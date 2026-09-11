@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"13c73aaf-43d6-4b2c-af51-05763e0c6834"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"read-permissions","name":"Read","input":{"file_path":"PERMISSIONS.md"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"read-permissions","is_error":false,"content":"# Permissions\nExamples: permission denied, not allowed, Operation not permitted.\nThe documentation describes errors; reading it succeeded."}]}}
+{"type":"result","subtype":"success","is_error":false,"session_id":"13c73aaf-43d6-4b2c-af51-05763e0c6834","total_cost_usd":0.01,"usage":{"input_tokens":30,"output_tokens":10},"permission_denials":[]}

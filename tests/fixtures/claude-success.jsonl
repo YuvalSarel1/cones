@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"13c73aaf-43d6-4b2c-af51-05763e0c6834"}
+{"type":"result","subtype":"success","is_error":false,"session_id":"13c73aaf-43d6-4b2c-af51-05763e0c6834","total_cost_usd":0.012,"usage":{"input_tokens":21,"output_tokens":9,"cache_creation_input_tokens":10,"cache_read_input_tokens":30},"permission_denials":[]}

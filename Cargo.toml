@@ -1,0 +1,32 @@
+[package]
+name = "cones"
+version = "0.1.0-headless"
+edition = "2024"
+description = "Scheduled coding-agent runs with explicit policy and a durable ledger"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/YuvalSarel1/cones"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+fs2 = "0.4"
+libc = "0.2"
+plist = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+semver = "1"
+sha2 = "0.10"
+signal-hook = "0.3"
+toml = "0.9"
+ureq = { version = "3", default-features = false, features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "cones"
+path = "src/main.rs"

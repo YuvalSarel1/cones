@@ -1,0 +1,7 @@
+# agent-console v0.3.0 cannot pass per-job policy to its fixed spawn command.
+# Select agent-console explicitly to probe it and record the headless fallback.
+control_plane = "none"
+agent_console_url = "http://127.0.0.1:7878"
+
+# To probe agent-console:
+# control_plane = "agent-console"

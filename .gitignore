@@ -1,0 +1,4 @@
+/target/
+/jobs.yaml
+/repomix-output.*
+.DS_Store

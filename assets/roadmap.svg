@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="830" viewBox="0 0 1600 830" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="1600" height="900" fill="#0d1117"/>
+<text x="60" y="74" font-size="40" font-weight="700" fill="#e6edf3">cones roadmap</text>
+<text x="60" y="108" font-size="19" fill="#8b949e">Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.</text>
+<rect x="60" y="132" width="1480" height="84" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="80" y="158" font-size="12" font-weight="700" fill="#3fb950" letter-spacing="1.5">SHIPPED  v0.1.0-headless</text>
+<text x="80" y="182" font-size="14" fill="#e6edf3">Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · rolling daily budget · live event stream · stop,</text>
+<text x="80" y="202" font-size="14" fill="#e6edf3">list, resume in Claude&#x27;s TUI · overlap skip / allow / replace · shared-workspace writer lock · durable run ledger</text>
+<circle cx="1435.6" cy="240" r="4" fill="#56d4dd"/><text x="1445.6" y="244" font-size="12" fill="#8b949e">Coordination</text>
+<circle cx="1255.6" cy="240" r="4" fill="#79c0ff"/><text x="1265.6" y="244" font-size="12" fill="#8b949e">Harnesses &amp; triggers</text>
+<circle cx="1126.0" cy="240" r="4" fill="#d2a8ff"/><text x="1136.0" y="244" font-size="12" fill="#8b949e">Observability</text>
+<circle cx="1010.8" cy="240" r="4" fill="#f0883e"/><text x="1020.8" y="244" font-size="12" fill="#8b949e">Reliability</text>
+<text x="60" y="244" font-size="12" fill="#8b949e" letter-spacing="1">CATEGORIES</text>
+<rect x="60" y="262" width="477" height="520" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="60" y="262" width="477" height="6" rx="3" fill="#3fb950"/>
+<text x="82" y="304" font-size="22" font-weight="800" fill="#3fb950" letter-spacing="2">NOW</text>
+<text x="82" y="328" font-size="14" fill="#8b949e">Make the first release trustworthy</text>
+<circle cx="88" cy="359" r="4" fill="#f0883e"/>
+<text x="104" y="364" font-size="16" font-weight="700" fill="#e6edf3">Sleep/wake proof</text>
+<text x="253.6" y="363" font-size="10.5" fill="#f0883e" letter-spacing="1">RELIABILITY</text>
+<text x="104" y="385" font-size="13.5" fill="#8b949e">launchd catch-up after lid-close and reboot verified; what</text>
+<text x="104" y="403" font-size="13.5" fill="#8b949e">replays and what is lost, documented.</text>
+<circle cx="88" cy="431" r="4" fill="#f0883e"/>
+<text x="104" y="436" font-size="16" font-weight="700" fill="#e6edf3">Public release</text>
+<text x="236.39999999999998" y="435" font-size="10.5" fill="#f0883e" letter-spacing="1">RELIABILITY</text>
+<text x="104" y="457" font-size="13.5" fill="#8b949e">Install steps and verification record, published under the</text>
+<text x="104" y="475" font-size="13.5" fill="#8b949e">personal account.</text>
+<circle cx="88" cy="503" r="4" fill="#d2a8ff"/>
+<text x="104" y="508" font-size="16" font-weight="700" fill="#e6edf3">Failure notification</text>
+<text x="288.0" y="507" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="104" y="529" font-size="13.5" fill="#8b949e">Opt-in macOS notification on failed, crashed or budget-</text>
+<text x="104" y="547" font-size="13.5" fill="#8b949e">skipped runs.</text>
+<circle cx="88" cy="575" r="4" fill="#d2a8ff"/>
+<text x="104" y="580" font-size="16" font-weight="700" fill="#e6edf3">Run summary in ls</text>
+<text x="262.2" y="579" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="104" y="601" font-size="13.5" fill="#8b949e">One line per run: what it did, cost, why it stopped.</text>
+<circle cx="88" cy="629" r="4" fill="#f0883e"/>
+<text x="104" y="634" font-size="16" font-weight="700" fill="#e6edf3">Doctor covers auth</text>
+<text x="270.79999999999995" y="633" font-size="10.5" fill="#f0883e" letter-spacing="1">RELIABILITY</text>
+<text x="104" y="655" font-size="13.5" fill="#8b949e">Claude login and named env vars checked before the 2 AM</text>
+<text x="104" y="673" font-size="13.5" fill="#8b949e">run fails silently.</text>
+<rect x="561" y="262" width="477" height="520" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="561" y="262" width="477" height="6" rx="3" fill="#58a6ff"/>
+<text x="583" y="304" font-size="22" font-weight="800" fill="#58a6ff" letter-spacing="2">NEXT</text>
+<text x="583" y="328" font-size="14" fill="#8b949e">More harnesses, less babysitting</text>
+<circle cx="589" cy="359" r="4" fill="#79c0ff"/>
+<text x="605" y="364" font-size="16" font-weight="700" fill="#e6edf3">Codex jobs</text>
+<text x="703.0" y="363" font-size="10.5" fill="#79c0ff" letter-spacing="1">HARNESSES &amp; TRIGGERS</text>
+<text x="605" y="385" font-size="13.5" fill="#8b949e">Real token budget, rejected when unenforceable. Same</text>
+<text x="605" y="403" font-size="13.5" fill="#8b949e">policy file, second harness.</text>
+<circle cx="589" cy="431" r="4" fill="#d2a8ff"/>
+<text x="605" y="436" font-size="16" font-weight="700" fill="#e6edf3">Next fire time in ls</text>
+<text x="789.0" y="435" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="605" y="457" font-size="13.5" fill="#8b949e">See what runs next, not only what already ran.</text>
+<circle cx="589" cy="485" r="4" fill="#f0883e"/>
+<text x="605" y="490" font-size="16" font-weight="700" fill="#e6edf3">Retries with backoff</text>
+<text x="789.0" y="489" font-size="10.5" fill="#f0883e" letter-spacing="1">RELIABILITY</text>
+<text x="605" y="511" font-size="13.5" fill="#8b949e">Bounded retry for transient failures, chain visible in the</text>
+<text x="605" y="529" font-size="13.5" fill="#8b949e">ledger.</text>
+<circle cx="589" cy="557" r="4" fill="#d2a8ff"/>
+<text x="605" y="562" font-size="16" font-weight="700" fill="#e6edf3">Run diffs</text>
+<text x="694.4" y="561" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="605" y="583" font-size="13.5" fill="#8b949e">The working-tree change a run produced, from the ledger.</text>
+<circle cx="589" cy="611" r="4" fill="#56d4dd"/>
+<text x="605" y="616" font-size="16" font-weight="700" fill="#e6edf3">Worktree per run</text>
+<text x="754.6" y="615" font-size="10.5" fill="#56d4dd" letter-spacing="1">COORDINATION</text>
+<text x="605" y="637" font-size="13.5" fill="#8b949e">Concurrent writers each get a worktree; unlocks overlap:</text>
+<text x="605" y="655" font-size="13.5" fill="#8b949e">allow for write jobs.</text>
+<circle cx="589" cy="683" r="4" fill="#79c0ff"/>
+<text x="605" y="688" font-size="16" font-weight="700" fill="#e6edf3">File and webhook triggers</text>
+<text x="832.0" y="687" font-size="10.5" fill="#79c0ff" letter-spacing="1">HARNESSES &amp; TRIGGERS</text>
+<text x="605" y="709" font-size="13.5" fill="#8b949e">Run on path change or HTTP call, not only on a calendar.</text>
+<rect x="1062" y="262" width="477" height="520" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="1062" y="262" width="477" height="6" rx="3" fill="#bc8cff"/>
+<text x="1084" y="304" font-size="22" font-weight="800" fill="#bc8cff" letter-spacing="2">LATER</text>
+<text x="1084" y="328" font-size="14" fill="#8b949e">From scheduler to fleet control</text>
+<circle cx="1090" cy="359" r="4" fill="#d2a8ff"/>
+<text x="1106" y="364" font-size="16" font-weight="700" fill="#e6edf3">Fleet view</text>
+<text x="1204.0" y="363" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="1106" y="385" font-size="13.5" fill="#8b949e">Everything running on the machine, scheduled and</text>
+<text x="1106" y="403" font-size="13.5" fill="#8b949e">interactive: cwd, task, files, busy/idle, cost. Side pane</text>
+<text x="1106" y="421" font-size="13.5" fill="#8b949e">or TUI.</text>
+<circle cx="1090" cy="449" r="4" fill="#56d4dd"/>
+<text x="1106" y="454" font-size="16" font-weight="700" fill="#e6edf3">Commit lock and queue</text>
+<text x="1298.6" y="453" font-size="10.5" fill="#56d4dd" letter-spacing="1">COORDINATION</text>
+<text x="1106" y="475" font-size="13.5" fill="#8b949e">Agents acquire a per-repo lock before committing; cones</text>
+<text x="1106" y="493" font-size="13.5" fill="#8b949e">grants in order.</text>
+<circle cx="1090" cy="521" r="4" fill="#56d4dd"/>
+<text x="1106" y="526" font-size="16" font-weight="700" fill="#e6edf3">Declared file scopes</text>
+<text x="1290.0" y="525" font-size="10.5" fill="#56d4dd" letter-spacing="1">COORDINATION</text>
+<text x="1106" y="547" font-size="13.5" fill="#8b949e">Jobs and sessions register files up front; overlaps caught</text>
+<text x="1106" y="565" font-size="13.5" fill="#8b949e">before commit.</text>
+<circle cx="1090" cy="593" r="4" fill="#d2a8ff"/>
+<text x="1106" y="598" font-size="16" font-weight="700" fill="#e6edf3">Status transitions</text>
+<text x="1272.8" y="597" font-size="10.5" fill="#d2a8ff" letter-spacing="1">OBSERVABILITY</text>
+<text x="1106" y="619" font-size="13.5" fill="#8b949e">Started, milestone, blocked, done from the agent itself.</text>
+<circle cx="1090" cy="647" r="4" fill="#56d4dd"/>
+<text x="1106" y="652" font-size="16" font-weight="700" fill="#e6edf3">Standing orders</text>
+<text x="1247.0" y="651" font-size="10.5" fill="#56d4dd" letter-spacing="1">COORDINATION</text>
+<text x="1106" y="673" font-size="13.5" fill="#8b949e">Fleet rules as data, checked when the last job ends.</text>
+<circle cx="1090" cy="701" r="4" fill="#79c0ff"/>
+<text x="1106" y="706" font-size="16" font-weight="700" fill="#e6edf3">More harnesses, more Macs</text>
+<text x="1333.0" y="705" font-size="10.5" fill="#79c0ff" letter-spacing="1">HARNESSES &amp; TRIGGERS</text>
+<text x="1106" y="727" font-size="13.5" fill="#8b949e">Pi when a real use case appears; multi-machine after</text>
+<text x="1106" y="745" font-size="13.5" fill="#8b949e">single-machine fleet control is daily-driven.</text>
+<text x="60" y="812" font-size="13" fill="#8b949e">cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
+</svg>
