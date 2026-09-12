@@ -19,8 +19,8 @@ pub struct Session {
     #[serde(default = "claude")]
     pub harness: String,
     pub cwd: PathBuf,
-    /// `active`, `idle` (Stop fired), `blocked` (a Notification such as a permission prompt)
-    /// or `exited`.
+    /// `active`, `idle` (Stop fired, or the idle_prompt Notification), `blocked` (a permission or
+    /// elicitation Notification) or `exited`.
     pub state: String,
     pub updated: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,12 +100,21 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
             cwd: payload["cwd"].as_str().unwrap_or("").into(),
             state: match event {
                 // Nothing has been asked yet after SessionStart: waiting, not working.
-                "Stop" | "SessionStart" => "idle",
-                "Notification" => "blocked",
-                "SessionEnd" => "exited",
-                _ => "active",
-            }
-            .into(),
+                "Stop" | "SessionStart" => "idle".into(),
+                "Notification" => match payload["notification_type"].as_str().unwrap_or("") {
+                    "permission_prompt" | "elicitation_dialog" | "elicitation_url_dialog" => {
+                        "blocked".into()
+                    }
+                    // Fires a minute after a turn ends with nothing typed: still idle.
+                    "idle_prompt" => "idle".into(),
+                    // auth_success, agent_completed, quota_*: informational, state unchanged.
+                    _ => previous
+                        .as_ref()
+                        .map_or_else(|| "idle".to_owned(), |p| p.state.clone()),
+                },
+                "SessionEnd" => "exited".into(),
+                _ => "active".into(),
+            },
             updated: Utc::now(),
             event: Some(event.into()),
             tool: payload["tool_name"].as_str().map(Into::into),

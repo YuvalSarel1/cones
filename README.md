@@ -73,7 +73,7 @@ cones hook --install             # one global Claude Code hook in ~/.claude/sett
 cones doctor                     # reports whether the hook is installed
 ```
 
-The hook runs on SessionStart, UserPromptSubmit, PostToolUse, Notification, Stop and SessionEnd and writes one JSON file per session to `~/.cones/fleet/<session_id>.json`: cwd, pid, state (`active`, `idle`, `blocked` on a permission prompt, `exited`), the last event and tool, and input/output tokens summed from the transcript at the end of each turn. Every Claude session on the Mac becomes visible, whether cones started it or not. The hook only observes; it is not on PreToolUse and never gates a tool call. Re-running `--install` replaces the earlier entry, so a moved binary or `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
+The hook runs on SessionStart, UserPromptSubmit, PostToolUse, Notification, Stop and SessionEnd and writes one JSON file per session to `~/.cones/fleet/<session_id>.json`: cwd, pid, state (`active`, `idle`, `blocked` on a permission or elicitation prompt, `exited`; the idle-prompt notification Claude sends a minute after a turn ends keeps a session `idle`), the last event and tool, and input/output tokens summed from the transcript at the end of each turn. Every Claude session on the Mac becomes visible, whether cones started it or not. The hook only observes; it is not on PreToolUse and never gates a tool call. Re-running `--install` replaces the earlier entry, so a moved binary or `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
 
 ## Roadmap
 

@@ -428,8 +428,17 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
     );
     cones::fleet::record(dir.path(), 42, &payload("PostToolUse")).unwrap();
     assert_eq!(get().tool.as_deref(), Some("Bash"));
-    cones::fleet::record(dir.path(), 42, &payload("Notification")).unwrap();
+    let notify = |kind: &str| {
+        let mut p = payload("Notification");
+        p["notification_type"] = kind.into();
+        p
+    };
+    cones::fleet::record(dir.path(), 42, &notify("auth_success")).unwrap();
+    assert_eq!(get().state, "active");
+    cones::fleet::record(dir.path(), 42, &notify("permission_prompt")).unwrap();
     assert_eq!(get().state, "blocked");
+    cones::fleet::record(dir.path(), 42, &notify("idle_prompt")).unwrap();
+    assert_eq!(get().state, "idle");
     cones::fleet::record(dir.path(), 42, &payload("Stop")).unwrap();
     let idle = get();
     assert_eq!(
