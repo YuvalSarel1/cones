@@ -64,7 +64,7 @@ With the fleet hook installed (`cones hook --install`), every Claude Code sessio
 
 A run is `ok`, `failed`, `timeout`, `skipped` or `crashed`, with a reason such as `permission`, `budget`, `overlap` or `workspace`. On timeout, stop or permission denial the whole process group is terminated. State lives in `~/.cones` (`--state-dir` to isolate): the `runs.jsonl` ledger, per-run events and stderr, archived transcripts, launchd logs.
 
-launchd runs after login, coalesces ticks missed during sleep, and does not wake the Mac or replay time spent powered off.
+Schedules compile to `StartCalendarInterval` entries in a per-user LaunchAgent with `RunAtLoad` false. Per launchd.plist(5), ticks missed while the Mac sleeps coalesce into one launch on wake, so a wake starts at most one run per job and `overlap` decides if the previous run is still going; nothing runs at login or on `cones install`. Ticks that pass while the Mac is powered off or you are logged out are lost, and launchd does not wake the Mac. This has not been observed through a real lid-close or reboot yet; the check is `cones ls --json` showing one `schedule` record fired after a slept-through tick and none after a reboot past one.
 
 ## Fleet
 

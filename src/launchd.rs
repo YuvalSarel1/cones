@@ -331,3 +331,39 @@ pub fn exported_plist_path(name: &str) -> Result<PathBuf> {
         .join("Library/LaunchAgents")
         .join(format!("{}.plist", label(name))))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// launchd.plist(5): ticks missed while asleep are "coalesced into one event upon wake
+    /// from sleep", and RunAtLoad false means loading at login launches nothing. So a wake
+    /// fires at most one run per job, which the overlap policy then handles.
+    #[test]
+    fn plist_schedules_one_interval_per_tick_and_never_runs_at_load() {
+        let mut job = crate::config::adhoc(None, "hi", Path::new("/tmp")).unwrap();
+        job.schedule = "0 2,14 * * *".into();
+        let bytes = render(
+            &job,
+            Path::new("/usr/local/bin/cones"),
+            Path::new("/tmp/jobs.yaml"),
+            Path::new("/tmp/state"),
+        )
+        .unwrap();
+        let value = Value::from_reader_xml(bytes.as_slice()).unwrap();
+        let d = value.as_dictionary().unwrap();
+        assert_eq!(d["RunAtLoad"].as_boolean(), Some(false));
+        assert!(!d.contains_key("StartInterval"));
+        let ticks = d["StartCalendarInterval"].as_array().unwrap();
+        assert_eq!(ticks.len(), 2);
+        let hours: Vec<_> = ticks
+            .iter()
+            .map(|t| t.as_dictionary().unwrap()["Hour"].as_signed_integer())
+            .collect();
+        assert_eq!(hours, [Some(2), Some(14)]);
+        assert_eq!(
+            ticks[0].as_dictionary().unwrap()["Minute"].as_signed_integer(),
+            Some(0)
+        );
+    }
+}
