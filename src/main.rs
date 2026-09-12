@@ -79,8 +79,10 @@ enum Action {
     },
     /// Check execution prerequisites and policy hazards.
     Doctor,
-    /// Live dashboard of jobs, runs and output.
+    /// Dashboard: jobs and runs in fzf, with preview and actions.
     Tui,
+    #[command(name = "__list", hide = true)]
+    List,
     #[command(name = "__worker", hide = true)]
     Worker {
         #[arg(long)]
@@ -191,8 +193,9 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Action::Tui => {
-            cones::tui::run(&jobs_path, &state)?;
+        Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state),
+        Action::List => {
+            print!("{}", cones::tui::list(&jobs_path, &state)?);
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {
