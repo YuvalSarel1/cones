@@ -1,9 +1,9 @@
 """Generates assets/roadmap.svg. Run: python3 assets/roadmap.py"""
 import html, textwrap, pathlib
-W, H = 1600, 860
+W = 1000
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
 CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
-       "HAR": ("Harnesses & triggers", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
+       "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
 COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
     ("Public release", "REL", "Install steps and verification record, published under the personal account."),
@@ -36,36 +36,55 @@ def t(x, y, s, size, fill, **kw):
     attrs = " ".join(f'{k.replace("_", "-")}="{v}"' for k, v in kw.items())
     return f'<text x="{x}" y="{y}" font-size="{size}" fill="{fill}" {attrs}>{html.escape(s)}</text>'
 
+# Stacked layout: one band per horizon, items in two columns, sized to read at README width.
+M, RAIL, GAP = 40, 190, 20
+ITEM_W = (W - 2 * M - RAIL - GAP - 24) // 2
+WRAP = 50
+o = [t(M, 62, "cones roadmap", 34, FG, font_weight=700),
+     t(M, 92, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 16, MUTED)]
+ship = textwrap.wrap(SHIPPED, 118)
+o.append(f'<rect x="{M}" y="112" width="{W-2*M}" height="{44+len(ship)*19}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
+o.append(t(M + 18, 136, "SHIPPED  v0.1.0-headless", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
+for i, l in enumerate(ship):
+    o.append(t(M + 18, 158 + i * 19, l, 14, FG))
+y = 112 + 44 + len(ship) * 19 + 22
+lx = W - M
+for k in reversed(list(CAT)):
+    name, c = CAT[k]; lx -= len(name) * 7 + 22
+    o.append(f'<circle cx="{lx+4}" cy="{y-4}" r="4" fill="{c}"/>' + t(lx + 14, y, name, 12, MUTED)); lx -= 14
+o.append(t(M, y, "CATEGORIES", 12, MUTED, letter_spacing=1))
+y += 16
+for name, sub, color, items in COLS:
+    rows = [items[i:i + 2] for i in range(0, len(items), 2)]
+    laid = []  # (col, dy, title, cat, lines)
+    band_h = 34
+    for row in rows:
+        row_h = 0
+        for ci, (title, cat, desc) in enumerate(row):
+            lines = textwrap.wrap(desc, WRAP)
+            laid.append((ci, band_h, title, cat, lines))
+            row_h = max(row_h, 24 + len(lines) * 19 + 18)
+        band_h += row_h
+    band_h += 4
+    o += [f'<rect x="{M}" y="{y}" width="{W-2*M}" height="{band_h}" rx="10" fill="{CARD}" stroke="{LINE}"/>',
+          f'<rect x="{M}" y="{y}" width="6" height="{band_h}" rx="3" fill="{color}"/>',
+          t(M + 26, y + 44, name, 24, color, font_weight=800, letter_spacing=2)]
+    for i, l in enumerate(textwrap.wrap(sub, 20)):
+        o.append(t(M + 26, y + 70 + i * 17, l, 13, MUTED))
+    for ci, dy, title, cat, lines in laid:
+        cname, cc = CAT[cat]
+        x = M + RAIL + GAP + ci * (ITEM_W + 24)
+        yy = y + dy
+        o += [f'<circle cx="{x}" cy="{yy-6}" r="4" fill="{cc}"/>',
+              t(x + 14, yy, title, 17, FG, font_weight=700),
+              t(x + 14 + len(title) * 9.1 + 10, yy - 1, cname.upper(), 10.5, cc, letter_spacing=1)]
+        for j, l in enumerate(lines):
+            o.append(t(x + 14, yy + 22 + j * 19, l, 14.5, MUTED))
+    y += band_h + 16
+for i, l in enumerate(textwrap.wrap(FOOT, 118)):
+    o.append(t(M, y + 12 + i * 17, l, 12.5, MUTED))
+H = y + 12 + len(textwrap.wrap(FOOT, 118)) * 17 + 24
 o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
      'font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">',
-     f'<rect width="{W}" height="{H}" fill="{BG}"/>',
-     t(60, 74, "cones roadmap", 40, FG, font_weight=700),
-     t(60, 108, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 19, MUTED),
-     f'<rect x="60" y="132" width="{W-120}" height="84" rx="8" fill="{CARD}" stroke="{LINE}"/>',
-     t(80, 158, "SHIPPED  v0.1.0-headless", 12, "#3fb950", font_weight=700, letter_spacing=1.5)]
-for i, l in enumerate(textwrap.wrap(SHIPPED, 160)[:2]):
-    o.append(t(80, 182 + i * 20, l, 14, FG))
-lx = W - 60
-for k in reversed(list(CAT)):
-    name, c = CAT[k]; lx -= len(name) * 7.2 + 22
-    o.append(f'<circle cx="{lx+4}" cy="240" r="4" fill="{c}"/>' + t(lx + 14, 244, name, 12, MUTED)); lx -= 14
-o.append(t(60, 244, "CATEGORIES", 12, MUTED, letter_spacing=1))
-cw, top = (W - 120 - 48) // 3, 262
-for ci, (name, sub, color, items) in enumerate(COLS):
-    x = 60 + ci * (cw + 24)
-    o += [f'<rect x="{x}" y="{top}" width="{cw}" height="{H-top-48}" rx="10" fill="{CARD}" stroke="{LINE}"/>',
-          f'<rect x="{x}" y="{top}" width="{cw}" height="6" rx="3" fill="{color}"/>',
-          t(x + 22, top + 42, name, 22, color, font_weight=800, letter_spacing=2),
-          t(x + 22, top + 66, sub, 14, MUTED)]
-    yy = top + 102
-    for title, cat, desc in items:
-        cname, cc = CAT[cat]
-        o += [f'<circle cx="{x+28}" cy="{yy-5}" r="4" fill="{cc}"/>',
-              t(x + 44, yy, title, 16, FG, font_weight=700),
-              t(x + 44 + len(title) * 8.6 + 12, yy - 1, cname.upper(), 10.5, cc, letter_spacing=1)]
-        yy += 21
-        for l in textwrap.wrap(desc, 58):
-            o.append(t(x + 44, yy, l, 13.5, MUTED)); yy += 18
-        yy += 13
-o += [t(60, H - 18, FOOT, 13, MUTED), "</svg>"]
+     f'<rect width="{W}" height="{H}" fill="{BG}"/>'] + o + ["</svg>"]
 pathlib.Path(__file__).with_name("roadmap.svg").write_text("\n".join(o))
