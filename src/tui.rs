@@ -519,7 +519,7 @@ pub fn fleet_rows(state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    Ok(fleet::sessions(state)?
+    Ok(fleet::with_agents(fleet::sessions(state)?)
         .into_iter()
         .filter(|s| !owned.contains(s.session_id.as_str()) && s.pid.is_none_or(fleet::alive))
         .collect())

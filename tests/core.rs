@@ -633,3 +633,104 @@ fn doctor_probes_only_the_switches_the_compiler_emits() {
         ]
     );
 }
+
+#[test]
+fn fleet_agents_feed_adds_claude_sessions_and_their_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = "22222222-2222-4222-8222-222222222222";
+    let hook = cones::fleet::Session {
+        v: 1,
+        session_id: seen.into(),
+        harness: "claude".into(),
+        cwd: "/src/a".into(),
+        state: "blocked".into(),
+        updated: Utc::now(),
+        event: Some("Notification".into()),
+        tool: None,
+        pid: Some(7),
+        transcript_path: None,
+        tokens_in: None,
+        tokens_out: None,
+        cost_usd: None,
+        title: None,
+        last: Some("Running the tests".into()),
+    };
+    let jobs = dir.path().join("jobs");
+    for (id, state) in [
+        (
+            "aaaaaaaa",
+            r#"{"state":"working","detail":"Inspecting job state files","name":"job a"}"#,
+        ),
+        (
+            "bbbbbbbb",
+            r#"{"state":"done","detail":"  ","name":"job b","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl"}"#,
+        ),
+    ] {
+        fs::create_dir_all(jobs.join(id)).unwrap();
+        fs::write(jobs.join(id).join("state.json"), state).unwrap();
+    }
+    let fresh = "33333333-3333-4333-8333-333333333333";
+    let bare = "44444444-4444-4444-8444-444444444444";
+    let agents = format!(
+        r#"[
+        {{"pid":7,"id":"aaaaaaaa","cwd":"/src/a","kind":"background","sessionId":"{seen}","name":"job a","status":"busy","state":"working"}},
+        {{"pid":8,"id":"bbbbbbbb","cwd":"/src/b","kind":"background","sessionId":"{fresh}","name":"job b","status":"idle","state":"done"}},
+        {{"pid":9,"id":"../x","cwd":"/src/c","kind":"interactive","sessionId":"{bare}","name":"","state":"working","startedAt":1757682871892}}
+        ]"#
+    );
+    let rows = cones::fleet::merge(vec![hook.clone()], &agents, &jobs);
+    assert_eq!(rows.len(), 3);
+    let by = |id: &str| rows.iter().find(|s| s.session_id == id).unwrap();
+    let a = by(seen);
+    assert_eq!(
+        (a.state.as_str(), a.pid, a.event.as_deref()),
+        ("blocked", Some(7), Some("Notification")),
+        "the hook's state is kept"
+    );
+    assert_eq!(
+        (a.last.as_deref(), a.title.as_deref()),
+        (Some("Inspecting job state files"), Some("job a")),
+        "Claude's detail line and name fill in"
+    );
+    let b = by(fresh);
+    assert_eq!(
+        (
+            b.state.as_str(),
+            b.pid,
+            b.cwd.to_str(),
+            b.title.as_deref(),
+            b.last.as_deref(),
+            b.transcript_path.as_deref().and_then(|p| p.to_str()),
+            b.updated.to_rfc3339(),
+        ),
+        (
+            "idle",
+            Some(8),
+            Some("/src/b"),
+            Some("job b"),
+            None,
+            Some("/t/b.jsonl"),
+            "2026-09-12T13:14:31.892+00:00".into(),
+        ),
+        "a session the hook never saw is synthesized; a blank detail is no last line"
+    );
+    let c = by(bare);
+    assert_eq!(
+        (
+            c.state.as_str(),
+            c.title.as_deref(),
+            c.last.as_deref(),
+            c.updated.timestamp_millis(),
+        ),
+        ("active", None, None, 1757682871892),
+        "an unsafe short id reads no job file; without one the start time is the age"
+    );
+    for bad in ["", "not json", "{}"] {
+        assert_eq!(cones::fleet::merge(vec![hook.clone()], bad, &jobs).len(), 1);
+    }
+    assert!(
+        !cones::fleet::ASK_CLAUDE.load(std::sync::atomic::Ordering::Relaxed)
+            && cones::fleet::with_agents(vec![hook]).len() == 1,
+        "the library never runs claude on its own"
+    );
+}

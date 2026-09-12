@@ -8,8 +8,14 @@ use serde_json::{Value, json};
 use std::{
     collections::HashSet,
     fs,
-    io::{BufRead, Write},
+    io::{BufRead, Read, Write},
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,7 +77,8 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
         .context("hook payload has no session_id")?;
     let event = payload["hook_event_name"].as_str().unwrap_or("");
     let transcript = payload["transcript_path"].as_str().map(PathBuf::from);
-    let previous = find(state, id)?;
+    // The hook's own file only: asking claude for its agent list on every hook event is too slow.
+    let previous = sessions(state)?.into_iter().find(|s| s.session_id == id);
     // Counting tokens means reading the whole transcript, so do it once per turn, not per tool.
     let counted = match event {
         "Stop" | "SessionEnd" => transcript.as_deref().and_then(|t| usage(t).ok()),
@@ -347,8 +354,152 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
+/// Whether the fleet view may run `claude agents --json`. Off in the library so no test ever
+/// runs claude; the binary turns it on.
+pub static ASK_CLAUDE: AtomicBool = AtomicBool::new(false);
+
+/// The hook's view plus what Claude itself lists: sessions the hook never saw are synthesized,
+/// and a background job's one-line `detail` from `~/.claude/jobs/<id>/state.json` becomes the
+/// last column.
+pub fn with_agents(sessions: Vec<Session>) -> Vec<Session> {
+    if !ASK_CLAUDE.load(Ordering::Relaxed) {
+        return sessions;
+    }
+    let jobs = dirs::home_dir().unwrap_or_default().join(".claude/jobs");
+    merge(sessions, &agents_json(), &jobs)
+}
+
+/// Pure: `agents` is the array `claude agents --json` prints, `jobs` the directory holding one
+/// `<id>/state.json` per background job. Anything unparseable leaves the list as it was.
+pub fn merge(mut sessions: Vec<Session>, agents: &str, jobs: &Path) -> Vec<Session> {
+    let agents: Vec<Value> = serde_json::from_str(agents).unwrap_or_default();
+    for a in &agents {
+        let Some(id) = a["sessionId"].as_str() else {
+            continue;
+        };
+        // The short id becomes a directory name, so it is checked first.
+        let job: Value = a["id"]
+            .as_str()
+            .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .and_then(|s| fs::read(jobs.join(s).join("state.json")).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let s = match sessions.iter().position(|s| s.session_id == id) {
+            Some(i) => &mut sessions[i],
+            None => {
+                sessions.push(Session {
+                    v: 1,
+                    session_id: id.into(),
+                    harness: claude(),
+                    cwd: a["cwd"].as_str().unwrap_or("").into(),
+                    state: if a["state"] == "working" {
+                        "active"
+                    } else {
+                        "idle"
+                    }
+                    .into(),
+                    updated: job["updatedAt"]
+                        .as_str()
+                        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+                        .map(Into::into)
+                        .or_else(|| {
+                            a["startedAt"]
+                                .as_i64()
+                                .and_then(DateTime::from_timestamp_millis)
+                        })
+                        .unwrap_or_else(Utc::now),
+                    event: None,
+                    tool: None,
+                    pid: a["pid"].as_u64().map(|p| p as u32),
+                    transcript_path: job["linkScanPath"].as_str().map(Into::into),
+                    tokens_in: None,
+                    tokens_out: None,
+                    cost_usd: None,
+                    title: None,
+                    last: None,
+                });
+                sessions.last_mut().expect("just pushed")
+            }
+        };
+        if let Some(d) = job["detail"].as_str().filter(|d| !d.trim().is_empty()) {
+            s.last = Some(d.into());
+        }
+        if s.title.is_none() {
+            s.title = a["name"].as_str().filter(|n| !n.is_empty()).map(Into::into);
+        }
+    }
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    sessions
+}
+
+/// `claude agents --json`, asked at most every 3 s. The dashboard refreshes every second and
+/// claude takes about half of one to answer, so a stale answer is served while a thread fetches.
+fn agents_json() -> String {
+    static CACHE: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+    static FETCHING: AtomicBool = AtomicBool::new(false);
+    fn remember(json: String) -> String {
+        *CACHE.lock().unwrap() = Some((Instant::now(), json.clone()));
+        json
+    }
+    let cached = CACHE.lock().unwrap().clone();
+    match cached {
+        Some((at, json)) if at.elapsed() < Duration::from_secs(3) => json,
+        Some((_, json)) => {
+            if !FETCHING.swap(true, Ordering::SeqCst) {
+                std::thread::spawn(|| {
+                    remember(run_agents());
+                    FETCHING.store(false, Ordering::SeqCst);
+                });
+            }
+            json
+        }
+        None => remember(run_agents()),
+    }
+}
+
+/// Fails soft: no claude on PATH, a non-zero exit or a hang past 2 s all read as no agents.
+fn run_agents() -> String {
+    let path = std::env::var("PATH").unwrap_or_else(|_| crate::harness::launch_path());
+    let Some(claude) = crate::harness::executable("claude", &path) else {
+        return String::new();
+    };
+    let Ok(mut child) = Command::new(claude)
+        .args(["agents", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return String::new();
+    };
+    let Some(mut stdout) = child.stdout.take() else {
+        return String::new();
+    };
+    // Drained on its own thread so a long list never blocks the child on a full pipe.
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout
+            .read_to_string(&mut out)
+            .map(|_| out)
+            .unwrap_or_default()
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return reader.join().unwrap_or_default(),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return String::new();
+            }
+        }
+    }
+}
+
+/// What the fleet view shows, so `logs`, `attach` and `stop` act on every visible row.
 pub fn find(state: &Path, session_id: &str) -> Result<Option<Session>> {
-    Ok(sessions(state)?
+    Ok(with_agents(sessions(state)?)
         .into_iter()
         .find(|s| s.session_id == session_id))
 }

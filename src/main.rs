@@ -126,6 +126,7 @@ fn execute(cli: Cli) -> Result<i32> {
         &cwd,
     )?;
     let jobs_path = cones::expand_path(&cli.jobs, &cwd)?;
+    cones::fleet::ASK_CLAUDE.store(true, std::sync::atomic::Ordering::Relaxed);
     match cli.command {
         Action::Validate => {
             let jobs = config::read_jobs(&jobs_path)?;
