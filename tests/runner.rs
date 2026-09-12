@@ -127,6 +127,8 @@ fn durable_start_success_cost_and_archived_native_resume() {
         2
     );
 }
+// Timing-sensitive: it has flaked when other cargo test runs shared the machine and passed
+// alone; rerun it alone before blaming a change.
 #[test]
 fn policy_denial_stops_a_running_harness_promptly() {
     for mode in ["permission", "sandbox"] {

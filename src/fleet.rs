@@ -71,6 +71,8 @@ pub fn dir(state: &Path) -> PathBuf {
 }
 
 /// Apply one hook payload (the JSON Claude Code writes to the hook's stdin) to the state file.
+/// Tolerate a missing or unparsable transcript instead of returning an error: every live
+/// session runs this hook, so one failure here breaks all of them at once.
 pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
     let id = payload["session_id"]
         .as_str()

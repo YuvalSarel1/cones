@@ -1,6 +1,9 @@
 //! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
 //! or by state, and runs, with a details pane, a dispatch prompt and the actions. ratatui draws;
 //! cones supplies rows. `cones __list` prints the same rows as tab-separated text.
+//! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
+//! `exited` are session states); a run status must not reuse those words or its rows sort and
+//! draw as sessions.
 use crate::{
     config::{self, ResolvedJob},
     fleet::{self, Session},
