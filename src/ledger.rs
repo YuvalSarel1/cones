@@ -156,6 +156,13 @@ impl Run {
     }
 }
 
+fn workspace_key(cwd: &Path) -> Result<String> {
+    let canonical = std::fs::canonicalize(cwd)?;
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(canonical.as_os_str().as_bytes())
+    ))
+}
 pub struct Ledger {
     pub state: PathBuf,
 }
@@ -181,14 +188,22 @@ impl Ledger {
         self.scoped_lock("runs", run_id)
     }
     pub fn workspace_lock(&self, cwd: &Path) -> Result<Option<File>> {
-        let canonical = std::fs::canonicalize(cwd)?;
-        let key = format!("{:x}", Sha256::digest(canonical.as_os_str().as_bytes()));
-        self.scoped_lock("workspaces", &key)
+        self.scoped_lock("workspaces", &workspace_key(cwd)?)
     }
-    fn scoped_lock(&self, scope: &str, key: &str) -> Result<Option<File>> {
+    /// Block until the writer lock on `cwd` is free, then hold it. Same file as the runner
+    /// takes for `write: true` jobs, so `cones lock` and scheduled writers exclude each other.
+    pub fn workspace_lock_wait(&self, cwd: &Path) -> Result<File> {
+        let f = self.lock_file("workspaces", &workspace_key(cwd)?)?;
+        f.lock_exclusive()?;
+        Ok(f)
+    }
+    fn lock_file(&self, scope: &str, key: &str) -> Result<File> {
         let directory = self.state.join("locks").join(scope);
         private_dir(&directory)?;
-        let f = private_file(&directory.join(format!("{key}.lock")))?;
+        private_file(&directory.join(format!("{key}.lock")))
+    }
+    fn scoped_lock(&self, scope: &str, key: &str) -> Result<Option<File>> {
+        let f = self.lock_file(scope, key)?;
         match f.try_lock_exclusive() {
             Ok(()) => Ok(Some(f)),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),

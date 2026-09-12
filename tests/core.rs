@@ -179,6 +179,23 @@ fn ledger_repairs_only_torn_tail_and_never_hides_middle_corruption() {
     assert!(ledger.append(&r).is_err());
 }
 #[test]
+fn workspace_lock_wait_blocks_until_writer_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::new(dir.path()).unwrap();
+    let held = ledger.workspace_lock(dir.path()).unwrap().unwrap();
+    let state = dir.path().to_owned();
+    let waiter = std::thread::spawn(move || {
+        let ledger = Ledger::new(&state).unwrap();
+        let _f = ledger.workspace_lock_wait(&state).unwrap();
+        std::time::Instant::now()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let released = std::time::Instant::now();
+    drop(held);
+    assert!(waiter.join().unwrap() >= released);
+    assert!(ledger.workspace_lock(dir.path()).unwrap().is_some());
+}
+#[test]
 fn ledger_lock_budget_and_orphan_status() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::new(dir.path()).unwrap();

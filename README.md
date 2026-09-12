@@ -46,7 +46,7 @@ jobs:
 
 What the job gets: a pinned session ID, print mode, a native dollar budget, a runner timeout, no prompts, no user or project settings, no MCP servers, and a strict sandbox when Bash is enabled. `daily_budget_usd` is a rolling 24-hour reservation. Anything the harness cannot enforce natively fails `cones validate`; there is no best-effort fallback.
 
-`overlap` decides what happens when a job is still running at its next tick. Writers on the same directory are serialized across jobs regardless.
+`overlap` decides what happens when a job is still running at its next tick. Writers on the same directory are serialized across jobs regardless. `cones lock . -- git commit -m msg` takes that same writer lock from a shell or another agent, waiting until scheduled writers on the directory finish, and exits with the command's status.
 
 ## Runs
 
