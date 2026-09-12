@@ -241,7 +241,7 @@ impl Data {
         out
     }
 
-    /// The details pane for one row: a job's policy and prompt, a session's recent messages,
+    /// The details pane for one row: a job's policy and prompt, a session's last prompt and reply,
     /// or a run's captured output.
     pub fn details(&self, kind: &Kind) -> Vec<String> {
         match kind {
@@ -288,7 +288,7 @@ impl Data {
                     String::new(),
                 ];
                 if let Some(t) = &s.transcript_path {
-                    out.extend(fleet::tail(t, 8).1.into_iter().map(|t| format!("· {t}")));
+                    out.extend(fleet::exchange(t));
                 }
                 out
             }

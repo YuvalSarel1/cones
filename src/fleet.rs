@@ -193,6 +193,48 @@ pub fn follow(transcript: &Path, follow: bool) -> Result<()> {
     Ok(())
 }
 
+/// The last user prompt and the assistant's full reply to it, as pane lines: prompt lines
+/// quoted with `> `, a blank, then every assistant text since. Tool results are user messages
+/// too; only text counts as a prompt.
+pub fn exchange(transcript: &Path) -> Vec<String> {
+    // ponytail: the last MiB is enough; an exchange older than that is not what the pane is for.
+    let Ok(text) = crate::output::tail(transcript, 1 << 20) else {
+        return Vec::new();
+    };
+    let (mut prompt, mut reply) = (None, Vec::new());
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let content = &v["message"]["content"];
+        let texts: Vec<&str> = match content {
+            Value::String(s) => vec![s.as_str()],
+            _ => content
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|b| b["text"].as_str())
+                .collect(),
+        };
+        match v["type"].as_str() {
+            Some("user") if !texts.concat().trim().is_empty() => {
+                prompt = Some(texts.join("\n"));
+                reply.clear();
+            }
+            Some("assistant") => reply.extend(texts.into_iter().map(str::to_owned)),
+            _ => {}
+        }
+    }
+    let mut out: Vec<String> = prompt
+        .iter()
+        .flat_map(|p| p.trim().lines())
+        .map(|l| format!("> {l}"))
+        .collect();
+    out.push(String::new());
+    out.extend(reply.join("\n\n").lines().map(|l| l.replace("**", "")));
+    out
+}
+
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
     for line in lines.lines() {

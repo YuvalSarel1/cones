@@ -606,3 +606,36 @@ fn session_columns_align_across_directory_groups() {
         "title column padded to one width across groups"
     );
 }
+
+#[test]
+fn fleet_exchange_is_the_last_prompt_and_the_full_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let t = dir.path().join("t.jsonl");
+    fs::write(
+        &t,
+        concat!(
+            r#"{"type":"user","message":{"content":"old prompt"}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"old reply"}]}}"#, "\n",
+            r#"{"type":"user","message":{"content":[{"type":"text","text":"fix it\nplease"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"}]}}"#, "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"**Fixed** it\nsecond line"}]}}"#, "\n",
+            "not json\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#, "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        cones::fleet::exchange(&t),
+        [
+            "> fix it",
+            "> please",
+            "",
+            "Fixed it",
+            "second line",
+            "",
+            "done"
+        ]
+    );
+    assert!(cones::fleet::exchange(&dir.path().join("missing.jsonl")).is_empty());
+}
