@@ -30,7 +30,6 @@ impl Fixture {
         fs::set_permissions(fake, fs::Permissions::from_mode(0o700)).unwrap();
         let state = dir.path().join("state");
         fs::create_dir_all(&state).unwrap();
-        fs::write(state.join("config.toml"), "control_plane = 'none'\n").unwrap();
         let jobs = dir.path().join("jobs.yaml");
         fs::write(&jobs,format!("version: 1\njobs:\n  - name: test\n    schedule: '* * * * *'\n    harness: claude\n    cwd: .\n    prompt: test\n    model: {mode}\n    timeout_min: {timeout}\n    budget_usd: 0.1\n    archive_transcript: true\n    env: [FAKE_LEDGER, FAKE_CHILD_PID]\n")).unwrap();
         Self { dir, jobs, state }
@@ -96,7 +95,6 @@ fn durable_start_success_cost_and_archived_native_resume() {
     assert_eq!(runs.len(), 1);
     let r = &runs[0];
     assert_eq!(r.terminal.as_ref().unwrap().status, Status::Ok);
-    assert_eq!(r.started.live, Some(false));
     assert_eq!(r.terminal.as_ref().unwrap().cost_usd, Some(0.01));
     let archive = r.terminal.as_ref().unwrap().transcript.as_ref().unwrap();
     assert!(archive.is_file());
@@ -462,19 +460,6 @@ fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
             "cones test skipped: budget"
         ]
     );
-}
-#[test]
-fn unreachable_console_falls_back_without_claiming_live_attach() {
-    let f = Fixture::new("success", 1.0);
-    fs::write(
-        f.state.join("config.toml"),
-        "control_plane='agent-console'\nagent_console_url='http://127.0.0.1:1'\n",
-    )
-    .unwrap();
-    assert!(f.output().status.success());
-    let r = f.ledger().runs().unwrap().remove(0);
-    assert_eq!(r.started.live, Some(false));
-    assert!(r.started.fallback_reason.unwrap().contains("unreachable"));
 }
 #[test]
 fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {

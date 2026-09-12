@@ -59,10 +59,6 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub live: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fallback_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_s: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_usd: Option<f64>,
@@ -109,8 +105,6 @@ impl Record {
             pid: None,
             pgid: None,
             policy_hash: None,
-            live: None,
-            fallback_reason: None,
             timeout_s: None,
             budget_usd: None,
             duration_s: None,

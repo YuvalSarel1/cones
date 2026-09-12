@@ -1,9 +1,7 @@
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use cones::{
-    config::{self, Backend, Config},
-    control::{self, ControlPlane, Headless},
-    harness, launchd,
+    config, harness, launchd,
     ledger::{Ledger, Status},
     output, runner,
 };
@@ -156,7 +154,6 @@ fn execute(cli: Cli) -> Result<i32> {
             prompt,
             trigger,
         } => {
-            let config = Config::load(&state.join("config.toml"))?;
             let jobs = config::read_jobs(&jobs_path).unwrap_or_default();
             let named = match &job {
                 Some(name) => Some(
@@ -177,7 +174,6 @@ fn execute(cli: Cli) -> Result<i32> {
             let ledger = Ledger::new(&state)?;
             let status = runner::run(
                 job,
-                &config,
                 &ledger,
                 &std::env::current_exe()?,
                 match trigger {
@@ -336,12 +332,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             };
             let adapter = harness::adapter(run.started.harness.context("run has no harness")?)?;
-            let mut command = if run.started.live == Some(true) {
-                let config = Config::load(&state.join("config.toml"))?;
-                control::backend(&config)?.attach(&run, adapter.as_ref())?
-            } else {
-                Headless.attach(&run, adapter.as_ref())?
-            };
+            let mut command = runner::resume_finished(&run, adapter.as_ref())?;
             let session = run
                 .started
                 .session_id
@@ -389,11 +380,7 @@ fn execute(cli: Cli) -> Result<i32> {
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
-        Action::Doctor => doctor(
-            &jobs_path,
-            &state,
-            &Config::load(&state.join("config.toml"))?,
-        ),
+        Action::Doctor => doctor(&jobs_path, &state),
         Action::Worker { .. } => unreachable!(),
     }
 }
@@ -436,7 +423,7 @@ fn claude_settings() -> Result<PathBuf> {
 fn quote(s: &std::ffi::OsStr) -> String {
     format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"))
 }
-fn doctor(jobs_path: &std::path::Path, state: &std::path::Path, config: &Config) -> Result<i32> {
+fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
     let mut failed = false;
     let mut report = |level: &str, message: String| {
         if level == "FAIL" {
@@ -603,19 +590,6 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path, config: &Config)
         report(if logged_in{"OK"}else{"WARN"},"Claude authentication status (no credentials printed; named job env still needs to match the auth provider)".into());
     } else {
         report("FAIL", "claude not found in generated launchd PATH".into());
-    }
-    match config.control_plane {
-        Backend::None => report(
-            "OK",
-            "control_plane = none; headless execution selected".into(),
-        ),
-        Backend::AgentConsole => match control::backend(config)?.status() {
-            Ok(s) => report(
-                "WARN",
-                format!("{s}; inspected API cannot enforce job policy, runs use headless fallback"),
-            ),
-            Err(e) => report("WARN", format!("{e}; runs use headless fallback")),
-        },
     }
     let settings = claude_settings()?;
     report(

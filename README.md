@@ -2,7 +2,7 @@
 
 Scheduled coding-agent jobs on a local Mac. Each job runs under an explicit policy the harness enforces natively, and every run lands in a durable ledger.
 
-`v0.1.0-headless` runs Claude Code jobs on a launchd schedule, streams their output live, shows jobs, every live Claude session and runs in a native dashboard, and resumes finished sessions in Claude's own TUI. Codex and Pi are recognized but not yet executed.
+`v0.1.0-headless` runs Claude Code jobs on a launchd schedule, streams their output live, shows jobs, every live Claude session and runs in a native dashboard, and resumes finished sessions in Claude's own TUI. Codex is recognized but not yet executed.
 
 ## Try it
 

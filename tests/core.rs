@@ -219,29 +219,6 @@ fn ledger_lock_budget_and_orphan_status() {
     assert_eq!(ledger.reserved_spend("job").unwrap(), 0.25);
 }
 #[test]
-fn backend_rejects_nonlocal_endpoints() {
-    for url in [
-        "https://example.org:7878",
-        "http://example.org:7878",
-        "http://127.0.0.1:7878/path",
-        "http://user:pass@localhost:7878",
-    ] {
-        assert!(cones::control::AgentConsole::new(url).is_err());
-    }
-    assert!(cones::control::AgentConsole::new("http://[::1]:7878").is_ok());
-}
-
-#[test]
-fn health_api_accepts_patch_versions_but_not_unverified_minor_versions() {
-    for version in ["0.3.0", "0.3.1", "0.3.99", "0.3.1+build"] {
-        assert!(cones::control::compatible_health_version(version));
-    }
-    for version in ["0.2.9", "0.4.0", "1.0.0", "0.3.1-rc.1", "unknown"] {
-        assert!(!cones::control::compatible_health_version(version));
-    }
-}
-
-#[test]
 fn permission_words_in_read_output_are_data_not_denials() {
     let mut result = Outcome::default();
     for line in include_str!("fixtures/claude-read-permissions.jsonl").lines() {
@@ -351,41 +328,6 @@ fn overlap_allow_requires_read_only_and_workspace_locks_follow_symlinks() {
     assert!(ledger.workspace_lock(&alias).unwrap().is_none());
     drop(lock);
     assert!(ledger.workspace_lock(&alias).unwrap().is_some());
-}
-
-#[test]
-fn healthy_console_cannot_silently_drop_execution_policy() {
-    use cones::control::{AgentConsole, ControlPlane};
-    use std::{
-        io::{Read, Write},
-        net::TcpListener,
-        thread,
-        time::Duration,
-    };
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    let server = thread::spawn(move || {
-        let (mut socket, _) = listener.accept().unwrap();
-        socket
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut buf = [0; 4096];
-        let n = socket.read(&mut buf).unwrap();
-        let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-        let body = r#"{"ok":true,"version":"0.3.0","auth":"token"}"#;
-        write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
-        request
-    });
-    let backend = AgentConsole::new(&format!("http://{address}")).unwrap();
-    let error = backend
-        .spawn(std::path::Path::new("/unused/cones"), "unused-run")
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("policy-aware spawn is unavailable")
-    );
-    assert!(server.join().unwrap().starts_with("GET /api/health "));
 }
 
 #[test]

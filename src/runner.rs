@@ -1,6 +1,5 @@
 use crate::{
-    config::{Config, Overlap, ResolvedJob},
-    control::{self, ControlPlane, Headless},
+    config::{Overlap, ResolvedJob},
     harness::{self, Invocation, Outcome},
     ledger::{Ledger, Record, Run, Status},
     output::RunOutput,
@@ -14,7 +13,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::{
         fs::{OpenOptionsExt, PermissionsExt},
-        process::ExitStatusExt,
+        process::{CommandExt, ExitStatusExt},
     },
     path::Path,
     process::{Child, Command, Stdio},
@@ -347,13 +346,7 @@ fn terminal_failure(
     Ok(Status::Failed)
 }
 
-pub fn run(
-    job: &ResolvedJob,
-    config: &Config,
-    ledger: &Ledger,
-    executable: &Path,
-    trigger: &str,
-) -> Result<Status> {
+pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str) -> Result<Status> {
     let run_id = uuid::Uuid::new_v4().to_string();
     uuid::Uuid::parse_str(&run_id)?;
     if !job.enabled {
@@ -421,7 +414,6 @@ pub fn run(
     initial.cwd = Some(job.cwd.clone());
     initial.pid = Some(std::process::id());
     initial.owns_run_lock = Some(true);
-    initial.live = Some(false);
     initial.timeout_s = Some(job.timeout_min * 60.0);
     initial.budget_usd = Some(job.budget_usd);
     initial.output = Some(output.events_path.clone());
@@ -446,17 +438,7 @@ pub fn run(
     };
     initial.policy_hash = Some(harness::policy_hash(job, &invocation)?);
     initial.policy = Some(harness::compiled_policy(job, &invocation)?);
-    let spawn = (|| -> Result<_> {
-        let backend = control::backend(config)?;
-        match backend.spawn(executable, &run_id) {
-            Ok(child) => Ok(child),
-            Err(e) => {
-                initial.fallback_reason = Some(e.to_string());
-                Headless.spawn(executable, &run_id)
-            }
-        }
-    })();
-    let child = match spawn {
+    let child = match spawn_worker(executable, &run_id) {
         Ok(child) => child,
         Err(e) => {
             return terminal_failure(ledger, job, &initial, format!("spawn: {e:#}"), &mut output);
@@ -592,6 +574,36 @@ pub fn stop(ledger: &Ledger, id: &str) -> Result<bool> {
     }
     signal_run(&run.started, SIGTERM)?;
     Ok(true)
+}
+
+/// The worker child in its own process group with piped stdio, so a timeout or stop can
+/// terminate the whole tree and the invocation travels over stdin.
+pub fn spawn_worker(executable: &Path, run_id: &str) -> Result<Child> {
+    Ok(Command::new(executable)
+        .args(["__worker", "--run-id", run_id])
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?)
+}
+
+/// The harness command that resumes a finished run's session in its working directory.
+pub fn resume_finished(run: &Run, harness: &dyn harness::Harness) -> Result<Command> {
+    ensure!(
+        run.terminal.is_some(),
+        "run is still active; headless runs can be resumed after they finish"
+    );
+    harness.resume(
+        run.started
+            .session_id
+            .as_deref()
+            .context("run has no session ID")?,
+        run.started
+            .cwd
+            .as_deref()
+            .context("run has no working directory")?,
+    )
 }
 
 fn archive(

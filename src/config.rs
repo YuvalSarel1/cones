@@ -12,7 +12,6 @@ use std::{
 pub enum HarnessKind {
     Claude,
     Codex,
-    Pi,
 }
 
 impl std::fmt::Display for HarnessKind {
@@ -20,7 +19,6 @@ impl std::fmt::Display for HarnessKind {
         f.write_str(match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
-            Self::Pi => "pi",
         })
     }
 }
@@ -287,7 +285,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     );
     let tools = tools.unwrap_or_else(|| match j.harness {
         HarnessKind::Claude => vec!["Read".into(), "Grep".into(), "Glob".into()],
-        HarnessKind::Pi => vec!["read".into(), "grep".into(), "find".into(), "ls".into()],
         HarnessKind::Codex => vec![],
     });
     Ok(ResolvedJob {
@@ -310,36 +307,4 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         overlap,
         notify: j.notify.or(d.notify).unwrap_or(false),
     })
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Backend {
-    AgentConsole,
-    #[default]
-    None,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct Config {
-    pub control_plane: Backend,
-    pub agent_console_url: String,
-}
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            control_plane: Backend::None,
-            agent_console_url: "http://127.0.0.1:7878".into(),
-        }
-    }
-}
-impl Config {
-    pub fn load(path: &Path) -> Result<Self> {
-        match fs::read_to_string(path) {
-            Ok(s) => Ok(toml::from_str(&s).context("invalid config.toml")?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
 }
