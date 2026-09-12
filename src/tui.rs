@@ -449,12 +449,11 @@ fn icon(state: &str) -> &str {
     }
 }
 
-/// Which harness a session or job runs under, written the way each app writes itself: Claude
-/// Code's ✻ banner mark, Codex's `>_` startup box title, pi's plain bold word (π is only its
-/// window title).
+/// Which harness a session or job runs under, written the way each app writes itself: Codex's
+/// `>_` startup box title, Claude's and pi's plain word (Claude's ✻ already spins in the state
+/// column while it works; π is only pi's window title).
 fn logo(harness: &str) -> String {
     match harness {
-        "claude" => "✻ claude".into(),
         "codex" => ">_ codex".into(),
         other => other.to_owned(),
     }

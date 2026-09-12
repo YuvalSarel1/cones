@@ -470,7 +470,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
-    for s in ["✻ claude", "fix the widget", "12k/300", "Running the tests"] {
+    for s in ["claude  fix the widget", "12k/300", "Running the tests"] {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
