@@ -3,7 +3,7 @@
 <text x="28" y="62" font-size="32" fill="#e6edf3" font-weight="700">cones roadmap</text>
 <text x="28" y="92" font-size="16" fill="#8b949e" >Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.</text>
 <rect x="28" y="112" width="804" height="354" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="46" y="136" font-size="12" fill="#3fb950" font-weight="700" letter-spacing="1.5">SHIPPED  v0.1.0-headless</text>
+<text x="46" y="136" font-size="12" fill="#3fb950" font-weight="700" letter-spacing="1.5">SHIPPED  v0.1.0</text>
 <text x="44" y="160" font-size="15" fill="#e6edf3" >Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-</text>
 <text x="44" y="182" font-size="15" fill="#e6edf3" >write policy · rolling daily budget · live event stream · native dashboard: live refresh,</text>
 <text x="44" y="204" font-size="15" fill="#e6edf3" >animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with</text>
@@ -36,10 +36,10 @@
 <text x="50" y="696" font-size="16" fill="#8b949e" >what replays and what is</text>
 <text x="50" y="718" font-size="16" fill="#8b949e" >lost, documented.</text>
 <text x="50" y="760" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
-<text x="50" y="784" font-size="16" fill="#8b949e" >Version bump, install steps</text>
-<text x="50" y="806" font-size="16" fill="#8b949e" >and verification record,</text>
-<text x="50" y="828" font-size="16" fill="#8b949e" >published under the personal</text>
-<text x="50" y="850" font-size="16" fill="#8b949e" >account.</text>
+<text x="50" y="784" font-size="16" fill="#8b949e" >Version, install steps and</text>
+<text x="50" y="806" font-size="16" fill="#8b949e" >verification record are in;</text>
+<text x="50" y="828" font-size="16" fill="#8b949e" >tag v0.1.0 and publish under</text>
+<text x="50" y="850" font-size="16" fill="#8b949e" >the personal account.</text>
 <text x="316" y="628" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
 <text x="316" y="652" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
 <text x="316" y="674" font-size="16" fill="#8b949e" >failures, chain visible in</text>

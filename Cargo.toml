@@ -1,6 +1,6 @@
 [package]
 name = "cones"
-version = "0.1.0-headless"
+version = "0.1.0"
 edition = "2024"
 description = "Scheduled coding-agent runs with explicit policy and a durable ledger"
 license = "Apache-2.0 OR MIT"

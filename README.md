@@ -2,14 +2,29 @@
 
 Scheduled coding-agent jobs on a local Mac. Each job runs under an explicit policy the harness enforces natively, and every run lands in a durable ledger.
 
-`v0.1.0-headless` runs Claude Code jobs on a launchd schedule, streams their output live, shows jobs, every live Claude session and runs in a native dashboard, and resumes finished sessions in Claude's own TUI. Codex is recognized but not yet executed.
+`v0.1.0` runs Claude Code jobs on a launchd schedule, streams their output live, shows jobs, every live Claude session and runs in a native dashboard, and resumes finished sessions in Claude's own TUI. Codex is recognized but not yet executed.
 
-## Try it
+## Install
 
 Requires Rust and Claude Code.
 
 ```sh
+cargo install --git https://github.com/YuvalSarel1/cones --tag v0.1.0
+```
+
+Or from a checkout:
+
+```sh
+git clone https://github.com/YuvalSarel1/cones && cd cones
 cargo install --path .
+cones --version                  # cones 0.1.0
+```
+
+Verified against Claude Code 2.1.269 on macOS 26.6.1. To repeat the check, run `cargo test --all-targets` in the checkout and `cones doctor` after installing.
+
+## Try it
+
+```sh
 cp jobs.example.yaml jobs.yaml   # gitignored
 cones validate
 cones doctor

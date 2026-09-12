@@ -6,7 +6,7 @@ CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
 COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
-    ("Public release", "REL", "Version bump, install steps and verification record, published under the personal account."),
+    ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account."),
     ("Cost on the run row", "OBS", "The run row shows job, status and stop reason today; add dollars spent from the ledger."),
     ("Claude agents feed", "OBS", "Merge claude agents --json and the job state file's one-line detail into the fleet view, so sessions that predate the hook appear and the last-message column reads like Claude's own."),
 ]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
@@ -48,7 +48,7 @@ o = [t(M, 62, "cones roadmap", 32, FG, font_weight=700),
      t(M, 92, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 16, MUTED)]
 ship = textwrap.wrap(SHIPPED, 96)
 o.append(f'<rect x="{M}" y="112" width="{W-2*M}" height="{46+len(ship)*22}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
-o.append(t(M + 18, 136, "SHIPPED  v0.1.0-headless", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
+o.append(t(M + 18, 136, "SHIPPED  v0.1.0", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
 for i, l in enumerate(ship):
     o.append(t(M + 16, 160 + i * 22, l, 15, FG))
 y = 112 + 46 + len(ship) * 22 + 26

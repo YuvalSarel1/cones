@@ -279,7 +279,7 @@ dependencies = [
 
 [[package]]
 name = "cones"
-version = "0.1.0-headless"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
