@@ -11,7 +11,6 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
     ("Harness compatibility check", "HAR", "cones doctor compares the installed Claude version and the flags cones compiles to against the tested set, and reports drift before install."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
-    ("2 · Fleet view", "OBS", "Every Claude session on the machine in cones ls and the dashboard: cwd, active/idle/blocked/exited, age, tokens, estimated cost. cones runs collapse into their run row."),
     ("Drop dead weight", "REL", "Remove the agent-console control plane stub, config.toml, Pi, and three unused dependencies."),
 ]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
@@ -31,7 +30,8 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · terminal dashboard · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
-           "shared-workspace writer lock · cones lock around any command · opt-in failure notification · global Claude fleet hook: one state file per session · durable run ledger")
+           "shared-workspace writer lock · cones lock around any command · opt-in failure notification · global Claude fleet hook: one state file per session · "
+           "fleet view: every Claude session in ls and the dashboard with cwd, state, age, tokens, cost · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 

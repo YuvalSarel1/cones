@@ -59,6 +59,8 @@ cones stop RUN_UUID
 cones attach RUN_UUID            # resume the finished session in Claude's TUI
 ```
 
+With the fleet hook installed (`cones hook --install`), every Claude Code session on the Mac appears in `cones ls` and the dashboard too, whether cones started it or not: working directory, `active`, `idle`, `blocked` or `exited`, age, tokens in/out and estimated cost. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. `cones attach SESSION_UUID` resumes an idle session in its own directory; `cones ls --status blocked` lists the ones waiting on a prompt.
+
 A run is `ok`, `failed`, `timeout`, `skipped` or `crashed`, with a reason such as `permission`, `budget`, `overlap` or `workspace`. On timeout, stop or permission denial the whole process group is terminated. State lives in `~/.cones` (`--state-dir` to isolate): the `runs.jsonl` ledger, per-run events and stderr, archived transcripts, launchd logs.
 
 launchd runs after login, coalesces ticks missed during sleep, and does not wake the Mac or replay time spent powered off.

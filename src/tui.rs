@@ -1,14 +1,19 @@
 //! `cones tui` is fzf over the ledger. fzf owns navigation, filtering and keys;
 //! cones only supplies the list, the preview and the actions.
-use crate::{config, ledger::Ledger};
+use crate::{
+    config,
+    fleet::{self, Session},
+    ledger::{Ledger, Run},
+};
 use anyhow::{Context, Result};
 use std::{
+    collections::HashSet,
     path::Path,
     process::{Command, Stdio},
 };
 
-/// Lines for fzf: hidden key (`job` or run UUID), hidden aux (job name or run status),
-/// then the display columns. Only the third field is shown.
+/// Lines for fzf: hidden key (`job`, session UUID or run UUID), hidden aux (job name,
+/// session state or run status), then the display columns. Only the third field is shown.
 pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     let mut out = String::new();
     let runs = Ledger::new(state)?.runs()?;
@@ -28,6 +33,19 @@ pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
                 if j.enabled { "on" } else { "off" }
             );
         }
+    }
+    for f in fleet_rows(state, &runs)? {
+        out += &format!(
+            "{}\t{}\t{:<24} {:<8} {:<16} {:<8} {:<9} {}\n",
+            f.session_id,
+            f.state,
+            fleet::tilde(&f.cwd),
+            f.state,
+            fleet::age(f.updated),
+            fleet::tokens(&f),
+            f.cost_usd.map(|c| format!("${c:.2}")).unwrap_or_default(),
+            f.event.as_deref().unwrap_or("")
+        );
     }
     for r in runs.iter().rev() {
         let last = r.terminal.as_ref().unwrap_or(&r.started);
@@ -53,6 +71,24 @@ pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     Ok(out)
 }
 
+/// Sessions from the fleet directory, newest first. Sessions belonging to a ledger run
+/// collapse into that run's row, and a session whose harness pid is gone is stale.
+pub fn fleet_rows(state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
+    let owned: HashSet<&str> = runs
+        .iter()
+        .filter_map(|r| r.started.session_id.as_deref())
+        .collect();
+    Ok(fleet::sessions(state)?
+        .into_iter()
+        .filter(|s| !owned.contains(s.session_id.as_str()) && s.pid.is_none_or(alive))
+        .collect())
+}
+
+fn alive(pid: u32) -> bool {
+    // Signal 0 checks existence; EPERM means it exists under another user.
+    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
+}
+
 pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
     let me = format!(
         "{} --jobs {} --state-dir {}",
@@ -61,6 +97,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
         sh(state)
     );
     let reload = format!("reload({me} __list)");
+    let fleet = sh(&fleet::dir(state));
     let status = Command::new("fzf")
         .args([
             "--delimiter=\t",
@@ -69,12 +106,14 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
             "--layout=reverse",
             "--header=enter: run job / view logs   ctrl-s: stop   ctrl-a: attach   ctrl-r: refresh   esc: quit",
             "--preview-window=down,60%,wrap",
-            &format!("--preview=[ {{1}} = job ] && {me} ls --job {{2}} || {me} logs {{1}}"),
+            &format!(
+                "--preview=[ {{1}} = job ] && {me} ls --job {{2}} || {me} logs {{1}} 2>/dev/null || cat {fleet}/{{1}}.json"
+            ),
             &format!("--bind=start:{reload}"),
             &format!("--bind=ctrl-r:{reload}"),
             // Pick the action by row kind so the screen is only cleared when something interactive runs.
             &format!(
-                "--bind=enter:transform:case {{1}}/{{2}} in job/*) echo \"execute-silent({me} run {{2}} >/dev/null 2>&1 &)+{reload}\";; */started) echo \"execute({me} logs {{1}} --follow)+{reload}\";; *) echo \"execute({me} logs {{1}} | less -R)\";; esac"
+                "--bind=enter:transform:case {{1}}/{{2}} in job/*) echo \"execute-silent({me} run {{2}} >/dev/null 2>&1 &)+{reload}\";; */started) echo \"execute({me} logs {{1}} --follow)+{reload}\";; */active|*/idle|*/blocked|*/exited) echo \"{reload}\";; *) echo \"execute({me} logs {{1}} | less -R)\";; esac"
             ),
             &format!("--bind=ctrl-s:execute-silent([ {{1}} = job ] || {me} stop {{1}})+{reload}"),
             &format!(

@@ -463,3 +463,51 @@ fn fleet_hook_install_merges_and_is_idempotent() {
         );
     }
 }
+#[test]
+fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = Ledger::new(dir.path()).unwrap();
+    let owned = "11111111-1111-4111-8111-111111111111";
+    let mut started = Record::new("run-1".into(), Status::Started);
+    started.session_id = Some(owned.into());
+    ledger.append(&started).unwrap();
+    let session = |id: &str, pid: u32, state: &str| cones::fleet::Session {
+        v: 1,
+        session_id: id.into(),
+        harness: "claude".into(),
+        cwd: dirs::home_dir().unwrap().join("src/repo"),
+        state: state.into(),
+        updated: Utc::now(),
+        event: Some("Stop".into()),
+        tool: None,
+        pid: Some(pid),
+        transcript_path: None,
+        tokens_in: Some(12_500),
+        tokens_out: Some(300),
+        cost_usd: Some(0.42),
+    };
+    let live = "22222222-2222-4222-8222-222222222222";
+    cones::fleet::write(dir.path(), &session(live, std::process::id(), "idle")).unwrap();
+    cones::fleet::write(dir.path(), &session(owned, std::process::id(), "active")).unwrap();
+    cones::fleet::write(
+        dir.path(),
+        &session("33333333-3333-4333-8333-333333333333", 4_000_000, "active"),
+    )
+    .unwrap();
+    let rows = cones::tui::fleet_rows(dir.path(), &ledger.runs().unwrap()).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|s| s.session_id.as_str())
+            .collect::<Vec<_>>(),
+        [live],
+        "the cones-owned session collapses into its run row and the dead pid is stale"
+    );
+    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let row = list.lines().find(|l| l.starts_with(live)).unwrap();
+    assert!(
+        row.starts_with(&format!("{live}\tidle\t~/src/repo")),
+        "{row}"
+    );
+    assert!(row.contains("12k/300") && row.contains("$0.42"), "{row}");
+    assert!(list.lines().any(|l| l.starts_with("run-1\tstarted")));
+}

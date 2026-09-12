@@ -55,7 +55,7 @@ enum Action {
     Ls {
         #[arg(long)]
         job: Option<String>,
-        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed"])]
+        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","active","idle","blocked","exited"])]
         status: Option<String>,
         #[arg(long)]
         json: bool,
@@ -205,6 +205,28 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
+            // Sessions the fleet hook saw that no cones run owns; same columns, cwd where the job name goes.
+            for s in cones::tui::fleet_rows(&state, &ledger.runs()?)?
+                .into_iter()
+                .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
+            {
+                if json {
+                    println!("{}", serde_json::json!({"status":s.state,"session":s}));
+                } else {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        s.session_id,
+                        cones::fleet::tilde(&s.cwd),
+                        s.state,
+                        s.updated.to_rfc3339(),
+                        s.harness,
+                        s.cost_usd
+                            .map(|c| format!("{c:.4}"))
+                            .unwrap_or_else(|| "-".into()),
+                        cones::fleet::tokens(&s)
+                    );
+                }
+            }
             Ok(0)
         }
         Action::Lock { dir, command } => {
@@ -253,7 +275,32 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Action::Attach { id, print_command } => {
             let ledger = Ledger::new(&state)?;
-            let run = ledger.resolve(&id)?;
+            let run = match ledger.resolve(&id) {
+                Ok(run) => run,
+                // Not a cones run: a session the fleet hook saw. Resume it in place once it is idle.
+                Err(e) => {
+                    let s = cones::fleet::find(&state, &id)?.ok_or(e)?;
+                    ensure!(
+                        s.state != "active",
+                        "session is still active in its own terminal"
+                    );
+                    let kind = serde_json::from_value(serde_json::Value::String(s.harness.clone()))
+                        .context("unknown harness in fleet state")?;
+                    let mut command = harness::adapter(kind)?.resume(&s.session_id, &s.cwd)?;
+                    if print_command {
+                        println!(
+                            "cd {} && {} {}",
+                            quote(s.cwd.as_os_str()),
+                            quote(command.get_program()),
+                            command.get_args().map(quote).collect::<Vec<_>>().join(" ")
+                        );
+                        return Ok(0);
+                    }
+                    attach_real_tty(&mut command);
+                    let error = command.exec();
+                    bail!("native resume failed: {error}")
+                }
+            };
             let adapter = harness::adapter(run.started.harness.context("run has no harness")?)?;
             let mut command = if run.started.live == Some(true) {
                 let config = Config::load(&state.join("config.toml"))?;
