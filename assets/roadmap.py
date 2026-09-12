@@ -9,8 +9,8 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Public release", "REL", "Install steps and verification record, published under the personal account."),
     ("Failure notification", "OBS", "Opt-in macOS notification on failed, crashed or budget-skipped runs."),
     ("Run summary in ls", "OBS", "One line per run: what it did, cost, why it stopped."),
-    ("Doctor covers auth", "REL", "Claude login and named env vars checked before the 2 AM run fails silently."),
-]), ("NEXT", "More harnesses, less babysitting", "#58a6ff", [
+    ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
+]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
     ("Next fire time in ls", "OBS", "See what runs next, not only what already ran."),
     ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
@@ -21,10 +21,10 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Fleet roster", "COORD", "cones launches agents with a name, cwd, task and declared file scope; the roster is the source of truth."),
     ("Fleet view", "OBS", "Everything running on the machine: who, where, on what, busy/idle, cost. Side pane or TUI."),
     ("Commit lock and queue", "COORD", "Agents acquire a per-repo lock before committing; cones grants in order. Workers never push or stash."),
-    ("Trusted coordinator messages", "COORD", "A per-run token lets workers tell the coordinator from a stray peer."),
+    ("Trusted coordinator messages", "COORD", "Coordinator messages carry a per-run token; workers ignore messages without it."),
     ("Status transitions", "OBS", "Started, milestone, blocked, done from the agent itself."),
     ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
-    ("More harnesses, more Macs", "HAR", "Pi when a real use case appears; multi-machine after single-machine fleet control is daily-driven."),
+    ("More harnesses, more Macs", "HAR", "Pi when a real use case appears; multi-machine after single-machine fleet control is in regular use."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
