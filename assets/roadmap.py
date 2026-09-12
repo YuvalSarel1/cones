@@ -8,6 +8,7 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
     ("Public release", "REL", "Install steps and verification record, published under the personal account."),
     ("Run summary in ls", "OBS", "One line per run: what it did, cost, why it stopped."),
+    ("Claude agents feed", "OBS", "Merge claude agents --json and the job state file's one-line detail into the fleet view, so sessions that predate the hook appear and the last-message column reads like Claude's own."),
     ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
     ("Harness compatibility check", "HAR", "cones doctor compares the installed Claude version and the flags cones compiles to against the tested set, and reports drift before install."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
@@ -20,12 +21,14 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
     ("Codex fleet hooks", "HAR", "cones hook codex, once Codex hook trust can be configured without a bypass flag."),
     ("File and webhook triggers", "HAR", "Run on path change or HTTP call, not only on a calendar."),
+    ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
 ]), ("LATER", "From scheduler to fleet control", "#bc8cff", [
     ("Fleet roster", "COORD", "Task and declared file scope added to each session's state file; overlaps detected before commit. Only when two writers share a repo."),
     ("Commit lock and queue", "COORD", "Agents acquire a per-repo lock before committing; cones grants in order. Workers never push or stash."),
     ("Coordinator token", "COORD", "Coordinator messages carry a per-run token; workers ignore messages without it."),
     ("Status transitions", "OBS", "Hook-derived blocked/idle/exited ship in Now; agent-declared started, milestone, done come here."),
     ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
+    ("Talk to sessions", "COORD", "Type a message to a live session from the dashboard over its local socket; dispatch covers new work, this covers steering."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
