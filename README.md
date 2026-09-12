@@ -52,11 +52,11 @@ What the job gets: a pinned session ID, print mode, a native dollar budget, a ru
 ## Runs
 
 ```sh
-cones tui                        # dashboard: n dispatches a task in the cwd, enter runs or attaches, x stops, s regroups by state, / filters
+cones tui                        # dashboard: claude agents keys (enter attaches or runs, ctrl+x twice stops a run, ctrl+s regroups, esc quits) plus n new task, / filter, r refresh
 cones run --prompt "fix the flaky test"   # one-off task under the first job's policy (or read-only defaults), in the cwd
 cones ls --status failed         # tab-separated; --json for records
 cones logs RUN_UUID --follow     # Ctrl+C detaches, the run keeps going
-cones stop RUN_UUID
+cones stop RUN_UUID_OR_SESSION_ID   # a cones run, or any Claude session the fleet hook saw
 cones attach RUN_UUID            # resume the finished session in Claude's TUI
 ```
 

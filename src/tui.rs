@@ -389,7 +389,7 @@ fn header_lines(summary: &str) -> Vec<Line<'static>> {
             Span::styled("▟███▙", orange),
             Span::raw("  "),
             Span::styled(
-                "enter run / attach · n new task · x stop · s group by state / dir · / filter · r refresh · q quit",
+                "↑↓ move · enter attach / run · ctrl+x twice stop run · ctrl+s group by state / dir · esc quit  ·  cones: n new task · / filter · r refresh",
                 dim(),
             ),
         ]),
@@ -527,6 +527,8 @@ struct App {
     details: Vec<String>,
     tick: usize,
     refreshed: Instant,
+    /// A run id and when ctrl-x was first pressed on it; the second press within two seconds stops it.
+    armed: Option<(String, Instant)>,
 }
 
 impl App {
@@ -661,16 +663,25 @@ impl App {
         }
     }
 
+    /// ctrl-x once arms, ctrl-x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
         let Some(Kind::Run(id, _)) = self.selected().map(|r| r.kind.clone()) else {
             self.status = "only cones runs can be stopped here".into();
             return;
         };
-        self.status = match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &id)) {
-            Ok(true) => "stop requested".into(),
-            Ok(false) => "already finished".into(),
-            Err(e) => format!("stop failed: {e:#}"),
-        };
+        match self.armed.take() {
+            Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
+                self.status = match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &id)) {
+                    Ok(true) => "stop requested".into(),
+                    Ok(false) => "already finished".into(),
+                    Err(e) => format!("stop failed: {e:#}"),
+                };
+            }
+            _ => {
+                self.armed = Some((id, Instant::now()));
+                self.status = "ctrl-x again to stop this run".into();
+            }
+        }
     }
 
     /// Returns true when the dashboard should exit.
@@ -719,7 +730,7 @@ impl App {
                 KeyCode::Char('c') if ctrl => return Ok(true),
                 KeyCode::Up | KeyCode::Char('k') => self.step(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
-                KeyCode::Enter | KeyCode::Char('a') => self.enter(terminal),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('a') => self.enter(terminal),
                 KeyCode::Char('x') => self.stop(),
                 KeyCode::Char('s') => {
                     self.by_state = !self.by_state;
@@ -843,6 +854,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
         details: vec![],
         tick: 0,
         refreshed: Instant::now(),
+        armed: None,
     };
     app.refresh()?;
     let mut terminal = ratatui::init();
@@ -862,6 +874,10 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
                 }
             } else {
                 app.tick += 1;
+                if matches!(app.armed, Some((_, at)) if at.elapsed() >= Duration::from_secs(2)) {
+                    app.armed = None;
+                    app.status.clear();
+                }
             }
         }
     })();
