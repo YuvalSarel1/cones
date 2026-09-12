@@ -512,7 +512,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
-    for s in ["fix the widget", "12k/300", "Running the tests"] {
+    for s in ["✻ claude", "fix the widget", "12k/300", "Running the tests"] {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
@@ -559,4 +559,50 @@ fn adhoc_job_borrows_policy_or_defaults_to_read_only() {
     assert!(borrowed.write && borrowed.budget_usd == 9.0 && borrowed.name != template.name);
     assert_eq!(borrowed.prompt, "ship it");
     assert!(cones::config::adhoc(None, "  ", dir.path()).is_err());
+}
+#[test]
+fn session_columns_align_across_directory_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    for (id, cwd, title) in [
+        ("44444444-4444-4444-8444-444444444444", "a", "short"),
+        (
+            "55555555-5555-4555-8555-555555555555",
+            "b",
+            "a much longer session title",
+        ),
+    ] {
+        cones::fleet::write(
+            dir.path(),
+            &cones::fleet::Session {
+                v: 1,
+                session_id: id.into(),
+                harness: "claude".into(),
+                cwd: dir.path().join(cwd),
+                state: "idle".into(),
+                updated: Utc::now(),
+                event: None,
+                tool: None,
+                pid: Some(std::process::id()),
+                transcript_path: None,
+                tokens_in: None,
+                tokens_out: None,
+                cost_usd: None,
+                title: Some(title.into()),
+                last: None,
+            },
+        )
+        .unwrap();
+    }
+    let data = cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let widths: Vec<usize> = data
+        .rows(false)
+        .iter()
+        .filter(|r| matches!(r.kind, cones::tui::Kind::Session(..)))
+        .map(|r| r.cells[2].0.chars().count())
+        .collect();
+    assert_eq!(widths.len(), 2);
+    assert_eq!(
+        widths[0], widths[1],
+        "title column padded to one width across groups"
+    );
 }

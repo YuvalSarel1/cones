@@ -120,7 +120,7 @@ impl Data {
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&last)),
                         (j.name.clone(), plain()),
                         (j.schedule.clone(), dim()),
-                        (j.harness.to_string(), dim()),
+                        (logo(&j.harness.to_string()), dim()),
                         (if j.enabled { "on" } else { "off" }.into(), plain()),
                         (format!("last: {last}"), color(&last)),
                     ]
@@ -149,39 +149,47 @@ impl Data {
             };
             groups.entry(key).or_default().push(s);
         }
-        for (key, group) in groups {
-            header(&mut out, if by_state { &key[1..] } else { &key });
-            let cells = group
-                .iter()
-                .map(|s| {
-                    vec![
-                        (icon(&s.state).into(), color(&s.state)),
-                        (
-                            s.title
-                                .clone()
-                                .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
-                            plain(),
-                        ),
-                        (label(&s.state).into(), color(&s.state)),
-                        (fleet::age(s.updated), dim()),
-                        (fleet::tokens(s), dim()),
-                        (
-                            if by_state {
-                                fleet::tilde(&s.cwd)
-                            } else {
-                                s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default()
-                            },
-                            dim(),
-                        ),
-                    ]
-                })
-                .collect();
-            for (s, cells) in group.iter().zip(table(cells)) {
-                out.push(Row {
-                    kind: Kind::Session(s.session_id.clone(), s.state.clone()),
-                    cells,
-                });
+        // One table across all groups, so columns line up between directories.
+        let flat: Vec<(&String, &&Session)> = groups
+            .iter()
+            .flat_map(|(key, group)| group.iter().map(move |s| (key, s)))
+            .collect();
+        let cells = flat
+            .iter()
+            .map(|(_, s)| {
+                vec![
+                    (icon(&s.state).into(), color(&s.state)),
+                    (logo(&s.harness), dim()),
+                    (
+                        s.title
+                            .clone()
+                            .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+                        plain(),
+                    ),
+                    (label(&s.state).into(), color(&s.state)),
+                    (fleet::age(s.updated), dim()),
+                    (fleet::tokens(s), dim()),
+                    (
+                        if by_state {
+                            fleet::tilde(&s.cwd)
+                        } else {
+                            s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default()
+                        },
+                        dim(),
+                    ),
+                ]
+            })
+            .collect();
+        let mut current: Option<&String> = None;
+        for ((key, s), cells) in flat.iter().zip(table(cells)) {
+            if current != Some(key) {
+                header(&mut out, if by_state { &key[1..] } else { key });
+                current = Some(key);
             }
+            out.push(Row {
+                kind: Kind::Session(s.session_id.clone(), s.state.clone()),
+                cells,
+            });
         }
         if !self.runs.is_empty() {
             header(&mut out, "runs");
@@ -238,7 +246,12 @@ impl Data {
                     return vec![];
                 };
                 let mut out = vec![
-                    format!("{} · {} · {}", j.schedule, j.harness, fleet::tilde(&j.cwd)),
+                    format!(
+                        "{} · {} · {}",
+                        j.schedule,
+                        logo(&j.harness.to_string()),
+                        fleet::tilde(&j.cwd)
+                    ),
                     format!(
                         "timeout {:.0}m · budget ${:.2} · write {} · overlap {:?} · tools {}",
                         j.timeout_min,
@@ -259,7 +272,8 @@ impl Data {
                 let mut out = vec![
                     fleet::tilde(&s.cwd),
                     format!(
-                        "{} {} · {} · {} tokens · pid {} · {}",
+                        "{} · {} {} · {} · {} tokens · pid {} · {}",
+                        logo(&s.harness),
                         label(&s.state),
                         s.event.as_deref().unwrap_or(""),
                         fleet::age(s.updated),
@@ -433,6 +447,17 @@ fn icon(state: &str) -> &str {
         "ok" => "✓",
         "skipped" => "–",
         _ => "✗",
+    }
+}
+
+/// Which harness a session or job runs under: a mark plus the name, so no reader has to know
+/// the marks.
+fn logo(harness: &str) -> String {
+    match harness {
+        "claude" => "✻ claude".into(),
+        "codex" => "⬡ codex".into(),
+        "pi" => "π pi".into(),
+        other => other.to_owned(),
     }
 }
 
