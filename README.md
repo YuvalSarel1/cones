@@ -70,8 +70,10 @@ launchd runs after login, coalesces ticks missed during sleep, and does not wake
 
 ```sh
 cones hook --install             # one global Claude Code hook in ~/.claude/settings.json
-cones doctor                     # reports whether the hook is installed
+cones doctor                     # hook installed, Claude login, job env vars, Claude version and flag drift
 ```
+
+`cones doctor` fails when Claude is not logged in or a variable a job imports with `env` is unset in the shell or missing from the installed plist (launchd bakes the value at install time, so a variable exported later needs a reinstall), since a scheduled job can prompt for neither, and warns when the installed Claude Code is outside the tested range (`>=2.1, <3`). The flags it checks against `claude --help` are the ones the compiler emits, so that list cannot drift from the compiler.
 
 The hook runs on SessionStart, UserPromptSubmit, PostToolUse, Notification, Stop and SessionEnd and writes one JSON file per session to `~/.cones/fleet/<session_id>.json`: cwd, pid, state (`active`, `idle`, `blocked` on a permission or elicitation prompt, `exited`; the idle-prompt notification Claude sends a minute after a turn ends keeps a session `idle`), the last event and tool, and input/output tokens summed from the transcript at the end of each turn. Every Claude session on the Mac becomes visible, whether cones started it or not. The hook only observes; it is not on PreToolUse and never gates a tool call. Re-running `--install` replaces the earlier entry, so a moved binary or `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
 

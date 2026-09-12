@@ -590,3 +590,39 @@ fn fleet_exchange_is_the_last_prompt_and_the_full_reply() {
     );
     assert!(cones::fleet::exchange(&dir.path().join("missing.jsonl")).is_empty());
 }
+#[test]
+fn doctor_version_range_is_major_minor_up_to_next_major() {
+    use cones::harness::{TESTED_CLAUDE_RANGE, claude_version_tested};
+    assert_eq!(TESTED_CLAUDE_RANGE, ">=2.1, <3");
+    assert_eq!(claude_version_tested("2.1.269 (Claude Code)"), Some(true));
+    assert_eq!(claude_version_tested("2.8.0"), Some(true));
+    assert_eq!(claude_version_tested("3.0.0 (Claude Code)"), Some(false));
+    assert_eq!(claude_version_tested("1.99.0"), Some(false));
+    assert_eq!(claude_version_tested("Claude Code 2.1.269"), None);
+    assert_eq!(claude_version_tested(""), None);
+}
+#[test]
+fn doctor_probes_only_the_switches_the_compiler_emits() {
+    let argv: Vec<String> = [
+        "--print",
+        "--output-format",
+        "stream-json",
+        "--mcp-config",
+        "{\"mcpServers\":{}}",
+        "--setting-sources",
+        "",
+        "--",
+        "--prompt-that-looks-like-a-flag",
+    ]
+    .map(String::from)
+    .to_vec();
+    assert_eq!(
+        cones::harness::compiled_flags(&argv),
+        [
+            "--print",
+            "--output-format",
+            "--mcp-config",
+            "--setting-sources"
+        ]
+    );
+}

@@ -472,6 +472,19 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
                 Err(e) => format!("job {}: {e:#}", job.name),
             },
         );
+        for name in &job.env {
+            report(
+                if std::env::var_os(name).is_some() {
+                    "OK"
+                } else {
+                    "FAIL"
+                },
+                format!(
+                    "job {} imports {name} from this shell (value not printed)",
+                    job.name
+                ),
+            );
+        }
         if job.codex_full_access {
             report(
                 "WARN",
@@ -508,19 +521,16 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
         }
         let path = launchd::exported_plist_path(&job.name)?;
         if path.exists() {
-            match plist::Value::from_file(&path)
+            let env = plist::Value::from_file(&path)
                 .ok()
                 .and_then(|p| p.as_dictionary().cloned())
                 .and_then(|d| d.get("EnvironmentVariables").cloned())
-                .and_then(|e| {
-                    e.as_dictionary()
-                        .and_then(|d| d.get("PATH"))
-                        .and_then(plist::Value::as_string)
-                        .map(str::to_owned)
-                }) {
+                .and_then(|e| e.as_dictionary().cloned())
+                .unwrap_or_default();
+            match env.get("PATH").and_then(plist::Value::as_string) {
                 Some(path)
                     if std::env::split_paths(&expected)
-                        .all(|p| std::env::split_paths(&path).any(|q| p == q)) =>
+                        .all(|p| std::env::split_paths(path).any(|q| p == q)) =>
                 {
                     report("OK", format!("job {} installed launchd PATH", job.name))
                 }
@@ -532,34 +542,58 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
                     ),
                 ),
             }
+            // The plist is what the scheduled run sees; the shell check above is what a
+            // reinstall would bake next.
+            for name in &job.env {
+                report(
+                    if env.contains_key(name) { "OK" } else { "FAIL" },
+                    if env.contains_key(name) {
+                        format!("job {} installed plist carries {name}", job.name)
+                    } else {
+                        format!("job {} installed plist lacks {name}; reinstall", job.name)
+                    },
+                );
+            }
         } else {
             report("WARN", format!("job {} is not installed", job.name));
         }
     }
     if let Some(claude) = harness::executable("claude", &expected) {
         let version = Command::new(&claude).arg("--version").output()?;
+        let version_text = String::from_utf8_lossy(&version.stdout).trim().to_owned();
         report(
             if version.status.success() {
                 "OK"
             } else {
                 "FAIL"
             },
-            String::from_utf8_lossy(&version.stdout).trim().into(),
+            version_text.clone(),
+        );
+        report(
+            if harness::claude_version_tested(&version_text) == Some(true) {
+                "OK"
+            } else {
+                "WARN"
+            },
+            format!(
+                "Claude version inside the tested range {}",
+                harness::TESTED_CLAUDE_RANGE
+            ),
         );
         let help = Command::new(&claude).arg("--help").output()?;
         let help = String::from_utf8_lossy(&help.stdout);
-        for flag in [
-            "--permission-prompts",
-            "--permission-mode",
-            "--max-budget-usd",
-            "--session-id",
-            "--tools",
-            "--allowedTools",
-            "--safe-mode",
-            "--restricted",
-            "--strict-mcp-config",
-            "--setting-sources",
-        ] {
+        // Probe exactly the switches the compiler emits for a job that uses every option.
+        let mut sample = config::adhoc(None, "doctor probe", std::path::Path::new("/"))?;
+        sample.write = true;
+        sample.tools = ["Read", "Edit", "Write", "Bash"].map(String::from).to_vec();
+        sample.model = Some("sonnet".into());
+        sample.max_turns = Some(1);
+        let sample = harness::adapter(sample.harness)?
+            .compile(&sample, &uuid::Uuid::new_v4().to_string())?;
+        for flag in harness::compiled_flags(&sample.args) {
+            if flag == "--max-turns" {
+                continue; // hidden from --help; probed below
+            }
             report(
                 if help.contains(flag) { "OK" } else { "FAIL" },
                 format!("Claude capability {flag}"),
@@ -587,7 +621,10 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
             .ok()
             .and_then(|v| v["loggedIn"].as_bool())
             .unwrap_or(false);
-        report(if logged_in{"OK"}else{"WARN"},"Claude authentication status (no credentials printed; named job env still needs to match the auth provider)".into());
+        report(
+            if logged_in { "OK" } else { "FAIL" },
+            "Claude authentication status (no credentials printed; a scheduled job cannot prompt to log in; named job env still needs to match the auth provider)".into(),
+        );
     } else {
         report("FAIL", "claude not found in generated launchd PATH".into());
     }

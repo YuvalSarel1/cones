@@ -7,7 +7,6 @@ CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
 COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
     ("Public release", "REL", "Version bump, install steps and verification record, published under the personal account."),
-    ("Doctor: auth, env, drift", "REL", "cones doctor verifies Claude login, every env var a job imports, and that the installed Claude version and the flags cones compiles to match the tested set."),
     ("Cost on the run row", "OBS", "The run row shows job, status and stop reason today; add dollars spent from the ledger."),
     ("Claude agents feed", "OBS", "Merge claude agents --json and the job state file's one-line detail into the fleet view, so sessions that predate the hook appear and the last-message column reads like Claude's own."),
 ]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
@@ -33,7 +32,7 @@ SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn ca
            "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
            "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · "
            "stop for fleet sessions from the CLI and the dashboard · key hints follow claude agents, ctrl-x twice stops · per-harness marks, spinners and colors · "
-           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger · agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used")
+           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger · agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used · doctor fails on missing login or job env, warns on Claude version drift, probes the flags the compiler emits")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 

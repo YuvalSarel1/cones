@@ -407,3 +407,31 @@ fn os_permission_error(text: &str) -> bool {
         })
     })
 }
+
+/// Claude Code versions the compiled flags above were tested against; `cones doctor` warns
+/// when the installed version leaves the range.
+pub const TESTED_CLAUDE_RANGE: &str = ">=2.1, <3";
+
+/// Whether `claude --version` output such as `2.1.269 (Claude Code)` falls inside the tested
+/// range. `None` when the text has no leading version.
+pub fn claude_version_tested(output: &str) -> Option<bool> {
+    // ponytail: major.minor compare against the constant above; a semver crate if the range
+    // ever needs pre-release or patch bounds.
+    let mut parts = output
+        .split_whitespace()
+        .next()?
+        .split('.')
+        .map(|p| p.parse::<u64>().ok());
+    let (major, minor) = (parts.next()??, parts.next()??);
+    Some((major, minor) >= (2, 1) && major < 3)
+}
+
+/// Every switch in a compiled argv up to the `--` that starts the prompt, so the set doctor
+/// probes against `claude --help` is whatever the compiler currently emits.
+pub fn compiled_flags(args: &[String]) -> Vec<&str> {
+    args.iter()
+        .take_while(|a| *a != "--")
+        .filter(|a| a.starts_with("--"))
+        .map(String::as_str)
+        .collect()
+}
