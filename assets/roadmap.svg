@@ -12,9 +12,9 @@
 <text x="44" y="270" font-size="15" fill="#e6edf3" >failure notification · global Claude fleet hook: one state file per session · fleet view: every</text>
 <text x="44" y="292" font-size="15" fill="#e6edf3" >Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and</text>
 <text x="44" y="314" font-size="15" fill="#e6edf3" >last message · stop for fleet sessions from the CLI and the dashboard · key hints follow claude</text>
-<text x="44" y="336" font-size="15" fill="#e6edf3" >agents, ctrl-x twice stops · per-harness marks, spinners and colors · enter follows a working</text>
-<text x="44" y="358" font-size="15" fill="#e6edf3" >session or attaches a finished one, cones logs takes a session id · details pane shows the last</text>
-<text x="44" y="380" font-size="15" fill="#e6edf3" >prompt and full reply · durable run ledger</text>
+<text x="44" y="336" font-size="15" fill="#e6edf3" >agents, ctrl-x twice stops · per-harness marks, spinners and colors · enter opens a live session</text>
+<text x="44" y="358" font-size="15" fill="#e6edf3" >in this terminal through claude attach, follows a running run, resumes a finished one; cones</text>
+<text x="44" y="380" font-size="15" fill="#e6edf3" >logs takes a session id · details pane shows the last prompt and full reply · durable run ledger</text>
 <rect x="36" y="426" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="464" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="484" font-size="12.5" fill="#8b949e" >Make the first release trustworthy</text>

@@ -52,7 +52,7 @@ What the job gets: a pinned session ID, print mode, a native dollar budget, a ru
 ## Runs
 
 ```sh
-cones tui                        # dashboard: claude agents keys (enter runs a job, follows a running run or a working session, attaches a finished one; ctrl+x twice stops a run, ctrl+s regroups, esc quits) plus n new task, / filter, r refresh
+cones tui                        # dashboard: claude agents keys (enter runs a job, follows a running run, or opens a session in this terminal, ctrl+z comes back; ctrl+x twice stops a run, ctrl+s regroups, esc quits) plus n new task, / filter, r refresh
 cones run --prompt "fix the flaky test"   # one-off task under the first job's policy (or read-only defaults), in the cwd
 cones ls --status failed         # tab-separated; --json for records
 cones logs RUN_UUID --follow     # Ctrl+C detaches, the run keeps going
@@ -60,7 +60,7 @@ cones stop RUN_UUID_OR_SESSION_ID   # a cones run, or any Claude session the fle
 cones attach RUN_UUID            # resume the finished session in Claude's TUI
 ```
 
-With the fleet hook installed (`cones hook --install`), every Claude Code session on the Mac appears in `cones ls` and the dashboard too, whether cones started it or not: working directory, `active`, `idle`, `blocked` or `exited`, age, tokens in/out and estimated cost. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. `cones logs SESSION_UUID --follow` follows a working session's transcript, `cones attach SESSION_UUID` resumes an idle one in its own directory; `cones ls --status blocked` lists the ones waiting on a prompt.
+With the fleet hook installed (`cones hook --install`), every Claude Code session on the Mac appears in `cones ls` and the dashboard too, whether cones started it or not: working directory, `active`, `idle`, `blocked` or `exited`, age, tokens in/out and estimated cost. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. `cones attach SESSION_UUID` opens a live session in this terminal (Claude's own `claude attach`, Ctrl+Z comes back) and resumes one whose process is gone; `cones logs SESSION_UUID --follow` follows a session's transcript; `cones ls --status blocked` lists the ones waiting on a prompt.
 
 A run is `ok`, `failed`, `timeout`, `skipped` or `crashed`, with a reason such as `permission`, `budget`, `overlap` or `workspace`. On timeout, stop or permission denial the whole process group is terminated. State lives in `~/.cones` (`--state-dir` to isolate): the `runs.jsonl` ledger, per-run events and stderr, archived transcripts, launchd logs.
 

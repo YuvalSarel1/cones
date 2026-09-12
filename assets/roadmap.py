@@ -34,7 +34,7 @@ SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn ca
            "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
            "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · "
            "stop for fleet sessions from the CLI and the dashboard · key hints follow claude agents, ctrl-x twice stops · per-harness marks, spinners and colors · "
-           "enter follows a working session or attaches a finished one, cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger")
+           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 

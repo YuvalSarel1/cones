@@ -20,6 +20,8 @@ pub struct Invocation {
 pub trait Harness {
     fn compile(&self, job: &ResolvedJob, session_id: &str) -> Result<Invocation>;
     fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
+    /// Open a session that is still running elsewhere in this terminal; resume would refuse it.
+    fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
     fn transcript(&self, session_id: &str, cwd: &Path) -> Result<PathBuf>;
 }
 
@@ -204,6 +206,15 @@ impl Harness for Claude {
         cmd.args(["--resume", session_id])
             .env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1")
             .current_dir(cwd);
+        Ok(cmd)
+    }
+    fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
+        uuid::Uuid::parse_str(session_id)?;
+        let path = executable("claude", &launch_path())
+            .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
+        let mut cmd = std::process::Command::new(path);
+        // `claude attach` takes the short id, the first block of the UUID.
+        cmd.args(["attach", &session_id[..8]]).current_dir(cwd);
         Ok(cmd)
     }
     fn transcript(&self, session_id: &str, cwd: &Path) -> Result<PathBuf> {

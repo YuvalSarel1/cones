@@ -342,6 +342,11 @@ pub fn sessions(state: &Path) -> Result<Vec<Session>> {
     Ok(out)
 }
 
+pub fn alive(pid: u32) -> bool {
+    // Signal 0 checks existence; EPERM means it exists under another user.
+    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
+}
+
 pub fn find(state: &Path, session_id: &str) -> Result<Option<Session>> {
     Ok(sessions(state)?
         .into_iter()

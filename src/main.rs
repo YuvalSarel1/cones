@@ -309,16 +309,18 @@ fn execute(cli: Cli) -> Result<i32> {
             let ledger = Ledger::new(&state)?;
             let run = match ledger.resolve(&id) {
                 Ok(run) => run,
-                // Not a cones run: a session the fleet hook saw. Resume it in place once it is idle.
+                // Not a cones run: a session the fleet hook saw. Attach while its harness is
+                // alive, resume in place once it is gone.
                 Err(e) => {
                     let s = cones::fleet::find(&state, &id)?.ok_or(e)?;
-                    ensure!(
-                        s.state != "active",
-                        "session is still active in its own terminal"
-                    );
                     let kind = serde_json::from_value(serde_json::Value::String(s.harness.clone()))
                         .context("unknown harness in fleet state")?;
-                    let mut command = harness::adapter(kind)?.resume(&s.session_id, &s.cwd)?;
+                    let adapter = harness::adapter(kind)?;
+                    let mut command = if s.pid.is_some_and(cones::fleet::alive) {
+                        adapter.attach(&s.session_id, &s.cwd)?
+                    } else {
+                        adapter.resume(&s.session_id, &s.cwd)?
+                    };
                     if print_command {
                         println!(
                             "cd {} && {} {}",
@@ -415,8 +417,14 @@ fn attach_real_tty(command: &mut Command) {
             .write(true)
             .open(format!("/dev/{name}"))
     };
-    if let (Ok(i), Ok(o), Ok(e)) = (open(), open(), open()) {
-        command.stdin(i).stdout(o).stderr(e);
+    if let (Ok(i), Ok(o)) = (open(), open()) {
+        command.stdin(i).stdout(o);
+    }
+    // A piped stderr belongs to a caller that wants the error text, such as the dashboard.
+    if std::io::IsTerminal::is_terminal(&std::io::stderr())
+        && let Ok(e) = open()
+    {
+        command.stderr(e);
     }
 }
 

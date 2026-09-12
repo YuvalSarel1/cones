@@ -526,13 +526,8 @@ pub fn fleet_rows(state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
         .collect();
     Ok(fleet::sessions(state)?
         .into_iter()
-        .filter(|s| !owned.contains(s.session_id.as_str()) && s.pid.is_none_or(alive))
+        .filter(|s| !owned.contains(s.session_id.as_str()) && s.pid.is_none_or(fleet::alive))
         .collect())
-}
-
-fn alive(pid: u32) -> bool {
-    // Signal 0 checks existence; EPERM means it exists under another user.
-    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
 enum Mode {
@@ -712,12 +707,9 @@ impl App {
         };
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], &format!("started {name}")),
-            // A headless run cannot be attached while it runs, and a session that is working in
-            // its own terminal cannot be resumed here; follow their logs instead.
+            // A headless run cannot be attached while it runs; follow its log instead. A live
+            // session attaches natively, ctrl-z comes back here.
             Kind::Run(id, s) if s == "started" => {
-                self.foreground(terminal, &["logs", &id, "--follow"], "logs")
-            }
-            Kind::Session(id, s) if s == "active" => {
                 self.foreground(terminal, &["logs", &id, "--follow"], "logs")
             }
             Kind::Session(id, _) | Kind::Run(id, _) => {
