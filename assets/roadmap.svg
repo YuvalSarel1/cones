@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="2396" viewBox="0 0 860 2396" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
-<rect width="860" height="2396" fill="#0d1117"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="2660" viewBox="0 0 860 2660" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="860" height="2660" fill="#0d1117"/>
 <text x="28" y="62" font-size="32" fill="#e6edf3" font-weight="700">cones roadmap</text>
 <text x="28" y="92" font-size="16" fill="#8b949e" >Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.</text>
 <rect x="28" y="112" width="804" height="376" rx="8" fill="#161b22" stroke="#30363d"/>
@@ -21,107 +21,133 @@
 <text x="44" y="468" font-size="15" fill="#e6edf3" >and the job state file feed the fleet view, last column reads Claude&#x27;s own status</text>
 <rect x="36" y="514" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="552" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
-<text x="50" y="572" font-size="12.5" fill="#8b949e" >Make the first release trustworthy</text>
+<text x="50" y="572" font-size="12.5" fill="#8b949e" >What the peer orchestrator lacks today</text>
 <rect x="302" y="514" width="254" height="6" rx="3" fill="#58a6ff"/>
 <text x="316" y="552" font-size="22" fill="#58a6ff" font-weight="800" letter-spacing="1.5">NEXT</text>
-<text x="316" y="572" font-size="12.5" fill="#8b949e" >More harnesses, less manual follow-up</text>
+<text x="316" y="572" font-size="12.5" fill="#8b949e" >Claude only, no second writer needed</text>
 <rect x="568" y="514" width="254" height="6" rx="3" fill="#bc8cff"/>
 <text x="582" y="552" font-size="22" fill="#bc8cff" font-weight="800" letter-spacing="1.5">LATER</text>
-<text x="582" y="572" font-size="12.5" fill="#8b949e" >From scheduler to fleet control</text>
+<text x="582" y="572" font-size="12.5" fill="#8b949e" >Needs a second writer, harness or Mac</text>
 <rect x="28" y="588" width="804" height="316" rx="10" fill="#161b22" stroke="#30363d"/>
 <rect x="28" y="600" width="5" height="292" rx="2.5" fill="#f0883e"/>
 <text x="46" y="618" font-size="12.5" fill="#f0883e" font-weight="700" letter-spacing="1.5">RELIABILITY</text>
-<text x="50" y="650" font-size="17" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
-<text x="50" y="674" font-size="16" fill="#8b949e" >launchd catch-up after lid-</text>
-<text x="50" y="696" font-size="16" fill="#8b949e" >close and reboot verified;</text>
-<text x="50" y="718" font-size="16" fill="#8b949e" >what replays and what is</text>
-<text x="50" y="740" font-size="16" fill="#8b949e" >lost, documented.</text>
-<text x="50" y="782" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
-<text x="50" y="806" font-size="16" fill="#8b949e" >Version, install steps and</text>
-<text x="50" y="828" font-size="16" fill="#8b949e" >verification record are in;</text>
-<text x="50" y="850" font-size="16" fill="#8b949e" >tag v0.1.0 and publish under</text>
-<text x="50" y="872" font-size="16" fill="#8b949e" >the personal account.</text>
-<text x="316" y="650" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
-<text x="316" y="674" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
-<text x="316" y="696" font-size="16" fill="#8b949e" >failures, chain visible in</text>
-<text x="316" y="718" font-size="16" fill="#8b949e" >the ledger.</text>
+<text x="50" y="650" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
+<text x="50" y="674" font-size="16" fill="#8b949e" >Version, install steps and</text>
+<text x="50" y="696" font-size="16" fill="#8b949e" >verification record are in;</text>
+<text x="50" y="718" font-size="16" fill="#8b949e" >tag v0.1.0 and publish under</text>
+<text x="50" y="740" font-size="16" fill="#8b949e" >the personal account. Owner</text>
+<text x="50" y="762" font-size="16" fill="#8b949e" >action, no code left.</text>
+<text x="316" y="650" font-size="17" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
+<text x="316" y="674" font-size="16" fill="#8b949e" >One slept-through tick fires</text>
+<text x="316" y="696" font-size="16" fill="#8b949e" >one run on wake, none after a</text>
+<text x="316" y="718" font-size="16" fill="#8b949e" >reboot past one; observed in</text>
+<text x="316" y="740" font-size="16" fill="#8b949e" >cones ls --json and written</text>
+<text x="316" y="762" font-size="16" fill="#8b949e" >into the README.</text>
+<text x="316" y="804" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
+<text x="316" y="828" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
+<text x="316" y="850" font-size="16" fill="#8b949e" >failures, chain visible in</text>
+<text x="316" y="872" font-size="16" fill="#8b949e" >the ledger.</text>
 <text x="582" y="650" font-size="16" fill="#30363d" >—</text>
-<rect x="28" y="916" width="804" height="382" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="928" width="5" height="358" rx="2.5" fill="#d2a8ff"/>
+<rect x="28" y="916" width="804" height="558" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="928" width="5" height="534" rx="2.5" fill="#d2a8ff"/>
 <text x="46" y="946" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">OBSERVABILITY</text>
-<text x="50" y="978" font-size="16" fill="#30363d" >—</text>
+<text x="50" y="978" font-size="17" fill="#e6edf3" font-weight="700">Touched files from hooks</text>
+<text x="50" y="1002" font-size="16" fill="#8b949e" >PostToolUse Edit and Write</text>
+<text x="50" y="1024" font-size="16" fill="#8b949e" >paths accumulate in the</text>
+<text x="50" y="1046" font-size="16" fill="#8b949e" >session&#x27;s fleet file; ls</text>
+<text x="50" y="1068" font-size="16" fill="#8b949e" >--json and the details pane</text>
+<text x="50" y="1090" font-size="16" fill="#8b949e" >show each footprint. Bash</text>
+<text x="50" y="1112" font-size="16" fill="#8b949e" >edits are not seen.</text>
+<text x="50" y="1154" font-size="17" fill="#e6edf3" font-weight="700">Status transitions</text>
+<text x="50" y="1178" font-size="16" fill="#8b949e" >cones status &#x27;text&#x27; writes</text>
+<text x="50" y="1200" font-size="16" fill="#8b949e" >the session&#x27;s fleet file and</text>
+<text x="50" y="1222" font-size="16" fill="#8b949e" >fills the last column, so the</text>
+<text x="50" y="1244" font-size="16" fill="#8b949e" >orchestrator reads check-ins</text>
+<text x="50" y="1266" font-size="16" fill="#8b949e" >instead of asking; hook-</text>
+<text x="50" y="1288" font-size="16" fill="#8b949e" >derived blocked/idle/exited</text>
+<text x="50" y="1310" font-size="16" fill="#8b949e" >shipped.</text>
 <text x="316" y="978" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
-<text x="316" y="1002" font-size="16" fill="#8b949e" >See what runs next, not only</text>
-<text x="316" y="1024" font-size="16" fill="#8b949e" >what already ran.</text>
-<text x="316" y="1066" font-size="17" fill="#e6edf3" font-weight="700">Run diffs</text>
-<text x="316" y="1090" font-size="16" fill="#8b949e" >The working-tree change a run</text>
-<text x="316" y="1112" font-size="16" fill="#8b949e" >produced, from the ledger.</text>
-<text x="316" y="1154" font-size="17" fill="#e6edf3" font-weight="700">Jump to pane</text>
-<text x="316" y="1178" font-size="16" fill="#8b949e" >Enter on a foreign session</text>
-<text x="316" y="1200" font-size="16" fill="#8b949e" >resolves pid to tty to tmux</text>
-<text x="316" y="1222" font-size="16" fill="#8b949e" >or iTerm pane and switches</text>
-<text x="316" y="1244" font-size="16" fill="#8b949e" >there, instead of resuming a</text>
-<text x="316" y="1266" font-size="16" fill="#8b949e" >copy.</text>
-<text x="582" y="978" font-size="17" fill="#e6edf3" font-weight="700">Status transitions</text>
-<text x="582" y="1002" font-size="16" fill="#8b949e" >Hook-derived</text>
-<text x="582" y="1024" font-size="16" fill="#8b949e" >blocked/idle/exited ship in</text>
-<text x="582" y="1046" font-size="16" fill="#8b949e" >Now; agent-declared started,</text>
-<text x="582" y="1068" font-size="16" fill="#8b949e" >milestone, done come here.</text>
-<rect x="28" y="1310" width="804" height="536" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="1322" width="5" height="512" rx="2.5" fill="#79c0ff"/>
-<text x="46" y="1340" font-size="12.5" fill="#79c0ff" font-weight="700" letter-spacing="1.5">HARNESSES</text>
-<text x="50" y="1372" font-size="16" fill="#30363d" >—</text>
-<text x="316" y="1372" font-size="17" fill="#e6edf3" font-weight="700">File triggers</text>
-<text x="316" y="1396" font-size="16" fill="#8b949e" >Run on path change via</text>
-<text x="316" y="1418" font-size="16" fill="#8b949e" >launchd WatchPaths; a few</text>
-<text x="316" y="1440" font-size="16" fill="#8b949e" >plist lines, no watcher</text>
-<text x="316" y="1462" font-size="16" fill="#8b949e" >process.</text>
-<text x="316" y="1504" font-size="17" fill="#e6edf3" font-weight="700">Codex budget probe</text>
-<text x="316" y="1528" font-size="16" fill="#8b949e" >Measure Codex usage events to</text>
-<text x="316" y="1550" font-size="16" fill="#8b949e" >decide whether a token budget</text>
-<text x="316" y="1572" font-size="16" fill="#8b949e" >can be enforced; the result</text>
-<text x="316" y="1594" font-size="16" fill="#8b949e" >gates the Codex adapter.</text>
-<text x="316" y="1636" font-size="17" fill="#e6edf3" font-weight="700">Codex jobs</text>
-<text x="316" y="1660" font-size="16" fill="#8b949e" >Real token budget, rejected</text>
-<text x="316" y="1682" font-size="16" fill="#8b949e" >when unenforceable. Same</text>
-<text x="316" y="1704" font-size="16" fill="#8b949e" >policy file, second harness.</text>
-<text x="316" y="1746" font-size="17" fill="#e6edf3" font-weight="700">Codex fleet hooks</text>
-<text x="316" y="1770" font-size="16" fill="#8b949e" >cones hook codex, once Codex</text>
-<text x="316" y="1792" font-size="16" fill="#8b949e" >hook trust can be configured</text>
-<text x="316" y="1814" font-size="16" fill="#8b949e" >without a bypass flag.</text>
-<text x="582" y="1372" font-size="17" fill="#e6edf3" font-weight="700">Webhook triggers</text>
-<text x="582" y="1396" font-size="16" fill="#8b949e" >Run on an HTTP call. Needs a</text>
-<text x="582" y="1418" font-size="16" fill="#8b949e" >listener process, so after</text>
-<text x="582" y="1440" font-size="16" fill="#8b949e" >single-machine fleet control.</text>
-<text x="582" y="1482" font-size="17" fill="#e6edf3" font-weight="700">More Macs</text>
-<text x="582" y="1506" font-size="16" fill="#8b949e" >Multi-machine after single-</text>
-<text x="582" y="1528" font-size="16" fill="#8b949e" >machine fleet control is in</text>
-<text x="582" y="1550" font-size="16" fill="#8b949e" >regular use.</text>
-<rect x="28" y="1858" width="804" height="448" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="1870" width="5" height="424" rx="2.5" fill="#56d4dd"/>
-<text x="46" y="1888" font-size="12.5" fill="#56d4dd" font-weight="700" letter-spacing="1.5">COORDINATION</text>
-<text x="50" y="1920" font-size="16" fill="#30363d" >—</text>
-<text x="316" y="1920" font-size="17" fill="#e6edf3" font-weight="700">Worktree per run</text>
-<text x="316" y="1944" font-size="16" fill="#8b949e" >Concurrent writers each get a</text>
-<text x="316" y="1966" font-size="16" fill="#8b949e" >worktree; unlocks overlap:</text>
-<text x="316" y="1988" font-size="16" fill="#8b949e" >allow for write jobs. Recipe</text>
-<text x="316" y="2010" font-size="16" fill="#8b949e" >from claude-squad, ported as</text>
-<text x="316" y="2032" font-size="16" fill="#8b949e" >git commands.</text>
-<text x="582" y="1920" font-size="17" fill="#e6edf3" font-weight="700">Fleet roster</text>
-<text x="582" y="1944" font-size="16" fill="#8b949e" >Task and declared file scope</text>
-<text x="582" y="1966" font-size="16" fill="#8b949e" >added to each session&#x27;s state</text>
-<text x="582" y="1988" font-size="16" fill="#8b949e" >file; overlaps detected</text>
-<text x="582" y="2010" font-size="16" fill="#8b949e" >before commit. Only when two</text>
-<text x="582" y="2032" font-size="16" fill="#8b949e" >writers share a repo.</text>
-<text x="582" y="2074" font-size="17" fill="#e6edf3" font-weight="700">Standing orders</text>
-<text x="582" y="2098" font-size="16" fill="#8b949e" >Fleet rules as data, checked</text>
-<text x="582" y="2120" font-size="16" fill="#8b949e" >when the last job ends.</text>
-<text x="582" y="2162" font-size="17" fill="#e6edf3" font-weight="700">Talk to sessions</text>
-<text x="582" y="2186" font-size="16" fill="#8b949e" >Type a message to a live</text>
-<text x="582" y="2208" font-size="16" fill="#8b949e" >session from the dashboard</text>
-<text x="582" y="2230" font-size="16" fill="#8b949e" >over its local socket;</text>
-<text x="582" y="2252" font-size="16" fill="#8b949e" >dispatch covers new work,</text>
-<text x="582" y="2274" font-size="16" fill="#8b949e" >this covers steering.</text>
-<text x="28" y="2332" font-size="14" fill="#8b949e" >cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and</text>
-<text x="28" y="2352" font-size="14" fill="#8b949e" >permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
+<text x="316" y="1002" font-size="16" fill="#8b949e" >Each job row shows its next</text>
+<text x="316" y="1024" font-size="16" fill="#8b949e" >tick, computed from the</text>
+<text x="316" y="1046" font-size="16" fill="#8b949e" >compiled</text>
+<text x="316" y="1068" font-size="16" fill="#8b949e" >StartCalendarInterval list</text>
+<text x="316" y="1090" font-size="16" fill="#8b949e" >and confirmed against the</text>
+<text x="316" y="1112" font-size="16" fill="#8b949e" >loaded plist.</text>
+<text x="316" y="1154" font-size="17" fill="#e6edf3" font-weight="700">Run diffs</text>
+<text x="316" y="1178" font-size="16" fill="#8b949e" >A write run records git diff</text>
+<text x="316" y="1200" font-size="16" fill="#8b949e" >--stat of its cwd at exit;</text>
+<text x="316" y="1222" font-size="16" fill="#8b949e" >cones logs and the details</text>
+<text x="316" y="1244" font-size="16" fill="#8b949e" >pane show what the run</text>
+<text x="316" y="1266" font-size="16" fill="#8b949e" >changed.</text>
+<text x="316" y="1308" font-size="17" fill="#e6edf3" font-weight="700">Fleet sessions in the ledger</text>
+<text x="316" y="1332" font-size="16" fill="#8b949e" >SessionEnd writes a session</text>
+<text x="316" y="1354" font-size="16" fill="#8b949e" >record (cwd, duration,</text>
+<text x="316" y="1376" font-size="16" fill="#8b949e" >tokens, dollars) for sessions</text>
+<text x="316" y="1398" font-size="16" fill="#8b949e" >cones did not launch; ls</text>
+<text x="316" y="1420" font-size="16" fill="#8b949e" >totals it, daily_budget_usd</text>
+<text x="316" y="1442" font-size="16" fill="#8b949e" >ignores it.</text>
+<text x="582" y="978" font-size="17" fill="#e6edf3" font-weight="700">Jump to pane</text>
+<text x="582" y="1002" font-size="16" fill="#8b949e" >Enter on a foreign session</text>
+<text x="582" y="1024" font-size="16" fill="#8b949e" >resolves pid to tty to tmux</text>
+<text x="582" y="1046" font-size="16" fill="#8b949e" >or iTerm pane and switches</text>
+<text x="582" y="1068" font-size="16" fill="#8b949e" >there, instead of resuming a</text>
+<text x="582" y="1090" font-size="16" fill="#8b949e" >copy.</text>
+<rect x="28" y="1486" width="804" height="624" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="1498" width="5" height="600" rx="2.5" fill="#79c0ff"/>
+<text x="46" y="1516" font-size="12.5" fill="#79c0ff" font-weight="700" letter-spacing="1.5">HARNESSES</text>
+<text x="50" y="1548" font-size="16" fill="#30363d" >—</text>
+<text x="316" y="1548" font-size="17" fill="#e6edf3" font-weight="700">File triggers</text>
+<text x="316" y="1572" font-size="16" fill="#8b949e" >Run on path change via</text>
+<text x="316" y="1594" font-size="16" fill="#8b949e" >launchd WatchPaths; a few</text>
+<text x="316" y="1616" font-size="16" fill="#8b949e" >plist lines, no watcher</text>
+<text x="316" y="1638" font-size="16" fill="#8b949e" >process.</text>
+<text x="582" y="1548" font-size="17" fill="#e6edf3" font-weight="700">Codex budget probe</text>
+<text x="582" y="1572" font-size="16" fill="#8b949e" >Measure Codex usage events to</text>
+<text x="582" y="1594" font-size="16" fill="#8b949e" >decide whether a token budget</text>
+<text x="582" y="1616" font-size="16" fill="#8b949e" >can be enforced; the result</text>
+<text x="582" y="1638" font-size="16" fill="#8b949e" >gates the Codex adapter.</text>
+<text x="582" y="1680" font-size="17" fill="#e6edf3" font-weight="700">Codex jobs</text>
+<text x="582" y="1704" font-size="16" fill="#8b949e" >Real token budget, rejected</text>
+<text x="582" y="1726" font-size="16" fill="#8b949e" >when unenforceable. Same</text>
+<text x="582" y="1748" font-size="16" fill="#8b949e" >policy file, second harness.</text>
+<text x="582" y="1790" font-size="17" fill="#e6edf3" font-weight="700">Codex fleet hooks</text>
+<text x="582" y="1814" font-size="16" fill="#8b949e" >cones hook codex, once Codex</text>
+<text x="582" y="1836" font-size="16" fill="#8b949e" >hook trust can be configured</text>
+<text x="582" y="1858" font-size="16" fill="#8b949e" >without a bypass flag.</text>
+<text x="582" y="1900" font-size="17" fill="#e6edf3" font-weight="700">Webhook triggers</text>
+<text x="582" y="1924" font-size="16" fill="#8b949e" >Run on an HTTP call. Needs a</text>
+<text x="582" y="1946" font-size="16" fill="#8b949e" >listener process, so after</text>
+<text x="582" y="1968" font-size="16" fill="#8b949e" >single-machine fleet control.</text>
+<text x="582" y="2010" font-size="17" fill="#e6edf3" font-weight="700">More Macs</text>
+<text x="582" y="2034" font-size="16" fill="#8b949e" >Multi-machine after single-</text>
+<text x="582" y="2056" font-size="16" fill="#8b949e" >machine fleet control is in</text>
+<text x="582" y="2078" font-size="16" fill="#8b949e" >regular use.</text>
+<rect x="28" y="2122" width="804" height="448" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="2134" width="5" height="424" rx="2.5" fill="#56d4dd"/>
+<text x="46" y="2152" font-size="12.5" fill="#56d4dd" font-weight="700" letter-spacing="1.5">COORDINATION</text>
+<text x="50" y="2184" font-size="17" fill="#e6edf3" font-weight="700">Lock holder in ls</text>
+<text x="50" y="2208" font-size="16" fill="#8b949e" >Holder pid and session id</text>
+<text x="50" y="2230" font-size="16" fill="#8b949e" >land beside the .lock; ls,</text>
+<text x="50" y="2252" font-size="16" fill="#8b949e" >the dashboard and cones lock</text>
+<text x="50" y="2274" font-size="16" fill="#8b949e" >--status show who holds and</text>
+<text x="50" y="2296" font-size="16" fill="#8b949e" >who waits; --try exits 1, no</text>
+<text x="50" y="2318" font-size="16" fill="#8b949e" >waiting.</text>
+<text x="316" y="2184" font-size="16" fill="#30363d" >—</text>
+<text x="582" y="2184" font-size="17" fill="#e6edf3" font-weight="700">Fleet roster</text>
+<text x="582" y="2208" font-size="16" fill="#8b949e" >Task and declared file scope</text>
+<text x="582" y="2230" font-size="16" fill="#8b949e" >added to each session&#x27;s state</text>
+<text x="582" y="2252" font-size="16" fill="#8b949e" >file; overlaps detected</text>
+<text x="582" y="2274" font-size="16" fill="#8b949e" >before commit. Only when two</text>
+<text x="582" y="2296" font-size="16" fill="#8b949e" >writers share a repo.</text>
+<text x="582" y="2338" font-size="17" fill="#e6edf3" font-weight="700">Worktree per run</text>
+<text x="582" y="2362" font-size="16" fill="#8b949e" >Concurrent writers each get a</text>
+<text x="582" y="2384" font-size="16" fill="#8b949e" >worktree; unlocks overlap:</text>
+<text x="582" y="2406" font-size="16" fill="#8b949e" >allow for write jobs. Recipe</text>
+<text x="582" y="2428" font-size="16" fill="#8b949e" >from claude-squad, ported as</text>
+<text x="582" y="2450" font-size="16" fill="#8b949e" >git commands.</text>
+<text x="582" y="2492" font-size="17" fill="#e6edf3" font-weight="700">Standing orders</text>
+<text x="582" y="2516" font-size="16" fill="#8b949e" >Fleet rules as data, checked</text>
+<text x="582" y="2538" font-size="16" fill="#8b949e" >when the last job ends.</text>
+<text x="28" y="2596" font-size="14" fill="#8b949e" >cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and</text>
+<text x="28" y="2616" font-size="14" fill="#8b949e" >permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
 </svg>

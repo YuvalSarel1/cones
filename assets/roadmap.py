@@ -4,26 +4,28 @@ W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
 CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
-COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
-    ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
-    ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account."),
-]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
+COLS = [("NOW", "What the peer orchestrator lacks today", "#3fb950", [
+    ("Lock holder in ls", "COORD", "Holder pid and session id land beside the .lock; ls, the dashboard and cones lock --status show who holds and who waits; --try exits 1, no waiting."),
+    ("Touched files from hooks", "OBS", "PostToolUse Edit and Write paths accumulate in the session's fleet file; ls --json and the details pane show each footprint. Bash edits are not seen."),
+    ("Status transitions", "OBS", "cones status 'text' writes the session's fleet file and fills the last column, so the orchestrator reads check-ins instead of asking; hook-derived blocked/idle/exited shipped."),
+    ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
+]), ("NEXT", "Claude only, no second writer needed", "#58a6ff", [
+    ("Sleep/wake proof", "REL", "One slept-through tick fires one run on wake, none after a reboot past one; observed in cones ls --json and written into the README."),
+    ("Next fire time in ls", "OBS", "Each job row shows its next tick, computed from the compiled StartCalendarInterval list and confirmed against the loaded plist."),
+    ("Run diffs", "OBS", "A write run records git diff --stat of its cwd at exit; cones logs and the details pane show what the run changed."),
+    ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
     ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
+    ("Fleet sessions in the ledger", "OBS", "SessionEnd writes a session record (cwd, duration, tokens, dollars) for sessions cones did not launch; ls totals it, daily_budget_usd ignores it."),
+]), ("LATER", "Needs a second writer, harness or Mac", "#bc8cff", [
+    ("Fleet roster", "COORD", "Task and declared file scope added to each session's state file; overlaps detected before commit. Only when two writers share a repo."),
+    ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
+    ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
-    ("Next fire time in ls", "OBS", "See what runs next, not only what already ran."),
-    ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
-    ("Run diffs", "OBS", "The working-tree change a run produced, from the ledger."),
-    ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
     ("Codex fleet hooks", "HAR", "cones hook codex, once Codex hook trust can be configured without a bypass flag."),
-    ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
-]), ("LATER", "From scheduler to fleet control", "#bc8cff", [
-    ("Fleet roster", "COORD", "Task and declared file scope added to each session's state file; overlaps detected before commit. Only when two writers share a repo."),
-    ("Status transitions", "OBS", "Hook-derived blocked/idle/exited ship in Now; agent-declared started, milestone, done come here."),
-    ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
-    ("Talk to sessions", "COORD", "Type a message to a live session from the dashboard over its local socket; dispatch covers new work, this covers steering."),
     ("Webhook triggers", "HAR", "Run on an HTTP call. Needs a listener process, so after single-machine fleet control."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
+    ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · native dashboard: live refresh, animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with cones run --prompt · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
