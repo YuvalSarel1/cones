@@ -1,6 +1,6 @@
 """Generates assets/roadmap.svg. Run: python3 assets/roadmap.py"""
 import html, textwrap, pathlib
-W = 1200
+W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
 CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
@@ -40,51 +40,51 @@ def t(x, y, s, size, fill, **kw):
     return f'<text x="{x}" y="{y}" font-size="{size}" fill="{fill}" {attrs}>{html.escape(s)}</text>'
 
 # Matrix layout: horizons are columns, categories are rows.
-M, RAIL, GAP, PAD = 40, 150, 14, 16
-COL_W = (W - 2 * M - RAIL - 2 * GAP) // 3
-WRAP = 30
-o = [t(M, 62, "cones roadmap", 44, FG, font_weight=700),
-     t(M, 92, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 21, MUTED)]
-ship = textwrap.wrap(SHIPPED, 112)
-o.append(f'<rect x="{M}" y="112" width="{W-2*M}" height="{50+len(ship)*25}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
-o.append(t(M + 18, 136, "SHIPPED  v0.1.0-headless", 14, "#3fb950", font_weight=700, letter_spacing=1.5))
+M, RAIL, GAP, PAD = 28, 0, 12, 14
+COL_W = (W - 2 * M - 16 - 2 * GAP) // 3
+WRAP = 29
+o = [t(M, 62, "cones roadmap", 32, FG, font_weight=700),
+     t(M, 92, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 16, MUTED)]
+ship = textwrap.wrap(SHIPPED, 96)
+o.append(f'<rect x="{M}" y="112" width="{W-2*M}" height="{46+len(ship)*22}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
+o.append(t(M + 18, 136, "SHIPPED  v0.1.0-headless", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
 for i, l in enumerate(ship):
-    o.append(t(M + 18, 164 + i * 25, l, 18.5, FG))
-y = 112 + 50 + len(ship) * 25 + 30
+    o.append(t(M + 16, 160 + i * 22, l, 15, FG))
+y = 112 + 46 + len(ship) * 22 + 26
 # column headers
 for ci, (name, sub, color, _) in enumerate(COLS):
-    x = M + RAIL + ci * (COL_W + GAP)
+    x = M + 8 + ci * (COL_W + GAP)
     o += [f'<rect x="{x}" y="{y}" width="{COL_W}" height="6" rx="3" fill="{color}"/>',
-          t(x + PAD, y + 42, name, 28, color, font_weight=800, letter_spacing=2),
-          t(x + PAD, y + 66, sub, 15.5, MUTED)]
-y += 84
+          t(x + PAD, y + 38, name, 22, color, font_weight=800, letter_spacing=1.5),
+          t(x + PAD, y + 58, sub, 12.5, MUTED) if len(sub) <= 40 else t(x + PAD, y + 58, sub, 11.5, MUTED)]
+y += 74
 def cell(items):
     laid, h = [], 0
     for title, desc in items:
         lines = textwrap.wrap(desc, WRAP)
-        laid.append((h, title, lines)); h += 30 + len(lines) * 23 + 16
+        laid.append((h, title, lines)); h += 28 + len(lines) * 22 + 16
     return laid, h
 for key, (cname, cc) in CAT.items():
     cells = [cell([(t_, d) for t_, c, d in items if c == key]) for _, _, _, items in COLS]
-    row_h = max(h for _, h in cells) + 2 * PAD - 6
+    row_h = max(h for _, h in cells) + 2 * PAD + 24
     o.append(f'<rect x="{M}" y="{y}" width="{W-2*M}" height="{row_h}" rx="10" fill="{CARD}" stroke="{LINE}"/>')
     o.append(f'<rect x="{M}" y="{y+12}" width="5" height="{row_h-24}" rx="2.5" fill="{cc}"/>')
-    for i, l in enumerate(textwrap.wrap(cname, 16)):
-        o.append(t(M + 20, y + PAD + 20 + i * 22, l, 18, cc, font_weight=700))
+    o.append(t(M + 18, y + PAD + 16, cname.upper(), 12.5, cc, font_weight=700, letter_spacing=1.5))
+    y0 = y; y += 30
     for ci, (laid, h) in enumerate(cells):
-        x = M + RAIL + ci * (COL_W + GAP)
+        x = M + 8 + ci * (COL_W + GAP)
         if not laid:
-            o.append(t(x + PAD, y + PAD + 20, "—", 18, LINE)); continue
+            o.append(t(x + PAD, y + PAD + 18, "—", 16, LINE)); continue
         for dy, title, lines in laid:
-            yy = y + PAD + 20 + dy
-            o.append(t(x + PAD, yy, title, 20, FG, font_weight=700))
+            yy = y + PAD + 18 + dy
+            o.append(t(x + PAD, yy, title, 17, FG, font_weight=700))
             for j, l in enumerate(lines):
-                o.append(t(x + PAD, yy + 25 + j * 23, l, 17, MUTED))
-    y += row_h + 12
-foot = textwrap.wrap(FOOT, 112)
+                o.append(t(x + PAD, yy + 24 + j * 22, l, 16, MUTED))
+    y = y0 + row_h + 12
+foot = textwrap.wrap(FOOT, 100)
 for i, l in enumerate(foot):
-    o.append(t(M, y + 16 + i * 22, l, 16, MUTED))
-H = y + 16 + len(foot) * 22 + 26
+    o.append(t(M, y + 14 + i * 20, l, 14, MUTED))
+H = y + 14 + len(foot) * 20 + 24
 o = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" '
      'font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">',
      f'<rect width="{W}" height="{H}" fill="{BG}"/>'] + o + ["</svg>"]

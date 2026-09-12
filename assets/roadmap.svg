@@ -1,124 +1,125 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2015" viewBox="0 0 1200 2015" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
-<rect width="1200" height="2015" fill="#0d1117"/>
-<text x="40" y="62" font-size="44" fill="#e6edf3" font-weight="700">cones roadmap</text>
-<text x="40" y="92" font-size="21" fill="#8b949e" >Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.</text>
-<rect x="40" y="112" width="1120" height="125" rx="8" fill="#161b22" stroke="#30363d"/>
-<text x="58" y="136" font-size="14" fill="#3fb950" font-weight="700" letter-spacing="1.5">SHIPPED  v0.1.0-headless</text>
-<text x="58" y="164" font-size="18.5" fill="#e6edf3" >Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy ·</text>
-<text x="58" y="189" font-size="18.5" fill="#e6edf3" >rolling daily budget · live event stream · stop, list, resume in Claude&#x27;s TUI · overlap skip / allow / replace ·</text>
-<text x="58" y="214" font-size="18.5" fill="#e6edf3" >shared-workspace writer lock · durable run ledger</text>
-<rect x="190" y="267" width="314" height="6" rx="3" fill="#3fb950"/>
-<text x="206" y="309" font-size="28" fill="#3fb950" font-weight="800" letter-spacing="2">NOW</text>
-<text x="206" y="333" font-size="15.5" fill="#8b949e" >Make the first release trustworthy</text>
-<rect x="518" y="267" width="314" height="6" rx="3" fill="#58a6ff"/>
-<text x="534" y="309" font-size="28" fill="#58a6ff" font-weight="800" letter-spacing="2">NEXT</text>
-<text x="534" y="333" font-size="15.5" fill="#8b949e" >More harnesses, less manual follow-up</text>
-<rect x="846" y="267" width="314" height="6" rx="3" fill="#bc8cff"/>
-<text x="862" y="309" font-size="28" fill="#bc8cff" font-weight="800" letter-spacing="2">LATER</text>
-<text x="862" y="333" font-size="15.5" fill="#8b949e" >From scheduler to fleet control</text>
-<rect x="40" y="351" width="1120" height="440" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="40" y="363" width="5" height="416" rx="2.5" fill="#f0883e"/>
-<text x="60" y="387" font-size="18" fill="#f0883e" font-weight="700">Reliability</text>
-<text x="206" y="387" font-size="20" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
-<text x="206" y="412" font-size="17" fill="#8b949e" >launchd catch-up after lid-</text>
-<text x="206" y="435" font-size="17" fill="#8b949e" >close and reboot verified;</text>
-<text x="206" y="458" font-size="17" fill="#8b949e" >what replays and what is lost,</text>
-<text x="206" y="481" font-size="17" fill="#8b949e" >documented.</text>
-<text x="206" y="525" font-size="20" fill="#e6edf3" font-weight="700">Public release</text>
-<text x="206" y="550" font-size="17" fill="#8b949e" >Install steps and verification</text>
-<text x="206" y="573" font-size="17" fill="#8b949e" >record, published under the</text>
-<text x="206" y="596" font-size="17" fill="#8b949e" >personal account.</text>
-<text x="206" y="640" font-size="20" fill="#e6edf3" font-weight="700">Doctor covers auth</text>
-<text x="206" y="665" font-size="17" fill="#8b949e" >cones doctor verifies Claude</text>
-<text x="206" y="688" font-size="17" fill="#8b949e" >login and every env var a job</text>
-<text x="206" y="711" font-size="17" fill="#8b949e" >imports, so a scheduled run</text>
-<text x="206" y="734" font-size="17" fill="#8b949e" >does not fail on missing</text>
-<text x="206" y="757" font-size="17" fill="#8b949e" >credentials.</text>
-<text x="534" y="387" font-size="20" fill="#e6edf3" font-weight="700">Retries with backoff</text>
-<text x="534" y="412" font-size="17" fill="#8b949e" >Bounded retry for transient</text>
-<text x="534" y="435" font-size="17" fill="#8b949e" >failures, chain visible in the</text>
-<text x="534" y="458" font-size="17" fill="#8b949e" >ledger.</text>
-<text x="862" y="387" font-size="18" fill="#30363d" >—</text>
-<rect x="40" y="803" width="1120" height="256" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="40" y="815" width="5" height="232" rx="2.5" fill="#d2a8ff"/>
-<text x="60" y="839" font-size="18" fill="#d2a8ff" font-weight="700">Observability</text>
-<text x="206" y="839" font-size="20" fill="#e6edf3" font-weight="700">Failure notification</text>
-<text x="206" y="864" font-size="17" fill="#8b949e" >Opt-in macOS notification on</text>
-<text x="206" y="887" font-size="17" fill="#8b949e" >failed, crashed or budget-</text>
-<text x="206" y="910" font-size="17" fill="#8b949e" >skipped runs.</text>
-<text x="206" y="954" font-size="20" fill="#e6edf3" font-weight="700">Run summary in ls</text>
-<text x="206" y="979" font-size="17" fill="#8b949e" >One line per run: what it did,</text>
-<text x="206" y="1002" font-size="17" fill="#8b949e" >cost, why it stopped.</text>
-<text x="534" y="839" font-size="20" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
-<text x="534" y="864" font-size="17" fill="#8b949e" >See what runs next, not only</text>
-<text x="534" y="887" font-size="17" fill="#8b949e" >what already ran.</text>
-<text x="534" y="931" font-size="20" fill="#e6edf3" font-weight="700">Run diffs</text>
-<text x="534" y="956" font-size="17" fill="#8b949e" >The working-tree change a run</text>
-<text x="534" y="979" font-size="17" fill="#8b949e" >produced, from the ledger.</text>
-<text x="862" y="839" font-size="20" fill="#e6edf3" font-weight="700">Fleet view</text>
-<text x="862" y="864" font-size="17" fill="#8b949e" >Everything running on the</text>
-<text x="862" y="887" font-size="17" fill="#8b949e" >machine: who, where, on what,</text>
-<text x="862" y="910" font-size="17" fill="#8b949e" >busy/idle, cost. Side pane or</text>
-<text x="862" y="933" font-size="17" fill="#8b949e" >TUI.</text>
-<text x="862" y="977" font-size="20" fill="#e6edf3" font-weight="700">Status transitions</text>
-<text x="862" y="1002" font-size="17" fill="#8b949e" >Started, milestone, blocked,</text>
-<text x="862" y="1025" font-size="17" fill="#8b949e" >done from the agent itself.</text>
-<rect x="40" y="1071" width="1120" height="325" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="40" y="1083" width="5" height="301" rx="2.5" fill="#79c0ff"/>
-<text x="60" y="1107" font-size="18" fill="#79c0ff" font-weight="700">Harnesses</text>
-<text x="206" y="1107" font-size="20" fill="#e6edf3" font-weight="700">Harness compatibility check</text>
-<text x="206" y="1132" font-size="17" fill="#8b949e" >cones doctor compares the</text>
-<text x="206" y="1155" font-size="17" fill="#8b949e" >installed Claude version and</text>
-<text x="206" y="1178" font-size="17" fill="#8b949e" >the flags cones compiles to</text>
-<text x="206" y="1201" font-size="17" fill="#8b949e" >against the tested set, and</text>
-<text x="206" y="1224" font-size="17" fill="#8b949e" >reports drift before install.</text>
-<text x="206" y="1268" font-size="20" fill="#e6edf3" font-weight="700">Codex budget probe</text>
-<text x="206" y="1293" font-size="17" fill="#8b949e" >Measure Codex usage events to</text>
-<text x="206" y="1316" font-size="17" fill="#8b949e" >decide whether a token budget</text>
-<text x="206" y="1339" font-size="17" fill="#8b949e" >can be enforced; the result</text>
-<text x="206" y="1362" font-size="17" fill="#8b949e" >gates the Codex adapter.</text>
-<text x="534" y="1107" font-size="20" fill="#e6edf3" font-weight="700">Codex jobs</text>
-<text x="534" y="1132" font-size="17" fill="#8b949e" >Real token budget, rejected</text>
-<text x="534" y="1155" font-size="17" fill="#8b949e" >when unenforceable. Same</text>
-<text x="534" y="1178" font-size="17" fill="#8b949e" >policy file, second harness.</text>
-<text x="534" y="1222" font-size="20" fill="#e6edf3" font-weight="700">File and webhook triggers</text>
-<text x="534" y="1247" font-size="17" fill="#8b949e" >Run on path change or HTTP</text>
-<text x="534" y="1270" font-size="17" fill="#8b949e" >call, not only on a calendar.</text>
-<text x="862" y="1107" font-size="20" fill="#e6edf3" font-weight="700">More harnesses, more Macs</text>
-<text x="862" y="1132" font-size="17" fill="#8b949e" >Pi when a real use case</text>
-<text x="862" y="1155" font-size="17" fill="#8b949e" >appears; multi-machine after</text>
-<text x="862" y="1178" font-size="17" fill="#8b949e" >single-machine fleet control</text>
-<text x="862" y="1201" font-size="17" fill="#8b949e" >is in regular use.</text>
-<rect x="40" y="1408" width="1120" height="509" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="40" y="1420" width="5" height="485" rx="2.5" fill="#56d4dd"/>
-<text x="60" y="1444" font-size="18" fill="#56d4dd" font-weight="700">Coordination</text>
-<text x="206" y="1444" font-size="20" fill="#e6edf3" font-weight="700">Lock CLI</text>
-<text x="206" y="1469" font-size="17" fill="#8b949e" >cones lock and unlock expose</text>
-<text x="206" y="1492" font-size="17" fill="#8b949e" >the existing workspace writer</text>
-<text x="206" y="1515" font-size="17" fill="#8b949e" >lock, so interactive agents</text>
-<text x="206" y="1538" font-size="17" fill="#8b949e" >can serialize commits on a</text>
-<text x="206" y="1561" font-size="17" fill="#8b949e" >shared repo today.</text>
-<text x="534" y="1444" font-size="20" fill="#e6edf3" font-weight="700">Worktree per run</text>
-<text x="534" y="1469" font-size="17" fill="#8b949e" >Concurrent writers each get a</text>
-<text x="534" y="1492" font-size="17" fill="#8b949e" >worktree; unlocks overlap:</text>
-<text x="534" y="1515" font-size="17" fill="#8b949e" >allow for write jobs.</text>
-<text x="862" y="1444" font-size="20" fill="#e6edf3" font-weight="700">Fleet roster</text>
-<text x="862" y="1469" font-size="17" fill="#8b949e" >cones launches agents with a</text>
-<text x="862" y="1492" font-size="17" fill="#8b949e" >name, cwd, task and declared</text>
-<text x="862" y="1515" font-size="17" fill="#8b949e" >file scope; the roster is the</text>
-<text x="862" y="1538" font-size="17" fill="#8b949e" >source of truth.</text>
-<text x="862" y="1582" font-size="20" fill="#e6edf3" font-weight="700">Commit lock and queue</text>
-<text x="862" y="1607" font-size="17" fill="#8b949e" >Agents acquire a per-repo lock</text>
-<text x="862" y="1630" font-size="17" fill="#8b949e" >before committing; cones</text>
-<text x="862" y="1653" font-size="17" fill="#8b949e" >grants in order. Workers never</text>
-<text x="862" y="1676" font-size="17" fill="#8b949e" >push or stash.</text>
-<text x="862" y="1720" font-size="20" fill="#e6edf3" font-weight="700">Coordinator token</text>
-<text x="862" y="1745" font-size="17" fill="#8b949e" >Coordinator messages carry a</text>
-<text x="862" y="1768" font-size="17" fill="#8b949e" >per-run token; workers ignore</text>
-<text x="862" y="1791" font-size="17" fill="#8b949e" >messages without it.</text>
-<text x="862" y="1835" font-size="20" fill="#e6edf3" font-weight="700">Standing orders</text>
-<text x="862" y="1860" font-size="17" fill="#8b949e" >Fleet rules as data, checked</text>
-<text x="862" y="1883" font-size="17" fill="#8b949e" >when the last job ends.</text>
-<text x="40" y="1945" font-size="16" fill="#8b949e" >cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions.</text>
-<text x="40" y="1967" font-size="16" fill="#8b949e" >Unenforceable guarantees are validation errors, never a second permission engine.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="2044" viewBox="0 0 860 2044" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="860" height="2044" fill="#0d1117"/>
+<text x="28" y="62" font-size="32" fill="#e6edf3" font-weight="700">cones roadmap</text>
+<text x="28" y="92" font-size="16" fill="#8b949e" >Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.</text>
+<rect x="28" y="112" width="804" height="112" rx="8" fill="#161b22" stroke="#30363d"/>
+<text x="46" y="136" font-size="12" fill="#3fb950" font-weight="700" letter-spacing="1.5">SHIPPED  v0.1.0-headless</text>
+<text x="44" y="160" font-size="15" fill="#e6edf3" >Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-</text>
+<text x="44" y="182" font-size="15" fill="#e6edf3" >write policy · rolling daily budget · live event stream · stop, list, resume in Claude&#x27;s TUI ·</text>
+<text x="44" y="204" font-size="15" fill="#e6edf3" >overlap skip / allow / replace · shared-workspace writer lock · durable run ledger</text>
+<rect x="36" y="250" width="254" height="6" rx="3" fill="#3fb950"/>
+<text x="50" y="288" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
+<text x="50" y="308" font-size="12.5" fill="#8b949e" >Make the first release trustworthy</text>
+<rect x="302" y="250" width="254" height="6" rx="3" fill="#58a6ff"/>
+<text x="316" y="288" font-size="22" fill="#58a6ff" font-weight="800" letter-spacing="1.5">NEXT</text>
+<text x="316" y="308" font-size="12.5" fill="#8b949e" >More harnesses, less manual follow-up</text>
+<rect x="568" y="250" width="254" height="6" rx="3" fill="#bc8cff"/>
+<text x="582" y="288" font-size="22" fill="#bc8cff" font-weight="800" letter-spacing="1.5">LATER</text>
+<text x="582" y="308" font-size="12.5" fill="#8b949e" >From scheduler to fleet control</text>
+<rect x="28" y="324" width="804" height="470" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="336" width="5" height="446" rx="2.5" fill="#f0883e"/>
+<text x="46" y="354" font-size="12.5" fill="#f0883e" font-weight="700" letter-spacing="1.5">RELIABILITY</text>
+<text x="50" y="386" font-size="17" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
+<text x="50" y="410" font-size="16" fill="#8b949e" >launchd catch-up after lid-</text>
+<text x="50" y="432" font-size="16" fill="#8b949e" >close and reboot verified;</text>
+<text x="50" y="454" font-size="16" fill="#8b949e" >what replays and what is</text>
+<text x="50" y="476" font-size="16" fill="#8b949e" >lost, documented.</text>
+<text x="50" y="518" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
+<text x="50" y="542" font-size="16" fill="#8b949e" >Install steps and</text>
+<text x="50" y="564" font-size="16" fill="#8b949e" >verification record,</text>
+<text x="50" y="586" font-size="16" fill="#8b949e" >published under the personal</text>
+<text x="50" y="608" font-size="16" fill="#8b949e" >account.</text>
+<text x="50" y="650" font-size="17" fill="#e6edf3" font-weight="700">Doctor covers auth</text>
+<text x="50" y="674" font-size="16" fill="#8b949e" >cones doctor verifies Claude</text>
+<text x="50" y="696" font-size="16" fill="#8b949e" >login and every env var a job</text>
+<text x="50" y="718" font-size="16" fill="#8b949e" >imports, so a scheduled run</text>
+<text x="50" y="740" font-size="16" fill="#8b949e" >does not fail on missing</text>
+<text x="50" y="762" font-size="16" fill="#8b949e" >credentials.</text>
+<text x="316" y="386" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
+<text x="316" y="410" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
+<text x="316" y="432" font-size="16" fill="#8b949e" >failures, chain visible in</text>
+<text x="316" y="454" font-size="16" fill="#8b949e" >the ledger.</text>
+<text x="582" y="386" font-size="16" fill="#30363d" >—</text>
+<rect x="28" y="806" width="804" height="272" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="818" width="5" height="248" rx="2.5" fill="#d2a8ff"/>
+<text x="46" y="836" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">OBSERVABILITY</text>
+<text x="50" y="868" font-size="17" fill="#e6edf3" font-weight="700">Failure notification</text>
+<text x="50" y="892" font-size="16" fill="#8b949e" >Opt-in macOS notification on</text>
+<text x="50" y="914" font-size="16" fill="#8b949e" >failed, crashed or budget-</text>
+<text x="50" y="936" font-size="16" fill="#8b949e" >skipped runs.</text>
+<text x="50" y="978" font-size="17" fill="#e6edf3" font-weight="700">Run summary in ls</text>
+<text x="50" y="1002" font-size="16" fill="#8b949e" >One line per run: what it</text>
+<text x="50" y="1024" font-size="16" fill="#8b949e" >did, cost, why it stopped.</text>
+<text x="316" y="868" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
+<text x="316" y="892" font-size="16" fill="#8b949e" >See what runs next, not only</text>
+<text x="316" y="914" font-size="16" fill="#8b949e" >what already ran.</text>
+<text x="316" y="956" font-size="17" fill="#e6edf3" font-weight="700">Run diffs</text>
+<text x="316" y="980" font-size="16" fill="#8b949e" >The working-tree change a run</text>
+<text x="316" y="1002" font-size="16" fill="#8b949e" >produced, from the ledger.</text>
+<text x="582" y="868" font-size="17" fill="#e6edf3" font-weight="700">Fleet view</text>
+<text x="582" y="892" font-size="16" fill="#8b949e" >Everything running on the</text>
+<text x="582" y="914" font-size="16" fill="#8b949e" >machine: who, where, on what,</text>
+<text x="582" y="936" font-size="16" fill="#8b949e" >busy/idle, cost. Side pane or</text>
+<text x="582" y="958" font-size="16" fill="#8b949e" >TUI.</text>
+<text x="582" y="1000" font-size="17" fill="#e6edf3" font-weight="700">Status transitions</text>
+<text x="582" y="1024" font-size="16" fill="#8b949e" >Started, milestone, blocked,</text>
+<text x="582" y="1046" font-size="16" fill="#8b949e" >done from the agent itself.</text>
+<rect x="28" y="1090" width="804" height="338" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="1102" width="5" height="314" rx="2.5" fill="#79c0ff"/>
+<text x="46" y="1120" font-size="12.5" fill="#79c0ff" font-weight="700" letter-spacing="1.5">HARNESSES</text>
+<text x="50" y="1152" font-size="17" fill="#e6edf3" font-weight="700">Harness compatibility check</text>
+<text x="50" y="1176" font-size="16" fill="#8b949e" >cones doctor compares the</text>
+<text x="50" y="1198" font-size="16" fill="#8b949e" >installed Claude version and</text>
+<text x="50" y="1220" font-size="16" fill="#8b949e" >the flags cones compiles to</text>
+<text x="50" y="1242" font-size="16" fill="#8b949e" >against the tested set, and</text>
+<text x="50" y="1264" font-size="16" fill="#8b949e" >reports drift before install.</text>
+<text x="50" y="1306" font-size="17" fill="#e6edf3" font-weight="700">Codex budget probe</text>
+<text x="50" y="1330" font-size="16" fill="#8b949e" >Measure Codex usage events to</text>
+<text x="50" y="1352" font-size="16" fill="#8b949e" >decide whether a token budget</text>
+<text x="50" y="1374" font-size="16" fill="#8b949e" >can be enforced; the result</text>
+<text x="50" y="1396" font-size="16" fill="#8b949e" >gates the Codex adapter.</text>
+<text x="316" y="1152" font-size="17" fill="#e6edf3" font-weight="700">Codex jobs</text>
+<text x="316" y="1176" font-size="16" fill="#8b949e" >Real token budget, rejected</text>
+<text x="316" y="1198" font-size="16" fill="#8b949e" >when unenforceable. Same</text>
+<text x="316" y="1220" font-size="16" fill="#8b949e" >policy file, second harness.</text>
+<text x="316" y="1262" font-size="17" fill="#e6edf3" font-weight="700">File and webhook triggers</text>
+<text x="316" y="1286" font-size="16" fill="#8b949e" >Run on path change or HTTP</text>
+<text x="316" y="1308" font-size="16" fill="#8b949e" >call, not only on a calendar.</text>
+<text x="582" y="1152" font-size="17" fill="#e6edf3" font-weight="700">More harnesses, more Macs</text>
+<text x="582" y="1176" font-size="16" fill="#8b949e" >Pi when a real use case</text>
+<text x="582" y="1198" font-size="16" fill="#8b949e" >appears; multi-machine after</text>
+<text x="582" y="1220" font-size="16" fill="#8b949e" >single-machine fleet control</text>
+<text x="582" y="1242" font-size="16" fill="#8b949e" >is in regular use.</text>
+<rect x="28" y="1440" width="804" height="514" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="1452" width="5" height="490" rx="2.5" fill="#56d4dd"/>
+<text x="46" y="1470" font-size="12.5" fill="#56d4dd" font-weight="700" letter-spacing="1.5">COORDINATION</text>
+<text x="50" y="1502" font-size="17" fill="#e6edf3" font-weight="700">Lock CLI</text>
+<text x="50" y="1526" font-size="16" fill="#8b949e" >cones lock and unlock expose</text>
+<text x="50" y="1548" font-size="16" fill="#8b949e" >the existing workspace writer</text>
+<text x="50" y="1570" font-size="16" fill="#8b949e" >lock, so interactive agents</text>
+<text x="50" y="1592" font-size="16" fill="#8b949e" >can serialize commits on a</text>
+<text x="50" y="1614" font-size="16" fill="#8b949e" >shared repo today.</text>
+<text x="316" y="1502" font-size="17" fill="#e6edf3" font-weight="700">Worktree per run</text>
+<text x="316" y="1526" font-size="16" fill="#8b949e" >Concurrent writers each get a</text>
+<text x="316" y="1548" font-size="16" fill="#8b949e" >worktree; unlocks overlap:</text>
+<text x="316" y="1570" font-size="16" fill="#8b949e" >allow for write jobs.</text>
+<text x="582" y="1502" font-size="17" fill="#e6edf3" font-weight="700">Fleet roster</text>
+<text x="582" y="1526" font-size="16" fill="#8b949e" >cones launches agents with a</text>
+<text x="582" y="1548" font-size="16" fill="#8b949e" >name, cwd, task and declared</text>
+<text x="582" y="1570" font-size="16" fill="#8b949e" >file scope; the roster is the</text>
+<text x="582" y="1592" font-size="16" fill="#8b949e" >source of truth.</text>
+<text x="582" y="1634" font-size="17" fill="#e6edf3" font-weight="700">Commit lock and queue</text>
+<text x="582" y="1658" font-size="16" fill="#8b949e" >Agents acquire a per-repo</text>
+<text x="582" y="1680" font-size="16" fill="#8b949e" >lock before committing; cones</text>
+<text x="582" y="1702" font-size="16" fill="#8b949e" >grants in order. Workers</text>
+<text x="582" y="1724" font-size="16" fill="#8b949e" >never push or stash.</text>
+<text x="582" y="1766" font-size="17" fill="#e6edf3" font-weight="700">Coordinator token</text>
+<text x="582" y="1790" font-size="16" fill="#8b949e" >Coordinator messages carry a</text>
+<text x="582" y="1812" font-size="16" fill="#8b949e" >per-run token; workers ignore</text>
+<text x="582" y="1834" font-size="16" fill="#8b949e" >messages without it.</text>
+<text x="582" y="1876" font-size="17" fill="#e6edf3" font-weight="700">Standing orders</text>
+<text x="582" y="1900" font-size="16" fill="#8b949e" >Fleet rules as data, checked</text>
+<text x="582" y="1922" font-size="16" fill="#8b949e" >when the last job ends.</text>
+<text x="28" y="1980" font-size="14" fill="#8b949e" >cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and</text>
+<text x="28" y="2000" font-size="14" fill="#8b949e" >permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
 </svg>
