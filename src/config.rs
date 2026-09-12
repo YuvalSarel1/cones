@@ -45,6 +45,7 @@ pub struct Policy {
     pub max_turns: Option<u32>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
+    pub notify: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +72,7 @@ pub struct Job {
     pub max_turns: Option<u32>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
+    pub notify: Option<bool>,
 }
 
 fn yes() -> bool {
@@ -105,6 +107,7 @@ pub struct ResolvedJob {
     pub max_turns: Option<u32>,
     pub codex_full_access: bool,
     pub overlap: Overlap,
+    pub notify: bool,
 }
 
 pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
@@ -263,6 +266,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         max_turns,
         codex_full_access: full,
         overlap,
+        notify: j.notify.or(d.notify).unwrap_or(false),
     })
 }
 

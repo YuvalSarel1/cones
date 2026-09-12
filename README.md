@@ -41,6 +41,7 @@ jobs:
     model: sonnet
     max_turns: 5
     overlap: skip                  # skip | allow | replace
+    notify: true                   # macOS notification when a run fails, times out or is skipped on budget
     # env: ["ANTHROPIC_API_KEY"]   # only named variables reach the job
 ```
 

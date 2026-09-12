@@ -7,14 +7,12 @@ CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
 COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
     ("Public release", "REL", "Install steps and verification record, published under the personal account."),
-    ("Failure notification", "OBS", "Opt-in macOS notification on failed, crashed or budget-skipped runs."),
     ("Run summary in ls", "OBS", "One line per run: what it did, cost, why it stopped."),
     ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
     ("Harness compatibility check", "HAR", "cones doctor compares the installed Claude version and the flags cones compiles to against the tested set, and reports drift before install."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
     ("1 · Fleet hooks", "OBS", "cones hook claude installs one global Claude Code hook keyed on the session id; every Claude session on the Mac, cones-launched or not, writes a last-state file."),
     ("2 · Fleet view", "OBS", "Every Claude session on the machine in cones ls and the dashboard: cwd, active/idle/blocked/exited, age, tokens, estimated cost. cones runs collapse into their run row."),
-    ("3 · Lock CLI", "COORD", "cones lock <cwd> -- <cmd> blocks on the existing per-cwd writer lock, so agents serialize commits on a shared repo."),
     ("Drop dead weight", "REL", "Remove the agent-console control plane stub, config.toml, Pi, and three unused dependencies."),
 ]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
@@ -34,7 +32,7 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · terminal dashboard · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
-           "shared-workspace writer lock · durable run ledger")
+           "shared-workspace writer lock · cones lock around any command · opt-in failure notification · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 

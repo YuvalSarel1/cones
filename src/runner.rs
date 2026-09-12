@@ -95,9 +95,10 @@ fn signal_run(run: &Record, signal: i32) -> Result<()> {
 
 // Called under the admission lock. Per-run leases distinguish live runs from PID reuse,
 // and the supervisor UUID remains the authority for signalling a surviving process group.
-fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<()> {
+/// Returns whether a terminal record was written for the orphan.
+fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
     if active(ledger, run)? || ledger.resolve(&run.started.run_id)?.terminal.is_some() {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(pgid) = run.started.pgid
         && group_exists(pgid)
@@ -131,7 +132,36 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<()> {
         .fired_at
         .map(|t| ((Utc::now() - t).num_milliseconds() as f64 / 1000.0).max(0.0));
     ledger.append(&terminal)?;
-    Ok(())
+    Ok(true)
+}
+
+/// Opt-in macOS notification for runs that need a human: failed, timed out, orphaned or
+/// skipped on budget. `CONES_NOTIFIER` names a command taking (title, message) instead of
+/// osascript, which tests and terminal-notifier users rely on.
+fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
+    let wanted = matches!(status, Status::Failed | Status::Timeout) || reason == Some("budget");
+    if !job.notify || !wanted {
+        return;
+    }
+    let message = match reason {
+        Some(r) => format!("{} {status}: {r}", job.name),
+        None => format!("{} {status}", job.name),
+    };
+    let result = match std::env::var_os("CONES_NOTIFIER") {
+        Some(command) => Command::new(command).args(["cones", &message]).status(),
+        None => Command::new("/usr/bin/osascript")
+            .args([
+                "-e",
+                &format!(
+                    "display notification {} with title \"cones\"",
+                    serde_json::json!(message)
+                ),
+            ])
+            .status(),
+    };
+    if let Err(e) = result {
+        eprintln!("cones: notification failed: {e}");
+    }
 }
 
 fn job_runs(ledger: &Ledger, job: &str) -> Result<Vec<Run>> {
@@ -228,6 +258,7 @@ fn skipped(
     r.cwd = Some(job.cwd.clone());
     r.reason = Some(reason.into());
     ledger.append(&r)?;
+    notify(job, Status::Skipped, Some(reason));
     let _ = writeln!(std::io::stdout(), "{}\tskipped\t{reason}", r.run_id);
     Ok(Status::Skipped)
 }
@@ -293,6 +324,7 @@ fn send(input: &mut Option<std::process::ChildStdin>, value: &serde_json::Value)
 
 fn terminal_failure(
     ledger: &Ledger,
+    job: &ResolvedJob,
     initial: &Record,
     reason: String,
     output: &mut RunOutput,
@@ -305,6 +337,7 @@ fn terminal_failure(
     terminal.duration_s = Some(0.0);
     terminal.reason = Some(reason);
     ledger.append(&terminal)?;
+    notify(job, Status::Failed, terminal.reason.as_deref());
     let _ = writeln!(
         std::io::stdout(),
         "{}\tfailed\t{}",
@@ -328,7 +361,9 @@ pub fn run(
     }
     let admission = ledger.admission_lock()?;
     for run in job_runs(ledger, &job.name)? {
-        reap_run(ledger, &run, false)?;
+        if reap_run(ledger, &run, false)? {
+            notify(job, Status::Failed, Some("orphan"));
+        }
     }
     let previous = job_runs(ledger, &job.name)?;
     if job.overlap == Overlap::Skip && !previous.is_empty() {
@@ -400,7 +435,13 @@ pub fn run(
     let (harness, invocation) = match prepared {
         Ok(p) => p,
         Err(e) => {
-            return terminal_failure(ledger, &initial, format!("validation: {e:#}"), &mut output);
+            return terminal_failure(
+                ledger,
+                job,
+                &initial,
+                format!("validation: {e:#}"),
+                &mut output,
+            );
         }
     };
     initial.policy_hash = Some(harness::policy_hash(job, &invocation)?);
@@ -417,7 +458,9 @@ pub fn run(
     })();
     let child = match spawn {
         Ok(child) => child,
-        Err(e) => return terminal_failure(ledger, &initial, format!("spawn: {e:#}"), &mut output),
+        Err(e) => {
+            return terminal_failure(ledger, job, &initial, format!("spawn: {e:#}"), &mut output);
+        }
     };
     let mut guard = Guard { child, armed: true };
     let pgid = guard.child.id() as i32;
@@ -529,6 +572,7 @@ pub fn run(
     terminal.ended_at = Some(Utc::now());
     terminal.duration_s = Some(start.elapsed().as_secs_f64());
     ledger.append(&terminal)?;
+    notify(job, terminal.status, terminal.reason.as_deref());
     let _ = writeln!(
         std::io::stdout(),
         "{run_id}\t{}\t{}",

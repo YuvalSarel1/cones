@@ -431,6 +431,39 @@ fn exhausted_daily_reservation_skips_without_spawning() {
     assert_eq!(runs[1].started.reason.as_deref(), Some("budget"));
 }
 #[test]
+fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
+    let f = Fixture::new("failed", 1.0);
+    let log = f.dir.path().join("notified");
+    let notifier = f.dir.path().join("notifier.sh");
+    fs::write(
+        &notifier,
+        format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&notifier, fs::Permissions::from_mode(0o700)).unwrap();
+    let run = |f: &Fixture| {
+        f.command()
+            .env("CONES_NOTIFIER", &notifier)
+            .args(["run", "test"])
+            .output()
+            .unwrap()
+    };
+    run(&f);
+    assert!(!log.exists(), "notify defaults to off");
+    f.add_options("    notify: true\n");
+    run(&f);
+    f.add_options("    daily_budget_usd: 0.2\n");
+    run(&f);
+    let lines = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        lines.lines().collect::<Vec<_>>(),
+        [
+            "cones test failed: error_during_execution",
+            "cones test skipped: budget"
+        ]
+    );
+}
+#[test]
 fn unreachable_console_falls_back_without_claiming_live_attach() {
     let f = Fixture::new("success", 1.0);
     fs::write(
