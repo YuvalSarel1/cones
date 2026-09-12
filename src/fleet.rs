@@ -37,6 +37,12 @@ pub struct Session {
     pub tokens_out: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    /// Claude's own session title (`ai-title`, or a user-set `agent-name`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// First line of the assistant's most recent text: what the session is doing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
 }
 fn claude() -> String {
     "claude".into()
@@ -76,6 +82,15 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
             .as_ref()
             .map_or((None, None), |p| (p.tokens_in, p.tokens_out))
     });
+    let (title, mut last) = transcript
+        .as_deref()
+        .map_or((None, Vec::new()), |t| tail(t, 1));
+    // ponytail: the title is only read from the tail. Claude writes it in the first turn and
+    // again on every resume, and hooks fire per tool call, so it is seen before it scrolls out.
+    let title = title.or_else(|| previous.as_ref().and_then(|p| p.title.clone()));
+    let last = last
+        .pop()
+        .or_else(|| previous.as_ref().and_then(|p| p.last.clone()));
     write(
         state,
         &Session {
@@ -98,8 +113,73 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
             tokens_in,
             tokens_out,
             cost_usd: None,
+            title,
+            last,
         },
     )
+}
+
+/// Session title and the last `n` assistant texts (first line each) from a Claude transcript.
+/// Read from the end in growing windows, so a long session costs about as much as a short one.
+pub fn tail(transcript: &Path, n: usize) -> (Option<String>, Vec<String>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut out = (None, Vec::new());
+    let Ok(mut file) = fs::File::open(transcript) else {
+        return out;
+    };
+    let len = file.metadata().map_or(0, |m| m.len());
+    let mut window: u64 = 256 * 1024;
+    loop {
+        let mut bytes = Vec::new();
+        if file
+            .seek(SeekFrom::Start(len.saturating_sub(window)))
+            .is_err()
+            || file.read_to_end(&mut bytes).is_err()
+        {
+            return out;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        // A window that starts mid-file begins with a partial line; skip it.
+        let start = if len > window {
+            text.find('\n').map_or(text.len(), |i| i + 1)
+        } else {
+            0
+        };
+        out = scan(&text[start..]);
+        // ponytail: one tool result can be a megabyte, so grow until both are found or 16 MiB.
+        if (out.0.is_some() && out.1.len() >= n) || window >= len || window >= 16 << 20 {
+            break;
+        }
+        window *= 4;
+    }
+    let keep = out.1.len().saturating_sub(n);
+    out.1.drain(..keep);
+    out
+}
+
+fn scan(lines: &str) -> (Option<String>, Vec<String>) {
+    let mut out = (None, Vec::new());
+    for line in lines.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match v["type"].as_str() {
+            Some("ai-title") => out.0 = v["aiTitle"].as_str().map(Into::into),
+            Some("agent-name") => out.0 = v["agentName"].as_str().map(Into::into),
+            Some("assistant") => {
+                for block in v["message"]["content"].as_array().into_iter().flatten() {
+                    if let Some(first) = block["text"]
+                        .as_str()
+                        .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
+                    {
+                        out.1.push(first.replace("**", ""));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Total input and output tokens in a Claude transcript. Streaming writes one line per content

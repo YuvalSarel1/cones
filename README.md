@@ -52,7 +52,7 @@ What the job gets: a pinned session ID, print mode, a native dollar budget, a ru
 ## Runs
 
 ```sh
-cones tui                        # fzf over jobs and runs: enter runs a job or follows logs, ctrl-s stop, ctrl-a attach
+cones tui                        # fzf dashboard: jobs, live sessions grouped by directory with title and last message, runs
 cones ls --status failed         # tab-separated, fzf-friendly; --json for records
 cones logs RUN_UUID --follow     # Ctrl+C detaches, the run keeps going
 cones stop RUN_UUID

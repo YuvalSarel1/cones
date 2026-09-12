@@ -402,10 +402,11 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
     fs::write(
         &transcript,
         format!(
-            "{{\"type\":\"user\"}}\n{}\n{}\nnot json\n{}\n",
+            "{{\"type\":\"user\"}}\n{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{}\n{}\nnot json\n{}\n{}\n",
             usage("m1", 100, 5),
             usage("m1", 100, 5),
-            usage("m2", 200, 7)
+            usage("m2", 200, 7),
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"\n**Running** the tests\nsecond line"}]}}"#
         ),
     )
     .unwrap();
@@ -421,6 +422,10 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
         (Some(42), "active", None)
     );
     assert_eq!(first.cwd, std::path::Path::new("/tmp/repo"));
+    assert_eq!(
+        (first.title.as_deref(), first.last.as_deref()),
+        (Some("fix the widget"), Some("Running the tests"))
+    );
     cones::fleet::record(dir.path(), 42, &payload("PostToolUse")).unwrap();
     assert_eq!(get().tool.as_deref(), Some("Bash"));
     cones::fleet::record(dir.path(), 42, &payload("Notification")).unwrap();
@@ -485,6 +490,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         tokens_in: Some(12_500),
         tokens_out: Some(300),
         cost_usd: Some(0.42),
+        title: Some("fix the widget".into()),
+        last: Some("Running the tests".into()),
     };
     let live = "22222222-2222-4222-8222-222222222222";
     cones::fleet::write(dir.path(), &session(live, std::process::id(), "idle")).unwrap();
@@ -504,10 +511,15 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
+    assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
+    for s in ["fix the widget", "12k/300", "Running the tests"] {
+        assert!(row.contains(s), "{row}");
+    }
+    let lines: Vec<&str> = list.lines().collect();
+    assert!(lines[0].starts_with("hdr\t-\t0 working · 0 need input · 1 idle"));
     assert!(
-        row.starts_with(&format!("{live}\tidle\t~/src/repo")),
-        "{row}"
+        lines.iter().any(|l| l.contains("~/src/repo")),
+        "sessions are grouped by directory"
     );
-    assert!(row.contains("12k/300") && row.contains("$0.42"), "{row}");
-    assert!(list.lines().any(|l| l.starts_with("run-1\tstarted")));
+    assert!(lines.iter().any(|l| l.starts_with("run-1\tstarted")));
 }

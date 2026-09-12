@@ -97,6 +97,8 @@ enum Action {
     },
     #[command(name = "__list", hide = true)]
     List,
+    #[command(name = "__show", hide = true)]
+    Show { id: String },
     #[command(name = "__worker", hide = true)]
     Worker {
         #[arg(long)]
@@ -254,6 +256,10 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Action::List => {
             print!("{}", cones::tui::list(&jobs_path, &state)?);
+            Ok(0)
+        }
+        Action::Show { id } => {
+            println!("{}", cones::tui::show(&state, &id)?);
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {
