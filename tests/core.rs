@@ -516,7 +516,13 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
-    assert!(lines[0].starts_with("hdr\t-\t0 working · 0 need input · 1 idle"));
+    assert!(
+        lines[..3].iter().all(|l| l.starts_with("hdr\t-\t"))
+            && lines[1].contains("0 working · 0 need input · 1 idle"),
+        "three pinned header lines carry the summary"
+    );
+    assert!(lines[3] == "hdr\t-\t", "a blank row separates sections");
+    assert!(row.contains("△"), "{row}");
     assert!(
         lines.iter().any(|l| l.contains("~/src/repo")),
         "sessions are grouped by directory"
