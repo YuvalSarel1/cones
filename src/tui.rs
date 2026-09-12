@@ -25,6 +25,10 @@ use std::{
 
 const ORANGE: Color = Color::Indexed(208);
 const SPINNER: [&str; 4] = ["▲", "◭", "▲", "◮"];
+/// Claude Code's own working animation: its star grows then shrinks.
+const CLAUDE_SPINNER: [&str; 12] = ["·", "✢", "✳", "✶", "✻", "✽", "✽", "✻", "✶", "✳", "✢", "·"];
+/// Codex and pi both spin braille dots.
+const DOTS_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -120,7 +124,7 @@ impl Data {
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&last)),
                         (j.name.clone(), plain()),
                         (j.schedule.clone(), dim()),
-                        (logo(&j.harness.to_string()), dim()),
+                        (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
                         (if j.enabled { "on" } else { "off" }.into(), plain()),
                         (format!("last: {last}"), color(&last)),
                     ]
@@ -159,7 +163,7 @@ impl Data {
             .map(|(_, s)| {
                 vec![
                     (icon(&s.state).into(), color(&s.state)),
-                    (logo(&s.harness), dim()),
+                    (logo(&s.harness), brand(&s.harness)),
                     (
                         s.title
                             .clone()
@@ -459,6 +463,33 @@ fn logo(harness: &str) -> String {
         "codex" => ">_ codex".into(),
         other => other.to_owned(),
     }
+}
+
+/// Each harness in the color it paints itself: Claude's orange, pi's teal accent; Codex has none.
+fn brand(harness: &str) -> Style {
+    match harness {
+        "claude" => Style::default().fg(Color::Rgb(215, 119, 87)),
+        "pi" => Style::default().fg(Color::Rgb(138, 190, 183)),
+        _ => dim(),
+    }
+}
+
+/// The working animation and color a row's harness would draw for itself. A cones run keeps the
+/// flipping cone.
+// ponytail: the harness is read back from the logo cell rather than carried on Row.
+fn spinner(row: &Row) -> (&'static [&'static str], Option<Style>) {
+    let mark = row.cells.get(1).map(|c| c.0.trim()).unwrap_or("");
+    for h in ["claude", "codex", "pi"] {
+        if mark == logo(h) {
+            let frames: &'static [&'static str] = if h == "claude" {
+                &CLAUDE_SPINNER
+            } else {
+                &DOTS_SPINNER
+            };
+            return (frames, Some(brand(h)));
+        }
+    }
+    (&SPINNER, None)
 }
 
 fn label(state: &str) -> &str {
@@ -834,7 +865,6 @@ impl App {
         } else if height > 0 && self.cursor >= self.scroll + height {
             self.scroll = self.cursor + 1 - height;
         }
-        let frame_glyph = SPINNER[self.tick % SPINNER.len()];
         let lines: Vec<Line> = self
             .visible
             .iter()
@@ -851,13 +881,17 @@ impl App {
                         Style::default().fg(ORANGE),
                     ));
                 }
+                let (frames, brand) = spinner(row);
                 for (c, (text, style)) in row.cells.iter().enumerate() {
-                    let text = if c == 0 && row.working() {
-                        text.replacen('▲', frame_glyph, 1)
+                    let (text, style) = if c == 0 && row.working() {
+                        (
+                            text.replacen('▲', frames[self.tick % frames.len()], 1),
+                            brand.unwrap_or(*style),
+                        )
                     } else {
-                        text.clone()
+                        (text.clone(), *style)
                     };
-                    spans.push(Span::styled(text, *style));
+                    spans.push(Span::styled(text, style));
                 }
                 let line = Line::from(spans);
                 if selected { line.style(bold()) } else { line }
@@ -895,7 +929,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
             }
             terminal.draw(|f| app.draw(f))?;
             // ponytail: one poll cadence drives both the spinner and input.
-            if event::poll(Duration::from_millis(250))? {
+            if event::poll(Duration::from_millis(100))? {
                 if let Event::Key(k) = event::read()?
                     && k.kind == KeyEventKind::Press
                     && app.key(k.code, k.modifiers, &mut terminal)?
