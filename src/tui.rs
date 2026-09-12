@@ -7,7 +7,8 @@ use std::{
     process::{Command, Stdio},
 };
 
-/// Lines for fzf: a hidden key (`job` or run UUID), a tab, then display columns.
+/// Lines for fzf: hidden key (`job` or run UUID), hidden aux (job name or run status),
+/// then the display columns. Only the third field is shown.
 pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     let mut out = String::new();
     let runs = Ledger::new(state)?.runs()?;
@@ -19,7 +20,8 @@ pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
                 .find(|r| r.started.job.as_deref() == Some(&j.name))
                 .map_or("-".to_owned(), |r| r.status());
             out += &format!(
-                "job\t{:<24} {:<16} {:<8} {:<8} last: {last}\n",
+                "job\t{}\t{:<24} {:<16} {:<8} {:<8} last: {last}\n",
+                j.name,
                 j.name,
                 j.schedule,
                 j.harness,
@@ -30,8 +32,9 @@ pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     for r in runs.iter().rev() {
         let last = r.terminal.as_ref().unwrap_or(&r.started);
         out += &format!(
-            "{}\t{:<24} {:<8} {:<16} {:<8} {:<9} {}\n",
+            "{}\t{}\t{:<24} {:<8} {:<16} {:<8} {:<9} {}\n",
             r.started.run_id,
+            r.status(),
             r.started.job.as_deref().unwrap_or("-"),
             r.status(),
             r.started
@@ -61,16 +64,17 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
     let status = Command::new("fzf")
         .args([
             "--delimiter=\t",
-            "--with-nth=2",
+            "--with-nth=3",
             "--no-sort",
             "--layout=reverse",
-            "--header=enter: run job / follow logs   ctrl-s: stop   ctrl-a: attach   ctrl-r: refresh   esc: quit",
+            "--header=enter: run job / view logs   ctrl-s: stop   ctrl-a: attach   ctrl-r: refresh   esc: quit",
             "--preview-window=down,60%,wrap",
             &format!("--preview=[ {{1}} = job ] && {me} ls --job {{2}} || {me} logs {{1}}"),
             &format!("--bind=start:{reload}"),
             &format!("--bind=ctrl-r:{reload}"),
+            // Pick the action by row kind so the screen is only cleared when something interactive runs.
             &format!(
-                "--bind=enter:execute([ {{1}} = job ] && ({me} run {{2}} >/dev/null 2>&1 &) || {me} logs {{1}} --follow)+{reload}"
+                "--bind=enter:transform:case {{1}}/{{2}} in job/*) echo \"execute-silent({me} run {{2}} >/dev/null 2>&1 &)+{reload}\";; */started) echo \"execute({me} logs {{1}} --follow)+{reload}\";; *) echo \"execute({me} logs {{1}} | less -R)\";; esac"
             ),
             &format!("--bind=ctrl-s:execute-silent([ {{1}} = job ] || {me} stop {{1}})+{reload}"),
             &format!(
