@@ -674,6 +674,7 @@ impl App {
             libc::signal(libc::SIGINT, libc::SIG_IGN);
             c.pre_exec(|| {
                 libc::signal(libc::SIGINT, libc::SIG_DFL);
+                libc::signal(libc::SIGTSTP, libc::SIG_DFL);
                 Ok(())
             });
         }
@@ -912,6 +913,12 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
         armed: None,
     };
     app.refresh()?;
+    // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
+    // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
+    // suspend the dashboard from under the user. Children get the default back in pre_exec.
+    unsafe {
+        libc::signal(libc::SIGTSTP, libc::SIG_IGN);
+    }
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         loop {

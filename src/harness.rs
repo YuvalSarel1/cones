@@ -202,9 +202,15 @@ impl Harness for Claude {
         uuid::Uuid::parse_str(session_id)?;
         let path = executable("claude", &launch_path())
             .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
-        let mut cmd = std::process::Command::new(path);
-        cmd.args(["--resume", session_id])
-            .env("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1")
+        // Resume in the background, then attach: ctrl-z detaches instead of suspending a
+        // foreground process group, so the dashboard always gets its terminal back. The session
+        // outlives the terminal until it is exited or stopped, like any background session.
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(r#""$0" --bg --resume "$1" >/dev/null && exec "$0" attach "$2""#)
+            .arg(path)
+            .arg(session_id)
+            .arg(&session_id[..8])
             .current_dir(cwd);
         Ok(cmd)
     }

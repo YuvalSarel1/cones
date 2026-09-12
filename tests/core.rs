@@ -727,7 +727,12 @@ fn fleet_agents_feed_adds_claude_sessions_and_their_detail() {
     );
     for bad in ["", "not json", "{}"] {
         assert_eq!(cones::fleet::merge(vec![hook.clone()], bad, &jobs).len(), 1);
+        assert!(!cones::fleet::is_agent(bad, seen));
     }
+    assert!(
+        cones::fleet::is_agent(&agents, seen) && !cones::fleet::is_agent(&agents, "nope"),
+        "a session Claude lists is stopped through claude stop, not a signal"
+    );
     assert!(
         !cones::fleet::ASK_CLAUDE.load(std::sync::atomic::Ordering::Relaxed)
             && cones::fleet::with_agents(vec![hook]).len() == 1,

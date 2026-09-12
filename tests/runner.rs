@@ -112,8 +112,12 @@ fn durable_start_success_cost_and_archived_native_resume() {
         "{}",
         String::from_utf8_lossy(&attach.stderr)
     );
+    let printed = String::from_utf8_lossy(&attach.stdout);
     assert!(
-        String::from_utf8_lossy(&attach.stdout).contains(r.started.session_id.as_ref().unwrap())
+        printed.contains(r.started.session_id.as_ref().unwrap())
+            && printed.contains("--bg --resume")
+            && printed.contains("attach"),
+        "a finished session resumes in the background and is attached: {printed}"
     );
     assert_eq!(
         fs::read_to_string(f.state.join("runs.jsonl"))

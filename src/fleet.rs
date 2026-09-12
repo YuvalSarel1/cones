@@ -504,11 +504,38 @@ pub fn find(state: &Path, session_id: &str) -> Result<Option<Session>> {
         .find(|s| s.session_id == session_id))
 }
 
-/// SIGTERM the harness behind a fleet session. Returns false when the process is already
+/// Pure: whether the array `claude agents --json` prints lists this session, so Claude's
+/// daemon owns its process.
+pub fn is_agent(agents: &str, session_id: &str) -> bool {
+    serde_json::from_str::<Vec<Value>>(agents)
+        .unwrap_or_default()
+        .iter()
+        .any(|a| a["sessionId"] == session_id)
+}
+
+/// Stop the harness behind a fleet session. Returns false when the process is already
 /// gone. The pid came from a hook payload long ago, so the command is checked first: a
 /// reused pid never gets signalled.
 pub fn stop(state: &Path, session_id: &str) -> Result<bool> {
     let session = find(state, session_id)?.context("no such run or session")?;
+    // A background session belongs to Claude's daemon, which respawns a worker whose process
+    // dies (`attempt` in ~/.claude/daemon/roster.json). Only `claude stop` ends one for good.
+    if ASK_CLAUDE.load(Ordering::Relaxed) && is_agent(&agents_json(), session_id) {
+        let claude = crate::harness::executable("claude", &crate::harness::launch_path())
+            .context("claude not found")?;
+        let short = session_id.get(..8).context("invalid session id")?;
+        let out = Command::new(claude)
+            .args(["stop", short])
+            .stdin(Stdio::null())
+            .output()?;
+        ensure!(
+            out.status.success(),
+            "claude stop: {}{}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return Ok(true);
+    }
     let pid = session.pid.context("session has no harness pid")?;
     ensure!(pid > 1, "invalid harness pid");
     let output = std::process::Command::new("/bin/ps")
