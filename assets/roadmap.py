@@ -5,35 +5,33 @@ BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e
 CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
 COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
+    ("Drop dead weight", "REL", "Remove the agent-console control plane stub, config.toml, Pi, and the two dependencies only the stub uses."),
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
-    ("Public release", "REL", "Install steps and verification record, published under the personal account."),
-    ("Run summary in ls", "OBS", "One line per run: what it did, cost, why it stopped."),
+    ("Public release", "REL", "Version bump, install steps and verification record, published under the personal account."),
+    ("Doctor: auth, env, drift", "REL", "cones doctor verifies Claude login, every env var a job imports, and that the installed Claude version and the flags cones compiles to match the tested set."),
+    ("Cost on the run row", "OBS", "The run row shows job, status and stop reason today; add dollars spent from the ledger."),
     ("Claude agents feed", "OBS", "Merge claude agents --json and the job state file's one-line detail into the fleet view, so sessions that predate the hook appear and the last-message column reads like Claude's own."),
-    ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
-    ("Harness compatibility check", "HAR", "cones doctor compares the installed Claude version and the flags cones compiles to against the tested set, and reports drift before install."),
-    ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
-    ("Drop dead weight", "REL", "Remove the agent-console control plane stub, config.toml, Pi, and three unused dependencies."),
 ]), ("NEXT", "More harnesses, less manual follow-up", "#58a6ff", [
+    ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
+    ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
     ("Next fire time in ls", "OBS", "See what runs next, not only what already ran."),
     ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
     ("Run diffs", "OBS", "The working-tree change a run produced, from the ledger."),
     ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
     ("Codex fleet hooks", "HAR", "cones hook codex, once Codex hook trust can be configured without a bypass flag."),
-    ("File and webhook triggers", "HAR", "Run on path change or HTTP call, not only on a calendar."),
     ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
 ]), ("LATER", "From scheduler to fleet control", "#bc8cff", [
     ("Fleet roster", "COORD", "Task and declared file scope added to each session's state file; overlaps detected before commit. Only when two writers share a repo."),
-    ("Commit lock and queue", "COORD", "Agents acquire a per-repo lock before committing; cones grants in order. Workers never push or stash."),
-    ("Coordinator token", "COORD", "Coordinator messages carry a per-run token; workers ignore messages without it."),
     ("Status transitions", "OBS", "Hook-derived blocked/idle/exited ship in Now; agent-declared started, milestone, done come here."),
     ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
     ("Talk to sessions", "COORD", "Type a message to a live session from the dashboard over its local socket; dispatch covers new work, this covers steering."),
+    ("Webhook triggers", "HAR", "Run on an HTTP call. Needs a listener process, so after single-machine fleet control."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · native dashboard: live refresh, animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with cones run --prompt · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
-           "shared-workspace writer lock · cones lock around any command · opt-in failure notification · global Claude fleet hook: one state file per session · "
+           "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
            "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
