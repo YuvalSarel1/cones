@@ -62,7 +62,8 @@ launchd runs after login, coalesces ticks missed during sleep, and does not wake
 
 ## Roadmap
 
-<p align="center"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></p>
+<p align="center"><a href="assets/roadmap.svg?raw=true"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
+<p align="center"><sub>Click the slide to open it full size.</sub></p>
 
 ## Development
 
