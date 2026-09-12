@@ -32,7 +32,9 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
            "rolling daily budget · live event stream · native dashboard: live refresh, animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with cones run --prompt · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
            "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
-           "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · durable run ledger")
+           "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · "
+           "stop for fleet sessions from the CLI and the dashboard · key hints follow claude agents, ctrl-x twice stops · per-harness marks, spinners and colors · "
+           "enter follows a working session or attaches a finished one, cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 
