@@ -99,7 +99,8 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
             harness: claude(),
             cwd: payload["cwd"].as_str().unwrap_or("").into(),
             state: match event {
-                "Stop" => "idle",
+                // Nothing has been asked yet after SessionStart: waiting, not working.
+                "Stop" | "SessionStart" => "idle",
                 "Notification" => "blocked",
                 "SessionEnd" => "exited",
                 _ => "active",

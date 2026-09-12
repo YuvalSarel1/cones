@@ -419,7 +419,7 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
     let first = get();
     assert_eq!(
         (first.pid, first.state.as_str(), first.tokens_in),
-        (Some(42), "active", None)
+        (Some(42), "idle", None)
     );
     assert_eq!(first.cwd, std::path::Path::new("/tmp/repo"));
     assert_eq!(
