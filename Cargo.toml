@@ -23,6 +23,7 @@ signal-hook = "0.3"
 toml = "0.9"
 ureq = { version = "3", default-features = false, features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
+ratatui = "0.30.2"
 
 [dev-dependencies]
 tempfile = "3"

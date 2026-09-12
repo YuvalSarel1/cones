@@ -2,7 +2,7 @@
 
 Scheduled coding-agent jobs on a local Mac. Each job runs under an explicit policy the harness enforces natively, and every run lands in a durable ledger.
 
-`v0.1.0-headless` runs Claude Code jobs on a launchd schedule, streams their output live, browses jobs and runs in fzf, and resumes finished sessions in Claude's own TUI. Codex and Pi are recognized but not yet executed.
+`v0.1.0-headless` runs Claude Code jobs on a launchd schedule, streams their output live, shows jobs, every live Claude session and runs in a native dashboard, and resumes finished sessions in Claude's own TUI. Codex and Pi are recognized but not yet executed.
 
 ## Try it
 
@@ -16,7 +16,7 @@ cones doctor
 cones run readme-check
 cones ls
 cones logs RUN_UUID --follow
-cones tui                        # jobs and runs in fzf (brew install fzf)
+cones tui                        # dashboard: jobs, live sessions, runs
 ```
 
 Happy with the schedule? `cones install --dry-run` prints the launchd plists, `cones install` writes them, `cones uninstall` removes them and keeps history. Installs are idempotent.
@@ -52,8 +52,9 @@ What the job gets: a pinned session ID, print mode, a native dollar budget, a ru
 ## Runs
 
 ```sh
-cones tui                        # fzf dashboard: jobs, live sessions grouped by directory with title and last message, runs
-cones ls --status failed         # tab-separated, fzf-friendly; --json for records
+cones tui                        # dashboard: n dispatches a task in the cwd, enter runs or attaches, x stops, s regroups by state, / filters
+cones run --prompt "fix the flaky test"   # one-off task under the first job's policy (or read-only defaults), in the cwd
+cones ls --status failed         # tab-separated; --json for records
 cones logs RUN_UUID --follow     # Ctrl+C detaches, the run keeps going
 cones stop RUN_UUID
 cones attach RUN_UUID            # resume the finished session in Claude's TUI

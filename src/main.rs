@@ -45,13 +45,17 @@ enum Action {
     },
     /// Remove cones LaunchAgents, retaining run history and transcripts.
     Uninstall,
-    /// Run a job now.
+    /// Run a job now, or `--prompt` for a one-off task in the current directory.
     Run {
-        job: String,
+        /// Job name; with --prompt, the job whose policy the task borrows (default: the first).
+        job: Option<String>,
+        /// Run this prompt once as an ad-hoc job instead of a job from the file.
+        #[arg(long)]
+        prompt: Option<String>,
         #[arg(long, value_enum, default_value = "manual")]
         trigger: Trigger,
     },
-    /// List runs as tab-separated rows, suitable for fzf.
+    /// List runs as tab-separated rows.
     Ls {
         #[arg(long)]
         job: Option<String>,
@@ -85,7 +89,7 @@ enum Action {
     },
     /// Check execution prerequisites and policy hazards.
     Doctor,
-    /// Dashboard: jobs and runs in fzf, with preview and actions.
+    /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
     Tui,
     /// Record a Claude Code hook event from stdin as a fleet state file.
     Hook {
@@ -97,8 +101,6 @@ enum Action {
     },
     #[command(name = "__list", hide = true)]
     List,
-    #[command(name = "__show", hide = true)]
-    Show { id: String },
     #[command(name = "__worker", hide = true)]
     Worker {
         #[arg(long)]
@@ -149,13 +151,29 @@ fn execute(cli: Cli) -> Result<i32> {
             launchd::uninstall_all()?;
             Ok(0)
         }
-        Action::Run { job, trigger } => {
+        Action::Run {
+            job,
+            prompt,
+            trigger,
+        } => {
             let config = Config::load(&state.join("config.toml"))?;
-            let jobs = config::read_jobs(&jobs_path)?;
-            let job = jobs
-                .iter()
-                .find(|j| j.name == job)
-                .context("unknown job name")?;
+            let jobs = config::read_jobs(&jobs_path).unwrap_or_default();
+            let named = match &job {
+                Some(name) => Some(
+                    jobs.iter()
+                        .find(|j| &j.name == name)
+                        .context("unknown job name")?,
+                ),
+                None => None,
+            };
+            let adhoc;
+            let job = match prompt {
+                Some(p) => {
+                    adhoc = config::adhoc(named.or(jobs.first()), &p, &cwd)?;
+                    &adhoc
+                }
+                None => named.context("a job name or --prompt is required")?,
+            };
             let ledger = Ledger::new(&state)?;
             let status = runner::run(
                 job,
@@ -256,10 +274,6 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Action::List => {
             print!("{}", cones::tui::list(&jobs_path, &state)?);
-            Ok(0)
-        }
-        Action::Show { id } => {
-            println!("{}", cones::tui::show(&state, &id)?);
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {

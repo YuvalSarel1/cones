@@ -528,4 +528,35 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "sessions are grouped by directory"
     );
     assert!(lines.iter().any(|l| l.starts_with("run-1\tstarted")));
+    let data = cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let by_state = data.rows(true);
+    let headers: Vec<String> = by_state
+        .iter()
+        .filter(|r| r.kind == cones::tui::Kind::Header)
+        .map(|r| r.cells[0].0.clone())
+        .collect();
+    assert_eq!(
+        headers,
+        ["idle", "runs"],
+        "grouping by state names the state"
+    );
+    let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()));
+    assert!(
+        pane[0] == "~/src/repo" && pane[1].contains("idle Stop"),
+        "{pane:?}"
+    );
+}
+#[test]
+fn adhoc_job_borrows_policy_or_defaults_to_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let plain = cones::config::adhoc(None, "fix it", dir.path()).unwrap();
+    assert!(plain.name.starts_with("adhoc-") && !plain.write && plain.enabled);
+    assert_eq!(plain.tools, ["Read", "Grep", "Glob"]);
+    let mut template = plain.clone();
+    template.write = true;
+    template.budget_usd = 9.0;
+    let borrowed = cones::config::adhoc(Some(&template), "ship it", dir.path()).unwrap();
+    assert!(borrowed.write && borrowed.budget_usd == 9.0 && borrowed.name != template.name);
+    assert_eq!(borrowed.prompt, "ship it");
+    assert!(cones::config::adhoc(None, "  ", dir.path()).is_err());
 }

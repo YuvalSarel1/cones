@@ -8,7 +8,6 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("Sleep/wake proof", "REL", "launchd catch-up after lid-close and reboot verified; what replays and what is lost, documented."),
     ("Public release", "REL", "Install steps and verification record, published under the personal account."),
     ("Run summary in ls", "OBS", "One line per run: what it did, cost, why it stopped."),
-    ("Live working glyph", "OBS", "The dashboard's working cone animates like Claude Code's spinner and rows refresh on a timer, not only on a keypress. Pixel-art cone theme throughout."),
     ("Doctor covers auth", "REL", "cones doctor verifies Claude login and every env var a job imports, so a scheduled run does not fail on missing credentials."),
     ("Harness compatibility check", "HAR", "cones doctor compares the installed Claude version and the flags cones compiles to against the tested set, and reports drift before install."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
@@ -30,7 +29,7 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
-           "rolling daily budget · live event stream · terminal dashboard · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
+           "rolling daily budget · live event stream · native dashboard: live refresh, animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with cones run --prompt · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
            "shared-workspace writer lock · cones lock around any command · opt-in failure notification · global Claude fleet hook: one state file per session · "
            "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "

@@ -110,6 +110,48 @@ pub struct ResolvedJob {
     pub notify: bool,
 }
 
+/// A one-off job for `cones run --prompt`: the template's policy (or the read-only defaults)
+/// with a fresh name, the given prompt and `cwd`. Unique names keep ad-hoc runs out of each
+/// other's overlap rules; the workspace lock still serializes writers.
+pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result<ResolvedJob> {
+    ensure!(
+        !prompt.trim().is_empty() && !prompt.contains('\0'),
+        "prompt must be nonempty and contain no NUL"
+    );
+    let name = format!("adhoc-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+    let cwd = fs::canonicalize(cwd)?;
+    Ok(match template {
+        Some(t) => ResolvedJob {
+            name,
+            schedule: "-".into(),
+            prompt: prompt.to_owned(),
+            cwd,
+            enabled: true,
+            ..t.clone()
+        },
+        None => ResolvedJob {
+            name,
+            schedule: "-".into(),
+            harness: HarnessKind::Claude,
+            cwd,
+            prompt: prompt.to_owned(),
+            model: None,
+            enabled: true,
+            archive_transcript: false,
+            env: vec![],
+            timeout_min: 30.0,
+            budget_usd: 2.0,
+            daily_budget_usd: None,
+            write: false,
+            tools: vec!["Read".into(), "Grep".into(), "Glob".into()],
+            max_turns: None,
+            codex_full_access: false,
+            overlap: Overlap::Skip,
+            notify: false,
+        },
+    })
+}
+
 pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
     let path =
         fs::canonicalize(path).with_context(|| format!("read jobs file {}", path.display()))?;
