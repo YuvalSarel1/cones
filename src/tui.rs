@@ -72,8 +72,10 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
             &format!(
                 "--bind=enter:execute([ {{1}} = job ] && ({me} run {{2}} >/dev/null 2>&1 &) || {me} logs {{1}} --follow)+{reload}"
             ),
-            &format!("--bind=ctrl-s:execute-silent({me} stop {{1}})+{reload}"),
-            &format!("--bind=ctrl-a:execute({me} attach {{1}})+{reload}"),
+            &format!("--bind=ctrl-s:execute-silent([ {{1}} = job ] || {me} stop {{1}})+{reload}"),
+            &format!(
+                "--bind=ctrl-a:execute([ {{1}} = job ] || {me} attach {{1}} || {{ printf 'press enter'; read _; }})+{reload}"
+            ),
         ])
         .stdin(Stdio::null())
         .status()

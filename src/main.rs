@@ -268,6 +268,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 );
                 return Ok(0);
             }
+            attach_real_tty(&mut command);
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
@@ -277,6 +278,30 @@ fn execute(cli: Cli) -> Result<i32> {
             &Config::load(&state.join("config.toml"))?,
         ),
         Action::Worker { .. } => unreachable!(),
+    }
+}
+
+/// Launchers such as fzf hand children the `/dev/tty` clone device. Bun-based harnesses
+/// cannot kqueue that device (EINVAL), so point stdio at the real terminal node instead.
+fn attach_real_tty(command: &mut Command) {
+    let Ok(out) = Command::new("ps")
+        .args(["-o", "tty=", "-p", &std::process::id().to_string()])
+        .output()
+    else {
+        return;
+    };
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !name.starts_with("tty") {
+        return;
+    }
+    let open = || {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("/dev/{name}"))
+    };
+    if let (Ok(i), Ok(o), Ok(e)) = (open(), open(), open()) {
+        command.stdin(i).stdout(o).stderr(e);
     }
 }
 
