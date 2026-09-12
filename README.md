@@ -52,7 +52,7 @@ What the job gets: a pinned session ID, print mode, a native dollar budget, a ru
 ## Runs
 
 ```sh
-cones tui                        # dashboard: claude agents keys (enter attaches or runs, ctrl+x twice stops a run, ctrl+s regroups, esc quits) plus n new task, / filter, r refresh
+cones tui                        # dashboard: claude agents keys (enter runs a job, follows a running run, attaches a finished one; ctrl+x twice stops a run, ctrl+s regroups, esc quits) plus n new task, / filter, r refresh
 cones run --prompt "fix the flaky test"   # one-off task under the first job's policy (or read-only defaults), in the cwd
 cones ls --status failed         # tab-separated; --json for records
 cones logs RUN_UUID --follow     # Ctrl+C detaches, the run keeps going

@@ -642,22 +642,51 @@ impl App {
         };
     }
 
+    /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
+    fn foreground(&mut self, terminal: &mut DefaultTerminal, args: &[&str], what: &str) {
+        use std::os::unix::process::CommandExt;
+        ratatui::restore();
+        let mut c = self.me();
+        c.args(args).stderr(Stdio::piped());
+        // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            c.pre_exec(|| {
+                libc::signal(libc::SIGINT, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+        let r = c.spawn().and_then(|c| c.wait_with_output());
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+        *terminal = ratatui::init();
+        self.status = match r {
+            Ok(o) if o.status.success() => format!("back from {what}"),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let last = err.lines().rev().find(|l| !l.trim().is_empty());
+                match last {
+                    Some(l) => format!("{what} failed: {}", l.trim_start_matches("Error: ")),
+                    None => format!("{what} exited with {}", o.status),
+                }
+            }
+            Err(e) => format!("{what} failed: {e}"),
+        };
+    }
+
     fn enter(&mut self, terminal: &mut DefaultTerminal) {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return;
         };
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], &format!("started {name}")),
+            // A headless run cannot be attached while it runs; follow its log instead.
+            Kind::Run(id, s) if s == "started" => {
+                self.foreground(terminal, &["logs", &id, "--follow"], "logs")
+            }
             Kind::Session(id, _) | Kind::Run(id, _) => {
-                // Hand the terminal to the harness and take it back when the user leaves.
-                ratatui::restore();
-                let r = self.me().args(["attach", &id]).status();
-                *terminal = ratatui::init();
-                self.status = match r {
-                    Ok(s) if s.success() => "back from attach".into(),
-                    Ok(s) => format!("attach exited with {s}"),
-                    Err(e) => format!("attach failed: {e}"),
-                };
+                self.foreground(terminal, &["attach", &id], "attach")
             }
             _ => {}
         }
