@@ -665,8 +665,9 @@ impl App {
 
     /// ctrl-x once arms, ctrl-x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
-        let Some(Kind::Run(id, _)) = self.selected().map(|r| r.kind.clone()) else {
-            self.status = "only cones runs can be stopped here".into();
+        let Some(Kind::Session(id, _) | Kind::Run(id, _)) = self.selected().map(|r| r.kind.clone())
+        else {
+            self.status = "select a run or session to stop".into();
             return;
         };
         match self.armed.take() {

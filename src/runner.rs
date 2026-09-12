@@ -583,7 +583,10 @@ pub fn run(
 }
 
 pub fn stop(ledger: &Ledger, id: &str) -> Result<bool> {
-    let run = ledger.resolve(id)?;
+    // Not a ledger run: a Claude session the fleet hook saw.
+    let Ok(run) = ledger.resolve(id) else {
+        return crate::fleet::stop(&ledger.state, id);
+    };
     if run.terminal.is_some() || run.started.status == Status::Skipped {
         return Ok(false);
     }

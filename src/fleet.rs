@@ -261,6 +261,34 @@ pub fn find(state: &Path, session_id: &str) -> Result<Option<Session>> {
         .find(|s| s.session_id == session_id))
 }
 
+/// SIGTERM the harness behind a fleet session. Returns false when the process is already
+/// gone. The pid came from a hook payload long ago, so the command is checked first: a
+/// reused pid never gets signalled.
+pub fn stop(state: &Path, session_id: &str) -> Result<bool> {
+    let session = find(state, session_id)?.context("no such run or session")?;
+    let pid = session.pid.context("session has no harness pid")?;
+    ensure!(pid > 1, "invalid harness pid");
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
+        .output()?;
+    let command = String::from_utf8_lossy(&output.stdout);
+    let Some(program) = command.split_whitespace().next() else {
+        return Ok(false);
+    };
+    ensure!(
+        Path::new(program)
+            .file_name()
+            .is_some_and(|f| f == session.harness.as_str()),
+        "pid {pid} is not a {} process; refusing to signal a reused pid",
+        session.harness
+    );
+    ensure!(
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) } == 0,
+        "unable to signal session {session_id}"
+    );
+    Ok(true)
+}
+
 pub fn age(updated: DateTime<Utc>) -> String {
     let s = (Utc::now() - updated).num_seconds().max(0);
     match s {

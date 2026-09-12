@@ -476,3 +476,49 @@ fn unreachable_console_falls_back_without_claiming_live_attach() {
     assert_eq!(r.started.live, Some(false));
     assert!(r.started.fallback_reason.unwrap().contains("unreachable"));
 }
+#[test]
+fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
+    let f = Fixture::new("success", 1.0);
+    let fake = f.dir.path().join("claude");
+    // ps reports argv[0]; a copied sleep binary named claude looks like the real harness.
+    fs::copy("/bin/sleep", &fake).unwrap();
+    let mut claude = Command::new(&fake).arg("30").spawn().unwrap();
+    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let session = |id: &str, pid: u32| cones::fleet::Session {
+        v: 1,
+        session_id: id.into(),
+        harness: "claude".into(),
+        cwd: f.dir.path().into(),
+        state: "idle".into(),
+        updated: chrono::Utc::now(),
+        event: None,
+        tool: None,
+        pid: Some(pid),
+        transcript_path: None,
+        tokens_in: None,
+        tokens_out: None,
+        cost_usd: None,
+        title: None,
+        last: None,
+    };
+    cones::fleet::write(&f.state, &session("real", claude.id())).unwrap();
+    cones::fleet::write(&f.state, &session("reused", sleeper.id())).unwrap();
+    let ledger = f.ledger();
+    assert!(
+        cones::runner::stop(&ledger, "reused")
+            .unwrap_err()
+            .to_string()
+            .contains("refusing")
+    );
+    assert!(cones::runner::stop(&ledger, "missing").is_err());
+    assert!(cones::runner::stop(&ledger, "real").unwrap());
+    let until = Instant::now() + Duration::from_secs(3);
+    while claude.try_wait().unwrap().is_none() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(claude.try_wait().unwrap().is_some(), "harness kept running");
+    assert!(sleeper.try_wait().unwrap().is_none());
+    sleeper.kill().unwrap();
+    // A pid that is already gone is "already finished", not an error.
+    assert!(!cones::runner::stop(&ledger, "real").unwrap());
+}

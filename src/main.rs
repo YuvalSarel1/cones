@@ -72,7 +72,7 @@ enum Action {
         #[arg(long)]
         raw: bool,
     },
-    /// Stop a running job after verifying its supervisor identity.
+    /// Stop a running job, or a fleet Claude session, after verifying the process identity.
     Stop { id: String },
     /// Resume a completed run in its harness UI.
     Attach {
