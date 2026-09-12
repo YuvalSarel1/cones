@@ -30,7 +30,7 @@ COLS = [("NOW", "Make the first release trustworthy", "#3fb950", [
     ("More harnesses, more Macs", "HAR", "Pi when a real use case appears; multi-machine after single-machine fleet control is in regular use."),
 ])]
 SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
-           "rolling daily budget · live event stream · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
+           "rolling daily budget · live event stream · terminal dashboard · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
            "shared-workspace writer lock · durable run ledger")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")

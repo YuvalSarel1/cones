@@ -79,6 +79,8 @@ enum Action {
     },
     /// Check execution prerequisites and policy hazards.
     Doctor,
+    /// Live dashboard of jobs, runs and output.
+    Tui,
     #[command(name = "__worker", hide = true)]
     Worker {
         #[arg(long)]
@@ -187,6 +189,10 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
+            Ok(0)
+        }
+        Action::Tui => {
+            cones::tui::run(&jobs_path, &state)?;
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {

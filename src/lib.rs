@@ -5,6 +5,7 @@ pub mod launchd;
 pub mod ledger;
 pub mod output;
 pub mod runner;
+pub mod tui;
 
 use anyhow::{Context, Result, bail};
 use std::{
