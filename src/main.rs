@@ -215,7 +215,7 @@ fn execute(cli: Cli) -> Result<i32> {
                             .map(|h| h.to_string())
                             .unwrap_or_else(|| "-".into()),
                         last.cost_usd
-                            .map(|c| format!("{c:.4}"))
+                            .map(cones::fleet::cost)
                             .unwrap_or_else(|| "-".into()),
                         last.reason.as_deref().unwrap_or("-")
                     );
@@ -237,7 +237,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         s.updated.to_rfc3339(),
                         s.harness,
                         s.cost_usd
-                            .map(|c| format!("{c:.4}"))
+                            .map(cones::fleet::cost)
                             .unwrap_or_else(|| "-".into()),
                         cones::fleet::tokens(&s)
                     );

@@ -391,6 +391,15 @@ pub fn age(updated: DateTime<Utc>) -> String {
     }
 }
 
+/// Dollars for a table cell: cents, or four places when a run cost less than a cent.
+pub fn cost(usd: f64) -> String {
+    if usd < 0.01 {
+        format!("${usd:.4}")
+    } else {
+        format!("${usd:.2}")
+    }
+}
+
 pub fn tokens(s: &Session) -> String {
     match (s.tokens_in, s.tokens_out) {
         (None, None) => "-".into(),

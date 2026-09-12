@@ -17,7 +17,7 @@
 <text x="44" y="380" font-size="15" fill="#e6edf3" >logs takes a session id · details pane shows the last prompt and full reply · durable run ledger</text>
 <text x="44" y="402" font-size="15" fill="#e6edf3" >· agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used</text>
 <text x="44" y="424" font-size="15" fill="#e6edf3" >· doctor fails on missing login or job env, warns on Claude version drift, probes the flags the</text>
-<text x="44" y="446" font-size="15" fill="#e6edf3" >compiler emits</text>
+<text x="44" y="446" font-size="15" fill="#e6edf3" >compiler emits · run rows and cones ls show dollars spent from the ledger</text>
 <rect x="36" y="492" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="530" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="550" font-size="12.5" fill="#8b949e" >Make the first release trustworthy</text>
@@ -48,19 +48,14 @@
 <rect x="28" y="894" width="804" height="382" rx="10" fill="#161b22" stroke="#30363d"/>
 <rect x="28" y="906" width="5" height="358" rx="2.5" fill="#d2a8ff"/>
 <text x="46" y="924" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">OBSERVABILITY</text>
-<text x="50" y="956" font-size="17" fill="#e6edf3" font-weight="700">Cost on the run row</text>
-<text x="50" y="980" font-size="16" fill="#8b949e" >The run row shows job, status</text>
-<text x="50" y="1002" font-size="16" fill="#8b949e" >and stop reason today; add</text>
-<text x="50" y="1024" font-size="16" fill="#8b949e" >dollars spent from the</text>
-<text x="50" y="1046" font-size="16" fill="#8b949e" >ledger.</text>
-<text x="50" y="1088" font-size="17" fill="#e6edf3" font-weight="700">Claude agents feed</text>
-<text x="50" y="1112" font-size="16" fill="#8b949e" >Merge claude agents --json</text>
-<text x="50" y="1134" font-size="16" fill="#8b949e" >and the job state file&#x27;s one-</text>
-<text x="50" y="1156" font-size="16" fill="#8b949e" >line detail into the fleet</text>
-<text x="50" y="1178" font-size="16" fill="#8b949e" >view, so sessions that</text>
-<text x="50" y="1200" font-size="16" fill="#8b949e" >predate the hook appear and</text>
-<text x="50" y="1222" font-size="16" fill="#8b949e" >the last-message column reads</text>
-<text x="50" y="1244" font-size="16" fill="#8b949e" >like Claude&#x27;s own.</text>
+<text x="50" y="956" font-size="17" fill="#e6edf3" font-weight="700">Claude agents feed</text>
+<text x="50" y="980" font-size="16" fill="#8b949e" >Merge claude agents --json</text>
+<text x="50" y="1002" font-size="16" fill="#8b949e" >and the job state file&#x27;s one-</text>
+<text x="50" y="1024" font-size="16" fill="#8b949e" >line detail into the fleet</text>
+<text x="50" y="1046" font-size="16" fill="#8b949e" >view, so sessions that</text>
+<text x="50" y="1068" font-size="16" fill="#8b949e" >predate the hook appear and</text>
+<text x="50" y="1090" font-size="16" fill="#8b949e" >the last-message column reads</text>
+<text x="50" y="1112" font-size="16" fill="#8b949e" >like Claude&#x27;s own.</text>
 <text x="316" y="956" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
 <text x="316" y="980" font-size="16" fill="#8b949e" >See what runs next, not only</text>
 <text x="316" y="1002" font-size="16" fill="#8b949e" >what already ran.</text>

@@ -221,12 +221,7 @@ impl Data {
                                 .unwrap_or_default(),
                             dim(),
                         ),
-                        (
-                            last.cost_usd
-                                .map(|c| format!("${c:.4}"))
-                                .unwrap_or_default(),
-                            dim(),
-                        ),
+                        (last.cost_usd.map(fleet::cost).unwrap_or_default(), dim()),
                         (last.reason.clone().unwrap_or_default(), dim()),
                     ]
                 })

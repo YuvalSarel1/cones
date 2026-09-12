@@ -217,6 +217,13 @@ fn ledger_lock_budget_and_orphan_status() {
     terminal.ended_at = Some(Utc::now());
     ledger.append(&terminal).unwrap();
     assert_eq!(ledger.reserved_spend("job").unwrap(), 0.25);
+    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let row = list.lines().find(|l| l.starts_with("run\tok\t")).unwrap();
+    assert!(
+        row.contains("$0.25"),
+        "the run row shows the ledger's dollars: {row}"
+    );
+    assert_eq!(cones::fleet::cost(0.004), "$0.0040");
 }
 #[test]
 fn permission_words_in_read_output_are_data_not_denials() {
