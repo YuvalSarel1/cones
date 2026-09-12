@@ -158,6 +158,41 @@ pub fn tail(transcript: &Path, n: usize) -> (Option<String>, Vec<String>) {
     out
 }
 
+/// Print the last assistant lines of a session transcript and, with `follow`, each new one as it
+/// lands. Ctrl+C returns; the session in its own terminal is untouched.
+pub fn follow(transcript: &Path, follow: bool) -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut out = std::io::stdout();
+    for line in tail(transcript, 20).1 {
+        writeln!(out, "· {line}")?;
+    }
+    if !follow {
+        return Ok(());
+    }
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    let sigint = signal_hook::flag::register(signal_hook::consts::SIGINT, cancelled.clone())?;
+    let mut pos = fs::metadata(transcript)?.len();
+    let mut pending = String::new();
+    while !cancelled.load(Ordering::Relaxed) {
+        let mut file = fs::File::open(transcript)?;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        pos += bytes.len() as u64;
+        pending.push_str(&String::from_utf8_lossy(&bytes));
+        if let Some(i) = pending.rfind('\n') {
+            for line in scan(&pending[..=i]).1 {
+                writeln!(out, "· {line}")?;
+            }
+            pending.drain(..=i);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    signal_hook::low_level::unregister(sigint);
+    Ok(())
+}
+
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
     for line in lines.lines() {

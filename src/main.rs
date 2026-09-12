@@ -277,7 +277,19 @@ fn execute(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {
-            output::logs(&Ledger::new(&state)?, &id, follow, raw)?;
+            let ledger = Ledger::new(&state)?;
+            // Not a cones run: a fleet session. Its transcript is the log.
+            if ledger.resolve(&id).is_err()
+                && let Some(s) = cones::fleet::find(&state, &id)?
+            {
+                let t = s
+                    .transcript_path
+                    .as_deref()
+                    .context("session has no transcript")?;
+                cones::fleet::follow(t, follow)?;
+                return Ok(0);
+            }
+            output::logs(&ledger, &id, follow, raw)?;
             Ok(0)
         }
         Action::Stop { id } => {

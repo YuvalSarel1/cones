@@ -712,8 +712,12 @@ impl App {
         };
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], &format!("started {name}")),
-            // A headless run cannot be attached while it runs; follow its log instead.
+            // A headless run cannot be attached while it runs, and a session that is working in
+            // its own terminal cannot be resumed here; follow their logs instead.
             Kind::Run(id, s) if s == "started" => {
+                self.foreground(terminal, &["logs", &id, "--follow"], "logs")
+            }
+            Kind::Session(id, s) if s == "active" => {
                 self.foreground(terminal, &["logs", &id, "--follow"], "logs")
             }
             Kind::Session(id, _) | Kind::Run(id, _) => {
