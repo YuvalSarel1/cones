@@ -63,6 +63,15 @@ A run is `ok`, `failed`, `timeout`, `skipped` or `crashed`, with a reason such a
 
 launchd runs after login, coalesces ticks missed during sleep, and does not wake the Mac or replay time spent powered off.
 
+## Fleet
+
+```sh
+cones hook --install             # one global Claude Code hook in ~/.claude/settings.json
+cones doctor                     # reports whether the hook is installed
+```
+
+The hook runs on SessionStart, UserPromptSubmit, PostToolUse, Notification, Stop and SessionEnd and writes one JSON file per session to `~/.cones/fleet/<session_id>.json`: cwd, pid, state (`active`, `idle`, `blocked` on a permission prompt, `exited`), the last event and tool, and input/output tokens summed from the transcript at the end of each turn. Every Claude session on the Mac becomes visible, whether cones started it or not. The hook only observes; it is not on PreToolUse and never gates a tool call. Re-running `--install` replaces the earlier entry, so a moved binary or `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
+
 ## Roadmap
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>

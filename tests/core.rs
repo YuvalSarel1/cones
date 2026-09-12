@@ -387,3 +387,79 @@ fn healthy_console_cannot_silently_drop_execution_policy() {
     );
     assert!(server.join().unwrap().starts_with("GET /api/health "));
 }
+
+#[test]
+fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "0f1e2d3c-4b5a-4978-8a1b-2c3d4e5f6a7b";
+    let transcript = dir.path().join("t.jsonl");
+    // Two streamed content blocks of one message, then a second message.
+    let usage = |mid: &str, i: u64, o: u64| {
+        format!(
+            r#"{{"type":"assistant","message":{{"id":"{mid}","usage":{{"input_tokens":{i},"cache_read_input_tokens":10,"output_tokens":{o}}}}}}}"#
+        )
+    };
+    fs::write(
+        &transcript,
+        format!(
+            "{{\"type\":\"user\"}}\n{}\n{}\nnot json\n{}\n",
+            usage("m1", 100, 5),
+            usage("m1", 100, 5),
+            usage("m2", 200, 7)
+        ),
+    )
+    .unwrap();
+    let payload = |event: &str| {
+        serde_json::json!({"session_id": id, "hook_event_name": event, "cwd": "/tmp/repo",
+            "transcript_path": transcript, "tool_name": "Bash"})
+    };
+    cones::fleet::record(dir.path(), 42, &payload("SessionStart")).unwrap();
+    let get = || cones::fleet::find(dir.path(), id).unwrap().unwrap();
+    let first = get();
+    assert_eq!(
+        (first.pid, first.state.as_str(), first.tokens_in),
+        (Some(42), "active", None)
+    );
+    assert_eq!(first.cwd, std::path::Path::new("/tmp/repo"));
+    cones::fleet::record(dir.path(), 42, &payload("PostToolUse")).unwrap();
+    assert_eq!(get().tool.as_deref(), Some("Bash"));
+    cones::fleet::record(dir.path(), 42, &payload("Notification")).unwrap();
+    assert_eq!(get().state, "blocked");
+    cones::fleet::record(dir.path(), 42, &payload("Stop")).unwrap();
+    let idle = get();
+    assert_eq!(
+        (idle.state.as_str(), idle.tokens_in, idle.tokens_out),
+        ("idle", Some(320), Some(12))
+    );
+    cones::fleet::record(dir.path(), 42, &payload("SessionEnd")).unwrap();
+    assert_eq!(get().state, "exited");
+    let bad = serde_json::json!({"session_id": "../escape", "hook_event_name": "Stop"});
+    assert!(cones::fleet::record(dir.path(), 1, &bad).is_err());
+    assert_eq!(cones::fleet::sessions(dir.path()).unwrap().len(), 1);
+}
+#[test]
+fn fleet_hook_install_merges_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.json");
+    fs::write(&settings, r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#).unwrap();
+    assert!(!cones::fleet::installed(&settings));
+    let cmd = cones::fleet::hook_command(std::path::Path::new("/opt/cones"), dir.path());
+    assert!(cmd.ends_with(" hook $PPID"));
+    cones::fleet::install(&settings, &cmd).unwrap();
+    cones::fleet::install(&settings, "'/moved/cones' --state-dir '/x' hook $PPID").unwrap();
+    let root: serde_json::Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    assert_eq!(root["model"], "opus");
+    let stop = root["hooks"]["Stop"].as_array().unwrap();
+    assert_eq!(stop.len(), 2, "user's own Stop hook kept, one cones entry");
+    assert_eq!(
+        stop[1]["hooks"][0]["command"],
+        "'/moved/cones' --state-dir '/x' hook $PPID"
+    );
+    assert!(cones::fleet::installed(&settings));
+    for event in cones::fleet::EVENTS {
+        assert_eq!(
+            root["hooks"][event].as_array().unwrap().len(),
+            if event == "Stop" { 2 } else { 1 }
+        );
+    }
+}

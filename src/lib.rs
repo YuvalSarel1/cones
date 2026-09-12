@@ -1,5 +1,6 @@
 pub mod config;
 pub mod control;
+pub mod fleet;
 pub mod harness;
 pub mod launchd;
 pub mod ledger;

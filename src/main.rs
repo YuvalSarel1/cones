@@ -87,6 +87,14 @@ enum Action {
     Doctor,
     /// Dashboard: jobs and runs in fzf, with preview and actions.
     Tui,
+    /// Record a Claude Code hook event from stdin as a fleet state file.
+    Hook {
+        /// Write the fleet hook into ~/.claude/settings.json instead of recording an event.
+        #[arg(long)]
+        install: bool,
+        /// PID of the harness process; the installed command passes $PPID.
+        pid: Option<u32>,
+    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -206,6 +214,22 @@ fn execute(cli: Cli) -> Result<i32> {
             Ok(status.code().unwrap_or(1))
         }
         Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state),
+        Action::Hook { install, pid } => {
+            if install {
+                let settings = claude_settings()?;
+                cones::fleet::install(
+                    &settings,
+                    &cones::fleet::hook_command(&std::env::current_exe()?, &state),
+                )?;
+                println!("fleet hook installed in {}", settings.display());
+                return Ok(0);
+            }
+            let payload = serde_json::from_reader(std::io::stdin().lock())
+                .context("hook payload is not JSON")?;
+            let pid = pid.unwrap_or_else(std::os::unix::process::parent_id);
+            cones::fleet::record(&state, pid, &payload)?;
+            Ok(0)
+        }
         Action::List => {
             print!("{}", cones::tui::list(&jobs_path, &state)?);
             Ok(0)
@@ -317,6 +341,11 @@ fn attach_real_tty(command: &mut Command) {
     }
 }
 
+fn claude_settings() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("missing home directory")?
+        .join(".claude/settings.json"))
+}
 fn quote(s: &std::ffi::OsStr) -> String {
     format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -501,6 +530,18 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path, config: &Config)
             Err(e) => report("WARN", format!("{e}; runs use headless fallback")),
         },
     }
+    let settings = claude_settings()?;
+    report(
+        if cones::fleet::installed(&settings) {
+            "OK"
+        } else {
+            "WARN"
+        },
+        format!(
+            "fleet hook in {} (cones hook --install)",
+            settings.display()
+        ),
+    );
     let projects = dirs::home_dir()
         .context("missing home directory")?
         .join(".claude/projects");
