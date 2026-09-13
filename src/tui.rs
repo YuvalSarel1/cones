@@ -1678,8 +1678,10 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
 /// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Claude's
 /// agents view does; its attach view eats the key) stops the child: the tty sends SIGTSTP to the
 /// whole foreground group and the dashboard ignores its copy. `Child::wait` would then block
-/// forever on a cooked terminal nobody reads. A stop is the user asking for the dashboard back,
-/// so the child is resumed and told to exit, SIGKILL if it has not within two seconds.
+/// forever on a cooked terminal nobody reads. A stop is the user asking for the dashboard back.
+/// The child has already restored the tty (it stopped on a cooked screen), and a resumed client
+/// takes most of a second to redraw and exit on SIGTERM, so it is killed where it stands: the
+/// attach client is only a viewer, the session it showed is untouched.
 fn wait_or_stopped(
     child: &mut std::process::Child,
     debug: &dyn Fn(String),
@@ -1695,10 +1697,8 @@ fn wait_or_stopped(
         })
     });
     let mut status: libc::c_int = 0;
-    let mut flags = libc::WUNTRACED;
-    let mut deadline: Option<Instant> = None;
     loop {
-        let r = unsafe { libc::waitpid(pid, &mut status, flags) };
+        let r = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
         if r == -1 {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::Interrupted {
@@ -1706,34 +1706,17 @@ fn wait_or_stopped(
             }
             return Err(e);
         }
-        if r == pid && libc::WIFSTOPPED(status) {
+        if libc::WIFSTOPPED(status) {
             debug(format!(
-                "child stopped by signal {}; resuming it to exit",
+                "child stopped by signal {}; killing the viewer",
                 libc::WSTOPSIG(status)
             ));
             unsafe {
-                libc::kill(pid, libc::SIGCONT);
-                libc::kill(pid, libc::SIGTERM);
-            }
-            flags = libc::WNOHANG;
-            deadline = Some(Instant::now() + Duration::from_secs(2));
-            continue;
-        }
-        if r == pid {
-            break;
-        }
-        // WNOHANG and still running: give SIGTERM its two seconds, then stop asking.
-        if let Some(d) = deadline
-            && Instant::now() >= d
-        {
-            debug("child ignored SIGTERM; SIGKILL".into());
-            unsafe {
                 libc::kill(pid, libc::SIGKILL);
             }
-            flags = 0;
-            deadline = None;
+            continue;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        break;
     }
     // ponytail: the pid is reaped here, so `Child::wait` would fail; the Output is built by hand.
     Ok(std::process::Output {
@@ -1862,12 +1845,13 @@ mod tests {
             .unwrap();
         let log = std::sync::Mutex::new(vec![]);
         let started = Instant::now();
+        use std::os::unix::process::ExitStatusExt;
         let out = wait_or_stopped(&mut c, &|m| log.lock().unwrap().push(m)).unwrap();
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(1),
             "did not hang on the stop"
         );
-        assert!(!out.status.success());
+        assert_eq!(out.status.signal(), Some(libc::SIGKILL));
         assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
         assert!(log.lock().unwrap()[0].starts_with("child stopped by signal"));
     }
