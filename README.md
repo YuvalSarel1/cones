@@ -12,6 +12,20 @@
 
 <p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones tui: the scheduled jobs, every Claude Code session on the Mac grouped by directory, and the selected job's policy" width="100%"></a></p>
 
+## What it does
+
+**cones shows every Claude Code session on your Mac, including the ones it did not start, schedules headless ones, and keeps them from writing over each other. One binary, no daemon.**
+
+* **See every session:** View all Claude Code sessions in `cones ls` or the dashboard, including ones started from any terminal. Check status, attach, or stop.
+* **Schedule jobs:** Run headless Claude tasks on a cron schedule using macOS launchd.
+* **Prevent write conflicts:** Share one writer lock per directory across jobs, agents, and commands. Choose whether overlapping runs skip, run alongside, or replace the previous run.
+
+Each run cones starts has enforced limits on spending, turns, tools, writes, and duration. No MCP servers or interactive prompts. Status, reason, and cost are recorded in a JSONL log. Sessions started elsewhere are visible, and you can attach to or stop them, but budgets and locks cover only runs cones starts and commands wrapped in `cones lock`.
+
+Run a task immediately with `cones run`, or orchestrate agents in a folder with `cones coordinator start`.
+
+Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [what cones needs from a harness](docs/harness.md), [command reference](docs/cli.md).
+
 ## Install
 
 Requires Rust and Claude Code 2.1 or later, on macOS.
@@ -38,34 +52,9 @@ jobs:
     overlap: skip
 ```
 
-## What it does
-
-**cones schedules, monitors, and coordinates Claude Code sessions on your Mac. One binary, no daemon.**
-
-* **Schedule jobs:** Run headless Claude tasks on a cron schedule using macOS launchd.
-* **See every session:** View all Claude Code sessions in `cones ls` or the dashboard, including ones started elsewhere. Check status, attach, or stop.
-* **Prevent write conflicts:** Share one writer lock per directory across jobs, agents, and commands. Choose whether overlapping runs skip, run alongside, or replace the previous run.
-
-Each run has enforced limits on spending, turns, tools, writes, and duration. No MCP servers or interactive prompts. Status, reason, and cost are recorded in a JSONL log.
-
-Run a task immediately with `cones run`, or orchestrate agents in a folder with `cones coordinator start`.
-
-Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [what cones needs from a harness](docs/harness.md), [command reference](docs/cli.md).
-
-## What existing tools leave out
-
-| Gap | cones |
-| --- | --- |
-| Fleet tools see only the sessions they launched. | Reads the registry Claude Code writes for every session. |
-| Two agents in one tree collide at commit time. | One writer lock per directory, shared by jobs, agents and `cones lock`. |
-| Budgets and tool policy are on you. | `budget_usd`, `tools` and `write` become Claude's own flags. A run cannot prompt, load settings or reach an MCP server. |
-| Scheduling needs the tool's own daemon. | Cron becomes a per-user LaunchAgent. |
-
 ## Philosophy
 
-cones owns the clock, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Every tool call goes through Claude's own permission engine. If Claude cannot enforce a guarantee natively, `cones validate` rejects the job. No best effort, no second permission engine.
-
-Coordination between agents on one tree, greetings, commit gating, relayed findings, is a skill, not cones logic. cones ships it and starts it, and stays a kernel. Claude Code is the harness today. Codex jobs parse and wait on a native dollar budget. Rules for agents working on cones are in [AGENTS.md](AGENTS.md). Tests use fake harness processes and spend no model tokens.
+cones owns the clock, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Every tool call goes through Claude's own permission engine, and if Claude cannot enforce a guarantee natively, `cones validate` rejects the job. No best effort, no second permission engine. Coordination between agents on one tree is a skill cones ships and starts, not cones logic; [the fleet doc](docs/fleet.md#the-coordinator-one-session-per-folder) has the details.
 
 ## Roadmap
 
