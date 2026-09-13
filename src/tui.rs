@@ -487,7 +487,8 @@ fn cone() -> [Vec<Span<'static>>; 3] {
 
 /// The three header lines: the cone, with the fleet summary beside its bands and the keys
 /// beside its base, each key lit and its verb dim so the eye finds the key first. `pane` names
-/// what the next `tab` does.
+/// what the next `tab` does. Two callers: `draw` and the `--tsv` path in `list`, so a change to
+/// the signature or the hint text reaches script output too and its tests.
 fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'static>> {
     let tab = match pane {
         Pane::Hidden => "peek",
