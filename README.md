@@ -40,17 +40,17 @@ jobs:
 
 ## What it does
 
-One binary, no daemon. It does three things.
+One binary, no daemon.
 
 | | |
 | --- | --- |
-| **Schedule** | Give a job a cron line. cones turns it into a launchd LaunchAgent that starts a headless Claude run on time. Nothing runs between ticks. |
-| **See the fleet** | Every Claude Code session on your Mac is in `cones ls` and the dashboard, whether cones started it or you did, read from the session registry Claude keeps itself. Nothing installed, nothing running inside your sessions. Title, state, age, context fill, last message. Stop or attach from either. |
-| **Keep them apart** | One writer lock per directory. Jobs take it. `cones lock . -- git commit` takes it around any command. If a job's last run is still going, the next one skips, runs alongside or replaces it. You pick, per job. |
+| **Schedule** | A cron line becomes a launchd LaunchAgent that starts a headless Claude run on time. Nothing runs between ticks. |
+| **See the fleet** | Every Claude Code session on the Mac, whichever terminal started it, in `cones ls` and the dashboard. Read from the registry Claude keeps itself, nothing installed. Stop or attach from either. |
+| **Keep them apart** | One writer lock per directory, shared by jobs and `cones lock . -- git commit`. When a job's last run is still going, the next one skips, runs alongside or replaces it. You pick, per job. |
 
-Every run has a policy that Claude itself enforces: a dollar budget, a turn cap, a tool allowlist, read-only or sandboxed writes, a timeout. No MCP servers, no prompts. When it ends, the run lands in a JSONL ledger with a status, a reason and what it cost.
+Each run carries a policy Claude enforces itself: budget, turns, tools, writes, timeout. No MCP servers, no prompts. It ends in a JSONL ledger with a status, a reason and a cost.
 
-`cones run --prompt "fix the flaky test"` runs one task right now, in the current directory, under the same policy. `cones coordinator start` starts one orchestrator session for the agents in a folder. The skill it runs ships inside the binary.
+`cones run --prompt "fix the flaky test"` runs one task now under the same policy. `cones coordinator start` starts one orchestrator session for the agents in a folder.
 
 Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
 
@@ -58,10 +58,10 @@ Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the f
 
 | Gap | cones |
 | --- | --- |
-| Fleet tools only see the sessions they launched. | cones reads the registry Claude Code writes for every session. Sessions started from any terminal show up. |
-| Two agents in one tree find out about each other at commit time. | One writer lock per directory, shared by jobs, agents and `cones lock`. |
-| Budgets and tool policy are on you. | `budget_usd` becomes Claude's own `--max-budget-usd`. `tools` and `write` become `--tools` and `--allowedTools`. A run cannot prompt, load settings or reach an MCP server. |
-| Scheduling needs the tool's own daemon. | Cron becomes `StartCalendarInterval` in a per-user LaunchAgent. |
+| Fleet tools see only the sessions they launched. | Reads the registry Claude Code writes for every session. |
+| Two agents in one tree collide at commit time. | One writer lock per directory, shared by jobs, agents and `cones lock`. |
+| Budgets and tool policy are on you. | `budget_usd`, `tools` and `write` become Claude's own flags. A run cannot prompt, load settings or reach an MCP server. |
+| Scheduling needs the tool's own daemon. | Cron becomes a per-user LaunchAgent. |
 
 ## Philosophy
 
