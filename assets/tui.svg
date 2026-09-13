@@ -11,7 +11,7 @@
 <text x="201.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">0</text>
 <text x="209.9" y="50" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> need input</text>
 <text x="319.5" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△ </text>
-<text x="336.3" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">2</text>
+<text x="336.3" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">4</text>
 <text x="344.8" y="50" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> idle</text>
 <text x="403.8" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">·  </text>
 <text x="429.1" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">1</text>
@@ -24,7 +24,7 @@
 <text x="159.3" y="70" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
 <text x="201.5" y="70" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> start job · </text>
 <text x="311.1" y="70" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
-<text x="336.3" y="70" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> more · </text>
+<text x="336.3" y="70" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> peek · </text>
 <text x="403.8" y="70" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">x x</text>
 <text x="429.1" y="70" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> stop · </text>
 <text x="496.5" y="70" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">e</text>
@@ -48,38 +48,62 @@
 <text x="353.2" y="150" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">on       </text>
 <text x="429.1" y="150" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">ok</text>
 <text x="16.0" y="190" xml:space="preserve" textLength="809.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">             title                            state    model             activity  context  last</text>
-<text x="16.0" y="210" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="230" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator sweep setup         </text>
-<text x="403.8" y="230" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="230" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  4s        216k     Reading watcher output and r</text>
-<text x="32.9" y="250" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="250" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">context window calculation bug   </text>
-<text x="403.8" y="250" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="250" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  22s       70k      Look for traces of the phant</text>
-<text x="32.9" y="270" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="270" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">cones tui header styling         </text>
-<text x="403.8" y="270" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="270" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  8s        81k      Point the capture at the exa</text>
-<text x="32.9" y="290" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="290" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">peek window toggle default       </text>
+<text x="16.0" y="210" xml:space="preserve" textLength="227.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/.claude/jobs/e027d11f/tmp</text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△  </text>
+<text x="58.1" y="230" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757">claude  </text>
+<text x="125.6" y="230" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">8f18596f                         </text>
+<text x="403.8" y="230" xml:space="preserve" textLength="387.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">idle     -                 -         -        </text>
+<text x="16.0" y="270" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
+<text x="32.9" y="290" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="290" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator sweep setup         </text>
 <text x="403.8" y="290" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="290" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  2s        30k      Finding peek references in s</text>
-<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△  </text>
-<text x="58.1" y="310" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757">claude  </text>
-<text x="125.6" y="310" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">524c96c5                         </text>
-<text x="403.8" y="310" xml:space="preserve" textLength="387.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">idle     -                 -         -        </text>
-<text x="16.0" y="350" xml:space="preserve" textLength="177.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work/pocs/workbench</text>
-<text x="32.9" y="370" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="370" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator agent coordination  </text>
-<text x="403.8" y="370" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="370" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  2s        341k     Verifying 8f5d9dd; log; upda</text>
-<text x="32.9" y="390" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✽  claude  </text>
-<text x="125.6" y="390" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">add top frameworks column        </text>
-<text x="403.8" y="390" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="479.6" y="390" xml:space="preserve" textLength="438.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  2s        125k     need hober text</text>
-<text x="16.0" y="410" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> ◆  readme-check  0 9 * * 1-5  claude  on       ok ─────────────────────────────────────────────────────────────────────</text>
-<text x="16.0" y="430" xml:space="preserve" textLength="328.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">0 9 * * 1-5 · claude · ~/personal/cones</text>
-<text x="16.0" y="450" xml:space="preserve" textLength="623.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">timeout 5m · budget $0.25 · write no · overlap Skip · tools Read,Grep,Glob</text>
-<text x="16.0" y="490" xml:space="preserve" textLength="649.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">Read README.md and summarize the next verification step. Do not modify files.</text>
+<text x="479.6" y="290" xml:space="preserve" textLength="539.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  37s       225k     header landed 3bb3180; pane</text>
+<text x="32.9" y="310" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="310" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">context window calculation bug   </text>
+<text x="403.8" y="310" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="310" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  31s       91k      Inspecting the stale hook st</text>
+<text x="32.9" y="330" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△  </text>
+<text x="58.1" y="330" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757">claude  </text>
+<text x="125.6" y="330" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">cones tui header styling         </text>
+<text x="403.8" y="330" xml:space="preserve" textLength="623.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">idle     claude-fable-5-1  57s       88k      dashboard capture now select</text>
+<text x="32.9" y="350" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△  </text>
+<text x="58.1" y="350" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757">claude  </text>
+<text x="125.6" y="350" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">524c96c5                         </text>
+<text x="403.8" y="350" xml:space="preserve" textLength="387.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">idle     -                 -         -        </text>
+<text x="16.0" y="390" xml:space="preserve" textLength="387.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones/.claude/worktrees/peek-toggle</text>
+<text x="32.9" y="410" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="410" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">peek window toggle default       </text>
+<text x="403.8" y="410" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="410" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  10s       61k      Reading the doc lines to upd</text>
+<text x="16.0" y="450" xml:space="preserve" textLength="177.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work/pocs/workbench</text>
+<text x="32.9" y="470" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="470" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator agent coordination  </text>
+<text x="403.8" y="470" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="470" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  3s        352k     Log 28204&#x27;s per-file answer;</text>
+<text x="32.9" y="490" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="490" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">add top frameworks column        </text>
+<text x="403.8" y="490" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="490" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  1m        134k     Query live registry: framewo</text>
+<text x="32.9" y="510" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="510" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">card sizing refinement           </text>
+<text x="403.8" y="510" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="510" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  8s        179k     Resetting the viewport to 14</text>
+<text x="32.9" y="530" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="530" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">tenant resolution risk assets    </text>
+<text x="403.8" y="530" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="530" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  8s        120k     Open the Risk assets tab fil</text>
+<text x="32.9" y="550" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✶  claude  </text>
+<text x="125.6" y="550" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">unclear column necessity         </text>
+<text x="403.8" y="550" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="479.6" y="550" xml:space="preserve" textLength="547.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  1s        51k      Finding the columns in capab</text>
+<text x="32.9" y="570" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">△  </text>
+<text x="58.1" y="570" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757">claude  </text>
+<text x="125.6" y="570" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">what is this tenent fix          </text>
+<text x="403.8" y="570" xml:space="preserve" textLength="463.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">idle     -                 0s        -        starting…</text>
+<text x="16.0" y="610" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">runs</text>
+<text x="16.0" y="630" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">     job           status  started         took  cost   reason</text>
+<text x="32.9" y="650" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
+<text x="58.1" y="650" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
+<text x="176.2" y="650" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
+<text x="243.6" y="650" xml:space="preserve" textLength="244.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-12 09:09:25  5s    $0.02  </text>
 </svg>

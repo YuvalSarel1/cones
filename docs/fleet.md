@@ -80,7 +80,7 @@ The copy under `assets/coordinator/` is the upstream skill with one line changed
 
 `cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
-Its hint line reads `↑↓ move · enter <verb> · tab more · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected; `tab more` reads `tab less` while the pane is expanded.
+Its hint line reads `↑↓ move · enter <verb> · tab peek · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected; `tab peek` reads `tab more` while the pane is showing and `tab hide` while it is expanded.
 
 | Pane | Columns | Details pane |
 | --- | --- | --- |
@@ -88,7 +88,7 @@ Its hint line reads `↑↓ move · enter <verb> · tab more · x x stop · e ed
 | Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd | model, start, last activity, context and tokens on one line, then the last prompt and full reply; with `tab`, the last 12 exchanges |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
 
-The details pane is the bottom 40% of the screen and shows the end of its text. `tab` expands it to 75% and, on a session, reads the last 12 prompts and replies from the transcript instead of the last one, so a session can be read before it is opened; nothing is shown that the transcript does not record, so a turn that was all tool calls shows its prompt alone. `pgup` and `pgdn` (or `shift+↑` `↓`) page through the text; the pane title then reads `lines 41-80 of 120`. The pane stays pinned to the end until it is paged up, so a working session keeps scrolling by itself, and moving to another row or pressing `tab` again pins it back.
+The details pane starts hidden, so the list has the screen. `tab` shows it as the bottom 40% of the screen, where it shows the end of its text; a second `tab` expands it to 75% and, on a session, reads the last 12 prompts and replies from the transcript instead of the last one, so a session can be read before it is opened; nothing is shown that the transcript does not record, so a turn that was all tool calls shows its prompt alone. `pgup` and `pgdn` (or `shift+↑` `↓`) page through the text; the pane title then reads `lines 41-80 of 120`. The pane stays pinned to the end until it is paged up, so a working session keeps scrolling by itself, and moving to another row or pressing `tab` again pins it back. A third `tab` hides the pane again.
 
 Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: the prompt size Claude reported on the session's last message, with no window and no percentage, since Claude Code states the window size only in the statusLine payload. `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Each of `model`, `age`, `activity` and `context` is `-` until the transcript holds the line it reads.
 
@@ -98,7 +98,7 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | --- | --- |
 | `↑` `↓`, `k` `j` | Move between rows. |
 | `enter`, `→`, `a` | On a job: start a run in the background. On a running run: follow its log (Ctrl+C returns). On a finished run or a session: open it in this terminal, as described above; Ctrl+Z comes back to the same row, with the filter and grouping as they were. |
-| `tab` | Expand the details pane; on a session, show the last 12 exchanges. `tab` again goes back. |
+| `tab` | Show the details pane, hidden by default; `tab` again expands it and, on a session, shows the last 12 exchanges; a third `tab` hides it. |
 | `pgup`, `pgdn` (or `shift+↑`, `shift+↓`) | Page the details pane up towards the start of the text and back down to its end. |
 | `x` twice (or `ctrl+x` twice) within two seconds | Stop the selected run or session. On a job: stop that job's run in flight; with none, the status line says so. |
 | `e` | Open jobs.yaml in `$VISUAL` or `$EDITOR`, then run `cones install` on return so launchd matches the file; an install error shows on the status line. |

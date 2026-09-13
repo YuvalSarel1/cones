@@ -399,7 +399,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(data.summary(), enter_verb(None), false) {
+    for line in header_lines(data.summary(), enter_verb(None), Pane::Hidden) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -460,13 +460,25 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     }
 }
 
+/// How much of the screen the details pane has; `tab` cycles it, starting hidden.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pane {
+    Hidden,
+    Peek,
+    More,
+}
+
 /// The three header lines: the cone beside the name, version and tagline; the fleet summary;
-/// the keys, each key lit and its verb dim so the eye finds the key first. `expanded` flips the
-/// `tab` hint between more and less.
-fn header_lines(summary: Line<'static>, enter: &str, expanded: bool) -> Vec<Line<'static>> {
+/// the keys, each key lit and its verb dim so the eye finds the key first. `pane` names what
+/// the next `tab` does.
+fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'static>> {
     let orange = Style::default().fg(ORANGE);
     let white = Style::default().fg(Color::White);
-    let tab = if expanded { "less" } else { "more" };
+    let tab = match pane {
+        Pane::Hidden => "peek",
+        Pane::Peek => "more",
+        Pane::More => "hide",
+    };
     let keys = [
         ("↑↓", "move"),
         ("enter", enter),
@@ -946,8 +958,9 @@ struct App {
     mode: Mode,
     status: String,
     details: Vec<String>,
-    /// `tab`: the pane takes most of the screen and a session shows `MORE` exchanges.
-    expanded: bool,
+    /// `tab` cycles the pane: hidden, a peek at the bottom of the screen, then most of it
+    /// with a session showing `MORE` exchanges.
+    pane: Pane,
     /// Pane lines hidden below the bottom edge: 0 pins the pane to the end of the transcript so
     /// a working session keeps scrolling by itself; paging up raises it.
     pane_scroll: usize,
@@ -977,7 +990,7 @@ impl App {
             mode: Mode::Normal,
             status: String::new(),
             details: vec![],
-            expanded: false,
+            pane: Pane::Hidden,
             pane_scroll: 0,
             pane_height: 0,
             tick: 0,
@@ -1027,9 +1040,13 @@ impl App {
         self.pane_scroll = (self.pane_scroll as isize + pages * by).clamp(0, max) as usize;
     }
 
-    /// `tab`: more of the session in a taller pane, or back to the last exchange.
+    /// `tab`: hidden, peek, more, hidden again.
     fn toggle_more(&mut self) {
-        self.expanded = !self.expanded;
+        self.pane = match self.pane {
+            Pane::Hidden => Pane::Peek,
+            Pane::Peek => Pane::More,
+            Pane::More => Pane::Hidden,
+        };
         self.pane_scroll = 0;
         self.settle();
     }
@@ -1082,7 +1099,7 @@ impl App {
         {
             self.cursor = i;
         }
-        let depth = if self.expanded { MORE } else { 1 };
+        let depth = if self.pane == Pane::More { MORE } else { 1 };
         self.details = self
             .selected()
             .map(|r| self.data.details(&r.kind, depth))
@@ -1366,8 +1383,13 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        // Expanded, the pane takes most of the screen and the list keeps the cursor in view.
-        let pane_size = if self.expanded { 75 } else { 40 };
+        // Hidden, the list has the screen; expanded, the pane takes most of it and the list
+        // keeps the cursor in view.
+        let pane_size = match self.pane {
+            Pane::Hidden => 0,
+            Pane::Peek => 40,
+            Pane::More => 75,
+        };
         let [head, list, pane, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
@@ -1377,7 +1399,7 @@ impl App {
         .areas(frame.area());
         let enter = enter_verb(self.selected().map(|r| &r.kind));
         frame.render_widget(
-            Paragraph::new(header_lines(self.data.summary(), enter, self.expanded)),
+            Paragraph::new(header_lines(self.data.summary(), enter, self.pane)),
             head,
         );
         self.draw_list(frame, list);
@@ -1388,7 +1410,7 @@ impl App {
         self.pane_height = pane.height.saturating_sub(1) as usize;
         let (from, to) = self.window();
         // Reading rather than glancing: the title says where in the transcript the pane is.
-        if (self.expanded || self.pane_scroll > 0) && to > from {
+        if (self.pane == Pane::More || self.pane_scroll > 0) && to > from {
             title = format!(
                 "{title} · lines {}-{to} of {} · pgup pgdn scroll",
                 from + 1,
@@ -1790,10 +1812,14 @@ mod tests {
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
         let prompts = |app: &App| app.details.iter().filter(|l| l.starts_with("> ")).count();
+        assert_eq!(app.pane, Pane::Hidden, "the pane starts hidden");
         assert_eq!(prompts(&app), 1, "collapsed: the last exchange");
         assert!(app.details.contains(&"reply 19".to_owned()));
         app.toggle_more();
-        assert!(app.expanded);
+        assert_eq!(app.pane, Pane::Peek, "one tab peeks");
+        assert_eq!(prompts(&app), 1);
+        app.toggle_more();
+        assert_eq!(app.pane, Pane::More);
         assert_eq!(prompts(&app), MORE, "expanded: the last {MORE} exchanges");
         assert!(app.details.contains(&"> prompt 8".to_owned()));
         assert!(!app.details.contains(&"> prompt 7".to_owned()));
@@ -1820,7 +1846,7 @@ mod tests {
         assert_eq!(app.window(), (n - 10, n), "a new row reads from its end");
         app.scroll_pane(1);
         app.toggle_more();
-        assert!(!app.expanded);
+        assert_eq!(app.pane, Pane::Hidden, "a third tab hides the pane again");
         assert_eq!(prompts(&app), 1);
         assert_eq!(app.pane_scroll, 0, "tab back pins to the end again");
         // A pane taller than the text shows all of it and cannot scroll.
@@ -1831,15 +1857,16 @@ mod tests {
     }
 
     #[test]
-    fn hint_line_flips_tab_between_more_and_less() {
-        let text = |expanded: bool| {
-            header_lines(Line::raw("s"), "attach", expanded)[2]
+    fn hint_line_names_what_tab_does_next() {
+        let text = |pane: Pane| {
+            header_lines(Line::raw("s"), "attach", pane)[2]
                 .spans
                 .iter()
                 .map(|s| s.content.to_string())
                 .collect::<String>()
         };
-        assert!(text(false).contains("enter attach · tab more · x x stop"));
-        assert!(text(true).contains("enter attach · tab less · x x stop"));
+        assert!(text(Pane::Hidden).contains("enter attach · tab peek · x x stop"));
+        assert!(text(Pane::Peek).contains("enter attach · tab more · x x stop"));
+        assert!(text(Pane::More).contains("enter attach · tab hide · x x stop"));
     }
 }
