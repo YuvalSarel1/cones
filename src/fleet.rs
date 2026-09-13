@@ -303,11 +303,20 @@ pub fn follow(transcript: &Path, follow: bool) -> Result<()> {
 /// quoted with `> `, a blank, then every assistant text since. Tool results are user messages
 /// too; only text counts as a prompt.
 pub fn exchange(transcript: &Path) -> Vec<String> {
-    // ponytail: the last MiB is enough; an exchange older than that is not what the pane is for.
-    let Ok(text) = crate::output::tail(transcript, 1 << 20) else {
+    exchanges(transcript, 1)
+}
+
+/// The last `n` exchanges of a transcript, oldest first, each rendered as `exchange` renders
+/// one and separated by a blank line. Only what the transcript records appears: user text and
+/// assistant text; a turn that was all tool calls shows its prompt alone. Reads the tail of the
+/// file, 1 MiB for one exchange, 4 MiB for more.
+pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
+    // ponytail: an exchange older than the last few MiB is not what the pane is for.
+    let bytes = if n <= 1 { 1 << 20 } else { 4 << 20 };
+    let Ok(text) = crate::output::tail(transcript, bytes) else {
         return Vec::new();
     };
-    let (mut prompt, mut reply) = (None, Vec::new());
+    let mut turns: Vec<(String, Vec<String>)> = Vec::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -324,20 +333,29 @@ pub fn exchange(transcript: &Path) -> Vec<String> {
         };
         match v["type"].as_str() {
             Some("user") if !texts.concat().trim().is_empty() => {
-                prompt = Some(texts.join("\n"));
-                reply.clear();
+                turns.push((texts.join("\n"), Vec::new()));
             }
-            Some("assistant") => reply.extend(texts.into_iter().map(str::to_owned)),
+            Some("assistant") => {
+                let texts = texts.into_iter().map(str::to_owned);
+                // A reply whose prompt lies before the window still shows, under no prompt.
+                match turns.last_mut() {
+                    Some((_, reply)) => reply.extend(texts),
+                    None => turns.push((String::new(), texts.collect())),
+                }
+            }
             _ => {}
         }
     }
-    let mut out: Vec<String> = prompt
-        .iter()
-        .flat_map(|p| p.trim().lines())
-        .map(|l| format!("> {l}"))
-        .collect();
-    out.push(String::new());
-    out.extend(reply.join("\n\n").lines().map(|l| l.replace("**", "")));
+    let keep = turns.len().saturating_sub(n);
+    let mut out = Vec::new();
+    for (prompt, reply) in turns.drain(keep..) {
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.extend(prompt.trim().lines().map(|l| format!("> {l}")));
+        out.push(String::new());
+        out.extend(reply.join("\n\n").lines().map(|l| l.replace("**", "")));
+    }
     out
 }
 

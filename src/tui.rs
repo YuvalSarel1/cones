@@ -52,7 +52,22 @@ impl Kind {
     fn selectable(&self) -> bool {
         !matches!(self, Kind::Header | Kind::Columns | Kind::Blank)
     }
+
+    /// What names a row across reloads: the job name, the session id or the run id. The state
+    /// is left out on purpose, so a session that went from idle to working while it was open
+    /// is still the same row when the dashboard comes back.
+    pub fn key(&self) -> Option<&str> {
+        match self {
+            Kind::Job(name) => Some(name),
+            Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
+            _ => None,
+        }
+    }
 }
+
+/// Exchanges the details pane shows for a session: the last one, or, with `tab`, the last
+/// dozen so a session can be read before it is opened.
+pub const MORE: usize = 12;
 
 pub struct Row {
     pub kind: Kind,
@@ -266,9 +281,9 @@ impl Data {
         out
     }
 
-    /// The details pane for one row: a job's policy and prompt, a session's last prompt and reply,
-    /// or a run's captured output.
-    pub fn details(&self, kind: &Kind) -> Vec<String> {
+    /// The details pane for one row: a job's policy and prompt, a session's last `exchanges`
+    /// prompts and replies from its transcript, or a run's captured output.
+    pub fn details(&self, kind: &Kind, exchanges: usize) -> Vec<String> {
         match kind {
             Kind::Job(name) => {
                 let Some(j) = self.jobs.iter().find(|j| &j.name == name) else {
@@ -313,7 +328,7 @@ impl Data {
                     String::new(),
                 ];
                 if let Some(t) = &s.transcript_path {
-                    out.extend(fleet::exchange(t));
+                    out.extend(fleet::exchanges(t, exchanges));
                 }
                 out
             }
@@ -349,7 +364,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(&data.summary(), enter_verb(None)) {
+    for line in header_lines(&data.summary(), enter_verb(None), false) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -410,9 +425,11 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     }
 }
 
-fn header_lines(summary: &str, enter: &str) -> Vec<Line<'static>> {
+/// The three header lines; `expanded` flips the `tab` hint between more and less.
+fn header_lines(summary: &str, enter: &str, expanded: bool) -> Vec<Line<'static>> {
     let orange = Style::default().fg(ORANGE);
     let white = Style::default().fg(Color::White);
+    let tab = if expanded { "less" } else { "more" };
     vec![
         Line::from(vec![
             Span::styled("  ▲  ", orange),
@@ -429,7 +446,7 @@ fn header_lines(summary: &str, enter: &str) -> Vec<Line<'static>> {
             Span::raw("  "),
             Span::styled(
                 format!(
-                    "↑↓ move · enter {enter} · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit"
+                    "↑↓ move · enter {enter} · tab {tab} · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit"
                 ),
                 dim(),
             ),
@@ -870,6 +887,13 @@ struct App {
     mode: Mode,
     status: String,
     details: Vec<String>,
+    /// `tab`: the pane takes most of the screen and a session shows `MORE` exchanges.
+    expanded: bool,
+    /// Pane lines hidden below the bottom edge: 0 pins the pane to the end of the transcript so
+    /// a working session keeps scrolling by itself; paging up raises it.
+    pane_scroll: usize,
+    /// Rows the pane had at the last draw, so a page is a screenful.
+    pane_height: usize,
     tick: usize,
     refreshed: Instant,
     /// A run id and when ctrl-x was first pressed on it; the second press within two seconds stops it.
@@ -877,23 +901,78 @@ struct App {
 }
 
 impl App {
+    fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
+        Ok(Self {
+            exe: exe.to_owned(),
+            jobs_path: jobs_path.to_owned(),
+            state: state.to_owned(),
+            claude: claude.to_owned(),
+            cwd: std::env::current_dir().context("dashboard working directory")?,
+            data: Data::load(jobs_path, state, claude)?,
+            rows: vec![],
+            visible: vec![],
+            cursor: 0,
+            scroll: 0,
+            by_state: false,
+            filter: String::new(),
+            mode: Mode::Normal,
+            status: String::new(),
+            details: vec![],
+            expanded: false,
+            pane_scroll: 0,
+            pane_height: 0,
+            tick: 0,
+            refreshed: Instant::now(),
+            armed: None,
+        })
+    }
+
     fn selected(&self) -> Option<&Row> {
         self.visible.get(self.cursor).map(|&i| &self.rows[i])
     }
 
+    /// Reload and stay on the selected row, found again by its key: a session whose state
+    /// changed is still the same row, a row that is gone leaves the cursor at its position, on
+    /// the neighbor. The filter and the grouping are fields, so a reload never touches them.
     fn refresh(&mut self) -> Result<()> {
-        let keep = self.selected().map(|r| r.kind.clone());
+        let keep = self
+            .selected()
+            .and_then(|r| r.kind.key().map(str::to_owned));
         self.data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
-            && let Some(i) = self.visible.iter().position(|&i| self.rows[i].kind == k)
+            && let Some(i) = self
+                .visible
+                .iter()
+                .position(|&i| self.rows[i].kind.key() == Some(k.as_str()))
         {
             self.cursor = i;
         }
         self.settle();
         self.refreshed = Instant::now();
         Ok(())
+    }
+
+    /// The pane lines on screen: `[from, to)` of `details`, from the end less `pane_scroll`.
+    fn window(&self) -> (usize, usize) {
+        let max = self.details.len().saturating_sub(self.pane_height);
+        let from = max - self.pane_scroll.min(max);
+        (from, (from + self.pane_height).min(self.details.len()))
+    }
+
+    /// Page the pane: up towards the start of the transcript, down back to its end.
+    fn scroll_pane(&mut self, pages: isize) {
+        let max = self.details.len().saturating_sub(self.pane_height) as isize;
+        let by = self.pane_height.max(1) as isize;
+        self.pane_scroll = (self.pane_scroll as isize + pages * by).clamp(0, max) as usize;
+    }
+
+    /// `tab`: more of the session in a taller pane, or back to the last exchange.
+    fn toggle_more(&mut self) {
+        self.expanded = !self.expanded;
+        self.pane_scroll = 0;
+        self.settle();
     }
 
     /// Rows that match the filter, plus the headers that still have something under them.
@@ -944,9 +1023,10 @@ impl App {
         {
             self.cursor = i;
         }
+        let depth = if self.expanded { MORE } else { 1 };
         self.details = self
             .selected()
-            .map(|r| self.data.details(&r.kind))
+            .map(|r| self.data.details(&r.kind, depth))
             .unwrap_or_default();
     }
 
@@ -963,6 +1043,8 @@ impl App {
             }
         }
         self.cursor = i as usize;
+        // A new row reads from its end, whatever the last one was scrolled to.
+        self.pane_scroll = 0;
         self.settle();
     }
 
@@ -1052,9 +1134,9 @@ impl App {
         };
     }
 
-    fn enter(&mut self, terminal: &mut DefaultTerminal) {
+    fn enter(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
-            return;
+            return Ok(());
         };
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
@@ -1068,10 +1150,14 @@ impl App {
             Kind::Session(id, _) | Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, c, "attach")
+                self.foreground(terminal, c, "attach");
+                // Back on the same row, read again by id: the session may have changed state,
+                // or ended, while it was open. Filter and grouping were never touched.
+                self.refresh()?;
             }
             _ => {}
         }
+        Ok(())
     }
 
     /// `e`: jobs.yaml in $VISUAL or $EDITOR, then `cones install` so launchd matches the file.
@@ -1145,6 +1231,7 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let shift = mods.contains(KeyModifiers::SHIFT);
         match &mut self.mode {
             Mode::Filter => {
                 match code {
@@ -1190,9 +1277,14 @@ impl App {
             Mode::Normal => match code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
                 KeyCode::Char('c') if ctrl => return Ok(true),
+                KeyCode::PageUp => self.scroll_pane(1),
+                KeyCode::PageDown => self.scroll_pane(-1),
+                KeyCode::Up if shift => self.scroll_pane(1),
+                KeyCode::Down if shift => self.scroll_pane(-1),
                 KeyCode::Up | KeyCode::Char('k') => self.step(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('a') => self.enter(terminal),
+                KeyCode::Tab => self.toggle_more(),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('a') => self.enter(terminal)?,
                 KeyCode::Char('x') => self.stop(),
                 KeyCode::Char('e') => self.edit_jobs(terminal),
                 KeyCode::Char('s') => {
@@ -1215,26 +1307,36 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        // Expanded, the pane takes most of the screen and the list keeps the cursor in view.
+        let pane_size = if self.expanded { 75 } else { 40 };
         let [head, list, pane, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Percentage(40),
+            Constraint::Percentage(pane_size),
             Constraint::Length(1),
         ])
         .areas(frame.area());
         let enter = enter_verb(self.selected().map(|r| &r.kind));
         frame.render_widget(
-            Paragraph::new(header_lines(&self.data.summary(), enter)),
+            Paragraph::new(header_lines(&self.data.summary(), enter, self.expanded)),
             head,
         );
         self.draw_list(frame, list);
-        let title = self
+        let mut title = self
             .selected()
             .map(|r| r.text().trim().to_owned())
             .unwrap_or_default();
-        let height = pane.height.saturating_sub(1) as usize;
-        let skip = self.details.len().saturating_sub(height);
-        let lines: Vec<Line> = self.details[skip..]
+        self.pane_height = pane.height.saturating_sub(1) as usize;
+        let (from, to) = self.window();
+        // Reading rather than glancing: the title says where in the transcript the pane is.
+        if (self.expanded || self.pane_scroll > 0) && to > from {
+            title = format!(
+                "{title} · lines {}-{to} of {} · pgup pgdn scroll",
+                from + 1,
+                self.details.len()
+            );
+        }
+        let lines: Vec<Line> = self.details[from..to]
             .iter()
             .map(|l| Line::raw(l.as_str()))
             .collect();
@@ -1307,26 +1409,7 @@ impl App {
 }
 
 pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<i32> {
-    let mut app = App {
-        exe: exe.to_owned(),
-        jobs_path: jobs_path.to_owned(),
-        state: state.to_owned(),
-        claude: claude.to_owned(),
-        cwd: std::env::current_dir().context("dashboard working directory")?,
-        data: Data::load(jobs_path, state, claude)?,
-        rows: vec![],
-        visible: vec![],
-        cursor: 0,
-        scroll: 0,
-        by_state: false,
-        filter: String::new(),
-        mode: Mode::Normal,
-        status: String::new(),
-        details: vec![],
-        tick: 0,
-        refreshed: Instant::now(),
-        armed: None,
-    };
+    let mut app = App::new(exe, jobs_path, state, claude)?;
     app.refresh()?;
     // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
     // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
@@ -1545,5 +1628,159 @@ mod tests {
         let text = l.line().to_string();
         assert!(text.starts_with("new task · dir › "));
         assert!(text.contains(&fleet::tilde(base.path())));
+    }
+
+    use std::fs;
+
+    /// A live registry entry for this test process, so `ps` vouches for the pid.
+    fn registry(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
+        fs::create_dir_all(claude.join("sessions")).unwrap();
+        fs::write(
+            claude.join("sessions").join(format!("{id}.json")),
+            serde_json::json!({"pid": std::process::id(), "sessionId": id, "cwd": cwd,
+                "kind": "interactive", "status": status, "startedAt": started, "updatedAt": started})
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// A dashboard before its first `refresh`, so a test sets filter and grouping first.
+    fn app(dir: &Path) -> App {
+        App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
+    }
+
+    fn key(app: &App) -> Option<String> {
+        app.selected().and_then(|r| r.kind.key().map(str::to_owned))
+    }
+
+    const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    #[test]
+    fn kind_key_is_the_id_without_the_state() {
+        assert_eq!(Kind::Session(A.into(), "idle".into()).key(), Some(A));
+        assert_eq!(Kind::Session(A.into(), "active".into()).key(), Some(A));
+        assert_eq!(Kind::Run("run-1".into(), "ok".into()).key(), Some("run-1"));
+        assert_eq!(Kind::Job("nightly".into()).key(), Some("nightly"));
+        assert_eq!(Kind::Header.key(), None);
+        assert_eq!(Kind::Columns.key(), None);
+        assert_eq!(Kind::Blank.key(), None);
+    }
+
+    /// The trip through the harness is `foreground` then `refresh`; the terminal part cannot
+    /// run under a test, the state part can. The filter and grouping are fields, the row is
+    /// found again by id.
+    #[test]
+    fn coming_back_lands_on_the_same_row_with_filter_and_grouping_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path();
+        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
+        registry(claude, B, "/src/two", "idle", 1_757_682_872_000);
+        registry(claude, C, "/src/two", "idle", 1_757_682_873_000);
+        let mut app = app(claude);
+        app.by_state = true;
+        app.filter = "two".into();
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(B), "oldest match first");
+        app.step(1);
+        assert_eq!(key(&app).as_deref(), Some(C));
+        let before = app.cursor;
+        // While C was open it started working: grouped by state it now sits in a group of its
+        // own, above the idle rows, so its index moved.
+        registry(claude, C, "/src/two", "busy", 1_757_682_873_000);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(C));
+        assert_ne!(app.cursor, before, "the row moved; the cursor followed it");
+        assert!(
+            matches!(&app.selected().unwrap().kind, Kind::Session(_, s) if s == "active"),
+            "the row shows what the session became"
+        );
+        assert!(app.by_state, "grouping kept");
+        assert_eq!(app.filter, "two", "filter kept");
+        assert!(matches!(app.mode, Mode::Normal));
+        // The session ended while open: the cursor falls on a remaining row, not on nothing.
+        fs::remove_file(claude.join("sessions").join(format!("{C}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(B));
+        assert!(app.by_state && app.filter == "two");
+        // Without the filter, A is back too and C's absence still leaves a selection.
+        app.filter.clear();
+        app.refresh().unwrap();
+        assert!(key(&app).is_some());
+    }
+
+    #[test]
+    fn tab_shows_more_of_the_transcript_and_the_pane_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path();
+        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
+        let project = claude.join("projects/-src-one");
+        fs::create_dir_all(&project).unwrap();
+        let turn = |n: usize| {
+            format!(
+                "{{\"type\":\"user\",\"message\":{{\"content\":\"prompt {n}\"}}}}\n{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"reply {n}\"}}]}}}}\n"
+            )
+        };
+        fs::write(
+            project.join(format!("{A}.jsonl")),
+            (0..20).map(turn).collect::<String>(),
+        )
+        .unwrap();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        let prompts = |app: &App| app.details.iter().filter(|l| l.starts_with("> ")).count();
+        assert_eq!(prompts(&app), 1, "collapsed: the last exchange");
+        assert!(app.details.contains(&"reply 19".to_owned()));
+        app.toggle_more();
+        assert!(app.expanded);
+        assert_eq!(prompts(&app), MORE, "expanded: the last {MORE} exchanges");
+        assert!(app.details.contains(&"> prompt 8".to_owned()));
+        assert!(!app.details.contains(&"> prompt 7".to_owned()));
+        // Paging: the pane starts pinned to the end, pages up in screenfuls, clamps at the top
+        // and comes back down; a reload keeps the place, moving rows resets it.
+        let n = app.details.len();
+        app.pane_height = 10;
+        assert_eq!(app.window(), (n - 10, n));
+        app.scroll_pane(1);
+        assert_eq!(app.window(), (n - 20, n - 10));
+        for _ in 0..50 {
+            app.scroll_pane(1);
+        }
+        assert_eq!(app.window(), (0, 10), "clamped at the start");
+        app.scroll_pane(-1);
+        assert_eq!(app.window(), (10, 20));
+        let place = app.pane_scroll;
+        app.refresh().unwrap();
+        assert_eq!(
+            app.pane_scroll, place,
+            "a reload does not yank the reader back"
+        );
+        app.step(1);
+        assert_eq!(app.window(), (n - 10, n), "a new row reads from its end");
+        app.scroll_pane(1);
+        app.toggle_more();
+        assert!(!app.expanded);
+        assert_eq!(prompts(&app), 1);
+        assert_eq!(app.pane_scroll, 0, "tab back pins to the end again");
+        // A pane taller than the text shows all of it and cannot scroll.
+        app.pane_height = 100;
+        assert_eq!(app.window(), (0, app.details.len()));
+        app.scroll_pane(1);
+        assert_eq!(app.pane_scroll, 0);
+    }
+
+    #[test]
+    fn hint_line_flips_tab_between_more_and_less() {
+        let text = |expanded: bool| {
+            header_lines("s", "attach", expanded)[2]
+                .spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert!(text(false).contains("enter attach · tab more · x x stop"));
+        assert!(text(true).contains("enter attach · tab less · x x stop"));
     }
 }

@@ -577,7 +577,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         ["idle", "runs"],
         "grouping by state names the state"
     );
-    let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()));
+    let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()), 1);
     assert!(
         pane[0] == "~/src/repo" && pane[1].contains("idle interactive"),
         "{pane:?}"
@@ -661,6 +661,48 @@ fn fleet_exchange_is_the_last_prompt_and_the_full_reply() {
         ]
     );
     assert!(cones::fleet::exchange(&dir.path().join("missing.jsonl")).is_empty());
+    // More of the transcript: the last n prompts with their replies, oldest first, a blank
+    // between them; a tool-only turn shows its prompt alone; one exchange is `exchange`.
+    assert_eq!(
+        cones::fleet::exchanges(&t, 2),
+        [
+            "> old prompt",
+            "",
+            "old reply",
+            "",
+            "> fix it",
+            "> please",
+            "",
+            "Fixed it",
+            "second line",
+            "",
+            "done"
+        ]
+    );
+    assert_eq!(
+        cones::fleet::exchanges(&t, 9),
+        cones::fleet::exchanges(&t, 2),
+        "asking for more than the transcript holds gives the whole transcript"
+    );
+    assert_eq!(cones::fleet::exchanges(&t, 1), cones::fleet::exchange(&t));
+    fs::write(
+        &t,
+        concat!(
+            r#"{"type":"user","message":{"content":"quiet"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":"loud"}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"reply"}]}}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        cones::fleet::exchanges(&t, 2),
+        ["> quiet", "", "", "> loud", "", "reply"]
+    );
 }
 #[test]
 fn doctor_version_range_is_major_minor_up_to_next_major() {

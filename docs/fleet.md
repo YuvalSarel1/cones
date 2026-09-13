@@ -54,13 +54,15 @@ The copy under `assets/coordinator/` is the upstream skill with one line changed
 
 `cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
-Its hint line reads `↑↓ move · enter <verb> · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected.
+Its hint line reads `↑↓ move · enter <verb> · tab more · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected; `tab more` reads `tab less` while the pane is expanded.
 
 | Pane | Columns | Details pane |
 | --- | --- | --- |
 | Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
-| Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply |
+| Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply; with `tab`, the last 12 exchanges |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
+
+The details pane is the bottom 40% of the screen and shows the end of its text. `tab` expands it to 75% and, on a session, reads the last 12 prompts and replies from the transcript instead of the last one, so a session can be read before it is opened; nothing is shown that the transcript does not record, so a turn that was all tool calls shows its prompt alone. `pgup` and `pgdn` (or `shift+↑` `↓`) page through the text; the pane title then reads `lines 41-80 of 120`. The pane stays pinned to the end until it is paged up, so a working session keeps scrolling by itself, and moving to another row or pressing `tab` again pins it back.
 
 Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: tokens in the window at the last turn, with `/200k 49%` appended only when the harness reported the window size. It is `-` until the transcript holds a message with usage.
 
@@ -69,7 +71,9 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | Key | Action |
 | --- | --- |
 | `↑` `↓`, `k` `j` | Move between rows. |
-| `enter`, `→`, `a` | On a job: start a run in the background. On a running run: follow its log (Ctrl+C returns). On a finished run or a session: open it in this terminal, as described above; Ctrl+Z comes back. |
+| `enter`, `→`, `a` | On a job: start a run in the background. On a running run: follow its log (Ctrl+C returns). On a finished run or a session: open it in this terminal, as described above; Ctrl+Z comes back to the same row, with the filter and grouping as they were. |
+| `tab` | Expand the details pane; on a session, show the last 12 exchanges. `tab` again goes back. |
+| `pgup`, `pgdn` (or `shift+↑`, `shift+↓`) | Page the details pane up towards the start of the text and back down to its end. |
 | `x` twice (or `ctrl+x` twice) within two seconds | Stop the selected run or session. On a job: stop that job's run in flight; with none, the status line says so. |
 | `e` | Open jobs.yaml in `$VISUAL` or `$EDITOR`, then run `cones install` on return so launchd matches the file; an install error shows on the status line. |
 | `ctrl+s` (or `s`) | Regroup sessions by state or by directory. |
@@ -78,7 +82,7 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `r` | Reload now. |
 | `esc`, `q`, `ctrl+c` | Quit. |
 
-Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
+Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Opening a session hands the terminal to `cones attach`, the same native resume the command runs; the dashboard's state waits in memory meanwhile and on return it reloads and finds the row again by its id, so a session that went from idle to working while it was open, and so moved to another group, is still the selected row. A session that ended while open leaves the cursor on its neighbor. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
 
 ### `n`: launch in any folder
 
