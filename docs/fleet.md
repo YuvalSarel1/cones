@@ -40,6 +40,17 @@ Other notifications (`auth_success`, `agent_completed`, `quota_*`) leave the sta
 
 Stopping and attaching follow the session's owner. A session that `claude agents --json` lists belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the hook's `$PPID` after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
 
+## The coordinator: one session per folder
+
+Coordination between agents sharing a tree is not in cones. It is the [start-orchestrator](https://github.com/YuvalSarel1/orchestrator) skill: one Claude Code session that finds every agent whose cwd is the folder, introduces itself, holds commits until it says go, relays findings and insists on a clean tree when the last job ends. cones owns locks, schedule and ledger; the coordinator owns the conversation.
+
+```sh
+cones coordinator start            # this folder
+cones coordinator start ~/src/app  # another folder
+```
+
+Both run `claude --bg /start-orchestrator` in the folder, so the coordinator is an ordinary background session: it shows in `cones ls` and the dashboard, `claude attach <id>` opens it, and telling it "stop orchestrator" ends it. The skill writes `~/.claude/orchestrator/<sha1 of the folder>.json` with its pid and peers every tick; when that file names a live process for the folder, `cones coordinator start` prints it and does nothing, and the skill refuses a second instance on its own as well. The skill is installed as `~/.claude/skills/start-orchestrator`; without it the command fails with the two install lines.
+
 ## The dashboard: jobs, sessions and runs on one screen
 
 `cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.

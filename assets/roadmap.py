@@ -4,7 +4,7 @@ W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
 CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
-COLS = [("NOW", "What the peer orchestrator lacks today", "#3fb950", [
+COLS = [("NOW", "What the coordinator needs from cones", "#3fb950", [
     ("Lock holder in ls", "COORD", "Holder pid and session id land beside the .lock; ls, the dashboard and cones lock --status show who holds and who waits; --try exits 1, no waiting."),
     ("Touched files from hooks", "OBS", "PostToolUse Edit and Write paths accumulate in the session's fleet file; ls --json and the details pane show each footprint. Bash edits are not seen."),
     ("Status transitions", "OBS", "cones status 'text' writes the session's fleet file and fills the last column, so the orchestrator reads check-ins instead of asking; hook-derived blocked/idle/exited shipped."),
@@ -15,11 +15,11 @@ COLS = [("NOW", "What the peer orchestrator lacks today", "#3fb950", [
     ("Run diffs", "OBS", "A write run records git diff --stat of its cwd at exit; cones logs and the details pane show what the run changed."),
     ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
     ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
+    ("Other coordinators", "COORD", "cones coordinator start --skill NAME launches any coordinator skill, Claude Code or another harness; start-orchestrator stays the default."),
     ("Fleet sessions in the ledger", "OBS", "SessionEnd writes a session record (cwd, duration, tokens, dollars) for sessions cones did not launch; ls totals it, daily_budget_usd ignores it."),
 ]), ("LATER", "Needs a second writer, harness or Mac", "#bc8cff", [
-    ("Fleet roster", "COORD", "Task and declared file scope added to each session's state file; overlaps detected before commit. Only when two writers share a repo."),
     ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
-    ("Standing orders", "COORD", "Fleet rules as data, checked when the last job ends."),
+    ("Cross-harness coordination", "COORD", "The coordinator drives Claude Code and Codex agents in one folder alike: Codex arrivals greeted, gated and relayed, not only read from their rollout files."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
     ("Codex fleet hooks", "HAR", "cones hook codex, once Codex hook trust can be configured without a bypass flag."),
@@ -32,7 +32,7 @@ SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn ca
            "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
            "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · "
            "stop for fleet sessions from the CLI and the dashboard · key hints follow claude agents, ctrl-x twice stops · per-harness marks, spinners and colors · "
-           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger · agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used · doctor fails on missing login or job env, warns on Claude version drift, probes the flags the compiler emits · run rows and cones ls show dollars spent from the ledger · claude agents --json and the job state file feed the fleet view, last column reads Claude's own status")
+           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger · agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used · doctor fails on missing login or job env, warns on Claude version drift, probes the flags the compiler emits · run rows and cones ls show dollars spent from the ledger · claude agents --json and the job state file feed the fleet view, last column reads Claude's own status · cones coordinator start: one start-orchestrator session per folder, coordination stays a skill")
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 

@@ -16,6 +16,7 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones stop ID` | A run ends `failed` / `interrupted` after cones checks the worker pid still belongs to its supervisor. A session ends through `claude stop` or SIGTERM as described in [fleet.md](fleet.md). Prints `stop requested` or `already finished`. |
 | `cones attach ID [--print-command]` | A finished run or a session whose process is gone is resumed in the background and attached to, in its cwd; the archived transcript is restored into Claude's store if the native one is missing. A live session is attached directly. `--print-command` prints the command instead. A running headless run cannot be attached; follow its log. |
 | `cones lock DIR -- COMMAND...` | Hold the directory writer lock while the command runs; exit with its status. |
+| `cones coordinator start [DIR]` | Launch the folder's coordinator: `claude --bg /start-orchestrator` in DIR (default: the current directory); Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Fail with the install lines when the skill is missing. See [fleet.md](fleet.md#the-coordinator-one-session-per-folder). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
 | `cones tui` | The dashboard. |
 | `cones hook [--install] [PID]` | `--install` writes the fleet hook into `~/.claude/settings.json`. Without it, `cones hook PID` records one hook event from stdin (Claude Code calls this). |

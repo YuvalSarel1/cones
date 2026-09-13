@@ -61,6 +61,40 @@ pub fn launch_path() -> String {
     .join(":")
 }
 
+/// The coordinator is a skill, not cones: one Claude Code session per folder that greets the
+/// agents working there, gates their commits and relays findings. cones only launches it.
+pub const COORDINATOR_SKILL: &str = "start-orchestrator";
+
+/// The skill's status file for `dir`, when it names a live process.
+pub fn coordinator_status(dir: &Path) -> Option<Value> {
+    let files = std::fs::read_dir(dirs::home_dir()?.join(".claude/orchestrator")).ok()?;
+    files.flatten().find_map(|entry| {
+        let status: Value = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
+        let pid = status.get("pid")?.as_u64()? as u32;
+        (status.get("cwd")?.as_str()? == dir.to_str()? && crate::fleet::alive(pid))
+            .then_some(status)
+    })
+}
+
+/// `claude --bg /start-orchestrator` in `dir`. The skill refuses a second instance per folder
+/// itself, so a blind launch is safe.
+pub fn coordinator(dir: &Path) -> Result<std::process::Command> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("missing home directory"))?;
+    ensure!(
+        home.join(".claude/skills")
+            .join(COORDINATOR_SKILL)
+            .join("SKILL.md")
+            .is_file(),
+        "skill {COORDINATOR_SKILL} is not installed:\n  git clone https://github.com/YuvalSarel1/orchestrator ~/personal/orchestrator\n  ln -s ~/personal/orchestrator ~/.claude/skills/{COORDINATOR_SKILL}"
+    );
+    let path =
+        executable("claude", &launch_path()).ok_or_else(|| anyhow::anyhow!("claude not found"))?;
+    let mut cmd = std::process::Command::new(path);
+    cmd.args(["--bg", &format!("/{COORDINATOR_SKILL}")])
+        .current_dir(dir);
+    Ok(cmd)
+}
+
 pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
     env.insert(

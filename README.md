@@ -31,7 +31,7 @@ $ cones ls
 8077985c-...	~/personal/cones	idle	2026-09-12T13:54:23+00:00	claude	-	40.6M/157k
 ```
 
-Real output, ids and paths shortened. One global hook puts every Claude session on the Mac, scheduled or interactive, into `cones ls` and a dashboard. launchd fires each job on a cron schedule, and a writer lock per directory keeps jobs and agents from editing the same tree at once. Each run goes out headless under a policy Claude itself enforces, dollar budget, turn cap, tool allowlist, read-only or sandboxed write, no MCP, no prompts, plus a timeout, and lands in a JSONL ledger with a status and a reason. cones runs no process between ticks. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget, see the roadmap.
+Real output, ids and paths shortened. One global hook puts every Claude session on the Mac, scheduled or interactive, into `cones ls` and a dashboard. launchd fires each job on a cron schedule, and a writer lock per directory keeps jobs and agents from editing the same tree at once. Each run goes out headless under a policy Claude itself enforces, dollar budget, turn cap, tool allowlist, read-only or sandboxed write, no MCP, no prompts, plus a timeout, and lands in a JSONL ledger with a status and a reason. cones runs no process between ticks. Coordination between agents on one tree, greetings, commit gating and relayed findings, is a skill rather than a cones feature, and `cones coordinator start` launches it for a folder. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget, see the roadmap.
 
 ## Why
 
@@ -68,6 +68,7 @@ cones run readme-check           # run one now, read it back with cones logs <id
 cones install                    # write and load the LaunchAgents
 cones hook --install             # every Claude session on the Mac in cones ls
 cones tui                        # jobs, sessions and runs on one screen
+cones coordinator start          # one orchestrator session for this folder's agents
 ```
 
 `cones install --dry-run` prints the plists instead of writing them, `cones uninstall` removes them and keeps history, and both are idempotent. `cones run --prompt "fix the flaky test"` runs a one-off task in the current directory under the first job's policy.

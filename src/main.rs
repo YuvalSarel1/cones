@@ -85,6 +85,11 @@ enum Action {
         #[arg(last = true, required = true)]
         command: Vec<String>,
     },
+    /// Start the coordinator for a folder: one Claude Code session running the start-orchestrator skill.
+    Coordinator {
+        #[command(subcommand)]
+        action: CoordinatorAction,
+    },
     /// Check execution prerequisites and policy hazards.
     Doctor,
     /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
@@ -104,6 +109,12 @@ enum Action {
         #[arg(long)]
         run_id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum CoordinatorAction {
+    /// `claude --bg /start-orchestrator` in DIR (default: here), unless one already runs there.
+    Start { dir: Option<PathBuf> },
 }
 
 fn main() {
@@ -380,6 +391,26 @@ fn execute(cli: Cli) -> Result<i32> {
             attach_real_tty(&mut command);
             let error = command.exec();
             bail!("native resume failed: {error}")
+        }
+        Action::Coordinator {
+            action: CoordinatorAction::Start { dir },
+        } => {
+            let dir = cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), &cwd)?
+                .canonicalize()
+                .context("coordinator directory")?;
+            if let Some(status) = harness::coordinator_status(&dir) {
+                println!(
+                    "coordinator already running in {} (pid {}, session {})",
+                    dir.display(),
+                    status["pid"],
+                    status["jobId"].as_str().unwrap_or("-")
+                );
+                return Ok(0);
+            }
+            let status = harness::coordinator(&dir)?
+                .status()
+                .context("start claude")?;
+            Ok(status.code().unwrap_or(1))
         }
         Action::Doctor => doctor(&jobs_path, &state),
         Action::Worker { .. } => unreachable!(),
