@@ -1693,6 +1693,10 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
 /// most of a second, so it is killed where it stands and the session it showed is untouched.
 /// Anything else (Codex and vi both stop on ctrl-z; interactive Claude eats it) is resumed,
 /// because killing it would be killing the session or the unsaved file.
+///
+/// To re-check what a program does on ctrl-z, run it as a foreground job of an interactive
+/// shell on a pty and read its ps state. A program forked straight onto a pty is an orphaned
+/// process group, and the kernel discards its tty stops, so that probe says nothing ever stops.
 fn wait_or_stopped(
     child: &mut std::process::Child,
     viewer: bool,
