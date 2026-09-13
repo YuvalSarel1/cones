@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>Traffic control for Claude Code.</b> Schedule repeated jobs, see every agent running on your Mac, and keep them out of each other's way.
+  <b>Traffic control for coding agents.</b> Schedule repeated jobs, see every agent running on your Mac, and keep them out of each other's way.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@ $ cones ls
 8077985c-...	~/personal/cones	idle	2026-09-12T13:54:23+00:00	claude	-	40.6M/157k
 ```
 
-Real output, ids and paths shortened. One global hook puts every Claude session on the Mac, scheduled or interactive, into `cones ls` and a dashboard. launchd fires each job on a cron schedule, and a writer lock per directory keeps jobs and agents from editing the same tree at once. Each run goes out headless under a policy Claude itself enforces, dollar budget, turn cap, tool allowlist, read-only or sandboxed write, no MCP, no prompts, plus a timeout, and lands in a JSONL ledger with a status and a reason. cones runs no process between ticks.
+Real output, ids and paths shortened. One global hook puts every Claude session on the Mac, scheduled or interactive, into `cones ls` and a dashboard. launchd fires each job on a cron schedule, and a writer lock per directory keeps jobs and agents from editing the same tree at once. Each run goes out headless under a policy Claude itself enforces, dollar budget, turn cap, tool allowlist, read-only or sandboxed write, no MCP, no prompts, plus a timeout, and lands in a JSONL ledger with a status and a reason. cones runs no process between ticks. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget, see the roadmap.
 
 ## Why
 
