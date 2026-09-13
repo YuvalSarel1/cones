@@ -11,9 +11,10 @@ ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5c
 def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output=True, **k)
 
 tmux("kill-session", "-t", "conescap")
-tmux("new-session", "-d", "-s", "conescap", "-x", str(COLS), "-y", str(ROWS), f"{BIN} tui", check=True)
-time.sleep(4)
-time.sleep(1)  # the job row is selected on start, so the details pane shows its policy and prompt
+# The example job is the first row, so the selected row's details pane shows its policy and
+# prompt rather than the tail of a live session's transcript.
+tmux("new-session", "-d", "-s", "conescap", "-x", str(COLS), "-y", str(ROWS), f"{BIN} --jobs jobs.example.yaml tui", check=True)
+time.sleep(5)
 lines = tmux("capture-pane", "-p", "-e", "-t", "conescap", check=True).stdout.rstrip("\n").split("\n")
 tmux("kill-session", "-t", "conescap")
 
