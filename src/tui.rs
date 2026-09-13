@@ -25,7 +25,7 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -204,7 +204,7 @@ impl Data {
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
                     "active" => 2,
-                    "idle" => 3,
+                    "idle" | "suspended" => 3,
                     _ => 4,
                 };
                 format!("{rank}{}", label(&s.state))
@@ -464,6 +464,7 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     match kind {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
+        Some(Kind::Session(_, s)) if s == "suspended" => "resume",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
         _ => "open",
     }
@@ -611,6 +612,7 @@ fn icon(state: &str) -> &str {
         "active" | "started" => "▲",
         "blocked" => "⚠",
         "idle" => "△",
+        "suspended" => "▽",
         "exited" => "▵",
         "ok" => "✓",
         "skipped" | "-" => "–",
@@ -667,6 +669,7 @@ fn color(status: &str) -> Style {
     match status {
         "active" | "started" | "ok" => Style::default().fg(Color::Green),
         "blocked" | "skipped" => Style::default().fg(Color::Yellow),
+        "suspended" => Style::default().fg(Color::Indexed(75)),
         "idle" | "exited" | "-" => dim(),
         _ => Style::default().fg(Color::Red),
     }
@@ -980,6 +983,38 @@ struct App {
     armed: Option<(String, Instant)>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
+    suspended: Vec<Suspended>,
+}
+
+/// A harness launched with `n` and parked by ctrl-z: stopped in its own process group, off the
+/// terminal, until `enter` on its row brings it back or quitting kills it.
+struct Suspended {
+    child: Child,
+    what: String,
+    harness: String,
+    cwd: PathBuf,
+}
+
+/// What a foreground child stopping on ctrl-z means.
+#[derive(Clone, PartialEq, Eq)]
+enum OnStop {
+    /// A viewer (attach client, log follower): killed, the dashboard is back at once.
+    Kill,
+    /// The editor: resumed, so ctrl-z is a no-op and unsaved edits are safe.
+    Resume,
+    /// A harness launched here: parked as a `suspended` row, the dashboard is back at once.
+    Suspend { harness: String, cwd: PathBuf },
+}
+
+enum Waited {
+    Exited(std::process::ExitStatus),
+    Stopped,
+}
+
+/// What `foreground` hands the terminal to: a new command, or a suspended child coming back.
+enum Start {
+    Spawn(Command),
+    Resume(Child),
 }
 
 impl App {
@@ -1008,6 +1043,7 @@ impl App {
             loading: None,
             armed: None,
             log: None,
+            suspended: vec![],
         })
     }
 
@@ -1051,6 +1087,19 @@ impl App {
     /// Apply a finished reload, if one has landed. A failed read shows in the status line and
     /// the last good data stays on screen.
     fn poll(&mut self) {
+        // A suspended harness that ended on its own (killed elsewhere, or continued and quit)
+        // leaves the list, or its row would promise a resume that cannot happen.
+        let mut i = 0;
+        while i < self.suspended.len() {
+            match self.suspended[i].child.try_wait() {
+                Ok(Some(st)) => {
+                    let s = self.suspended.remove(i);
+                    self.debug(|| format!("suspended {} ended on its own: {st}", s.what));
+                    self.status = format!("{} ended while suspended", s.what);
+                }
+                _ => i += 1,
+            }
+        }
         let Some(rx) = &self.loading else {
             return;
         };
@@ -1068,6 +1117,32 @@ impl App {
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
         self.data = data;
+        // A suspended harness is a session row in state `suspended`: the fleet's own row for
+        // its pid when it lists one (Codex, from the process table), a stand-in until then.
+        for s in &self.suspended {
+            let pid = s.child.id();
+            match self.data.sessions.iter_mut().find(|x| x.pid == Some(pid)) {
+                Some(x) => x.state = "suspended".into(),
+                None => self.data.sessions.push(Session {
+                    session_id: format!("{}-{pid}", s.harness),
+                    harness: s.harness.clone(),
+                    kind: None,
+                    cwd: s.cwd.clone(),
+                    state: "suspended".into(),
+                    started: None,
+                    last_activity: None,
+                    model: None,
+                    pid: Some(pid),
+                    transcript_path: None,
+                    tokens_in: None,
+                    tokens_out: None,
+                    context_tokens: None,
+                    cost_usd: None,
+                    title: None,
+                    last: Some("parked by ctrl-z".into()),
+                }),
+            }
+        }
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
@@ -1234,23 +1309,27 @@ impl App {
     }
 
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
-    /// `viewer` says what ctrl-z means if the child stops on it: an attach client or a log
-    /// follower is killed and the dashboard is back at once; the real thing (an editor, a
-    /// harness launched here) is resumed and keeps the terminal, since killing it would lose
-    /// edits or the session itself.
+    /// Hand the terminal to a child, take it back when it exits or stops, and surface its last
+    /// stderr line. The child runs in its own process group and owns the tty, like a shell job,
+    /// so ctrl-c and ctrl-z reach it and everything it forked, and nothing else; `on_stop` says
+    /// what a stop means. `Start::Resume` brings a suspended child back instead of spawning.
     fn foreground(
         &mut self,
         terminal: &mut DefaultTerminal,
-        mut c: Command,
+        start: Start,
         what: &str,
-        viewer: bool,
+        on_stop: OnStop,
     ) {
-        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
         let height = terminal.size().map(|s| s.height).unwrap_or(0);
         self.debug(|| {
+            let start = match &start {
+                Start::Spawn(c) => format!("{c:?} in {:?}", c.get_current_dir()),
+                Start::Resume(c) => format!("resume pid {}", c.id()),
+            };
             format!(
-                "foreground {what}: {c:?} in {:?}; size={:?}; {}",
-                c.get_current_dir(),
+                "foreground {what}: {start}; size={:?}; {}",
                 terminal.size().ok(),
                 term_state()
             )
@@ -1270,43 +1349,94 @@ impl App {
         if let Some(t) = still.as_mut() {
             let _ = t.draw(|f| self.draw(f));
         }
-        c.stderr(Stdio::piped());
         // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_IGN);
-            c.pre_exec(|| {
-                libc::signal(libc::SIGINT, libc::SIG_DFL);
-                libc::signal(libc::SIGTSTP, libc::SIG_DFL);
-                Ok(())
-            });
         }
+        let spawned = match start {
+            Start::Spawn(mut c) => {
+                // A harness that may be suspended keeps its own stderr: the pipe would outlive
+                // the wait, and a TUI that finds fd 2 is not a tty may misbehave.
+                if !matches!(on_stop, OnStop::Suspend { .. }) {
+                    c.stderr(Stdio::piped());
+                }
+                unsafe {
+                    c.pre_exec(|| {
+                        libc::setpgid(0, 0);
+                        libc::tcsetpgrp(0, libc::getpid());
+                        for sig in [libc::SIGINT, libc::SIGTSTP, libc::SIGTTOU, libc::SIGTTIN] {
+                            libc::signal(sig, libc::SIG_DFL);
+                        }
+                        Ok(())
+                    });
+                }
+                c.spawn()
+            }
+            Start::Resume(c) => {
+                let pid = c.id() as libc::pid_t;
+                unsafe {
+                    libc::tcsetpgrp(0, pid);
+                    libc::kill(-pid, libc::SIGCONT);
+                }
+                Ok(c)
+            }
+        };
         let started = Instant::now();
-        let r = c.spawn().and_then(|mut c| {
-            self.debug(|| format!("spawned pid {}; waiting", c.id()));
-            let watch = self.log.as_ref().map(|p| watch_group(p.clone()));
-            let r = wait_or_stopped(&mut c, viewer, &|m| self.debug(|| m));
+        let r = spawned.and_then(|mut c| {
+            self.debug(|| format!("child pid {}; waiting", c.id()));
+            let pid = c.id() as libc::pid_t;
+            let stderr = c.stderr.take().map(|mut e| {
+                std::thread::spawn(move || {
+                    let mut v = Vec::new();
+                    let _ = e.read_to_end(&mut v);
+                    v
+                })
+            });
+            let watch = self.log.as_ref().map(|p| watch_group(p.clone(), c.id()));
+            let waited = loop {
+                let w = wait_or_stopped(&mut c, on_stop == OnStop::Kill, &|m| self.debug(|| m));
+                match w {
+                    // The child still owns the tty; it only needs to run again.
+                    Ok(Waited::Stopped) if on_stop == OnStop::Resume => unsafe {
+                        libc::kill(-pid, libc::SIGCONT);
+                    },
+                    w => break w,
+                }
+            };
             if let Some((stop, t)) = watch {
                 stop.store(true, Ordering::Relaxed);
                 let _ = t.join();
             }
-            r
+            let stderr = match &waited {
+                Ok(Waited::Exited(_)) => stderr.and_then(|t| t.join().ok()).unwrap_or_default(),
+                _ => vec![],
+            };
+            waited.map(|w| (c, w, stderr))
         });
         unsafe {
+            libc::tcsetpgrp(0, libc::getpgrp());
             libc::signal(libc::SIGINT, libc::SIG_DFL);
         }
         match &r {
-            Ok(o) => self.debug(|| format!(
-                "child done after {:?}: code={:?} signal={:?} stopped={:?} stderr_tail={:?}; {}",
-                started.elapsed(),
-                o.status.code(),
-                o.status.signal(),
-                o.status.stopped_signal(),
-                String::from_utf8_lossy(&o.stderr)
-                    .lines()
-                    .rev()
-                    .find(|l| !l.trim().is_empty()),
-                term_state()
-            )),
+            Ok((_, Waited::Exited(st), err)) => self.debug(|| {
+                format!(
+                    "child done after {:?}: {st}; stderr_tail={:?}; {}",
+                    started.elapsed(),
+                    String::from_utf8_lossy(err)
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty()),
+                    term_state()
+                )
+            }),
+            Ok((c, Waited::Stopped, _)) => self.debug(|| {
+                format!(
+                    "child pid {} suspended after {:?}; {}",
+                    c.id(),
+                    started.elapsed(),
+                    term_state()
+                )
+            }),
             Err(e) => self.debug(|| format!("child failed: {e}; {}", term_state())),
         }
         if let Some(t) = still.as_mut() {
@@ -1321,17 +1451,62 @@ impl App {
             )
         });
         self.status = match r {
-            Ok(o) if o.status.success() => format!("back from {what}"),
-            Ok(o) => {
-                let err = String::from_utf8_lossy(&o.stderr);
+            Ok((child, Waited::Stopped, _)) => {
+                if let OnStop::Suspend { harness, cwd } = on_stop {
+                    self.suspended.push(Suspended {
+                        child,
+                        what: what.to_owned(),
+                        harness,
+                        cwd,
+                    });
+                }
+                format!("{what} suspended · enter on its row to return")
+            }
+            Ok((_, Waited::Exited(st), _)) if st.success() => format!("back from {what}"),
+            Ok((_, Waited::Exited(st), err)) => {
+                let err = String::from_utf8_lossy(&err);
                 let last = err.lines().rev().find(|l| !l.trim().is_empty());
                 match last {
                     Some(l) => format!("{what} failed: {}", l.trim_start_matches("Error: ")),
-                    None => format!("{what} exited with {}", o.status),
+                    None => format!("{what} exited with {st}"),
                 }
             }
             Err(e) => format!("{what} failed: {e}"),
         };
+    }
+
+    /// SIGKILL every suspended harness, process group and all. Left stopped with no dashboard
+    /// to resume them, they would sit in the process table forever.
+    fn kill_suspended(&mut self) {
+        for s in &mut self.suspended {
+            unsafe {
+                libc::kill(-(s.child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            let _ = s.child.wait();
+        }
+        self.suspended.clear();
+    }
+
+    /// `q` with suspended harnesses arms, `q` again within two seconds kills them and quits.
+    fn quit(&mut self) -> bool {
+        if self.suspended.is_empty() {
+            return true;
+        }
+        match self.armed.take() {
+            Some((k, at)) if k == "quit" && at.elapsed() < Duration::from_secs(2) => {
+                self.kill_suspended();
+                true
+            }
+            _ => {
+                let names: Vec<&str> = self.suspended.iter().map(|s| s.what.as_str()).collect();
+                self.status = format!(
+                    "{} suspended · q again kills it and quits",
+                    names.join(", ")
+                );
+                self.armed = Some(("quit".into(), Instant::now()));
+                false
+            }
+        }
     }
 
     fn enter(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -1346,7 +1521,7 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, c, "logs", true)
+                self.foreground(terminal, Start::Spawn(c), "logs", OnStop::Kill)
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1354,15 +1529,28 @@ impl App {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
                 };
-                if s.harness != "claude" {
+                let (harness, cwd, pid) = (s.harness.clone(), s.cwd.clone(), s.pid);
+                // A harness parked here by ctrl-z comes back the way it left.
+                if let Some(i) =
+                    pid.and_then(|p| self.suspended.iter().position(|x| x.child.id() == p))
+                {
+                    let s = self.suspended.remove(i);
+                    let on_stop = OnStop::Suspend {
+                        harness: s.harness,
+                        cwd: s.cwd,
+                    };
+                    self.foreground(terminal, Start::Resume(s.child), &s.what, on_stop);
+                    self.reload();
+                    return Ok(());
+                }
+                if harness != "claude" {
                     self.status = format!(
-                        "{} sessions are listed but cannot be attached; open them in their own terminal",
-                        s.harness
+                        "{harness} sessions started elsewhere cannot be opened here; n launches one that can"
                     );
                     return Ok(());
                 }
-                match harness::adapter(HarnessKind::Claude)?.attach(&id, &s.cwd) {
-                    Ok(c) => self.foreground(terminal, c, "attach", true),
+                match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
+                    Ok(c) => self.foreground(terminal, Start::Spawn(c), "attach", OnStop::Kill),
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
                 // Back on the same row, read again by id: the session may have changed state,
@@ -1372,7 +1560,7 @@ impl App {
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, c, "attach", true);
+                self.foreground(terminal, Start::Spawn(c), "attach", OnStop::Kill);
                 self.reload();
             }
             _ => {}
@@ -1387,7 +1575,7 @@ impl App {
         c.arg("-c")
             .arg("exec ${VISUAL:-${EDITOR:-vi}} \"$0\"")
             .arg(&self.jobs_path);
-        self.foreground(terminal, c, "editor", false);
+        self.foreground(terminal, Start::Spawn(c), "editor", OnStop::Resume);
         let r = self.me().arg("install").output();
         self.status = match r {
             Ok(o) if o.status.success() => "jobs.yaml saved · launchd reinstalled".into(),
@@ -1473,14 +1661,24 @@ impl App {
                 LaunchAction::Stay => {}
                 LaunchAction::Cancel => self.mode = Mode::Normal,
                 // The harness natively in the directory; the dashboard waits and takes the
-                // terminal back, as for attach.
+                // terminal back. Claude runs as a background session under a viewer, so
+                // leaving the viewer keeps it in the fleet; a Codex is a foreground process
+                // that ctrl-z parks as a `suspended` row.
                 LaunchAction::Interactive(dir, kind) => {
                     self.mode = Mode::Normal;
                     let what = format!("{kind} in {}", fleet::tilde(&dir));
+                    let on_stop = match kind {
+                        HarnessKind::Claude => OnStop::Kill,
+                        _ => OnStop::Suspend {
+                            harness: kind.to_string(),
+                            cwd: dir.clone(),
+                        },
+                    };
                     match harness::interactive(kind, &dir) {
-                        Ok(c) => self.foreground(terminal, c, &what, false),
+                        Ok(c) => self.foreground(terminal, Start::Spawn(c), &what, on_stop),
                         Err(e) => self.status = format!("{what} failed: {e}"),
                     }
+                    self.reload();
                 }
                 // The same `cones run --prompt` the dashboard has always dispatched, with the
                 // subprocess's cwd set to the chosen directory.
@@ -1495,8 +1693,8 @@ impl App {
                 }
             },
             Mode::Normal => match code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
-                KeyCode::Char('c') if ctrl => return Ok(true),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(self.quit()),
+                KeyCode::Char('c') if ctrl => return Ok(self.quit()),
                 KeyCode::PageUp => self.scroll_pane(1),
                 KeyCode::PageDown => self.scroll_pane(-1),
                 KeyCode::Up if shift => self.scroll_pane(1),
@@ -1649,8 +1847,11 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
     // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
     // suspend the dashboard from under the user. Children get the default back in pre_exec.
+    // A foreground child owns the tty as its own process group; taking it back with tcsetpgrp
+    // from the background is SIGTTOU unless ignored.
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
+        libc::signal(libc::SIGTTOU, libc::SIG_IGN);
     }
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
@@ -1680,38 +1881,29 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         }
     })();
     app.debug(|| format!("dashboard loop ended: {result:?}"));
+    app.kill_suspended();
     ratatui::restore();
     result.context("dashboard")?;
     Ok(0)
 }
 
-/// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Claude's
-/// agents view does; its attach view eats the key) stops the child: the tty sends SIGTSTP to the
-/// whole foreground group and the dashboard ignores its copy. `Child::wait` would then block
-/// forever on a cooked terminal nobody reads. A stopped `viewer` is the user asking for the
-/// dashboard back: it has already restored the tty, and resuming it to exit on SIGTERM costs
-/// most of a second, so it is killed where it stands and the session it showed is untouched.
-/// Anything else (Codex and vi both stop on ctrl-z; interactive Claude eats it) is resumed,
-/// because killing it would be killing the session or the unsaved file.
+/// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Codex,
+/// vi and Claude's agents view do; interactive Claude and its attach view eat the key) stops the
+/// child's process group. `Child::wait` would then block forever on a cooked terminal nobody
+/// reads. With `kill_on_stop` the child is a viewer that has already restored the tty: it is
+/// killed where it stands, group and all, and the session it showed is untouched. Otherwise the
+/// stop is reported and the caller decides: resume it, or park it as a suspended row.
 ///
 /// To re-check what a program does on ctrl-z, run it as a foreground job of an interactive
 /// shell on a pty and read its ps state. A program forked straight onto a pty is an orphaned
 /// process group, and the kernel discards its tty stops, so that probe says nothing ever stops.
 fn wait_or_stopped(
-    child: &mut std::process::Child,
-    viewer: bool,
+    child: &mut Child,
+    kill_on_stop: bool,
     debug: &dyn Fn(String),
-) -> std::io::Result<std::process::Output> {
-    use std::io::Read;
+) -> std::io::Result<Waited> {
     use std::os::unix::process::ExitStatusExt;
     let pid = child.id() as libc::pid_t;
-    let stderr = child.stderr.take().map(|mut s| {
-        std::thread::spawn(move || {
-            let mut v = Vec::new();
-            let _ = s.read_to_end(&mut v);
-            v
-        })
-    });
     let mut status: libc::c_int = 0;
     loop {
         let r = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
@@ -1723,28 +1915,20 @@ fn wait_or_stopped(
             return Err(e);
         }
         if libc::WIFSTOPPED(status) {
-            let (verb, sig) = if viewer {
-                ("killing the viewer", libc::SIGKILL)
-            } else {
-                ("resuming it", libc::SIGCONT)
-            };
-            debug(format!(
-                "child stopped by signal {}; {verb}",
-                libc::WSTOPSIG(status)
-            ));
-            unsafe {
-                libc::kill(pid, sig);
+            let sig = libc::WSTOPSIG(status);
+            if kill_on_stop {
+                debug(format!("child stopped by signal {sig}; killing the viewer"));
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+                continue;
             }
-            continue;
+            debug(format!("child stopped by signal {sig}"));
+            return Ok(Waited::Stopped);
         }
-        break;
+        // ponytail: the pid is reaped here, so `Child::wait` would fail; the status is kept.
+        return Ok(Waited::Exited(ExitStatusExt::from_raw(status)));
     }
-    // ponytail: the pid is reaped here, so `Child::wait` would fail; the Output is built by hand.
-    Ok(std::process::Output {
-        status: ExitStatusExt::from_raw(status),
-        stdout: vec![],
-        stderr: stderr.and_then(|t| t.join().ok()).unwrap_or_default(),
-    })
 }
 
 fn debug_line(path: &Path, msg: impl std::fmt::Display) {
@@ -1795,13 +1979,13 @@ fn term_state() -> String {
     }
 }
 
-/// While a child holds the terminal, log the dashboard's process group (the child and what it
-/// forks share it) and the tty's foreground group once a second: `T` in the state column is a
-/// stopped child the dashboard is waiting on.
-fn watch_group(log: PathBuf) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+/// While a child holds the terminal, log the dashboard's process group and the child's (its own,
+/// shared with what it forks) and the tty's foreground group once a second: `T` in the state
+/// column is a stopped child.
+fn watch_group(log: PathBuf, child: u32) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
-    let pgrp = unsafe { libc::getpgrp() }.to_string();
+    let pgrp = format!("{},{child}", unsafe { libc::getpgrp() });
     let t = std::thread::spawn(move || {
         let mut last = String::new();
         while !flag.load(Ordering::Relaxed) {
@@ -1857,38 +2041,101 @@ mod tests {
         assert!(term_state().contains("pgrp="));
     }
 
-    #[test]
-    fn a_stopped_child_is_brought_back_and_waited_for() {
-        let mut c = Command::new("sh")
-            .args(["-c", "echo oops >&2; kill -STOP $$; sleep 30"])
-            .stderr(Stdio::piped())
+    fn job(script: &str) -> Child {
+        use std::os::unix::process::CommandExt;
+        Command::new("sh")
+            .args(["-c", script])
+            .process_group(0)
             .spawn()
-            .unwrap();
-        let log = std::sync::Mutex::new(vec![]);
-        let started = Instant::now();
+            .unwrap()
+    }
+
+    #[test]
+    fn a_stopped_viewer_is_killed_with_its_group_at_once() {
         use std::os::unix::process::ExitStatusExt;
-        let out = wait_or_stopped(&mut c, true, &|m| log.lock().unwrap().push(m)).unwrap();
+        let mut c = job("sleep 30 & kill -STOP $$; wait");
+        let started = Instant::now();
+        let log = std::sync::Mutex::new(vec![]);
+        let w = wait_or_stopped(&mut c, true, &|m| log.lock().unwrap().push(m)).unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "did not hang on the stop"
         );
-        assert_eq!(out.status.signal(), Some(libc::SIGKILL));
-        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
-        assert!(log.lock().unwrap()[0].starts_with("child stopped by signal"));
+        let Waited::Exited(st) = w else {
+            panic!("viewer must exit")
+        };
+        assert_eq!(st.signal(), Some(libc::SIGKILL));
+        assert!(log.lock().unwrap()[0].ends_with("killing the viewer"));
+        std::thread::sleep(Duration::from_millis(50));
+        let ps = Command::new("ps")
+            .args(["-o", "pid=", "-g", &c.id().to_string()])
+            .output()
+            .unwrap();
+        assert!(
+            ps.stdout.trim_ascii().is_empty(),
+            "the group died with the viewer: {ps:?}"
+        );
     }
 
     #[test]
-    fn a_stopped_non_viewer_is_resumed_and_finishes_on_its_own() {
-        let mut c = Command::new("sh")
-            .args(["-c", "kill -STOP $$; echo resumed >&2; exit 3"])
-            .stderr(Stdio::piped())
-            .spawn()
+    fn a_stopped_harness_is_reported_and_finishes_once_continued() {
+        let mut c = job("kill -STOP $$; exit 3");
+        let w = wait_or_stopped(&mut c, false, &|_| {}).unwrap();
+        assert!(matches!(w, Waited::Stopped));
+        assert!(c.try_wait().unwrap().is_none(), "still alive, stopped");
+        unsafe { libc::kill(-(c.id() as libc::pid_t), libc::SIGCONT) };
+        let Waited::Exited(st) = wait_or_stopped(&mut c, false, &|_| {}).unwrap() else {
+            panic!("must exit after SIGCONT")
+        };
+        assert_eq!(st.code(), Some(3));
+    }
+
+    #[test]
+    fn a_suspended_harness_is_a_row_enter_resumes_and_quit_asks_twice_then_kills() {
+        let d = dir();
+        let mut app = App::new(
+            Path::new("cones"),
+            &d.path().join("jobs.yaml"),
+            d.path(),
+            d.path(),
+        )
+        .unwrap();
+        let child = job("kill -STOP $$; sleep 30");
+        let pid = child.id();
+        app.suspended.push(Suspended {
+            child,
+            what: "codex in ~/x".into(),
+            harness: "codex".into(),
+            cwd: PathBuf::from("/x"),
+        });
+        app.refresh().unwrap();
+        let row = app
+            .rows
+            .iter()
+            .find(|r| matches!(&r.kind, Kind::Session(id, _) if id == &format!("codex-{pid}")))
+            .expect("a stand-in row for the parked harness");
+        assert!(matches!(&row.kind, Kind::Session(_, s) if s == "suspended"));
+        assert_eq!(enter_verb(Some(&row.kind)), "resume");
+        assert!(!app.quit(), "first q arms");
+        assert!(app.status.contains("codex in ~/x suspended"));
+        assert!(app.quit(), "second q quits");
+        assert!(app.suspended.is_empty());
+        let ps = Command::new("ps")
+            .args(["-o", "pid=", "-p", &pid.to_string()])
+            .output()
             .unwrap();
-        let log = std::sync::Mutex::new(vec![]);
-        let out = wait_or_stopped(&mut c, false, &|m| log.lock().unwrap().push(m)).unwrap();
-        assert_eq!(out.status.code(), Some(3));
-        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "resumed");
-        assert!(log.lock().unwrap()[0].ends_with("resuming it"));
+        assert!(ps.stdout.trim_ascii().is_empty(), "killed on quit");
+        // Reaped on its own when it ends elsewhere.
+        let child = job("exit 0");
+        app.suspended.push(Suspended {
+            child,
+            what: "w".into(),
+            harness: "codex".into(),
+            cwd: PathBuf::from("/x"),
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        app.poll();
+        assert!(app.suspended.is_empty(), "ended children leave the list");
     }
 
     #[test]

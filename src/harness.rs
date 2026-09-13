@@ -39,16 +39,30 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
 pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 
 /// The harness started natively in `dir`, as typing its name in a shell there would: no
-/// policy, no ledger, the harness's own permission prompts. The dashboard suspends itself
-/// around it and lists the session from the harness's registry while it runs.
+/// policy, no ledger, the harness's own permission prompts. Claude starts as a background
+/// session with `claude attach` on it, so leaving the viewer keeps the session in the fleet and
+/// `enter` on its row opens it again; `--bg` picks the id itself, so the launcher reads it from
+/// the `backgrounded · <id>` line. Codex has no background mode and runs in the foreground;
+/// the dashboard parks it on ctrl-z.
 pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Command> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
-    let mut cmd = std::process::Command::new(path);
+    let mut cmd = match kind {
+        HarnessKind::Claude => {
+            let mut c = std::process::Command::new("/bin/sh");
+            c.arg("-c").arg(BG_THEN_ATTACH).arg(path);
+            c
+        }
+        _ => std::process::Command::new(path),
+    };
     cmd.current_dir(dir);
     Ok(cmd)
 }
+
+/// `$0` is the claude binary. The id is the first eight-hex-digit word of `claude --bg`'s
+/// output, colors and all; anything else is an error shown as is.
+pub const BG_THEN_ATTACH: &str = r#"out=$("$0" --bg 2>&1); id=$(printf '%s' "$out" | grep -oE '[0-9a-f]{8}' | head -1); [ -n "$id" ] || { printf '%s\n' "$out" >&2; exit 1; }; exec "$0" attach "$id""#;
 
 pub fn executable(name: &str, path: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
@@ -471,4 +485,49 @@ pub fn compiled_flags(args: &[String]) -> Vec<&str> {
         .filter(|a| a.starts_with("--"))
         .map(String::as_str)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, body).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    fn launch(bin: &Path) -> std::process::Output {
+        std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(BG_THEN_ATTACH)
+            .arg(bin)
+            .output()
+            .unwrap()
+    }
+
+    #[test]
+    fn claude_launcher_reads_the_id_from_bg_output_and_attaches_with_it() {
+        let d = tempfile::tempdir().unwrap();
+        let fake = script(
+            d.path(),
+            "claude",
+            "#!/bin/sh\ncase \"$1\" in\n--bg) printf 'backgrounded \\302\\267 \\033[36m7890c11a\\033[39m (idle)\\n';;\nattach) echo \"attached $2\";;\nesac\n",
+        );
+        let out = launch(&fake);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "attached 7890c11a"
+        );
+        let broken = script(
+            d.path(),
+            "broken",
+            "#!/bin/sh\necho 'no daemon' >&2; exit 2\n",
+        );
+        let out = launch(&broken);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("no daemon"));
+    }
 }
