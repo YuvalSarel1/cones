@@ -1,0 +1,65 @@
+# The fleet and the dashboard
+
+Back to the [README](../README.md). Commands are in [cli.md](cli.md).
+
+## The fleet: every Claude session on the Mac
+
+```sh
+cones hook --install             # one global Claude Code hook in ~/.claude/settings.json
+cones ls --status blocked        # sessions waiting on a permission or elicitation prompt
+cones logs SESSION_UUID --follow # the session's transcript, Ctrl+C returns
+cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes back
+cones stop SESSION_UUID          # ends the session
+```
+
+With the hook installed, every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age and last message. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. Dollars come from the ledger for cones runs; for hook-observed sessions the column stays `-`, since the hook records tokens and no price.
+
+`cones hook --install` adds one command to `~/.claude/settings.json` for the `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop` and `SessionEnd` events, none of them `PreToolUse`, so Claude's permission checks are untouched. On each event Claude Code runs `cones --state-dir ~/.cones hook $PPID`, which writes `~/.cones/fleet/<session_id>.json`.
+
+| Field in the state file | Source |
+| --- | --- |
+| `cwd`, `pid`, `transcript_path` | The hook payload; `$PPID` is the Claude process |
+| `state`, `event`, `tool` | The event name and tool, mapped as below |
+| `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail |
+| `last` | First line of the assistant's most recent text |
+| `tokens_in`, `tokens_out` | Summed from the transcript at `Stop` and `SessionEnd`; input includes cache reads and cache creation |
+
+Re-running `cones hook --install` replaces the earlier entry, so a moved binary or a different `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
+
+| State | Set by | Dashboard label |
+| --- | --- | --- |
+| `active` | `UserPromptSubmit`, `PostToolUse` | working |
+| `idle` | `SessionStart` with nothing asked yet, `Stop`, and the `idle_prompt` notification Claude sends a minute after a turn ends | idle |
+| `blocked` | A `Notification` of type `permission_prompt`, `elicitation_dialog` or `elicitation_url_dialog` | needs input |
+| `exited` | `SessionEnd`. The row leaves the list after an hour; the file stays. | exited |
+
+Other notifications (`auth_success`, `agent_completed`, `quota_*`) leave the state unchanged.
+
+`cones ls` and the dashboard also ask `claude agents --json` (at most every 3 seconds; ignored after 2 seconds, on a non-zero exit or when `claude` is missing). Sessions Claude lists appear even before the hook saw them, with `working` mapped to `active` and anything else to `idle`, and Claude's agent name fills a missing title. When Claude keeps a one-line status for a background job (`~/.claude/jobs/<id>/state.json`), that `detail` line is the session's last column.
+
+Stopping and attaching follow the session's owner. A session that `claude agents --json` lists belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the hook's `$PPID` after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
+
+## The dashboard: jobs, sessions and runs on one screen
+
+`cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
+
+| Pane | Columns | Details pane |
+| --- | --- | --- |
+| Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
+| Sessions | icon, harness, title or short id, state, age, tokens, last message or cwd | last prompt and full reply |
+| Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
+
+Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓`, `k` `j` | Move between rows. |
+| `enter`, `→`, `a` | On a job: start a run in the background. On a running run: follow its log (Ctrl+C returns). On a finished run or a session: open it in this terminal, as described above; Ctrl+Z comes back. |
+| `ctrl+x` twice (or `x` twice) within two seconds | Stop the selected run or session. |
+| `ctrl+s` (or `s`) | Regroup sessions by state or by directory. |
+| `n` | New task: type a prompt, `enter` dispatches it as `cones run --prompt` in the current directory, `esc` cancels. |
+| `/` | Filter rows by text; `enter` keeps the filter, `esc` clears it. |
+| `r` | Reload now. |
+| `esc`, `q`, `ctrl+c` | Quit. |
+
+Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger and the fleet files.

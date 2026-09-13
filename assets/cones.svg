@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="120" viewBox="0 0 420 120" role="img" aria-label="cones">
+  <!-- mark: a traffic cone, the thing you put down before a scheduled run -->
+  <g transform="translate(20 12)">
+    <ellipse cx="48" cy="90" rx="44" ry="8" fill="#f97316" opacity=".35"/>
+    <path d="M48 4 L78 88 L18 88 Z" fill="#f97316"/>
+    <path d="M36.5 36 L59.5 36 L64 50 L32 50 Z" fill="#fff" opacity=".9"/>
+    <path d="M29 60 L67 60 L71.5 74 L24.5 74 Z" fill="#fff" opacity=".9"/>
+    <rect x="12" y="86" width="72" height="8" rx="3" fill="#f97316"/>
+  </g>
+  <text x="130" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="64" font-weight="700" fill="#f97316" letter-spacing="-2">cones</text>
+</svg>
