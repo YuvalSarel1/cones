@@ -6,6 +6,7 @@
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
 //! draw as sessions.
 use crate::{
+    codex,
     config::{self, HarnessKind, ResolvedJob},
     fleet::{self, Session},
     harness,
@@ -104,7 +105,7 @@ pub struct Data {
 impl Data {
     pub fn load(jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
         let runs = Ledger::new(state)?.runs()?;
-        let sessions = fleet_rows(claude, &runs)?;
+        let sessions = fleet_rows(claude, state, &runs)?;
         Ok(Self {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
             runs,
@@ -682,15 +683,19 @@ fn clip(s: &str, n: usize) -> String {
 
 /// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
 /// to a ledger run collapse into that run's row.
-pub fn fleet_rows(claude: &Path, runs: &[Run]) -> Result<Vec<Session>> {
+pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
     let owned: HashSet<&str> = runs
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    Ok(fleet::all(claude)?
+    let mut out: Vec<Session> = fleet::all(claude)?
         .into_iter()
         .filter(|s| !owned.contains(s.session_id.as_str()))
-        .collect())
+        .collect();
+    // Codex threads the dashboard launched behind the daemon show nothing in the process
+    // table while no client is attached; cones lists them from its own record.
+    out.extend(codex::thread_rows(&codex::home(claude), state, &out));
+    Ok(out)
 }
 
 /// The directory a launch runs in: `text` with `~` expanded and a relative path taken from
@@ -1373,16 +1378,33 @@ impl App {
         };
     }
 
+    /// After a Codex client launched here returns: keep the thread it opened, so its row stays
+    /// and `enter` resumes it. A thread left before its first turn is gone with the client.
+    fn record_codex(&mut self, dir: &Path, since: chrono::DateTime<chrono::Utc>) {
+        let home = codex::home(&self.claude);
+        match codex::launched(&home, dir, since) {
+            Some(t) => {
+                let short: String = t.id.chars().take(8).collect();
+                self.status = match codex::remember(&self.state, t) {
+                    Ok(()) => format!("codex thread {short} kept · enter on its row returns to it"),
+                    Err(e) => format!("could not record codex thread {short}: {e}"),
+                };
+            }
+            None if !self.status.contains("failed") => {
+                self.status = "codex left before its first turn; nothing to come back to".into()
+            }
+            None => {}
+        }
+    }
+
     /// The footer's `enter` verb for the selected row: a session of a harness that cannot be
     /// joined from here says so instead of promising an attach.
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if let Some(Kind::Session(id, _)) = row.map(|r| &r.kind)
-            && self
-                .data
-                .sessions
-                .iter()
-                .any(|s| &s.session_id == id && s.harness != "claude")
+            && self.data.sessions.iter().any(|s| {
+                &s.session_id == id && s.harness != "claude" && s.kind.as_deref() != Some("daemon")
+            })
         {
             return "own terminal";
         }
@@ -1409,9 +1431,21 @@ impl App {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
                 };
-                let (harness, cwd) = (s.harness.clone(), s.cwd.clone());
-                // A TUI running in another terminal cannot be joined; only a session that
-                // lives behind a daemon (Claude's background sessions) can.
+                let (harness, cwd, daemon) = (
+                    s.harness.clone(),
+                    s.cwd.clone(),
+                    s.kind.as_deref() == Some("daemon"),
+                );
+                // A Codex thread behind the daemon reopens with a client; a TUI running in
+                // another terminal cannot be joined.
+                if harness == "codex" && daemon {
+                    match harness::codex_resume(&id, &cwd) {
+                        Ok(c) => self.foreground(terminal, c, "codex", OnStop::Kill),
+                        Err(e) => self.status = format!("codex resume failed: {e:#}"),
+                    }
+                    self.reload();
+                    return Ok(());
+                }
                 if harness != "claude" {
                     self.status = format!(
                         "{harness} runs in its own terminal and cannot be joined from here"
@@ -1483,19 +1517,36 @@ impl App {
                 return;
             }
         };
+        // A Codex thread behind the daemon has no stop; the record is what x x removes, and
+        // `codex resume` still has the thread.
+        let daemon = self
+            .data
+            .sessions
+            .iter()
+            .any(|s| s.session_id == id && s.kind.as_deref() == Some("daemon"));
         match self.armed.take() {
             Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
-                self.status = match Ledger::new(&self.state)
-                    .and_then(|l| runner::stop(&l, &self.claude, &id))
-                {
-                    Ok(true) => "stop requested".into(),
-                    Ok(false) => "already finished".into(),
-                    Err(e) => format!("stop failed: {e:#}"),
+                self.status = if daemon {
+                    match codex::forget(&self.state, &id) {
+                        Ok(()) => "thread forgotten · codex resume still has it".into(),
+                        Err(e) => format!("forget failed: {e}"),
+                    }
+                } else {
+                    match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &self.claude, &id))
+                    {
+                        Ok(true) => "stop requested".into(),
+                        Ok(false) => "already finished".into(),
+                        Err(e) => format!("stop failed: {e:#}"),
+                    }
                 };
             }
             _ => {
                 self.armed = Some((id, Instant::now()));
-                self.status = "x again to stop this run".into();
+                self.status = if daemon {
+                    "x again to forget this thread".into()
+                } else {
+                    "x again to stop this run".into()
+                };
             }
         }
     }
@@ -1535,9 +1586,14 @@ impl App {
                 LaunchAction::Interactive(dir, kind) => {
                     self.mode = Mode::Normal;
                     let what = format!("{kind} in {}", fleet::tilde(&dir));
+                    // Rollout timestamps are the thread's own clock; a little slack covers it.
+                    let since = chrono::Utc::now() - chrono::Duration::seconds(5);
                     match harness::interactive(kind, &dir) {
                         Ok(c) => {
                             self.foreground(terminal, c, &what, OnStop::Kill);
+                            if kind == HarnessKind::Codex {
+                                self.record_codex(&dir, since);
+                            }
                             self.reload();
                         }
                         // The refusal names the harness itself; the row's prefix would only
@@ -1996,6 +2052,33 @@ mod tests {
             "own terminal",
             "the verb follows the selected row"
         );
+        // A thread behind the daemon is the one Codex row that opens from here.
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: "dddd-daemon".into(),
+            harness: "codex".into(),
+            kind: Some("daemon".into()),
+            cwd: PathBuf::from("/x"),
+            state: "idle".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: None,
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+        });
+        app.apply(data);
+        app.filter = "dddd-dae".into();
+        app.apply_filter();
+        app.settle();
+        assert_eq!(app.enter_label(), "attach");
+        app.stop();
+        assert_eq!(app.status, "x again to forget this thread");
     }
 
     #[test]

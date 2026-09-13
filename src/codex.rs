@@ -6,6 +6,7 @@
 //! job and holds no Codex budget: seeing a session is all this module does.
 use crate::fleet::Session;
 use chrono::{DateTime, NaiveDateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -329,6 +330,98 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     out
 }
 
+/// A Codex thread the dashboard launched behind the app-server daemon. The daemon's TUI is a
+/// client: leaving it keeps the thread working, and `codex --remote ... resume ID` opens it
+/// again. The process table shows nothing while no client is attached, and the app server has
+/// no thread list yet, so cones keeps its own list under the state dir; `x x` on the row
+/// forgets an entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    pub id: String,
+    pub cwd: PathBuf,
+    pub started: DateTime<Utc>,
+    pub rollout: PathBuf,
+}
+
+fn threads_path(state: &Path) -> PathBuf {
+    state.join("codex-threads.json")
+}
+
+pub fn threads(state: &Path) -> Vec<Thread> {
+    fs::read_to_string(threads_path(state))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+pub fn remember(state: &Path, t: Thread) -> std::io::Result<()> {
+    let mut all = threads(state);
+    all.retain(|x| x.id != t.id);
+    all.push(t);
+    fs::create_dir_all(state)?;
+    fs::write(threads_path(state), serde_json::to_string_pretty(&all)?)
+}
+
+pub fn forget(state: &Path, id: &str) -> std::io::Result<()> {
+    let mut all = threads(state);
+    all.retain(|x| x.id != id);
+    fs::write(threads_path(state), serde_json::to_string_pretty(&all)?)
+}
+
+/// The thread a launch in `dir` at `since` produced: the newest rollout in that directory
+/// started since then, if it has had a turn. The daemon drops a thread that disconnects before
+/// its first turn and `resume` on it exits at once, so such a launch is not recorded.
+pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread> {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+    rollouts(codex, since)
+        .into_iter()
+        .filter(|(_, m)| m.started >= since)
+        .filter(|(_, m)| m.cwd.canonicalize().unwrap_or_else(|_| m.cwd.clone()) == dir)
+        .filter(|(path, _)| tail_of(path).state.is_some())
+        .max_by_key(|(_, m)| m.started)
+        .map(|(rollout, m)| Thread {
+            id: m.session_id,
+            cwd: m.cwd,
+            started: m.started,
+            rollout,
+        })
+}
+
+/// Fleet rows for recorded threads no live client shows: `kind` is `daemon`, which `enter`
+/// resumes; state and last reply come from the rollout's tail, the title from the index. A
+/// thread whose rollout is gone is not a row. `live` are the process-table rows, which carry
+/// the same id while a client is attached.
+pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
+    let titles = fs::read_to_string(codex.join("session_index.jsonl"))
+        .map(|t| titles(&t))
+        .unwrap_or_default();
+    threads(state)
+        .into_iter()
+        .filter(|t| t.rollout.is_file() && !live.iter().any(|s| s.session_id == t.id))
+        .map(|t| {
+            let tail = tail_of(&t.rollout);
+            Session {
+                title: titles.get(&t.id).cloned(),
+                session_id: t.id,
+                harness: "codex".into(),
+                kind: Some("daemon".into()),
+                cwd: t.cwd,
+                state: tail.state.unwrap_or("-").into(),
+                last_activity: tail.last_activity,
+                model: tail.model,
+                started: Some(t.started),
+                pid: None,
+                transcript_path: Some(t.rollout),
+                tokens_in: None,
+                tokens_out: None,
+                context_tokens: None,
+                cost_usd: None,
+                last: tail.last,
+            }
+        })
+        .collect()
+}
+
 /// Rollout files under `sessions/YYYY/MM/DD/` modified since `since`, with their first line. A
 /// live session's file is written after its process started, so an older file is never read.
 fn rollouts(codex: &Path, since: DateTime<Utc>) -> Vec<(PathBuf, Meta)> {
@@ -389,4 +482,83 @@ fn tail_of(path: &Path) -> Tail {
         .unwrap_or_default();
     cache.insert(path.to_owned(), (len, t.clone()));
     t
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rollout(home: &Path, name: &str, id: &str, cwd: &Path, at: &str, turn: bool) -> PathBuf {
+        let dir = home.join("sessions/2026/09/13");
+        fs::create_dir_all(&dir).unwrap();
+        let mut text = format!(
+            r#"{{"timestamp":"{at}","type":"session_meta","payload":{{"id":"{id}","timestamp":"{at}","cwd":{}}}}}"#,
+            serde_json::to_string(cwd).unwrap()
+        );
+        text.push('\n');
+        if turn {
+            text.push_str(&format!(
+                r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"task_complete"}}}}"#
+            ));
+            text.push('\n');
+        }
+        let path = dir.join(format!("{name}.jsonl"));
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_launch_is_the_newest_rollout_in_its_dir_with_a_turn_and_the_list_round_trips() {
+        let d = tempfile::tempdir().unwrap();
+        let (home, state, work) = (
+            d.path().join("codex"),
+            d.path().join("state"),
+            d.path().join("w"),
+        );
+        let other = d.path().join("elsewhere");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        let since = DateTime::parse_from_rfc3339("2026-09-13T10:00:00Z")
+            .unwrap()
+            .into();
+        rollout(&home, "old", "aaaa", &work, "2026-09-13T09:59:00Z", true);
+        rollout(&home, "away", "bbbb", &other, "2026-09-13T10:00:30Z", true);
+        rollout(&home, "fresh", "cccc", &work, "2026-09-13T10:00:40Z", false);
+        assert_eq!(
+            launched(&home, &work, since),
+            None,
+            "no turn yet, nothing to come back to"
+        );
+        let path = rollout(&home, "turned", "dddd", &work, "2026-09-13T10:00:20Z", true);
+        let t = launched(&home, &work, since).expect("the turned thread in this dir");
+        assert_eq!((t.id.as_str(), &t.rollout), ("dddd", &path));
+        remember(&state, t.clone()).unwrap();
+        assert_eq!(threads(&state), vec![t.clone()]);
+        remember(&state, t.clone()).unwrap();
+        assert_eq!(
+            threads(&state).len(),
+            1,
+            "remembering twice keeps one entry"
+        );
+        fs::write(
+            home.join("session_index.jsonl"),
+            r#"{"id":"dddd","thread_name":"fix the build","updated_at":"x"}"#,
+        )
+        .unwrap();
+        let rows = thread_rows(&home, &state, &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind.as_deref(), Some("daemon"));
+        assert_eq!(
+            (rows[0].state.as_str(), rows[0].title.as_deref()),
+            ("idle", Some("fix the build"))
+        );
+        let live = rows.clone();
+        assert!(
+            thread_rows(&home, &state, &live).is_empty(),
+            "an attached client's row wins"
+        );
+        forget(&state, "dddd").unwrap();
+        assert!(threads(&state).is_empty());
+        assert!(thread_rows(&home, &state, &[]).is_empty());
+    }
 }

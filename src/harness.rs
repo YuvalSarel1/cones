@@ -41,26 +41,111 @@ pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 /// The harness started natively in `dir`, as typing its name in a shell there would: no
 /// policy, no ledger, the harness's own permission prompts. Only a harness whose session
 /// outlives the viewer opens from the dashboard, because leaving must keep it working. Claude
-/// starts as a background session with `claude attach` on it, so leaving the viewer keeps the
-/// session in the fleet and `enter` on its row opens it again; `--bg` picks the id itself, so
-/// the launcher reads it from the `backgrounded · <id>` line. Codex's TUI is the session, so
-/// leaving it would stop it, and it is refused here with the reason.
+/// starts as a background session with `claude attach` on it; `--bg` picks the id itself, so
+/// the launcher reads it from the `backgrounded · <id>` line. Codex starts as a thread of its
+/// app-server daemon with the TUI as a `--remote` client; leaving the client keeps the thread,
+/// and the dashboard records its id from the rollout to resume it.
 pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Command> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
+    leave_and_return(kind)?;
     let mut cmd = match kind {
         HarnessKind::Claude => {
             let mut c = std::process::Command::new("/bin/sh");
             c.arg("-c").arg(BG_THEN_ATTACH).arg(path);
             c
         }
-        _ => bail!(
-            "{name} has no background mode; leaving would stop it, so run it in its own terminal"
-        ),
+        HarnessKind::Codex => {
+            let (path, remote) = codex_remote(&path)?;
+            let mut c = std::process::Command::new(path);
+            c.args(["--remote", &remote, "-C"]).arg(dir);
+            c
+        }
     };
     cmd.current_dir(dir);
     Ok(cmd)
+}
+
+/// Whether this build of the harness can be opened from the dashboard and left running: Claude
+/// needs `--bg` and `attach`, Codex its app-server daemon (0.154 and later, experimental
+/// there). The message is the doctor line; the error is what the `n` prompt shows instead of
+/// opening a session that could not be left.
+pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
+    let name = kind.to_string();
+    let path = executable(&name, &launch_path())
+        .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
+    let run = |args: &[&str]| {
+        std::process::Command::new(&path)
+            .args(args)
+            .output()
+            .map(|o| {
+                (
+                    o.status.success(),
+                    String::from_utf8_lossy(&o.stdout).into_owned(),
+                )
+            })
+            .map_err(|e| anyhow::anyhow!("{name} {}: {e}", args.join(" ")))
+    };
+    match kind {
+        HarnessKind::Claude => {
+            let (_, help) = run(&["--help"])?;
+            ensure!(
+                help.contains("--bg") && help.contains("attach"),
+                "this claude has no --bg or attach, so a session opened here could not be left running; update Claude Code"
+            );
+            Ok("claude: background sessions with a viewer (--bg, attach)".into())
+        }
+        HarnessKind::Codex => {
+            let (ok, json) = run(&["app-server", "daemon", "version"])?;
+            ensure!(
+                ok,
+                "this codex has no app-server daemon, so a session opened here could not be left running; Codex 0.154 or later has one"
+            );
+            let ver = json
+                .lines()
+                .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+                .find_map(|v| v["cliVersion"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            Ok(format!(
+                "codex {ver}: threads behind the app-server daemon (experimental in Codex)"
+            ))
+        }
+    }
+}
+
+/// The client that reopens a daemon thread in its directory.
+pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
+    let path = executable("codex", &launch_path())
+        .ok_or_else(|| anyhow::anyhow!("codex not found on the launch PATH"))?;
+    let (path, remote) = codex_remote(&path)?;
+    let mut c = std::process::Command::new(path);
+    c.args(["--remote", &remote, "resume", id]).current_dir(cwd);
+    Ok(c)
+}
+
+/// The daemon's address, starting it if it is not running: `codex app-server daemon start` is
+/// idempotent and prints JSON with `socketPath` either way. Experimental in Codex 0.154.
+fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
+    let out = std::process::Command::new(codex)
+        .args(["app-server", "daemon", "start"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("codex app-server daemon start: {e}"))?;
+    let sock = socket_path(&String::from_utf8_lossy(&out.stdout)).ok_or_else(|| {
+        anyhow::anyhow!(
+            "codex app-server daemon start gave no socketPath: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )
+    })?;
+    Ok((codex.to_owned(), format!("unix://{sock}")))
+}
+
+/// `socketPath` from the first JSON line the daemon command prints.
+pub fn socket_path(stdout: &str) -> Option<String> {
+    stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .find_map(|v| v["socketPath"].as_str().map(str::to_owned))
 }
 
 /// `$0` is the claude binary. The id is the first eight-hex-digit word of `claude --bg`'s
@@ -509,6 +594,16 @@ mod tests {
             .arg(bin)
             .output()
             .unwrap()
+    }
+
+    #[test]
+    fn the_daemon_socket_comes_from_the_first_json_line() {
+        let out = "warning: experimental\n{\"status\":\"alreadyRunning\",\"socketPath\":\"/u/.codex/app-server-control/app-server-control.sock\"}\n";
+        assert_eq!(
+            socket_path(out).as_deref(),
+            Some("/u/.codex/app-server-control/app-server-control.sock")
+        );
+        assert_eq!(socket_path("not json"), None);
     }
 
     #[test]

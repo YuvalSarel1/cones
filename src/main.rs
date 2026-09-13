@@ -222,7 +222,7 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             // Sessions from Claude's registry that no cones run owns; same columns, cwd where the
             // job name goes and the transcript's first timestamp where the fired time goes.
-            for s in cones::tui::fleet_rows(&claude, &ledger.runs()?)?
+            for s in cones::tui::fleet_rows(&claude, &state, &ledger.runs()?)?
                 .into_iter()
                 .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
             {
@@ -448,6 +448,13 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
         "launchd requires a logged-in macOS user; wake coalescing does not wake a sleeping Mac"
             .into(),
     );
+    // What the dashboard's n prompt can open and leave running, per harness build.
+    for kind in harness::KNOWN {
+        match harness::leave_and_return(kind) {
+            Ok(m) => report("OK", format!("dashboard opens {m}")),
+            Err(e) => report("WARN", format!("dashboard cannot open {kind}: {e:#}")),
+        }
+    }
     let expected = harness::launch_path();
     let shell_path = std::env::var("PATH").unwrap_or_default();
     for part in std::env::split_paths(&expected).take(3) {

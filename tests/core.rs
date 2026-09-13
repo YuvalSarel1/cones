@@ -534,7 +534,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     registry(dir.path(), owned, session(owned, me, "busy"));
     let dead = "33333333-3333-4333-8333-333333333333";
     registry(dir.path(), dead, session(dead, 4_000_000, "busy"));
-    let rows = cones::tui::fleet_rows(dir.path(), &ledger.runs().unwrap()).unwrap();
+    let rows = cones::tui::fleet_rows(dir.path(), dir.path(), &ledger.runs().unwrap()).unwrap();
     assert_eq!(
         rows.iter()
             .map(|s| s.session_id.as_str())

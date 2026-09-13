@@ -36,6 +36,7 @@ With no jobs file, or one that does not parse, the task runs under the read-only
 | --- | --- |
 | Running on macOS (launchd requires a logged-in user) | FAIL |
 | The first three launchd PATH entries are also on the shell PATH | WARN |
+| The dashboard can open each known harness and leave it running: `claude --help` lists `--bg` and `attach`; `codex app-server daemon version` runs (Codex 0.154 or later) | WARN |
 | `jobs.yaml` parses and each job's policy compiles | FAIL |
 | Each `env` name is set in this shell | FAIL |
 | The installed plist has every `env` name and the full launchd PATH | FAIL, or WARN when the job is not installed |
