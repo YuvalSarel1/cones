@@ -125,10 +125,7 @@ fn session(dir: &Path, v: &Value) -> Option<Session> {
     } else {
         job["linkScanPath"].as_str().map(PathBuf::from)
     };
-    let d = transcript
-        .as_deref()
-        .map(|t| details(dir, t))
-        .unwrap_or_default();
+    let d = transcript.as_deref().map(details).unwrap_or_default();
     Some(Session {
         session_id: id.into(),
         harness: claude(),
@@ -153,7 +150,8 @@ fn session(dir: &Path, v: &Value) -> Option<Session> {
         tokens_in: d.usage.tokens_in,
         tokens_out: d.usage.tokens_out,
         context_tokens: d.usage.context,
-        context_window: d.usage.window,
+        // Nothing Claude writes outside a session states the window; see `context`.
+        context_window: None,
         cost_usd: None,
         title: d
             .title
@@ -175,7 +173,7 @@ struct Details {
 
 /// Title, last reply and token counts from a transcript, recomputed only when the file grew.
 /// The dashboard reloads every second and counting tokens reads the whole file.
-fn details(claude: &Path, transcript: &Path) -> Details {
+fn details(transcript: &Path) -> Details {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Details)>>> = Mutex::new(None);
     let len = fs::metadata(transcript).map_or(0, |m| m.len());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -189,7 +187,7 @@ fn details(claude: &Path, transcript: &Path) -> Details {
     let d = Details {
         title,
         last: last.pop(),
-        usage: usage(transcript, settings_model_is_1m(claude)).unwrap_or_default(),
+        usage: usage(transcript).unwrap_or_default(),
     };
     cache.insert(transcript.to_owned(), (len, d.clone()));
     d
@@ -340,13 +338,12 @@ struct Usage {
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
     context: Option<u64>,
-    window: Option<u64>,
 }
 
 /// Total input and output tokens in a Claude transcript, plus the last message's prompt size as
 /// the context in use. Streaming writes one line per content block with the same message id and
 /// usage, so each message is counted once.
-fn usage(transcript: &Path, one_m: bool) -> Result<Usage> {
+fn usage(transcript: &Path) -> Result<Usage> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
     let mut last = None;
@@ -368,33 +365,13 @@ fn usage(transcript: &Path, one_m: bool) -> Result<Usage> {
             n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
         input += prompt;
         output += n("output_tokens");
-        last = Some((prompt, window(prompt, one_m)));
+        last = Some(prompt);
     }
     Ok(Usage {
         tokens_in: Some(input),
         tokens_out: Some(output),
-        context: last.map(|(p, _)| p),
-        window: last.map(|(_, w)| w),
+        context: last,
     })
-}
-
-/// Claude writes the API model id to the transcript, never the window. The 1M window is on when
-/// settings.json's model carries the "[1m]" suffix.
-/// ponytail: the global setting only; a per-session --model override is not visible to us.
-fn settings_model_is_1m(claude: &Path) -> bool {
-    fs::read_to_string(claude.join("settings.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .is_some_and(|v| v["model"].as_str().is_some_and(|m| m.contains("[1m]")))
-}
-
-/// A prompt past 200k is proof of the 1M window whatever the settings say.
-fn window(prompt: u64, one_m: bool) -> u64 {
-    if one_m || prompt > 200_000 {
-        1_000_000
-    } else {
-        200_000
-    }
 }
 
 pub fn alive(pid: u32) -> bool {
@@ -474,10 +451,15 @@ pub fn cost(usd: f64) -> String {
     }
 }
 
-/// "98k/200k 49%": how full the context window was at the session's last turn.
+/// Tokens in the context window at the session's last turn: "98k", or "98k/200k 49%" when the
+/// harness reported the window size. The window is never inferred. Claude Code states it only
+/// in the statusLine payload, which reaches nothing outside the session; the transcript carries
+/// the bare model id, the registry nothing. Guessing 200k, or 1M from a `[1m]` in settings.json,
+/// rendered live sessions at 194%. A missing denominator beats a wrong one.
 pub fn context(s: &Session) -> String {
     match (s.context_tokens, s.context_window) {
         (Some(t), Some(w)) if w > 0 => format!("{}/{} {}%", short(t), short(w), t * 100 / w),
+        (Some(t), _) => short(t),
         _ => "-".into(),
     }
 }

@@ -24,7 +24,7 @@ Every Claude Code session on the Mac appears in `cones ls` with its working dire
 | `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail; the registry `name` when the transcript has neither |
 | `last` | For a background job, the one-line `detail` Claude keeps in the job's `state.json`; otherwise the first line of the assistant's most recent text |
 | `tokens_in`, `tokens_out` | Summed from the transcript, recounted when the file grows; input includes cache reads and cache creation |
-| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation) and the window it ran in: 1M when the model id carries `[1m]`, otherwise 200k |
+| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation), and the window size when the harness reported one. Claude Code states the window only in its statusLine payload, so today it is absent and never inferred |
 
 | State | Registry `status` | Dashboard label |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ Its hint line reads `↑↓ move · enter <verb> · x x stop · e edit jobs · s
 | Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
 
-Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k/200k 49%`: tokens in the window at the last turn, the window size, and the fill. It is `-` until the transcript holds a message with usage.
+Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: tokens in the window at the last turn, with `/200k 49%` appended only when the harness reported the window size. It is `-` until the transcript holds a message with usage.
 
 Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a registry entry without a start time sorts by its last update.
 

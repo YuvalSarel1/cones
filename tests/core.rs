@@ -407,30 +407,24 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     assert_eq!((s.tokens_in, s.tokens_out), (Some(320), Some(12)));
     assert_eq!(
         (s.context_tokens, s.context_window),
-        (Some(210), Some(200_000)),
-        "the last message's prompt is the context in use; no settings.json here means 200k"
+        (Some(210), None),
+        "the last message's prompt is the context in use; the window is never inferred"
     );
-    // settings.json's model with the [1m] suffix turns the window to 1M; the transcript must
-    // grow for the cached count to be redone.
+    // A [1m] model in settings.json and a turn past 200k prove nothing about the window
+    // Claude reports; the cell shows the tokens alone. The transcript must grow for the cached
+    // count to be redone.
     fs::write(claude.join("settings.json"), r#"{"model":"opus[1m]"}"#).unwrap();
     let mut t = fs::OpenOptions::new()
         .append(true)
         .open(&transcript)
         .unwrap();
-    writeln!(t, "{}", usage("m3", 50, 1)).unwrap();
-    assert_eq!(
-        (get().context_tokens, get().context_window),
-        (Some(60), Some(1_000_000))
-    );
-    // A turn past 200k can only be the 1M window, whatever settings.json says.
-    fs::remove_file(claude.join("settings.json")).unwrap();
-    writeln!(t, "{}", usage("m4", 300_000, 1)).unwrap();
+    writeln!(t, "{}", usage("m3", 300_000, 1)).unwrap();
     let big = get();
     assert_eq!(
         (big.context_tokens, big.context_window),
-        (Some(300_010), Some(1_000_000))
+        (Some(300_010), None)
     );
-    assert_eq!(cones::fleet::context(&big), "300k/1.0M 30%");
+    assert_eq!(cones::fleet::context(&big), "300k");
     assert_eq!(
         (
             s.started.map(|t| t.timestamp_millis()),
@@ -547,11 +541,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
-    for s in [
-        "claude  fix the widget",
-        "100k/200k 50%",
-        "Running the tests",
-    ] {
+    for s in ["claude  fix the widget", "100k  ", "Running the tests"] {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
@@ -569,7 +559,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     fs::write(&jobs, "version: 1\ncolumns: [tokens]\njobs: []\n").unwrap();
     let list = cones::tui::list(&jobs, dir.path(), dir.path()).unwrap();
     assert!(
-        list.contains("tokens in/out") && !list.contains("100k/200k"),
+        list.contains("tokens in/out") && !list.contains("100k  "),
         "columns: in jobs.yaml picks the session columns"
     );
     fs::write(&jobs, "version: 1\ncolumns: [cost]\njobs: []\n").unwrap();
