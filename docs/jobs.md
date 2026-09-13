@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Runtime behavior is in [runs.md](runs.md), commands in [cli.md](cli.md).
 
-`jobs.yaml` is `version: 1`, an optional `defaults` block, and a list of jobs. `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `overlap`, `notify` and `codex_full_access`; each job may override them. Unknown fields anywhere in the file are rejected.
+`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and an optional `columns` list for the dashboard. `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `overlap`, `notify` and `codex_full_access`; each job may override them. Unknown fields anywhere in the file are rejected.
 
 ```yaml
 version: 1
@@ -11,6 +11,7 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
+columns: [state, age, context, last]   # dashboard session columns, see below
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd
@@ -46,6 +47,20 @@ jobs:
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
 | `codex_full_access` | `false` | Codex only. Rejected on a Claude job. |
+
+## Dashboard columns
+
+`columns` picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash.
+
+| Column | Cell | Default |
+| --- | --- | --- |
+| `state` | working, needs input, idle or exited | yes |
+| `age` | Time since the last hook event, `4s`, `6m`, `2h` | yes |
+| `context` | `98k/200k 49%`: tokens in the window at the last turn, window size, fill | yes |
+| `last` | First line of the last reply, or the directory when grouped by state | yes |
+| `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
+
+Cost is not a column: Claude Code writes tokens to the transcript and no price, so live sessions have no dollars to show. Run rows take theirs from the ledger.
 
 `cones validate` compiles every job's policy and prints `<name>  valid  <harness>`, or the first error with the job's name. Beyond the per-field rules it rejects:
 

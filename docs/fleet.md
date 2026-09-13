@@ -12,7 +12,7 @@ cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes ba
 cones stop SESSION_UUID          # ends the session
 ```
 
-With the hook installed, every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age and last message. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. Dollars come from the ledger for cones runs; for hook-observed sessions the column stays `-`, since the hook records tokens and no price.
+With the hook installed, every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age, context fill and last message. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. Dollars come from the ledger for cones runs; for hook-observed sessions the column stays `-`, since the hook records tokens and no price.
 
 `cones hook --install` adds one command to `~/.claude/settings.json` for the `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop` and `SessionEnd` events, none of them `PreToolUse`, so Claude's permission checks are untouched. On each event Claude Code runs `cones --state-dir ~/.cones hook $PPID`, which writes `~/.cones/fleet/<session_id>.json`.
 
@@ -23,6 +23,7 @@ With the hook installed, every Claude Code session on the Mac appears in `cones 
 | `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail |
 | `last` | First line of the assistant's most recent text |
 | `tokens_in`, `tokens_out` | Summed from the transcript at `Stop` and `SessionEnd`; input includes cache reads and cache creation |
+| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation) and the window it ran in: 1M when the model id carries `[1m]`, otherwise 200k. Read at the same events. |
 
 Re-running `cones hook --install` replaces the earlier entry, so a moved binary or a different `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
 
@@ -48,8 +49,10 @@ Its hint line reads `↑↓ move · enter <verb> · x x stop · e edit jobs · s
 | Pane | Columns | Details pane |
 | --- | --- | --- |
 | Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
-| Sessions | icon, harness, title or short id, state, age, tokens, last message or cwd | last prompt and full reply |
+| Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
+
+Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k/200k 49%`: tokens in the window at the last turn, the window size, and the fill. It is `-` until the session's first `Stop`.
 
 Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session file without a start time sorts by its last update until its next hook event pins one.
 

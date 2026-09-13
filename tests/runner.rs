@@ -489,6 +489,8 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
         transcript_path: None,
         tokens_in: None,
         tokens_out: None,
+        context_tokens: None,
+        context_window: None,
         cost_usd: None,
         title: None,
         last: None,

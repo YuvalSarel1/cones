@@ -84,6 +84,40 @@ pub struct JobsFile {
     #[serde(default)]
     pub defaults: Policy,
     pub jobs: Vec<Job>,
+    /// Session columns the dashboard shows after the harness and title, from `COLUMNS`.
+    #[serde(default)]
+    pub columns: Option<Vec<String>>,
+}
+
+pub const COLUMNS: [&str; 5] = ["state", "age", "context", "tokens", "last"];
+pub const DEFAULT_COLUMNS: [&str; 4] = ["state", "age", "context", "last"];
+
+fn parse(path: &Path) -> Result<JobsFile> {
+    let doc: JobsFile =
+        serde_yaml::from_str(&fs::read_to_string(path)?).context("invalid jobs.yaml")?;
+    ensure!(
+        doc.version == 1,
+        "unsupported jobs version {}; expected 1",
+        doc.version
+    );
+    if let Some(bad) = doc
+        .columns
+        .iter()
+        .flatten()
+        .find(|c| !COLUMNS.contains(&c.as_str()))
+    {
+        bail!("unknown column {bad:?}; columns are {}", COLUMNS.join(", "));
+    }
+    Ok(doc)
+}
+
+/// The dashboard's session columns: `columns:` from jobs.yaml, or the default when the file is
+/// missing or invalid, so the fleet view works without any jobs.
+pub fn columns(path: &Path) -> Vec<String> {
+    parse(path)
+        .ok()
+        .and_then(|d| d.columns)
+        .unwrap_or_else(|| DEFAULT_COLUMNS.iter().map(|c| (*c).to_owned()).collect())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -153,13 +187,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
 pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
     let path =
         fs::canonicalize(path).with_context(|| format!("read jobs file {}", path.display()))?;
-    let doc: JobsFile =
-        serde_yaml::from_str(&fs::read_to_string(&path)?).context("invalid jobs.yaml")?;
-    ensure!(
-        doc.version == 1,
-        "unsupported jobs version {}; expected 1",
-        doc.version
-    );
+    let doc = parse(&path)?;
     let mut names = BTreeSet::new();
     doc.jobs
         .into_iter()

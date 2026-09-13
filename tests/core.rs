@@ -394,6 +394,11 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
         (idle.state.as_str(), idle.tokens_in, idle.tokens_out),
         ("idle", Some(320), Some(12))
     );
+    assert_eq!(
+        (idle.context_tokens, idle.context_window),
+        (Some(210), Some(200_000)),
+        "the last message's prompt is the context in use"
+    );
     cones::fleet::record(dir.path(), 42, &payload("SessionEnd")).unwrap();
     assert_eq!(get().state, "exited");
     let bad = serde_json::json!({"session_id": "../escape", "hook_event_name": "Stop"});
@@ -448,6 +453,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         transcript_path: None,
         tokens_in: Some(12_500),
         tokens_out: Some(300),
+        context_tokens: Some(100_000),
+        context_window: Some(200_000),
         cost_usd: Some(0.42),
         title: Some("fix the widget".into()),
         last: Some("Running the tests".into()),
@@ -471,7 +478,11 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
-    for s in ["claude  fix the widget", "12k/300", "Running the tests"] {
+    for s in [
+        "claude  fix the widget",
+        "100k/200k 50%",
+        "Running the tests",
+    ] {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
@@ -480,10 +491,25 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
             && lines[1].contains("0 working · 0 need input · 1 idle"),
         "three pinned header lines carry the summary"
     );
-    let names = lines.iter().find(|l| l.contains("tokens in/out")).unwrap();
+    let names = lines.iter().find(|l| l.contains("context")).unwrap();
     assert!(
         names.starts_with("hdr\t-\t") && names.contains("title") && names.contains("last"),
         "an unselectable row names the session columns: {names}"
+    );
+    let jobs = dir.path().join("jobs.yaml");
+    fs::write(&jobs, "version: 1\ncolumns: [tokens]\njobs: []\n").unwrap();
+    let list = cones::tui::list(&jobs, dir.path()).unwrap();
+    assert!(
+        list.contains("tokens in/out") && !list.contains("100k/200k"),
+        "columns: in jobs.yaml picks the session columns"
+    );
+    fs::write(&jobs, "version: 1\ncolumns: [cost]\njobs: []\n").unwrap();
+    assert!(
+        config::read_jobs(&jobs)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown column"),
+        "a column cones cannot show is a validation error"
     );
     assert!(lines[3] == "hdr\t-\t", "a blank row separates sections");
     assert!(row.contains("△"), "{row}");
@@ -551,6 +577,8 @@ fn session_columns_align_across_directory_groups() {
                 transcript_path: None,
                 tokens_in: None,
                 tokens_out: None,
+                context_tokens: None,
+                context_window: None,
                 cost_usd: None,
                 title: Some(title.into()),
                 last: None,
@@ -659,6 +687,8 @@ fn fleet_agents_feed_adds_claude_sessions_and_their_detail() {
         transcript_path: None,
         tokens_in: None,
         tokens_out: None,
+        context_tokens: None,
+        context_window: None,
         cost_usd: None,
         title: None,
         last: Some("Running the tests".into()),

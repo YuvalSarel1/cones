@@ -71,6 +71,8 @@ pub struct Data {
     pub jobs: Vec<ResolvedJob>,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
+    /// Session column names after the harness and title, from jobs.yaml.
+    pub columns: Vec<String>,
 }
 
 impl Data {
@@ -81,6 +83,7 @@ impl Data {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
             runs,
             sessions,
+            columns: config::columns(jobs_path),
         })
     }
 
@@ -169,7 +172,7 @@ impl Data {
         let cells = flat
             .iter()
             .map(|(_, s)| {
-                vec![
+                let mut row = vec![
                     (icon(&s.state).into(), color(&s.state)),
                     (logo(&s.harness), brand(&s.harness)),
                     (
@@ -178,32 +181,18 @@ impl Data {
                             .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
                         plain(),
                     ),
-                    (label(&s.state).into(), color(&s.state)),
-                    (fleet::age(s.updated), dim()),
-                    (fleet::tokens(s), dim()),
-                    (
-                        if by_state {
-                            fleet::tilde(&s.cwd)
-                        } else {
-                            s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default()
-                        },
-                        dim(),
-                    ),
-                ]
+                ];
+                row.extend(self.columns.iter().map(|c| cell(c, s, by_state)));
+                row
             })
             .collect();
-        let (names, cells) = columns(
-            &[
-                "",
-                "",
-                "title",
-                "state",
-                "age",
-                "tokens in/out",
-                if by_state { "dir" } else { "last" },
-            ],
-            cells,
-        );
+        let mut names = vec!["", "", "title"];
+        names.extend(self.columns.iter().map(|c| match c.as_str() {
+            "tokens" => "tokens in/out",
+            "last" if by_state => "dir",
+            c => c,
+        }));
+        let (names, cells) = columns(&names, cells);
         if !flat.is_empty() {
             out.push(Row {
                 kind: Kind::Blank,
@@ -474,6 +463,23 @@ fn table(rows: Vec<Vec<(String, Style)>>) -> Vec<Vec<(String, Style)>> {
                 .collect()
         })
         .collect()
+}
+
+/// One configurable session cell; `last` shows the directory when rows are grouped by state,
+/// since the group title no longer names it.
+fn cell(column: &str, s: &Session, by_state: bool) -> (String, Style) {
+    match column {
+        "state" => (label(&s.state).into(), color(&s.state)),
+        "age" => (fleet::age(s.updated), dim()),
+        "context" => (fleet::context(s), dim()),
+        "tokens" => (fleet::tokens(s), dim()),
+        "last" if by_state => (fleet::tilde(&s.cwd), dim()),
+        "last" => (
+            s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default(),
+            dim(),
+        ),
+        _ => ("?".into(), dim()),
+    }
 }
 
 /// Column names as a dim row padded together with the table beneath it, indented past the cursor

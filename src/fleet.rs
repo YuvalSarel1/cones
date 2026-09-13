@@ -44,6 +44,11 @@ pub struct Session {
     pub tokens_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_out: Option<u64>,
+    /// Tokens in the context window at the last turn, and that window's size.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// Claude's own session title (`ai-title`, or a user-set `agent-name`).
@@ -89,10 +94,13 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
         "Stop" | "SessionEnd" => transcript.as_deref().and_then(|t| usage(t).ok()),
         _ => None,
     };
-    let (tokens_in, tokens_out) = counted.unwrap_or_else(|| {
-        previous
-            .as_ref()
-            .map_or((None, None), |p| (p.tokens_in, p.tokens_out))
+    let counted = counted.unwrap_or_else(|| {
+        previous.as_ref().map_or(Usage::default(), |p| Usage {
+            tokens_in: p.tokens_in,
+            tokens_out: p.tokens_out,
+            context: p.context_tokens,
+            window: p.context_window,
+        })
     });
     let (title, mut last) = transcript
         .as_deref()
@@ -136,8 +144,10 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
             tool: payload["tool_name"].as_str().map(Into::into),
             pid: Some(pid),
             transcript_path: transcript,
-            tokens_in,
-            tokens_out,
+            tokens_in: counted.tokens_in,
+            tokens_out: counted.tokens_out,
+            context_tokens: counted.context,
+            context_window: counted.window,
             cost_usd: None,
             title,
             last,
@@ -285,11 +295,21 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     out
 }
 
-/// Total input and output tokens in a Claude transcript. Streaming writes one line per content
-/// block with the same message id and usage, so each message is counted once.
-fn usage(transcript: &Path) -> Result<(Option<u64>, Option<u64>)> {
+#[derive(Default, Clone, Copy)]
+struct Usage {
+    tokens_in: Option<u64>,
+    tokens_out: Option<u64>,
+    context: Option<u64>,
+    window: Option<u64>,
+}
+
+/// Total input and output tokens in a Claude transcript, plus the last message's prompt size as
+/// the context in use. Streaming writes one line per content block with the same message id and
+/// usage, so each message is counted once.
+fn usage(transcript: &Path) -> Result<Usage> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
+    let mut last = None;
     for line in std::io::BufReader::new(fs::File::open(transcript)?).lines() {
         let Ok(event) = serde_json::from_str::<Value>(&line?) else {
             continue;
@@ -304,11 +324,27 @@ fn usage(transcript: &Path) -> Result<(Option<u64>, Option<u64>)> {
             continue;
         }
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
-        input +=
+        let prompt =
             n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
+        input += prompt;
         output += n("output_tokens");
+        // ponytail: Claude writes no window size; 200k unless the model id says [1m].
+        let window = if message["model"]
+            .as_str()
+            .is_some_and(|m| m.contains("[1m]"))
+        {
+            1_000_000
+        } else {
+            200_000
+        };
+        last = Some((prompt, window));
     }
-    Ok((Some(input), Some(output)))
+    Ok(Usage {
+        tokens_in: Some(input),
+        tokens_out: Some(output),
+        context: last.map(|(p, _)| p),
+        window: last.map(|(_, w)| w),
+    })
 }
 
 /// Atomically replace the session's file. The id comes from a hook payload, so it is
@@ -426,6 +462,8 @@ pub fn merge(mut sessions: Vec<Session>, agents: &str, jobs: &Path) -> Vec<Sessi
                     transcript_path: job["linkScanPath"].as_str().map(Into::into),
                     tokens_in: None,
                     tokens_out: None,
+                    context_tokens: None,
+                    context_window: None,
                     cost_usd: None,
                     title: None,
                     last: None,
@@ -587,6 +625,14 @@ pub fn cost(usd: f64) -> String {
         format!("${usd:.4}")
     } else {
         format!("${usd:.2}")
+    }
+}
+
+/// "98k/200k 49%": how full the context window was at the session's last turn.
+pub fn context(s: &Session) -> String {
+    match (s.context_tokens, s.context_window) {
+        (Some(t), Some(w)) if w > 0 => format!("{}/{} {}%", short(t), short(w), t * 100 / w),
+        _ => "-".into(),
     }
 }
 
