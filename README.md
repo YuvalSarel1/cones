@@ -40,19 +40,17 @@ jobs:
 
 ## What it does
 
-One binary, no daemon.
+**cones schedules, monitors, and coordinates Claude Code sessions on your Mac. One binary, no daemon.**
 
-| | |
-| --- | --- |
-| **Schedule** | A cron line becomes a launchd LaunchAgent that starts a headless Claude run on time. Nothing runs between ticks. |
-| **See the fleet** | Every Claude Code session on the Mac, whichever terminal started it, in `cones ls` and the dashboard. Read from the registry Claude keeps itself, nothing installed. Stop or attach from either. |
-| **Keep them apart** | One writer lock per directory, shared by jobs and `cones lock . -- git commit`. When a job's last run is still going, the next one skips, runs alongside or replaces it. You pick, per job. |
+* **Schedule jobs:** Run headless Claude tasks on a cron schedule using macOS launchd.
+* **See every session:** View all Claude Code sessions in `cones ls` or the dashboard, including ones started elsewhere. Check status, attach, or stop.
+* **Prevent write conflicts:** Share one writer lock per directory across jobs, agents, and commands. Choose whether overlapping runs skip, run alongside, or replace the previous run.
 
-Each run carries a policy Claude enforces itself: budget, turns, tools, writes, timeout. No MCP servers, no prompts. It ends in a JSONL ledger with a status, a reason and a cost.
+Each run has enforced limits on spending, turns, tools, writes, and duration. No MCP servers or interactive prompts. Status, reason, and cost are recorded in a JSONL log.
 
-`cones run --prompt "fix the flaky test"` runs one task now under the same policy. `cones coordinator start` starts one orchestrator session for the agents in a folder.
+Run a task immediately with `cones run`, or orchestrate agents in a folder with `cones coordinator start`.
 
-Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [what cones needs from a harness](docs/harness.md), [command reference](docs/cli.md).
+Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
 
 ## What existing tools leave out
 
