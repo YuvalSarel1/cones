@@ -1,3 +1,4 @@
+pub mod codex;
 pub mod config;
 pub mod fleet;
 pub mod harness;

@@ -1,7 +1,8 @@
 //! Fleet: every Claude Code session on this Mac, read from the registry Claude itself keeps,
 //! `~/.claude/sessions/<pid>.json`, plus each session's transcript for title, last reply, model,
-//! timestamps and tokens. cones installs nothing into the session and runs nothing inside it.
-//! Every value is something Claude wrote; a value Claude did not write is `None`, never a guess.
+//! timestamps and tokens. Codex sessions join through [`crate::codex`], from the process table
+//! and Codex's rollout files. cones installs nothing into a session and runs nothing inside it.
+//! Every value is something the harness wrote; a value it did not write is `None`, never a guess.
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -351,6 +352,35 @@ pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
                     None => turns.push((String::new(), texts.collect())),
                 }
             }
+            // A Codex rollout: user turns are `input_text` blocks, replies `output_text`. Codex
+            // also files its environment and instruction blocks as user messages; they are
+            // tagged XML, not something the user typed.
+            Some("response_item") if v["payload"]["type"] == "message" => {
+                let p = &v["payload"];
+                let inputs: Vec<&str> = p["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|b| b["type"] == "input_text")
+                    .filter_map(|b| b["text"].as_str())
+                    .filter(|t| !t.trim_start().starts_with('<'))
+                    .collect();
+                if p["role"] == "user" && !inputs.concat().trim().is_empty() {
+                    turns.push((inputs.join("\n"), Vec::new()));
+                }
+                // Codex opens a reply with a newline; the pane already separates replies.
+                let mut replies = crate::codex::assistant_texts(&v).map(|t| t.trim().to_owned());
+                match turns.last_mut() {
+                    Some((_, reply)) => reply.extend(replies),
+                    None => {
+                        if let Some(first) = replies.next() {
+                            let mut reply = vec![first];
+                            reply.extend(replies);
+                            turns.push((String::new(), reply));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -367,6 +397,15 @@ pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
     out
 }
 
+/// The first non-empty line of a reply, bold markers dropped: what a one-line cell shows.
+pub fn headline(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|l| l.replace("**", ""))
+}
+
+/// Title and assistant headlines in transcript lines, Claude's or Codex's.
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
     for line in lines.lines() {
@@ -376,16 +415,16 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
         match v["type"].as_str() {
             Some("ai-title") => out.0 = v["aiTitle"].as_str().map(Into::into),
             Some("agent-name") => out.0 = v["agentName"].as_str().map(Into::into),
-            Some("assistant") => {
-                for block in v["message"]["content"].as_array().into_iter().flatten() {
-                    if let Some(first) = block["text"]
-                        .as_str()
-                        .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
-                    {
-                        out.1.push(first.replace("**", ""));
-                    }
-                }
-            }
+            Some("assistant") => out.1.extend(
+                v["message"]["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|b| b["text"].as_str().and_then(headline)),
+            ),
+            Some("response_item") => out
+                .1
+                .extend(crate::codex::assistant_texts(&v).filter_map(headline)),
             _ => {}
         }
     }
@@ -462,9 +501,24 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
+/// Every live session of every harness, oldest first by start time: Claude's registry plus
+/// Codex's process table and rollouts.
+pub fn all(claude: &Path) -> Result<Vec<Session>> {
+    let mut out = sessions(claude)?;
+    out.extend(crate::codex::sessions(&crate::codex::home()?));
+    out.sort_by(|a, b| {
+        (a.started.is_none(), a.started, &a.session_id).cmp(&(
+            b.started.is_none(),
+            b.started,
+            &b.session_id,
+        ))
+    });
+    Ok(out)
+}
+
 /// What the fleet view shows, so `logs`, `attach` and `stop` act on every visible row.
 pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
-    Ok(sessions(claude)?
+    Ok(all(claude)?
         .into_iter()
         .find(|s| s.session_id == session_id))
 }

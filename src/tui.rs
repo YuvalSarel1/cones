@@ -545,7 +545,8 @@ fn dim() -> Style {
 }
 
 /// One glyph per state, cone-shaped where it can be: a solid cone is busy, a hollow one is
-/// resting, a warning cone wants a human.
+/// resting, a warning cone wants a human. `-` is a session whose harness reported no state, a
+/// Codex before its first turn; it is not a failure.
 fn icon(state: &str) -> &str {
     match state {
         "active" | "started" => "▲",
@@ -553,7 +554,7 @@ fn icon(state: &str) -> &str {
         "idle" => "△",
         "exited" => "▵",
         "ok" => "✓",
-        "skipped" => "–",
+        "skipped" | "-" => "–",
         _ => "✗",
     }
 }
@@ -620,14 +621,14 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Sessions from Claude's registry, oldest first. Sessions belonging to a ledger run collapse
-/// into that run's row.
+/// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
+/// to a ledger run collapse into that run's row.
 pub fn fleet_rows(claude: &Path, runs: &[Run]) -> Result<Vec<Session>> {
     let owned: HashSet<&str> = runs
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    Ok(fleet::sessions(claude)?
+    Ok(fleet::all(claude)?
         .into_iter()
         .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect())

@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Commands are in [cli.md](cli.md).
 
-## The fleet: every Claude session on the Mac
+## The fleet: every Claude and Codex session on the Mac
 
 ```sh
 cones ls --status blocked        # sessions waiting on a permission, trust or user prompt
@@ -10,6 +10,8 @@ cones logs SESSION_UUID --follow # the session's transcript, Ctrl+C returns
 cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes back
 cones stop SESSION_UUID          # ends the session
 ```
+
+Claude Code sessions come from Claude's own registry, Codex sessions from the process table and Codex's rollout files; both are described below. Codex rows are seen, not driven: `cones ls`, the dashboard, `cones logs` and `cones stop` work on them, `cones attach` refuses (Codex has no attach command), and no budget, job, token or dollar figure applies.
 
 Nothing is installed. Claude Code keeps a registry of its own sessions, one `~/.claude/sessions/<pid>.json` per live session, interactive or background, written and updated by Claude itself. Every `cones ls` and every dashboard refresh reads that directory, or `$CLAUDE_CONFIG_DIR/sessions` when that variable is set, the same override Claude honors, and fills the rest of the row from the session's transcript under `~/.claude/projects`. No hook runs inside the session and `~/.claude/settings.json` is untouched. If an earlier cones put its hook there, `cones doctor` warns until the entries whose command ends in ` hook $PPID` are deleted; with the hook command gone from the binary each would fail on every event.
 
@@ -40,6 +42,26 @@ Every value is a line Claude wrote, and the table names the line. Nothing is rea
 A registry entry is a live session only when its pid is running and the process start time `ps` prints under UTC equals the entry's `procStart`; a gone pid or a reused one is a crashed session and is skipped. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
 
 Stopping and attaching follow the session's owner. A session whose kind is `bg` belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the registry pid after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
+
+### Codex: the process table and the rollout file
+
+Codex keeps no session registry. A Codex row starts from the process table: `TZ=UTC ps -axww -o pid=,lstart=,command=` names every live process whose program is `codex` and whose first argument is not a subcommand that runs no session (`app-server`, `mcp-server`, `login`, `update`, `doctor` and the like), then one `lsof -a -p <pids> -d cwd` call gives each its working directory. The word `codex` inside another command's text is not a process. That already makes a row: pid, cwd, start time, harness `>_ codex`.
+
+The rest comes from the rollout file Codex writes for the session, `~/.codex/sessions/YYYY/MM/DD/rollout-<local start>-<session id>.jsonl` (`$CODEX_HOME` relocates `~/.codex`, the same override Codex honors). Codex opens that file on the session's first turn, so a Codex that has been started and not yet asked anything has none. Its first line, `session_meta`, records the session id, `cwd` and a `timestamp`; a rollout belongs to a live process when that process is the only Codex in the rollout's directory that started at or before the rollout's timestamp, and the newest such rollout is the live thread, since `/new` opens another. With two Codex processes in one directory the file could be either's, so neither takes it. A resumed session (`codex resume`) appends to its old rollout, whose start predates the process, so it matches nothing. Only rollouts modified since the oldest live Codex started are opened; that mtime prunes the scan and is shown nowhere. Every unmatched field shows `-`; nothing is estimated.
+
+| Field | Source |
+| --- | --- |
+| `pid`, `started`, `cwd` | The process table: `ps` pid and `lstart` under UTC, `lsof` cwd |
+| `session_id` | The rollout's `session_meta.session_id`; `codex-<pid>` for a process with no rollout, so `logs` and `stop` can still name the row |
+| `title` | `thread_name` for the session id in `~/.codex/session_index.jsonl`, the name Codex gives a thread |
+| `last` | First line of the last assistant `output_text` in the rollout |
+| `state` | The rollout's last turn event: `active` after `task_started`, `idle` after `task_complete` or `turn_aborted`, `-` with no rollout. Codex records no needs-input event there, so a turn waiting on an approval reads as working |
+| `last_activity` | The `timestamp` of the rollout's last line; absent with no rollout, the process start does not stand in for it |
+| `model` | `turn_context.model` on the rollout's last turn, verbatim, such as `openai.gpt-6-astra` |
+| `transcript_path` | The rollout file; `cones logs` and the details pane read it |
+| `kind`, `tokens_in`, `tokens_out`, `context_tokens`, `cost_usd` | Not shown for Codex |
+
+`cones stop` on a Codex row sends SIGTERM to the pid after checking it still runs a `codex` binary.
 
 ## The coordinator: one session per folder
 

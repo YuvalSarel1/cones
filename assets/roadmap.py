@@ -19,7 +19,6 @@ BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e
 CAT = {"OBS": ("See", "#d2a8ff"), "CTL": ("Move and control", "#56d4dd"),
        "HAR": ("Harnesses", "#79c0ff"), "REL": ("Reliability", "#f0883e")}
 COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
-    ("Codex in the fleet", "HAR", "Codex keeps no session registry: pid and cwd from the process table, title and last line from its rollout file. Seeing Codex sessions does not wait for Codex budgets or jobs."),
     ("Writer lock removal", "REL", "The runner flock, the workspace skip reason, cones lock DIR -- CMD and the validate rule against overlap: allow with write go. Ledger and admission locks stay. Ruled, not yet in code."),
     ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
 ]), ("NEXT", "Everyday control of jobs", "#58a6ff", [
@@ -44,7 +43,7 @@ COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
 SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
            "shared-workspace writer lock (leaving, see NOW)", "cones lock around any command (leaving)", "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
-           "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "model, start, activity and context read from the transcript, never estimated", "stop and attach from CLI and TUI",
+           "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "Codex sessions from the process table and rollout file", "model, start, activity and context read from the transcript, never estimated", "stop and attach from CLI and TUI",
            "dashboard: details pane, dispatch, grouping", "n launches in any folder, interactive or managed", "tab reads more of a session, attach returns to the row", "key hints follow claude agents",
            "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]
 FOOT = ("cones owns the clock, supervision, budgets and the ledger. The harness owns execution and permissions. "

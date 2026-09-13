@@ -19,21 +19,21 @@ What the fleet view and `cones ls` show for every live session.
 
 | Need | Claude Code | Codex |
 | --- | --- | --- |
-| Discover live sessions | reported: `~/.claude/sessions/<pid>.json`, one per session, bg or interactive. `$CLAUDE_CONFIG_DIR` relocates it. | unknown |
-| Liveness proof | reported: registry `pid` and `procStart`, the process start time as `ps -o lstart` prints it under UTC. cones compares that text with the live process table, so a reused pid is not a session. | unknown |
-| Working directory | reported: registry `cwd` | unknown |
-| Kind (background or interactive) | reported: registry `kind` | unknown |
-| State (working, idle, needs input) | reported: registry `status`: busy, shell, idle, blocked, waiting, needs_user, needs_trust. Any other value renders as the word itself. | unknown |
-| Session start | reported: the `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read. | unknown |
-| Last activity | reported: the `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and file mtimes are not read. | unknown |
-| Transcript path | deduced: `projects/<cwd with every non-alphanumeric byte as '-'>/<sessionId>.jsonl`, Claude's internal layout. Background jobs report `linkScanPath` in state.json; interactive sessions report nothing. | unknown |
-| Title | reported: transcript `ai-title` or `agent-name`, else registry `name` | unknown |
-| Last reply | reported: state.json `detail` for background jobs, else the transcript's last assistant text | unknown |
-| Tokens in and out | reported: transcript `message.usage`, summed once per message id | unknown |
-| Context tokens at the last turn | reported: the last message's `input_tokens` plus cache creation and cache read, the fields Claude's statusLine `current_usage` carries. Shown with no denominator. A message whose model is `<synthetic>` is Claude's placeholder for a turn no model answered and is skipped. | unknown |
-| Context window size | `-`: stated only in the statusLine stdin JSON (`context_window.context_window_size`), which reaches nothing outside the session. Transcript, registry, hook payloads and `claude agents --json` have none. The fleet record has no field for it. | unknown |
-| Cost | `-` for sessions, the transcript records tokens and no price. Reported for cones runs from the result event `total_cost_usd`. | unknown |
-| Model | reported: `message.model` on the last transcript message with usage, the bare API id such as `claude-fable-5-1`, shown verbatim. | unknown |
+| Discover live sessions | reported: `~/.claude/sessions/<pid>.json`, one per session, bg or interactive. `$CLAUDE_CONFIG_DIR` relocates it. | reported: no registry; the process table. `ps -axww` lists every `codex` process whose first argument is not a subcommand that runs no session (`app-server`, `mcp-server`, `login` and the like). |
+| Liveness proof | reported: registry `pid` and `procStart`, the process start time as `ps -o lstart` prints it under UTC. cones compares that text with the live process table, so a reused pid is not a session. | reported: the row is the live process; nothing to reconcile. |
+| Working directory | reported: registry `cwd` | reported: `lsof -a -p <pids> -d cwd`, one call per refresh. |
+| Kind (background or interactive) | reported: registry `kind` | `-`: `session_meta.originator` names the front end (`codex-tui`, `codex-exec`). Not shown. |
+| State (working, idle, needs input) | reported: registry `status`: busy, shell, idle, blocked, waiting, needs_user, needs_trust. Any other value renders as the word itself. | reported: the rollout's `event_msg` turn events, `task_started` for working, `task_complete` or `turn_aborted` for idle. No needs-input event is written there; a turn waiting on an approval reads as working. `-` with no rollout. |
+| Session start | reported: the `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read. | reported: the process start as `ps -o lstart` prints it under UTC. The rollout's `session_meta.timestamp` is the match key, not the row's start. |
+| Last activity | reported: the `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and file mtimes are not read. | reported: the `timestamp` on the rollout's last line. `-` with no rollout; the process start is not substituted. |
+| Transcript path | deduced: `projects/<cwd with every non-alphanumeric byte as '-'>/<sessionId>.jsonl`, Claude's internal layout. Background jobs report `linkScanPath` in state.json; interactive sessions report nothing. | reported, then matched: `~/.codex/sessions/YYYY/MM/DD/rollout-<local start>-<id>.jsonl` (`$CODEX_HOME` relocates it), created on the session's first turn. Its `session_meta` records `cwd` and a start `timestamp` and no pid; the rollout is tied to the only live Codex in that cwd that started at or before it, else `-`. A resumed session appends to a rollout that predates its process and stays `-`. |
+| Title | reported: transcript `ai-title` or `agent-name`, else registry `name` | reported: `thread_name` for the id in `~/.codex/session_index.jsonl`. |
+| Last reply | reported: state.json `detail` for background jobs, else the transcript's last assistant text | reported: the rollout's last assistant `response_item` message, its `output_text`. |
+| Tokens in and out | reported: transcript `message.usage`, summed once per message id | `-`: the rollout carries `token_count` events with totals; not shown, Codex holds no cones budget. |
+| Context tokens at the last turn | reported: the last message's `input_tokens` plus cache creation and cache read, the fields Claude's statusLine `current_usage` carries. Shown with no denominator. A message whose model is `<synthetic>` is Claude's placeholder for a turn no model answered and is skipped. | `-`: `token_count.info.last_token_usage` in the rollout. Not shown. |
+| Context window size | `-`: stated only in the statusLine stdin JSON (`context_window.context_window_size`), which reaches nothing outside the session. Transcript, registry, hook payloads and `claude agents --json` have none. The fleet record has no field for it. | `-`: `token_count.info.model_context_window` in the rollout. No field for it. |
+| Cost | `-` for sessions, the transcript records tokens and no price. Reported for cones runs from the result event `total_cost_usd`. | `-`: the rollout records tokens and no price. |
+| Model | reported: `message.model` on the last transcript message with usage, the bare API id such as `claude-fable-5-1`, shown verbatim. | reported: `turn_context.model` on the rollout's last turn, such as `openai.gpt-6-astra`, shown verbatim. |
 
 ## Trigger
 
@@ -64,14 +64,14 @@ What `stop`, `attach`, `logs` and the timeout need.
 
 | Need | Claude Code | Codex |
 | --- | --- | --- |
-| Stop an interactive session | reported: the registry pid. cones checks the process name with `ps` before SIGTERM. | unknown |
-| Stop a background session | reported: `claude stop <id>`. The daemon respawns a killed worker, so a signal is not enough. | unknown |
+| Stop an interactive session | reported: the registry pid. cones checks the process name with `ps` before SIGTERM. | reported: the process table pid, checked the same way before SIGTERM. |
+| Stop a background session | reported: `claude stop <id>`. The daemon respawns a killed worker, so a signal is not enough. | `-`: Codex has no daemon-owned sessions in the fleet; `app-server` processes are not listed. |
 | Kill a run at the timeout | cones owns it: SIGTERM to the process group, SIGKILL two seconds later | unknown |
-| Attach to a session | reported: `claude attach <id>` in its cwd | unknown |
-| Read a session's output | reported: the transcript, see Observe | unknown |
+| Attach to a session | reported: `claude attach <id>` in its cwd | `-`: Codex has no attach command. `cones attach` refuses a Codex row. |
+| Read a session's output | reported: the transcript, see Observe | reported: the rollout, when matched; `cones logs` and the details pane read it. |
 
 ## Open
 
 One row is still deduced: the transcript path for interactive sessions. Nothing reports it. Until Claude does, the layout rule stays, and a missing file renders `-`, never a guess.
 
-Codex is parsed and refused at validation ([jobs.md](jobs.md#codex-parsed-refused-at-validation)). Its column fills in as each row is checked against a real Codex binary; the adapter lands when no row is unknown.
+Codex is observed, not run. Its Observe and Control rows were checked against Codex CLI 0.154 on this Mac: a rollout from a real session, a TUI started without a prompt (which writes no rollout until the first turn), `ps` and `lsof` on that process. Its rollout ties to a process by cwd and start time, the two facts it records, and `-` stands wherever that match is not certain. The Trigger column stays unknown until a real headless run is checked; Codex jobs are parsed and refused at validation ([jobs.md](jobs.md#codex-parsed-refused-at-validation)), and the adapter lands when no row is unknown.

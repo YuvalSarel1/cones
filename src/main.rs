@@ -297,6 +297,13 @@ fn execute(cli: Cli) -> Result<i32> {
                 // alive, resume in place once it is gone.
                 Err(e) => {
                     let s = cones::fleet::find(&claude, &id)?.ok_or(e)?;
+                    // A Codex row is seen, not driven: Codex has no attach command and cones
+                    // starts no Codex process.
+                    ensure!(
+                        s.harness == "claude",
+                        "{} sessions are listed but cannot be attached; open them in their own terminal",
+                        s.harness
+                    );
                     let kind = serde_json::from_value(serde_json::Value::String(s.harness.clone()))
                         .context("unknown harness in fleet state")?;
                     let adapter = harness::adapter(kind)?;
