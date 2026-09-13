@@ -1,12 +1,14 @@
 //! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
-//! or by state, and runs, with a details pane, a dispatch prompt and the actions. ratatui draws;
+//! or by state, and runs, with a details pane, a launch prompt (`n`: any directory, any known
+//! harness, interactive or managed) and the actions. ratatui draws;
 //! cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
 //! draw as sessions.
 use crate::{
-    config::{self, ResolvedJob},
+    config::{self, HarnessKind, ResolvedJob},
     fleet::{self, Session},
+    harness,
     ledger::{Ledger, Run},
     output, runner,
 };
@@ -598,10 +600,256 @@ pub fn fleet_rows(claude: &Path, runs: &[Run]) -> Result<Vec<Session>> {
         .collect())
 }
 
+/// The directory a launch runs in: `text` with `~` expanded and a relative path taken from
+/// `base`, canonical, and an existing directory. Empty text means `fallback`, the row's cwd or
+/// the dashboard's own. The error is the one line the prompt shows inline.
+pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, String> {
+    let text = text.trim();
+    let path = if text.is_empty() {
+        fallback.to_path_buf()
+    } else {
+        crate::expand_path(Path::new(text), base).map_err(|e| e.to_string())?
+    };
+    if !path.is_dir() {
+        return Err(format!("not a directory: {}", path.display()));
+    }
+    path.canonicalize()
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Where the `n` prompt is: each step is one question on the footer line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Dir,
+    Harness,
+    How,
+    Prompt,
+}
+
+/// What a key in the `n` prompt asks the dashboard to do.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LaunchAction {
+    Stay,
+    Cancel,
+    /// Suspend the dashboard and run the harness natively in the directory.
+    Interactive(PathBuf, HarnessKind),
+    /// A supervised `cones run --prompt` in the directory.
+    Managed(PathBuf, HarnessKind, String),
+}
+
+/// The `n` prompt: a directory, a harness, interactive or managed, then the task for a managed
+/// run. `enter` answers a question, `esc` cancels, backspace on an empty answer steps back.
+/// Pure: every filesystem fact comes in through `base`, `fallback` and `launch_dir`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Launch {
+    pub step: Step,
+    pub dir: String,
+    pub resolved: Option<PathBuf>,
+    pub harness: usize,
+    pub managed: bool,
+    pub prompt: String,
+    pub error: Option<String>,
+    base: PathBuf,
+    fallback: PathBuf,
+}
+
+impl Launch {
+    /// `fallback` is the directory an empty answer means and is shown as the placeholder.
+    pub fn new(base: &Path, fallback: &Path) -> Self {
+        Self {
+            step: Step::Dir,
+            dir: String::new(),
+            resolved: None,
+            harness: 0,
+            managed: false,
+            prompt: String::new(),
+            error: None,
+            base: base.to_owned(),
+            fallback: fallback.to_owned(),
+        }
+    }
+
+    pub fn kind(&self) -> HarnessKind {
+        harness::KNOWN[self.harness]
+    }
+
+    /// The directory the launch will use so far: the validated one, else the placeholder.
+    pub fn target(&self) -> &Path {
+        self.resolved.as_deref().unwrap_or(&self.fallback)
+    }
+
+    fn cycle(&mut self, delta: isize) {
+        let n = harness::KNOWN.len() as isize;
+        self.harness = (self.harness as isize + delta).rem_euclid(n) as usize;
+    }
+
+    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> LaunchAction {
+        if code == KeyCode::Esc {
+            return LaunchAction::Cancel;
+        }
+        self.error = None;
+        match self.step {
+            Step::Dir => match code {
+                KeyCode::Enter => match launch_dir(&self.dir, &self.base, &self.fallback) {
+                    Ok(dir) => {
+                        self.resolved = Some(dir);
+                        self.step = Step::Harness;
+                    }
+                    Err(e) => self.error = Some(e),
+                },
+                KeyCode::Backspace => {
+                    self.dir.pop();
+                }
+                KeyCode::Char(c) if !ctrl => self.dir.push(c),
+                _ => {}
+            },
+            Step::Harness => match code {
+                KeyCode::Left | KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('h') => {
+                    self.cycle(-1)
+                }
+                KeyCode::Right
+                | KeyCode::Down
+                | KeyCode::Tab
+                | KeyCode::Char(' ')
+                | KeyCode::Char('j')
+                | KeyCode::Char('l') => self.cycle(1),
+                KeyCode::Enter => self.step = Step::How,
+                KeyCode::Backspace => self.step = Step::Dir,
+                _ => {}
+            },
+            Step::How => match code {
+                KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Tab
+                | KeyCode::Char(' ')
+                | KeyCode::Char('h')
+                | KeyCode::Char('j')
+                | KeyCode::Char('k')
+                | KeyCode::Char('l') => self.managed = !self.managed,
+                KeyCode::Char('i') => self.managed = false,
+                KeyCode::Char('m') => self.managed = true,
+                KeyCode::Enter => {
+                    let dir = self.target().to_owned();
+                    if !self.managed {
+                        return LaunchAction::Interactive(dir, self.kind());
+                    }
+                    // A managed run compiles a policy; a harness without an adapter fails at
+                    // validation, so say so here rather than as a failed row in the ledger.
+                    match harness::adapter(self.kind()) {
+                        Ok(_) => self.step = Step::Prompt,
+                        Err(e) => self.error = Some(e.to_string()),
+                    }
+                }
+                KeyCode::Backspace => self.step = Step::Harness,
+                _ => {}
+            },
+            Step::Prompt => match code {
+                KeyCode::Enter => {
+                    let prompt = self.prompt.trim().to_owned();
+                    if !prompt.is_empty() {
+                        return LaunchAction::Managed(
+                            self.target().to_owned(),
+                            self.kind(),
+                            prompt,
+                        );
+                    }
+                }
+                KeyCode::Backspace if self.prompt.is_empty() => self.step = Step::How,
+                KeyCode::Backspace => {
+                    self.prompt.pop();
+                }
+                KeyCode::Char(c) if !ctrl => self.prompt.push(c),
+                _ => {}
+            },
+        }
+        LaunchAction::Stay
+    }
+
+    /// The footer line: what is asked, the answer so far, the choices with the current one lit,
+    /// the inline error when there is one.
+    fn line(&self) -> Line<'static> {
+        let ask = Style::default().fg(ORANGE);
+        let lit = Style::default().fg(ORANGE).add_modifier(Modifier::BOLD);
+        let choices = |spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize| {
+            for (i, o) in options.iter().enumerate() {
+                spans.push(Span::styled(
+                    format!(
+                        "{}{o}{}",
+                        if i == picked { "[" } else { " " },
+                        if i == picked { "]" } else { " " }
+                    ),
+                    if i == picked { lit } else { dim() },
+                ));
+            }
+            spans.push(Span::styled("  ←→ pick · enter next · esc cancel", dim()));
+        };
+        let mut spans = vec![Span::styled("new task", ask)];
+        match self.step {
+            Step::Dir => {
+                spans.push(Span::styled(" · dir › ", ask));
+                if self.dir.is_empty() {
+                    spans.push(Span::styled(fleet::tilde(&self.fallback), dim()));
+                } else {
+                    spans.push(Span::raw(self.dir.clone()));
+                }
+                spans.push(Span::styled("▏", dim()));
+            }
+            Step::Harness => {
+                spans.push(Span::styled(
+                    format!(" in {} · harness › ", fleet::tilde(self.target())),
+                    ask,
+                ));
+                let names: Vec<String> = harness::KNOWN
+                    .iter()
+                    .map(|h| logo(&h.to_string()))
+                    .collect();
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                choices(&mut spans, &names, self.harness);
+            }
+            Step::How => {
+                spans.push(Span::styled(
+                    format!(
+                        " in {} · {} · start › ",
+                        fleet::tilde(self.target()),
+                        logo(&self.kind().to_string())
+                    ),
+                    ask,
+                ));
+                choices(
+                    &mut spans,
+                    &["interactive", "managed"],
+                    usize::from(self.managed),
+                );
+            }
+            Step::Prompt => {
+                spans.push(Span::styled(
+                    format!(
+                        " in {} · {} managed › ",
+                        fleet::tilde(self.target()),
+                        logo(&self.kind().to_string())
+                    ),
+                    ask,
+                ));
+                spans.push(Span::raw(self.prompt.clone()));
+                spans.push(Span::styled("▏", dim()));
+            }
+        }
+        if let Some(e) = &self.error {
+            spans.push(Span::styled(
+                format!("  {e}"),
+                Style::default().fg(Color::Red),
+            ));
+        }
+        Line::from(spans)
+    }
+}
+
 enum Mode {
     Normal,
     Filter,
-    Dispatch(String),
+    Launch(Launch),
 }
 
 struct App {
@@ -609,6 +857,8 @@ struct App {
     jobs_path: PathBuf,
     state: PathBuf,
     claude: PathBuf,
+    /// The dashboard's own working directory: where a launch goes with nothing selected.
+    cwd: PathBuf,
     data: Data,
     rows: Vec<Row>,
     /// Indexes into `rows` that pass the filter; the cursor indexes this list.
@@ -725,10 +975,39 @@ impl App {
         c
     }
 
+    /// The working directory of the selected row: a job's cwd, a session's, a run's.
+    fn selected_cwd(&self) -> Option<PathBuf> {
+        match &self.selected()?.kind {
+            Kind::Job(name) => self
+                .data
+                .jobs
+                .iter()
+                .find(|j| &j.name == name)
+                .map(|j| j.cwd.clone()),
+            Kind::Session(id, _) => self
+                .data
+                .sessions
+                .iter()
+                .find(|s| &s.session_id == id)
+                .map(|s| s.cwd.clone()),
+            Kind::Run(id, _) => self
+                .data
+                .runs
+                .iter()
+                .find(|r| &r.started.run_id == id)
+                .and_then(|r| r.started.cwd.clone()),
+            _ => None,
+        }
+    }
+
     /// Start something in the background and forget it; the ledger and fleet files report back.
-    fn spawn(&mut self, args: &[&str], what: &str) {
-        let r = self
-            .me()
+    /// `dir` is the subprocess's working directory, which is where `cones run --prompt` runs.
+    fn spawn(&mut self, args: &[&str], dir: Option<&Path>, what: &str) {
+        let mut c = self.me();
+        if let Some(dir) = dir {
+            c.current_dir(dir);
+        }
+        let r = c
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -778,7 +1057,7 @@ impl App {
             return;
         };
         match kind {
-            Kind::Job(name) => self.spawn(&["run", &name], &format!("started {name}")),
+            Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
             // A headless run cannot be attached while it runs; follow its log instead. A live
             // session attaches natively, ctrl-z comes back here.
             Kind::Run(id, s) if s == "started" => {
@@ -883,21 +1162,30 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            Mode::Dispatch(text) => match code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
-                    let prompt = text.trim().to_owned();
+            Mode::Launch(launch) => match launch.key(code, ctrl) {
+                LaunchAction::Stay => {}
+                LaunchAction::Cancel => self.mode = Mode::Normal,
+                // The harness natively in the directory; the dashboard waits and takes the
+                // terminal back, as for attach.
+                LaunchAction::Interactive(dir, kind) => {
                     self.mode = Mode::Normal;
-                    if !prompt.is_empty() {
-                        let label = format!("dispatched: {}", clip(&prompt, 60));
-                        self.spawn(&["run", "--prompt", &prompt], &label);
+                    let what = format!("{kind} in {}", fleet::tilde(&dir));
+                    match harness::interactive(kind, &dir) {
+                        Ok(c) => self.foreground(terminal, c, &what),
+                        Err(e) => self.status = format!("{what} failed: {e}"),
                     }
                 }
-                KeyCode::Backspace => {
-                    text.pop();
+                // The same `cones run --prompt` the dashboard has always dispatched, with the
+                // subprocess's cwd set to the chosen directory.
+                LaunchAction::Managed(dir, _, prompt) => {
+                    self.mode = Mode::Normal;
+                    let label = format!(
+                        "dispatched in {}: {}",
+                        fleet::tilde(&dir),
+                        clip(&prompt, 60)
+                    );
+                    self.spawn(&["run", "--prompt", &prompt], Some(&dir), &label);
                 }
-                KeyCode::Char(c) if !ctrl => text.push(c),
-                _ => {}
             },
             Mode::Normal => match code {
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
@@ -911,7 +1199,10 @@ impl App {
                     self.by_state = !self.by_state;
                     self.refresh()?;
                 }
-                KeyCode::Char('n') => self.mode = Mode::Dispatch(String::new()),
+                KeyCode::Char('n') => {
+                    let fallback = self.selected_cwd().unwrap_or_else(|| self.cwd.clone());
+                    self.mode = Mode::Launch(Launch::new(&self.cwd, &fallback));
+                }
                 KeyCode::Char('/') => self.mode = Mode::Filter,
                 KeyCode::Char('r') => {
                     self.refresh()?;
@@ -962,11 +1253,7 @@ impl App {
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", dim()),
             ]),
-            Mode::Dispatch(t) => Line::from(vec![
-                Span::styled("new task in cwd › ", Style::default().fg(ORANGE)),
-                Span::raw(t.clone()),
-                Span::styled("▏", dim()),
-            ]),
+            Mode::Launch(l) => l.line(),
             Mode::Normal if !self.filter.is_empty() => Line::from(vec![
                 Span::styled(format!("filter: {}  ", self.filter), dim()),
                 Span::styled(self.status.clone(), dim()),
@@ -1025,6 +1312,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<
         jobs_path: jobs_path.to_owned(),
         state: state.to_owned(),
         claude: claude.to_owned(),
+        cwd: std::env::current_dir().context("dashboard working directory")?,
         data: Data::load(jobs_path, state, claude)?,
         rows: vec![],
         visible: vec![],
@@ -1073,4 +1361,189 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<
     ratatui::restore();
     result.context("dashboard")?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn typed(l: &mut Launch, text: &str) {
+        for c in text.chars() {
+            assert_eq!(l.key(KeyCode::Char(c), false), LaunchAction::Stay);
+        }
+    }
+
+    #[test]
+    fn launch_dir_expands_tilde_and_relative_paths() {
+        let home = dirs::home_dir().unwrap();
+        let base = dir();
+        std::fs::create_dir(base.path().join("sub")).unwrap();
+        let sub = base.path().join("sub").canonicalize().unwrap();
+        assert_eq!(
+            launch_dir("~", base.path(), base.path()),
+            Ok(home.canonicalize().unwrap())
+        );
+        assert_eq!(launch_dir("sub", base.path(), base.path()), Ok(sub.clone()));
+        assert_eq!(
+            launch_dir("  ", base.path(), &base.path().join("sub")),
+            Ok(sub.clone()),
+            "blank means the fallback"
+        );
+        assert_eq!(
+            launch_dir(&sub.display().to_string(), Path::new("/"), Path::new("/")),
+            Ok(sub)
+        );
+    }
+
+    #[test]
+    fn launch_dir_rejects_files_missing_paths_and_user_tildes() {
+        let base = dir();
+        let file = base.path().join("f");
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(
+            launch_dir("f", base.path(), base.path()),
+            Err(format!("not a directory: {}", file.display()))
+        );
+        assert!(
+            launch_dir("missing", base.path(), base.path())
+                .unwrap_err()
+                .starts_with("not a directory: ")
+        );
+        assert!(
+            launch_dir("~someone/x", base.path(), base.path())
+                .unwrap_err()
+                .contains("~user")
+        );
+        // A fallback that is gone is an error too, not a silent launch elsewhere.
+        assert!(launch_dir("", base.path(), &base.path().join("gone")).is_err());
+    }
+
+    #[test]
+    fn empty_dir_means_the_fallback_and_interactive_launches_there() {
+        let base = dir();
+        let mut l = Launch::new(base.path(), base.path());
+        assert_eq!(l.step, Step::Dir);
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::Harness);
+        assert_eq!(l.kind(), HarnessKind::Claude);
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::How);
+        assert!(!l.managed);
+        assert_eq!(
+            l.key(KeyCode::Enter, false),
+            LaunchAction::Interactive(base.path().canonicalize().unwrap(), HarnessKind::Claude)
+        );
+    }
+
+    #[test]
+    fn a_bad_directory_stays_on_the_question_with_an_inline_error() {
+        let base = dir();
+        let mut l = Launch::new(base.path(), base.path());
+        typed(&mut l, "nope");
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::Dir);
+        assert!(l.error.as_deref().unwrap().starts_with("not a directory: "));
+        assert!(l.line().to_string().contains("not a directory"));
+        // The next key clears the error; a corrected path goes through.
+        for _ in 0..4 {
+            l.key(KeyCode::Backspace, false);
+        }
+        assert_eq!(l.error, None);
+        std::fs::create_dir(base.path().join("ok")).unwrap();
+        typed(&mut l, "ok");
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::Harness);
+        assert_eq!(
+            l.target(),
+            base.path().join("ok").canonicalize().unwrap().as_path()
+        );
+    }
+
+    #[test]
+    fn managed_asks_for_a_prompt_and_dispatches_it() {
+        let base = dir();
+        let mut l = Launch::new(base.path(), base.path());
+        l.key(KeyCode::Enter, false);
+        l.key(KeyCode::Enter, false);
+        assert_eq!(l.key(KeyCode::Right, false), LaunchAction::Stay);
+        assert!(l.managed);
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::Prompt);
+        // An empty prompt does not dispatch.
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::Prompt);
+        typed(&mut l, " fix the test ");
+        assert_eq!(
+            l.key(KeyCode::Enter, false),
+            LaunchAction::Managed(
+                base.path().canonicalize().unwrap(),
+                HarnessKind::Claude,
+                "fix the test".into()
+            )
+        );
+    }
+
+    #[test]
+    fn harness_cycles_through_the_known_list_and_managed_codex_is_refused_inline() {
+        let base = dir();
+        let mut l = Launch::new(base.path(), base.path());
+        l.key(KeyCode::Enter, false);
+        assert_eq!(l.kind(), harness::KNOWN[0]);
+        l.key(KeyCode::Right, false);
+        assert_eq!(l.kind(), HarnessKind::Codex);
+        l.key(KeyCode::Right, false);
+        assert_eq!(l.kind(), HarnessKind::Claude, "wraps around");
+        l.key(KeyCode::Left, false);
+        assert_eq!(l.kind(), HarnessKind::Codex);
+        assert!(l.line().to_string().contains("[>_ codex]"));
+        l.key(KeyCode::Enter, false);
+        assert_eq!(
+            l.key(KeyCode::Enter, false),
+            LaunchAction::Interactive(base.path().canonicalize().unwrap(), HarnessKind::Codex),
+            "interactive needs no adapter"
+        );
+        l.key(KeyCode::Char('m'), false);
+        assert!(l.managed);
+        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
+        assert_eq!(l.step, Step::How, "no adapter, so no prompt step");
+        assert!(l.error.as_deref().unwrap().contains("not available"));
+    }
+
+    #[test]
+    fn esc_cancels_anywhere_and_backspace_steps_back() {
+        let base = dir();
+        let mut l = Launch::new(base.path(), base.path());
+        l.key(KeyCode::Enter, false);
+        l.key(KeyCode::Enter, false);
+        l.key(KeyCode::Char('m'), false);
+        l.key(KeyCode::Enter, false);
+        assert_eq!(l.step, Step::Prompt);
+        typed(&mut l, "a");
+        l.key(KeyCode::Backspace, false);
+        assert_eq!(l.step, Step::Prompt, "backspace edits text first");
+        l.key(KeyCode::Backspace, false);
+        assert_eq!(l.step, Step::How);
+        l.key(KeyCode::Backspace, false);
+        assert_eq!(l.step, Step::Harness);
+        l.key(KeyCode::Backspace, false);
+        assert_eq!(l.step, Step::Dir);
+        assert_eq!(l.key(KeyCode::Esc, false), LaunchAction::Cancel);
+        // Control characters never reach the text.
+        let mut l = Launch::new(base.path(), base.path());
+        l.key(KeyCode::Char('c'), true);
+        assert_eq!(l.dir, "");
+    }
+
+    #[test]
+    fn the_dir_question_shows_the_fallback_as_a_placeholder() {
+        let base = dir();
+        let l = Launch::new(base.path(), base.path());
+        let text = l.line().to_string();
+        assert!(text.starts_with("new task · dir › "));
+        assert!(text.contains(&fleet::tilde(base.path())));
+    }
 }

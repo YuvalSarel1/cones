@@ -35,6 +35,21 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     }
 }
 
+/// Every harness cones knows, in the order the dashboard's `n` prompt offers them.
+pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
+
+/// The harness started natively in `dir`, as typing its name in a shell there would: no
+/// policy, no ledger, the harness's own permission prompts. The dashboard suspends itself
+/// around it and lists the session from the harness's registry while it runs.
+pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Command> {
+    let name = kind.to_string();
+    let path = executable(&name, &launch_path())
+        .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
+    let mut cmd = std::process::Command::new(path);
+    cmd.current_dir(dir);
+    Ok(cmd)
+}
+
 pub fn executable(name: &str, path: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path).map(|d| d.join(name)).find(|p| {

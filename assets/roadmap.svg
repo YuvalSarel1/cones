@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="2762" viewBox="0 0 860 2762" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
-<rect width="860" height="2762" fill="#0d1117"/>
-<rect x="28" y="16" width="804" height="290" rx="8" fill="#161b22" stroke="#30363d"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="2584" viewBox="0 0 860 2584" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+<rect width="860" height="2584" fill="#0d1117"/>
+<rect x="28" y="16" width="804" height="310" rx="8" fill="#161b22" stroke="#30363d"/>
 <text x="46" y="40" font-size="12" fill="#3fb950" font-weight="700" letter-spacing="1.5">SHIPPED  v0.1.0</text>
 <text x="50" y="64" font-size="13.5" fill="#e6edf3" >• launchd schedule, no daemon</text>
 <text x="62" y="84" font-size="13.5" fill="#e6edf3" >between ticks</text>
@@ -29,175 +29,169 @@
 <text x="594" y="84" font-size="13.5" fill="#e6edf3" >TUI</text>
 <text x="582" y="104" font-size="13.5" fill="#e6edf3" >• dashboard: details pane,</text>
 <text x="594" y="124" font-size="13.5" fill="#e6edf3" >dispatch, grouping</text>
-<text x="582" y="144" font-size="13.5" fill="#e6edf3" >• key hints follow claude agents</text>
-<text x="582" y="164" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
-<text x="594" y="184" font-size="13.5" fill="#e6edf3" >colors</text>
-<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
-<text x="594" y="224" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
-<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
-<text x="594" y="264" font-size="13.5" fill="#e6edf3" >in the binary</text>
-<rect x="36" y="332" width="254" height="6" rx="3" fill="#3fb950"/>
-<text x="50" y="370" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
-<text x="50" y="390" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>
-<rect x="302" y="332" width="254" height="6" rx="3" fill="#58a6ff"/>
-<text x="316" y="370" font-size="22" fill="#58a6ff" font-weight="800" letter-spacing="1.5">NEXT</text>
-<text x="316" y="390" font-size="12.5" fill="#8b949e" >Everyday control of jobs</text>
-<rect x="568" y="332" width="254" height="6" rx="3" fill="#bc8cff"/>
-<text x="582" y="370" font-size="22" fill="#bc8cff" font-weight="800" letter-spacing="1.5">LATER</text>
-<text x="582" y="390" font-size="12.5" fill="#8b949e" >Needs a second harness or Mac</text>
-<rect x="28" y="406" width="804" height="734" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="418" width="5" height="710" rx="2.5" fill="#d2a8ff"/>
-<text x="46" y="436" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">SEE</text>
-<text x="50" y="468" font-size="17" fill="#e6edf3" font-weight="700">Metrics you can trust</text>
-<text x="50" y="492" font-size="16" fill="#8b949e" >Model, session start, last</text>
-<text x="50" y="514" font-size="16" fill="#8b949e" >activity and context usage,</text>
-<text x="50" y="536" font-size="16" fill="#8b949e" >each read from a Claude</text>
-<text x="50" y="558" font-size="16" fill="#8b949e" >report; the age column stops</text>
-<text x="50" y="580" font-size="16" fill="#8b949e" >measuring the last update. A</text>
-<text x="50" y="602" font-size="16" fill="#8b949e" >value Claude does not report</text>
-<text x="50" y="624" font-size="16" fill="#8b949e" >shows as absent, never</text>
-<text x="50" y="646" font-size="16" fill="#8b949e" >estimated.</text>
-<text x="316" y="468" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
-<text x="316" y="492" font-size="16" fill="#8b949e" >Each job row shows its next</text>
-<text x="316" y="514" font-size="16" fill="#8b949e" >tick, computed from the</text>
-<text x="316" y="536" font-size="16" fill="#8b949e" >compiled</text>
-<text x="316" y="558" font-size="16" fill="#8b949e" >StartCalendarInterval list</text>
-<text x="316" y="580" font-size="16" fill="#8b949e" >and confirmed against the</text>
-<text x="316" y="602" font-size="16" fill="#8b949e" >loaded plist.</text>
-<text x="316" y="644" font-size="17" fill="#e6edf3" font-weight="700">Run diffs</text>
-<text x="316" y="668" font-size="16" fill="#8b949e" >A write run records git diff</text>
-<text x="316" y="690" font-size="16" fill="#8b949e" >--stat of its cwd at exit;</text>
-<text x="316" y="712" font-size="16" fill="#8b949e" >cones logs and the details</text>
-<text x="316" y="734" font-size="16" fill="#8b949e" >pane show what the run</text>
-<text x="316" y="756" font-size="16" fill="#8b949e" >changed.</text>
-<text x="316" y="798" font-size="17" fill="#e6edf3" font-weight="700">Touched files</text>
-<text x="316" y="822" font-size="16" fill="#8b949e" >Edit and Write paths read</text>
-<text x="316" y="844" font-size="16" fill="#8b949e" >from the session&#x27;s</text>
-<text x="316" y="866" font-size="16" fill="#8b949e" >transcript; ls --json and the</text>
-<text x="316" y="888" font-size="16" fill="#8b949e" >details pane show each</text>
-<text x="316" y="910" font-size="16" fill="#8b949e" >footprint. Bash edits are not</text>
-<text x="316" y="932" font-size="16" fill="#8b949e" >seen.</text>
-<text x="316" y="974" font-size="17" fill="#e6edf3" font-weight="700">Status transitions</text>
-<text x="316" y="998" font-size="16" fill="#8b949e" >cones status &#x27;text&#x27; records a</text>
-<text x="316" y="1020" font-size="16" fill="#8b949e" >one-line check-in per session</text>
-<text x="316" y="1042" font-size="16" fill="#8b949e" >that fills the last column,</text>
-<text x="316" y="1064" font-size="16" fill="#8b949e" >kept apart from the</text>
-<text x="316" y="1086" font-size="16" fill="#8b949e" >active/idle/blocked state</text>
-<text x="316" y="1108" font-size="16" fill="#8b949e" >Claude reports.</text>
-<text x="582" y="468" font-size="17" fill="#e6edf3" font-weight="700">Fleet session records</text>
-<text x="582" y="492" font-size="16" fill="#8b949e" >A session cones did not</text>
-<text x="582" y="514" font-size="16" fill="#8b949e" >launch gets a ledger record</text>
-<text x="582" y="536" font-size="16" fill="#8b949e" >when it leaves Claude&#x27;s</text>
-<text x="582" y="558" font-size="16" fill="#8b949e" >registry: cwd, duration,</text>
-<text x="582" y="580" font-size="16" fill="#8b949e" >tokens, dollars as last</text>
-<text x="582" y="602" font-size="16" fill="#8b949e" >reported. ls totals it,</text>
-<text x="582" y="624" font-size="16" fill="#8b949e" >daily_budget_usd ignores it.</text>
-<rect x="28" y="1152" width="804" height="404" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="1164" width="5" height="380" rx="2.5" fill="#56d4dd"/>
-<text x="46" y="1182" font-size="12.5" fill="#56d4dd" font-weight="700" letter-spacing="1.5">MOVE AND CONTROL</text>
-<text x="50" y="1214" font-size="17" fill="#e6edf3" font-weight="700">Preview and return</text>
-<text x="50" y="1238" font-size="16" fill="#8b949e" >Read more of a session before</text>
-<text x="50" y="1260" font-size="16" fill="#8b949e" >opening it; attach natively</text>
-<text x="50" y="1282" font-size="16" fill="#8b949e" >and land back on the same row</text>
-<text x="50" y="1304" font-size="16" fill="#8b949e" >with the filter and grouping</text>
-<text x="50" y="1326" font-size="16" fill="#8b949e" >kept.</text>
-<text x="50" y="1368" font-size="17" fill="#e6edf3" font-weight="700">Launch in any folder</text>
-<text x="50" y="1392" font-size="16" fill="#8b949e" >n asks for a directory and a</text>
-<text x="50" y="1414" font-size="16" fill="#8b949e" >harness, interactive or</text>
-<text x="50" y="1436" font-size="16" fill="#8b949e" >managed, instead of running</text>
-<text x="50" y="1458" font-size="16" fill="#8b949e" >in the dashboard&#x27;s own cwd.</text>
-<text x="50" y="1480" font-size="16" fill="#8b949e" >Starting work never depends</text>
-<text x="50" y="1502" font-size="16" fill="#8b949e" >on a session already being</text>
-<text x="50" y="1524" font-size="16" fill="#8b949e" >there.</text>
-<text x="316" y="1214" font-size="17" fill="#e6edf3" font-weight="700">Job lifecycle hooks</text>
-<text x="316" y="1238" font-size="16" fill="#8b949e" >Opt-in commands on start,</text>
-<text x="316" y="1260" font-size="16" fill="#8b949e" >exit and failure for jobs</text>
-<text x="316" y="1282" font-size="16" fill="#8b949e" >cones launches, set in</text>
-<text x="316" y="1304" font-size="16" fill="#8b949e" >jobs.yaml. Nothing hooks</text>
-<text x="316" y="1326" font-size="16" fill="#8b949e" >sessions cones did not start.</text>
-<text x="582" y="1214" font-size="17" fill="#e6edf3" font-weight="700">Jump to pane</text>
-<text x="582" y="1238" font-size="16" fill="#8b949e" >Enter on a foreign session</text>
-<text x="582" y="1260" font-size="16" fill="#8b949e" >resolves pid to tty to tmux</text>
-<text x="582" y="1282" font-size="16" fill="#8b949e" >or iTerm pane and switches</text>
-<text x="582" y="1304" font-size="16" fill="#8b949e" >there, instead of resuming a</text>
-<text x="582" y="1326" font-size="16" fill="#8b949e" >copy.</text>
-<rect x="28" y="1568" width="804" height="668" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="1580" width="5" height="644" rx="2.5" fill="#79c0ff"/>
-<text x="46" y="1598" font-size="12.5" fill="#79c0ff" font-weight="700" letter-spacing="1.5">HARNESSES</text>
-<text x="50" y="1630" font-size="17" fill="#e6edf3" font-weight="700">Codex in the fleet</text>
-<text x="50" y="1654" font-size="16" fill="#8b949e" >Codex keeps no session</text>
-<text x="50" y="1676" font-size="16" fill="#8b949e" >registry: pid and cwd from</text>
-<text x="50" y="1698" font-size="16" fill="#8b949e" >the process table, title and</text>
-<text x="50" y="1720" font-size="16" fill="#8b949e" >last line from its rollout</text>
-<text x="50" y="1742" font-size="16" fill="#8b949e" >file. Seeing Codex sessions</text>
-<text x="50" y="1764" font-size="16" fill="#8b949e" >does not wait for Codex</text>
-<text x="50" y="1786" font-size="16" fill="#8b949e" >budgets or jobs.</text>
-<text x="316" y="1630" font-size="16" fill="#30363d" >—</text>
-<text x="582" y="1630" font-size="17" fill="#e6edf3" font-weight="700">Codex budget probe</text>
-<text x="582" y="1654" font-size="16" fill="#8b949e" >Measure Codex usage events to</text>
-<text x="582" y="1676" font-size="16" fill="#8b949e" >decide whether a token budget</text>
-<text x="582" y="1698" font-size="16" fill="#8b949e" >can be enforced; the result</text>
-<text x="582" y="1720" font-size="16" fill="#8b949e" >gates Codex jobs, not Codex</text>
-<text x="582" y="1742" font-size="16" fill="#8b949e" >in the fleet.</text>
-<text x="582" y="1784" font-size="17" fill="#e6edf3" font-weight="700">Codex jobs</text>
-<text x="582" y="1808" font-size="16" fill="#8b949e" >Real token budget, rejected</text>
-<text x="582" y="1830" font-size="16" fill="#8b949e" >when unenforceable. Same</text>
-<text x="582" y="1852" font-size="16" fill="#8b949e" >policy file, second harness.</text>
-<text x="582" y="1894" font-size="17" fill="#e6edf3" font-weight="700">File triggers</text>
-<text x="582" y="1918" font-size="16" fill="#8b949e" >Run on path change via</text>
-<text x="582" y="1940" font-size="16" fill="#8b949e" >launchd WatchPaths; a few</text>
-<text x="582" y="1962" font-size="16" fill="#8b949e" >plist lines, no watcher</text>
-<text x="582" y="1984" font-size="16" fill="#8b949e" >process.</text>
-<text x="582" y="2026" font-size="17" fill="#e6edf3" font-weight="700">Webhook triggers</text>
-<text x="582" y="2050" font-size="16" fill="#8b949e" >Run on an HTTP call. Needs a</text>
-<text x="582" y="2072" font-size="16" fill="#8b949e" >listener process, so after</text>
-<text x="582" y="2094" font-size="16" fill="#8b949e" >single-machine fleet control.</text>
-<text x="582" y="2136" font-size="17" fill="#e6edf3" font-weight="700">More Macs</text>
-<text x="582" y="2160" font-size="16" fill="#8b949e" >Multi-machine after single-</text>
-<text x="582" y="2182" font-size="16" fill="#8b949e" >machine fleet control is in</text>
-<text x="582" y="2204" font-size="16" fill="#8b949e" >regular use.</text>
-<rect x="28" y="2248" width="804" height="404" rx="10" fill="#161b22" stroke="#30363d"/>
-<rect x="28" y="2260" width="5" height="380" rx="2.5" fill="#f0883e"/>
-<text x="46" y="2278" font-size="12.5" fill="#f0883e" font-weight="700" letter-spacing="1.5">RELIABILITY</text>
-<text x="50" y="2310" font-size="17" fill="#e6edf3" font-weight="700">Writer lock removal</text>
-<text x="50" y="2334" font-size="16" fill="#8b949e" >The runner flock, the</text>
-<text x="50" y="2356" font-size="16" fill="#8b949e" >workspace skip reason, cones</text>
-<text x="50" y="2378" font-size="16" fill="#8b949e" >lock DIR -- CMD and the</text>
-<text x="50" y="2400" font-size="16" fill="#8b949e" >validate rule against</text>
-<text x="50" y="2422" font-size="16" fill="#8b949e" >overlap: allow with write go.</text>
-<text x="50" y="2444" font-size="16" fill="#8b949e" >Ledger and admission locks</text>
-<text x="50" y="2466" font-size="16" fill="#8b949e" >stay. Ruled, not yet in code.</text>
-<text x="50" y="2508" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
-<text x="50" y="2532" font-size="16" fill="#8b949e" >Version, install steps and</text>
-<text x="50" y="2554" font-size="16" fill="#8b949e" >verification record are in;</text>
-<text x="50" y="2576" font-size="16" fill="#8b949e" >tag v0.1.0 and publish under</text>
-<text x="50" y="2598" font-size="16" fill="#8b949e" >the personal account. Owner</text>
-<text x="50" y="2620" font-size="16" fill="#8b949e" >action, no code left.</text>
-<text x="316" y="2310" font-size="17" fill="#e6edf3" font-weight="700">overlap: continue</text>
-<text x="316" y="2334" font-size="16" fill="#8b949e" >A tick that finds the</text>
-<text x="316" y="2356" font-size="16" fill="#8b949e" >previous run still going</text>
-<text x="316" y="2378" font-size="16" fill="#8b949e" >stops it and starts the new</text>
-<text x="316" y="2400" font-size="16" fill="#8b949e" >run with claude --resume on</text>
-<text x="316" y="2422" font-size="16" fill="#8b949e" >run 1&#x27;s session id, so run 2</text>
-<text x="316" y="2444" font-size="16" fill="#8b949e" >keeps what run 1 learned.</text>
-<text x="316" y="2486" font-size="17" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
-<text x="316" y="2510" font-size="16" fill="#8b949e" >One slept-through tick fires</text>
-<text x="316" y="2532" font-size="16" fill="#8b949e" >one run on wake, none after a</text>
-<text x="316" y="2554" font-size="16" fill="#8b949e" >reboot past one; observed in</text>
-<text x="316" y="2576" font-size="16" fill="#8b949e" >cones ls --json and written</text>
-<text x="316" y="2598" font-size="16" fill="#8b949e" >into the README.</text>
-<text x="582" y="2310" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
-<text x="582" y="2334" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
-<text x="582" y="2356" font-size="16" fill="#8b949e" >failures, chain visible in</text>
-<text x="582" y="2378" font-size="16" fill="#8b949e" >the ledger.</text>
-<text x="582" y="2420" font-size="17" fill="#e6edf3" font-weight="700">Worktree per run</text>
-<text x="582" y="2444" font-size="16" fill="#8b949e" >Concurrent writers each get a</text>
-<text x="582" y="2466" font-size="16" fill="#8b949e" >worktree. Recipe from claude-</text>
-<text x="582" y="2488" font-size="16" fill="#8b949e" >squad, ported as git</text>
-<text x="582" y="2510" font-size="16" fill="#8b949e" >commands. Only if shared</text>
-<text x="582" y="2532" font-size="16" fill="#8b949e" >directories prove</text>
-<text x="582" y="2554" font-size="16" fill="#8b949e" >insufficient.</text>
-<text x="28" y="2678" font-size="14" fill="#8b949e" >cones owns the clock, supervision, budgets and the ledger. The harness owns execution and</text>
-<text x="28" y="2698" font-size="14" fill="#8b949e" >permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
-<text x="28" y="2718" font-size="14" fill="#8b949e" >Seeing a harness&#x27;s sessions never waits on enforcing its budgets.</text>
+<text x="582" y="144" font-size="13.5" fill="#e6edf3" >• n launches in any folder,</text>
+<text x="594" y="164" font-size="13.5" fill="#e6edf3" >interactive or managed</text>
+<text x="582" y="184" font-size="13.5" fill="#e6edf3" >• key hints follow claude agents</text>
+<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
+<text x="594" y="224" font-size="13.5" fill="#e6edf3" >colors</text>
+<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
+<text x="594" y="264" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
+<text x="582" y="284" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
+<text x="594" y="304" font-size="13.5" fill="#e6edf3" >in the binary</text>
+<rect x="36" y="352" width="254" height="6" rx="3" fill="#3fb950"/>
+<text x="50" y="390" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
+<text x="50" y="410" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>
+<rect x="302" y="352" width="254" height="6" rx="3" fill="#58a6ff"/>
+<text x="316" y="390" font-size="22" fill="#58a6ff" font-weight="800" letter-spacing="1.5">NEXT</text>
+<text x="316" y="410" font-size="12.5" fill="#8b949e" >Everyday control of jobs</text>
+<rect x="568" y="352" width="254" height="6" rx="3" fill="#bc8cff"/>
+<text x="582" y="390" font-size="22" fill="#bc8cff" font-weight="800" letter-spacing="1.5">LATER</text>
+<text x="582" y="410" font-size="12.5" fill="#8b949e" >Needs a second harness or Mac</text>
+<rect x="28" y="426" width="804" height="734" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="438" width="5" height="710" rx="2.5" fill="#d2a8ff"/>
+<text x="46" y="456" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">SEE</text>
+<text x="50" y="488" font-size="17" fill="#e6edf3" font-weight="700">Metrics you can trust</text>
+<text x="50" y="512" font-size="16" fill="#8b949e" >Model, session start, last</text>
+<text x="50" y="534" font-size="16" fill="#8b949e" >activity and context usage,</text>
+<text x="50" y="556" font-size="16" fill="#8b949e" >each read from a Claude</text>
+<text x="50" y="578" font-size="16" fill="#8b949e" >report; the age column stops</text>
+<text x="50" y="600" font-size="16" fill="#8b949e" >measuring the last update. A</text>
+<text x="50" y="622" font-size="16" fill="#8b949e" >value Claude does not report</text>
+<text x="50" y="644" font-size="16" fill="#8b949e" >shows as absent, never</text>
+<text x="50" y="666" font-size="16" fill="#8b949e" >estimated.</text>
+<text x="316" y="488" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
+<text x="316" y="512" font-size="16" fill="#8b949e" >Each job row shows its next</text>
+<text x="316" y="534" font-size="16" fill="#8b949e" >tick, computed from the</text>
+<text x="316" y="556" font-size="16" fill="#8b949e" >compiled</text>
+<text x="316" y="578" font-size="16" fill="#8b949e" >StartCalendarInterval list</text>
+<text x="316" y="600" font-size="16" fill="#8b949e" >and confirmed against the</text>
+<text x="316" y="622" font-size="16" fill="#8b949e" >loaded plist.</text>
+<text x="316" y="664" font-size="17" fill="#e6edf3" font-weight="700">Run diffs</text>
+<text x="316" y="688" font-size="16" fill="#8b949e" >A write run records git diff</text>
+<text x="316" y="710" font-size="16" fill="#8b949e" >--stat of its cwd at exit;</text>
+<text x="316" y="732" font-size="16" fill="#8b949e" >cones logs and the details</text>
+<text x="316" y="754" font-size="16" fill="#8b949e" >pane show what the run</text>
+<text x="316" y="776" font-size="16" fill="#8b949e" >changed.</text>
+<text x="316" y="818" font-size="17" fill="#e6edf3" font-weight="700">Touched files</text>
+<text x="316" y="842" font-size="16" fill="#8b949e" >Edit and Write paths read</text>
+<text x="316" y="864" font-size="16" fill="#8b949e" >from the session&#x27;s</text>
+<text x="316" y="886" font-size="16" fill="#8b949e" >transcript; ls --json and the</text>
+<text x="316" y="908" font-size="16" fill="#8b949e" >details pane show each</text>
+<text x="316" y="930" font-size="16" fill="#8b949e" >footprint. Bash edits are not</text>
+<text x="316" y="952" font-size="16" fill="#8b949e" >seen.</text>
+<text x="316" y="994" font-size="17" fill="#e6edf3" font-weight="700">Status transitions</text>
+<text x="316" y="1018" font-size="16" fill="#8b949e" >cones status &#x27;text&#x27; records a</text>
+<text x="316" y="1040" font-size="16" fill="#8b949e" >one-line check-in per session</text>
+<text x="316" y="1062" font-size="16" fill="#8b949e" >that fills the last column,</text>
+<text x="316" y="1084" font-size="16" fill="#8b949e" >kept apart from the</text>
+<text x="316" y="1106" font-size="16" fill="#8b949e" >active/idle/blocked state</text>
+<text x="316" y="1128" font-size="16" fill="#8b949e" >Claude reports.</text>
+<text x="582" y="488" font-size="17" fill="#e6edf3" font-weight="700">Fleet session records</text>
+<text x="582" y="512" font-size="16" fill="#8b949e" >A session cones did not</text>
+<text x="582" y="534" font-size="16" fill="#8b949e" >launch gets a ledger record</text>
+<text x="582" y="556" font-size="16" fill="#8b949e" >when it leaves Claude&#x27;s</text>
+<text x="582" y="578" font-size="16" fill="#8b949e" >registry: cwd, duration,</text>
+<text x="582" y="600" font-size="16" fill="#8b949e" >tokens, dollars as last</text>
+<text x="582" y="622" font-size="16" fill="#8b949e" >reported. ls totals it,</text>
+<text x="582" y="644" font-size="16" fill="#8b949e" >daily_budget_usd ignores it.</text>
+<rect x="28" y="1172" width="804" height="206" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="1184" width="5" height="182" rx="2.5" fill="#56d4dd"/>
+<text x="46" y="1202" font-size="12.5" fill="#56d4dd" font-weight="700" letter-spacing="1.5">MOVE AND CONTROL</text>
+<text x="50" y="1234" font-size="17" fill="#e6edf3" font-weight="700">Preview and return</text>
+<text x="50" y="1258" font-size="16" fill="#8b949e" >Read more of a session before</text>
+<text x="50" y="1280" font-size="16" fill="#8b949e" >opening it; attach natively</text>
+<text x="50" y="1302" font-size="16" fill="#8b949e" >and land back on the same row</text>
+<text x="50" y="1324" font-size="16" fill="#8b949e" >with the filter and grouping</text>
+<text x="50" y="1346" font-size="16" fill="#8b949e" >kept.</text>
+<text x="316" y="1234" font-size="17" fill="#e6edf3" font-weight="700">Job lifecycle hooks</text>
+<text x="316" y="1258" font-size="16" fill="#8b949e" >Opt-in commands on start,</text>
+<text x="316" y="1280" font-size="16" fill="#8b949e" >exit and failure for jobs</text>
+<text x="316" y="1302" font-size="16" fill="#8b949e" >cones launches, set in</text>
+<text x="316" y="1324" font-size="16" fill="#8b949e" >jobs.yaml. Nothing hooks</text>
+<text x="316" y="1346" font-size="16" fill="#8b949e" >sessions cones did not start.</text>
+<text x="582" y="1234" font-size="17" fill="#e6edf3" font-weight="700">Jump to pane</text>
+<text x="582" y="1258" font-size="16" fill="#8b949e" >Enter on a foreign session</text>
+<text x="582" y="1280" font-size="16" fill="#8b949e" >resolves pid to tty to tmux</text>
+<text x="582" y="1302" font-size="16" fill="#8b949e" >or iTerm pane and switches</text>
+<text x="582" y="1324" font-size="16" fill="#8b949e" >there, instead of resuming a</text>
+<text x="582" y="1346" font-size="16" fill="#8b949e" >copy.</text>
+<rect x="28" y="1390" width="804" height="668" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="1402" width="5" height="644" rx="2.5" fill="#79c0ff"/>
+<text x="46" y="1420" font-size="12.5" fill="#79c0ff" font-weight="700" letter-spacing="1.5">HARNESSES</text>
+<text x="50" y="1452" font-size="17" fill="#e6edf3" font-weight="700">Codex in the fleet</text>
+<text x="50" y="1476" font-size="16" fill="#8b949e" >Codex keeps no session</text>
+<text x="50" y="1498" font-size="16" fill="#8b949e" >registry: pid and cwd from</text>
+<text x="50" y="1520" font-size="16" fill="#8b949e" >the process table, title and</text>
+<text x="50" y="1542" font-size="16" fill="#8b949e" >last line from its rollout</text>
+<text x="50" y="1564" font-size="16" fill="#8b949e" >file. Seeing Codex sessions</text>
+<text x="50" y="1586" font-size="16" fill="#8b949e" >does not wait for Codex</text>
+<text x="50" y="1608" font-size="16" fill="#8b949e" >budgets or jobs.</text>
+<text x="316" y="1452" font-size="16" fill="#30363d" >—</text>
+<text x="582" y="1452" font-size="17" fill="#e6edf3" font-weight="700">Codex budget probe</text>
+<text x="582" y="1476" font-size="16" fill="#8b949e" >Measure Codex usage events to</text>
+<text x="582" y="1498" font-size="16" fill="#8b949e" >decide whether a token budget</text>
+<text x="582" y="1520" font-size="16" fill="#8b949e" >can be enforced; the result</text>
+<text x="582" y="1542" font-size="16" fill="#8b949e" >gates Codex jobs, not Codex</text>
+<text x="582" y="1564" font-size="16" fill="#8b949e" >in the fleet.</text>
+<text x="582" y="1606" font-size="17" fill="#e6edf3" font-weight="700">Codex jobs</text>
+<text x="582" y="1630" font-size="16" fill="#8b949e" >Real token budget, rejected</text>
+<text x="582" y="1652" font-size="16" fill="#8b949e" >when unenforceable. Same</text>
+<text x="582" y="1674" font-size="16" fill="#8b949e" >policy file, second harness.</text>
+<text x="582" y="1716" font-size="17" fill="#e6edf3" font-weight="700">File triggers</text>
+<text x="582" y="1740" font-size="16" fill="#8b949e" >Run on path change via</text>
+<text x="582" y="1762" font-size="16" fill="#8b949e" >launchd WatchPaths; a few</text>
+<text x="582" y="1784" font-size="16" fill="#8b949e" >plist lines, no watcher</text>
+<text x="582" y="1806" font-size="16" fill="#8b949e" >process.</text>
+<text x="582" y="1848" font-size="17" fill="#e6edf3" font-weight="700">Webhook triggers</text>
+<text x="582" y="1872" font-size="16" fill="#8b949e" >Run on an HTTP call. Needs a</text>
+<text x="582" y="1894" font-size="16" fill="#8b949e" >listener process, so after</text>
+<text x="582" y="1916" font-size="16" fill="#8b949e" >single-machine fleet control.</text>
+<text x="582" y="1958" font-size="17" fill="#e6edf3" font-weight="700">More Macs</text>
+<text x="582" y="1982" font-size="16" fill="#8b949e" >Multi-machine after single-</text>
+<text x="582" y="2004" font-size="16" fill="#8b949e" >machine fleet control is in</text>
+<text x="582" y="2026" font-size="16" fill="#8b949e" >regular use.</text>
+<rect x="28" y="2070" width="804" height="404" rx="10" fill="#161b22" stroke="#30363d"/>
+<rect x="28" y="2082" width="5" height="380" rx="2.5" fill="#f0883e"/>
+<text x="46" y="2100" font-size="12.5" fill="#f0883e" font-weight="700" letter-spacing="1.5">RELIABILITY</text>
+<text x="50" y="2132" font-size="17" fill="#e6edf3" font-weight="700">Writer lock removal</text>
+<text x="50" y="2156" font-size="16" fill="#8b949e" >The runner flock, the</text>
+<text x="50" y="2178" font-size="16" fill="#8b949e" >workspace skip reason, cones</text>
+<text x="50" y="2200" font-size="16" fill="#8b949e" >lock DIR -- CMD and the</text>
+<text x="50" y="2222" font-size="16" fill="#8b949e" >validate rule against</text>
+<text x="50" y="2244" font-size="16" fill="#8b949e" >overlap: allow with write go.</text>
+<text x="50" y="2266" font-size="16" fill="#8b949e" >Ledger and admission locks</text>
+<text x="50" y="2288" font-size="16" fill="#8b949e" >stay. Ruled, not yet in code.</text>
+<text x="50" y="2330" font-size="17" fill="#e6edf3" font-weight="700">Public release</text>
+<text x="50" y="2354" font-size="16" fill="#8b949e" >Version, install steps and</text>
+<text x="50" y="2376" font-size="16" fill="#8b949e" >verification record are in;</text>
+<text x="50" y="2398" font-size="16" fill="#8b949e" >tag v0.1.0 and publish under</text>
+<text x="50" y="2420" font-size="16" fill="#8b949e" >the personal account. Owner</text>
+<text x="50" y="2442" font-size="16" fill="#8b949e" >action, no code left.</text>
+<text x="316" y="2132" font-size="17" fill="#e6edf3" font-weight="700">overlap: continue</text>
+<text x="316" y="2156" font-size="16" fill="#8b949e" >A tick that finds the</text>
+<text x="316" y="2178" font-size="16" fill="#8b949e" >previous run still going</text>
+<text x="316" y="2200" font-size="16" fill="#8b949e" >stops it and starts the new</text>
+<text x="316" y="2222" font-size="16" fill="#8b949e" >run with claude --resume on</text>
+<text x="316" y="2244" font-size="16" fill="#8b949e" >run 1&#x27;s session id, so run 2</text>
+<text x="316" y="2266" font-size="16" fill="#8b949e" >keeps what run 1 learned.</text>
+<text x="316" y="2308" font-size="17" fill="#e6edf3" font-weight="700">Sleep/wake proof</text>
+<text x="316" y="2332" font-size="16" fill="#8b949e" >One slept-through tick fires</text>
+<text x="316" y="2354" font-size="16" fill="#8b949e" >one run on wake, none after a</text>
+<text x="316" y="2376" font-size="16" fill="#8b949e" >reboot past one; observed in</text>
+<text x="316" y="2398" font-size="16" fill="#8b949e" >cones ls --json and written</text>
+<text x="316" y="2420" font-size="16" fill="#8b949e" >into the README.</text>
+<text x="582" y="2132" font-size="17" fill="#e6edf3" font-weight="700">Retries with backoff</text>
+<text x="582" y="2156" font-size="16" fill="#8b949e" >Bounded retry for transient</text>
+<text x="582" y="2178" font-size="16" fill="#8b949e" >failures, chain visible in</text>
+<text x="582" y="2200" font-size="16" fill="#8b949e" >the ledger.</text>
+<text x="582" y="2242" font-size="17" fill="#e6edf3" font-weight="700">Worktree per run</text>
+<text x="582" y="2266" font-size="16" fill="#8b949e" >Concurrent writers each get a</text>
+<text x="582" y="2288" font-size="16" fill="#8b949e" >worktree. Recipe from claude-</text>
+<text x="582" y="2310" font-size="16" fill="#8b949e" >squad, ported as git</text>
+<text x="582" y="2332" font-size="16" fill="#8b949e" >commands. Only if shared</text>
+<text x="582" y="2354" font-size="16" fill="#8b949e" >directories prove</text>
+<text x="582" y="2376" font-size="16" fill="#8b949e" >insufficient.</text>
+<text x="28" y="2500" font-size="14" fill="#8b949e" >cones owns the clock, supervision, budgets and the ledger. The harness owns execution and</text>
+<text x="28" y="2520" font-size="14" fill="#8b949e" >permissions. Unenforceable guarantees are validation errors, never a second permission engine.</text>
+<text x="28" y="2540" font-size="14" fill="#8b949e" >Seeing a harness&#x27;s sessions never waits on enforcing its budgets.</text>
 </svg>

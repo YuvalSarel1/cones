@@ -73,9 +73,20 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `x` twice (or `ctrl+x` twice) within two seconds | Stop the selected run or session. On a job: stop that job's run in flight; with none, the status line says so. |
 | `e` | Open jobs.yaml in `$VISUAL` or `$EDITOR`, then run `cones install` on return so launchd matches the file; an install error shows on the status line. |
 | `ctrl+s` (or `s`) | Regroup sessions by state or by directory. |
-| `n` | New task: type a prompt, `enter` dispatches it as `cones run --prompt` in the current directory, `esc` cancels. |
+| `n` | New task, in any folder: four questions on the footer line, described below. `esc` cancels at any of them. |
 | `/` | Filter rows by text; `enter` keeps the filter, `esc` clears it. |
 | `r` | Reload now. |
 | `esc`, `q`, `ctrl+c` | Quit. |
 
 Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
+
+### `n`: launch in any folder
+
+Starting work never depends on a session already being there: `n` works on an empty fleet and never runs in the dashboard's own cwd unless you say so. Each answer is `enter`; backspace on an empty answer goes back one question.
+
+| Question | Answer |
+| --- | --- |
+| `dir ›` | A directory. `~` expands, a relative path is taken from the dashboard's cwd, and the placeholder is the selected row's directory (a job's `cwd`, a session's, a run's), or the dashboard's cwd with nothing selected; `enter` on an empty answer takes it. A path that is not an existing directory stays on the question with `not a directory: /path` inline. |
+| `harness ›` | `←` `→` (or `space`) pick between the harnesses cones knows, `claude` and `>_ codex`. |
+| `start ›` | `interactive` or `managed` (`←` `→`, or `i` / `m`). Interactive suspends the dashboard, runs the harness natively in the directory as typing its name in a shell there would, with the harness's own permission prompts, and comes back when it exits; while it runs the session shows in the fleet. Managed is a supervised one-off run under the read-only defaults or the first job's policy, so a harness with no adapter (Codex today) is refused here with the validation message rather than as a failed row. |
+| `managed ›` | The task. `enter` dispatches it as `cones run --prompt` with the chosen directory as the subprocess's working directory; it appears under runs and in the ledger like any other. |

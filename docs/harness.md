@@ -55,6 +55,7 @@ What `cones run` and `cones coordinator start` need to launch a harness. The com
 | No user or project settings, no MCP, no slash commands | reported: `--setting-sources ""`, `--strict-mcp-config --mcp-config`, `--disable-slash-commands` | unknown |
 | Version and flag probe | reported: `claude --version` against `>=2.1, <3`; every compiled flag against `claude --help` | unknown |
 | Background session with a skill | reported: `claude --bg --plugin-dir <dir> /<skill>` | unknown |
+| Interactive session in a directory (the dashboard's `n`) | reported: `claude` run in that cwd, resolved from the launch PATH | reported: `codex` run in that cwd, the same way |
 
 ## Control
 
