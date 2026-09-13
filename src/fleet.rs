@@ -138,6 +138,11 @@ fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
 fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Session> {
     let pid = v["pid"].as_u64()? as u32;
     let id = v["sessionId"].as_str()?;
+    // A warm spare the daemon keeps ready for the next `claude --bg` has an entry too; it is
+    // no one's session until claimed, and `claude agents` hides it as well.
+    if v["spare"].as_bool() == Some(true) {
+        return None;
+    }
     let start = starts.get(&pid)?;
     if v["procStart"].as_str().is_some_and(|s| s.trim() != start) {
         return None;

@@ -438,8 +438,8 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         (None, None, None),
         "an unsafe job id reads no file"
     );
-    // A dead pid, a pid whose start time is not the registry's (reused), an unsafe id, junk and
-    // Claude's .key files are skipped. An entry with no timestamp is still a session: no
+    // A dead pid, a pid whose start time is not the registry's (reused), an unsafe id, a daemon
+    // spare, junk and Claude's .key files are skipped. An entry with no timestamp is still a session: no
     // registry timestamp is read for any column.
     registry(
         claude,
@@ -473,6 +473,12 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         claude,
         "escape",
         serde_json::json!({"pid": me, "sessionId": "../escape", "cwd": "/x", "status": "busy"}),
+    );
+    registry(
+        claude,
+        "spare",
+        serde_json::json!({"pid": me, "sessionId": "77777777-7777-4777-8777-777777777777", "cwd": "/x",
+            "status": "idle", "kind": "bg", "spare": true}),
     );
     fs::write(claude.join("sessions/junk.json"), "not json").unwrap();
     fs::write(claude.join("sessions/1.abc.key"), "k").unwrap();
