@@ -52,7 +52,7 @@ Each run carries a policy Claude enforces itself: budget, turns, tools, writes, 
 
 `cones run --prompt "fix the flaky test"` runs one task now under the same policy. `cones coordinator start` starts one orchestrator session for the agents in a folder.
 
-Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
+Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [what cones needs from a harness](docs/harness.md), [command reference](docs/cli.md).
 
 ## What existing tools leave out
 
