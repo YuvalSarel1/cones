@@ -402,7 +402,7 @@ fn header_lines(summary: &str, enter: &str) -> Vec<Line<'static>> {
             Span::raw("  "),
             Span::styled(
                 format!(
-                    "↑↓ move · enter {enter} · x x stop · s regroup · n new task · / filter · r refresh · q quit"
+                    "↑↓ move · enter {enter} · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit"
                 ),
                 dim(),
             ),
@@ -678,11 +678,10 @@ impl App {
     }
 
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
-    fn foreground(&mut self, terminal: &mut DefaultTerminal, args: &[&str], what: &str) {
+    fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
         use std::os::unix::process::CommandExt;
         ratatui::restore();
-        let mut c = self.me();
-        c.args(args).stderr(Stdio::piped());
+        c.stderr(Stdio::piped());
         // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_IGN);
@@ -720,21 +719,64 @@ impl App {
             // A headless run cannot be attached while it runs; follow its log instead. A live
             // session attaches natively, ctrl-z comes back here.
             Kind::Run(id, s) if s == "started" => {
-                self.foreground(terminal, &["logs", &id, "--follow"], "logs")
+                let mut c = self.me();
+                c.args(["logs", &id, "--follow"]);
+                self.foreground(terminal, c, "logs")
             }
             Kind::Session(id, _) | Kind::Run(id, _) => {
-                self.foreground(terminal, &["attach", &id], "attach")
+                let mut c = self.me();
+                c.args(["attach", &id]);
+                self.foreground(terminal, c, "attach")
             }
             _ => {}
         }
     }
 
+    /// `e`: jobs.yaml in $VISUAL or $EDITOR, then `cones install` so launchd matches the file.
+    /// Jobs are the owner's file, so the dashboard never rewrites yaml itself; comments survive.
+    fn edit_jobs(&mut self, terminal: &mut DefaultTerminal) {
+        let mut c = Command::new("sh");
+        c.arg("-c")
+            .arg("exec ${VISUAL:-${EDITOR:-vi}} \"$0\"")
+            .arg(&self.jobs_path);
+        self.foreground(terminal, c, "editor");
+        let r = self.me().arg("install").output();
+        self.status = match r {
+            Ok(o) if o.status.success() => "jobs.yaml saved · launchd reinstalled".into(),
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let last = err.lines().rev().find(|l| !l.trim().is_empty());
+                format!(
+                    "install failed: {}",
+                    last.unwrap_or("").trim_start_matches("Error: ")
+                )
+            }
+            Err(e) => format!("install failed: {e}"),
+        };
+    }
+
     /// ctrl-x once arms, ctrl-x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
-        let Some(Kind::Session(id, _) | Kind::Run(id, _)) = self.selected().map(|r| r.kind.clone())
-        else {
-            self.status = "select a run or session to stop".into();
-            return;
+        let id = match self.selected().map(|r| r.kind.clone()) {
+            Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
+            // A job row means its run in flight; a job itself is edited with `e`, not stopped.
+            Some(Kind::Job(name)) => {
+                let live =
+                    self.data.runs.iter().rev().find(|r| {
+                        r.started.job.as_deref() == Some(&name) && r.status() == "started"
+                    });
+                match live {
+                    Some(r) => r.started.run_id.clone(),
+                    None => {
+                        self.status = format!("{name} has no run in flight · e edits jobs.yaml");
+                        return;
+                    }
+                }
+            }
+            _ => {
+                self.status = "select a job, run or session to stop".into();
+                return;
+            }
         };
         match self.armed.take() {
             Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
@@ -746,7 +788,7 @@ impl App {
             }
             _ => {
                 self.armed = Some((id, Instant::now()));
-                self.status = "ctrl-x again to stop this run".into();
+                self.status = "x again to stop this run".into();
             }
         }
     }
@@ -799,6 +841,7 @@ impl App {
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('a') => self.enter(terminal),
                 KeyCode::Char('x') => self.stop(),
+                KeyCode::Char('e') => self.edit_jobs(terminal),
                 KeyCode::Char('s') => {
                     self.by_state = !self.by_state;
                     self.refresh()?;
