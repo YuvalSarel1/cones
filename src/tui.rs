@@ -14,7 +14,8 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use ratatui::{
-    DefaultTerminal, Frame,
+    DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport,
+    backend::CrosstermBackend,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -25,6 +26,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -966,6 +968,9 @@ struct App {
     pane_height: usize,
     tick: usize,
     refreshed: Instant,
+    /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
+    /// never holds the spinner or a keypress.
+    loading: Option<mpsc::Receiver<Result<Data>>>,
     /// A run id and when ctrl-x was first pressed on it; the second press within two seconds stops it.
     armed: Option<(String, Instant)>,
 }
@@ -993,6 +998,7 @@ impl App {
             pane_height: 0,
             tick: 0,
             refreshed: Instant::now(),
+            loading: None,
             armed: None,
         })
     }
@@ -1005,10 +1011,48 @@ impl App {
     /// changed is still the same row, a row that is gone leaves the cursor at its position, on
     /// the neighbor. The filter and the grouping are fields, so a reload never touches them.
     fn refresh(&mut self) -> Result<()> {
+        let data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
+        self.apply(data);
+        Ok(())
+    }
+
+    /// Start a reload on a thread unless one is already running; `poll` lands it.
+    fn reload(&mut self) {
+        if self.loading.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (jobs, state, claude) = (
+            self.jobs_path.clone(),
+            self.state.clone(),
+            self.claude.clone(),
+        );
+        std::thread::spawn(move || {
+            let _ = tx.send(Data::load(&jobs, &state, &claude));
+        });
+        self.loading = Some(rx);
+    }
+
+    /// Apply a finished reload, if one has landed. A failed read shows in the status line and
+    /// the last good data stays on screen.
+    fn poll(&mut self) {
+        let Some(rx) = &self.loading else {
+            return;
+        };
+        match rx.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return,
+            Ok(Ok(data)) => self.apply(data),
+            Ok(Err(e)) => self.status = format!("reload failed: {e:#}"),
+            Err(mpsc::TryRecvError::Disconnected) => {}
+        }
+        self.loading = None;
+    }
+
+    fn apply(&mut self, data: Data) {
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        self.data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
+        self.data = data;
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
@@ -1021,7 +1065,6 @@ impl App {
         }
         self.settle();
         self.refreshed = Instant::now();
-        Ok(())
     }
 
     /// The pane lines on screen: `[from, to)` of `details`, from the end less `pane_scroll`.
@@ -1178,7 +1221,21 @@ impl App {
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
     fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
         use std::os::unix::process::CommandExt;
+        let height = terminal.size().map(|s| s.height).unwrap_or(0);
         ratatui::restore();
+        // The frame stays on the normal screen: the child starts over it, and on the way out
+        // leaves its own screen to it, so neither gap shows the shell. Erased before the
+        // dashboard is back.
+        let mut still = Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            TerminalOptions {
+                viewport: Viewport::Inline(height),
+            },
+        )
+        .ok();
+        if let Some(t) = still.as_mut() {
+            let _ = t.draw(|f| self.draw(f));
+        }
         c.stderr(Stdio::piped());
         // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
         unsafe {
@@ -1192,6 +1249,9 @@ impl App {
         let r = c.spawn().and_then(|c| c.wait_with_output());
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+        if let Some(t) = still.as_mut() {
+            let _ = t.clear();
         }
         *terminal = ratatui::init();
         self.status = match r {
@@ -1221,13 +1281,32 @@ impl App {
                 c.args(["logs", &id, "--follow"]);
                 self.foreground(terminal, c, "logs")
             }
-            Kind::Session(id, _) | Kind::Run(id, _) => {
+            // A listed session is live, so `claude attach` runs straight from here; the
+            // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
+            Kind::Session(id, _) => {
+                let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
+                    return Ok(());
+                };
+                if s.harness != "claude" {
+                    self.status = format!(
+                        "{} sessions are listed but cannot be attached; open them in their own terminal",
+                        s.harness
+                    );
+                    return Ok(());
+                }
+                match harness::adapter(HarnessKind::Claude)?.attach(&id, &s.cwd) {
+                    Ok(c) => self.foreground(terminal, c, "attach"),
+                    Err(e) => self.status = format!("attach failed: {e:#}"),
+                }
+                // Back on the same row, read again by id: the session may have changed state,
+                // or ended, while it was open. Filter and grouping were never touched.
+                self.reload();
+            }
+            Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
                 self.foreground(terminal, c, "attach");
-                // Back on the same row, read again by id: the session may have changed state,
-                // or ended, while it was open. Filter and grouping were never touched.
-                self.refresh()?;
+                self.reload();
             }
             _ => {}
         }
@@ -1500,8 +1579,9 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<
     let result = (|| -> Result<()> {
         loop {
             if app.refreshed.elapsed() >= Duration::from_secs(1) {
-                app.refresh()?;
+                app.reload();
             }
+            app.poll();
             terminal.draw(|f| app.draw(f))?;
             // ponytail: one poll cadence drives both the spinner and input.
             if event::poll(Duration::from_millis(100))? {

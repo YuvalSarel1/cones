@@ -78,7 +78,7 @@ The copy under `assets/coordinator/` is the upstream skill with one line changed
 
 ## The dashboard: jobs, sessions and runs on one screen
 
-`cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
+`cones tui` reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
 Its hint line reads `↑↓ move · enter <verb> · tab peek · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected; `tab peek` reads `tab more` while the pane is showing and `tab hide` while it is expanded.
 
@@ -108,7 +108,7 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `r` | Reload now. |
 | `esc`, `q`, `ctrl+c` | Quit. |
 
-Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Opening a session hands the terminal to `cones attach`, the same native resume the command runs; the dashboard's state waits in memory meanwhile and on return it reloads and finds the row again by its id, so a session that went from idle to working while it was open, and so moved to another group, is still the selected row. A session that ended while open leaves the cursor on its neighbor. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
+Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Opening a session runs `claude attach <short id>` from the dashboard itself; a finished run goes through `cones attach`, which resumes it. Before the hand-off the dashboard paints its last frame on the normal screen and erases it on the way back, so the shell never shows while Claude starts or shuts down. The dashboard's state waits in memory meanwhile and on return it reloads and finds the row again by its id, so a session that went from idle to working while it was open, and so moved to another group, is still the selected row. A session that ended while open leaves the cursor on its neighbor. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
 
 ### `n`: launch in any folder
 
