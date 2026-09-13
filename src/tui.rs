@@ -1234,7 +1234,17 @@ impl App {
     }
 
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
-    fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
+    /// `viewer` says what ctrl-z means if the child stops on it: an attach client or a log
+    /// follower is killed and the dashboard is back at once; the real thing (an editor, a
+    /// harness launched here) is resumed and keeps the terminal, since killing it would lose
+    /// edits or the session itself.
+    fn foreground(
+        &mut self,
+        terminal: &mut DefaultTerminal,
+        mut c: Command,
+        what: &str,
+        viewer: bool,
+    ) {
         use std::os::unix::process::{CommandExt, ExitStatusExt};
         let height = terminal.size().map(|s| s.height).unwrap_or(0);
         self.debug(|| {
@@ -1274,7 +1284,7 @@ impl App {
         let r = c.spawn().and_then(|mut c| {
             self.debug(|| format!("spawned pid {}; waiting", c.id()));
             let watch = self.log.as_ref().map(|p| watch_group(p.clone()));
-            let r = wait_or_stopped(&mut c, &|m| self.debug(|| m));
+            let r = wait_or_stopped(&mut c, viewer, &|m| self.debug(|| m));
             if let Some((stop, t)) = watch {
                 stop.store(true, Ordering::Relaxed);
                 let _ = t.join();
@@ -1336,7 +1346,7 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, c, "logs")
+                self.foreground(terminal, c, "logs", true)
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1352,7 +1362,7 @@ impl App {
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &s.cwd) {
-                    Ok(c) => self.foreground(terminal, c, "attach"),
+                    Ok(c) => self.foreground(terminal, c, "attach", true),
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
                 // Back on the same row, read again by id: the session may have changed state,
@@ -1362,7 +1372,7 @@ impl App {
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, c, "attach");
+                self.foreground(terminal, c, "attach", true);
                 self.reload();
             }
             _ => {}
@@ -1377,7 +1387,7 @@ impl App {
         c.arg("-c")
             .arg("exec ${VISUAL:-${EDITOR:-vi}} \"$0\"")
             .arg(&self.jobs_path);
-        self.foreground(terminal, c, "editor");
+        self.foreground(terminal, c, "editor", false);
         let r = self.me().arg("install").output();
         self.status = match r {
             Ok(o) if o.status.success() => "jobs.yaml saved · launchd reinstalled".into(),
@@ -1468,7 +1478,7 @@ impl App {
                     self.mode = Mode::Normal;
                     let what = format!("{kind} in {}", fleet::tilde(&dir));
                     match harness::interactive(kind, &dir) {
-                        Ok(c) => self.foreground(terminal, c, &what),
+                        Ok(c) => self.foreground(terminal, c, &what, false),
                         Err(e) => self.status = format!("{what} failed: {e}"),
                     }
                 }
@@ -1678,12 +1688,14 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
 /// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Claude's
 /// agents view does; its attach view eats the key) stops the child: the tty sends SIGTSTP to the
 /// whole foreground group and the dashboard ignores its copy. `Child::wait` would then block
-/// forever on a cooked terminal nobody reads. A stop is the user asking for the dashboard back.
-/// The child has already restored the tty (it stopped on a cooked screen), and a resumed client
-/// takes most of a second to redraw and exit on SIGTERM, so it is killed where it stands: the
-/// attach client is only a viewer, the session it showed is untouched.
+/// forever on a cooked terminal nobody reads. A stopped `viewer` is the user asking for the
+/// dashboard back: it has already restored the tty, and resuming it to exit on SIGTERM costs
+/// most of a second, so it is killed where it stands and the session it showed is untouched.
+/// Anything else (Codex and vi both stop on ctrl-z; interactive Claude eats it) is resumed,
+/// because killing it would be killing the session or the unsaved file.
 fn wait_or_stopped(
     child: &mut std::process::Child,
+    viewer: bool,
     debug: &dyn Fn(String),
 ) -> std::io::Result<std::process::Output> {
     use std::io::Read;
@@ -1707,12 +1719,17 @@ fn wait_or_stopped(
             return Err(e);
         }
         if libc::WIFSTOPPED(status) {
+            let (verb, sig) = if viewer {
+                ("killing the viewer", libc::SIGKILL)
+            } else {
+                ("resuming it", libc::SIGCONT)
+            };
             debug(format!(
-                "child stopped by signal {}; killing the viewer",
+                "child stopped by signal {}; {verb}",
                 libc::WSTOPSIG(status)
             ));
             unsafe {
-                libc::kill(pid, libc::SIGKILL);
+                libc::kill(pid, sig);
             }
             continue;
         }
@@ -1846,7 +1863,7 @@ mod tests {
         let log = std::sync::Mutex::new(vec![]);
         let started = Instant::now();
         use std::os::unix::process::ExitStatusExt;
-        let out = wait_or_stopped(&mut c, &|m| log.lock().unwrap().push(m)).unwrap();
+        let out = wait_or_stopped(&mut c, true, &|m| log.lock().unwrap().push(m)).unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "did not hang on the stop"
@@ -1854,6 +1871,20 @@ mod tests {
         assert_eq!(out.status.signal(), Some(libc::SIGKILL));
         assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
         assert!(log.lock().unwrap()[0].starts_with("child stopped by signal"));
+    }
+
+    #[test]
+    fn a_stopped_non_viewer_is_resumed_and_finishes_on_its_own() {
+        let mut c = Command::new("sh")
+            .args(["-c", "kill -STOP $$; echo resumed >&2; exit 3"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let log = std::sync::Mutex::new(vec![]);
+        let out = wait_or_stopped(&mut c, false, &|m| log.lock().unwrap().push(m)).unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "resumed");
+        assert!(log.lock().unwrap()[0].ends_with("resuming it"));
     }
 
     #[test]
