@@ -395,12 +395,32 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
         ("idle", Some(320), Some(12))
     );
     assert_eq!(
-        (idle.context_tokens, idle.context_window),
-        (Some(210), Some(200_000)),
+        idle.context_tokens,
+        Some(210),
         "the last message's prompt is the context in use"
     );
+    assert!(
+        matches!(idle.context_window, Some(200_000 | 1_000_000)),
+        "the window below 200k follows the machine's settings.json"
+    );
+    // A turn past 200k can only be the 1M window, whatever settings.json says.
+    let mut t = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    use std::io::Write;
+    writeln!(t, "{}", usage("m3", 300_000, 1)).unwrap();
     cones::fleet::record(dir.path(), 42, &payload("SessionEnd")).unwrap();
-    assert_eq!(get().state, "exited");
+    let ended = get();
+    assert_eq!(
+        (
+            ended.state.as_str(),
+            ended.context_tokens,
+            ended.context_window
+        ),
+        ("exited", Some(300_010), Some(1_000_000))
+    );
+    assert_eq!(cones::fleet::context(&ended), "300k/1.0M 30%");
     let bad = serde_json::json!({"session_id": "../escape", "hook_event_name": "Stop"});
     assert!(cones::fleet::record(dir.path(), 1, &bad).is_err());
     assert_eq!(cones::fleet::sessions(dir.path()).unwrap().len(), 1);

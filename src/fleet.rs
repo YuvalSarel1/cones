@@ -310,6 +310,7 @@ fn usage(transcript: &Path) -> Result<Usage> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
     let mut last = None;
+    let one_m = settings_model_is_1m();
     for line in std::io::BufReader::new(fs::File::open(transcript)?).lines() {
         let Ok(event) = serde_json::from_str::<Value>(&line?) else {
             continue;
@@ -328,16 +329,7 @@ fn usage(transcript: &Path) -> Result<Usage> {
             n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
         input += prompt;
         output += n("output_tokens");
-        // ponytail: Claude writes no window size; 200k unless the model id says [1m].
-        let window = if message["model"]
-            .as_str()
-            .is_some_and(|m| m.contains("[1m]"))
-        {
-            1_000_000
-        } else {
-            200_000
-        };
-        last = Some((prompt, window));
+        last = Some((prompt, window(prompt, one_m)));
     }
     Ok(Usage {
         tokens_in: Some(input),
@@ -345,6 +337,25 @@ fn usage(transcript: &Path) -> Result<Usage> {
         context: last.map(|(p, _)| p),
         window: last.map(|(_, w)| w),
     })
+}
+
+/// Claude writes the API model id to the transcript, never the window. The 1M window is on when
+/// settings.json's model carries the "[1m]" suffix.
+/// ponytail: the global setting only; a per-session --model override is not visible to us.
+fn settings_model_is_1m() -> bool {
+    dirs::home_dir()
+        .and_then(|h| fs::read_to_string(h.join(".claude/settings.json")).ok())
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .is_some_and(|v| v["model"].as_str().is_some_and(|m| m.contains("[1m]")))
+}
+
+/// A prompt past 200k is proof of the 1M window whatever the settings say.
+fn window(prompt: u64, one_m: bool) -> u64 {
+    if one_m || prompt > 200_000 {
+        1_000_000
+    } else {
+        200_000
+    }
 }
 
 /// Atomically replace the session's file. The id comes from a hook payload, so it is
