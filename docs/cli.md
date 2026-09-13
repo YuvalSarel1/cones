@@ -17,7 +17,7 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones attach ID [--print-command]` | A finished run or a session whose process is gone is resumed in the background and attached to, in its cwd; the archived transcript is restored into Claude's store if the native one is missing. A live session is attached directly. `--print-command` prints the command instead. A running headless run cannot be attached; follow its log. |
 | `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [fleet.md](fleet.md#the-coordinator-one-session-per-folder). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
-| `cones tui` | The dashboard. |
+| `cones tui [--debug]` | The dashboard. `--debug` appends every terminal hand-off (command, child pid, exit status, tty modes, foreground process group, signal dispositions, the process group.s states while it runs) and every input event to `STATE_DIR/tui-debug.log`, for the attach-and-return bugs. |
 
 ## Run a prompt without a job
 

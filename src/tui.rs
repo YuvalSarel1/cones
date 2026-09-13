@@ -26,7 +26,11 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -974,6 +978,8 @@ struct App {
     loading: Option<mpsc::Receiver<Result<Data>>>,
     /// A run id and when ctrl-x was first pressed on it; the second press within two seconds stops it.
     armed: Option<(String, Instant)>,
+    /// `cones tui --debug`: every terminal hand-off and input event is appended here.
+    log: Option<PathBuf>,
 }
 
 impl App {
@@ -1001,7 +1007,15 @@ impl App {
             refreshed: Instant::now(),
             loading: None,
             armed: None,
+            log: None,
         })
+    }
+
+    /// Append one timestamped line to the debug log, if `--debug` named one.
+    fn debug(&self, msg: impl FnOnce() -> String) {
+        if let Some(path) = &self.log {
+            debug_line(path, msg());
+        }
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -1221,9 +1235,18 @@ impl App {
 
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
     fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
-        use std::os::unix::process::CommandExt;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
         let height = terminal.size().map(|s| s.height).unwrap_or(0);
+        self.debug(|| {
+            format!(
+                "foreground {what}: {c:?} in {:?}; size={:?}; {}",
+                c.get_current_dir(),
+                terminal.size().ok(),
+                term_state()
+            )
+        });
         ratatui::restore();
+        self.debug(|| format!("restored; {}", term_state()));
         // The frame stays on the normal screen: the child starts over it, and on the way out
         // leaves its own screen to it, so neither gap shows the shell. Erased before the
         // dashboard is back.
@@ -1247,14 +1270,46 @@ impl App {
                 Ok(())
             });
         }
-        let r = c.spawn().and_then(|c| c.wait_with_output());
+        let started = Instant::now();
+        let r = c.spawn().and_then(|c| {
+            self.debug(|| format!("spawned pid {}; waiting", c.id()));
+            let watch = self.log.as_ref().map(|p| watch_group(p.clone()));
+            let r = c.wait_with_output();
+            if let Some((stop, t)) = watch {
+                stop.store(true, Ordering::Relaxed);
+                let _ = t.join();
+            }
+            r
+        });
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+        match &r {
+            Ok(o) => self.debug(|| format!(
+                "child done after {:?}: code={:?} signal={:?} stopped={:?} stderr_tail={:?}; {}",
+                started.elapsed(),
+                o.status.code(),
+                o.status.signal(),
+                o.status.stopped_signal(),
+                String::from_utf8_lossy(&o.stderr)
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty()),
+                term_state()
+            )),
+            Err(e) => self.debug(|| format!("child failed: {e}; {}", term_state())),
         }
         if let Some(t) = still.as_mut() {
             let _ = t.clear();
         }
         *terminal = ratatui::init();
+        self.debug(|| {
+            format!(
+                "dashboard back: size={:?}; {}",
+                terminal.size().ok(),
+                term_state()
+            )
+        });
         self.status = match r {
             Ok(o) if o.status.success() => format!("back from {what}"),
             Ok(o) => {
@@ -1273,6 +1328,7 @@ impl App {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return Ok(());
         };
+        self.debug(|| format!("enter on {:?}: {}", kind.key(), enter_verb(Some(&kind))));
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
             // A headless run cannot be attached while it runs; follow its log instead. A live
@@ -1567,8 +1623,18 @@ impl App {
     }
 }
 
-pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<i32> {
+pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: bool) -> Result<i32> {
     let mut app = App::new(exe, jobs_path, state, claude)?;
+    if debug {
+        app.log = Some(state.join("tui-debug.log"));
+        app.debug(|| {
+            format!(
+                "dashboard start pid {}; {}",
+                std::process::id(),
+                term_state()
+            )
+        });
+    }
     app.refresh()?;
     // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
     // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
@@ -1586,7 +1652,9 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<
             terminal.draw(|f| app.draw(f))?;
             // ponytail: one poll cadence drives both the spinner and input.
             if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(k) = event::read()?
+                let e = event::read()?;
+                app.debug(|| format!("event {e:?}"));
+                if let Event::Key(k) = e
                     && k.kind == KeyEventKind::Press
                     && app.key(k.code, k.modifiers, &mut terminal)?
                 {
@@ -1601,9 +1669,89 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<
             }
         }
     })();
+    app.debug(|| format!("dashboard loop ended: {result:?}"));
     ratatui::restore();
     result.context("dashboard")?;
     Ok(0)
+}
+
+fn debug_line(path: &Path, msg: impl std::fmt::Display) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{} {msg}", chrono::Local::now().format("%H:%M:%S%.3f"));
+    }
+}
+
+/// The terminal facts a hand-off can corrupt: the tty's line discipline, who owns the
+/// foreground, and what ctrl-z and ctrl-c do to this process.
+fn term_state() -> String {
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        let tty = if libc::tcgetattr(0, &mut t) == 0 {
+            format!(
+                "icanon={} echo={} isig={} ixon={} opost={}",
+                t.c_lflag & libc::ICANON != 0,
+                t.c_lflag & libc::ECHO != 0,
+                t.c_lflag & libc::ISIG != 0,
+                t.c_iflag & libc::IXON != 0,
+                t.c_oflag & libc::OPOST != 0
+            )
+        } else {
+            format!("tcgetattr: {}", std::io::Error::last_os_error())
+        };
+        let disposition = |sig| {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(sig, std::ptr::null(), &mut old);
+            match old.sa_sigaction {
+                libc::SIG_DFL => "dfl",
+                libc::SIG_IGN => "ign",
+                _ => "handler",
+            }
+        };
+        format!(
+            "{tty} fg_pgrp={} pgrp={} tstp={} int={} raw={:?}",
+            libc::tcgetpgrp(0),
+            libc::getpgrp(),
+            disposition(libc::SIGTSTP),
+            disposition(libc::SIGINT),
+            ratatui::crossterm::terminal::is_raw_mode_enabled().ok()
+        )
+    }
+}
+
+/// While a child holds the terminal, log the dashboard's process group (the child and what it
+/// forks share it) and the tty's foreground group once a second: `T` in the state column is a
+/// stopped child the dashboard is waiting on.
+fn watch_group(log: PathBuf) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let pgrp = unsafe { libc::getpgrp() }.to_string();
+    let t = std::thread::spawn(move || {
+        let mut last = String::new();
+        while !flag.load(Ordering::Relaxed) {
+            let out = Command::new("ps")
+                .args(["-o", "pid=,ppid=,stat=,tpgid=,command=", "-g", &pgrp])
+                .output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_owned())
+                .unwrap_or_else(|e| format!("ps failed: {e}"));
+            // ponytail: only changes are logged, so an idle attach costs one line.
+            if out != last {
+                debug_line(
+                    &log,
+                    format!("child tree:\n{out}\n  fg_pgrp={}", unsafe {
+                        libc::tcgetpgrp(0)
+                    }),
+                );
+                last = out;
+            }
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+    (stop, t)
 }
 
 #[cfg(test)]
@@ -1618,6 +1766,23 @@ mod tests {
         for c in text.chars() {
             assert_eq!(l.key(KeyCode::Char(c), false), LaunchAction::Stay);
         }
+    }
+
+    #[test]
+    fn debug_log_appends_only_when_enabled() {
+        let d = dir();
+        let path = d.path().join("tui-debug.log");
+        let mut app = App::new(Path::new("cones"), &path, d.path(), d.path()).unwrap();
+        app.debug(|| panic!("formatted without --debug"));
+        assert!(!path.exists());
+        app.log = Some(path.clone());
+        app.debug(|| "one".into());
+        app.debug(|| "two".into());
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with(" one") && lines[1].ends_with(" two"));
+        assert!(term_state().contains("pgrp="));
     }
 
     #[test]

@@ -84,7 +84,11 @@ enum Action {
     /// Check execution prerequisites and policy hazards.
     Doctor,
     /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
-    Tui,
+    Tui {
+        /// Append every terminal hand-off and input event to STATE_DIR/tui-debug.log.
+        #[arg(long)]
+        debug: bool,
+    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -243,7 +247,13 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state, &claude),
+        Action::Tui { debug } => cones::tui::run(
+            &std::env::current_exe()?,
+            &jobs_path,
+            &state,
+            &claude,
+            debug,
+        ),
         Action::List => {
             print!("{}", cones::tui::list(&jobs_path, &state, &claude)?);
             Ok(0)
