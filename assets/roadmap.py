@@ -27,12 +27,13 @@ COLS = [("NOW", "What the coordinator needs from cones", "#3fb950", [
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
     ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
 ])]
-SHIPPED = ("Claude jobs on a launchd schedule · dollar budget, timeout, turn cap · read-only or sandboxed-write policy · "
-           "rolling daily budget · live event stream · native dashboard: live refresh, animated cone, details pane, dispatch prompt, group by state or directory · one-off tasks with cones run --prompt · stop, list, resume in Claude's TUI · overlap skip / allow / replace · "
-           "shared-workspace writer lock · cones lock around any command, git commit included · opt-in failure notification · global Claude fleet hook: one state file per session · "
-           "fleet view: every Claude session in ls and the dashboard grouped by directory with title, state, age, tokens and last message · "
-           "stop for fleet sessions from the CLI and the dashboard · key hints follow claude agents, ctrl-x twice stops · per-harness marks, spinners and colors · "
-           "enter opens a live session in this terminal through claude attach, follows a running run, resumes a finished one; cones logs takes a session id · details pane shows the last prompt and full reply · durable run ledger · agent-console stub, config.toml and Pi jobs dropped with the three dependencies only they used · doctor fails on missing login or job env, warns on Claude version drift, probes the flags the compiler emits · run rows and cones ls show dollars spent from the ledger · claude agents --json and the job state file feed the fleet view, last column reads Claude's own status · cones coordinator start: one start-orchestrator session per folder, the skill ships inside the binary as a per-session plugin")
+SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
+           "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
+           "shared-workspace writer lock", "cones lock around any command", "opt-in failure notification",
+           "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
+           "global fleet hook, one file per session", "every Claude session in ls and the TUI", "stop and attach from CLI and TUI",
+           "fleet status from claude agents --json", "dashboard: details pane, dispatch, grouping", "key hints follow claude agents",
+           "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")
 
@@ -44,14 +45,18 @@ def t(x, y, s, size, fill, **kw):
 M, RAIL, GAP, PAD = 28, 0, 12, 14
 COL_W = (W - 2 * M - 16 - 2 * GAP) // 3
 WRAP = 29
-o = [t(M, 62, "cones roadmap", 32, FG, font_weight=700),
-     t(M, 92, "Scheduled coding-agent jobs on your Mac, under explicit policy, with every run accounted for.", 16, MUTED)]
-ship = textwrap.wrap(SHIPPED, 96)
-o.append(f'<rect x="{M}" y="112" width="{W-2*M}" height="{46+len(ship)*22}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
-o.append(t(M + 18, 136, "SHIPPED  v0.1.0", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
-for i, l in enumerate(ship):
-    o.append(t(M + 16, 160 + i * 22, l, 15, FG))
-y = 112 + 46 + len(ship) * 22 + 26
+o = []
+# SHIPPED: three columns of bullets, filled column-wise
+per = -(-len(SHIPPED) // 3)
+cols = [[(j > 0, l) for it in SHIPPED[c*per:(c+1)*per] for j, l in enumerate(textwrap.wrap(it, 30))] for c in range(3)]
+ship_h = max(map(len, cols)) * 20
+o.append(f'<rect x="{M}" y="16" width="{W-2*M}" height="{50+ship_h}" rx="8" fill="{CARD}" stroke="{LINE}"/>')
+o.append(t(M + 18, 40, "SHIPPED  v0.1.0", 12, "#3fb950", font_weight=700, letter_spacing=1.5))
+for ci, lines in enumerate(cols):
+    x = M + 8 + ci * (COL_W + GAP)
+    for i, (cont, l) in enumerate(lines):
+        o.append(t(x + PAD + 12 if cont else x + PAD, 64 + i * 20, l if cont else "\u2022 " + l, 13.5, FG))
+y = 16 + 50 + ship_h + 26
 # column headers
 for ci, (name, sub, color, _) in enumerate(COLS):
     x = M + 8 + ci * (COL_W + GAP)
