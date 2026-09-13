@@ -62,10 +62,35 @@ pub fn launch_path() -> String {
 }
 
 /// The coordinator is a skill, not cones: one Claude Code session per folder that greets the
-/// agents working there, gates their commits and relays findings. cones only launches it.
+/// agents working there, gates their commits and relays findings. cones ships it as a plugin
+/// embedded in the binary and loads it for that session only; nothing lands in ~/.claude.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
+const COORDINATOR_FILES: [(&str, &str); 5] = [
+    (
+        ".claude-plugin/plugin.json",
+        include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
+    ),
+    (
+        "skills/start-orchestrator/SKILL.md",
+        include_str!("../assets/coordinator/skills/start-orchestrator/SKILL.md"),
+    ),
+    (
+        "skills/start-orchestrator/bin/self.sh",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/self.sh"),
+    ),
+    (
+        "skills/start-orchestrator/bin/sweep.sh",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/sweep.sh"),
+    ),
+    (
+        "skills/start-orchestrator/bin/status.py",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/status.py"),
+    ),
+];
 
-/// The skill's status file for `dir`, when it names a live process.
+/// The skill's status file for `dir`, when it names a live process. The skill writes it under
+/// ~/.claude/orchestrator whether cones or a hand-typed /start-orchestrator started it, so
+/// either guard sees the other.
 pub fn coordinator_status(dir: &Path) -> Option<Value> {
     let files = std::fs::read_dir(dirs::home_dir()?.join(".claude/orchestrator")).ok()?;
     files.flatten().find_map(|entry| {
@@ -76,21 +101,33 @@ pub fn coordinator_status(dir: &Path) -> Option<Value> {
     })
 }
 
-/// `claude --bg /start-orchestrator` in `dir`. The skill refuses a second instance per folder
-/// itself, so a blind launch is safe.
-pub fn coordinator(dir: &Path) -> Result<std::process::Command> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("missing home directory"))?;
-    ensure!(
-        home.join(".claude/skills")
-            .join(COORDINATOR_SKILL)
-            .join("SKILL.md")
-            .is_file(),
-        "skill {COORDINATOR_SKILL} is not installed:\n  git clone https://github.com/YuvalSarel1/orchestrator ~/personal/orchestrator\n  ln -s ~/personal/orchestrator ~/.claude/skills/{COORDINATOR_SKILL}"
-    );
+/// Write the embedded plugin under `state` (rewritten on every start, so an upgraded binary
+/// carries its skill along) and return the plugin directory.
+pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
+    let plugin = state.join("coordinator/plugin");
+    let bin = plugin.join("skills").join(COORDINATOR_SKILL).join("bin");
+    for (rel, text) in COORDINATOR_FILES {
+        let path = plugin.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        std::fs::write(
+            &path,
+            text.replace("__CONES_COORDINATOR_BIN__", &bin.to_string_lossy()),
+        )?;
+    }
+    Ok(plugin)
+}
+
+/// `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` in `dir`. The skill refuses a
+/// second instance per folder itself, so a blind launch is safe.
+pub fn coordinator(dir: &Path, state: &Path) -> Result<std::process::Command> {
+    let plugin = coordinator_plugin(state)?;
     let path =
         executable("claude", &launch_path()).ok_or_else(|| anyhow::anyhow!("claude not found"))?;
     let mut cmd = std::process::Command::new(path);
-    cmd.args(["--bg", &format!("/{COORDINATOR_SKILL}")])
+    cmd.arg("--bg")
+        .arg("--plugin-dir")
+        .arg(plugin)
+        .arg(format!("/cones:{COORDINATOR_SKILL}"))
         .current_dir(dir);
     Ok(cmd)
 }

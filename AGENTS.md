@@ -2,7 +2,7 @@
 
 1. cones owns scheduling, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Never intercept harness tool calls or add a second permission engine.
 2. A policy guarantee the harness cannot enforce natively is a validation error, not a best effort.
-3. Markdown in this repo is `README.md`, this file and `docs/`. The README is the pitch, install and quick start; reference material lives in `docs/`. No plan, status or verification documents. Durable facts go in `docs/` or in tests.
+3. Markdown in this repo is `README.md`, this file, `docs/` and the coordinator skill under `assets/coordinator/`, which Claude Code requires as `SKILL.md`. The README is the pitch, install and quick start; reference material lives in `docs/`. No plan, status or verification documents. Durable facts go in `docs/` or in tests.
 4. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --all-targets` pass before every commit. Tests spend no model tokens.
 5. Never commit `jobs.yaml`, secrets or generated artifacts.
 6. Do not create a remote or push. Publishing is the owner's call, under the owner's personal GitHub account.

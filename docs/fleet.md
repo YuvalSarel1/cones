@@ -42,14 +42,16 @@ Stopping and attaching follow the session's owner. A session that `claude agents
 
 ## The coordinator: one session per folder
 
-Coordination between agents sharing a tree is not in cones. It is the [start-orchestrator](https://github.com/YuvalSarel1/orchestrator) skill: one Claude Code session that finds every agent whose cwd is the folder, introduces itself, holds commits until it says go, relays findings and insists on a clean tree when the last job ends. cones owns locks, schedule and ledger; the coordinator owns the conversation.
+Coordination between agents sharing a tree is not cones logic. It is the [start-orchestrator](https://github.com/YuvalSarel1/orchestrator) skill: one Claude Code session that finds every agent whose cwd is the folder, introduces itself, holds commits until it says go, relays findings and insists on a clean tree when the last job ends. cones owns locks, schedule and ledger; the coordinator owns the conversation. cones ships the skill inside its binary, from `assets/coordinator/`, so nothing needs installing.
 
 ```sh
 cones coordinator start            # this folder
 cones coordinator start ~/src/app  # another folder
 ```
 
-Both run `claude --bg /start-orchestrator` in the folder, so the coordinator is an ordinary background session: it shows in `cones ls` and the dashboard, `claude attach <id>` opens it, and telling it "stop orchestrator" ends it. The skill writes `~/.claude/orchestrator/<sha1 of the folder>.json` with its pid and peers every tick; when that file names a live process for the folder, `cones coordinator start` prints it and does nothing, and the skill refuses a second instance on its own as well. The skill is installed as `~/.claude/skills/start-orchestrator`; without it the command fails with the two install lines.
+Each start rewrites the plugin under `~/.cones/coordinator/plugin` (or the `--state-dir`), then runs `claude --bg --plugin-dir <that> /cones:start-orchestrator` in the folder, so the coordinator is an ordinary background session loaded with the skill for that session only: it shows in `cones ls` and the dashboard, `claude attach <id>` opens it, and telling it "stop orchestrator" ends its role. The skill writes `~/.claude/orchestrator/<sha1 of the folder>.json` with its pid and peers every tick, the same file a hand-typed `/start-orchestrator` from an installed copy of the skill writes, so `cones coordinator start` and the skill's own guard both see a coordinator started either way: when that file names a live process for the folder, the command prints it and does nothing.
+
+The copy under `assets/coordinator/` is the upstream skill with one line changed, the helper path, which cones fills in when it writes the plugin. Update it by copying the upstream files over and re-applying that line.
 
 ## The dashboard: jobs, sessions and runs on one screen
 

@@ -113,7 +113,7 @@ enum Action {
 
 #[derive(Subcommand)]
 enum CoordinatorAction {
-    /// `claude --bg /start-orchestrator` in DIR (default: here), unless one already runs there.
+    /// Launch the embedded skill in DIR (default: here) as a background Claude session, unless one already runs there.
     Start { dir: Option<PathBuf> },
 }
 
@@ -407,7 +407,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 );
                 return Ok(0);
             }
-            let status = harness::coordinator(&dir)?
+            let status = harness::coordinator(&dir, &state)?
                 .status()
                 .context("start claude")?;
             Ok(status.code().unwrap_or(1))

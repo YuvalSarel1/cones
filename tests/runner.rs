@@ -529,25 +529,20 @@ fn version_flag_prints_the_crate_version() {
 }
 
 #[test]
-fn coordinator_start_is_one_per_folder_and_needs_the_skill() {
+fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
     let f = Fixture::new("success", 1.0);
     let dir = f.dir.path().canonicalize().unwrap();
-    let start = || {
-        f.command()
-            .args(["coordinator", "start", dir.to_str().unwrap()])
-            .output()
-            .unwrap()
-    };
-    // No skill under $HOME: fail with the install lines, launch nothing.
-    let out = start();
-    assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ln -s"));
-    // The skill's status file names a live pid for this folder: a second start is a no-op.
+    // The skill's status file names a live pid for this folder: start prints it and launches nothing.
     let status = f.dir.path().join(".claude/orchestrator");
     fs::create_dir_all(&status).unwrap();
     let live = serde_json::json!({"cwd": dir, "pid": std::process::id(), "jobId": "8077985c"});
     fs::write(status.join("x.json"), live.to_string()).unwrap();
-    let out = start();
+    let out = f
+        .command()
+        .args(["coordinator", "start", dir.to_str().unwrap()])
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("already running"));
+    assert!(!f.state.join("coordinator").exists());
 }

@@ -777,3 +777,21 @@ fn fleet_agents_feed_adds_claude_sessions_and_their_detail() {
         "the library never runs claude on its own"
     );
 }
+
+#[test]
+fn coordinator_plugin_is_written_from_the_binary_with_its_helper_path_filled_in() {
+    let state = tempfile::tempdir().unwrap();
+    let plugin = cones::harness::coordinator_plugin(state.path()).unwrap();
+    let skill = plugin.join("skills/start-orchestrator");
+    let text = std::fs::read_to_string(skill.join("SKILL.md")).unwrap();
+    assert!(text.starts_with("---\nname: start-orchestrator\n"));
+    assert!(text.contains(&format!("S={}", skill.join("bin").display())));
+    assert!(!text.contains("__CONES_"));
+    for f in ["bin/self.sh", "bin/sweep.sh", "bin/status.py"] {
+        assert!(skill.join(f).is_file(), "{f}");
+    }
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(plugin.join(".claude-plugin/plugin.json")).unwrap())
+            .unwrap();
+    assert_eq!(manifest["name"], "cones");
+}
