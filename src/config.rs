@@ -92,7 +92,7 @@ pub struct JobsFile {
 pub const COLUMNS: [&str; 7] = [
     "state", "model", "age", "activity", "context", "tokens", "last",
 ];
-pub const DEFAULT_COLUMNS: [&str; 6] = ["state", "model", "age", "activity", "context", "last"];
+pub const DEFAULT_COLUMNS: [&str; 5] = ["state", "model", "activity", "context", "last"];
 
 fn parse(path: &Path) -> Result<JobsFile> {
     let doc: JobsFile =

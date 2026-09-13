@@ -11,7 +11,7 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
-columns: [state, model, age, activity, context, last]   # dashboard session columns, see below
+columns: [state, model, activity, context, last]   # dashboard session columns, see below
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd
@@ -56,7 +56,7 @@ jobs:
 | --- | --- | --- |
 | `state` | working, needs input, idle or exited | yes |
 | `model` | The bare API model id on the last message with usage, `claude-fable-5-1` | yes |
-| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | yes |
+| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
 | `activity` | Time since the transcript's last timestamp | yes |
 | `context` | `98k`: the prompt size Claude reported on the last message. No window, so no percentage | yes |
 | `last` | First line of the last reply, or the directory when grouped by state | yes |
