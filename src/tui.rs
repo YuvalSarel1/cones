@@ -36,6 +36,8 @@ const DOTS_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 #[derive(Clone, PartialEq, Eq)]
 pub enum Kind {
     Header,
+    /// Column names under a section title, dim and unselectable.
+    Columns,
     Blank,
     Job(String),
     /// Session id and state.
@@ -46,7 +48,7 @@ pub enum Kind {
 
 impl Kind {
     fn selectable(&self) -> bool {
-        !matches!(self, Kind::Header | Kind::Blank)
+        !matches!(self, Kind::Header | Kind::Columns | Kind::Blank)
     }
 }
 
@@ -129,11 +131,14 @@ impl Data {
                         (j.schedule.clone(), dim()),
                         (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
                         (if j.enabled { "on" } else { "off" }.into(), plain()),
-                        (format!("last: {last}"), color(&last)),
+                        (last.clone(), color(&last)),
                     ]
                 })
                 .collect();
-            for (j, cells) in self.jobs.iter().zip(table(cells)) {
+            let (names, cells) =
+                columns(&["", "job", "schedule", "", "enabled", "last run"], cells);
+            out.push(names);
+            for (j, cells) in self.jobs.iter().zip(cells) {
                 out.push(Row {
                     kind: Kind::Job(j.name.clone()),
                     cells,
@@ -187,10 +192,36 @@ impl Data {
                 ]
             })
             .collect();
+        let (names, cells) = columns(
+            &[
+                "",
+                "",
+                "title",
+                "state",
+                "age",
+                "tokens in/out",
+                if by_state { "dir" } else { "last" },
+            ],
+            cells,
+        );
+        if !flat.is_empty() {
+            out.push(Row {
+                kind: Kind::Blank,
+                cells: vec![],
+            });
+            out.push(names);
+        }
         let mut current: Option<&String> = None;
-        for ((key, s), cells) in flat.iter().zip(table(cells)) {
+        for ((key, s), cells) in flat.iter().zip(cells) {
             if current != Some(key) {
-                header(&mut out, if by_state { &key[1..] } else { key });
+                if current.is_none() {
+                    out.push(Row {
+                        kind: Kind::Header,
+                        cells: vec![((if by_state { &key[1..] } else { key }).to_owned(), bold())],
+                    });
+                } else {
+                    header(&mut out, if by_state { &key[1..] } else { key });
+                }
                 current = Some(key);
             }
             out.push(Row {
@@ -229,7 +260,12 @@ impl Data {
                     ]
                 })
                 .collect();
-            for (r, cells) in runs.iter().zip(table(cells)) {
+            let (names, cells) = columns(
+                &["", "job", "status", "started", "took", "cost", "reason"],
+                cells,
+            );
+            out.push(names);
+            for (r, cells) in runs.iter().zip(cells) {
                 out.push(Row {
                     kind: Kind::Run(r.started.run_id.clone(), r.status()),
                     cells,
@@ -331,7 +367,7 @@ pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     }
     for row in data.rows(false) {
         let (key, aux) = match &row.kind {
-            Kind::Header | Kind::Blank => ("hdr".to_owned(), "-".to_owned()),
+            Kind::Header | Kind::Columns | Kind::Blank => ("hdr".to_owned(), "-".to_owned()),
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
         };
@@ -438,6 +474,23 @@ fn table(rows: Vec<Vec<(String, Style)>>) -> Vec<Vec<(String, Style)>> {
                 .collect()
         })
         .collect()
+}
+
+/// Column names as a dim row padded together with the table beneath it, indented past the cursor
+/// gutter so each name sits over its column.
+fn columns(names: &[&str], rows: Vec<Vec<(String, Style)>>) -> (Row, Vec<Vec<(String, Style)>>) {
+    let mut all = vec![names.iter().map(|n| ((*n).to_owned(), dim())).collect()];
+    all.extend(rows);
+    let mut all = table(all);
+    let mut cells = all.remove(0);
+    cells[0].0.insert_str(0, "  ");
+    (
+        Row {
+            kind: Kind::Columns,
+            cells,
+        },
+        all,
+    )
 }
 
 fn plain() -> Style {
@@ -592,8 +645,8 @@ impl App {
         let rows = &self.rows;
         let matched: Vec<usize> = (0..rows.len())
             .filter(|&i| {
-                !rows[i].kind.selectable()
-                    || needle.is_empty()
+                needle.is_empty()
+                    || (!rows[i].kind.selectable() && rows[i].kind != Kind::Columns)
                     || rows[i].text().to_lowercase().contains(&needle)
             })
             .collect();

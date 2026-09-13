@@ -480,6 +480,11 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
             && lines[1].contains("0 working · 0 need input · 1 idle"),
         "three pinned header lines carry the summary"
     );
+    let names = lines.iter().find(|l| l.contains("tokens in/out")).unwrap();
+    assert!(
+        names.starts_with("hdr\t-\t") && names.contains("title") && names.contains("last"),
+        "an unselectable row names the session columns: {names}"
+    );
     assert!(lines[3] == "hdr\t-\t", "a blank row separates sections");
     assert!(row.contains("△"), "{row}");
     assert!(
