@@ -108,15 +108,38 @@ impl Data {
         self.sessions.iter().filter(|s| s.state == state).count()
     }
 
-    pub fn summary(&self) -> String {
-        format!(
-            "{} working · {} need input · {} idle · {} jobs · {} runs",
-            self.count("active"),
-            self.count("blocked"),
-            self.count("idle"),
-            self.jobs.len(),
-            self.runs.len()
-        )
+    /// The fleet in one line: a cone glyph and count per state, each in the state's color, then
+    /// the jobs and runs. A count of zero goes dim so the live numbers stand out.
+    pub fn summary(&self) -> Line<'static> {
+        let sep = || Span::styled("  ", plain());
+        let mut spans = Vec::new();
+        for (state, title) in [
+            ("active", "working"),
+            ("blocked", "need input"),
+            ("idle", "idle"),
+        ] {
+            let n = self.count(state);
+            let style = if n == 0 { dim() } else { color(state) };
+            spans.push(Span::styled(format!("{} ", icon(state)), style));
+            spans.push(Span::styled(
+                n.to_string(),
+                style.add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(format!(" {title}"), style));
+            spans.push(sep());
+        }
+        spans.push(Span::styled("·  ", dim()));
+        for (n, title) in [(self.jobs.len(), "jobs"), (self.runs.len(), "runs")] {
+            let style = if n == 0 { dim() } else { plain() };
+            spans.push(Span::styled(
+                n.to_string(),
+                style.add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(format!(" {title}"), style));
+            spans.push(sep());
+        }
+        spans.pop();
+        Line::from(spans)
     }
 
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
@@ -376,7 +399,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(&data.summary(), enter_verb(None), false) {
+    for line in header_lines(data.summary(), enter_verb(None), false) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -437,32 +460,51 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     }
 }
 
-/// The three header lines; `expanded` flips the `tab` hint between more and less.
-fn header_lines(summary: &str, enter: &str, expanded: bool) -> Vec<Line<'static>> {
+/// The three header lines: the cone beside the name, version and tagline; the fleet summary;
+/// the keys, each key lit and its verb dim so the eye finds the key first. `expanded` flips the
+/// `tab` hint between more and less.
+fn header_lines(summary: Line<'static>, enter: &str, expanded: bool) -> Vec<Line<'static>> {
     let orange = Style::default().fg(ORANGE);
     let white = Style::default().fg(Color::White);
     let tab = if expanded { "less" } else { "more" };
+    let keys = [
+        ("↑↓", "move"),
+        ("enter", enter),
+        ("tab", tab),
+        ("x x", "stop"),
+        ("e", "edit jobs"),
+        ("s", "regroup"),
+        ("n", "new task"),
+        ("/", "filter"),
+        ("r", "refresh"),
+        ("q", "quit"),
+    ];
+    let mut hints = vec![Span::styled("▟███▙", orange), Span::raw("  ")];
+    for (i, (key, verb)) in keys.iter().enumerate() {
+        if i > 0 {
+            hints.push(Span::styled(" · ", dim()));
+        }
+        hints.push(Span::styled((*key).to_owned(), bold()));
+        hints.push(Span::styled(format!(" {verb}"), dim()));
+    }
+    let mut middle = summary;
+    middle.spans.insert(0, Span::raw("  "));
+    middle.spans.insert(0, Span::styled(" ▟█▙ ", white));
     vec![
         Line::from(vec![
             Span::styled("  ▲  ", orange),
             Span::raw("  "),
             Span::styled("cones", bold()),
-        ]),
-        Line::from(vec![
-            Span::styled(" ▟█▙ ", white),
-            Span::raw("  "),
-            Span::raw(summary.to_owned()),
-        ]),
-        Line::from(vec![
-            Span::styled("▟███▙", orange),
-            Span::raw("  "),
             Span::styled(
                 format!(
-                    "↑↓ move · enter {enter} · tab {tab} · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit"
+                    " {}  a little structure for coding agents",
+                    env!("CARGO_PKG_VERSION")
                 ),
                 dim(),
             ),
         ]),
+        middle,
+        Line::from(hints),
     ]
 }
 
@@ -1335,7 +1377,7 @@ impl App {
         .areas(frame.area());
         let enter = enter_verb(self.selected().map(|r| &r.kind));
         frame.render_widget(
-            Paragraph::new(header_lines(&self.data.summary(), enter, self.expanded)),
+            Paragraph::new(header_lines(self.data.summary(), enter, self.expanded)),
             head,
         );
         self.draw_list(frame, list);
@@ -1791,7 +1833,7 @@ mod tests {
     #[test]
     fn hint_line_flips_tab_between_more_and_less() {
         let text = |expanded: bool| {
-            header_lines("s", "attach", expanded)[2]
+            header_lines(Line::raw("s"), "attach", expanded)[2]
                 .spans
                 .iter()
                 .map(|s| s.content.to_string())

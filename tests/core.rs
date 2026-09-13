@@ -493,6 +493,21 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             .is_empty()
     );
 }
+/// The list text without its ANSI color codes.
+fn plain(s: &str) -> String {
+    let mut out = String::new();
+    let mut skip = false;
+    for c in s.chars() {
+        match c {
+            '\x1b' => skip = true,
+            'm' if skip => skip = false,
+            _ if !skip => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
 #[test]
 fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let dir = tempfile::tempdir().unwrap();
@@ -558,7 +573,9 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let lines: Vec<&str> = list.lines().collect();
     assert!(
         lines[..3].iter().all(|l| l.starts_with("hdr\t-\t"))
-            && lines[1].contains("0 working · 0 need input · 1 idle"),
+            && ["0 working", "0 need input", "1 idle"]
+                .iter()
+                .all(|s| plain(lines[1]).contains(s)),
         "three pinned header lines carry the summary"
     );
     let names = lines.iter().find(|l| l.contains("context")).unwrap();
