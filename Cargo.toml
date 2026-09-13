@@ -2,7 +2,7 @@
 name = "cones"
 version = "0.1.0"
 edition = "2024"
-description = "Scheduled coding-agent runs with explicit policy and a durable ledger"
+description = "Schedule repeated Claude Code jobs and see every agent running on the Mac"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/YuvalSarel1/cones"
 
