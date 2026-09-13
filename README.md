@@ -4,7 +4,7 @@
 
 **A dashboard for your coding agents.** See what is running, move between sessions, and start, stop or schedule work.
 
-The goal is one place to work across harnesses. **Today: Claude Code on macOS. Next: Codex sessions beside it.**
+The goal is one place to work across harnesses. **Today: Claude Code on macOS, with Codex sessions seen beside it.**
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS">
@@ -48,7 +48,7 @@ Job policies cover the headless runs cones launches. Sessions started elsewhere,
 
 ## Roadmap
 
-Now: Codex sessions beside Claude's, metrics only as the harness reports them, better previews and return, launching in any folder, and the v0.1.0 tag. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, next fire time, sleep and wake proof. [Source](assets/roadmap.py).
+Now: the v0.1.0 tag and the public release. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, next fire time in `ls`, run diffs, sleep and wake proof. [Source](assets/roadmap.py).
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
 
