@@ -67,39 +67,71 @@ pub fn claude_dir() -> Result<PathBuf> {
         .join(".claude"))
 }
 
-/// Every live session in Claude's registry, oldest first by start time. A file whose pid is
-/// gone is a crashed session and is skipped; unparsable files are skipped too, since Claude may
-/// be mid-write on one.
+/// Every live session in Claude's registry, oldest first by start time. A file whose process is
+/// gone, or whose pid now belongs to another process, is a crashed session and is skipped;
+/// unparsable files are skipped too, since Claude may be mid-write on one.
 pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(claude.join("sessions")) else {
         return Ok(out);
     };
-    for entry in entries {
-        let path = entry?.path();
-        if path.extension().is_some_and(|e| e == "json")
-            && let Some(v) = fs::read(&path)
-                .ok()
-                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-            && let Some(s) = session(claude, &v)
-        {
-            out.push(s);
-        }
-    }
+    let values: Vec<Value> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .filter_map(|p| fs::read(p).ok())
+        .filter_map(|b| serde_json::from_slice(&b).ok())
+        .collect();
+    let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()));
+    out.extend(values.iter().filter_map(|v| session(claude, v, &starts)));
     out.sort_by_key(|s| s.started.unwrap_or(s.updated));
     Ok(out)
 }
 
-/// One registry entry as a fleet row. Pure apart from the pid check and the transcript read.
-fn session(dir: &Path, v: &Value) -> Option<Session> {
+/// Start time of each live pid as `ps` prints it under UTC. Claude writes that same text to the
+/// registry as `procStart`, so the two compare as strings and a reused pid never passes for the
+/// session that had it. One `ps` per refresh covers every entry.
+fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
+    // ps rejects the whole list when one pid is above the kernel's maximum (99998 on macOS);
+    // such a pid runs nothing anyway.
+    let list = pids
+        .filter(|p| *p <= 99_998)
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    if list.is_empty() {
+        return HashMap::new();
+    }
+    Command::new("/bin/ps")
+        .env("TZ", "UTC")
+        .args(["-o", "pid=,lstart=", "-p", &list])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let (pid, start) = l.trim().split_once(' ')?;
+                    Some((pid.parse().ok()?, start.trim().to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// One registry entry as a fleet row. Pure apart from the transcript read; `starts` is the
+/// process table from `process_starts`.
+fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Session> {
     let pid = v["pid"].as_u64()? as u32;
     let id = v["sessionId"].as_str()?;
+    let start = starts.get(&pid)?;
+    if v["procStart"].as_str().is_some_and(|s| s.trim() != start) {
+        return None;
+    }
     // The id names a transcript file, so it is checked before it becomes a path.
     if id.is_empty()
         || !id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        || !alive(pid)
     {
         return None;
     }
@@ -131,19 +163,20 @@ fn session(dir: &Path, v: &Value) -> Option<Session> {
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
         cwd,
-        state: match v["status"].as_str().unwrap_or("") {
-            "idle" => "idle",
+        // A status this version does not know renders as Claude's own word, never as a guess.
+        state: match v["status"].as_str().unwrap_or("-") {
+            "busy" | "shell" => "active",
             "blocked" | "waiting" | "needs_user" | "needs_trust" => "blocked",
-            _ => "active",
+            other => other,
         }
         .into(),
+        // An entry with no timestamp at all is not a session record; nothing is stamped now.
         updated: job["updatedAt"]
             .as_str()
             .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
             .map(Into::into)
             .or_else(|| millis("updatedAt"))
-            .or_else(|| millis("startedAt"))
-            .unwrap_or_else(Utc::now),
+            .or_else(|| millis("startedAt"))?,
         started: millis("startedAt"),
         pid: Some(pid),
         transcript_path: transcript,

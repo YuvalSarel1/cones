@@ -252,65 +252,6 @@ fn budget_stop_preserves_reported_per_model_usage() {
 }
 
 #[test]
-fn os_permission_errors_require_a_known_failing_bash_call() {
-    for (tool, error, text, expected) in [
-        ("Read", true, "cat: file: Permission denied", false),
-        (
-            "Read",
-            false,
-            "permission denied, denied, not allowed",
-            false,
-        ),
-        ("Bash", false, "touch: file: Operation not permitted", false),
-        (
-            "Bash",
-            true,
-            "Guide: Permission denied is an example.",
-            false,
-        ),
-        (
-            "Bash",
-            true,
-            "Exit code 1\ntouch: file: Operation not permitted",
-            true,
-        ),
-        ("Bash", true, "cat: file: Permission denied", true),
-        ("Bash", true, "touch: file: Read-only file system", true),
-    ] {
-        let mut result = Outcome::default();
-        result
-            .observe(
-                &serde_json::json!({"type":"assistant","message":{"content":[
-                    {"type":"tool_use","id":"call","name":tool,"input":{}}
-                ]}})
-                .to_string(),
-                "session",
-            )
-            .unwrap();
-        result
-            .observe(
-                &serde_json::json!({"type":"user","message":{"content":[
-                    {"type":"tool_result","tool_use_id":"call","is_error":error,"content":text}
-                ]}})
-                .to_string(),
-                "session",
-            )
-            .unwrap();
-        assert_eq!(result.permission_denied, expected, "{tool} {error} {text}");
-    }
-    let mut result = Outcome::default();
-    result.observe(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"unknown","is_error":true,"content":"touch: file: Permission denied"}]}}"#, "session").unwrap();
-    assert!(!result.permission_denied);
-    result
-        .observe(
-            r#"{"type":"system","subtype":"permission_denied"}"#,
-            "session",
-        )
-        .unwrap();
-    assert!(result.permission_denied);
-}
-
-#[test]
 fn overlap_allow_requires_read_only_and_workspace_locks_follow_symlinks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
@@ -507,12 +448,36 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         (None, None, 1757682871892),
         "an unsafe job id reads no file; without one the start time is the age"
     );
-    // A dead pid, an unsafe id, junk and Claude's .key files are skipped.
+    // A dead pid, a pid whose start time is not the registry's (reused), an entry with no
+    // timestamp, an unsafe id, junk and Claude's .key files are skipped.
     registry(
         claude,
         "dead",
         serde_json::json!({"pid": 4_000_000, "sessionId": "33333333-3333-4333-8333-333333333333", "cwd": "/x", "status": "busy"}),
     );
+    registry(
+        claude,
+        "reused",
+        serde_json::json!({"pid": me, "sessionId": "44444444-4444-4444-8444-444444444444", "cwd": "/x",
+            "status": "busy", "startedAt": 1i64, "procStart": "Thu Jan  1 00:00:00 1970"}),
+    );
+    registry(
+        claude,
+        "stampless",
+        serde_json::json!({"pid": me, "sessionId": "55555555-5555-4555-8555-555555555555", "cwd": "/x", "status": "busy"}),
+    );
+    let raw = "66666666-6666-4666-8666-666666666666";
+    registry(
+        claude,
+        "raw",
+        serde_json::json!({"pid": me, "sessionId": raw, "cwd": "/x", "status": "compacting", "startedAt": 2i64}),
+    );
+    assert_eq!(
+        cones::fleet::find(claude, raw).unwrap().unwrap().state,
+        "compacting",
+        "an unknown registry status is shown as Claude's word, not as active"
+    );
+    fs::remove_file(claude.join("sessions/raw.json")).unwrap();
     registry(
         claude,
         "escape",
@@ -647,7 +612,7 @@ fn session_columns_align_across_directory_groups() {
             dir.path(),
             id,
             serde_json::json!({"pid": std::process::id(), "sessionId": id, "cwd": dir.path().join(cwd),
-                "status": "idle", "name": title}),
+                "status": "idle", "name": title, "startedAt": 1757682871892i64}),
         );
     }
     let data =

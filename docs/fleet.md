@@ -28,11 +28,12 @@ Every Claude Code session on the Mac appears in `cones ls` with its working dire
 
 | State | Registry `status` | Dashboard label |
 | --- | --- | --- |
-| `active` | `busy`, `shell`, or any value not listed below | working |
+| `active` | `busy`, `shell` | working |
 | `idle` | `idle` | idle |
 | `blocked` | `blocked`, `waiting`, `needs_user`, `needs_trust` | needs input |
+| the word itself | any other value | the word itself |
 
-A registry entry whose pid is gone is a crashed session and is skipped. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
+A registry entry is a live session only when its pid is running and the process start time `ps` prints under UTC equals the entry's `procStart`; a gone pid or a reused one is a crashed session and is skipped, as is an entry with no timestamp. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
 
 Stopping and attaching follow the session's owner. A session whose kind is `bg` belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the registry pid after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
 

@@ -131,15 +131,13 @@ fn durable_start_success_cost_and_archived_native_resume() {
 // alone; rerun it alone before blaming a change.
 #[test]
 fn policy_denial_stops_a_running_harness_promptly() {
-    for mode in ["permission", "sandbox"] {
-        let f = Fixture::new(mode, 1.0);
-        let start = Instant::now();
-        assert!(!f.output().status.success());
-        assert!(start.elapsed() < Duration::from_secs(6));
-        let r = f.ledger().runs().unwrap().remove(0).terminal.unwrap();
-        assert_eq!(r.status, Status::Failed);
-        assert_eq!(r.reason.as_deref(), Some("permission"));
-    }
+    let f = Fixture::new("permission", 1.0);
+    let start = Instant::now();
+    assert!(!f.output().status.success());
+    assert!(start.elapsed() < Duration::from_secs(6));
+    let r = f.ledger().runs().unwrap().remove(0).terminal.unwrap();
+    assert_eq!(r.status, Status::Failed);
+    assert_eq!(r.reason.as_deref(), Some("permission"));
 }
 #[test]
 fn timeout_kills_descendants_that_ignore_sigterm() {
@@ -480,7 +478,7 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     for (id, pid) in [("real", claude_proc.id()), ("reused", sleeper.id())] {
         fs::write(
             claude.join("sessions").join(format!("{id}.json")),
-            serde_json::json!({"pid": pid, "sessionId": id, "cwd": f.dir.path(), "kind": "interactive", "status": "idle"}).to_string(),
+            serde_json::json!({"pid": pid, "sessionId": id, "cwd": f.dir.path(), "kind": "interactive", "status": "idle", "startedAt": 1i64}).to_string(),
         )
         .unwrap();
     }

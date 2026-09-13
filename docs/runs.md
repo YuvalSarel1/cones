@@ -42,7 +42,7 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `timeout` | `timeout` | The runner's clock ran out | 124 |
 | `timeout` | `replaced` | This run was the old one under `overlap: replace`; it received SIGUSR1 and stopped | 124 |
 | `failed` | `interrupted` | `cones stop`, or SIGTERM / SIGINT to the runner | 1 |
-| `failed` | `permission` | Claude reported a permission denial, or a sandboxed Bash call hit `Permission denied`, `Operation not permitted` or `Read-only file system` | 1 |
+| `failed` | `permission` | Claude reported a permission denial: a `permission_denials` entry on the result or a `permission_denied` system event. A sandboxed command the OS refuses is not one; the sandbox blocks it and the run goes on | 1 |
 | `failed` | `session_mismatch` | An event carried a session id other than the pinned one | 1 |
 | `failed` | `missing_result`, `missing_cost` | Claude exited without a result event, or with one that had no `total_cost_usd` | 1 |
 | `failed` | `validation: ...`, `spawn: ...`, `runner: ...` | The policy did not compile, the worker could not start, or cones hit an error while supervising | 1 |

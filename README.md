@@ -50,7 +50,7 @@ Each run has enforced limits on spending, turns, tools, writes, and duration. No
 
 Run a task immediately with `cones run`, or orchestrate agents in a folder with `cones coordinator start`.
 
-Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
+Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [what cones needs from a harness](docs/harness.md), [command reference](docs/cli.md).
 
 ## What existing tools leave out
 

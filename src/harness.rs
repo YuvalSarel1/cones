@@ -354,7 +354,6 @@ pub struct Outcome {
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
     pub cost_usd: Option<f64>,
-    bash_calls: BTreeSet<String>,
 }
 impl Outcome {
     pub fn observe(&mut self, line: &str, session_id: &str) -> Result<()> {
@@ -372,43 +371,6 @@ impl Outcome {
         }
         if event["type"] == "system" && event["subtype"] == "permission_denied" {
             self.permission_denied = true;
-        }
-        if event["type"] == "assistant"
-            && let Some(parts) = event["message"]["content"].as_array()
-        {
-            for part in parts {
-                if part["type"] == "tool_use"
-                    && part["name"] == "Bash"
-                    && let Some(id) = part["id"].as_str()
-                {
-                    self.bash_calls.insert(id.to_owned());
-                }
-            }
-        }
-        if event["type"] == "user"
-            && let Some(parts) = event["message"]["content"].as_array()
-        {
-            for part in parts {
-                if part["type"] != "tool_result" {
-                    continue;
-                }
-                let is_bash = part["tool_use_id"]
-                    .as_str()
-                    .is_some_and(|id| self.bash_calls.remove(id));
-                if is_bash && part["is_error"] == true {
-                    let denied = if let Some(text) = part["content"].as_str() {
-                        os_permission_error(text)
-                    } else {
-                        part["content"].as_array().is_some_and(|blocks| {
-                            blocks
-                                .iter()
-                                .filter_map(|block| block["text"].as_str())
-                                .any(os_permission_error)
-                        })
-                    };
-                    self.permission_denied |= denied;
-                }
-            }
         }
         if event["type"] == "result" {
             ensure!(!self.result_seen, "duplicate Claude result");
@@ -466,23 +428,6 @@ impl Outcome {
         }
         Ok(())
     }
-}
-
-fn os_permission_error(text: &str) -> bool {
-    const ERRORS: [&str; 3] = [
-        "Permission denied",
-        "Operation not permitted",
-        "Read-only file system",
-    ];
-    text.lines().any(|line| {
-        let line = line.trim();
-        ERRORS.iter().any(|error| {
-            line == *error
-                || line
-                    .strip_suffix(error)
-                    .is_some_and(|prefix| prefix.ends_with(": "))
-        })
-    })
 }
 
 /// Claude Code versions the compiled flags above were tested against; `cones doctor` warns

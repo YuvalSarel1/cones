@@ -20,11 +20,11 @@ What the fleet view and `cones ls` show for every live session.
 | Need | Claude Code | Codex |
 | --- | --- | --- |
 | Discover live sessions | reported: `~/.claude/sessions/<pid>.json`, one per session, bg or interactive. `$CLAUDE_CONFIG_DIR` relocates it. | unknown |
-| Liveness proof | deduced: the pid answers `kill(pid, 0)`. The registry reports `procStart`; cones does not compare it, so a reused pid is a ghost row. | unknown |
+| Liveness proof | reported: registry `pid` and `procStart`, the process start time as `ps -o lstart` prints it under UTC. cones compares that text with the live process table, so a reused pid is not a session. | unknown |
 | Working directory | reported: registry `cwd` | unknown |
 | Kind (background or interactive) | reported: registry `kind` | unknown |
-| State (working, idle, needs input) | reported: registry `status`: busy, shell, idle, blocked, waiting, needs_user, needs_trust. An unrecognised status renders as active; that fallback is a deduction. | unknown |
-| Last update time | reported: `~/.claude/jobs/<id>/state.json` `updatedAt`, else registry `updatedAt` or `startedAt`. Falls back to now when all are absent; that fallback is a deduction. | unknown |
+| State (working, idle, needs input) | reported: registry `status`: busy, shell, idle, blocked, waiting, needs_user, needs_trust. Any other value renders as the word itself. | unknown |
+| Last update time | reported: `~/.claude/jobs/<id>/state.json` `updatedAt`, else registry `updatedAt` or `startedAt`. An entry with none is skipped. | unknown |
 | Transcript path | deduced: `projects/<cwd with every non-alphanumeric byte as '-'>/<sessionId>.jsonl`, Claude's internal layout. Background jobs report `linkScanPath` in state.json; interactive sessions report nothing. | unknown |
 | Title | reported: transcript `ai-title` or `agent-name`, else registry `name` | unknown |
 | Last reply | reported: state.json `detail` for background jobs, else the transcript's last assistant text | unknown |
@@ -43,7 +43,7 @@ What `cones run` and `cones coordinator start` need to launch a harness. The com
 | Headless run with a prompt | reported: `--print -- <prompt>` | unknown |
 | Streamed events | reported: `--output-format stream-json --verbose`, one JSON object per line | unknown |
 | Result event with cost, usage and session id | reported: the `result` event. A missing `total_cost_usd` fails the run as `missing_cost`. Budget stops zero the aggregate usage and keep `modelUsage`; cones sums that instead. | unknown |
-| Permission denial as an event | reported: `permission_denials` on the result and a `system` event with subtype `permission_denied`. cones also matches three OS error strings in errored Bash results; that layer is deduced. | unknown |
+| Permission denial as an event | reported: `permission_denials` on the result and a `system` event with subtype `permission_denied`. A sandboxed command the OS refuses raises no event; the sandbox blocks it and the run goes on. | unknown |
 | No prompts ever | reported: `--permission-mode dontAsk --permission-prompts none` | unknown |
 | Tool allowlist | reported: `--tools`, `--allowedTools` | unknown |
 | Read-only or workspace-write sandbox | reported: `--settings` with `sandbox.enabled` and `failIfUnavailable` | unknown |
@@ -70,12 +70,6 @@ What `stop`, `attach`, `logs` and the timeout need.
 
 ## Open
 
-Rows marked deduced, in the order they should be retired:
-
-1. Liveness: compare the registry `procStart` with the process start time from `ps -o lstart`. Note the registry prints UTC and `ps` prints local time.
-2. Transcript path for interactive sessions: nothing reports it. Until Claude does, the layout rule stays, and a missing file renders `-`, never a guess.
-3. OS error strings in Bash results: drop the text match once the reported permission events cover the sandbox cases the tests exercise.
-4. Unrecognised registry status: render the raw word instead of active.
-5. Missing timestamps: render `-` instead of now.
+One row is still deduced: the transcript path for interactive sessions. Nothing reports it. Until Claude does, the layout rule stays, and a missing file renders `-`, never a guess.
 
 Codex is parsed and refused at validation ([jobs.md](jobs.md#codex-parsed-refused-at-validation)). Its column fills in as each row is checked against a real Codex binary; the adapter lands when no row is unknown.

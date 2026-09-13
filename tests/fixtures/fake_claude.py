@@ -43,18 +43,6 @@ if mode in ("hang", "slow", "descendant"):
 if mode == "permission":
     emit({"type": "system", "subtype": "permission_denied", "session_id": session})
     time.sleep(120)
-if mode == "sandbox":
-    emit({"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "id": "bash-denied", "name": "Bash", "input": {"command": "touch outside-workspace"}}
-    ]}})
-    emit({
-        "type": "user",
-        "message": {"content": [{
-            "type": "tool_result", "tool_use_id": "bash-denied", "is_error": True,
-            "content": "Exit code 1\ntouch: outside-workspace: Operation not permitted"
-        }]}
-    })
-    time.sleep(120)
 if mode == "read-permissions":
     fixture = pathlib.Path(__file__).with_name("claude-read-permissions.jsonl")
     for line in fixture.read_text().splitlines():
