@@ -1,6 +1,8 @@
 //! Codex in the fleet: fixture strings from a real Codex 0.154 rollout, `ps` and `lsof`. No
 //! Codex process runs and no model token is spent.
-use cones::codex::{Meta, Process, attribute, cwds, meta, processes, rows, tail, titles};
+use cones::codex::{
+    Meta, Process, attribute, cwds, home, meta, processes, rows, sessions, tail, titles,
+};
 use std::{fs, path::PathBuf};
 
 /// The first rollout line, trimmed to the fields cones reads.
@@ -221,4 +223,17 @@ fn rows_read_the_rollout_and_the_session_index() {
         "the environment block Codex files as a user message is not a prompt"
     );
     assert!(rows(codex, &[]).is_empty());
+}
+
+/// A live `codex` on the developer's machine must not leak into a test's fleet: a temp Claude
+/// dir has no `.codex` beside it, so the process table is never read.
+#[test]
+fn no_codex_home_means_no_process_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let claude = dir.path().join(".claude");
+    if std::env::var_os("CODEX_HOME").is_none_or(|d| d.is_empty()) {
+        assert_eq!(home(&claude), dir.path().join(".codex"));
+    }
+    assert!(sessions(&dir.path().join(".codex")).is_empty());
+    assert!(cones::fleet::all(&claude).unwrap().is_empty());
 }

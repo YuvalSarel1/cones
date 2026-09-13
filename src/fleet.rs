@@ -505,7 +505,7 @@ pub fn alive(pid: u32) -> bool {
 /// Codex's process table and rollouts.
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
     let mut out = sessions(claude)?;
-    out.extend(crate::codex::sessions(&crate::codex::home()?));
+    out.extend(crate::codex::sessions(&crate::codex::home(claude)));
     out.sort_by(|a, b| {
         (a.started.is_none(), a.started, &a.session_id).cmp(&(
             b.started.is_none(),

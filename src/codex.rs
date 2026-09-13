@@ -5,7 +5,6 @@
 //! time; a process without one shows `-` for title, last reply and state. cones runs no Codex
 //! job and holds no Codex budget: seeing a session is all this module does.
 use crate::fleet::Session;
-use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
 use std::{
@@ -17,15 +16,15 @@ use std::{
     sync::Mutex,
 };
 
-/// Codex's home: `$CODEX_HOME`, the override Codex honors, or `~/.codex`. Holds `sessions/`
-/// and `session_index.jsonl`.
-pub fn home() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
+/// Codex's home: `$CODEX_HOME`, the override Codex honors, else `.codex` beside the Claude dir
+/// (`~/.codex` next to `~/.claude`). Holds `sessions/` and `session_index.jsonl`.
+// ponytail: deriving the home from the Claude dir keeps a test's temp dir hermetic; a layout
+// where the two do not sit together sets CODEX_HOME.
+pub fn home(claude: &Path) -> PathBuf {
+    match std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => claude.with_file_name(".codex"),
     }
-    Ok(dirs::home_dir()
-        .context("missing home directory")?
-        .join(".codex"))
 }
 
 /// A live `codex` process: what the process table states about it.
@@ -59,8 +58,13 @@ pub struct Tail {
     pub model: Option<String>,
 }
 
-/// Every live Codex session, oldest first by process start.
+/// Every live Codex session, oldest first by process start. No Codex home means Codex is not
+/// installed here: the process table is not read, so a machine or a test without one sees no
+/// `codex` process, whatever else is running.
 pub fn sessions(codex: &Path) -> Vec<Session> {
+    if !codex.is_dir() {
+        return Vec::new();
+    }
     let ps = Command::new("/bin/ps")
         .env("TZ", "UTC")
         .args(["-axww", "-o", "pid=,lstart=,command="])
