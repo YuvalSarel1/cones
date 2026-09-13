@@ -1,6 +1,7 @@
 //! Fleet: every Claude Code session on this Mac, read from the registry Claude itself keeps,
-//! `~/.claude/sessions/<pid>.json`, plus each session's transcript for title, last reply and
-//! tokens. cones installs nothing into the session and runs nothing inside it.
+//! `~/.claude/sessions/<pid>.json`, plus each session's transcript for title, last reply, model,
+//! timestamps and tokens. cones installs nothing into the session and runs nothing inside it.
+//! Every value is something Claude wrote; a value Claude did not write is `None`, never a guess.
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -25,10 +26,16 @@ pub struct Session {
     pub cwd: PathBuf,
     /// `active`, `idle` or `blocked` (waiting on a permission, trust or user prompt).
     pub state: String,
-    pub updated: DateTime<Utc>,
-    /// When the session started. Rows sort by this so they hold still while `updated` ticks.
+    /// The `timestamp` of the first transcript line that carries one. Rows sort by this so they
+    /// hold still while the session works.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<DateTime<Utc>>,
+    /// The `timestamp` of the last transcript line that carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<DateTime<Utc>>,
+    /// The bare API model id Claude wrote on the last message with usage, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,11 +44,11 @@ pub struct Session {
     pub tokens_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_out: Option<u64>,
-    /// Tokens in the context window at the last turn, and that window's size.
+    /// The prompt size Claude reported on the last message with usage: input plus cache creation
+    /// and cache read. There is no window field; Claude states the window size only in its
+    /// statusLine payload, which reaches nothing outside the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// Claude's own session title (`ai-title`, or a user-set `agent-name`).
@@ -67,9 +74,10 @@ pub fn claude_dir() -> Result<PathBuf> {
         .join(".claude"))
 }
 
-/// Every live session in Claude's registry, oldest first by start time. A file whose process is
-/// gone, or whose pid now belongs to another process, is a crashed session and is skipped;
-/// unparsable files are skipped too, since Claude may be mid-write on one.
+/// Every live session in Claude's registry, oldest first by start time; a session whose
+/// transcript reports no start sorts last, by id. A file whose process is gone, or whose pid now
+/// belongs to another process, is a crashed session and is skipped; unparsable files are skipped
+/// too, since Claude may be mid-write on one.
 pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(claude.join("sessions")) else {
@@ -83,7 +91,13 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         .collect();
     let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()));
     out.extend(values.iter().filter_map(|v| session(claude, v, &starts)));
-    out.sort_by_key(|s| s.started.unwrap_or(s.updated));
+    out.sort_by(|a, b| {
+        (a.started.is_none(), a.started, &a.session_id).cmp(&(
+            b.started.is_none(),
+            b.started,
+            &b.session_id,
+        ))
+    });
     Ok(out)
 }
 
@@ -136,7 +150,6 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         return None;
     }
     let cwd = PathBuf::from(v["cwd"].as_str().unwrap_or(""));
-    let millis = |k: &str| v[k].as_i64().and_then(DateTime::from_timestamp_millis);
     // The short job id becomes a directory name, so it is checked first.
     let job: Value = v["jobId"]
         .as_str()
@@ -170,21 +183,16 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
             other => other,
         }
         .into(),
-        // An entry with no timestamp at all is not a session record; nothing is stamped now.
-        updated: job["updatedAt"]
-            .as_str()
-            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
-            .map(Into::into)
-            .or_else(|| millis("updatedAt"))
-            .or_else(|| millis("startedAt"))?,
-        started: millis("startedAt"),
+        // Start, last activity, model and context are the transcript's own words; the registry
+        // `startedAt` and `updatedAt` and the file's mtime are not read for them.
+        started: d.report.started,
+        last_activity: d.report.last_activity,
+        model: d.report.model,
         pid: Some(pid),
         transcript_path: transcript,
-        tokens_in: d.usage.tokens_in,
-        tokens_out: d.usage.tokens_out,
-        context_tokens: d.usage.context,
-        // Nothing Claude writes outside a session states the window; see `context`.
-        context_window: None,
+        tokens_in: d.report.tokens_in,
+        tokens_out: d.report.tokens_out,
+        context_tokens: d.report.context,
         cost_usd: None,
         title: d
             .title
@@ -201,11 +209,11 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
 struct Details {
     title: Option<String>,
     last: Option<String>,
-    usage: Usage,
+    report: Report,
 }
 
-/// Title, last reply and token counts from a transcript, recomputed only when the file grew.
-/// The dashboard reloads every second and counting tokens reads the whole file.
+/// Title, last reply, model, timestamps and token counts from a transcript, recomputed only
+/// when the file grew. The dashboard reloads every second and the count reads the whole file.
 fn details(transcript: &Path) -> Details {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Details)>>> = Mutex::new(None);
     let len = fs::metadata(transcript).map_or(0, |m| m.len());
@@ -220,7 +228,7 @@ fn details(transcript: &Path) -> Details {
     let d = Details {
         title,
         last: last.pop(),
-        usage: usage(transcript).unwrap_or_default(),
+        report: report(transcript).unwrap_or_default(),
     };
     cache.insert(transcript.to_owned(), (len, d.clone()));
     d
@@ -384,28 +392,50 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     out
 }
 
-#[derive(Default, Clone, Copy)]
-struct Usage {
+/// What one pass over a transcript reads out of Claude's own lines.
+#[derive(Default, Clone)]
+struct Report {
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
+    /// The prompt size on the last message with usage.
     context: Option<u64>,
+    /// `message.model` on that same message, verbatim.
+    model: Option<String>,
+    /// The `timestamp` on the first and the last line that carries one.
+    started: Option<DateTime<Utc>>,
+    last_activity: Option<DateTime<Utc>>,
 }
 
-/// Total input and output tokens in a Claude transcript, plus the last message's prompt size as
-/// the context in use. Streaming writes one line per content block with the same message id and
-/// usage, so each message is counted once.
-fn usage(transcript: &Path) -> Result<Usage> {
+/// Total input and output tokens in a Claude transcript, the last message's prompt size as the
+/// context in use, the model id on that message, and the first and last line timestamps.
+/// Streaming writes one line per content block with the same message id and usage, so each
+/// message is counted once. A message whose model is `<synthetic>` is Claude's own placeholder
+/// for a turn no model answered (all-zero usage); it is not a report and is skipped.
+fn report(transcript: &Path) -> Result<Report> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
-    let mut last = None;
+    let mut r = Report::default();
+    let mut counted = false;
     for line in std::io::BufReader::new(fs::File::open(transcript)?).lines() {
         let Ok(event) = serde_json::from_str::<Value>(&line?) else {
             continue;
         };
+        if let Some(t) = event["timestamp"]
+            .as_str()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(DateTime::<Utc>::from)
+        {
+            r.started.get_or_insert(t);
+            r.last_activity = Some(t);
+        }
         let message = &event["message"];
         let Some(u) = message.get("usage") else {
             continue;
         };
+        let model = message["model"].as_str();
+        if model == Some("<synthetic>") {
+            continue;
+        }
         if let Some(id) = message["id"].as_str()
             && !seen.insert(id.to_owned())
         {
@@ -416,13 +446,15 @@ fn usage(transcript: &Path) -> Result<Usage> {
             n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
         input += prompt;
         output += n("output_tokens");
-        last = Some(prompt);
+        counted = true;
+        r.context = Some(prompt);
+        r.model = model.map(Into::into);
     }
-    Ok(Usage {
-        tokens_in: Some(input),
-        tokens_out: Some(output),
-        context: last,
-    })
+    if counted {
+        r.tokens_in = Some(input);
+        r.tokens_out = Some(output);
+    }
+    Ok(r)
 }
 
 pub fn alive(pid: u32) -> bool {
@@ -502,8 +534,9 @@ pub fn stale_hook(settings: &Path) -> bool {
     })
 }
 
-pub fn age(updated: DateTime<Utc>) -> String {
-    let s = (Utc::now() - updated).num_seconds().max(0);
+/// Time since a reported instant as a table cell: `4s`, `6m`, `2h`, `3d`.
+pub fn age(since: DateTime<Utc>) -> String {
+    let s = (Utc::now() - since).num_seconds().max(0);
     match s {
         0..60 => format!("{s}s"),
         60..3600 => format!("{}m", s / 60),
@@ -521,17 +554,13 @@ pub fn cost(usd: f64) -> String {
     }
 }
 
-/// Tokens in the context window at the session's last turn: "98k", or "98k/200k 49%" when the
-/// harness reported the window size. The window is never inferred. Claude Code states it only
-/// in the statusLine payload, which reaches nothing outside the session; the transcript carries
-/// the bare model id, the registry nothing. Guessing 200k, or 1M from a `[1m]` in settings.json,
-/// rendered live sessions at 194%. A missing denominator beats a wrong one.
+/// The prompt size Claude reported on the session's last message: "98k", with no denominator and
+/// no percentage. Claude Code states the window size only in the statusLine payload, which
+/// reaches nothing outside the session; the transcript carries the bare model id, the registry
+/// nothing. Guessing 200k, or 1M from a `[1m]` in settings.json, once rendered live sessions at
+/// 194%. A missing denominator beats a wrong one.
 pub fn context(s: &Session) -> String {
-    match (s.context_tokens, s.context_window) {
-        (Some(t), Some(w)) if w > 0 => format!("{}/{} {}%", short(t), short(w), t * 100 / w),
-        (Some(t), _) => short(t),
-        _ => "-".into(),
-    }
+    s.context_tokens.map_or_else(|| "-".into(), short)
 }
 
 pub fn tokens(s: &Session) -> String {

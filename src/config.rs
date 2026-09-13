@@ -89,8 +89,10 @@ pub struct JobsFile {
     pub columns: Option<Vec<String>>,
 }
 
-pub const COLUMNS: [&str; 5] = ["state", "age", "context", "tokens", "last"];
-pub const DEFAULT_COLUMNS: [&str; 4] = ["state", "age", "context", "last"];
+pub const COLUMNS: [&str; 7] = [
+    "state", "model", "age", "activity", "context", "tokens", "last",
+];
+pub const DEFAULT_COLUMNS: [&str; 6] = ["state", "model", "age", "activity", "context", "last"];
 
 fn parse(path: &Path) -> Result<JobsFile> {
     let doc: JobsFile =

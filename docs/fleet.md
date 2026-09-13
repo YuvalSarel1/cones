@@ -13,18 +13,22 @@ cones stop SESSION_UUID          # ends the session
 
 Nothing is installed. Claude Code keeps a registry of its own sessions, one `~/.claude/sessions/<pid>.json` per live session, interactive or background, written and updated by Claude itself. Every `cones ls` and every dashboard refresh reads that directory, or `$CLAUDE_CONFIG_DIR/sessions` when that variable is set, the same override Claude honors, and fills the rest of the row from the session's transcript under `~/.claude/projects`. No hook runs inside the session and `~/.claude/settings.json` is untouched. If an earlier cones put its hook there, `cones doctor` warns until the entries whose command ends in ` hook $PPID` are deleted; with the hook command gone from the binary each would fail on every event.
 
-Every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age, context fill and last message. Sessions that belong to a cones run collapse into that run's row. Dollars come from the ledger for cones runs; for other sessions the column stays `-`, since the transcript records tokens and no price.
+Every Claude Code session on the Mac appears in `cones ls` with its working directory, state, start time, harness, dollars and tokens in/out; the dashboard adds the title, model, age, last activity, context and last message. Sessions that belong to a cones run collapse into that run's row. Dollars come from the ledger for cones runs; for other sessions the column stays `-`, since the transcript records tokens and no price.
+
+Every value is a line Claude wrote, and the table names the line. Nothing is read from settings, a model name, a threshold or a file's mtime. A value Claude did not write is absent: `-` in a cell, omitted from `cones ls --json`, never estimated.
 
 | Field | Source |
 | --- | --- |
 | `session_id`, `pid`, `cwd`, `kind` | The registry entry: `sessionId`, `pid`, `cwd` and `kind`, which is `bg` for a session Claude's daemon owns and `interactive` otherwise |
 | `state` | The registry `status`, mapped as below |
-| `started`, `updated` | The registry `startedAt` and `updatedAt`; for a background job, the `updatedAt` in `~/.claude/jobs/<id>/state.json` |
+| `started` | The `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read for it |
+| `last_activity` | The `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and the transcript file's mtime are not read |
+| `model` | `message.model` on the last transcript message with `usage`, verbatim: the bare API id, `claude-fable-5-1`. A message whose model is `<synthetic>` is Claude's placeholder for a turn no model answered (all-zero usage) and is skipped |
 | `transcript_path` | `~/.claude/projects/<cwd with every non-alphanumeric byte as ->/<session_id>.jsonl`, or the job's `linkScanPath` when that file is missing |
 | `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail; the registry `name` when the transcript has neither |
 | `last` | For a background job, the one-line `detail` Claude keeps in the job's `state.json`; otherwise the first line of the assistant's most recent text |
-| `tokens_in`, `tokens_out` | Summed from the transcript, recounted when the file grows; input includes cache reads and cache creation |
-| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation), and the window size when the harness reported one. Claude Code states the window only in its statusLine payload, so today it is absent and never inferred |
+| `tokens_in`, `tokens_out` | Summed over every transcript message with `usage`, once per message id, recounted when the file grows; input includes cache reads and cache creation. Absent until the first such message |
+| `context_tokens` | The prompt size on the same message `model` comes from: `input_tokens` plus `cache_creation_input_tokens` and `cache_read_input_tokens`, the fields Claude's statusLine `current_usage` carries. There is no window field: Claude Code states the window size only in its statusLine payload, which reaches nothing outside the session, so the cell has no denominator and no percentage |
 
 | State | Registry `status` | Dashboard label |
 | --- | --- | --- |
@@ -33,7 +37,7 @@ Every Claude Code session on the Mac appears in `cones ls` with its working dire
 | `blocked` | `blocked`, `waiting`, `needs_user`, `needs_trust` | needs input |
 | the word itself | any other value | the word itself |
 
-A registry entry is a live session only when its pid is running and the process start time `ps` prints under UTC equals the entry's `procStart`; a gone pid or a reused one is a crashed session and is skipped, as is an entry with no timestamp. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
+A registry entry is a live session only when its pid is running and the process start time `ps` prints under UTC equals the entry's `procStart`; a gone pid or a reused one is a crashed session and is skipped. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
 
 Stopping and attaching follow the session's owner. A session whose kind is `bg` belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the registry pid after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
 
@@ -59,14 +63,14 @@ Its hint line reads `↑↓ move · enter <verb> · tab more · x x stop · e ed
 | Pane | Columns | Details pane |
 | --- | --- | --- |
 | Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
-| Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply; with `tab`, the last 12 exchanges |
+| Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd | model, start, last activity, context and tokens on one line, then the last prompt and full reply; with `tab`, the last 12 exchanges |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
 
 The details pane is the bottom 40% of the screen and shows the end of its text. `tab` expands it to 75% and, on a session, reads the last 12 prompts and replies from the transcript instead of the last one, so a session can be read before it is opened; nothing is shown that the transcript does not record, so a turn that was all tool calls shows its prompt alone. `pgup` and `pgdn` (or `shift+↑` `↓`) page through the text; the pane title then reads `lines 41-80 of 120`. The pane stays pinned to the end until it is paged up, so a working session keeps scrolling by itself, and moving to another row or pressing `tab` again pins it back.
 
-Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: tokens in the window at the last turn, with `/200k 49%` appended only when the harness reported the window size. It is `-` until the transcript holds a message with usage.
+Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: the prompt size Claude reported on the session's last message, with no window and no percentage, since Claude Code states the window size only in the statusLine payload. `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Each of `model`, `age`, `activity` and `context` is `-` until the transcript holds the line it reads.
 
-Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a registry entry without a start time sorts by its last update.
+Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session whose transcript reports no start sorts last, by id.
 
 | Key | Action |
 | --- | --- |

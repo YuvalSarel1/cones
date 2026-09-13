@@ -25,21 +25,24 @@
 <text x="328" y="184" font-size="13.5" fill="#e6edf3" >session registry, no hook</text>
 <text x="316" y="204" font-size="13.5" fill="#e6edf3" >• every Claude session in ls and</text>
 <text x="328" y="224" font-size="13.5" fill="#e6edf3" >the TUI</text>
-<text x="316" y="244" font-size="13.5" fill="#e6edf3" >• stop and attach from CLI and</text>
-<text x="328" y="264" font-size="13.5" fill="#e6edf3" >TUI</text>
-<text x="316" y="284" font-size="13.5" fill="#e6edf3" >• dashboard: details pane,</text>
-<text x="328" y="304" font-size="13.5" fill="#e6edf3" >dispatch, grouping</text>
-<text x="582" y="64" font-size="13.5" fill="#e6edf3" >• n launches in any folder,</text>
-<text x="594" y="84" font-size="13.5" fill="#e6edf3" >interactive or managed</text>
-<text x="582" y="104" font-size="13.5" fill="#e6edf3" >• tab reads more of a session,</text>
-<text x="594" y="124" font-size="13.5" fill="#e6edf3" >attach returns to the row</text>
-<text x="582" y="144" font-size="13.5" fill="#e6edf3" >• key hints follow claude agents</text>
-<text x="582" y="164" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
-<text x="594" y="184" font-size="13.5" fill="#e6edf3" >colors</text>
-<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
-<text x="594" y="224" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
-<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
-<text x="594" y="264" font-size="13.5" fill="#e6edf3" >in the binary</text>
+<text x="316" y="244" font-size="13.5" fill="#e6edf3" >• model, start, activity and</text>
+<text x="328" y="264" font-size="13.5" fill="#e6edf3" >context read from the</text>
+<text x="328" y="284" font-size="13.5" fill="#e6edf3" >transcript, never estimated</text>
+<text x="316" y="304" font-size="13.5" fill="#e6edf3" >• stop and attach from CLI and</text>
+<text x="328" y="324" font-size="13.5" fill="#e6edf3" >TUI</text>
+<text x="582" y="64" font-size="13.5" fill="#e6edf3" >• dashboard: details pane,</text>
+<text x="594" y="84" font-size="13.5" fill="#e6edf3" >dispatch, grouping</text>
+<text x="582" y="104" font-size="13.5" fill="#e6edf3" >• n launches in any folder,</text>
+<text x="594" y="124" font-size="13.5" fill="#e6edf3" >interactive or managed</text>
+<text x="582" y="144" font-size="13.5" fill="#e6edf3" >• tab reads more of a session,</text>
+<text x="594" y="164" font-size="13.5" fill="#e6edf3" >attach returns to the row</text>
+<text x="582" y="184" font-size="13.5" fill="#e6edf3" >• key hints follow claude agents</text>
+<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
+<text x="594" y="224" font-size="13.5" fill="#e6edf3" >colors</text>
+<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
+<text x="594" y="264" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
+<text x="582" y="284" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
+<text x="594" y="304" font-size="13.5" fill="#e6edf3" >in the binary</text>
 <rect x="36" y="372" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="410" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="430" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>
@@ -52,15 +55,7 @@
 <rect x="28" y="446" width="804" height="734" rx="10" fill="#161b22" stroke="#30363d"/>
 <rect x="28" y="458" width="5" height="710" rx="2.5" fill="#d2a8ff"/>
 <text x="46" y="476" font-size="12.5" fill="#d2a8ff" font-weight="700" letter-spacing="1.5">SEE</text>
-<text x="50" y="508" font-size="17" fill="#e6edf3" font-weight="700">Metrics you can trust</text>
-<text x="50" y="532" font-size="16" fill="#8b949e" >Model, session start, last</text>
-<text x="50" y="554" font-size="16" fill="#8b949e" >activity and context usage,</text>
-<text x="50" y="576" font-size="16" fill="#8b949e" >each read from a Claude</text>
-<text x="50" y="598" font-size="16" fill="#8b949e" >report; the age column stops</text>
-<text x="50" y="620" font-size="16" fill="#8b949e" >measuring the last update. A</text>
-<text x="50" y="642" font-size="16" fill="#8b949e" >value Claude does not report</text>
-<text x="50" y="664" font-size="16" fill="#8b949e" >shows as absent, never</text>
-<text x="50" y="686" font-size="16" fill="#8b949e" >estimated.</text>
+<text x="50" y="508" font-size="16" fill="#30363d" >—</text>
 <text x="316" y="508" font-size="17" fill="#e6edf3" font-weight="700">Next fire time in ls</text>
 <text x="316" y="532" font-size="16" fill="#8b949e" >Each job row shows its next</text>
 <text x="316" y="554" font-size="16" fill="#8b949e" >tick, computed from the</text>

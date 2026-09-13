@@ -222,7 +222,8 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
-            // Sessions from Claude's registry that no cones run owns; same columns, cwd where the job name goes.
+            // Sessions from Claude's registry that no cones run owns; same columns, cwd where the
+            // job name goes and the transcript's first timestamp where the fired time goes.
             for s in cones::tui::fleet_rows(&claude, &ledger.runs()?)?
                 .into_iter()
                 .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
@@ -235,7 +236,9 @@ fn execute(cli: Cli) -> Result<i32> {
                         s.session_id,
                         cones::fleet::tilde(&s.cwd),
                         s.state,
-                        s.updated.to_rfc3339(),
+                        s.started
+                            .map(|t| t.to_rfc3339())
+                            .unwrap_or_else(|| "-".into()),
                         s.harness,
                         s.cost_usd
                             .map(cones::fleet::cost)

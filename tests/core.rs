@@ -284,8 +284,8 @@ fn registry(claude: &std::path::Path, name: &str, entry: serde_json::Value) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(format!("{name}.json")), entry.to_string()).unwrap();
 }
-/// A transcript in Claude's project store for `cwd`: one titled assistant message of `prompt`
-/// input tokens whose text is `text`.
+/// A transcript in Claude's project store for `cwd`: one titled, stamped assistant message of
+/// `prompt` input tokens whose text is `text`, naming its model the way Claude writes it.
 fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt: u64, text: &str) {
     let project = claude.join("projects").join(
         cwd.to_string_lossy()
@@ -295,7 +295,7 @@ fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt:
     fs::write(
         project.join(format!("{id}.jsonl")),
         format!(
-            "{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{{\"type\":\"assistant\",\"message\":{{\"id\":\"m\",\"usage\":{{\"input_tokens\":{prompt},\"output_tokens\":300}},\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
+            "{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{{\"type\":\"assistant\",\"timestamp\":\"2026-09-12T10:56:35.556Z\",\"message\":{{\"id\":\"m\",\"model\":\"claude-fable-5-1\",\"usage\":{{\"input_tokens\":{prompt},\"output_tokens\":300}},\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
         ),
     )
     .unwrap();
@@ -331,20 +331,22 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     let project = claude.join("projects/-tmp-re-po");
     fs::create_dir_all(&project).unwrap();
     let transcript = project.join(format!("{id}.jsonl"));
-    // Two streamed content blocks of one message, then a second message.
-    let usage = |mid: &str, i: u64, o: u64| {
+    // Two streamed content blocks of one message, then a second message, each stamped and naming
+    // its model the way Claude writes them. The first stamped line is an attachment, as in a
+    // real transcript.
+    let usage = |mid: &str, i: u64, o: u64, ts: &str| {
         format!(
-            r#"{{"type":"assistant","message":{{"id":"{mid}","usage":{{"input_tokens":{i},"cache_read_input_tokens":10,"output_tokens":{o}}}}}}}"#
+            r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{mid}","model":"claude-fable-5-1","usage":{{"input_tokens":{i},"cache_read_input_tokens":10,"output_tokens":{o}}}}}}}"#
         )
     };
     fs::write(
         &transcript,
         format!(
-            "{{\"type\":\"user\"}}\n{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{}\n{}\nnot json\n{}\n{}\n",
-            usage("m1", 100, 5),
-            usage("m1", 100, 5),
-            usage("m2", 200, 7),
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"\n**Running** the tests\nsecond line"}]}}"#
+            "{{\"type\":\"user\"}}\n{{\"type\":\"attachment\",\"timestamp\":\"2026-09-12T10:56:31.487Z\"}}\n{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{}\n{}\nnot json\n{}\n{}\n",
+            usage("m1", 100, 5, "2026-09-12T10:56:35.556Z"),
+            usage("m1", 100, 5, "2026-09-12T10:56:35.556Z"),
+            usage("m2", 200, 7, "2026-09-12T10:57:00.250Z"),
+            r#"{"type":"assistant","timestamp":"2026-09-12T10:57:01.750Z","message":{"content":[{"type":"text","text":"\n**Running** the tests\nsecond line"}]}}"#
         ),
     )
     .unwrap();
@@ -369,32 +371,47 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     );
     assert_eq!((s.tokens_in, s.tokens_out), (Some(320), Some(12)));
     assert_eq!(
-        (s.context_tokens, s.context_window),
-        (Some(210), None),
-        "the last message's prompt is the context in use; the window is never inferred"
+        (s.context_tokens, s.model.as_deref()),
+        (Some(210), Some("claude-fable-5-1")),
+        "the last message's prompt is the context in use and its model id is shown verbatim"
+    );
+    let rfc = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
+    assert_eq!(
+        (rfc(s.started), rfc(s.last_activity)),
+        (
+            Some("2026-09-12T10:56:31.487+00:00".into()),
+            Some("2026-09-12T10:57:01.750+00:00".into())
+        ),
+        "start and last activity are the transcript's first and last timestamps, not the registry's"
     );
     // A [1m] model in settings.json and a turn past 200k prove nothing about the window
-    // Claude reports; the cell shows the tokens alone. The transcript must grow for the cached
-    // count to be redone.
+    // Claude reports; the cell shows the tokens alone, no denominator. The transcript must grow
+    // for the cached count to be redone.
     fs::write(claude.join("settings.json"), r#"{"model":"opus[1m]"}"#).unwrap();
     let mut t = fs::OpenOptions::new()
         .append(true)
         .open(&transcript)
         .unwrap();
-    writeln!(t, "{}", usage("m3", 300_000, 1)).unwrap();
+    writeln!(t, "{}", usage("m3", 300_000, 1, "2026-09-12T11:00:00.100Z")).unwrap();
+    // Claude's placeholder for a turn no model answered: model `<synthetic>`, all-zero usage.
+    let synthetic = r#"{"type":"assistant","timestamp":"2026-09-12T11:00:05.500Z","message":{"id":"m4","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"No response requested."}]}}"#;
+    writeln!(t, "{synthetic}").unwrap();
     let big = get();
     assert_eq!(
-        (big.context_tokens, big.context_window),
-        (Some(300_010), None)
+        (
+            big.context_tokens,
+            big.model.as_deref(),
+            rfc(big.last_activity)
+        ),
+        (
+            Some(300_010),
+            Some("claude-fable-5-1"),
+            Some("2026-09-12T11:00:05.500+00:00".into())
+        ),
+        "a <synthetic> line is activity but no model report: context and model keep the real one"
     );
     assert_eq!(cones::fleet::context(&big), "300k");
-    assert_eq!(
-        (
-            s.started.map(|t| t.timestamp_millis()),
-            s.updated.timestamp_millis()
-        ),
-        (Some(1757682871892), 1757682900000)
-    );
+    assert_eq!((big.tokens_in, big.tokens_out), (Some(300_330), Some(13)));
     for (status, state) in [
         ("idle", "idle"),
         ("shell", "active"),
@@ -406,8 +423,9 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         registry(claude, id, entry(status));
         assert_eq!(get().state, state, "{status}");
     }
-    // A background job: Claude's detail line is the last column, the job's updatedAt the age,
-    // and its transcript path fills in when the project store has none.
+    // A background job: Claude's detail line is the last column and its transcript path fills
+    // in when the project store has none. The job's updatedAt is not read; with no transcript
+    // file behind the path, start, activity, model and context are absent.
     let other = "22222222-2222-4222-8222-222222222222";
     fs::create_dir_all(claude.join("jobs/aaaaaaaa")).unwrap();
     fs::write(
@@ -417,7 +435,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     .unwrap();
     let bg = |job: &str| {
         serde_json::json!({"pid": me, "sessionId": other, "cwd": "/src/b", "kind": "bg",
-            "jobId": job, "status": "busy", "name": "job b", "startedAt": 1757682871892i64})
+            "jobId": job, "status": "busy", "name": "job b", "startedAt": 1757682871892i64, "updatedAt": 1757682900000i64})
     };
     registry(claude, other, bg("aaaaaaaa"));
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
@@ -427,29 +445,35 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             b.title.as_deref(),
             b.last.as_deref(),
             b.transcript_path.as_deref().and_then(|p| p.to_str()),
-            b.updated.to_rfc3339(),
         ),
         (
             Some("bg"),
             Some("job b"),
             Some("Inspecting job state files"),
             Some("/t/b.jsonl"),
-            "2026-09-12T13:14:31.892+00:00".to_owned(),
         )
+    );
+    assert_eq!(
+        (
+            b.started,
+            b.last_activity,
+            b.model,
+            b.context_tokens,
+            b.tokens_in
+        ),
+        (None, None, None, None, None),
+        "the registry's startedAt and updatedAt never stand in for the transcript"
     );
     registry(claude, other, bg("../x"));
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
     assert_eq!(
-        (
-            b.last.as_deref(),
-            b.transcript_path.as_deref(),
-            b.updated.timestamp_millis()
-        ),
-        (None, None, 1757682871892),
-        "an unsafe job id reads no file; without one the start time is the age"
+        (b.last.as_deref(), b.transcript_path.as_deref(), b.started),
+        (None, None, None),
+        "an unsafe job id reads no file"
     );
-    // A dead pid, a pid whose start time is not the registry's (reused), an entry with no
-    // timestamp, an unsafe id, junk and Claude's .key files are skipped.
+    // A dead pid, a pid whose start time is not the registry's (reused), an unsafe id, junk and
+    // Claude's .key files are skipped. An entry with no timestamp is still a session: no
+    // registry timestamp is read for any column.
     registry(
         claude,
         "dead",
@@ -490,7 +514,12 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         .into_iter()
         .map(|s| s.session_id)
         .collect();
-    assert_eq!(ids, [other, id], "oldest start first, then by update time");
+    let stampless = "55555555-5555-4555-8555-555555555555";
+    assert_eq!(
+        ids,
+        [id, other, stampless],
+        "a reported start sorts first; sessions whose transcript reports none follow, by id"
+    );
     assert!(
         cones::fleet::sessions(&claude.join("nowhere"))
             .unwrap()
@@ -525,10 +554,38 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         [live],
         "the cones-owned session collapses into its run row and the dead pid is stale"
     );
+    // The JSON `cones ls --json` prints is the same record the table renders: model, start,
+    // last activity and context come from the transcript, and there is no window or update
+    // time field to disagree with the cells.
+    let json = serde_json::to_value(&rows[0]).unwrap();
+    assert_eq!(
+        (
+            json["model"].as_str(),
+            json["started"].as_str(),
+            json["last_activity"].as_str(),
+            json["context_tokens"].as_u64(),
+            json.get("context_window"),
+            json.get("updated"),
+        ),
+        (
+            Some("claude-fable-5-1"),
+            Some("2026-09-12T10:56:35.556Z"),
+            Some("2026-09-12T10:56:35.556Z"),
+            Some(100_000),
+            None,
+            None,
+        ),
+        "{json}"
+    );
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
-    for s in ["claude  fix the widget", "100k  ", "Running the tests"] {
+    for s in [
+        "claude  fix the widget",
+        "claude-fable-5-1",
+        "100k  ",
+        "Running the tests",
+    ] {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
@@ -539,7 +596,10 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
     let names = lines.iter().find(|l| l.contains("context")).unwrap();
     assert!(
-        names.starts_with("hdr\t-\t") && names.contains("title") && names.contains("last"),
+        names.starts_with("hdr\t-\t")
+            && ["title", "model", "age", "activity", "last"]
+                .iter()
+                .all(|n| names.contains(n)),
         "an unselectable row names the session columns: {names}"
     );
     let jobs = dir.path().join("jobs.yaml");
@@ -579,7 +639,16 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
     let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()), 1);
     assert!(
-        pane[0] == "~/src/repo" && pane[1].contains("idle interactive"),
+        pane[0] == "~/src/repo"
+            && [
+                "idle interactive",
+                "claude-fable-5-1",
+                "started 09-12 10:56:35",
+                "last activity 09-12 10:56:35",
+                "100k context",
+            ]
+            .iter()
+            .all(|s| pane[1].contains(s)),
         "{pane:?}"
     );
 }

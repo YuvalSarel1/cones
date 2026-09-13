@@ -11,7 +11,7 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
-columns: [state, age, context, last]   # dashboard session columns, see below
+columns: [state, model, age, activity, context, last]   # dashboard session columns, see below
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd
@@ -50,13 +50,15 @@ jobs:
 
 ## Dashboard columns
 
-`columns` picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash.
+`columns` picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line of Claude's own transcript or registry, named in [fleet.md](fleet.md#the-fleet-every-claude-session-on-the-mac); it is `-` until that line exists, never an estimate.
 
 | Column | Cell | Default |
 | --- | --- | --- |
 | `state` | working, needs input, idle or exited | yes |
-| `age` | Time since Claude last updated the session, `4s`, `6m`, `2h` | yes |
-| `context` | `98k/200k 49%`: tokens in the window at the last turn, window size, fill | yes |
+| `model` | The bare API model id on the last message with usage, `claude-fable-5-1` | yes |
+| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | yes |
+| `activity` | Time since the transcript's last timestamp | yes |
+| `context` | `98k`: the prompt size Claude reported on the last message. No window, so no percentage | yes |
 | `last` | First line of the last reply, or the directory when grouped by state | yes |
 | `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
 

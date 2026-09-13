@@ -193,9 +193,13 @@ impl Data {
                     (icon(&s.state).into(), color(&s.state)),
                     (logo(&s.harness), brand(&s.harness)),
                     (
-                        s.title
-                            .clone()
-                            .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+                        // A long title would push every metric column off a 120-column screen.
+                        clip(
+                            &s.title
+                                .clone()
+                                .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+                            40,
+                        ),
                         plain(),
                     ),
                 ];
@@ -313,14 +317,22 @@ impl Data {
                 let Some(s) = self.sessions.iter().find(|s| &s.session_id == id) else {
                     return vec![];
                 };
+                // Model, start, last activity and context are the transcript's words, `-` when
+                // it has none; the harness reports no window, so the context has no denominator.
+                let stamp = |t: Option<chrono::DateTime<chrono::Utc>>| {
+                    t.map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M:%S").to_string())
+                };
                 let mut out = vec![
                     fleet::tilde(&s.cwd),
                     format!(
-                        "{} · {} {} · {} · {} tokens · pid {} · {}",
+                        "{} · {} {} · {} · started {} · last activity {} · {} context · {} tokens · pid {} · {}",
                         logo(&s.harness),
                         label(&s.state),
                         s.kind.as_deref().unwrap_or(""),
-                        fleet::age(s.updated),
+                        s.model.as_deref().unwrap_or("-"),
+                        stamp(s.started),
+                        stamp(s.last_activity),
+                        fleet::context(s),
                         fleet::tokens(s),
                         s.pid.map(|p| p.to_string()).unwrap_or_default(),
                         s.session_id
@@ -485,11 +497,15 @@ fn table(rows: Vec<Vec<(String, Style)>>) -> Vec<Vec<(String, Style)>> {
 }
 
 /// One configurable session cell; `last` shows the directory when rows are grouped by state,
-/// since the group title no longer names it.
+/// since the group title no longer names it. `model`, `age`, `activity` and `context` are the
+/// transcript's own words and read `-` until it has them.
 fn cell(column: &str, s: &Session, by_state: bool) -> (String, Style) {
+    let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
         "state" => (label(&s.state).into(), color(&s.state)),
-        "age" => (fleet::age(s.updated), dim()),
+        "model" => (s.model.clone().unwrap_or_else(|| "-".into()), dim()),
+        "age" => (since(s.started), dim()),
+        "activity" => (since(s.last_activity), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
         "last" if by_state => (fleet::tilde(&s.cwd), dim()),

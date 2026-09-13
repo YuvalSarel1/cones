@@ -24,15 +24,16 @@ What the fleet view and `cones ls` show for every live session.
 | Working directory | reported: registry `cwd` | unknown |
 | Kind (background or interactive) | reported: registry `kind` | unknown |
 | State (working, idle, needs input) | reported: registry `status`: busy, shell, idle, blocked, waiting, needs_user, needs_trust. Any other value renders as the word itself. | unknown |
-| Last update time | reported: `~/.claude/jobs/<id>/state.json` `updatedAt`, else registry `updatedAt` or `startedAt`. An entry with none is skipped. | unknown |
+| Session start | reported: the `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read. | unknown |
+| Last activity | reported: the `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and file mtimes are not read. | unknown |
 | Transcript path | deduced: `projects/<cwd with every non-alphanumeric byte as '-'>/<sessionId>.jsonl`, Claude's internal layout. Background jobs report `linkScanPath` in state.json; interactive sessions report nothing. | unknown |
 | Title | reported: transcript `ai-title` or `agent-name`, else registry `name` | unknown |
 | Last reply | reported: state.json `detail` for background jobs, else the transcript's last assistant text | unknown |
 | Tokens in and out | reported: transcript `message.usage`, summed once per message id | unknown |
-| Context tokens at the last turn | reported: the last message's `input_tokens` plus cache creation and cache read, the fields Claude's statusLine `current_usage` carries | unknown |
-| Context window size | `-`: stated only in the statusLine stdin JSON (`context_window.context_window_size`), which reaches nothing outside the session. Transcript, registry, hook payloads and `claude agents --json` have none. | unknown |
+| Context tokens at the last turn | reported: the last message's `input_tokens` plus cache creation and cache read, the fields Claude's statusLine `current_usage` carries. Shown with no denominator. A message whose model is `<synthetic>` is Claude's placeholder for a turn no model answered and is skipped. | unknown |
+| Context window size | `-`: stated only in the statusLine stdin JSON (`context_window.context_window_size`), which reaches nothing outside the session. Transcript, registry, hook payloads and `claude agents --json` have none. The fleet record has no field for it. | unknown |
 | Cost | `-` for sessions, the transcript records tokens and no price. Reported for cones runs from the result event `total_cost_usd`. | unknown |
-| Model | reported in the transcript as the bare API id. Not shown. | unknown |
+| Model | reported: `message.model` on the last transcript message with usage, the bare API id such as `claude-fable-5-1`, shown verbatim. | unknown |
 
 ## Trigger
 
