@@ -39,11 +39,12 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
 pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 
 /// The harness started natively in `dir`, as typing its name in a shell there would: no
-/// policy, no ledger, the harness's own permission prompts. Claude starts as a background
-/// session with `claude attach` on it, so leaving the viewer keeps the session in the fleet and
-/// `enter` on its row opens it again; `--bg` picks the id itself, so the launcher reads it from
-/// the `backgrounded · <id>` line. Codex has no background mode and runs in the foreground;
-/// the dashboard parks it on ctrl-z.
+/// policy, no ledger, the harness's own permission prompts. Only a harness whose session
+/// outlives the viewer opens from the dashboard, because leaving must keep it working. Claude
+/// starts as a background session with `claude attach` on it, so leaving the viewer keeps the
+/// session in the fleet and `enter` on its row opens it again; `--bg` picks the id itself, so
+/// the launcher reads it from the `backgrounded · <id>` line. Codex's TUI is the session, so
+/// leaving it would stop it, and it is refused here with the reason.
 pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Command> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
@@ -54,7 +55,9 @@ pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Comman
             c.arg("-c").arg(BG_THEN_ATTACH).arg(path);
             c
         }
-        _ => std::process::Command::new(path),
+        _ => bail!(
+            "{name} has no background mode; leaving would stop it, so run it in its own terminal"
+        ),
     };
     cmd.current_dir(dir);
     Ok(cmd)

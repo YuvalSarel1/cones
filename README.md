@@ -31,7 +31,7 @@ cargo install --git https://github.com/YuvalSarel1/cones
 cones tui
 ```
 
-`Enter` opens a session or follows a running job's output. `Ctrl+Z` comes back from any of them: a Claude keeps running in the background, a Codex is parked as a suspended row until you re-enter it. `n` starts a task in the current directory; `x` twice stops one.
+`Enter` opens a session or follows a running job's output. `Ctrl+Z` comes back from an opened session, which keeps running. A harness that cannot be left and re-entered is not opened from here, and the dashboard says why. `n` starts a task in the current directory; `x` twice stops one.
 
 ```sh
 cones run --prompt "Read this repo and summarize its TODOs."

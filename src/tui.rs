@@ -204,7 +204,7 @@ impl Data {
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
                     "active" => 2,
-                    "idle" | "suspended" => 3,
+                    "idle" => 3,
                     _ => 4,
                 };
                 format!("{rank}{}", label(&s.state))
@@ -464,7 +464,6 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     match kind {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
-        Some(Kind::Session(_, s)) if s == "suspended" => "resume",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
         _ => "open",
     }
@@ -612,7 +611,6 @@ fn icon(state: &str) -> &str {
         "active" | "started" => "▲",
         "blocked" => "⚠",
         "idle" => "△",
-        "suspended" => "▽",
         "exited" => "▵",
         "ok" => "✓",
         "skipped" | "-" => "–",
@@ -669,7 +667,6 @@ fn color(status: &str) -> Style {
     match status {
         "active" | "started" | "ok" => Style::default().fg(Color::Green),
         "blocked" | "skipped" => Style::default().fg(Color::Yellow),
-        "suspended" => Style::default().fg(Color::Indexed(75)),
         "idle" | "exited" | "-" => dim(),
         _ => Style::default().fg(Color::Red),
     }
@@ -983,38 +980,22 @@ struct App {
     armed: Option<(String, Instant)>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
-    suspended: Vec<Suspended>,
 }
 
-/// A harness launched with `n` and parked by ctrl-z: stopped in its own process group, off the
-/// terminal, until `enter` on its row brings it back or quitting kills it.
-struct Suspended {
-    child: Child,
-    what: String,
-    harness: String,
-    cwd: PathBuf,
-}
-
-/// What a foreground child stopping on ctrl-z means.
-#[derive(Clone, PartialEq, Eq)]
+/// What a foreground child stopping on ctrl-z means. Nothing here parks a harness: a stopped
+/// agent does no work, so a harness that cannot be left running is not opened from the
+/// dashboard at all.
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum OnStop {
     /// A viewer (attach client, log follower): killed, the dashboard is back at once.
     Kill,
     /// The editor: resumed, so ctrl-z is a no-op and unsaved edits are safe.
     Resume,
-    /// A harness launched here: parked as a `suspended` row, the dashboard is back at once.
-    Suspend { harness: String, cwd: PathBuf },
 }
 
 enum Waited {
     Exited(std::process::ExitStatus),
     Stopped,
-}
-
-/// What `foreground` hands the terminal to: a new command, or a suspended child coming back.
-enum Start {
-    Spawn(Command),
-    Resume(Child),
 }
 
 impl App {
@@ -1043,7 +1024,6 @@ impl App {
             loading: None,
             armed: None,
             log: None,
-            suspended: vec![],
         })
     }
 
@@ -1087,19 +1067,6 @@ impl App {
     /// Apply a finished reload, if one has landed. A failed read shows in the status line and
     /// the last good data stays on screen.
     fn poll(&mut self) {
-        // A suspended harness that ended on its own (killed elsewhere, or continued and quit)
-        // leaves the list, or its row would promise a resume that cannot happen.
-        let mut i = 0;
-        while i < self.suspended.len() {
-            match self.suspended[i].child.try_wait() {
-                Ok(Some(st)) => {
-                    let s = self.suspended.remove(i);
-                    self.debug(|| format!("suspended {} ended on its own: {st}", s.what));
-                    self.status = format!("{} ended while suspended", s.what);
-                }
-                _ => i += 1,
-            }
-        }
         let Some(rx) = &self.loading else {
             return;
         };
@@ -1117,32 +1084,6 @@ impl App {
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
         self.data = data;
-        // A suspended harness is a session row in state `suspended`: the fleet's own row for
-        // its pid when it lists one (Codex, from the process table), a stand-in until then.
-        for s in &self.suspended {
-            let pid = s.child.id();
-            match self.data.sessions.iter_mut().find(|x| x.pid == Some(pid)) {
-                Some(x) => x.state = "suspended".into(),
-                None => self.data.sessions.push(Session {
-                    session_id: format!("{}-{pid}", s.harness),
-                    harness: s.harness.clone(),
-                    kind: None,
-                    cwd: s.cwd.clone(),
-                    state: "suspended".into(),
-                    started: None,
-                    last_activity: None,
-                    model: None,
-                    pid: Some(pid),
-                    transcript_path: None,
-                    tokens_in: None,
-                    tokens_out: None,
-                    context_tokens: None,
-                    cost_usd: None,
-                    title: None,
-                    last: Some("parked by ctrl-z".into()),
-                }),
-            }
-        }
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
@@ -1309,14 +1250,14 @@ impl App {
     }
 
     /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
-    /// Hand the terminal to a child, take it back when it exits or stops, and surface its last
-    /// stderr line. The child runs in its own process group and owns the tty, like a shell job,
-    /// so ctrl-c and ctrl-z reach it and everything it forked, and nothing else; `on_stop` says
-    /// what a stop means. `Start::Resume` brings a suspended child back instead of spawning.
+    /// Hand the terminal to a child, take it back when it exits, and surface its last stderr
+    /// line. The child runs in its own process group and owns the tty, like a shell job, so
+    /// ctrl-c and ctrl-z reach it and everything it forked, and nothing else; `on_stop` says
+    /// what a stop means.
     fn foreground(
         &mut self,
         terminal: &mut DefaultTerminal,
-        start: Start,
+        mut c: Command,
         what: &str,
         on_stop: OnStop,
     ) {
@@ -1324,12 +1265,9 @@ impl App {
         use std::os::unix::process::CommandExt;
         let height = terminal.size().map(|s| s.height).unwrap_or(0);
         self.debug(|| {
-            let start = match &start {
-                Start::Spawn(c) => format!("{c:?} in {:?}", c.get_current_dir()),
-                Start::Resume(c) => format!("resume pid {}", c.id()),
-            };
             format!(
-                "foreground {what}: {start}; size={:?}; {}",
+                "foreground {what}: {c:?} in {:?}; size={:?}; {}",
+                c.get_current_dir(),
                 terminal.size().ok(),
                 term_state()
             )
@@ -1349,40 +1287,21 @@ impl App {
         if let Some(t) = still.as_mut() {
             let _ = t.draw(|f| self.draw(f));
         }
+        c.stderr(Stdio::piped());
         // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
         unsafe {
             libc::signal(libc::SIGINT, libc::SIG_IGN);
+            c.pre_exec(|| {
+                libc::setpgid(0, 0);
+                libc::tcsetpgrp(0, libc::getpid());
+                for sig in [libc::SIGINT, libc::SIGTSTP, libc::SIGTTOU, libc::SIGTTIN] {
+                    libc::signal(sig, libc::SIG_DFL);
+                }
+                Ok(())
+            });
         }
-        let spawned = match start {
-            Start::Spawn(mut c) => {
-                // A harness that may be suspended keeps its own stderr: the pipe would outlive
-                // the wait, and a TUI that finds fd 2 is not a tty may misbehave.
-                if !matches!(on_stop, OnStop::Suspend { .. }) {
-                    c.stderr(Stdio::piped());
-                }
-                unsafe {
-                    c.pre_exec(|| {
-                        libc::setpgid(0, 0);
-                        libc::tcsetpgrp(0, libc::getpid());
-                        for sig in [libc::SIGINT, libc::SIGTSTP, libc::SIGTTOU, libc::SIGTTIN] {
-                            libc::signal(sig, libc::SIG_DFL);
-                        }
-                        Ok(())
-                    });
-                }
-                c.spawn()
-            }
-            Start::Resume(c) => {
-                let pid = c.id() as libc::pid_t;
-                unsafe {
-                    libc::tcsetpgrp(0, pid);
-                    libc::kill(-pid, libc::SIGCONT);
-                }
-                Ok(c)
-            }
-        };
         let started = Instant::now();
-        let r = spawned.and_then(|mut c| {
+        let r = c.spawn().and_then(|mut c| {
             self.debug(|| format!("child pid {}; waiting", c.id()));
             let pid = c.id() as libc::pid_t;
             let stderr = c.stderr.take().map(|mut e| {
@@ -1393,32 +1312,30 @@ impl App {
                 })
             });
             let watch = self.log.as_ref().map(|p| watch_group(p.clone(), c.id()));
-            let waited = loop {
+            let status = loop {
                 let w = wait_or_stopped(&mut c, on_stop == OnStop::Kill, &|m| self.debug(|| m));
                 match w {
                     // The child still owns the tty; it only needs to run again.
-                    Ok(Waited::Stopped) if on_stop == OnStop::Resume => unsafe {
+                    Ok(Waited::Stopped) => unsafe {
                         libc::kill(-pid, libc::SIGCONT);
                     },
-                    w => break w,
+                    Ok(Waited::Exited(st)) => break Ok(st),
+                    Err(e) => break Err(e),
                 }
             };
             if let Some((stop, t)) = watch {
                 stop.store(true, Ordering::Relaxed);
                 let _ = t.join();
             }
-            let stderr = match &waited {
-                Ok(Waited::Exited(_)) => stderr.and_then(|t| t.join().ok()).unwrap_or_default(),
-                _ => vec![],
-            };
-            waited.map(|w| (c, w, stderr))
+            let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
+            status.map(|st| (st, stderr))
         });
         unsafe {
             libc::tcsetpgrp(0, libc::getpgrp());
             libc::signal(libc::SIGINT, libc::SIG_DFL);
         }
         match &r {
-            Ok((_, Waited::Exited(st), err)) => self.debug(|| {
+            Ok((st, err)) => self.debug(|| {
                 format!(
                     "child done after {:?}: {st}; stderr_tail={:?}; {}",
                     started.elapsed(),
@@ -1426,14 +1343,6 @@ impl App {
                         .lines()
                         .rev()
                         .find(|l| !l.trim().is_empty()),
-                    term_state()
-                )
-            }),
-            Ok((c, Waited::Stopped, _)) => self.debug(|| {
-                format!(
-                    "child pid {} suspended after {:?}; {}",
-                    c.id(),
-                    started.elapsed(),
                     term_state()
                 )
             }),
@@ -1451,19 +1360,8 @@ impl App {
             )
         });
         self.status = match r {
-            Ok((child, Waited::Stopped, _)) => {
-                if let OnStop::Suspend { harness, cwd } = on_stop {
-                    self.suspended.push(Suspended {
-                        child,
-                        what: what.to_owned(),
-                        harness,
-                        cwd,
-                    });
-                }
-                format!("{what} suspended · enter on its row to return")
-            }
-            Ok((_, Waited::Exited(st), _)) if st.success() => format!("back from {what}"),
-            Ok((_, Waited::Exited(st), err)) => {
+            Ok((st, _)) if st.success() => format!("back from {what}"),
+            Ok((st, err)) => {
                 let err = String::from_utf8_lossy(&err);
                 let last = err.lines().rev().find(|l| !l.trim().is_empty());
                 match last {
@@ -1475,38 +1373,20 @@ impl App {
         };
     }
 
-    /// SIGKILL every suspended harness, process group and all. Left stopped with no dashboard
-    /// to resume them, they would sit in the process table forever.
-    fn kill_suspended(&mut self) {
-        for s in &mut self.suspended {
-            unsafe {
-                libc::kill(-(s.child.id() as libc::pid_t), libc::SIGKILL);
-            }
-            let _ = s.child.wait();
+    /// The footer's `enter` verb for the selected row: a session of a harness that cannot be
+    /// joined from here says so instead of promising an attach.
+    fn enter_label(&self) -> &'static str {
+        let row = self.selected();
+        if let Some(Kind::Session(id, _)) = row.map(|r| &r.kind)
+            && self
+                .data
+                .sessions
+                .iter()
+                .any(|s| &s.session_id == id && s.harness != "claude")
+        {
+            return "own terminal";
         }
-        self.suspended.clear();
-    }
-
-    /// `q` with suspended harnesses arms, `q` again within two seconds kills them and quits.
-    fn quit(&mut self) -> bool {
-        if self.suspended.is_empty() {
-            return true;
-        }
-        match self.armed.take() {
-            Some((k, at)) if k == "quit" && at.elapsed() < Duration::from_secs(2) => {
-                self.kill_suspended();
-                true
-            }
-            _ => {
-                let names: Vec<&str> = self.suspended.iter().map(|s| s.what.as_str()).collect();
-                self.status = format!(
-                    "{} suspended · q again kills it and quits",
-                    names.join(", ")
-                );
-                self.armed = Some(("quit".into(), Instant::now()));
-                false
-            }
-        }
+        enter_verb(row.map(|r| &r.kind))
     }
 
     fn enter(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
@@ -1521,7 +1401,7 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, Start::Spawn(c), "logs", OnStop::Kill)
+                self.foreground(terminal, c, "logs", OnStop::Kill)
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1529,28 +1409,17 @@ impl App {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
                 };
-                let (harness, cwd, pid) = (s.harness.clone(), s.cwd.clone(), s.pid);
-                // A harness parked here by ctrl-z comes back the way it left.
-                if let Some(i) =
-                    pid.and_then(|p| self.suspended.iter().position(|x| x.child.id() == p))
-                {
-                    let s = self.suspended.remove(i);
-                    let on_stop = OnStop::Suspend {
-                        harness: s.harness,
-                        cwd: s.cwd,
-                    };
-                    self.foreground(terminal, Start::Resume(s.child), &s.what, on_stop);
-                    self.reload();
-                    return Ok(());
-                }
+                let (harness, cwd) = (s.harness.clone(), s.cwd.clone());
+                // A TUI running in another terminal cannot be joined; only a session that
+                // lives behind a daemon (Claude's background sessions) can.
                 if harness != "claude" {
                     self.status = format!(
-                        "{harness} sessions started elsewhere cannot be opened here; n launches one that can"
+                        "{harness} runs in its own terminal and cannot be joined from here"
                     );
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
-                    Ok(c) => self.foreground(terminal, Start::Spawn(c), "attach", OnStop::Kill),
+                    Ok(c) => self.foreground(terminal, c, "attach", OnStop::Kill),
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
                 // Back on the same row, read again by id: the session may have changed state,
@@ -1560,7 +1429,7 @@ impl App {
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, Start::Spawn(c), "attach", OnStop::Kill);
+                self.foreground(terminal, c, "attach", OnStop::Kill);
                 self.reload();
             }
             _ => {}
@@ -1575,7 +1444,7 @@ impl App {
         c.arg("-c")
             .arg("exec ${VISUAL:-${EDITOR:-vi}} \"$0\"")
             .arg(&self.jobs_path);
-        self.foreground(terminal, Start::Spawn(c), "editor", OnStop::Resume);
+        self.foreground(terminal, c, "editor", OnStop::Resume);
         let r = self.me().arg("install").output();
         self.status = match r {
             Ok(o) if o.status.success() => "jobs.yaml saved · launchd reinstalled".into(),
@@ -1660,25 +1529,21 @@ impl App {
             Mode::Launch(launch) => match launch.key(code, ctrl) {
                 LaunchAction::Stay => {}
                 LaunchAction::Cancel => self.mode = Mode::Normal,
-                // The harness natively in the directory; the dashboard waits and takes the
-                // terminal back. Claude runs as a background session under a viewer, so
-                // leaving the viewer keeps it in the fleet; a Codex is a foreground process
-                // that ctrl-z parks as a `suspended` row.
+                // The harness natively in the directory, under a viewer the dashboard waits on
+                // and takes the terminal back from. Only a harness whose session outlives the
+                // viewer opens here: leaving must keep it working, and a stopped agent does not.
                 LaunchAction::Interactive(dir, kind) => {
                     self.mode = Mode::Normal;
                     let what = format!("{kind} in {}", fleet::tilde(&dir));
-                    let on_stop = match kind {
-                        HarnessKind::Claude => OnStop::Kill,
-                        _ => OnStop::Suspend {
-                            harness: kind.to_string(),
-                            cwd: dir.clone(),
-                        },
-                    };
                     match harness::interactive(kind, &dir) {
-                        Ok(c) => self.foreground(terminal, Start::Spawn(c), &what, on_stop),
-                        Err(e) => self.status = format!("{what} failed: {e}"),
+                        Ok(c) => {
+                            self.foreground(terminal, c, &what, OnStop::Kill);
+                            self.reload();
+                        }
+                        // The refusal names the harness itself; the row's prefix would only
+                        // push the reason off the status line.
+                        Err(e) => self.status = e.to_string(),
                     }
-                    self.reload();
                 }
                 // The same `cones run --prompt` the dashboard has always dispatched, with the
                 // subprocess's cwd set to the chosen directory.
@@ -1693,8 +1558,8 @@ impl App {
                 }
             },
             Mode::Normal => match code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(self.quit()),
-                KeyCode::Char('c') if ctrl => return Ok(self.quit()),
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+                KeyCode::Char('c') if ctrl => return Ok(true),
                 KeyCode::PageUp => self.scroll_pane(1),
                 KeyCode::PageDown => self.scroll_pane(-1),
                 KeyCode::Up if shift => self.scroll_pane(1),
@@ -1739,7 +1604,7 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        let enter = enter_verb(self.selected().map(|r| &r.kind));
+        let enter = self.enter_label();
         frame.render_widget(
             Paragraph::new(header_lines(self.data.summary(), enter, self.pane)),
             head,
@@ -1881,7 +1746,6 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         }
     })();
     app.debug(|| format!("dashboard loop ended: {result:?}"));
-    app.kill_suspended();
     ratatui::restore();
     result.context("dashboard")?;
     Ok(0)
@@ -1892,7 +1756,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
 /// child's process group. `Child::wait` would then block forever on a cooked terminal nobody
 /// reads. With `kill_on_stop` the child is a viewer that has already restored the tty: it is
 /// killed where it stands, group and all, and the session it showed is untouched. Otherwise the
-/// stop is reported and the caller decides: resume it, or park it as a suspended row.
+/// stop is reported and the caller resumes it.
 ///
 /// To re-check what a program does on ctrl-z, run it as a foreground job of an interactive
 /// shell on a pty and read its ps state. A program forked straight onto a pty is an orphaned
@@ -2091,7 +1955,7 @@ mod tests {
     }
 
     #[test]
-    fn a_suspended_harness_is_a_row_enter_resumes_and_quit_asks_twice_then_kills() {
+    fn a_codex_row_offers_no_attach_and_says_own_terminal() {
         let d = dir();
         let mut app = App::new(
             Path::new("cones"),
@@ -2100,42 +1964,38 @@ mod tests {
             d.path(),
         )
         .unwrap();
-        let child = job("kill -STOP $$; sleep 30");
-        let pid = child.id();
-        app.suspended.push(Suspended {
-            child,
-            what: "codex in ~/x".into(),
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: "codex-77".into(),
             harness: "codex".into(),
+            kind: None,
             cwd: PathBuf::from("/x"),
+            state: "-".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: Some(77),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            cost_usd: None,
+            title: None,
+            last: None,
         });
-        app.refresh().unwrap();
-        let row = app
-            .rows
-            .iter()
-            .find(|r| matches!(&r.kind, Kind::Session(id, _) if id == &format!("codex-{pid}")))
-            .expect("a stand-in row for the parked harness");
-        assert!(matches!(&row.kind, Kind::Session(_, s) if s == "suspended"));
-        assert_eq!(enter_verb(Some(&row.kind)), "resume");
-        assert!(!app.quit(), "first q arms");
-        assert!(app.status.contains("codex in ~/x suspended"));
-        assert!(app.quit(), "second q quits");
-        assert!(app.suspended.is_empty());
-        let ps = Command::new("ps")
-            .args(["-o", "pid=", "-p", &pid.to_string()])
-            .output()
-            .unwrap();
-        assert!(ps.stdout.trim_ascii().is_empty(), "killed on quit");
-        // Reaped on its own when it ends elsewhere.
-        let child = job("exit 0");
-        app.suspended.push(Suspended {
-            child,
-            what: "w".into(),
-            harness: "codex".into(),
-            cwd: PathBuf::from("/x"),
-        });
-        std::thread::sleep(Duration::from_millis(200));
-        app.poll();
-        assert!(app.suspended.is_empty(), "ended children leave the list");
+        app.apply(data);
+        app.filter = "codex-77".into();
+        app.apply_filter();
+        app.settle();
+        assert!(matches!(&app.selected().unwrap().kind, Kind::Session(id, _) if id == "codex-77"));
+        assert_eq!(app.enter_label(), "own terminal");
+        app.filter.clear();
+        app.apply_filter();
+        assert_ne!(
+            app.enter_label(),
+            "own terminal",
+            "the verb follows the selected row"
+        );
     }
 
     #[test]
