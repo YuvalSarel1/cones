@@ -3,9 +3,9 @@
 Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones]."""
 import html, re, subprocess, sys, time
 
-COLS, ROWS, FRAMES, STEP = 120, 34, 14, 0.7
+COLS, ROWS, FRAMES, STEP = 120, 34, 20, 0.3
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
-KEYS = {3: "Down", 5: "Down", 8: "Down", 11: "Up"}  # what the cursor does between frames; never Enter, it starts a job
+KEYS = {2: "Down", 5: "Down", 8: "Down", 11: "Down", 14: "Up", 17: "Up"}  # what the cursor does between frames; never Enter, it starts a job
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 
