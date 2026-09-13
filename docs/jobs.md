@@ -66,7 +66,6 @@ Cost is not a column: Claude Code writes tokens to the transcript and no price, 
 
 `cones validate` compiles every job's policy and prints `<name>  valid  <harness>`, or the first error with the job's name. Beyond the per-field rules it rejects:
 
-- `overlap: allow` with `write: true`. Two writers in one directory would need a worktree per run, which is not implemented; use `skip` or `replace`.
 - `Bash(pattern)` rules other than `Bash(*)` with `write: true`. Claude treats a scoped Bash rule as a pre-approval, so other commands still reach ordinary permission checks; use `Bash` for sandboxed Bash, or stay read-only. A read-only job strips the rules with the rest of Bash.
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - An `env` name that could change execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers.

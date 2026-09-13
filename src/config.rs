@@ -146,7 +146,7 @@ pub struct ResolvedJob {
 
 /// A one-off job for `cones run --prompt`: the template's policy (or the read-only defaults)
 /// with a fresh name, the given prompt and `cwd`. Unique names keep ad-hoc runs out of each
-/// other's overlap rules; the workspace lock still serializes writers.
+/// other's overlap rules.
 pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result<ResolvedJob> {
     ensure!(
         !prompt.trim().is_empty() && !prompt.contains('\0'),
@@ -308,11 +308,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     }
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
-    ensure!(
-        !(write && overlap == Overlap::Allow),
-        "job {}: overlap: allow with write: true requires worktree-per-run, which is not implemented; use skip or replace",
-        j.name
-    );
     let tools = tools.unwrap_or_else(|| match j.harness {
         HarnessKind::Claude => vec!["Read".into(), "Grep".into(), "Glob".into()],
         HarnessKind::Codex => vec![],

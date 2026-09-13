@@ -37,7 +37,6 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `skipped` | `disabled` | `enabled: false` | 0 |
 | `skipped` | `overlap` | `overlap: skip` and a previous run is still going | 0 |
 | `skipped` | `budget` | The daily reservation would exceed `daily_budget_usd` | 0 |
-| `skipped` | `workspace` | Another writer holds the directory's lock | 0 |
 | `skipped` | `replace_unconfirmed` | `overlap: replace` and the previous run did not confirm shutdown within 10 seconds | 0 |
 | `timeout` | `timeout` | The runner's clock ran out | 124 |
 | `timeout` | `replaced` | This run was the old one under `overlap: replace`; it received SIGUSR1 and stopped | 124 |
@@ -47,7 +46,7 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `failed` | `missing_result`, `missing_cost` | Claude exited without a result event, or with one that had no `total_cost_usd` | 1 |
 | `failed` | `validation: ...`, `spawn: ...`, `runner: ...` | The policy did not compile, the worker could not start, or cones hit an error while supervising | 1 |
 | `failed` | `exit`, or Claude's result subtype | Nonzero exit with no other explanation, or a result other than `success`, recorded verbatim | 1 |
-| `failed` | `orphan` | The supervisor died; written when the next run of that job, or a writer on the same directory, reaps it | |
+| `failed` | `orphan` | The supervisor died; written when the next run of that job reaps it | |
 | `crashed` | | Derived at read time: a `started` record with no terminal record past its timeout plus five seconds. | |
 
 The `started` record has `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `budget_usd`, the compiled `policy` and its SHA-256 `policy_hash` (session id, job name and prompt normalized out, so a compiler flag change changes the hash). The terminal record has `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`.
@@ -60,29 +59,21 @@ State lives in `~/.cones` (`--state-dir` to isolate). Directories are created `0
 | `output/<run_id>/events.jsonl`, `output/<run_id>/stderr.log` | Claude's stream-json events (64 MiB cap, 1 MiB per line) and stderr (1 MiB cap). |
 | `transcripts/<run_id>/<session_id>.jsonl` | The archived transcript when `archive_transcript: true`. |
 | `logs/<job>.out.log`, `logs/<job>.err.log` | launchd's stdout and stderr for the scheduled `cones run`. |
-| `locks/admission/`, `locks/runs/`, `locks/workspaces/` | Admission, per-run and per-workspace lock files. |
+| `locks/admission/`, `locks/runs/` | The admission lock `cones run` holds while it applies the skip rules, and one lease per run that stays held while the run is alive. |
 
 ## When a job is still running at its next tick
+
+`overlap` is per job. Jobs that share a directory do not see each other: two writers on one directory both run, and keeping them out of each other's changes is the coordinator's business.
 
 | `overlap` | Behavior |
 | --- | --- |
 | `skip` | The tick is recorded as `skipped` / `overlap`. |
-| `allow` | Both run. Rejected with `write: true`. |
+| `allow` | Both run. |
 | `replace` | The previous run gets SIGUSR1 and ends as `timeout` / `replaced`; the new run starts once that is confirmed within 10 seconds, else it is `skipped` / `replace_unconfirmed`. |
 
 ## Budgets: a per-run cap Claude enforces and a rolling daily reservation
 
 `budget_usd` is Claude's own `--max-budget-usd`. `daily_budget_usd` is a rolling 24-hour reservation per job: the ledger sums the job's runs from the last 24 hours, counting a run's actual cost when its record has one and its `budget_usd` while it is still going or when it ended without a reported cost, and a tick whose own `budget_usd` would push that sum over the cap is `skipped` / `budget`. The reservation is checked before a `replace` sends SIGUSR1, so a budget skip leaves the previous run going.
-
-## One writer per directory, from jobs or from the shell
-
-Writers on the same directory are serialized across jobs regardless of `overlap`: a `write: true` run takes `~/.cones/locks/workspaces/<sha256 of the canonical cwd>.lock` and a tick that finds it held is `skipped` / `workspace`. Read-only runs do not take it.
-
-```sh
-cones lock . -- git commit -m msg
-```
-
-`cones lock DIR -- COMMAND` takes that same writer lock from a shell or another agent, waits until scheduled writers on the directory finish, runs the command, releases, and exits with the command's status.
 
 ## Schedules on launchd: sleep, login and reboot
 

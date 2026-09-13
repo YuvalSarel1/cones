@@ -15,7 +15,6 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones logs ID [--follow] [--raw]` | A run's events rendered as tool calls and text, with the harness stderr tail appended; `--raw` prints the JSON events. For a session id, the last assistant lines of its transcript. Ctrl+C detaches, the run keeps going. |
 | `cones stop ID` | A run ends `failed` / `interrupted` after cones checks the worker pid still belongs to its supervisor. A session ends through `claude stop` or SIGTERM as described in [fleet.md](fleet.md). Prints `stop requested` or `already finished`. |
 | `cones attach ID [--print-command]` | A finished run or a session whose process is gone is resumed in the background and attached to, in its cwd; the archived transcript is restored into Claude's store if the native one is missing. A live session is attached directly. `--print-command` prints the command instead. A running headless run cannot be attached; follow its log. |
-| `cones lock DIR -- COMMAND...` | Hold the directory writer lock while the command runs; exit with its status. |
 | `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [fleet.md](fleet.md#the-coordinator-one-session-per-folder). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
 | `cones tui` | The dashboard. |
@@ -27,7 +26,7 @@ cones run --prompt "fix the flaky test"     # under the first job's policy, in t
 cones run nightly-triage --prompt "..."     # under a named job's policy
 ```
 
-With no jobs file, or one that does not parse, the task runs under the read-only defaults (30 minutes, $2.00, Read/Grep/Glob); run `cones validate` first when you expect a job's policy. Each task gets a unique `adhoc-<8 hex>` name, so `overlap` is checked per task. The writer lock is checked per directory as for any job.
+With no jobs file, or one that does not parse, the task runs under the read-only defaults (30 minutes, $2.00, Read/Grep/Glob); run `cones validate` first when you expect a job's policy. Each task gets a unique `adhoc-<8 hex>` name, so `overlap` is checked per task.
 
 ## Doctor: what breaks a scheduled run before it starts
 

@@ -6,11 +6,10 @@
 # with `claude --resume` on run 1's session id.
 # Applied to this roadmap on 2026-09-13 by the owner's direction: "Lock holder in ls", "Other
 # coordinators" and "Cross-harness coordination" are gone; COORD is out of CAT; "Worktree per run"
-# is REL; "Touched files" and "Status transitions" are OBS; the two lock bullets leave SHIPPED with the code;
-# "overlap: continue" is in NEXT. Still pending in code, tracked as the NOW card "Writer lock
-# removal": drop the runner flock, the `workspace` skip reason, `cones lock DIR -- CMD` and the
-# validate rule rejecting overlap: allow with write: true; keep the internal ledger and admission
-# locks. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
+# is REL; "Touched files" and "Status transitions" are OBS; "overlap: continue" is in NEXT. The
+# writer lock is out of the code: no runner flock, no `workspace` skip reason, no `cones lock`,
+# no validate rule against overlap: allow with write: true; the internal ledger and admission
+# locks stay. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
 # Roster, participants, gating, knowledge transfer and messaging belong to the coordinator skill;
 # hooks mean hooks on jobs cones launches, never instrumentation of sessions it did not start.
 import html, textwrap, pathlib
@@ -19,7 +18,6 @@ BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e
 CAT = {"OBS": ("See", "#d2a8ff"), "CTL": ("Move and control", "#56d4dd"),
        "HAR": ("Harnesses", "#79c0ff"), "REL": ("Reliability", "#f0883e")}
 COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
-    ("Writer lock removal", "REL", "The runner flock, the workspace skip reason, cones lock DIR -- CMD and the validate rule against overlap: allow with write go. Ledger and admission locks stay. Ruled, not yet in code."),
     ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
 ]), ("NEXT", "Everyday control of jobs", "#58a6ff", [
     ("overlap: continue", "REL", "A tick that finds the previous run still going stops it and starts the new run with claude --resume on run 1's session id, so run 2 keeps what run 1 learned."),
@@ -42,7 +40,7 @@ COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
 ])]
 SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
-           "shared-workspace writer lock (leaving, see NOW)", "cones lock around any command (leaving)", "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
+           "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
            "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "Codex sessions from the process table and rollout file", "model, start, activity and context read from the transcript, never estimated", "stop and attach from CLI and TUI",
            "dashboard: details pane, dispatch, grouping", "n launches in any folder, interactive or managed", "tab reads more of a session, attach returns to the row", "key hints follow claude agents",
            "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]

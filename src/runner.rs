@@ -375,31 +375,6 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
         eprintln!("cones: {e:#}");
         return skipped(ledger, job, trigger, "replace_unconfirmed", &run_id);
     }
-    let _workspace = if job.write {
-        let Some(lock) = ledger.workspace_lock(&job.cwd)? else {
-            return skipped(ledger, job, trigger, "workspace", &run_id);
-        };
-        // The old writer may have died, releasing its lock before its worker has exited.
-        // Reap writers from every job on this cwd before opening another execution gate.
-        for run in ledger.runs()?.into_iter().filter(|r| {
-            r.started.cwd.as_ref() == Some(&job.cwd)
-                && r.started.status == Status::Started
-                && r.terminal.is_none()
-                && r.started
-                    .policy
-                    .as_ref()
-                    .and_then(|p| p["write"].as_bool())
-                    .unwrap_or(true)
-        }) {
-            if active(ledger, &run)? {
-                return skipped(ledger, job, trigger, "workspace", &run_id);
-            }
-            reap_run(ledger, &run, false)?;
-        }
-        Some(lock)
-    } else {
-        None
-    };
     let _run_lease = ledger
         .run_lock(&run_id)?
         .context("run ID is already active")?;

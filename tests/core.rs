@@ -179,23 +179,6 @@ fn ledger_repairs_only_torn_tail_and_never_hides_middle_corruption() {
     assert!(ledger.append(&r).is_err());
 }
 #[test]
-fn workspace_lock_wait_blocks_until_writer_releases() {
-    let dir = tempfile::tempdir().unwrap();
-    let ledger = Ledger::new(dir.path()).unwrap();
-    let held = ledger.workspace_lock(dir.path()).unwrap().unwrap();
-    let state = dir.path().to_owned();
-    let waiter = std::thread::spawn(move || {
-        let ledger = Ledger::new(&state).unwrap();
-        let _f = ledger.workspace_lock_wait(&state).unwrap();
-        std::time::Instant::now()
-    });
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let released = std::time::Instant::now();
-    drop(held);
-    assert!(waiter.join().unwrap() >= released);
-    assert!(ledger.workspace_lock(dir.path()).unwrap().is_some());
-}
-#[test]
 fn ledger_lock_budget_and_orphan_status() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::new(dir.path()).unwrap();
@@ -252,30 +235,14 @@ fn budget_stop_preserves_reported_per_model_usage() {
 }
 
 #[test]
-fn overlap_allow_requires_read_only_and_workspace_locks_follow_symlinks() {
+fn overlap_allow_is_valid_for_writers() {
+    // cones does not decide what jobs may do to a directory; two writers on one cwd both run.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
     fs::write(&path, config_text("    write: true\n    overlap: allow\n")).unwrap();
-    assert!(
-        config::read_jobs(&path)
-            .unwrap_err()
-            .to_string()
-            .contains("worktree-per-run")
-    );
-    fs::write(&path, config_text("    overlap: allow\n")).unwrap();
-    assert_eq!(
-        config::read_jobs(&path).unwrap()[0].overlap,
-        config::Overlap::Allow
-    );
-    let cwd = dir.path().join("repo");
-    fs::create_dir(&cwd).unwrap();
-    let alias = dir.path().join("alias");
-    std::os::unix::fs::symlink(&cwd, &alias).unwrap();
-    let ledger = Ledger::new(&dir.path().join("state")).unwrap();
-    let lock = ledger.workspace_lock(&cwd).unwrap().unwrap();
-    assert!(ledger.workspace_lock(&alias).unwrap().is_none());
-    drop(lock);
-    assert!(ledger.workspace_lock(&alias).unwrap().is_some());
+    let job = &config::read_jobs(&path).unwrap()[0];
+    assert!(job.write);
+    assert_eq!(job.overlap, config::Overlap::Allow);
 }
 
 /// One entry in Claude's own session registry, as `~/.claude/sessions/<pid>.json` holds it.

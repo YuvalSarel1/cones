@@ -237,36 +237,7 @@ fn replace_waits_for_the_old_run_and_records_why_it_ended() {
 }
 
 #[test]
-fn different_writer_jobs_share_the_workspace_lock_even_with_replace() {
-    let f = Fixture::new("hang", 0.5);
-    f.add_options("    write: true\n");
-    let text = fs::read_to_string(&f.jobs).unwrap();
-    let other = text
-        .split_once("jobs:\n")
-        .unwrap()
-        .1
-        .replace("name: test", "name: other");
-    fs::write(&f.jobs, format!("{text}{other}    overlap: replace\n")).unwrap();
-    let (mut first, id) = f.start();
-    let result = f.command().args(["run", "other"]).output().unwrap();
-    assert!(result.status.success());
-    assert!(first.try_wait().unwrap().is_none());
-    assert_eq!(
-        f.ledger()
-            .runs()
-            .unwrap()
-            .last()
-            .unwrap()
-            .started
-            .reason
-            .as_deref(),
-        Some("workspace")
-    );
-    f.stop(&id, &mut first);
-}
-
-#[test]
-fn a_new_writer_reaps_a_different_jobs_orphan_before_starting() {
+fn two_writer_jobs_in_one_directory_both_run() {
     let f = Fixture::new("hang", 0.5);
     f.add_options("    write: true\n");
     let text = fs::read_to_string(&f.jobs).unwrap();
@@ -278,30 +249,17 @@ fn a_new_writer_reaps_a_different_jobs_orphan_before_starting() {
         .replace("model: hang", "model: success");
     fs::write(&f.jobs, format!("{text}{other}")).unwrap();
     let (mut first, id) = f.start();
-    let until = Instant::now() + Duration::from_secs(8);
-    while !f.state.join("child.pid").exists() {
-        assert!(Instant::now() < until);
-        thread::sleep(Duration::from_millis(20));
-    }
-    first.kill().unwrap();
-    first.wait().unwrap();
     let result = f.command().args(["run", "other"]).output().unwrap();
     assert!(
         result.status.success(),
         "{}",
         String::from_utf8_lossy(&result.stderr)
     );
-    assert_eq!(
-        f.ledger()
-            .resolve(&id)
-            .unwrap()
-            .terminal
-            .unwrap()
-            .reason
-            .as_deref(),
-        Some("orphan")
-    );
-    assert_dead(f.state.join("child.pid"));
+    assert!(first.try_wait().unwrap().is_none());
+    let other = f.ledger().runs().unwrap().pop().unwrap();
+    assert_eq!(other.started.job.as_deref(), Some("other"));
+    assert_eq!(other.terminal.unwrap().status, Status::Ok);
+    f.stop(&id, &mut first);
 }
 
 #[test]

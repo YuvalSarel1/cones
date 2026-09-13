@@ -44,11 +44,11 @@ One-off tasks use the first job's policy, or read-only defaults without a jobs f
 
 cones reads the session state and transcripts the harness writes; a metric the harness does not report stays absent. Harnesses own execution and permissions. cones adds scheduling, supervision, budgets and run records, with launchd doing the scheduling and no cones daemon between runs.
 
-Job policies cover the headless runs cones launches. Sessions started elsewhere, and the coordinator, keep their native permissions. Keeping agents out of each other's changes is the coordinator's business, not cones logic. Today cones still serializes write jobs in one directory with a writer lock; that lock is leaving, see the roadmap.
+Job policies cover the headless runs cones launches. Sessions started elsewhere, and the coordinator, keep their native permissions. Keeping agents out of each other's changes is the coordinator's business, not cones logic; two jobs that write one directory both run.
 
 ## Roadmap
 
-Now: Codex sessions beside Claude's, metrics only as the harness reports them, better previews and return, launching in any folder, the writer lock out, and the v0.1.0 tag. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, next fire time, sleep and wake proof. [Source](assets/roadmap.py).
+Now: Codex sessions beside Claude's, metrics only as the harness reports them, better previews and return, launching in any folder, and the v0.1.0 tag. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, next fire time, sleep and wake proof. [Source](assets/roadmap.py).
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
 

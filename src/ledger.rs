@@ -3,12 +3,10 @@ use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -150,13 +148,6 @@ impl Run {
     }
 }
 
-fn workspace_key(cwd: &Path) -> Result<String> {
-    let canonical = std::fs::canonicalize(cwd)?;
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(canonical.as_os_str().as_bytes())
-    ))
-}
 pub struct Ledger {
     pub state: PathBuf,
 }
@@ -177,27 +168,13 @@ impl Ledger {
         f.lock_exclusive()?;
         Ok(f)
     }
+    /// A lease held for the life of a run, so a later tick can tell a live run from a dead
+    /// supervisor whose PID was reused. `None` while the run is still active.
     pub fn run_lock(&self, run_id: &str) -> Result<Option<File>> {
         uuid::Uuid::parse_str(run_id)?;
-        self.scoped_lock("runs", run_id)
-    }
-    pub fn workspace_lock(&self, cwd: &Path) -> Result<Option<File>> {
-        self.scoped_lock("workspaces", &workspace_key(cwd)?)
-    }
-    /// Block until the writer lock on `cwd` is free, then hold it. Same file as the runner
-    /// takes for `write: true` jobs, so `cones lock` and scheduled writers exclude each other.
-    pub fn workspace_lock_wait(&self, cwd: &Path) -> Result<File> {
-        let f = self.lock_file("workspaces", &workspace_key(cwd)?)?;
-        f.lock_exclusive()?;
-        Ok(f)
-    }
-    fn lock_file(&self, scope: &str, key: &str) -> Result<File> {
-        let directory = self.state.join("locks").join(scope);
+        let directory = self.state.join("locks").join("runs");
         private_dir(&directory)?;
-        private_file(&directory.join(format!("{key}.lock")))
-    }
-    fn scoped_lock(&self, scope: &str, key: &str) -> Result<Option<File>> {
-        let f = self.lock_file(scope, key)?;
+        let f = private_file(&directory.join(format!("{run_id}.lock")))?;
         match f.try_lock_exclusive() {
             Ok(()) => Ok(Some(f)),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),

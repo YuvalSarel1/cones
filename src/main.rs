@@ -76,12 +76,6 @@ enum Action {
         #[arg(long)]
         print_command: bool,
     },
-    /// Hold the writer lock on a directory while running a command: `cones lock . -- git commit`.
-    Lock {
-        dir: PathBuf,
-        #[arg(last = true, required = true)]
-        command: Vec<String>,
-    },
     /// Start the coordinator for a folder: one Claude Code session running the start-orchestrator skill.
     Coordinator {
         #[command(subcommand)]
@@ -248,12 +242,6 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
             Ok(0)
-        }
-        Action::Lock { dir, command } => {
-            let _held =
-                Ledger::new(&state)?.workspace_lock_wait(&cones::expand_path(&dir, &cwd)?)?;
-            let status = Command::new(&command[0]).args(&command[1..]).status()?;
-            Ok(status.code().unwrap_or(1))
         }
         Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state, &claude),
         Action::List => {
