@@ -45,6 +45,12 @@ pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 /// the launcher reads it from the `backgrounded · <id>` line. Codex starts as a thread of its
 /// app-server daemon with the TUI as a `--remote` client; leaving the client keeps the thread,
 /// and the dashboard records its id from the rollout to resume it.
+///
+/// Two other ways to leave a harness were tried and rejected: stopping the client with SIGTSTP
+/// parks the agent, which freezes it until re-entered, and a cones-owned pty proxy (dtach
+/// style) keeps it running but makes cones the owner of the agent's terminal and lifetime,
+/// which belong to the harness. A harness with no mode whose session outlives the viewer is
+/// refused here with the reason, not parked or proxied.
 pub fn interactive(kind: HarnessKind, dir: &Path) -> Result<std::process::Command> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
