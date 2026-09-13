@@ -3,9 +3,10 @@
 Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones]."""
 import html, re, subprocess, sys, time
 
-COLS, ROWS, FRAMES, STEP = 120, 34, 20, 0.3
+COLS, ROWS, FRAMES, STEP = 120, 34, 8, 0.9
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
-KEYS = {2: "Down", 5: "Down", 8: "Down", 11: "Down", 14: "Up", 17: "Up"}  # what the cursor does between frames; never Enter, it starts a job
+KEYS = {1: "Down", 2: "Down", 3: "Down", 4: "Down", 5: "Up", 6: "Up", 7: "Up"}  # cursor walks down and back so the loop closes; never Enter, it starts a job
+SPIN = str.maketrans(dict.fromkeys("✢✳✶✽", "✻"))  # freeze the spinner: sampled at under 2 fps it strobes instead of spinning
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 
@@ -18,14 +19,14 @@ frames = []
 for i in range(FRAMES):
     if i in KEYS: tmux("send-keys", "-t", "conescap", KEYS[i])
     time.sleep(STEP)
-    frames.append(tmux("capture-pane", "-p", "-e", "-t", "conescap", check=True).stdout.rstrip("\n").split("\n"))
+    frames.append(tmux("capture-pane", "-p", "-e", "-t", "conescap", check=True).stdout.translate(SPIN).rstrip("\n").split("\n"))
 tmux("kill-session", "-t", "conescap")
 
 CW, LH, PAD, FS = 8.43, 20, 16, 14
 W, H = int(COLS * CW + 2 * PAD), ROWS * LH + 2 * PAD
 dur = FRAMES * STEP
 out = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="SFMono-Regular,Menlo,Consolas,monospace" font-size="{FS}">',
-       f'<style>.f{{visibility:hidden;animation:s {dur}s steps(1) infinite}}@keyframes s{{0%{{visibility:visible}}{100/FRAMES:.3f}%{{visibility:hidden}}}}</style>',
+       f'<style>.f{{opacity:0;animation:s {dur}s linear infinite}}@keyframes s{{2%{{opacity:1}}{100/FRAMES:.3f}%{{opacity:1}}{100/FRAMES+2:.3f}%{{opacity:0}}}}</style>',  # frames cross-fade over 2% of the loop
        f'<rect width="{W}" height="{H}" rx="8" fill="{BG}"/>']
 for n, lines in enumerate(frames):
     out.append(f'<g class="f" style="animation-delay:{n * STEP:.2f}s">')
