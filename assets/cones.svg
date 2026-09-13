@@ -1,11 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="420" height="120" viewBox="0 0 420 120" role="img" aria-label="cones">
-  <!-- mark: a traffic cone, the thing you put down before a scheduled run -->
-  <g transform="translate(20 12)">
-    <ellipse cx="48" cy="90" rx="44" ry="8" fill="#f97316" opacity=".35"/>
-    <path d="M48 4 L78 88 L18 88 Z" fill="#f97316"/>
-    <path d="M36.5 36 L59.5 36 L64 50 L32 50 Z" fill="#fff" opacity=".9"/>
-    <path d="M29 60 L67 60 L71.5 74 L24.5 74 Z" fill="#fff" opacity=".9"/>
-    <rect x="12" y="86" width="72" height="8" rx="3" fill="#f97316"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="140" viewBox="0 0 480 140" role="img" aria-label="cones">
+  <!-- a coding agent pulls up to the cones and waits its turn -->
+  <defs>
+    <clipPath id="cone-clip"><path d="M0 -80 L30 0 L-30 0 Z"/></clipPath>
+    <g id="cone">
+      <ellipse cx="0" cy="1" rx="40" ry="6" fill="#f97316" opacity=".3"/>
+      <path d="M0 -80 L30 0 L-30 0 Z" fill="#f97316"/>
+      <g clip-path="url(#cone-clip)" fill="#fff" opacity=".9">
+        <rect x="-30" y="-54" width="60" height="12"/>
+        <rect x="-30" y="-30" width="60" height="12"/>
+      </g>
+      <rect x="-36" y="-4" width="72" height="8" rx="3" fill="#f97316"/>
+    </g>
+  </defs>
+
+  <!-- road: rolls in with the car, then stops -->
+  <line x1="0" y1="112" x2="240" y2="112" stroke="#9ca3af" stroke-width="2" opacity=".6"/>
+  <line x1="0" y1="124" x2="240" y2="124" stroke="#9ca3af" stroke-width="3" stroke-dasharray="14 10" opacity=".7">
+    <animate attributeName="stroke-dashoffset" values="0;-96" dur="1.4s" calcMode="spline" keySplines=".2 .8 .2 1" fill="freeze"/>
+  </line>
+
+  <!-- the agent -->
+  <g>
+    <animateTransform attributeName="transform" type="translate" values="-90 0;0 0" dur="1.4s" calcMode="spline" keySplines=".2 .8 .2 1" fill="freeze"/>
+    <circle cx="22" cy="106" r="6" fill="#64748b"/>
+    <circle cx="46" cy="106" r="6" fill="#64748b"/>
+    <rect x="10" y="78" width="48" height="26" rx="7" fill="#3b82f6"/>
+    <rect x="16" y="83" width="36" height="16" rx="3" fill="#0f172a"/>
+    <text x="21" y="95" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" fill="#e2e8f0">&gt;<tspan><animate attributeName="opacity" values="1;1;0;0" dur="1s" repeatCount="indefinite"/>_</tspan></text>
+    <!-- "on it, waiting" -->
+    <g opacity="0">
+      <animate attributeName="opacity" values="0;1" begin="1.4s" dur=".3s" fill="freeze"/>
+      <path d="M46 72 L52 78 L56 72 Z" fill="#e5e7eb"/>
+      <rect x="40" y="56" width="38" height="18" rx="9" fill="#e5e7eb"/>
+      <circle cx="51" cy="65" r="2.4" fill="#6b7280"><animate attributeName="opacity" values="1;.2;1" dur="1.2s" repeatCount="indefinite"/></circle>
+      <circle cx="59" cy="65" r="2.4" fill="#6b7280"><animate attributeName="opacity" values="1;.2;1" dur="1.2s" begin=".2s" repeatCount="indefinite"/></circle>
+      <circle cx="67" cy="65" r="2.4" fill="#6b7280"><animate attributeName="opacity" values="1;.2;1" dur="1.2s" begin=".4s" repeatCount="indefinite"/></circle>
+    </g>
   </g>
-  <text x="130" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="64" font-weight="700" fill="#f97316" letter-spacing="-2">cones</text>
+
+  <!-- the cones, receding -->
+  <use href="#cone" transform="translate(126 112)"/>
+  <use href="#cone" transform="translate(184 112) scale(.72)"/>
+  <use href="#cone" transform="translate(224 112) scale(.5)"/>
+  <!-- beacon on the lead cone -->
+  <circle cx="126" cy="28" r="10" fill="#fde047" opacity=".35"><animate attributeName="opacity" values=".35;0;.35" dur="1s" repeatCount="indefinite"/></circle>
+  <circle cx="126" cy="28" r="4.5" fill="#fde047"><animate attributeName="opacity" values="1;.25;1" dur="1s" repeatCount="indefinite"/></circle>
+
+  <text x="256" y="104" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="64" font-weight="700" fill="#f97316" letter-spacing="-2">cones</text>
 </svg>
