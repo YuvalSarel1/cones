@@ -14,64 +14,19 @@
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-3b82f6" alt="MIT or Apache-2.0"></a>
 </p>
 
-```
-$ cones validate
-readme-check	valid	claude
-$ cones run readme-check
-173c4d8b-...	started	readme-check
-173c4d8b-...	ok
-$ cones logs 173c4d8b-...
-Read  ~/personal/cones/README.md
-1	# cones
-...
-Result: success  $0.018371
-$ cones ls
-173c4d8b-...	readme-check	ok	2026-09-12T09:09:25+00:00	claude	$0.02	-
-2b2aa8d2-...	~/personal/cones	active	2026-09-12T13:54:25+00:00	claude	-	8.1M/45k
-8077985c-...	~/personal/cones	idle	2026-09-12T13:54:23+00:00	claude	-	40.6M/157k
-```
-
-Real output, ids and paths shortened. One global hook puts every Claude session on the Mac, scheduled or interactive, into `cones ls` and a dashboard. launchd fires each job on a cron schedule, and a writer lock per directory keeps jobs and agents from editing the same tree at once. Each run goes out headless under a policy Claude itself enforces, dollar budget, turn cap, tool allowlist, read-only or sandboxed write, no MCP, no prompts, plus a timeout, and lands in a JSONL ledger with a status and a reason. cones runs no process between ticks. Coordination between agents on one tree, greetings, commit gating and relayed findings, is a skill rather than cones logic; cones ships it and `cones coordinator start` runs it for a folder. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget, see the roadmap.
-
-## Why
-
-Three things the agent fleet tools around it leave out:
-
-| Gap | What cones does |
-| --- | --- |
-| Fleet tools list only the sessions they launched. | A global Claude Code hook writes one state file per session, so every Claude session on the Mac shows in `cones ls` and the dashboard, including sessions started from a terminal. |
-| Dollar budgets and tool policy are left to the user. | `budget_usd` compiles to Claude's own `--max-budget-usd`; `tools` and `write` compile to `--tools` and `--allowedTools`; a run cannot prompt, load settings or reach an MCP server. |
-| Scheduling needs the tool's own daemon. | Five-field cron compiles to `StartCalendarInterval` in a per-user LaunchAgent. |
-
-The ownership rule, rule 1 of [AGENTS.md](AGENTS.md): cones owns the clock, supervision, budgets, locks and the ledger. Claude owns execution and permissions. Every tool call goes to Claude's own permission engine, and a guarantee Claude cannot enforce natively is a `cones validate` error.
+<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones tui: the scheduled jobs, every Claude Code session on the Mac grouped by directory, and the selected job's policy" width="100%"></a></p>
 
 ## Install
 
-Requires Rust and Claude Code.
+Requires Rust and Claude Code 2.1 or later, on macOS.
 
 ```sh
 cargo install --git https://github.com/YuvalSarel1/cones --tag v0.1.0
-cones --version                  # cones 0.1.0
+cones hook --install             # every Claude session on the Mac shows in cones ls and cones tui
+cones tui                        # the dashboard above
 ```
 
-Or `cargo install --path .` from a checkout. Verified against Claude Code 2.1.269 on macOS 26.6.1; `cargo test --all-targets` and `cones doctor` repeat the check.
-
-## Quick start
-
-A job is one prompt, run in one directory, on one cron schedule, under one policy. `jobs.example.yaml` is a working read-only job; `jobs.yaml` is gitignored.
-
-```sh
-cp jobs.example.yaml jobs.yaml
-cones validate                   # compile every job's policy
-cones doctor                     # what would break a scheduled run
-cones run readme-check           # run one now, read it back with cones logs <id>
-cones install                    # write and load the LaunchAgents
-cones hook --install             # every Claude session on the Mac in cones ls
-cones tui                        # jobs, sessions and runs on one screen
-cones coordinator start          # one orchestrator session for this folder's agents
-```
-
-`cones install --dry-run` prints the plists instead of writing them, `cones uninstall` removes them and keeps history, and both are idempotent. `cones run --prompt "fix the flaky test"` runs a one-off task in the current directory under the first job's policy.
+To schedule a job, describe it in `jobs.yaml` (`jobs.example.yaml` is a working read-only one), then `cones validate`, `cones run <job>` to try it now, and `cones install` to load it into launchd. `cones doctor` says what would break a scheduled run.
 
 ```yaml
 version: 1
@@ -88,25 +43,35 @@ jobs:
     overlap: skip
 ```
 
-## Docs
+## What it does
+
+Traffic control means three things, from one binary with no daemon:
 
 | | |
 | --- | --- |
-| [The job file](docs/jobs.md) | Every field, its default, and what `cones validate` rejects. |
-| [What a run does](docs/runs.md) | The flags Claude is given, every status and reason in the ledger, overlap, budgets, the writer lock, launchd behavior across sleep and reboot. |
-| [The fleet and the dashboard](docs/fleet.md) | The hook, the session state file, `cones ls`, stop and attach, `cones tui` keys. |
-| [Command reference](docs/cli.md) | Every command and flag, one-off prompts, the `cones doctor` checks. |
+| **Schedule** | A five-field cron per job becomes a launchd LaunchAgent that starts a headless Claude run. cones runs no process between ticks. |
+| **See the fleet** | One global hook puts every Claude Code session on the Mac, scheduled or interactive, into `cones ls` and the dashboard: title, state, age, context fill, last message. Stop or attach from either. |
+| **Keep them apart** | A writer lock per directory. Jobs take it, `cones lock . -- git commit` takes it around any command, and a job whose previous run is still going skips, runs alongside or replaces it, per job. |
+
+Around those: each run goes out under a policy Claude itself enforces, a dollar budget, a turn cap, a tool allowlist, read-only or sandboxed write, a timeout, no MCP servers and no prompts, and lands in a JSONL ledger with a status, a reason and the dollars spent. `cones run --prompt "fix the flaky test"` is a one-off task in the current directory under the same policy. `cones coordinator start` launches one orchestrator session for a folder's agents, running a skill that ships inside the binary.
+
+Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
+
+## What existing tools leave out
+
+| Gap | What cones does |
+| --- | --- |
+| Fleet tools list only the sessions they launched. | The hook writes one state file per session, so sessions started from any terminal show up too. |
+| Two agents in one tree find out about each other at commit time. | The writer lock is per directory and the same lock for jobs, agents and `cones lock`. |
+| Dollar budgets and tool policy are left to the user. | `budget_usd` compiles to Claude's own `--max-budget-usd`; `tools` and `write` compile to `--tools` and `--allowedTools`; a run cannot prompt, load settings or reach an MCP server. |
+| Scheduling needs the tool's own daemon. | Cron compiles to `StartCalendarInterval` in a per-user LaunchAgent. |
+
+## Philosophy
+
+cones owns the clock, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Every tool call goes to Claude's own permission engine, and a guarantee Claude cannot enforce natively is a `cones validate` error, never a best effort and never a second permission engine.
+
+Coordination between agents on one tree, greetings, commit gating, relayed findings, is a skill rather than cones logic: cones ships it and starts it, and stays a kernel. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget. Rules for agents working on cones are in [AGENTS.md](AGENTS.md); tests use fake harness processes and spend no model tokens.
 
 ## Roadmap
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
-
-## Development
-
-```sh
-cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test --all-targets
-```
-
-Tests use fake harness processes and spend no model tokens. Rules for agents working here are in [AGENTS.md](AGENTS.md).
-
-Licensed under either [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
