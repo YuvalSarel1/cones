@@ -322,7 +322,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state)?;
     let mut out = String::new();
-    for line in header_lines(&data.summary()) {
+    for line in header_lines(&data.summary(), enter_verb(None)) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -373,7 +373,17 @@ fn ansi(text: &str, style: Style) -> String {
     }
 }
 
-fn header_lines(summary: &str) -> Vec<Line<'static>> {
+/// What `enter` does to the selected row: start a job, follow a headless run, attach a session.
+fn enter_verb(kind: Option<&Kind>) -> &'static str {
+    match kind {
+        Some(Kind::Job(_)) => "start job",
+        Some(Kind::Run(_, s)) if s == "started" => "follow log",
+        Some(Kind::Session(..) | Kind::Run(..)) => "attach",
+        _ => "open",
+    }
+}
+
+fn header_lines(summary: &str, enter: &str) -> Vec<Line<'static>> {
     let orange = Style::default().fg(ORANGE);
     let white = Style::default().fg(Color::White);
     vec![
@@ -391,7 +401,9 @@ fn header_lines(summary: &str) -> Vec<Line<'static>> {
             Span::styled("▟███▙", orange),
             Span::raw("  "),
             Span::styled(
-                "↑↓ move · enter attach / run · ctrl+x twice stop run · ctrl+s group by state / dir · esc quit  ·  cones: n new task · / filter · r refresh",
+                format!(
+                    "↑↓ move · enter {enter} · x x stop · s regroup · n new task · / filter · r refresh · q quit"
+                ),
                 dim(),
             ),
         ]),
@@ -811,7 +823,11 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        frame.render_widget(Paragraph::new(header_lines(&self.data.summary())), head);
+        let enter = enter_verb(self.selected().map(|r| &r.kind));
+        frame.render_widget(
+            Paragraph::new(header_lines(&self.data.summary(), enter)),
+            head,
+        );
         self.draw_list(frame, list);
         let title = self
             .selected()
