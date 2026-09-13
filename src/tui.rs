@@ -646,6 +646,9 @@ impl App {
     }
 
     /// Rows that match the filter, plus the headers that still have something under them.
+    /// The keep-a-header-if-followed rule cannot tell a group title from any other unselectable
+    /// row, so every unselectable kind except Header is dropped from the match set while a needle
+    /// is set; a new unselectable kind needs the same treatment or it hides the title above it.
     fn apply_filter(&mut self) {
         let needle = self.filter.to_lowercase();
         let rows = &self.rows;
