@@ -10,7 +10,7 @@ GLYPHS = {
     "S": [".######", "##...##", "##.....", "##.....", ".#####.", ".....##", ".....##", "##...##", "######."],
 }
 WORD, PX, PITCH, GAP_CELLS, X0, Y0 = "cones", 5.1, 5.6, 2, 250, 40
-TAGLINE = "Traffic control for coding agents."
+TAGLINE = "A little structure for coding agents."
 
 cells = []
 x = 0

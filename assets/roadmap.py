@@ -1,54 +1,58 @@
 """Generates assets/roadmap.svg. Run: python3 assets/roadmap.py"""
-# Owner rulings on this roadmap, given while questioning "Lock holder in ls", not yet applied:
+# Owner rulings on this roadmap, given while questioning "Lock holder in ls":
 # cones does not meddle in what jobs do. Two jobs that write one directory both run; a collision
 # is the coordinator skill's business or nobody's. Per-job `overlap` (skip, replace, allow) is the
 # only overlap policy cones holds, plus a wanted fourth mode, continue: stop run 1, start run 2
 # with `claude --resume` on run 1's session id.
-# Pending the owner's go, in one commit that also regenerates the SVG: drop the writer lock (runner
-# flock, the `workspace` skip reason, `cones lock DIR -- CMD`, the validate rule rejecting
-# overlap: allow with write: true; keep the internal ledger and admission locks). Drop "Lock holder
-# in ls", "Other coordinators" and "Cross-harness coordination"; retag "Worktree per run" as REL;
-# keep "Touched files" and "Status transitions" as OBS; rename the NOW column, "What the coordinator
-# needs from cones" is the wrong frame; remove COORD from CAT; move "shared-workspace writer lock"
-# and "cones lock around any command" out of SHIPPED with the lock; add "overlap: continue" to
-# NEXT. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
+# Applied to this roadmap on 2026-09-13 by the owner's direction: "Lock holder in ls", "Other
+# coordinators" and "Cross-harness coordination" are gone; COORD is out of CAT; "Worktree per run"
+# is REL; "Touched files" and "Status transitions" are OBS; the two lock bullets leave SHIPPED with the code;
+# "overlap: continue" is in NEXT. Still pending in code, tracked as the NOW card "Writer lock
+# removal": drop the runner flock, the `workspace` skip reason, `cones lock DIR -- CMD` and the
+# validate rule rejecting overlap: allow with write: true; keep the internal ledger and admission
+# locks. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
+# Roster, participants, gating, knowledge transfer and messaging belong to the coordinator skill;
+# hooks mean hooks on jobs cones launches, never instrumentation of sessions it did not start.
 import html, textwrap, pathlib
 W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
-CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
-       "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
-COLS = [("NOW", "What the coordinator needs from cones", "#3fb950", [
-    ("Lock holder in ls", "COORD", "Holder pid and session id land beside the .lock; ls, the dashboard and cones lock --status show who holds and who waits; --try exits 1, no waiting."),
-    ("Touched files", "OBS", "Edit and Write paths read from the session's transcript; ls --json and the details pane show each footprint. Bash edits are not seen."),
-    ("Status transitions", "OBS", "cones status 'text' records a one-line check-in per session that fills the last column, so the orchestrator reads check-ins instead of asking; active/idle/blocked come from Claude's registry."),
+CAT = {"OBS": ("See", "#d2a8ff"), "CTL": ("Move and control", "#56d4dd"),
+       "HAR": ("Harnesses", "#79c0ff"), "REL": ("Reliability", "#f0883e")}
+COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
+    ("Codex in the fleet", "HAR", "Codex keeps no session registry: pid and cwd from the process table, title and last line from its rollout file. Seeing Codex sessions does not wait for Codex budgets or jobs."),
+    ("Metrics you can trust", "OBS", "Model, session start, last activity and context usage, each read from a Claude report; the age column stops measuring the last update. A value Claude does not report shows as absent, never estimated."),
+    ("Preview and return", "CTL", "Read more of a session before opening it; attach natively and land back on the same row with the filter and grouping kept."),
+    ("Launch in any folder", "CTL", "n asks for a directory and a harness, interactive or managed, instead of running in the dashboard's own cwd. Starting work never depends on a session already being there."),
+    ("Writer lock removal", "REL", "The runner flock, the workspace skip reason, cones lock DIR -- CMD and the validate rule against overlap: allow with write go. Ledger and admission locks stay. Ruled, not yet in code."),
     ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
-]), ("NEXT", "Claude only, no second writer needed", "#58a6ff", [
-    ("Sleep/wake proof", "REL", "One slept-through tick fires one run on wake, none after a reboot past one; observed in cones ls --json and written into the README."),
+]), ("NEXT", "Everyday control of jobs", "#58a6ff", [
+    ("overlap: continue", "REL", "A tick that finds the previous run still going stops it and starts the new run with claude --resume on run 1's session id, so run 2 keeps what run 1 learned."),
+    ("Job lifecycle hooks", "CTL", "Opt-in commands on start, exit and failure for jobs cones launches, set in jobs.yaml. Nothing hooks sessions cones did not start."),
     ("Next fire time in ls", "OBS", "Each job row shows its next tick, computed from the compiled StartCalendarInterval list and confirmed against the loaded plist."),
     ("Run diffs", "OBS", "A write run records git diff --stat of its cwd at exit; cones logs and the details pane show what the run changed."),
-    ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
-    ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
-    ("Other coordinators", "COORD", "cones coordinator start --skill NAME launches any coordinator skill, Claude Code or another harness; start-orchestrator stays the default."),
-    ("Fleet sessions in the ledger", "OBS", "SessionEnd writes a session record (cwd, duration, tokens, dollars) for sessions cones did not launch; ls totals it, daily_budget_usd ignores it."),
-]), ("LATER", "Needs a second writer, harness or Mac", "#bc8cff", [
-    ("Worktree per run", "COORD", "Concurrent writers each get a worktree; unlocks overlap: allow for write jobs. Recipe from claude-squad, ported as git commands."),
-    ("Cross-harness coordination", "COORD", "The coordinator drives Claude Code and Codex agents in one folder alike: Codex arrivals greeted, gated and relayed, not only read from their rollout files."),
-    ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
+    ("Touched files", "OBS", "Edit and Write paths read from the session's transcript; ls --json and the details pane show each footprint. Bash edits are not seen."),
+    ("Status transitions", "OBS", "cones status 'text' records a one-line check-in per session that fills the last column, kept apart from the active/idle/blocked state Claude reports."),
+    ("Sleep/wake proof", "REL", "One slept-through tick fires one run on wake, none after a reboot past one; observed in cones ls --json and written into the README."),
+]), ("LATER", "Needs a second harness or Mac", "#bc8cff", [
+    ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates Codex jobs, not Codex in the fleet."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
-    ("Codex in the fleet", "HAR", "Codex keeps no session registry: pid and cwd from the process table, title and last line from its rollout file."),
+    ("Fleet session records", "OBS", "A session cones did not launch gets a ledger record when it leaves Claude's registry: cwd, duration, tokens, dollars as last reported. ls totals it, daily_budget_usd ignores it."),
+    ("Jump to pane", "CTL", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
+    ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
+    ("Worktree per run", "REL", "Concurrent writers each get a worktree. Recipe from claude-squad, ported as git commands. Only if shared directories prove insufficient."),
+    ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
     ("Webhook triggers", "HAR", "Run on an HTTP call. Needs a listener process, so after single-machine fleet control."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
-    ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
 ])]
 SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
-           "shared-workspace writer lock", "cones lock around any command", "opt-in failure notification",
-           "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
+           "shared-workspace writer lock (leaving, see NOW)", "cones lock around any command (leaving)", "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
            "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "stop and attach from CLI and TUI",
            "dashboard: details pane, dispatch, grouping", "key hints follow claude agents",
            "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]
-FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
-        "Unenforceable guarantees are validation errors, never a second permission engine.")
+FOOT = ("cones owns the clock, supervision, budgets and the ledger. The harness owns execution and permissions. "
+        "Unenforceable guarantees are validation errors, never a second permission engine. "
+        "Seeing a harness's sessions never waits on enforcing its budgets.")
 
 def t(x, y, s, size, fill, **kw):
     attrs = " ".join(f'{k.replace("_", "-")}="{v}"' for k, v in kw.items())
