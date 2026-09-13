@@ -1,4 +1,17 @@
 """Generates assets/roadmap.svg. Run: python3 assets/roadmap.py"""
+# Owner rulings on this roadmap, given while questioning "Lock holder in ls", not yet applied:
+# cones does not meddle in what jobs do. Two jobs that write one directory both run; a collision
+# is the coordinator skill's business or nobody's. Per-job `overlap` (skip, replace, allow) is the
+# only overlap policy cones holds, plus a wanted fourth mode, continue: stop run 1, start run 2
+# with `claude --resume` on run 1's session id.
+# Pending the owner's go, in one commit that also regenerates the SVG: drop the writer lock (runner
+# flock, the `workspace` skip reason, `cones lock DIR -- CMD`, the validate rule rejecting
+# overlap: allow with write: true; keep the internal ledger and admission locks). Drop "Lock holder
+# in ls", "Other coordinators" and "Cross-harness coordination"; retag "Worktree per run" as REL;
+# keep "Touched files" and "Status transitions" as OBS; rename the NOW column, "What the coordinator
+# needs from cones" is the wrong frame; remove COORD from CAT; move "shared-workspace writer lock"
+# and "cones lock around any command" out of SHIPPED with the lock; add "overlap: continue" to
+# NEXT. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
 import html, textwrap, pathlib
 W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
