@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="assets/cones.svg" alt="cones" width="420">
-</p>
-
-<p align="center">
-  <b>Traffic control for coding agents.</b>
+  <img src="assets/cones.svg" alt="cones: traffic control for coding agents" width="460">
 </p>
 
 <p align="center">
