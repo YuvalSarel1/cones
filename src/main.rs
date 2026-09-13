@@ -14,10 +14,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(
-    version,
-    about = "Scheduled coding-agent runs with explicit policy and a durable ledger"
-)]
+#[command(version, about = "Traffic control for coding agents")]
 struct Cli {
     #[arg(long, global = true, default_value = "jobs.yaml")]
     jobs: PathBuf,

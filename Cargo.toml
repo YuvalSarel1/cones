@@ -2,7 +2,7 @@
 name = "cones"
 version = "0.1.0"
 edition = "2024"
-description = "Schedule repeated coding-agent jobs and see every agent running on the Mac"
+description = "Traffic control for coding agents"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/YuvalSarel1/cones"
 

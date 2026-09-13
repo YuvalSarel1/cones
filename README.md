@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>Traffic control for coding agents.</b> Schedule repeated jobs, see every agent running on your Mac, and keep them out of each other's way.
+  <b>Traffic control for coding agents.</b>
 </p>
 
 <p align="center">
