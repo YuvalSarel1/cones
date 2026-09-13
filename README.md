@@ -41,32 +41,34 @@ jobs:
 
 ## What it does
 
-Traffic control means three things, from one binary with no daemon:
+One binary, no daemon. It does three things.
 
 | | |
 | --- | --- |
-| **Schedule** | A five-field cron per job becomes a launchd LaunchAgent that starts a headless Claude run. cones runs no process between ticks. |
-| **See the fleet** | One global hook puts every Claude Code session on the Mac, scheduled or interactive, into `cones ls` and the dashboard: title, state, age, context fill, last message. Stop or attach from either. |
-| **Keep them apart** | A writer lock per directory. Jobs take it, `cones lock . -- git commit` takes it around any command, and a job whose previous run is still going skips, runs alongside or replaces it, per job. |
+| **Schedule** | Give a job a cron line. cones turns it into a launchd LaunchAgent that starts a headless Claude run on time. Nothing runs between ticks. |
+| **See the fleet** | One hook puts every Claude Code session on your Mac into `cones ls` and the dashboard, whether cones started it or you did. Title, state, age, context fill, last message. Stop or attach from either. |
+| **Keep them apart** | One writer lock per directory. Jobs take it. `cones lock . -- git commit` takes it around any command. If a job's last run is still going, the next one skips, runs alongside or replaces it. You pick, per job. |
 
-Around those: each run goes out under a policy Claude itself enforces, a dollar budget, a turn cap, a tool allowlist, read-only or sandboxed write, a timeout, no MCP servers and no prompts, and lands in a JSONL ledger with a status, a reason and the dollars spent. `cones run --prompt "fix the flaky test"` is a one-off task in the current directory under the same policy. `cones coordinator start` launches one orchestrator session for a folder's agents, running a skill that ships inside the binary.
+Every run has a policy that Claude itself enforces: a dollar budget, a turn cap, a tool allowlist, read-only or sandboxed writes, a timeout. No MCP servers, no prompts. When it ends, the run lands in a JSONL ledger with a status, a reason and what it cost.
+
+`cones run --prompt "fix the flaky test"` runs one task right now, in the current directory, under the same policy. `cones coordinator start` starts one orchestrator session for the agents in a folder. The skill it runs ships inside the binary.
 
 Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the fleet and the dashboard](docs/fleet.md), [command reference](docs/cli.md).
 
 ## What existing tools leave out
 
-| Gap | What cones does |
+| Gap | cones |
 | --- | --- |
-| Fleet tools list only the sessions they launched. | The hook writes one state file per session, so sessions started from any terminal show up too. |
-| Two agents in one tree find out about each other at commit time. | The writer lock is per directory and the same lock for jobs, agents and `cones lock`. |
-| Dollar budgets and tool policy are left to the user. | `budget_usd` compiles to Claude's own `--max-budget-usd`; `tools` and `write` compile to `--tools` and `--allowedTools`; a run cannot prompt, load settings or reach an MCP server. |
-| Scheduling needs the tool's own daemon. | Cron compiles to `StartCalendarInterval` in a per-user LaunchAgent. |
+| Fleet tools only see the sessions they launched. | The hook writes a state file per session. Sessions started from any terminal show up. |
+| Two agents in one tree find out about each other at commit time. | One writer lock per directory, shared by jobs, agents and `cones lock`. |
+| Budgets and tool policy are on you. | `budget_usd` becomes Claude's own `--max-budget-usd`. `tools` and `write` become `--tools` and `--allowedTools`. A run cannot prompt, load settings or reach an MCP server. |
+| Scheduling needs the tool's own daemon. | Cron becomes `StartCalendarInterval` in a per-user LaunchAgent. |
 
 ## Philosophy
 
-cones owns the clock, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Every tool call goes to Claude's own permission engine, and a guarantee Claude cannot enforce natively is a `cones validate` error, never a best effort and never a second permission engine.
+cones owns the clock, supervision, budgets, locks and the ledger. The harness owns execution and permissions. Every tool call goes through Claude's own permission engine. If Claude cannot enforce a guarantee natively, `cones validate` rejects the job. No best effort, no second permission engine.
 
-Coordination between agents on one tree, greetings, commit gating, relayed findings, is a skill rather than cones logic: cones ships it and starts it, and stays a kernel. Claude Code is the harness that runs today; Codex jobs parse and wait on a native dollar budget. Rules for agents working on cones are in [AGENTS.md](AGENTS.md); tests use fake harness processes and spend no model tokens.
+Coordination between agents on one tree, greetings, commit gating, relayed findings, is a skill, not cones logic. cones ships it and starts it, and stays a kernel. Claude Code is the harness today. Codex jobs parse and wait on a native dollar budget. Rules for agents working on cones are in [AGENTS.md](AGENTS.md). Tests use fake harness processes and spend no model tokens.
 
 ## Roadmap
 
