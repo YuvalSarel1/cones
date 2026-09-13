@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="140" viewBox="0 0 480 140" role="img" aria-label="cones">
+<svg xmlns="http://www.w3.org/2000/svg" width="490" height="140" viewBox="0 0 490 140" role="img" aria-label="cones">
   <!-- a coding agent pulls up to the cones and waits its turn -->
   <defs>
     <clipPath id="cone-clip"><path d="M0 -80 L30 0 L-30 0 Z"/></clipPath>
@@ -46,5 +46,67 @@
   <circle cx="126" cy="28" r="10" fill="#fde047" opacity=".35"><animate attributeName="opacity" values=".35;0;.35" dur="1s" repeatCount="indefinite"/></circle>
   <circle cx="126" cy="28" r="4.5" fill="#fde047"><animate attributeName="opacity" values="1;.25;1" dur="1s" repeatCount="indefinite"/></circle>
 
-  <text x="256" y="104" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="64" font-weight="700" fill="#f97316" letter-spacing="-2">cones</text>
+  <!-- wordmark: 5x5 pixel glyphs, one rect per lit cell -->
+  <g fill="#f97316">
+    <rect x="260" y="64" width="7.5" height="7.5"/>
+    <rect x="268" y="64" width="7.5" height="7.5"/>
+    <rect x="276" y="64" width="7.5" height="7.5"/>
+    <rect x="252" y="72" width="7.5" height="7.5"/>
+    <rect x="252" y="80" width="7.5" height="7.5"/>
+    <rect x="252" y="88" width="7.5" height="7.5"/>
+    <rect x="260" y="96" width="7.5" height="7.5"/>
+    <rect x="268" y="96" width="7.5" height="7.5"/>
+    <rect x="276" y="96" width="7.5" height="7.5"/>
+    <rect x="308" y="64" width="7.5" height="7.5"/>
+    <rect x="316" y="64" width="7.5" height="7.5"/>
+    <rect x="324" y="64" width="7.5" height="7.5"/>
+    <rect x="300" y="72" width="7.5" height="7.5"/>
+    <rect x="332" y="72" width="7.5" height="7.5"/>
+    <rect x="300" y="80" width="7.5" height="7.5"/>
+    <rect x="332" y="80" width="7.5" height="7.5"/>
+    <rect x="300" y="88" width="7.5" height="7.5"/>
+    <rect x="332" y="88" width="7.5" height="7.5"/>
+    <rect x="308" y="96" width="7.5" height="7.5"/>
+    <rect x="316" y="96" width="7.5" height="7.5"/>
+    <rect x="324" y="96" width="7.5" height="7.5"/>
+    <rect x="348" y="64" width="7.5" height="7.5"/>
+    <rect x="356" y="64" width="7.5" height="7.5"/>
+    <rect x="364" y="64" width="7.5" height="7.5"/>
+    <rect x="372" y="64" width="7.5" height="7.5"/>
+    <rect x="348" y="72" width="7.5" height="7.5"/>
+    <rect x="380" y="72" width="7.5" height="7.5"/>
+    <rect x="348" y="80" width="7.5" height="7.5"/>
+    <rect x="380" y="80" width="7.5" height="7.5"/>
+    <rect x="348" y="88" width="7.5" height="7.5"/>
+    <rect x="380" y="88" width="7.5" height="7.5"/>
+    <rect x="348" y="96" width="7.5" height="7.5"/>
+    <rect x="380" y="96" width="7.5" height="7.5"/>
+    <rect x="404" y="64" width="7.5" height="7.5"/>
+    <rect x="412" y="64" width="7.5" height="7.5"/>
+    <rect x="420" y="64" width="7.5" height="7.5"/>
+    <rect x="396" y="72" width="7.5" height="7.5"/>
+    <rect x="428" y="72" width="7.5" height="7.5"/>
+    <rect x="396" y="80" width="7.5" height="7.5"/>
+    <rect x="404" y="80" width="7.5" height="7.5"/>
+    <rect x="412" y="80" width="7.5" height="7.5"/>
+    <rect x="420" y="80" width="7.5" height="7.5"/>
+    <rect x="428" y="80" width="7.5" height="7.5"/>
+    <rect x="396" y="88" width="7.5" height="7.5"/>
+    <rect x="404" y="96" width="7.5" height="7.5"/>
+    <rect x="412" y="96" width="7.5" height="7.5"/>
+    <rect x="420" y="96" width="7.5" height="7.5"/>
+    <rect x="452" y="64" width="7.5" height="7.5"/>
+    <rect x="460" y="64" width="7.5" height="7.5"/>
+    <rect x="468" y="64" width="7.5" height="7.5"/>
+    <rect x="476" y="64" width="7.5" height="7.5"/>
+    <rect x="444" y="72" width="7.5" height="7.5"/>
+    <rect x="452" y="80" width="7.5" height="7.5"/>
+    <rect x="460" y="80" width="7.5" height="7.5"/>
+    <rect x="468" y="80" width="7.5" height="7.5"/>
+    <rect x="476" y="88" width="7.5" height="7.5"/>
+    <rect x="444" y="96" width="7.5" height="7.5"/>
+    <rect x="452" y="96" width="7.5" height="7.5"/>
+    <rect x="460" y="96" width="7.5" height="7.5"/>
+    <rect x="468" y="96" width="7.5" height="7.5"/>
+  </g>
 </svg>
