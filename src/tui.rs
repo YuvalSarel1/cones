@@ -29,6 +29,8 @@ use std::{
 };
 
 const ORANGE: Color = Color::Indexed(208);
+/// The beacon on the header cone, the README cone's yellow.
+const BEACON: Color = Color::Indexed(227);
 const SPINNER: [&str; 4] = ["▲", "◭", "▲", "◮"];
 /// Claude Code's own working animation: its star grows then shrinks.
 const CLAUDE_SPINNER: [&str; 12] = ["·", "✢", "✳", "✶", "✻", "✽", "✽", "✻", "✶", "✳", "✢", "·"];
@@ -399,7 +401,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(data.summary(), enter_verb(None), Pane::Hidden) {
+    for line in header_lines(data.summary(), enter_verb(None), Pane::Hidden, 0) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -443,6 +445,9 @@ fn ansi(text: &str, style: Style) -> String {
         Some(Color::Indexed(n)) => codes.push(format!("38;5;{n}")),
         _ => {}
     }
+    if let Some(Color::Indexed(n)) = style.bg {
+        codes.push(format!("48;5;{n}"));
+    }
     if codes.is_empty() {
         text.to_owned()
     } else {
@@ -468,12 +473,33 @@ enum Pane {
     More,
 }
 
-/// The three header lines: the cone beside the name, version and tagline; the fleet summary;
-/// the keys, each key lit and its verb dim so the eye finds the key first. `pane` names what
-/// the next `tab` does.
-fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'static>> {
+/// The header cone in half-block pixels, the README cone: orange with two white bands and a
+/// wide base. The beacon at the tip blinks yellow on alternate half seconds of `tick`.
+fn cone(tick: usize) -> [Vec<Span<'static>>; 3] {
     let orange = Style::default().fg(ORANGE);
-    let white = Style::default().fg(Color::White);
+    let band = Style::default().fg(Color::White).bg(ORANGE);
+    let side = |s: &'static str| Span::styled(s, orange);
+    let tip = if (tick / 5).is_multiple_of(2) {
+        Span::styled("▀", Style::default().fg(BEACON).bg(ORANGE))
+    } else {
+        Span::styled("█", orange)
+    };
+    [
+        vec![side("  ▄"), tip, side("▄  ")],
+        vec![side(" ▄"), Span::styled("▀▀▀", band), side("▄ ")],
+        vec![side("▄"), Span::styled("▀▀▀▀▀", band), side("▄")],
+    ]
+}
+
+/// The three header lines: the cone, with the fleet summary beside its bands and the keys
+/// beside its base, each key lit and its verb dim so the eye finds the key first. `pane` names
+/// what the next `tab` does; `tick` drives the beacon.
+fn header_lines(
+    summary: Line<'static>,
+    enter: &str,
+    pane: Pane,
+    tick: usize,
+) -> Vec<Line<'static>> {
     let tab = match pane {
         Pane::Hidden => "peek",
         Pane::Peek => "more",
@@ -491,7 +517,10 @@ fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'st
         ("r", "refresh"),
         ("q", "quit"),
     ];
-    let mut hints = vec![Span::styled("▟███▙", orange), Span::raw("  ")];
+    let [top, mut middle, mut hints] = cone(tick);
+    middle.push(Span::raw("  "));
+    middle.extend(summary.spans);
+    hints.push(Span::raw("  "));
     for (i, (key, verb)) in keys.iter().enumerate() {
         if i > 0 {
             hints.push(Span::styled(" · ", dim()));
@@ -499,25 +528,7 @@ fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'st
         hints.push(Span::styled((*key).to_owned(), bold()));
         hints.push(Span::styled(format!(" {verb}"), dim()));
     }
-    let mut middle = summary;
-    middle.spans.insert(0, Span::raw("  "));
-    middle.spans.insert(0, Span::styled(" ▟█▙ ", white));
-    vec![
-        Line::from(vec![
-            Span::styled("  ▲  ", orange),
-            Span::raw("  "),
-            Span::styled("cones", bold()),
-            Span::styled(
-                format!(
-                    " {}  a little structure for coding agents",
-                    env!("CARGO_PKG_VERSION")
-                ),
-                dim(),
-            ),
-        ]),
-        middle,
-        Line::from(hints),
-    ]
+    vec![Line::from(top), Line::from(middle), Line::from(hints)]
 }
 
 /// Pad each column to its widest cell, two spaces apart.
@@ -1399,7 +1410,12 @@ impl App {
         .areas(frame.area());
         let enter = enter_verb(self.selected().map(|r| &r.kind));
         frame.render_widget(
-            Paragraph::new(header_lines(self.data.summary(), enter, self.pane)),
+            Paragraph::new(header_lines(
+                self.data.summary(),
+                enter,
+                self.pane,
+                self.tick,
+            )),
             head,
         );
         self.draw_list(frame, list);
@@ -1859,7 +1875,7 @@ mod tests {
     #[test]
     fn hint_line_names_what_tab_does_next() {
         let text = |pane: Pane| {
-            header_lines(Line::raw("s"), "attach", pane)[2]
+            header_lines(Line::raw("s"), "attach", pane, 0)[2]
                 .spans
                 .iter()
                 .map(|s| s.content.to_string())
