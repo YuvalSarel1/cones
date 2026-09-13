@@ -360,6 +360,28 @@ fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt:
     .unwrap();
 }
 #[test]
+fn doctor_spots_entries_left_by_the_removed_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join("settings.json");
+    assert!(
+        !cones::fleet::stale_hook(&settings),
+        "no file, nothing stale"
+    );
+    fs::write(
+        &settings,
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#,
+    )
+    .unwrap();
+    assert!(
+        !cones::fleet::stale_hook(&settings),
+        "the user's own hooks are not ours"
+    );
+    fs::write(&settings, r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]},{"hooks":[{"type":"command","command":"'/x/cones' --state-dir '/y' hook $PPID"}]}]}}"#).unwrap();
+    assert!(cones::fleet::stale_hook(&settings));
+    fs::write(&settings, "not json").unwrap();
+    assert!(!cones::fleet::stale_hook(&settings));
+}
+#[test]
 fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     let dir = tempfile::tempdir().unwrap();
     let claude = dir.path();

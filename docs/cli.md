@@ -46,4 +46,5 @@ With no jobs file, or one that does not parse, the task runs under the read-only
 | Every flag the compiler emits for a job that uses every option appears in `claude --help`; `--max-turns` is hidden there and probed by parsing an invalid value instead | FAIL (WARN for the probe) |
 | `claude auth status --json` reports logged in; a scheduled job cannot prompt to log in | FAIL |
 | `~/.claude/sessions`, Claude's session registry, and `~/.claude/projects`, its session store, exist | WARN |
+| `~/.claude/settings.json` has no entries left from the removed `cones hook`; delete those whose command ends in ` hook $PPID` | WARN |
 | `~/.cones/runs.jsonl` is readable and writable | FAIL |

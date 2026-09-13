@@ -432,6 +432,25 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// True when a Claude settings file still carries entries from the removed `cones hook`. Each
+/// would run a command the binary no longer has, on every event of every session.
+pub fn stale_hook(settings: &Path) -> bool {
+    let Ok(Ok(root)) = fs::read(settings).map(|b| serde_json::from_slice::<Value>(&b)) else {
+        return false;
+    };
+    root["hooks"].as_object().is_some_and(|events| {
+        events
+            .values()
+            .flat_map(|l| l.as_array().into_iter().flatten())
+            .flat_map(|e| e["hooks"].as_array().into_iter().flatten())
+            .any(|h| {
+                h["command"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with(" hook $PPID"))
+            })
+    })
+}
+
 pub fn age(updated: DateTime<Utc>) -> String {
     let s = (Utc::now() - updated).num_seconds().max(0);
     match s {

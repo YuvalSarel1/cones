@@ -639,6 +639,18 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
             format!("Claude {what} {}", path.display()),
         );
     }
+    let settings = claude.join("settings.json");
+    report(
+        if cones::fleet::stale_hook(&settings) {
+            "WARN"
+        } else {
+            "OK"
+        },
+        format!(
+            "no entries from the removed cones hook in {} (delete those whose command ends in ` hook $PPID`)",
+            settings.display()
+        ),
+    );
     match Ledger::new(state).and_then(|ledger| ledger.runs()) {
         Ok(_) => report(
             "OK",
