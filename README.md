@@ -18,8 +18,7 @@ Requires Rust and Claude Code 2.1 or later, on macOS.
 
 ```sh
 cargo install --git https://github.com/YuvalSarel1/cones --tag v0.1.0
-cones hook --install             # every Claude session on the Mac shows in cones ls and cones tui
-cones tui                        # the dashboard above
+cones tui                        # the dashboard above, every Claude session on the Mac already in it
 ```
 
 To schedule a job, describe it in `jobs.yaml` (`jobs.example.yaml` is a working read-only one), then `cones validate`, `cones run <job>` to try it now, and `cones install` to load it into launchd. `cones doctor` says what would break a scheduled run.
@@ -46,7 +45,7 @@ One binary, no daemon. It does three things.
 | | |
 | --- | --- |
 | **Schedule** | Give a job a cron line. cones turns it into a launchd LaunchAgent that starts a headless Claude run on time. Nothing runs between ticks. |
-| **See the fleet** | One hook puts every Claude Code session on your Mac into `cones ls` and the dashboard, whether cones started it or you did. Title, state, age, context fill, last message. Stop or attach from either. |
+| **See the fleet** | Every Claude Code session on your Mac is in `cones ls` and the dashboard, whether cones started it or you did, read from the session registry Claude keeps itself. Nothing installed, nothing running inside your sessions. Title, state, age, context fill, last message. Stop or attach from either. |
 | **Keep them apart** | One writer lock per directory. Jobs take it. `cones lock . -- git commit` takes it around any command. If a job's last run is still going, the next one skips, runs alongside or replaces it. You pick, per job. |
 
 Every run has a policy that Claude itself enforces: a dollar budget, a turn cap, a tool allowlist, read-only or sandboxed writes, a timeout. No MCP servers, no prompts. When it ends, the run lands in a JSONL ledger with a status, a reason and what it cost.
@@ -59,7 +58,7 @@ Reference: [the job file](docs/jobs.md), [what a run does](docs/runs.md), [the f
 
 | Gap | cones |
 | --- | --- |
-| Fleet tools only see the sessions they launched. | The hook writes a state file per session. Sessions started from any terminal show up. |
+| Fleet tools only see the sessions they launched. | cones reads the registry Claude Code writes for every session. Sessions started from any terminal show up. |
 | Two agents in one tree find out about each other at commit time. | One writer lock per directory, shared by jobs, agents and `cones lock`. |
 | Budgets and tool policy are on you. | `budget_usd` becomes Claude's own `--max-budget-usd`. `tools` and `write` become `--tools` and `--allowedTools`. A run cannot prompt, load settings or reach an MCP server. |
 | Scheduling needs the tool's own daemon. | Cron becomes `StartCalendarInterval` in a per-user LaunchAgent. |

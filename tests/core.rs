@@ -217,7 +217,7 @@ fn ledger_lock_budget_and_orphan_status() {
     terminal.ended_at = Some(Utc::now());
     ledger.append(&terminal).unwrap();
     assert_eq!(ledger.reserved_spend("job").unwrap(), 0.25);
-    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with("run\tok\t")).unwrap();
     assert!(
         row.contains("$0.25"),
@@ -337,11 +337,37 @@ fn overlap_allow_requires_read_only_and_workspace_locks_follow_symlinks() {
     assert!(ledger.workspace_lock(&alias).unwrap().is_some());
 }
 
+/// One entry in Claude's own session registry, as `~/.claude/sessions/<pid>.json` holds it.
+fn registry(claude: &std::path::Path, name: &str, entry: serde_json::Value) {
+    let dir = claude.join("sessions");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(format!("{name}.json")), entry.to_string()).unwrap();
+}
+/// A transcript in Claude's project store for `cwd`: one titled assistant message of `prompt`
+/// input tokens whose text is `text`.
+fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt: u64, text: &str) {
+    let project = claude.join("projects").join(
+        cwd.to_string_lossy()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
+    );
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join(format!("{id}.jsonl")),
+        format!(
+            "{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{{\"type\":\"assistant\",\"message\":{{\"id\":\"m\",\"usage\":{{\"input_tokens\":{prompt},\"output_tokens\":300}},\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
+        ),
+    )
+    .unwrap();
+}
 #[test]
-fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
+fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     let dir = tempfile::tempdir().unwrap();
+    let claude = dir.path();
     let id = "0f1e2d3c-4b5a-4978-8a1b-2c3d4e5f6a7b";
-    let transcript = dir.path().join("t.jsonl");
+    let cwd = "/tmp/re.po";
+    let project = claude.join("projects/-tmp-re-po");
+    fs::create_dir_all(&project).unwrap();
+    let transcript = project.join(format!("{id}.jsonl"));
     // Two streamed content blocks of one message, then a second message.
     let usage = |mid: &str, i: u64, o: u64| {
         format!(
@@ -359,97 +385,136 @@ fn fleet_hook_records_sessions_and_counts_tokens_once_per_message() {
         ),
     )
     .unwrap();
-    let payload = |event: &str| {
-        serde_json::json!({"session_id": id, "hook_event_name": event, "cwd": "/tmp/repo",
-            "transcript_path": transcript, "tool_name": "Bash"})
+    let me = std::process::id();
+    let entry = |status: &str| {
+        serde_json::json!({"pid": me, "sessionId": id, "cwd": cwd, "kind": "interactive",
+            "status": status, "startedAt": 1757682871892i64, "updatedAt": 1757682900000i64, "name": "job a"})
     };
-    cones::fleet::record(dir.path(), 42, &payload("SessionStart")).unwrap();
-    let get = || cones::fleet::find(dir.path(), id).unwrap().unwrap();
-    let first = get();
+    registry(claude, id, entry("busy"));
+    let get = || cones::fleet::find(claude, id).unwrap().unwrap();
+    let s = get();
     assert_eq!(
-        (first.pid, first.state.as_str(), first.tokens_in),
-        (Some(42), "idle", None)
+        (s.pid, s.state.as_str(), s.kind.as_deref()),
+        (Some(me), "active", Some("interactive"))
     );
-    assert_eq!(first.cwd, std::path::Path::new("/tmp/repo"));
+    assert_eq!(s.cwd, std::path::Path::new(cwd));
+    assert_eq!(s.transcript_path.as_deref(), Some(transcript.as_path()));
     assert_eq!(
-        (first.title.as_deref(), first.last.as_deref()),
-        (Some("fix the widget"), Some("Running the tests"))
+        (s.title.as_deref(), s.last.as_deref()),
+        (Some("fix the widget"), Some("Running the tests")),
+        "title and last line come from the transcript, not the registry name"
     );
-    cones::fleet::record(dir.path(), 42, &payload("PostToolUse")).unwrap();
-    assert_eq!(get().tool.as_deref(), Some("Bash"));
-    let notify = |kind: &str| {
-        let mut p = payload("Notification");
-        p["notification_type"] = kind.into();
-        p
-    };
-    cones::fleet::record(dir.path(), 42, &notify("auth_success")).unwrap();
-    assert_eq!(get().state, "active");
-    cones::fleet::record(dir.path(), 42, &notify("permission_prompt")).unwrap();
-    assert_eq!(get().state, "blocked");
-    cones::fleet::record(dir.path(), 42, &notify("idle_prompt")).unwrap();
-    assert_eq!(get().state, "idle");
-    cones::fleet::record(dir.path(), 42, &payload("Stop")).unwrap();
-    let idle = get();
+    assert_eq!((s.tokens_in, s.tokens_out), (Some(320), Some(12)));
     assert_eq!(
-        (idle.state.as_str(), idle.tokens_in, idle.tokens_out),
-        ("idle", Some(320), Some(12))
+        (s.context_tokens, s.context_window),
+        (Some(210), Some(200_000)),
+        "the last message's prompt is the context in use; no settings.json here means 200k"
     );
-    assert_eq!(
-        idle.context_tokens,
-        Some(210),
-        "the last message's prompt is the context in use"
-    );
-    assert!(
-        matches!(idle.context_window, Some(200_000 | 1_000_000)),
-        "the window below 200k follows the machine's settings.json"
-    );
-    // A turn past 200k can only be the 1M window, whatever settings.json says.
+    // settings.json's model with the [1m] suffix turns the window to 1M; the transcript must
+    // grow for the cached count to be redone.
+    fs::write(claude.join("settings.json"), r#"{"model":"opus[1m]"}"#).unwrap();
     let mut t = fs::OpenOptions::new()
         .append(true)
         .open(&transcript)
         .unwrap();
-    use std::io::Write;
-    writeln!(t, "{}", usage("m3", 300_000, 1)).unwrap();
-    cones::fleet::record(dir.path(), 42, &payload("SessionEnd")).unwrap();
-    let ended = get();
+    writeln!(t, "{}", usage("m3", 50, 1)).unwrap();
+    assert_eq!(
+        (get().context_tokens, get().context_window),
+        (Some(60), Some(1_000_000))
+    );
+    // A turn past 200k can only be the 1M window, whatever settings.json says.
+    fs::remove_file(claude.join("settings.json")).unwrap();
+    writeln!(t, "{}", usage("m4", 300_000, 1)).unwrap();
+    let big = get();
+    assert_eq!(
+        (big.context_tokens, big.context_window),
+        (Some(300_010), Some(1_000_000))
+    );
+    assert_eq!(cones::fleet::context(&big), "300k/1.0M 30%");
     assert_eq!(
         (
-            ended.state.as_str(),
-            ended.context_tokens,
-            ended.context_window
+            s.started.map(|t| t.timestamp_millis()),
+            s.updated.timestamp_millis()
         ),
-        ("exited", Some(300_010), Some(1_000_000))
+        (Some(1757682871892), 1757682900000)
     );
-    assert_eq!(cones::fleet::context(&ended), "300k/1.0M 30%");
-    let bad = serde_json::json!({"session_id": "../escape", "hook_event_name": "Stop"});
-    assert!(cones::fleet::record(dir.path(), 1, &bad).is_err());
-    assert_eq!(cones::fleet::sessions(dir.path()).unwrap().len(), 1);
-}
-#[test]
-fn fleet_hook_install_merges_and_is_idempotent() {
-    let dir = tempfile::tempdir().unwrap();
-    let settings = dir.path().join("settings.json");
-    fs::write(&settings, r#"{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}"#).unwrap();
-    assert!(!cones::fleet::installed(&settings));
-    let cmd = cones::fleet::hook_command(std::path::Path::new("/opt/cones"), dir.path());
-    assert!(cmd.ends_with(" hook $PPID"));
-    cones::fleet::install(&settings, &cmd).unwrap();
-    cones::fleet::install(&settings, "'/moved/cones' --state-dir '/x' hook $PPID").unwrap();
-    let root: serde_json::Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
-    assert_eq!(root["model"], "opus");
-    let stop = root["hooks"]["Stop"].as_array().unwrap();
-    assert_eq!(stop.len(), 2, "user's own Stop hook kept, one cones entry");
-    assert_eq!(
-        stop[1]["hooks"][0]["command"],
-        "'/moved/cones' --state-dir '/x' hook $PPID"
-    );
-    assert!(cones::fleet::installed(&settings));
-    for event in cones::fleet::EVENTS {
-        assert_eq!(
-            root["hooks"][event].as_array().unwrap().len(),
-            if event == "Stop" { 2 } else { 1 }
-        );
+    for (status, state) in [
+        ("idle", "idle"),
+        ("shell", "active"),
+        ("blocked", "blocked"),
+        ("waiting", "blocked"),
+        ("needs_user", "blocked"),
+        ("needs_trust", "blocked"),
+    ] {
+        registry(claude, id, entry(status));
+        assert_eq!(get().state, state, "{status}");
     }
+    // A background job: Claude's detail line is the last column, the job's updatedAt the age,
+    // and its transcript path fills in when the project store has none.
+    let other = "22222222-2222-4222-8222-222222222222";
+    fs::create_dir_all(claude.join("jobs/aaaaaaaa")).unwrap();
+    fs::write(
+        claude.join("jobs/aaaaaaaa/state.json"),
+        r#"{"state":"working","detail":"Inspecting job state files","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl"}"#,
+    )
+    .unwrap();
+    let bg = |job: &str| {
+        serde_json::json!({"pid": me, "sessionId": other, "cwd": "/src/b", "kind": "bg",
+            "jobId": job, "status": "busy", "name": "job b", "startedAt": 1757682871892i64})
+    };
+    registry(claude, other, bg("aaaaaaaa"));
+    let b = cones::fleet::find(claude, other).unwrap().unwrap();
+    assert_eq!(
+        (
+            b.kind.as_deref(),
+            b.title.as_deref(),
+            b.last.as_deref(),
+            b.transcript_path.as_deref().and_then(|p| p.to_str()),
+            b.updated.to_rfc3339(),
+        ),
+        (
+            Some("bg"),
+            Some("job b"),
+            Some("Inspecting job state files"),
+            Some("/t/b.jsonl"),
+            "2026-09-12T13:14:31.892+00:00".to_owned(),
+        )
+    );
+    registry(claude, other, bg("../x"));
+    let b = cones::fleet::find(claude, other).unwrap().unwrap();
+    assert_eq!(
+        (
+            b.last.as_deref(),
+            b.transcript_path.as_deref(),
+            b.updated.timestamp_millis()
+        ),
+        (None, None, 1757682871892),
+        "an unsafe job id reads no file; without one the start time is the age"
+    );
+    // A dead pid, an unsafe id, junk and Claude's .key files are skipped.
+    registry(
+        claude,
+        "dead",
+        serde_json::json!({"pid": 4_000_000, "sessionId": "33333333-3333-4333-8333-333333333333", "cwd": "/x", "status": "busy"}),
+    );
+    registry(
+        claude,
+        "escape",
+        serde_json::json!({"pid": me, "sessionId": "../escape", "cwd": "/x", "status": "busy"}),
+    );
+    fs::write(claude.join("sessions/junk.json"), "not json").unwrap();
+    fs::write(claude.join("sessions/1.abc.key"), "k").unwrap();
+    let ids: Vec<String> = cones::fleet::sessions(claude)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect();
+    assert_eq!(ids, [other, id], "oldest start first, then by update time");
+    assert!(
+        cones::fleet::sessions(&claude.join("nowhere"))
+            .unwrap()
+            .is_empty()
+    );
 }
 #[test]
 fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
@@ -459,34 +524,18 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let mut started = Record::new("run-1".into(), Status::Started);
     started.session_id = Some(owned.into());
     ledger.append(&started).unwrap();
-    let session = |id: &str, pid: u32, state: &str| cones::fleet::Session {
-        v: 1,
-        session_id: id.into(),
-        harness: "claude".into(),
-        cwd: dirs::home_dir().unwrap().join("src/repo"),
-        state: state.into(),
-        updated: Utc::now(),
-        started: None,
-        event: Some("Stop".into()),
-        tool: None,
-        pid: Some(pid),
-        transcript_path: None,
-        tokens_in: Some(12_500),
-        tokens_out: Some(300),
-        context_tokens: Some(100_000),
-        context_window: Some(200_000),
-        cost_usd: Some(0.42),
-        title: Some("fix the widget".into()),
-        last: Some("Running the tests".into()),
+    let cwd = dirs::home_dir().unwrap().join("src/repo");
+    let me = std::process::id();
+    let session = |id: &str, pid: u32, status: &str| {
+        serde_json::json!({"pid": pid, "sessionId": id, "cwd": cwd, "kind": "interactive",
+            "status": status, "name": "fix the widget", "startedAt": 1757682871892i64})
     };
     let live = "22222222-2222-4222-8222-222222222222";
-    cones::fleet::write(dir.path(), &session(live, std::process::id(), "idle")).unwrap();
-    cones::fleet::write(dir.path(), &session(owned, std::process::id(), "active")).unwrap();
-    cones::fleet::write(
-        dir.path(),
-        &session("33333333-3333-4333-8333-333333333333", 4_000_000, "active"),
-    )
-    .unwrap();
+    registry(dir.path(), live, session(live, me, "idle"));
+    transcript(dir.path(), &cwd, live, 100_000, "Running the tests");
+    registry(dir.path(), owned, session(owned, me, "busy"));
+    let dead = "33333333-3333-4333-8333-333333333333";
+    registry(dir.path(), dead, session(dead, 4_000_000, "busy"));
     let rows = cones::tui::fleet_rows(dir.path(), &ledger.runs().unwrap()).unwrap();
     assert_eq!(
         rows.iter()
@@ -495,7 +544,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         [live],
         "the cones-owned session collapses into its run row and the dead pid is stale"
     );
-    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
     for s in [
@@ -518,7 +567,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
     let jobs = dir.path().join("jobs.yaml");
     fs::write(&jobs, "version: 1\ncolumns: [tokens]\njobs: []\n").unwrap();
-    let list = cones::tui::list(&jobs, dir.path()).unwrap();
+    let list = cones::tui::list(&jobs, dir.path(), dir.path()).unwrap();
     assert!(
         list.contains("tokens in/out") && !list.contains("100k/200k"),
         "columns: in jobs.yaml picks the session columns"
@@ -538,7 +587,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "sessions are grouped by directory"
     );
     assert!(lines.iter().any(|l| l.starts_with("run-1\tstarted")));
-    let data = cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let data =
+        cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let by_state = data.rows(true);
     let headers: Vec<String> = by_state
         .iter()
@@ -552,7 +602,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
     let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()));
     assert!(
-        pane[0] == "~/src/repo" && pane[1].contains("idle Stop"),
+        pane[0] == "~/src/repo" && pane[1].contains("idle interactive"),
         "{pane:?}"
     );
 }
@@ -581,32 +631,15 @@ fn session_columns_align_across_directory_groups() {
             "a much longer session title",
         ),
     ] {
-        cones::fleet::write(
+        registry(
             dir.path(),
-            &cones::fleet::Session {
-                v: 1,
-                session_id: id.into(),
-                harness: "claude".into(),
-                cwd: dir.path().join(cwd),
-                state: "idle".into(),
-                updated: Utc::now(),
-                started: None,
-                event: None,
-                tool: None,
-                pid: Some(std::process::id()),
-                transcript_path: None,
-                tokens_in: None,
-                tokens_out: None,
-                context_tokens: None,
-                context_window: None,
-                cost_usd: None,
-                title: Some(title.into()),
-                last: None,
-            },
-        )
-        .unwrap();
+            id,
+            serde_json::json!({"pid": std::process::id(), "sessionId": id, "cwd": dir.path().join(cwd),
+                "status": "idle", "name": title}),
+        );
     }
-    let data = cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path()).unwrap();
+    let data =
+        cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let widths: Vec<usize> = data
         .rows(false)
         .iter()
@@ -686,115 +719,6 @@ fn doctor_probes_only_the_switches_the_compiler_emits() {
             "--mcp-config",
             "--setting-sources"
         ]
-    );
-}
-
-#[test]
-fn fleet_agents_feed_adds_claude_sessions_and_their_detail() {
-    let dir = tempfile::tempdir().unwrap();
-    let seen = "22222222-2222-4222-8222-222222222222";
-    let hook = cones::fleet::Session {
-        v: 1,
-        session_id: seen.into(),
-        harness: "claude".into(),
-        cwd: "/src/a".into(),
-        state: "blocked".into(),
-        updated: Utc::now(),
-        started: None,
-        event: Some("Notification".into()),
-        tool: None,
-        pid: Some(7),
-        transcript_path: None,
-        tokens_in: None,
-        tokens_out: None,
-        context_tokens: None,
-        context_window: None,
-        cost_usd: None,
-        title: None,
-        last: Some("Running the tests".into()),
-    };
-    let jobs = dir.path().join("jobs");
-    for (id, state) in [
-        (
-            "aaaaaaaa",
-            r#"{"state":"working","detail":"Inspecting job state files","name":"job a"}"#,
-        ),
-        (
-            "bbbbbbbb",
-            r#"{"state":"done","detail":"  ","name":"job b","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl"}"#,
-        ),
-    ] {
-        fs::create_dir_all(jobs.join(id)).unwrap();
-        fs::write(jobs.join(id).join("state.json"), state).unwrap();
-    }
-    let fresh = "33333333-3333-4333-8333-333333333333";
-    let bare = "44444444-4444-4444-8444-444444444444";
-    let agents = format!(
-        r#"[
-        {{"pid":7,"id":"aaaaaaaa","cwd":"/src/a","kind":"background","sessionId":"{seen}","name":"job a","status":"busy","state":"working"}},
-        {{"pid":8,"id":"bbbbbbbb","cwd":"/src/b","kind":"background","sessionId":"{fresh}","name":"job b","status":"idle","state":"done"}},
-        {{"pid":9,"id":"../x","cwd":"/src/c","kind":"interactive","sessionId":"{bare}","name":"","state":"working","startedAt":1757682871892}}
-        ]"#
-    );
-    let rows = cones::fleet::merge(vec![hook.clone()], &agents, &jobs);
-    assert_eq!(rows.len(), 3);
-    let by = |id: &str| rows.iter().find(|s| s.session_id == id).unwrap();
-    let a = by(seen);
-    assert_eq!(
-        (a.state.as_str(), a.pid, a.event.as_deref()),
-        ("blocked", Some(7), Some("Notification")),
-        "the hook's state is kept"
-    );
-    assert_eq!(
-        (a.last.as_deref(), a.title.as_deref()),
-        (Some("Inspecting job state files"), Some("job a")),
-        "Claude's detail line and name fill in"
-    );
-    let b = by(fresh);
-    assert_eq!(
-        (
-            b.state.as_str(),
-            b.pid,
-            b.cwd.to_str(),
-            b.title.as_deref(),
-            b.last.as_deref(),
-            b.transcript_path.as_deref().and_then(|p| p.to_str()),
-            b.updated.to_rfc3339(),
-        ),
-        (
-            "idle",
-            Some(8),
-            Some("/src/b"),
-            Some("job b"),
-            None,
-            Some("/t/b.jsonl"),
-            "2026-09-12T13:14:31.892+00:00".into(),
-        ),
-        "a session the hook never saw is synthesized; a blank detail is no last line"
-    );
-    let c = by(bare);
-    assert_eq!(
-        (
-            c.state.as_str(),
-            c.title.as_deref(),
-            c.last.as_deref(),
-            c.updated.timestamp_millis(),
-        ),
-        ("active", None, None, 1757682871892),
-        "an unsafe short id reads no job file; without one the start time is the age"
-    );
-    for bad in ["", "not json", "{}"] {
-        assert_eq!(cones::fleet::merge(vec![hook.clone()], bad, &jobs).len(), 1);
-        assert!(!cones::fleet::is_agent(bad, seen));
-    }
-    assert!(
-        cones::fleet::is_agent(&agents, seen) && !cones::fleet::is_agent(&agents, "nope"),
-        "a session Claude lists is stopped through claude stop, not a signal"
-    );
-    assert!(
-        !cones::fleet::ASK_CLAUDE.load(std::sync::atomic::Ordering::Relaxed)
-            && cones::fleet::with_agents(vec![hook]).len() == 1,
-        "the library never runs claude on its own"
     );
 }
 

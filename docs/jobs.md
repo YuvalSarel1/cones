@@ -55,7 +55,7 @@ jobs:
 | Column | Cell | Default |
 | --- | --- | --- |
 | `state` | working, needs input, idle or exited | yes |
-| `age` | Time since the last hook event, `4s`, `6m`, `2h` | yes |
+| `age` | Time since Claude last updated the session, `4s`, `6m`, `2h` | yes |
 | `context` | `98k/200k 49%`: tokens in the window at the last turn, window size, fill | yes |
 | `last` | First line of the last reply, or the directory when grouped by state | yes |
 | `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |

@@ -19,7 +19,6 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [fleet.md](fleet.md#the-coordinator-one-session-per-folder). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
 | `cones tui` | The dashboard. |
-| `cones hook [--install] [PID]` | `--install` writes the fleet hook into `~/.claude/settings.json`. Without it, `cones hook PID` records one hook event from stdin (Claude Code calls this). |
 
 ## Run a prompt without a job
 
@@ -46,6 +45,5 @@ With no jobs file, or one that does not parse, the task runs under the read-only
 | Claude version is inside the tested range `>=2.1, <3` | WARN |
 | Every flag the compiler emits for a job that uses every option appears in `claude --help`; `--max-turns` is hidden there and probed by parsing an invalid value instead | FAIL (WARN for the probe) |
 | `claude auth status --json` reports logged in; a scheduled job cannot prompt to log in | FAIL |
-| The fleet hook is in `~/.claude/settings.json` | WARN |
-| `~/.claude/projects`, Claude's session store, exists | WARN |
+| `~/.claude/sessions`, Claude's session registry, and `~/.claude/projects`, its session store, exist | WARN |
 | `~/.cones/runs.jsonl` is readable and writable | FAIL |

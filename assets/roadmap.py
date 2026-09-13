@@ -6,8 +6,8 @@ CAT = {"REL": ("Reliability", "#f0883e"), "OBS": ("Observability", "#d2a8ff"),
        "HAR": ("Harnesses", "#79c0ff"), "COORD": ("Coordination", "#56d4dd")}
 COLS = [("NOW", "What the coordinator needs from cones", "#3fb950", [
     ("Lock holder in ls", "COORD", "Holder pid and session id land beside the .lock; ls, the dashboard and cones lock --status show who holds and who waits; --try exits 1, no waiting."),
-    ("Touched files from hooks", "OBS", "PostToolUse Edit and Write paths accumulate in the session's fleet file; ls --json and the details pane show each footprint. Bash edits are not seen."),
-    ("Status transitions", "OBS", "cones status 'text' writes the session's fleet file and fills the last column, so the orchestrator reads check-ins instead of asking; hook-derived blocked/idle/exited shipped."),
+    ("Touched files", "OBS", "Edit and Write paths read from the session's transcript; ls --json and the details pane show each footprint. Bash edits are not seen."),
+    ("Status transitions", "OBS", "cones status 'text' records a one-line check-in per session that fills the last column, so the orchestrator reads check-ins instead of asking; active/idle/blocked come from Claude's registry."),
     ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
 ]), ("NEXT", "Claude only, no second writer needed", "#58a6ff", [
     ("Sleep/wake proof", "REL", "One slept-through tick fires one run on wake, none after a reboot past one; observed in cones ls --json and written into the README."),
@@ -22,7 +22,7 @@ COLS = [("NOW", "What the coordinator needs from cones", "#3fb950", [
     ("Cross-harness coordination", "COORD", "The coordinator drives Claude Code and Codex agents in one folder alike: Codex arrivals greeted, gated and relayed, not only read from their rollout files."),
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates the Codex adapter."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
-    ("Codex fleet hooks", "HAR", "cones hook codex, once Codex hook trust can be configured without a bypass flag."),
+    ("Codex in the fleet", "HAR", "Codex keeps no session registry: pid and cwd from the process table, title and last line from its rollout file."),
     ("Webhook triggers", "HAR", "Run on an HTTP call. Needs a listener process, so after single-machine fleet control."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
     ("Jump to pane", "OBS", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
@@ -31,8 +31,8 @@ SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout,
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
            "shared-workspace writer lock", "cones lock around any command", "opt-in failure notification",
            "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
-           "global fleet hook, one file per session", "every Claude session in ls and the TUI", "stop and attach from CLI and TUI",
-           "fleet status from claude agents --json", "dashboard: details pane, dispatch, grouping", "key hints follow claude agents",
+           "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "stop and attach from CLI and TUI",
+           "dashboard: details pane, dispatch, grouping", "key hints follow claude agents",
            "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]
 FOOT = ("cones owns the clock, supervision, budgets, locks and ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine.")

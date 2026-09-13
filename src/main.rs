@@ -91,14 +91,6 @@ enum Action {
     Doctor,
     /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
     Tui,
-    /// Record a Claude Code hook event from stdin as a fleet state file.
-    Hook {
-        /// Write the fleet hook into ~/.claude/settings.json instead of recording an event.
-        #[arg(long)]
-        install: bool,
-        /// PID of the harness process; the installed command passes $PPID.
-        pid: Option<u32>,
-    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -134,7 +126,7 @@ fn execute(cli: Cli) -> Result<i32> {
         &cwd,
     )?;
     let jobs_path = cones::expand_path(&cli.jobs, &cwd)?;
-    cones::fleet::ASK_CLAUDE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let claude = cones::fleet::claude_dir()?;
     match cli.command {
         Action::Validate => {
             let jobs = config::read_jobs(&jobs_path)?;
@@ -230,8 +222,8 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
-            // Sessions the fleet hook saw that no cones run owns; same columns, cwd where the job name goes.
-            for s in cones::tui::fleet_rows(&state, &ledger.runs()?)?
+            // Sessions from Claude's registry that no cones run owns; same columns, cwd where the job name goes.
+            for s in cones::tui::fleet_rows(&claude, &ledger.runs()?)?
                 .into_iter()
                 .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
             {
@@ -260,32 +252,16 @@ fn execute(cli: Cli) -> Result<i32> {
             let status = Command::new(&command[0]).args(&command[1..]).status()?;
             Ok(status.code().unwrap_or(1))
         }
-        Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state),
-        Action::Hook { install, pid } => {
-            if install {
-                let settings = claude_settings()?;
-                cones::fleet::install(
-                    &settings,
-                    &cones::fleet::hook_command(&std::env::current_exe()?, &state),
-                )?;
-                println!("fleet hook installed in {}", settings.display());
-                return Ok(0);
-            }
-            let payload = serde_json::from_reader(std::io::stdin().lock())
-                .context("hook payload is not JSON")?;
-            let pid = pid.unwrap_or_else(std::os::unix::process::parent_id);
-            cones::fleet::record(&state, pid, &payload)?;
-            Ok(0)
-        }
+        Action::Tui => cones::tui::run(&std::env::current_exe()?, &jobs_path, &state, &claude),
         Action::List => {
-            print!("{}", cones::tui::list(&jobs_path, &state)?);
+            print!("{}", cones::tui::list(&jobs_path, &state, &claude)?);
             Ok(0)
         }
         Action::Logs { id, follow, raw } => {
             let ledger = Ledger::new(&state)?;
             // Not a cones run: a fleet session. Its transcript is the log.
             if ledger.resolve(&id).is_err()
-                && let Some(s) = cones::fleet::find(&state, &id)?
+                && let Some(s) = cones::fleet::find(&claude, &id)?
             {
                 let t = s
                     .transcript_path
@@ -298,7 +274,7 @@ fn execute(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Action::Stop { id } => {
-            let stopped = runner::stop(&Ledger::new(&state)?, &id)?;
+            let stopped = runner::stop(&Ledger::new(&state)?, &claude, &id)?;
             println!(
                 "{}\t{}",
                 id,
@@ -314,10 +290,10 @@ fn execute(cli: Cli) -> Result<i32> {
             let ledger = Ledger::new(&state)?;
             let run = match ledger.resolve(&id) {
                 Ok(run) => run,
-                // Not a cones run: a session the fleet hook saw. Attach while its harness is
+                // Not a cones run: a session from Claude's registry. Attach while its harness is
                 // alive, resume in place once it is gone.
                 Err(e) => {
-                    let s = cones::fleet::find(&state, &id)?.ok_or(e)?;
+                    let s = cones::fleet::find(&claude, &id)?.ok_or(e)?;
                     let kind = serde_json::from_value(serde_json::Value::String(s.harness.clone()))
                         .context("unknown harness in fleet state")?;
                     let adapter = harness::adapter(kind)?;
@@ -444,11 +420,6 @@ fn attach_real_tty(command: &mut Command) {
     }
 }
 
-fn claude_settings() -> Result<PathBuf> {
-    Ok(dirs::home_dir()
-        .context("missing home directory")?
-        .join(".claude/settings.json"))
-}
 fn quote(s: &std::ffi::OsStr) -> String {
     format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"))
 }
@@ -657,25 +628,17 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
     } else {
         report("FAIL", "claude not found in generated launchd PATH".into());
     }
-    let settings = claude_settings()?;
-    report(
-        if cones::fleet::installed(&settings) {
-            "OK"
-        } else {
-            "WARN"
-        },
-        format!(
-            "fleet hook in {} (cones hook --install)",
-            settings.display()
-        ),
-    );
-    let projects = dirs::home_dir()
-        .context("missing home directory")?
-        .join(".claude/projects");
-    report(
-        if projects.is_dir() { "OK" } else { "WARN" },
-        format!("Claude session store {}", projects.display()),
-    );
+    let claude = cones::fleet::claude_dir()?;
+    for (dir, what) in [
+        ("sessions", "session registry"),
+        ("projects", "session store"),
+    ] {
+        let path = claude.join(dir);
+        report(
+            if path.is_dir() { "OK" } else { "WARN" },
+            format!("Claude {what} {}", path.display()),
+        );
+    }
     match Ledger::new(state).and_then(|ledger| ledger.runs()) {
         Ok(_) => report(
             "OK",

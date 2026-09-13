@@ -473,48 +473,38 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     let fake = f.dir.path().join("claude");
     // ps reports argv[0]; a copied sleep binary named claude looks like the real harness.
     fs::copy("/bin/sleep", &fake).unwrap();
-    let mut claude = Command::new(&fake).arg("30").spawn().unwrap();
+    let mut claude_proc = Command::new(&fake).arg("30").spawn().unwrap();
     let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-    let session = |id: &str, pid: u32| cones::fleet::Session {
-        v: 1,
-        session_id: id.into(),
-        harness: "claude".into(),
-        cwd: f.dir.path().into(),
-        state: "idle".into(),
-        updated: chrono::Utc::now(),
-        started: None,
-        event: None,
-        tool: None,
-        pid: Some(pid),
-        transcript_path: None,
-        tokens_in: None,
-        tokens_out: None,
-        context_tokens: None,
-        context_window: None,
-        cost_usd: None,
-        title: None,
-        last: None,
-    };
-    cones::fleet::write(&f.state, &session("real", claude.id())).unwrap();
-    cones::fleet::write(&f.state, &session("reused", sleeper.id())).unwrap();
+    let claude = f.dir.path().join("dot-claude");
+    fs::create_dir_all(claude.join("sessions")).unwrap();
+    for (id, pid) in [("real", claude_proc.id()), ("reused", sleeper.id())] {
+        fs::write(
+            claude.join("sessions").join(format!("{id}.json")),
+            serde_json::json!({"pid": pid, "sessionId": id, "cwd": f.dir.path(), "kind": "interactive", "status": "idle"}).to_string(),
+        )
+        .unwrap();
+    }
     let ledger = f.ledger();
     assert!(
-        cones::runner::stop(&ledger, "reused")
+        cones::runner::stop(&ledger, &claude, "reused")
             .unwrap_err()
             .to_string()
             .contains("refusing")
     );
-    assert!(cones::runner::stop(&ledger, "missing").is_err());
-    assert!(cones::runner::stop(&ledger, "real").unwrap());
+    assert!(cones::runner::stop(&ledger, &claude, "missing").is_err());
+    assert!(cones::runner::stop(&ledger, &claude, "real").unwrap());
     let until = Instant::now() + Duration::from_secs(3);
-    while claude.try_wait().unwrap().is_none() && Instant::now() < until {
+    while claude_proc.try_wait().unwrap().is_none() && Instant::now() < until {
         thread::sleep(Duration::from_millis(25));
     }
-    assert!(claude.try_wait().unwrap().is_some(), "harness kept running");
+    assert!(
+        claude_proc.try_wait().unwrap().is_some(),
+        "harness kept running"
+    );
     assert!(sleeper.try_wait().unwrap().is_none());
     sleeper.kill().unwrap();
-    // A pid that is already gone is "already finished", not an error.
-    assert!(!cones::runner::stop(&ledger, "real").unwrap());
+    // A session whose process is gone has left the fleet.
+    assert!(cones::runner::stop(&ledger, &claude, "real").is_err());
 }
 #[test]
 fn version_flag_prints_the_crate_version() {

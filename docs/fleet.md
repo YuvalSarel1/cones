@@ -5,40 +5,36 @@ Back to the [README](../README.md). Commands are in [cli.md](cli.md).
 ## The fleet: every Claude session on the Mac
 
 ```sh
-cones hook --install             # one global Claude Code hook in ~/.claude/settings.json
-cones ls --status blocked        # sessions waiting on a permission or elicitation prompt
+cones ls --status blocked        # sessions waiting on a permission, trust or user prompt
 cones logs SESSION_UUID --follow # the session's transcript, Ctrl+C returns
 cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes back
 cones stop SESSION_UUID          # ends the session
 ```
 
-With the hook installed, every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age, context fill and last message. Sessions that belong to a cones run collapse into that run's row, and a session whose process is gone is not shown. Dollars come from the ledger for cones runs; for hook-observed sessions the column stays `-`, since the hook records tokens and no price.
+Nothing is installed. Claude Code keeps a registry of its own sessions, one `~/.claude/sessions/<pid>.json` per live session, interactive or background, written and updated by Claude itself. Every `cones ls` and every dashboard refresh reads that directory, or `$CLAUDE_CONFIG_DIR/sessions` when that variable is set, the same override Claude honors, and fills the rest of the row from the session's transcript under `~/.claude/projects`. No hook runs inside the session and `~/.claude/settings.json` is untouched.
 
-`cones hook --install` adds one command to `~/.claude/settings.json` for the `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Notification`, `Stop` and `SessionEnd` events, none of them `PreToolUse`, so Claude's permission checks are untouched. On each event Claude Code runs `cones --state-dir ~/.cones hook $PPID`, which writes `~/.cones/fleet/<session_id>.json`.
+Every Claude Code session on the Mac appears in `cones ls` with its working directory, state, last update time, harness, dollars and tokens in/out; the dashboard adds the title, age, context fill and last message. Sessions that belong to a cones run collapse into that run's row. Dollars come from the ledger for cones runs; for other sessions the column stays `-`, since the transcript records tokens and no price.
 
-| Field in the state file | Source |
+| Field | Source |
 | --- | --- |
-| `cwd`, `pid`, `transcript_path` | The hook payload; `$PPID` is the Claude process |
-| `state`, `event`, `tool` | The event name and tool, mapped as below |
-| `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail |
-| `last` | First line of the assistant's most recent text |
-| `tokens_in`, `tokens_out` | Summed from the transcript at `Stop` and `SessionEnd`; input includes cache reads and cache creation |
-| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation) and the window it ran in: 1M when the model id carries `[1m]`, otherwise 200k. Read at the same events. |
+| `session_id`, `pid`, `cwd`, `kind` | The registry entry: `sessionId`, `pid`, `cwd` and `kind`, which is `bg` for a session Claude's daemon owns and `interactive` otherwise |
+| `state` | The registry `status`, mapped as below |
+| `started`, `updated` | The registry `startedAt` and `updatedAt`; for a background job, the `updatedAt` in `~/.claude/jobs/<id>/state.json` |
+| `transcript_path` | `~/.claude/projects/<cwd with every non-alphanumeric byte as ->/<session_id>.jsonl`, or the job's `linkScanPath` when that file is missing |
+| `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail; the registry `name` when the transcript has neither |
+| `last` | For a background job, the one-line `detail` Claude keeps in the job's `state.json`; otherwise the first line of the assistant's most recent text |
+| `tokens_in`, `tokens_out` | Summed from the transcript, recounted when the file grows; input includes cache reads and cache creation |
+| `context_tokens`, `context_window` | The last assistant message's prompt size (input plus cache reads and creation) and the window it ran in: 1M when the model id carries `[1m]`, otherwise 200k |
 
-Re-running `cones hook --install` replaces the earlier entry, so a moved binary or a different `--state-dir` is picked up. To remove it, delete the entries ending in `hook $PPID` from the settings file.
-
-| State | Set by | Dashboard label |
+| State | Registry `status` | Dashboard label |
 | --- | --- | --- |
-| `active` | `UserPromptSubmit`, `PostToolUse` | working |
-| `idle` | `SessionStart` with nothing asked yet, `Stop`, and the `idle_prompt` notification Claude sends a minute after a turn ends | idle |
-| `blocked` | A `Notification` of type `permission_prompt`, `elicitation_dialog` or `elicitation_url_dialog` | needs input |
-| `exited` | `SessionEnd`. The row leaves the list after an hour; the file stays. | exited |
+| `active` | `busy`, `shell`, or any value not listed below | working |
+| `idle` | `idle` | idle |
+| `blocked` | `blocked`, `waiting`, `needs_user`, `needs_trust` | needs input |
 
-Other notifications (`auth_success`, `agent_completed`, `quota_*`) leave the state unchanged.
+A registry entry whose pid is gone is a crashed session and is skipped. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
 
-`cones ls` and the dashboard also ask `claude agents --json` (at most every 3 seconds; ignored after 2 seconds, on a non-zero exit or when `claude` is missing). Sessions Claude lists appear even before the hook saw them, with `working` mapped to `active` and anything else to `idle`, and Claude's agent name fills a missing title. When Claude keeps a one-line status for a background job (`~/.claude/jobs/<id>/state.json`), that `detail` line is the session's last column.
-
-Stopping and attaching follow the session's owner. A session that `claude agents --json` lists belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the hook's `$PPID` after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
+Stopping and attaching follow the session's owner. A session whose kind is `bg` belongs to Claude's daemon, which respawns a killed worker, so `cones stop` ends it with `claude stop <short id>`; any other session gets SIGTERM on the registry pid after cones checks the pid still belongs to a `claude` binary. `cones attach` runs `claude attach <short id>` while the session's process is alive; once it is gone, cones resumes the session in the background (`claude --bg --resume <session>`) and attaches to it, so Ctrl+Z detaches and the session keeps running until it is exited or stopped. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt.
 
 ## The coordinator: one session per folder
 
@@ -65,9 +61,9 @@ Its hint line reads `↑↓ move · enter <verb> · x x stop · e edit jobs · s
 | Sessions | icon, harness, title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, age, context, last message or cwd | last prompt and full reply |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
 
-Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k/200k 49%`: tokens in the window at the last turn, the window size, and the fill. It is `-` until the session's first `Stop`.
+Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k/200k 49%`: tokens in the window at the last turn, the window size, and the fill. It is `-` until the transcript holds a message with usage.
 
-Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session file without a start time sorts by its last update until its next hook event pins one.
+Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a registry entry without a start time sorts by its last update.
 
 | Key | Action |
 | --- | --- |
@@ -81,4 +77,4 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `r` | Reload now. |
 | `esc`, `q`, `ctrl+c` | Quit. |
 
-Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger and the fleet files.
+Ctrl+Z never suspends the dashboard; inside an attached session it detaches and returns here. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.

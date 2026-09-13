@@ -76,9 +76,9 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn load(jobs_path: &Path, state: &Path) -> Result<Self> {
+    pub fn load(jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
         let runs = Ledger::new(state)?.runs()?;
-        let sessions = fleet_rows(state, &runs)?;
+        let sessions = fleet_rows(claude, &runs)?;
         Ok(Self {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
             runs,
@@ -302,7 +302,7 @@ impl Data {
                         "{} · {} {} · {} · {} tokens · pid {} · {}",
                         logo(&s.harness),
                         label(&s.state),
-                        s.event.as_deref().unwrap_or(""),
+                        s.kind.as_deref().unwrap_or(""),
                         fleet::age(s.updated),
                         fleet::tokens(s),
                         s.pid.map(|p| p.to_string()).unwrap_or_default(),
@@ -344,8 +344,8 @@ impl Data {
 /// Tab-separated rows for scripts and tests: hidden key (`job`, `hdr`, session or run UUID),
 /// hidden aux (job name, session state or run status), then the display text with ANSI color.
 /// Three header lines carry the pixel cone, the summary and the keys.
-pub fn list(jobs_path: &Path, state: &Path) -> Result<String> {
-    let data = Data::load(jobs_path, state)?;
+pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
+    let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
     for line in header_lines(&data.summary(), enter_verb(None)) {
         out += "hdr\t-\t";
@@ -585,16 +585,16 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Sessions from the fleet directory, newest first. Sessions belonging to a ledger run
-/// collapse into that run's row, and a session whose harness pid is gone is stale.
-pub fn fleet_rows(state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
+/// Sessions from Claude's registry, oldest first. Sessions belonging to a ledger run collapse
+/// into that run's row.
+pub fn fleet_rows(claude: &Path, runs: &[Run]) -> Result<Vec<Session>> {
     let owned: HashSet<&str> = runs
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    Ok(fleet::with_agents(fleet::sessions(state)?)
+    Ok(fleet::sessions(claude)?
         .into_iter()
-        .filter(|s| !owned.contains(s.session_id.as_str()) && s.pid.is_none_or(fleet::alive))
+        .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect())
 }
 
@@ -608,6 +608,7 @@ struct App {
     exe: PathBuf,
     jobs_path: PathBuf,
     state: PathBuf,
+    claude: PathBuf,
     data: Data,
     rows: Vec<Row>,
     /// Indexes into `rows` that pass the filter; the cursor indexes this list.
@@ -632,7 +633,7 @@ impl App {
 
     fn refresh(&mut self) -> Result<()> {
         let keep = self.selected().map(|r| r.kind.clone());
-        self.data = Data::load(&self.jobs_path, &self.state)?;
+        self.data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
@@ -842,7 +843,9 @@ impl App {
         };
         match self.armed.take() {
             Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
-                self.status = match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &id)) {
+                self.status = match Ledger::new(&self.state)
+                    .and_then(|l| runner::stop(&l, &self.claude, &id))
+                {
                     Ok(true) => "stop requested".into(),
                     Ok(false) => "already finished".into(),
                     Err(e) => format!("stop failed: {e:#}"),
@@ -1016,12 +1019,13 @@ impl App {
     }
 }
 
-pub fn run(exe: &Path, jobs_path: &Path, state: &Path) -> Result<i32> {
+pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<i32> {
     let mut app = App {
         exe: exe.to_owned(),
         jobs_path: jobs_path.to_owned(),
         state: state.to_owned(),
-        data: Data::load(jobs_path, state)?,
+        claude: claude.to_owned(),
+        data: Data::load(jobs_path, state, claude)?,
         rows: vec![],
         visible: vec![],
         cursor: 0,

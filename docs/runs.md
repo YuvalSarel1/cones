@@ -60,7 +60,6 @@ State lives in `~/.cones` (`--state-dir` to isolate). Directories are created `0
 | `output/<run_id>/events.jsonl`, `output/<run_id>/stderr.log` | Claude's stream-json events (64 MiB cap, 1 MiB per line) and stderr (1 MiB cap). |
 | `transcripts/<run_id>/<session_id>.jsonl` | The archived transcript when `archive_transcript: true`. |
 | `logs/<job>.out.log`, `logs/<job>.err.log` | launchd's stdout and stderr for the scheduled `cones run`. |
-| `fleet/<session_id>.json` | One state file per Claude session, written by the hook. |
 | `locks/admission/`, `locks/runs/`, `locks/workspaces/` | Admission, per-run and per-workspace lock files. |
 
 ## When a job is still running at its next tick

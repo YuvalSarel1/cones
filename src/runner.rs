@@ -564,10 +564,10 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     Ok(terminal.status)
 }
 
-pub fn stop(ledger: &Ledger, id: &str) -> Result<bool> {
-    // Not a ledger run: a Claude session the fleet hook saw.
+pub fn stop(ledger: &Ledger, claude: &Path, id: &str) -> Result<bool> {
+    // Not a ledger run: a Claude session from the registry.
     let Ok(run) = ledger.resolve(id) else {
-        return crate::fleet::stop(&ledger.state, id);
+        return crate::fleet::stop(claude, id);
     };
     if run.terminal.is_some() || run.started.status == Status::Skipped {
         return Ok(false);
