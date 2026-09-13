@@ -1271,10 +1271,10 @@ impl App {
             });
         }
         let started = Instant::now();
-        let r = c.spawn().and_then(|c| {
+        let r = c.spawn().and_then(|mut c| {
             self.debug(|| format!("spawned pid {}; waiting", c.id()));
             let watch = self.log.as_ref().map(|p| watch_group(p.clone()));
-            let r = c.wait_with_output();
+            let r = wait_or_stopped(&mut c, &|m| self.debug(|| m));
             if let Some((stop, t)) = watch {
                 stop.store(true, Ordering::Relaxed);
                 let _ = t.join();
@@ -1675,6 +1675,74 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     Ok(0)
 }
 
+/// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Claude's
+/// agents view does; its attach view eats the key) stops the child: the tty sends SIGTSTP to the
+/// whole foreground group and the dashboard ignores its copy. `Child::wait` would then block
+/// forever on a cooked terminal nobody reads. A stop is the user asking for the dashboard back,
+/// so the child is resumed and told to exit, SIGKILL if it has not within two seconds.
+fn wait_or_stopped(
+    child: &mut std::process::Child,
+    debug: &dyn Fn(String),
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::os::unix::process::ExitStatusExt;
+    let pid = child.id() as libc::pid_t;
+    let stderr = child.stderr.take().map(|mut s| {
+        std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = s.read_to_end(&mut v);
+            v
+        })
+    });
+    let mut status: libc::c_int = 0;
+    let mut flags = libc::WUNTRACED;
+    let mut deadline: Option<Instant> = None;
+    loop {
+        let r = unsafe { libc::waitpid(pid, &mut status, flags) };
+        if r == -1 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(e);
+        }
+        if r == pid && libc::WIFSTOPPED(status) {
+            debug(format!(
+                "child stopped by signal {}; resuming it to exit",
+                libc::WSTOPSIG(status)
+            ));
+            unsafe {
+                libc::kill(pid, libc::SIGCONT);
+                libc::kill(pid, libc::SIGTERM);
+            }
+            flags = libc::WNOHANG;
+            deadline = Some(Instant::now() + Duration::from_secs(2));
+            continue;
+        }
+        if r == pid {
+            break;
+        }
+        // WNOHANG and still running: give SIGTERM its two seconds, then stop asking.
+        if let Some(d) = deadline
+            && Instant::now() >= d
+        {
+            debug("child ignored SIGTERM; SIGKILL".into());
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            flags = 0;
+            deadline = None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // ponytail: the pid is reaped here, so `Child::wait` would fail; the Output is built by hand.
+    Ok(std::process::Output {
+        status: ExitStatusExt::from_raw(status),
+        stdout: vec![],
+        stderr: stderr.and_then(|t| t.join().ok()).unwrap_or_default(),
+    })
+}
+
 fn debug_line(path: &Path, msg: impl std::fmt::Display) {
     use std::io::Write;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -1783,6 +1851,25 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with(" one") && lines[1].ends_with(" two"));
         assert!(term_state().contains("pgrp="));
+    }
+
+    #[test]
+    fn a_stopped_child_is_brought_back_and_waited_for() {
+        let mut c = Command::new("sh")
+            .args(["-c", "echo oops >&2; kill -STOP $$; sleep 30"])
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let log = std::sync::Mutex::new(vec![]);
+        let started = Instant::now();
+        let out = wait_or_stopped(&mut c, &|m| log.lock().unwrap().push(m)).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "did not hang on the stop"
+        );
+        assert!(!out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
+        assert!(log.lock().unwrap()[0].starts_with("child stopped by signal"));
     }
 
     #[test]
