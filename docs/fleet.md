@@ -43,19 +43,22 @@ Stopping and attaching follow the session's owner. A session that `claude agents
 
 `cones tui` reloads every second and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
+Its hint line reads `↑↓ move · enter <verb> · x x stop · e edit jobs · s regroup · n new task · / filter · r refresh · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected.
+
 | Pane | Columns | Details pane |
 | --- | --- | --- |
 | Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
 | Sessions | icon, harness, title or short id, state, age, tokens, last message or cwd | last prompt and full reply |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
 
-Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top.
+Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session file without a start time sorts by its last update until its next hook event pins one.
 
 | Key | Action |
 | --- | --- |
 | `↑` `↓`, `k` `j` | Move between rows. |
 | `enter`, `→`, `a` | On a job: start a run in the background. On a running run: follow its log (Ctrl+C returns). On a finished run or a session: open it in this terminal, as described above; Ctrl+Z comes back. |
-| `ctrl+x` twice (or `x` twice) within two seconds | Stop the selected run or session. |
+| `x` twice (or `ctrl+x` twice) within two seconds | Stop the selected run or session. On a job: stop that job's run in flight; with none, the status line says so. |
+| `e` | Open jobs.yaml in `$VISUAL` or `$EDITOR`, then run `cones install` on return so launchd matches the file; an install error shows on the status line. |
 | `ctrl+s` (or `s`) | Regroup sessions by state or by directory. |
 | `n` | New task: type a prompt, `enter` dispatches it as `cones run --prompt` in the current directory, `esc` cancels. |
 | `/` | Filter rows by text; `enter` keeps the filter, `esc` clears it. |
