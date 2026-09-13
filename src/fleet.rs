@@ -29,6 +29,9 @@ pub struct Session {
     /// elicitation Notification) or `exited`.
     pub state: String,
     pub updated: DateTime<Utc>,
+    /// When the session was first seen. Rows sort by this so they hold still while `updated` ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,6 +128,10 @@ pub fn record(state: &Path, pid: u32, payload: &Value) -> Result<()> {
                 _ => "active".into(),
             },
             updated: Utc::now(),
+            started: previous
+                .as_ref()
+                .and_then(|p| p.started)
+                .or_else(|| Some(Utc::now())),
             event: Some(event.into()),
             tool: payload["tool_name"].as_str().map(Into::into),
             pid: Some(pid),
@@ -327,8 +334,8 @@ pub fn write(state: &Path, session: &Session) -> Result<()> {
     Ok(())
 }
 
-/// Newest first. Unreadable files are skipped; a session the hook is mid-write on is
-/// not a failure of the listing.
+/// Oldest first by when the session started, so rows hold still while `updated` ticks. Unreadable
+/// files are skipped; a session the hook is mid-write on is not a failure of the listing.
 pub fn sessions(state: &Path) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir(state)) else {
@@ -347,7 +354,7 @@ pub fn sessions(state: &Path) -> Result<Vec<Session>> {
             }
         }
     }
-    out.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    out.sort_by_key(|s| s.started.unwrap_or(s.updated));
     Ok(out)
 }
 
@@ -410,6 +417,9 @@ pub fn merge(mut sessions: Vec<Session>, agents: &str, jobs: &Path) -> Vec<Sessi
                                 .and_then(DateTime::from_timestamp_millis)
                         })
                         .unwrap_or_else(Utc::now),
+                    started: a["startedAt"]
+                        .as_i64()
+                        .and_then(DateTime::from_timestamp_millis),
                     event: None,
                     tool: None,
                     pid: a["pid"].as_u64().map(|p| p as u32),
@@ -430,7 +440,7 @@ pub fn merge(mut sessions: Vec<Session>, agents: &str, jobs: &Path) -> Vec<Sessi
             s.title = a["name"].as_str().filter(|n| !n.is_empty()).map(Into::into);
         }
     }
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    sessions.sort_by_key(|s| s.started.unwrap_or(s.updated));
     sessions
 }
 

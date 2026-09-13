@@ -482,6 +482,7 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
         cwd: f.dir.path().into(),
         state: "idle".into(),
         updated: chrono::Utc::now(),
+        started: None,
         event: None,
         tool: None,
         pid: Some(pid),
