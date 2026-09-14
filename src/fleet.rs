@@ -225,8 +225,17 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         context_tokens: d.report.context,
         context_window: statusline_window(dir, id),
         cost_usd: None,
+        // Then the job's own name, the one `claude agents` shows: a claimed spare keeps its
+        // 8-hex id as the registry name until Claude renames it, and a short job never gets an
+        // ai-title.
         title: d
             .title
+            .or_else(|| {
+                job["name"]
+                    .as_str()
+                    .filter(|n| !n.is_empty())
+                    .map(Into::into)
+            })
             .or_else(|| v["name"].as_str().filter(|n| !n.is_empty()).map(Into::into)),
         // A background job's one-line status from Claude beats the transcript's last text.
         last: job["detail"]

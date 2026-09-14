@@ -417,12 +417,12 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     fs::create_dir_all(claude.join("jobs/aaaaaaaa")).unwrap();
     fs::write(
         claude.join("jobs/aaaaaaaa/state.json"),
-        r#"{"state":"working","detail":"Inspecting job state files","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl","cwd":"/src/launch"}"#,
+        r#"{"state":"working","name":"install push clear","detail":"Inspecting job state files","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl","cwd":"/src/launch"}"#,
     )
     .unwrap();
     let bg = |job: &str| {
         serde_json::json!({"pid": me, "sessionId": other, "cwd": "/src/b", "kind": "bg",
-            "jobId": job, "status": "busy", "name": "job b", "startedAt": 1757682871892i64, "updatedAt": 1757682900000i64})
+            "jobId": job, "status": "busy", "name": "aaaaaaaa", "startedAt": 1757682871892i64, "updatedAt": 1757682900000i64})
     };
     registry(claude, other, bg("aaaaaaaa"));
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
@@ -436,13 +436,14 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         ),
         (
             Some("bg"),
-            Some("job b"),
+            Some("install push clear"),
             Some("Inspecting job state files"),
             Some("/t/b.jsonl"),
             Some("/src/launch"),
         ),
-        "a job's row sits in its launch directory, as in `claude agents`, even after the \
-         session entered a worktree and the registry cwd moved"
+        "a job's row sits in its launch directory and carries the job's name, as in `claude \
+         agents`, even after the session entered a worktree and the registry cwd moved and \
+         while a claimed spare still holds its 8-hex id as the registry name"
     );
     assert_eq!(
         (

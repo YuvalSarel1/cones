@@ -828,6 +828,49 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Tab in the folder prompt, as a shell completes `cd`: `text` grown to the longest prefix
+/// every matching directory shares, with a `/` when only one is left, and the names that still
+/// match when there are several. Hidden directories match only a `.` prefix.
+pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
+    let (parent, partial) = match text.rfind('/') {
+        Some(i) => (&text[..=i], &text[i + 1..]),
+        None => ("", text),
+    };
+    let dir = if parent.is_empty() {
+        base.to_path_buf()
+    } else {
+        match crate::expand_path(Path::new(parent), base) {
+            Ok(d) => d,
+            Err(_) => return (text.to_string(), Vec::new()),
+        }
+    };
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(partial) && (!n.starts_with('.') || partial.starts_with('.')))
+        .collect();
+    names.sort();
+    match names.as_slice() {
+        [] => (text.to_string(), names),
+        [one] => (format!("{parent}{one}/"), Vec::new()),
+        _ => {
+            let first = &names[0];
+            let common = first
+                .char_indices()
+                .find(|&(i, _)| {
+                    !names
+                        .iter()
+                        .all(|n| n.get(..i + 1).is_some_and(|p| first.starts_with(p)))
+                })
+                .map_or(first.len(), |(i, _)| i);
+            (format!("{parent}{}", &first[..common]), names)
+        }
+    }
+}
+
 /// Where the job wizard is: each step is one question on the prompt line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -1869,7 +1912,11 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Harness(_) => Line::default(),
-            Mode::Folder(_) => hints(&[("enter", "work there"), ("esc", "cancel")]),
+            Mode::Folder(_) => hints(&[
+                ("enter", "work there"),
+                ("tab", "complete"),
+                ("esc", "cancel"),
+            ]),
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
                 ("tab", &next),
@@ -2087,6 +2134,17 @@ impl App {
                     text.pop();
                 }
                 KeyCode::Char(c) if !ctrl => text.push(c),
+                // One tab grows the path as far as it is unambiguous; a second, changing
+                // nothing, lists what still matches, as bash and zsh do.
+                KeyCode::Tab => {
+                    let (grown, names) = complete_dir(text, &self.cwd);
+                    if grown == *text {
+                        self.status = names.join("  ");
+                    } else {
+                        *text = grown;
+                        self.status.clear();
+                    }
+                }
                 KeyCode::Enter => {
                     let text = text.clone();
                     match launch_dir(&text, &self.cwd, &self.cwd) {
@@ -2778,6 +2836,49 @@ mod tests {
         assert_eq!(
             launch_dir(&sub.display().to_string(), Path::new("/"), Path::new("/")),
             Ok(sub)
+        );
+    }
+
+    /// The folder prompt completes as `cd` does: one match fills in with a trailing `/`,
+    /// several fill in the shared prefix and are listed, hidden folders need a `.` first.
+    #[test]
+    fn tab_completes_a_folder_as_the_shell_completes_cd() {
+        let d = dir();
+        for name in ["alpha", "alps", "beta", ".hidden"] {
+            fs::create_dir(d.path().join(name)).unwrap();
+        }
+        fs::write(d.path().join("alpine"), "").unwrap();
+        fs::create_dir(d.path().join("beta/inner")).unwrap();
+        let base = d.path();
+        assert_eq!(complete_dir("b", base), ("beta/".to_string(), vec![]));
+        assert_eq!(
+            complete_dir("beta/", base),
+            ("beta/inner/".to_string(), vec![])
+        );
+        assert_eq!(
+            complete_dir("a", base),
+            (
+                "alp".to_string(),
+                vec!["alpha".to_string(), "alps".to_string()]
+            ),
+            "a file is not offered and two folders grow to the shared prefix"
+        );
+        assert_eq!(
+            complete_dir("alp", base).0,
+            "alp",
+            "no growth means a second tab lists"
+        );
+        assert_eq!(complete_dir("zzz", base), ("zzz".to_string(), vec![]));
+        assert_eq!(
+            complete_dir("", base).1,
+            vec!["alpha", "alps", "beta"],
+            "hidden folders stay out until a dot is typed"
+        );
+        assert_eq!(complete_dir(".h", base).0, ".hidden/");
+        let abs = format!("{}/be", base.display());
+        assert_eq!(
+            complete_dir(&abs, Path::new("/nowhere")).0,
+            format!("{}/beta/", base.display())
         );
     }
 
