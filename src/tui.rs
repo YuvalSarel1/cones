@@ -1573,6 +1573,23 @@ impl App {
         }
     }
 
+    /// What ctrl+x does to a session row. A Codex thread behind the daemon has no stop, so its
+    /// record is forgotten; a Claude background session is removed with `claude rm`, which drops
+    /// the job record `claude agents` shows; anything else is stopped with a signal.
+    fn session_verb(&self, id: &str) -> &'static str {
+        match self
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .and_then(|s| s.kind.as_deref())
+        {
+            Some("daemon") => "forget",
+            Some("bg") => "delete",
+            _ => "stop",
+        }
+    }
+
     /// What ctrl+x does to the selected row, for the hint line; nothing on a row it cannot act on.
     fn stop_verb(&self) -> Option<&'static str> {
         let live = |name: &str| {
@@ -1586,14 +1603,7 @@ impl App {
             Kind::Job(_) => Some("delete"),
             Kind::Run(_, s) if s == "started" => Some("stop"),
             Kind::Run(..) => Some("delete"),
-            Kind::Session(id, _) => {
-                let daemon = self
-                    .data
-                    .sessions
-                    .iter()
-                    .any(|s| &s.session_id == id && s.kind.as_deref() == Some("daemon"));
-                Some(if daemon { "forget" } else { "stop" })
-            }
+            Kind::Session(id, _) => Some(self.session_verb(id)),
             _ => None,
         }
     }
@@ -1687,16 +1697,12 @@ impl App {
                 return;
             }
         };
-        // A Codex thread behind the daemon has no stop; the record is what x x removes, and
-        // `codex resume` still has the thread.
-        let daemon = self
-            .data
-            .sessions
-            .iter()
-            .any(|s| s.session_id == id && s.kind.as_deref() == Some("daemon"));
+        // `codex resume` still has a forgotten thread; `claude --resume` still has a deleted
+        // background session's conversation.
+        let verb = self.session_verb(&id);
         match self.armed.take() {
             Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
-                self.status = if daemon {
+                self.status = if verb == "forget" {
                     match codex::forget(&self.state, &id) {
                         Ok(()) => "thread forgotten · codex resume still has it".into(),
                         Err(e) => format!("forget failed: {e}"),
@@ -1704,18 +1710,21 @@ impl App {
                 } else {
                     match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &self.claude, &id))
                     {
+                        Ok(true) if verb == "delete" => {
+                            "deleted · claude --resume still has it".into()
+                        }
                         Ok(true) => "stop requested".into(),
                         Ok(false) => "already finished".into(),
-                        Err(e) => format!("stop failed: {e:#}"),
+                        Err(e) => format!("{verb} failed: {e:#}"),
                     }
                 };
             }
             _ => {
                 self.armed = Some((id, Instant::now()));
-                self.status = if daemon {
+                self.status = if verb == "forget" {
                     "ctrl+x again to forget this thread · esc keeps it".into()
                 } else {
-                    "ctrl+x again to stop · esc keeps it".into()
+                    format!("ctrl+x again to {verb} · esc keeps it")
                 };
             }
         }

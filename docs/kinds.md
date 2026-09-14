@@ -12,7 +12,7 @@ The dashboard opens an agent only when leaving it keeps it working. An agent tha
 
 | Kind | Reported by | Shown | `enter` | Leaving it | `ctrl+x` | Row leaves when |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude background | registry entry, `kind: bg`; `claude --bg`, `claude agents`, the coordinator, a session started from the `cones tui` composer | sessions table | `claude attach <short id>` in its cwd | Ctrl+Z detaches the viewer, the session keeps working | `claude stop <short id>`; a signal is not enough, the daemon respawns a killed worker | Claude removes the entry |
+| Claude background | registry entry, `kind: bg`; `claude --bg`, `claude agents`, the coordinator, a session started from the `cones tui` composer | sessions table | `claude attach <short id>` in its cwd | Ctrl+Z detaches the viewer, the session keeps working | `claude rm <short id>`; a signal is not enough, the daemon respawns a killed worker, and `claude stop` leaves a stopped record in `claude agents` | Claude removes the entry; `claude rm` drops the job record too, the transcript stays |
 | Claude interactive | registry entry, `kind: interactive`; a `claude` typed in a terminal | sessions table, row and footer say `own terminal` | refused: "runs in its own terminal and cannot be joined from here"; `cones attach` refuses with the same reason while the pid is alive | n/a | SIGTERM on the registry pid, after `ps` confirms the pid still runs a `claude` binary | Claude removes the entry, or the pid is gone or reused |
 | Claude spare | registry entry, `spare: true`; a warm worker the daemon keeps for the next `--bg` | no, as `claude agents` hides it | | | | |
 | Claude crashed | registry entry whose pid is gone, or whose `ps` start time differs from the entry's `procStart` | no | | | | |
@@ -33,7 +33,7 @@ The dashboard's `h` key opens a harness's own agents view with no row picked: `c
 | Decision | The fact | Not used |
 | --- | --- | --- |
 | Claude: join or refuse | registry `kind`, `bg` or `interactive` | whether the pid has a controlling tty, the parent process, the entry's `name` |
-| Claude: `claude stop` or SIGTERM | registry `kind`; `bg` belongs to the daemon | the pid alone; a killed daemon worker is respawned |
+| Claude: `claude rm` or SIGTERM | registry `kind`; `bg` belongs to the daemon | the pid alone; a killed daemon worker is respawned |
 | Claude: live or crashed | the pid runs and its `ps` start time equals `procStart` | the entry's `updatedAt`, the transcript's mtime |
 | Codex: join or refuse | `kind: daemon` on a thread cones launched | the process command line; a `--remote` client started elsewhere is a TUI row and stays `own terminal` |
 | Run: follow or resume | the ledger's terminal record | the registry; a headless run is not looked up there |
