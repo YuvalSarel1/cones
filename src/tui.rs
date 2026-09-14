@@ -82,6 +82,8 @@ pub enum Kind {
     Session(String, String),
     /// Run id and status.
     Run(String, String),
+    /// A top-menu row: `runs`, `agents` or `folder`. From `App::rebuild`, never from `Data::rows`.
+    Menu(&'static str),
 }
 
 impl Kind {
@@ -96,6 +98,7 @@ impl Kind {
         match self {
             Kind::Job(name) => Some(name),
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
+            Kind::Menu(name) => Some(name),
             _ => None,
         }
     }
@@ -453,6 +456,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::Header | Kind::Columns | Kind::Blank => ("hdr".to_owned(), "-".to_owned()),
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
+            Kind::Menu(m) => ("menu".to_owned(), (*m).to_owned()),
         };
         out += &format!("{key}\t{aux}\t");
         if row.kind.selectable() {
@@ -498,8 +502,36 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
+        Some(Kind::Menu("runs")) => "run once",
+        Some(Kind::Menu("agents")) => "agents",
+        Some(Kind::Menu(_)) => "pick folder",
         _ => "open",
     }
+}
+
+/// The top menu: three rows above the tables, reached with `↑` past the first table. `runs`
+/// makes the composer a supervised one-off run, `agents` opens a harness's agents view, `folder`
+/// picks the directory the menu works in, whether or not a session runs there.
+fn menu_rows(folder: &Path) -> Vec<Row> {
+    let dir = fleet::tilde(folder);
+    let items = [
+        (
+            "runs",
+            "type an instruction, enter runs it once under a job's policy".to_owned(),
+        ),
+        (
+            "agents",
+            "enter opens a harness's own agents view".to_owned(),
+        ),
+        ("folder", format!("{dir} · enter picks another")),
+    ];
+    items
+        .into_iter()
+        .map(|(name, text)| Row {
+            kind: Kind::Menu(name),
+            cells: vec![(format!("{name:<8}"), plain()), (text, dim())],
+        })
+        .collect()
 }
 
 /// The header cone: one orange hue in three tones, lit on the left, shadowed on the right, so
@@ -996,6 +1028,8 @@ enum Mode {
     Job(Box<JobForm>),
     /// The `ctrl+o` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
     Harness(usize),
+    /// The menu's `folder` prompt: the path typed so far.
+    Folder(String),
 }
 
 struct App {
@@ -1003,7 +1037,8 @@ struct App {
     jobs_path: PathBuf,
     state: PathBuf,
     claude: PathBuf,
-    /// The dashboard's own working directory: where a launch goes with nothing selected.
+    /// The menu's folder: the dashboard's own working directory until the `folder` row picks
+    /// another. Where a launch goes from a menu row or with nothing selected.
     cwd: PathBuf,
     data: Data,
     rows: Vec<Row>,
@@ -1229,15 +1264,23 @@ impl App {
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        self.rows = self.data.rows(self.by_state);
+        self.rows = menu_rows(&self.cwd);
+        self.rows.extend(self.data.rows(self.by_state));
         self.apply_filter();
-        if let Some(k) = keep
+        if let Some(k) = &keep
             && let Some(i) = self
                 .visible
                 .iter()
                 .position(|&i| self.rows[i].kind.key() == Some(k.as_str()))
         {
             self.cursor = i;
+        } else if keep.is_none() {
+            // A fresh dashboard opens on the first table; the menu is where `↑` ends.
+            let below = |i: &usize| {
+                let k = &self.rows[*i].kind;
+                k.selectable() && !matches!(k, Kind::Menu(_))
+            };
+            self.cursor = self.visible.iter().position(below).unwrap_or(0);
         }
         self.settle();
         self.timing("rebuild", started);
@@ -1586,6 +1629,14 @@ impl App {
                 self.foreground(terminal, c, "attach");
                 self.invalidate();
             }
+            Kind::Menu("runs") => {
+                self.status = format!(
+                    "type an instruction, enter runs it once in {}",
+                    fleet::tilde(&self.cwd)
+                )
+            }
+            Kind::Menu("agents") => self.mode = Mode::Harness(0),
+            Kind::Menu(_) => self.mode = Mode::Folder(String::new()),
             _ => {}
         }
         Ok(())
@@ -1626,6 +1677,15 @@ impl App {
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
     fn start(&mut self, terminal: &mut DefaultTerminal) {
+        // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
+        // ledger like any other, instead of a bare session.
+        if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
+            let prompt = std::mem::take(&mut self.text);
+            let dir = self.cwd.clone();
+            let what = format!("started a run in {}", fleet::tilde(&dir));
+            self.spawn(&["run", "--prompt", prompt.trim()], Some(&dir), &what);
+            return;
+        }
         let dir = self.target_dir();
         let kind = harness::KNOWN[self.harness];
         let prompt = std::mem::take(&mut self.text);
@@ -1792,11 +1852,15 @@ impl App {
             return Line::styled(action.message(), dim());
         }
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
-        let start = format!(
-            "start {} in {}",
-            harness::KNOWN[self.harness],
-            fleet::tilde(&self.target_dir())
-        );
+        let start = if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
+            format!("run once in {}", fleet::tilde(&self.cwd))
+        } else {
+            format!(
+                "start {} in {}",
+                harness::KNOWN[self.harness],
+                fleet::tilde(&self.target_dir())
+            )
+        };
         let mut line = match &self.mode {
             Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
             Mode::Job(_) => hints(&[
@@ -1805,6 +1869,7 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Harness(_) => Line::default(),
+            Mode::Folder(_) => hints(&[("enter", "work there"), ("esc", "cancel")]),
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
                 ("tab", &next),
@@ -2014,6 +2079,28 @@ impl App {
                     _ => {}
                 }
             }
+            // The menu's folder: a directory, relative to the current one, checked before it
+            // is taken; the menu rows then show and launch into it.
+            Mode::Folder(text) => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Backspace => {
+                    text.pop();
+                }
+                KeyCode::Char(c) if !ctrl => text.push(c),
+                KeyCode::Enter => {
+                    let text = text.clone();
+                    match launch_dir(&text, &self.cwd, &self.cwd) {
+                        Ok(dir) => {
+                            self.cwd = dir;
+                            self.mode = Mode::Normal;
+                            self.status = format!("working in {}", fleet::tilde(&self.cwd));
+                            self.rebuild();
+                        }
+                        Err(e) => self.status = e,
+                    }
+                }
+                _ => {}
+            },
             Mode::Job(form) => match form.key(code, ctrl) {
                 FormAction::Stay => {}
                 FormAction::Cancel => self.mode = Mode::Normal,
@@ -2105,6 +2192,11 @@ impl App {
                     *i,
                     "open",
                 );
+                Line::from(spans)
+            }
+            Mode::Folder(text) => {
+                let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
+                spans.extend(typed(text, &fleet::tilde(&self.cwd)));
                 Line::from(spans)
             }
             Mode::Normal => self.composer(),
@@ -2824,6 +2916,7 @@ mod tests {
         assert_eq!(Kind::Session(A.into(), "active".into()).key(), Some(A));
         assert_eq!(Kind::Run("run-1".into(), "ok".into()).key(), Some("run-1"));
         assert_eq!(Kind::Job("nightly".into()).key(), Some("nightly"));
+        assert_eq!(Kind::Menu("folder").key(), Some("folder"));
         assert_eq!(Kind::Header.key(), None);
         assert_eq!(Kind::Columns.key(), None);
         assert_eq!(Kind::Blank.key(), None);
@@ -3155,7 +3248,10 @@ mod tests {
         app.stop();
         assert!(app.status.starts_with("run hidden"), "{}", app.status);
         app.refresh().unwrap();
-        assert!(key(&app).is_none(), "gone from the dashboard");
+        assert!(
+            !app.rows.iter().any(|r| matches!(r.kind, Kind::Run(..))),
+            "gone from the dashboard"
+        );
         assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
     }
 
@@ -3192,13 +3288,15 @@ mod tests {
         assert!(text(app.composer()).starts_with("claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("tab codex · ctrl+n new job"),
-            "nothing selected, no row-bound keys: {hint}"
+            hint.starts_with("enter run once · tab codex · ctrl+n new job"),
+            "an empty dashboard opens on the menu's runs row: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
+        assert!(text(app.hint_line()).starts_with("enter run once in "));
+        app.step(1);
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.status = "back from attach".into();
         assert_eq!(
@@ -3209,6 +3307,52 @@ mod tests {
         assert_eq!(
             uncolored("backgrounded · \x1b[36m7890c11a\x1b[39m (idle)"),
             "backgrounded · 7890c11a (idle)"
+        );
+    }
+
+    /// The menu sits above the tables: a fresh dashboard opens on the first table and `↑` from
+    /// there lands on `folder`. Picking a folder moves every menu row's target, so a session
+    /// or a run can start in a directory nothing runs in yet.
+    #[test]
+    fn the_top_menu_is_reached_going_up_and_its_folder_moves_the_target() {
+        let d = dir();
+        let claude = d.path();
+        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A), "opens on the first table");
+        app.step(-1);
+        assert_eq!(key(&app).as_deref(), Some("folder"));
+        app.step(-1);
+        app.step(-1);
+        assert_eq!(key(&app).as_deref(), Some("runs"));
+        assert_eq!(
+            app.target_dir(),
+            app.cwd,
+            "a menu row launches into the menu's folder"
+        );
+        let inside = claude.join("inside");
+        fs::create_dir(&inside).unwrap();
+        assert!(launch_dir("nowhere-such-dir", &app.cwd, &app.cwd).is_err());
+        app.cwd = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
+        app.rebuild();
+        assert_eq!(
+            key(&app).as_deref(),
+            Some("runs"),
+            "the cursor stays on its row"
+        );
+        app.step(2);
+        assert_eq!(key(&app).as_deref(), Some("folder"));
+        assert!(
+            app.selected().unwrap().text().contains("inside"),
+            "the folder row names the folder"
+        );
+        assert_eq!(app.target_dir(), inside.canonicalize().unwrap());
+        app.refresh().unwrap();
+        assert_eq!(
+            key(&app).as_deref(),
+            Some("folder"),
+            "a reload keeps the menu row"
         );
     }
 }

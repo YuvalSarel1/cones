@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Render assets/tui.svg, a screenshot of a live `cones tui`, from a tmux pane.
-Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones]."""
+Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in]."""
 import html, re, subprocess, sys, time
 
 COLS, ROWS = 120, 34
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
+CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, named on the menu's folder row
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00"}  # the cone's shadow, body and lit tones
@@ -14,7 +15,7 @@ def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output
 tmux("kill-session", "-t", "conescap")
 # The example job is the first row, so the selected row's details pane shows its policy and
 # prompt rather than the tail of a live session's transcript.
-tmux("new-session", "-d", "-s", "conescap", "-x", str(COLS), "-y", str(ROWS), f"{BIN} --jobs jobs.example.yaml tui", check=True)
+tmux("new-session", "-d", "-s", "conescap", "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"{BIN} --jobs jobs.example.yaml tui", check=True)
 time.sleep(5)
 lines = tmux("capture-pane", "-p", "-e", "-t", "conescap", check=True).stdout.rstrip("\n").split("\n")
 tmux("kill-session", "-t", "conescap")
