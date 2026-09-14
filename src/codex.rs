@@ -455,7 +455,8 @@ pub fn attribute<'a>(
 }
 
 /// Fleet rows for live processes: the rollout each wrote, its title from `names`,
-/// last reply and state from its tail. Reads only under `codex`.
+/// last reply and state from its tail. A process showing a thread the daemon holds is
+/// `kind: daemon`, joinable from here; a plain TUI has no kind. Reads only under `codex`.
 pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let Some(since) = procs.iter().map(|p| p.started).min() else {
         return Vec::new();
@@ -463,10 +464,9 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let rollouts = rollouts(codex, since);
     let guessed = attribute(procs, &rollouts);
     let index = index(codex);
-    let held: HashMap<u32, String> = locks(codex)
-        .into_iter()
-        .map(|(id, pid)| (pid, id))
-        .collect();
+    let locks = locks(codex);
+    let daemon = daemon_pid(codex);
+    let held: HashMap<u32, String> = locks.iter().map(|(id, pid)| (*pid, id.clone())).collect();
     let mut out: Vec<Session> = procs
         .iter()
         .map(|p| {
@@ -482,6 +482,10 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
             let t = rollout.map(|(path, _)| tail_of(path)).unwrap_or_default();
             let id =
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
+            // A client of a thread the daemon holds: Codex lets several clients share one
+            // thread, so the dashboard opens another, whichever terminal shows this one.
+            let kind = (daemon.is_some() && locks.get(&id) == daemon.as_ref())
+                .then(|| "daemon".to_owned());
             Session {
                 title: index
                     .titles
@@ -490,7 +494,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                     .or_else(|| rollout.and_then(|(path, _)| prompt_of(path))),
                 session_id: id,
                 harness: "codex".into(),
-                kind: None,
+                kind,
                 cwd: p.cwd.clone().unwrap_or_default(),
                 // Codex writes task_started and task_complete; nothing else about the turn.
                 state: t.state.unwrap_or("-").into(),
