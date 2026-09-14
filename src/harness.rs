@@ -222,7 +222,7 @@ pub fn launch_path() -> String {
 /// agents working there, gates their commits and relays findings. cones ships it as a plugin
 /// embedded in the binary and loads it for that session only; nothing lands in ~/.claude.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
-const COORDINATOR_FILES: [(&str, &str); 5] = [
+const COORDINATOR_FILES: [(&str, &str); 6] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
@@ -242,6 +242,10 @@ const COORDINATOR_FILES: [(&str, &str); 5] = [
     (
         "skills/start-orchestrator/bin/status.py",
         include_str!("../assets/coordinator/skills/start-orchestrator/bin/status.py"),
+    ),
+    (
+        "skills/start-orchestrator/bin/codex.sh",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.sh"),
     ),
 ];
 

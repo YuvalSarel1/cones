@@ -51,9 +51,14 @@ so a stopped-but-alive session does not block a restart.
 
 - Message only pids on `roster.now`. Registry cwd decides, not ListAgents. Verify the pid is
   alive before every SendMessage; agents come and go.
-- Codex processes cannot be messaged. Find their session log in
-  `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` (grep the cwd), report what files they
-  touch to the user, and warn Claude agents working on the same files.
+- Codex rows (`CODEX:<cwd>`) go through `$S/codex.sh`, not SendMessage: `codex.sh send <pid>
+  <text>` queues the message on the agent's thread (Codex runs it when its current turn ends),
+  `codex.sh last <pid>` reads its latest reply from the rollout, `codex.sh thread <pid>` prints
+  thread id and rollout path. A queued message to a thread with no live client waits in Codex's
+  queue db until one attaches, so a stalled `last` means the agent is not there yet, not a
+  refusal. Codex has no idle notice and no pre-commit hook: greet it with the same rules, ask it
+  to reply "done" in its last message, and treat its commits as advisory-gated. Its file edits
+  still show in `git status`; attribute them like any other writer.
 - All bg Claude processes look like `claude bg-spare` in `ps`; 8-hex names with
   `jobId == name` are unused spares, not agents. Do not filter by name shape otherwise.
 
