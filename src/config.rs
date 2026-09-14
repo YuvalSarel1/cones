@@ -46,7 +46,7 @@ pub struct Policy {
     pub notify: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Job {
     pub name: String,
@@ -54,23 +54,64 @@ pub struct Job {
     pub harness: HarnessKind,
     pub cwd: PathBuf,
     pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    #[serde(default = "yes")]
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub archive_transcript: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     // Keep these explicit: serde flatten cannot enforce unknown-field rejection reliably.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub daily_budget_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub write: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_full_access: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Overlap>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
+}
+
+impl Job {
+    /// A Claude job with only the four fields the dashboard's wizard asks for; everything else
+    /// is the file's defaults.
+    pub fn new(name: &str, schedule: &str, cwd: &Path, prompt: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            schedule: schedule.to_owned(),
+            harness: HarnessKind::Claude,
+            cwd: cwd.to_owned(),
+            prompt: prompt.to_owned(),
+            model: None,
+            enabled: true,
+            archive_transcript: false,
+            env: vec![],
+            timeout_min: None,
+            budget_usd: None,
+            daily_budget_usd: None,
+            write: None,
+            tools: None,
+            max_turns: None,
+            codex_full_access: None,
+            overlap: None,
+            notify: None,
+        }
+    }
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 fn yes() -> bool {
@@ -120,6 +161,103 @@ pub fn columns(path: &Path) -> Vec<String> {
         .ok()
         .and_then(|d| d.columns)
         .unwrap_or_else(|| DEFAULT_COLUMNS.iter().map(|c| (*c).to_owned()).collect())
+}
+
+/// The jobs as written, before defaults and path expansion: what the wizard edits.
+pub fn raw_jobs(path: &Path) -> Result<Vec<Job>> {
+    Ok(parse(path)?.jobs)
+}
+
+/// One job's lines in jobs.yaml: from its `- ` item line to the next item or top-level key.
+/// Found by text, so the rest of the file, comments and quoting included, is never rewritten.
+/// Returns the item indent, the blocks as `(name, start, end)`, and where the list ends.
+fn job_blocks(lines: &[&str], jobs_at: usize) -> (usize, Vec<(String, usize, usize)>, usize) {
+    let mut starts: Vec<usize> = vec![];
+    let mut indent = 2;
+    let mut end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(jobs_at + 1) {
+        let t = l.trim_start();
+        let ind = l.len() - t.len();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if ind == 0 && !t.starts_with("- ") {
+            end = i;
+            break;
+        }
+        if t.starts_with("- ") && (starts.is_empty() || ind == indent) {
+            indent = ind;
+            starts.push(i);
+        }
+    }
+    let blocks = starts
+        .iter()
+        .enumerate()
+        .map(|(n, &s)| {
+            let e = starts.get(n + 1).copied().unwrap_or(end);
+            let name = lines[s..e]
+                .iter()
+                .map(|l| l.trim_start().trim_start_matches("- ").trim_start())
+                .find_map(|l| l.strip_prefix("name:"))
+                .map(|v| v.trim().trim_matches(['"', '\'']).to_owned())
+                .unwrap_or_default();
+            (name, s, e)
+        })
+        .collect();
+    (indent, blocks, end)
+}
+
+/// Rewrite jobs.yaml with `job` in place of the job named `old`, appended to the list when
+/// there is no such job, or with that job removed when `job` is `None`. Only the one block
+/// changes; the file is validated as a whole before it replaces the old one, so a bad answer
+/// comes back as the error and the file is untouched. Then `cones install` is the caller's.
+pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()> {
+    let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let lines: Vec<&str> = text.lines().collect();
+    let jobs_at = lines
+        .iter()
+        .position(|l| l.starts_with("jobs:"))
+        .ok_or_else(|| anyhow::anyhow!("{} has no jobs: list", path.display()))?;
+    let (indent, blocks, end) = job_blocks(&lines, jobs_at);
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let (at, removed) = match blocks.iter().find(|(n, _, _)| Some(n.as_str()) == old) {
+        Some(&(_, s, e)) => {
+            out.drain(s..e);
+            (s, true)
+        }
+        None => (end, false),
+    };
+    match job {
+        Some(job) => {
+            let pad = " ".repeat(indent);
+            let block = serde_yaml::to_string(job)?;
+            let block = block.lines().enumerate().map(|(i, l)| {
+                if i == 0 {
+                    format!("{pad}- {l}")
+                } else {
+                    format!("{pad}  {l}")
+                }
+            });
+            out.splice(at..at, block);
+            // `jobs: []` becomes a list with an item.
+            out[jobs_at] = "jobs:".into();
+        }
+        None => {
+            ensure!(removed, "no job named {}", old.unwrap_or(""));
+            if blocks.len() == 1 {
+                out[jobs_at] = "jobs: []".into();
+            }
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, out.join("\n") + "\n")?;
+    let checked = read_jobs(&tmp).map(drop);
+    if checked.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    checked?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -332,4 +470,72 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         overlap,
         notify: j.notify.or(d.notify).unwrap_or(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FILE: &str = "version: 1\ndefaults:\n  budget_usd: 1.0   # cheap\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: first\n\n  # two runs at night\n  - name: two\n    schedule: \"0 2 * * *\"\n    harness: claude\n    cwd: .\n    prompt: second\n    model: sonnet\ncolumns: [state]\n";
+
+    fn file(text: &str) -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("jobs.yaml");
+        fs::write(&p, text).unwrap();
+        (d, p)
+    }
+
+    #[test]
+    fn write_job_adds_edits_and_removes_one_block_and_leaves_the_rest_alone() {
+        let (_d, p) = file(FILE);
+        let three = Job::new("three", "*/5 * * * *", Path::new("."), "third");
+        write_job(&p, None, Some(&three)).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("  budget_usd: 1.0   # cheap\n"),
+            "comments survive"
+        );
+        assert!(text.contains("  # two runs at night\n"));
+        assert!(
+            text.ends_with("    prompt: third\ncolumns: [state]\n"),
+            "{text}"
+        );
+        assert!(!text.contains("model: null"), "unset fields are left out");
+        let names: Vec<String> = raw_jobs(&p).unwrap().into_iter().map(|j| j.name).collect();
+        assert_eq!(names, ["one", "two", "three"]);
+
+        // Editing keeps the fields the wizard does not ask about and the block's place.
+        let mut two = raw_jobs(&p).unwrap().remove(1);
+        two.prompt = "second, revised".into();
+        write_job(&p, Some("two"), Some(&two)).unwrap();
+        let jobs = raw_jobs(&p).unwrap();
+        assert_eq!(jobs[1].prompt, "second, revised");
+        assert_eq!(jobs[1].model.as_deref(), Some("sonnet"));
+        assert_eq!(jobs[2].name, "three");
+
+        write_job(&p, Some("one"), None).unwrap();
+        let names: Vec<String> = raw_jobs(&p).unwrap().into_iter().map(|j| j.name).collect();
+        assert_eq!(names, ["two", "three"]);
+        assert!(write_job(&p, Some("nine"), None).is_err());
+    }
+
+    #[test]
+    fn write_job_validates_before_replacing_the_file() {
+        let (_d, p) = file(FILE);
+        let bad = Job::new("bad", "0 9 * * *", Path::new("/nonexistent/dir"), "x");
+        let err = write_job(&p, None, Some(&bad)).unwrap_err().to_string();
+        assert!(err.contains("cwd is not a directory"), "{err}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), FILE, "untouched");
+        assert!(!p.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn write_job_handles_an_empty_list_both_ways() {
+        let (_d, p) = file("version: 1\njobs: []\n");
+        let one = Job::new("one", "0 9 * * *", Path::new("."), "first");
+        write_job(&p, None, Some(&one)).unwrap();
+        assert_eq!(raw_jobs(&p).unwrap().len(), 1);
+        write_job(&p, Some("one"), None).unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
+    }
 }

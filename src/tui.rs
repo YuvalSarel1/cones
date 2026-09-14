@@ -1,7 +1,8 @@
 //! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
-//! or by state, and runs, with a details pane, a launch prompt (`n`: any directory, any known
-//! harness, interactive or managed) and the actions. ratatui draws;
-//! cones supplies rows. `cones __list` prints the same rows as tab-separated text.
+//! or by state, and runs, with a composer at the bottom like `claude agents`: type an
+//! instruction, `enter` starts a session in the selected row's directory under the harness
+//! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`).
+//! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
 //! draw as sessions.
@@ -9,7 +10,8 @@ use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
     fleet::{self, Session},
-    harness,
+    harness::{self, Start},
+    launchd,
     ledger::{Ledger, Run},
     output, runner,
 };
@@ -21,7 +23,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::Paragraph,
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -70,10 +72,6 @@ impl Kind {
         }
     }
 }
-
-/// Exchanges the details pane shows for a session: the last one, or, with `tab`, the last
-/// dozen so a session can be read before it is opened.
-pub const MORE: usize = 12;
 
 pub struct Row {
     pub kind: Kind,
@@ -411,7 +409,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(data.summary(), enter_verb(None), Pane::Hidden) {
+    for line in header_lines(data.summary()) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -472,14 +470,6 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
     }
 }
 
-/// How much of the screen the details pane has; `tab` cycles it, starting hidden.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Pane {
-    Hidden,
-    Peek,
-    More,
-}
-
 /// The header cone: one orange hue in three tones, lit on the left, shadowed on the right, so
 /// it reads as a solid rather than a flat triangle. Static and foreground-only: a blinking beacon
 /// and background-filled bands were tried and rejected as too busy for a dashboard header.
@@ -492,40 +482,42 @@ fn cone() -> [Vec<Span<'static>>; 3] {
     ]
 }
 
-/// The three header lines: the cone, with the fleet summary beside its bands and the keys
-/// beside its base, each key lit and its verb dim so the eye finds the key first. `pane` names
-/// what the next `tab` does. Two callers: `draw` and the `--tsv` path in `list`, so a change to
-/// the signature or the hint text reaches script output too and its tests.
-fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'static>> {
-    let tab = match pane {
-        Pane::Hidden => "peek",
-        Pane::Peek => "more",
-        Pane::More => "hide",
-    };
-    let keys = [
-        ("↑↓", "move"),
-        ("enter", enter),
-        ("tab", tab),
-        ("x x", "stop"),
-        ("e", "edit jobs"),
-        ("s", "regroup"),
-        ("n", "new task"),
-        ("h", "harness"),
-        ("/", "filter"),
-        ("q", "quit"),
-    ];
-    let [top, mut middle, mut hints] = cone();
+/// The three header lines: the cone, with the fleet summary beside its bands. The keys are on
+/// the bottom line, under the composer, as in `claude agents`. Two callers: `draw` and the
+/// `--tsv` path in `list`.
+fn header_lines(summary: Line<'static>) -> Vec<Line<'static>> {
+    let [top, mut middle, base] = cone();
     middle.push(Span::raw("  "));
     middle.extend(summary.spans);
-    hints.push(Span::raw("  "));
+    vec![Line::from(top), Line::from(middle), Line::from(base)]
+}
+
+/// Key hints: each key lit and its verb dim, so the eye finds the key first.
+fn hints(keys: &[(&str, &str)]) -> Line<'static> {
+    let mut spans = vec![];
     for (i, (key, verb)) in keys.iter().enumerate() {
         if i > 0 {
-            hints.push(Span::styled(" · ", dim()));
+            spans.push(Span::styled(" · ", dim()));
         }
-        hints.push(Span::styled((*key).to_owned(), bold()));
-        hints.push(Span::styled(format!(" {verb}"), dim()));
+        spans.push(Span::styled((*key).to_owned(), bold()));
+        spans.push(Span::styled(format!(" {verb}"), dim()));
     }
-    vec![Line::from(top), Line::from(middle), Line::from(hints)]
+    Line::from(spans)
+}
+
+/// `text` without its ANSI color sequences, for a status line.
+fn uncolored(text: &str) -> String {
+    let mut out = String::new();
+    let mut esc = false;
+    for c in text.chars() {
+        match (esc, c) {
+            (true, 'm') => esc = false,
+            (true, _) => {}
+            (false, '\x1b') => esc = true,
+            (false, c) => out.push(c),
+        }
+    }
+    out
 }
 
 /// Pad each column to its widest cell, two spaces apart.
@@ -717,24 +709,22 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Where the `n` prompt is: each step is one question on the footer line.
+/// Where the job wizard is: each step is one question on the prompt line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
+    Name,
     Dir,
-    Harness,
-    How,
+    Schedule,
     Prompt,
 }
 
-/// What a key in the `n` prompt asks the dashboard to do.
-#[derive(Debug, PartialEq, Eq)]
-pub enum LaunchAction {
+/// What a key in the job wizard asks the dashboard to do.
+#[derive(Debug, PartialEq)]
+pub enum FormAction {
     Stay,
     Cancel,
-    /// Suspend the dashboard and run the harness natively in the directory.
-    Interactive(PathBuf, HarnessKind),
-    /// A supervised `cones run --prompt` in the directory.
-    Managed(PathBuf, HarnessKind, String),
+    /// Write the job, replacing the one with this name when editing.
+    Save(Option<String>, Box<config::Job>),
 }
 
 /// A row of options with the picked one lit and bracketed, then the keys that move and the
@@ -757,194 +747,157 @@ fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, ente
     ));
 }
 
-/// The `n` prompt: a directory, a harness, interactive or managed, then the task for a managed
-/// run. `enter` answers a question, `esc` cancels, backspace on an empty answer steps back.
-/// Pure: every filesystem fact comes in through `base`, `fallback` and `launch_dir`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Launch {
+/// The job wizard (`ctrl+n` adds, `ctrl+e` on a job row edits): a name, a directory, a
+/// five-field cron schedule and the prompt. `enter` answers a question, `esc` cancels,
+/// backspace on an empty answer steps back. Editing keeps every field the wizard does not ask
+/// about (model, budget, tools). Pure: filesystem facts come in through `base`, `fallback` and
+/// `launch_dir`; the file is written by the dashboard on `Save`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JobForm {
     pub step: Step,
+    pub name: String,
     pub dir: String,
-    pub resolved: Option<PathBuf>,
-    pub harness: usize,
-    pub managed: bool,
+    pub schedule: String,
     pub prompt: String,
     pub error: Option<String>,
+    /// The job being edited, as written in the file; `None` adds one.
+    original: Option<config::Job>,
     base: PathBuf,
     fallback: PathBuf,
 }
 
-impl Launch {
-    /// `fallback` is the directory an empty answer means and is shown as the placeholder.
-    pub fn new(base: &Path, fallback: &Path) -> Self {
+impl JobForm {
+    /// `base` is where a relative directory is taken from, the jobs file's; `fallback` is what
+    /// an empty directory means and is shown as the placeholder.
+    pub fn new(base: &Path, fallback: &Path, original: Option<config::Job>) -> Self {
+        let (name, dir, schedule, prompt) = match &original {
+            Some(j) => (
+                j.name.clone(),
+                j.cwd.display().to_string(),
+                j.schedule.clone(),
+                j.prompt.clone(),
+            ),
+            None => Default::default(),
+        };
         Self {
-            step: Step::Dir,
-            dir: String::new(),
-            resolved: None,
-            harness: 0,
-            managed: false,
-            prompt: String::new(),
+            step: Step::Name,
+            name,
+            dir,
+            schedule,
+            prompt,
             error: None,
+            original,
             base: base.to_owned(),
             fallback: fallback.to_owned(),
         }
     }
 
-    pub fn kind(&self) -> HarnessKind {
-        harness::KNOWN[self.harness]
+    fn field(&mut self) -> &mut String {
+        match self.step {
+            Step::Name => &mut self.name,
+            Step::Dir => &mut self.dir,
+            Step::Schedule => &mut self.schedule,
+            Step::Prompt => &mut self.prompt,
+        }
     }
 
-    /// The directory the launch will use so far: the validated one, else the placeholder.
-    pub fn target(&self) -> &Path {
-        self.resolved.as_deref().unwrap_or(&self.fallback)
-    }
-
-    fn cycle(&mut self, delta: isize) {
-        let n = harness::KNOWN.len() as isize;
-        self.harness = (self.harness as isize + delta).rem_euclid(n) as usize;
-    }
-
-    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> LaunchAction {
+    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> FormAction {
         if code == KeyCode::Esc {
-            return LaunchAction::Cancel;
+            return FormAction::Cancel;
         }
         self.error = None;
-        match self.step {
-            Step::Dir => match code {
-                KeyCode::Enter => match launch_dir(&self.dir, &self.base, &self.fallback) {
-                    Ok(dir) => {
-                        self.resolved = Some(dir);
-                        self.step = Step::Harness;
-                    }
-                    Err(e) => self.error = Some(e),
-                },
-                KeyCode::Backspace => {
-                    self.dir.pop();
+        match code {
+            KeyCode::Enter => return self.next(),
+            KeyCode::Backspace if self.field().is_empty() => {
+                self.step = match self.step {
+                    Step::Name | Step::Dir => Step::Name,
+                    Step::Schedule => Step::Dir,
+                    Step::Prompt => Step::Schedule,
                 }
-                KeyCode::Char(c) if !ctrl => self.dir.push(c),
-                _ => {}
-            },
-            Step::Harness => match code {
-                KeyCode::Left | KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('h') => {
-                    self.cycle(-1)
-                }
-                KeyCode::Right
-                | KeyCode::Down
-                | KeyCode::Tab
-                | KeyCode::Char(' ')
-                | KeyCode::Char('j')
-                | KeyCode::Char('l') => self.cycle(1),
-                KeyCode::Enter => self.step = Step::How,
-                KeyCode::Backspace => self.step = Step::Dir,
-                _ => {}
-            },
-            Step::How => match code {
-                KeyCode::Left
-                | KeyCode::Right
-                | KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Tab
-                | KeyCode::Char(' ')
-                | KeyCode::Char('h')
-                | KeyCode::Char('j')
-                | KeyCode::Char('k')
-                | KeyCode::Char('l') => self.managed = !self.managed,
-                KeyCode::Char('i') => self.managed = false,
-                KeyCode::Char('m') => self.managed = true,
-                KeyCode::Enter => {
-                    let dir = self.target().to_owned();
-                    if !self.managed {
-                        return LaunchAction::Interactive(dir, self.kind());
-                    }
-                    // A managed run compiles a policy; a harness without an adapter fails at
-                    // validation, so say so here rather than as a failed row in the ledger.
-                    match harness::adapter(self.kind()) {
-                        Ok(_) => self.step = Step::Prompt,
-                        Err(e) => self.error = Some(e.to_string()),
-                    }
-                }
-                KeyCode::Backspace => self.step = Step::Harness,
-                _ => {}
-            },
-            Step::Prompt => match code {
-                KeyCode::Enter => {
-                    let prompt = self.prompt.trim().to_owned();
-                    if !prompt.is_empty() {
-                        return LaunchAction::Managed(
-                            self.target().to_owned(),
-                            self.kind(),
-                            prompt,
-                        );
-                    }
-                }
-                KeyCode::Backspace if self.prompt.is_empty() => self.step = Step::How,
-                KeyCode::Backspace => {
-                    self.prompt.pop();
-                }
-                KeyCode::Char(c) if !ctrl => self.prompt.push(c),
-                _ => {}
-            },
+            }
+            KeyCode::Backspace => {
+                self.field().pop();
+            }
+            KeyCode::Char(c) if !ctrl => self.field().push(c),
+            _ => {}
         }
-        LaunchAction::Stay
+        FormAction::Stay
     }
 
-    /// The footer line: what is asked, the answer so far, the choices with the current one lit,
-    /// the inline error when there is one.
-    fn line(&self) -> Line<'static> {
-        let ask = Style::default().fg(ORANGE);
-        let choices = |spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize| {
-            choices(spans, options, picked, "next");
-        };
-        let mut spans = vec![Span::styled("new task", ask)];
+    /// Check the answer; move on, or at the last question hand the job over. The checks are the
+    /// file's own, so what passes here passes `cones install`.
+    fn next(&mut self) -> FormAction {
         match self.step {
-            Step::Dir => {
-                spans.push(Span::styled(" · dir › ", ask));
-                if self.dir.is_empty() {
-                    spans.push(Span::styled(fleet::tilde(&self.fallback), dim()));
+            Step::Name => {
+                let ok = !self.name.is_empty()
+                    && self.name.len() <= 80
+                    && self
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+                if ok {
+                    self.step = Step::Dir;
                 } else {
-                    spans.push(Span::raw(self.dir.clone()));
+                    self.error = Some("1-80 letters, digits, - or _".into());
                 }
-                spans.push(Span::styled("▏", dim()));
             }
-            Step::Harness => {
-                spans.push(Span::styled(
-                    format!(" in {} · harness › ", fleet::tilde(self.target())),
-                    ask,
-                ));
-                let names: Vec<String> = harness::KNOWN
-                    .iter()
-                    .map(|h| logo(&h.to_string()))
-                    .collect();
-                let names: Vec<&str> = names.iter().map(String::as_str).collect();
-                choices(&mut spans, &names, self.harness);
-            }
-            Step::How => {
-                spans.push(Span::styled(
-                    format!(
-                        " in {} · {} · start › ",
-                        fleet::tilde(self.target()),
-                        logo(&self.kind().to_string())
-                    ),
-                    ask,
-                ));
-                choices(
-                    &mut spans,
-                    &["interactive", "managed"],
-                    usize::from(self.managed),
+            Step::Dir => match launch_dir(&self.dir, &self.base, &self.fallback) {
+                Ok(dir) => {
+                    self.dir = fleet::tilde(&dir);
+                    self.step = Step::Schedule;
+                }
+                Err(e) => self.error = Some(e),
+            },
+            Step::Schedule => match launchd::calendar_intervals(&self.schedule) {
+                Ok(_) => self.step = Step::Prompt,
+                Err(e) => self.error = Some(format!("{e:#}")),
+            },
+            Step::Prompt => {
+                if self.prompt.trim().is_empty() {
+                    self.error = Some("the prompt is the task; it cannot be empty".into());
+                    return FormAction::Stay;
+                }
+                let mut job = self.original.clone().unwrap_or_else(|| {
+                    config::Job::new(&self.name, &self.schedule, Path::new(&self.dir), "")
+                });
+                job.name = self.name.clone();
+                job.cwd = PathBuf::from(&self.dir);
+                job.schedule = self.schedule.clone();
+                job.prompt = self.prompt.trim().to_owned();
+                return FormAction::Save(
+                    self.original.as_ref().map(|j| j.name.clone()),
+                    Box::new(job),
                 );
             }
-            Step::Prompt => {
-                spans.push(Span::styled(
-                    format!(
-                        " in {} · {} managed › ",
-                        fleet::tilde(self.target()),
-                        logo(&self.kind().to_string())
-                    ),
-                    ask,
-                ));
-                spans.push(Span::raw(self.prompt.clone()));
-                spans.push(Span::styled("▏", dim()));
-            }
         }
+        FormAction::Stay
+    }
+
+    /// The prompt line: what is asked, the answer so far or a placeholder, the inline error.
+    fn line(&self) -> Line<'static> {
+        let ask = Style::default().fg(ORANGE);
+        let title = match &self.original {
+            Some(j) => format!("edit {}", j.name),
+            None => "new job".to_owned(),
+        };
+        let fallback = fleet::tilde(&self.fallback);
+        let (what, value, hint) = match self.step {
+            Step::Name => ("name", &self.name, "letters, digits, - or _"),
+            Step::Dir => ("dir", &self.dir, fallback.as_str()),
+            Step::Schedule => (
+                "schedule",
+                &self.schedule,
+                "minute hour day month weekday, as in 0 9 * * 1-5",
+            ),
+            Step::Prompt => ("prompt", &self.prompt, "the task"),
+        };
+        let mut spans = vec![Span::styled(format!("{title} · {what} › "), ask)];
+        if value.is_empty() {
+            spans.push(Span::styled(hint.to_owned(), dim()));
+        } else {
+            spans.push(Span::raw(value.clone()));
+        }
+        spans.push(Span::styled("▏", dim()));
         if let Some(e) = &self.error {
             spans.push(Span::styled(
                 format!("  {e}"),
@@ -958,8 +911,8 @@ impl Launch {
 enum Mode {
     Normal,
     Filter,
-    Launch(Launch),
-    /// The `h` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
+    Job(Box<JobForm>),
+    /// The `ctrl+o` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
     Harness(usize),
 }
 
@@ -980,15 +933,12 @@ struct App {
     filter: String,
     mode: Mode,
     status: String,
-    details: Vec<String>,
-    /// `tab` cycles the pane: hidden, a peek at the bottom of the screen, then most of it
-    /// with a session showing `MORE` exchanges.
-    pane: Pane,
-    /// Pane lines hidden below the bottom edge: 0 pins the pane to the end of the transcript so
-    /// a working session keeps scrolling by itself; paging up raises it.
-    pane_scroll: usize,
-    /// Rows the pane had at the last draw, so a page is a screenful.
-    pane_height: usize,
+    /// The composer: the instruction a session in the selected row's directory starts with.
+    text: String,
+    /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
+    harness: usize,
+    /// A `claude --bg` in flight on its own thread; its one line lands in the status.
+    started: Option<mpsc::Receiver<String>>,
     tick: usize,
     refreshed: Instant,
     /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
@@ -998,17 +948,6 @@ struct App {
     armed: Option<(String, Instant)>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
-}
-
-/// What a foreground child stopping on ctrl-z means. Nothing here parks a harness: a stopped
-/// agent does no work, so a harness that cannot be left running is not opened from the
-/// dashboard at all.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum OnStop {
-    /// A viewer (attach client, log follower): killed, the dashboard is back at once.
-    Kill,
-    /// The editor: resumed, so ctrl-z is a no-op and unsaved edits are safe.
-    Resume,
 }
 
 enum Waited {
@@ -1033,10 +972,9 @@ impl App {
             filter: String::new(),
             mode: Mode::Normal,
             status: String::new(),
-            details: vec![],
-            pane: Pane::Hidden,
-            pane_scroll: 0,
-            pane_height: 0,
+            text: String::new(),
+            harness: 0,
+            started: None,
             tick: 0,
             refreshed: Instant::now(),
             loading: None,
@@ -1085,6 +1023,13 @@ impl App {
     /// Apply a finished reload, if one has landed. A failed read shows in the status line and
     /// the last good data stays on screen.
     fn poll(&mut self) {
+        if let Some(rx) = &self.started
+            && let Ok(msg) = rx.try_recv()
+        {
+            self.status = msg;
+            self.started = None;
+            self.reload();
+        }
         let Some(rx) = &self.loading else {
             return;
         };
@@ -1114,31 +1059,6 @@ impl App {
         }
         self.settle();
         self.refreshed = Instant::now();
-    }
-
-    /// The pane lines on screen: `[from, to)` of `details`, from the end less `pane_scroll`.
-    fn window(&self) -> (usize, usize) {
-        let max = self.details.len().saturating_sub(self.pane_height);
-        let from = max - self.pane_scroll.min(max);
-        (from, (from + self.pane_height).min(self.details.len()))
-    }
-
-    /// Page the pane: up towards the start of the transcript, down back to its end.
-    fn scroll_pane(&mut self, pages: isize) {
-        let max = self.details.len().saturating_sub(self.pane_height) as isize;
-        let by = self.pane_height.max(1) as isize;
-        self.pane_scroll = (self.pane_scroll as isize + pages * by).clamp(0, max) as usize;
-    }
-
-    /// `tab`: hidden, peek, more, hidden again.
-    fn toggle_more(&mut self) {
-        self.pane = match self.pane {
-            Pane::Hidden => Pane::Peek,
-            Pane::Peek => Pane::More,
-            Pane::More => Pane::Hidden,
-        };
-        self.pane_scroll = 0;
-        self.settle();
     }
 
     /// Rows that match the filter, plus the headers that still have something under them.
@@ -1177,7 +1097,6 @@ impl App {
     fn settle(&mut self) {
         if self.visible.is_empty() {
             self.cursor = 0;
-            self.details.clear();
             return;
         }
         self.cursor = self.cursor.min(self.visible.len() - 1);
@@ -1189,11 +1108,6 @@ impl App {
         {
             self.cursor = i;
         }
-        let depth = if self.pane == Pane::More { MORE } else { 1 };
-        self.details = self
-            .selected()
-            .map(|r| self.data.details(&r.kind, depth))
-            .unwrap_or_default();
     }
 
     fn step(&mut self, delta: isize) {
@@ -1209,8 +1123,6 @@ impl App {
             }
         }
         self.cursor = i as usize;
-        // A new row reads from its end, whatever the last one was scrolled to.
-        self.pane_scroll = 0;
         self.settle();
     }
 
@@ -1272,13 +1184,7 @@ impl App {
     /// line. The child runs in its own process group and owns the tty, like a shell job, so
     /// ctrl-c and ctrl-z reach it and everything it forked, and nothing else; `on_stop` says
     /// what a stop means.
-    fn foreground(
-        &mut self,
-        terminal: &mut DefaultTerminal,
-        mut c: Command,
-        what: &str,
-        on_stop: OnStop,
-    ) {
+    fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
         use std::io::Read;
         use std::os::unix::process::CommandExt;
         let height = terminal.size().map(|s| s.height).unwrap_or(0);
@@ -1331,7 +1237,7 @@ impl App {
             });
             let watch = self.log.as_ref().map(|p| watch_group(p.clone(), c.id()));
             let status = loop {
-                let w = wait_or_stopped(&mut c, on_stop == OnStop::Kill, &|m| self.debug(|| m));
+                let w = wait_or_stopped(&mut c, true, &|m| self.debug(|| m));
                 match w {
                     // The child still owns the tty; it only needs to run again.
                     Ok(Waited::Stopped) => unsafe {
@@ -1444,7 +1350,7 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, c, "logs", OnStop::Kill)
+                self.foreground(terminal, c, "logs")
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1465,14 +1371,14 @@ impl App {
                 // A Codex thread behind the daemon reopens with a client.
                 if harness == "codex" {
                     match harness::codex_resume(&id, &cwd) {
-                        Ok(c) => self.foreground(terminal, c, "codex", OnStop::Kill),
+                        Ok(c) => self.foreground(terminal, c, "codex"),
                         Err(e) => self.status = format!("codex resume failed: {e:#}"),
                     }
                     self.reload();
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
-                    Ok(c) => self.foreground(terminal, c, "attach", OnStop::Kill),
+                    Ok(c) => self.foreground(terminal, c, "attach"),
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
                 // Back on the same row, read again by id: the session may have changed state,
@@ -1482,7 +1388,7 @@ impl App {
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, c, "attach", OnStop::Kill);
+                self.foreground(terminal, c, "attach");
                 self.reload();
             }
             _ => {}
@@ -1490,34 +1396,207 @@ impl App {
         Ok(())
     }
 
-    /// `e`: jobs.yaml in $VISUAL or $EDITOR, then `cones install` so launchd matches the file.
-    /// Jobs are the owner's file, so the dashboard never rewrites yaml itself; comments survive.
-    fn edit_jobs(&mut self, terminal: &mut DefaultTerminal) {
-        let mut c = Command::new("sh");
-        c.arg("-c")
-            .arg("exec ${VISUAL:-${EDITOR:-vi}} \"$0\"")
-            .arg(&self.jobs_path);
-        self.foreground(terminal, c, "editor", OnStop::Resume);
+    /// `cones install`, so launchd matches the file the wizard or ctrl+x just changed.
+    fn install(&mut self, done: &str) {
         let r = self.me().arg("install").output();
         self.status = match r {
-            Ok(o) if o.status.success() => "jobs.yaml saved · launchd reinstalled".into(),
+            Ok(o) if o.status.success() => format!("{done} · launchd reinstalled"),
             Ok(o) => {
                 let err = String::from_utf8_lossy(&o.stderr);
                 let last = err.lines().rev().find(|l| !l.trim().is_empty());
                 format!(
-                    "install failed: {}",
+                    "{done} · install failed: {}",
                     last.unwrap_or("").trim_start_matches("Error: ")
                 )
             }
-            Err(e) => format!("install failed: {e}"),
+            Err(e) => format!("{done} · install failed: {e}"),
         };
     }
 
-    /// ctrl-x once arms, ctrl-x again within two seconds stops: the `claude agents` convention.
+    /// Where the composer starts a session and the wizard's placeholder: the selected row's
+    /// directory, else the dashboard's own.
+    fn target_dir(&self) -> PathBuf {
+        self.selected_cwd().unwrap_or_else(|| self.cwd.clone())
+    }
+
+    /// Where a job's relative `cwd` is taken from: the jobs file's directory.
+    fn jobs_dir(&self) -> PathBuf {
+        std::fs::canonicalize(&self.jobs_path)
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_owned))
+            .unwrap_or_else(|| self.cwd.clone())
+    }
+
+    /// The composer's `enter`: a session in the selected row's directory with the text as its
+    /// first instruction, under the harness `tab` picked. Claude starts in the background on a
+    /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
+    fn start(&mut self, terminal: &mut DefaultTerminal) {
+        let dir = self.target_dir();
+        let kind = harness::KNOWN[self.harness];
+        let prompt = std::mem::take(&mut self.text);
+        let what = format!("{kind} in {}", fleet::tilde(&dir));
+        // Rollout timestamps are the thread's own clock; a little slack covers it.
+        let since = chrono::Utc::now() - chrono::Duration::seconds(5);
+        self.debug(|| format!("start {what}: {prompt:?}"));
+        match harness::start(kind, &dir, prompt.trim()) {
+            Ok(Start::Background(mut c)) => {
+                let (tx, rx) = mpsc::channel();
+                self.status = format!("starting {what}");
+                std::thread::spawn(move || {
+                    let msg = match c.stdin(Stdio::null()).output() {
+                        Ok(o) if o.status.success() => format!(
+                            "started {what}: {}",
+                            uncolored(String::from_utf8_lossy(&o.stdout).trim())
+                        ),
+                        Ok(o) => {
+                            let err = String::from_utf8_lossy(&o.stderr);
+                            let last = err.lines().rev().find(|l| !l.trim().is_empty());
+                            format!("{what} failed: {}", last.unwrap_or("").trim())
+                        }
+                        Err(e) => format!("{what} failed: {e}"),
+                    };
+                    let _ = tx.send(msg);
+                });
+                self.started = Some(rx);
+            }
+            Ok(Start::Foreground(c)) => {
+                self.foreground(terminal, c, &what);
+                if kind == HarnessKind::Codex {
+                    self.record_codex(&dir, since);
+                }
+                self.reload();
+            }
+            Err(e) => {
+                // The instruction is not lost to a refusal.
+                self.text = prompt;
+                self.status = e.to_string();
+            }
+        }
+    }
+
+    /// ctrl+x on a job with no run in flight: once arms, again within two seconds removes the
+    /// job from jobs.yaml and reinstalls launchd. `esc` keeps it.
+    fn delete_job(&mut self, name: String) {
+        match self.armed.take() {
+            Some((armed, at)) if armed == name && at.elapsed() < Duration::from_secs(2) => {
+                match config::write_job(&self.jobs_path, Some(&name), None) {
+                    Ok(()) => {
+                        self.install(&format!("job {name} deleted"));
+                        self.reload();
+                    }
+                    Err(e) => self.status = format!("delete failed: {e:#}"),
+                }
+            }
+            _ => {
+                self.status = format!("ctrl+x again to delete job {name} · esc keeps it");
+                self.armed = Some((name, Instant::now()));
+            }
+        }
+    }
+
+    /// ctrl+e: the wizard on the selected job, filled in from the file as written.
+    fn edit_job(&mut self) {
+        let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
+            self.status = "select a job to edit · ctrl+n adds one".into();
+            return;
+        };
+        match config::raw_jobs(&self.jobs_path) {
+            Ok(jobs) => match jobs.into_iter().find(|j| j.name == name) {
+                Some(j) => {
+                    self.mode =
+                        Mode::Job(Box::new(JobForm::new(&self.jobs_dir(), &self.cwd, Some(j))));
+                }
+                None => {
+                    self.status = format!("{name} is not in {}", fleet::tilde(&self.jobs_path));
+                }
+            },
+            Err(e) => self.status = format!("{e:#}"),
+        }
+    }
+
+    /// What ctrl+x does to the selected row, for the hint line.
+    fn stop_verb(&self) -> &'static str {
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::Job(name))
+                if !self
+                    .data
+                    .runs
+                    .iter()
+                    .any(|r| r.started.job.as_deref() == Some(name) && r.status() == "started") =>
+            {
+                "delete"
+            }
+            _ => "stop",
+        }
+    }
+
+    /// The composer: the harness `tab` picked, then the instruction, or where it would run.
+    fn composer(&self) -> Line<'static> {
+        let kind = harness::KNOWN[self.harness].to_string();
+        let mut spans = vec![Span::styled(
+            format!("{} › ", logo(&kind)),
+            brand(&kind).add_modifier(Modifier::BOLD),
+        )];
+        if self.text.is_empty() {
+            spans.push(Span::styled(
+                format!(
+                    "an instruction for {} · enter starts {kind} there",
+                    fleet::tilde(&self.target_dir())
+                ),
+                dim(),
+            ));
+        } else {
+            spans.push(Span::raw(self.text.clone()));
+            spans.push(Span::styled("▏", dim()));
+        }
+        Line::from(spans)
+    }
+
+    /// The bottom line: the last action's status until the next key, else the keys.
+    fn hint_line(&self) -> Line<'static> {
+        if !self.status.is_empty() {
+            return Line::styled(self.status.clone(), dim());
+        }
+        let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
+        let start = format!(
+            "start {} in {}",
+            harness::KNOWN[self.harness],
+            fleet::tilde(&self.target_dir())
+        );
+        let mut line = match &self.mode {
+            Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
+            Mode::Job(_) => hints(&[
+                ("enter", "next"),
+                ("backspace", "on an empty answer goes back"),
+                ("esc", "cancel"),
+            ]),
+            Mode::Harness(_) => Line::default(),
+            Mode::Normal if !self.text.is_empty() => {
+                hints(&[("enter", &start), ("tab", &next), ("esc", "clear")])
+            }
+            Mode::Normal => hints(&[
+                ("enter", self.enter_label()),
+                ("tab", &next),
+                ("ctrl+x", self.stop_verb()),
+                ("ctrl+n", "new job"),
+                ("ctrl+e", "edit"),
+                ("ctrl+s", "regroup"),
+                ("ctrl+o", "agents"),
+                ("esc", "quit"),
+            ]),
+        };
+        if !self.filter.is_empty() {
+            line.spans
+                .insert(0, Span::styled(format!("filter: {}  ", self.filter), dim()));
+        }
+        line
+    }
+
+    /// ctrl+x once arms, ctrl+x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
-            // A job row means its run in flight; a job itself is edited with `e`, not stopped.
+            // A job row with a run in flight stops that run; with none, ctrl+x deletes the job.
             Some(Kind::Job(name)) => {
                 let live =
                     self.data.runs.iter().rev().find(|r| {
@@ -1525,10 +1604,7 @@ impl App {
                     });
                 match live {
                     Some(r) => r.started.run_id.clone(),
-                    None => {
-                        self.status = format!("{name} has no run in flight · e edits jobs.yaml");
-                        return;
-                    }
+                    None => return self.delete_job(name),
                 }
             }
             _ => {
@@ -1562,15 +1638,17 @@ impl App {
             _ => {
                 self.armed = Some((id, Instant::now()));
                 self.status = if daemon {
-                    "x again to forget this thread".into()
+                    "ctrl+x again to forget this thread · esc keeps it".into()
                 } else {
-                    "x again to stop this run".into()
+                    "ctrl+x again to stop · esc keeps it".into()
                 };
             }
         }
     }
 
-    /// Returns true when the dashboard should exit.
+    /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
+    /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
+    /// until the next key.
     fn key(
         &mut self,
         code: KeyCode,
@@ -1578,7 +1656,7 @@ impl App {
         terminal: &mut DefaultTerminal,
     ) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
-        let shift = mods.contains(KeyModifiers::SHIFT);
+        self.status.clear();
         match &mut self.mode {
             Mode::Filter => {
                 match code {
@@ -1602,16 +1680,7 @@ impl App {
                 let i = *i;
                 match code {
                     KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Left
-                    | KeyCode::Right
-                    | KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::Tab
-                    | KeyCode::Char(' ')
-                    | KeyCode::Char('h')
-                    | KeyCode::Char('j')
-                    | KeyCode::Char('k')
-                    | KeyCode::Char('l') => {
+                    KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char(' ') => {
                         self.mode = Mode::Harness((i + 1) % harness::KNOWN.len());
                     }
                     KeyCode::Enter => {
@@ -1619,12 +1688,7 @@ impl App {
                         self.mode = Mode::Normal;
                         match harness::agents(kind) {
                             Ok(c) => {
-                                self.foreground(
-                                    terminal,
-                                    c,
-                                    &format!("{kind} agents"),
-                                    OnStop::Kill,
-                                );
+                                self.foreground(terminal, c, &format!("{kind} agents"));
                                 self.reload();
                             }
                             Err(e) => self.status = e.to_string(),
@@ -1633,69 +1697,63 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::Launch(launch) => match launch.key(code, ctrl) {
-                LaunchAction::Stay => {}
-                LaunchAction::Cancel => self.mode = Mode::Normal,
-                // The harness natively in the directory, under a viewer the dashboard waits on
-                // and takes the terminal back from. Only a harness whose session outlives the
-                // viewer opens here: leaving must keep it working, and a stopped agent does not.
-                LaunchAction::Interactive(dir, kind) => {
-                    self.mode = Mode::Normal;
-                    let what = format!("{kind} in {}", fleet::tilde(&dir));
-                    // Rollout timestamps are the thread's own clock; a little slack covers it.
-                    let since = chrono::Utc::now() - chrono::Duration::seconds(5);
-                    match harness::interactive(kind, &dir) {
-                        Ok(c) => {
-                            self.foreground(terminal, c, &what, OnStop::Kill);
-                            if kind == HarnessKind::Codex {
-                                self.record_codex(&dir, since);
-                            }
+            Mode::Job(form) => match form.key(code, ctrl) {
+                FormAction::Stay => {}
+                FormAction::Cancel => self.mode = Mode::Normal,
+                // The file is checked as a whole before it is replaced; a bad answer comes back
+                // inline and the wizard stays where it was.
+                FormAction::Save(old, job) => {
+                    match config::write_job(&self.jobs_path, old.as_deref(), Some(&job)) {
+                        Ok(()) => {
+                            self.mode = Mode::Normal;
+                            self.install(&format!("job {} saved", job.name));
                             self.reload();
                         }
-                        // The refusal names the harness itself; the row's prefix would only
-                        // push the reason off the status line.
-                        Err(e) => self.status = e.to_string(),
+                        Err(e) => {
+                            if let Mode::Job(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                        }
                     }
-                }
-                // The same `cones run --prompt` the dashboard has always dispatched, with the
-                // subprocess's cwd set to the chosen directory.
-                LaunchAction::Managed(dir, _, prompt) => {
-                    self.mode = Mode::Normal;
-                    let label = format!(
-                        "dispatched in {}: {}",
-                        fleet::tilde(&dir),
-                        clip(&prompt, 60)
-                    );
-                    self.spawn(&["run", "--prompt", &prompt], Some(&dir), &label);
                 }
             },
             Mode::Normal => match code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
                 KeyCode::Char('c') if ctrl => return Ok(true),
-                KeyCode::PageUp => self.scroll_pane(1),
-                KeyCode::PageDown => self.scroll_pane(-1),
-                KeyCode::Up if shift => self.scroll_pane(1),
-                KeyCode::Down if shift => self.scroll_pane(-1),
-                KeyCode::Up | KeyCode::Char('k') => self.step(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.step(1),
-                KeyCode::Tab => self.toggle_more(),
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('a') => self.enter(terminal)?,
-                KeyCode::Char('x') => self.stop(),
-                KeyCode::Char('e') => self.edit_jobs(terminal),
-                KeyCode::Char('s') => {
+                // esc backs out one thing at a time: an armed ctrl+x, the text, the dashboard.
+                KeyCode::Esc => {
+                    if self.armed.take().is_some() {
+                        self.status = "kept".into();
+                    } else if !self.text.is_empty() {
+                        self.text.clear();
+                    } else {
+                        return Ok(true);
+                    }
+                }
+                KeyCode::Up => self.step(-1),
+                KeyCode::Down => self.step(1),
+                KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
+                KeyCode::Enter if self.text.trim().is_empty() => self.enter(terminal)?,
+                KeyCode::Enter => self.start(terminal),
+                KeyCode::Backspace => {
+                    self.text.pop();
+                }
+                KeyCode::Char('x') if ctrl => self.stop(),
+                KeyCode::Char('s') if ctrl => {
                     self.by_state = !self.by_state;
                     self.refresh()?;
                 }
-                KeyCode::Char('n') => {
-                    let fallback = self.selected_cwd().unwrap_or_else(|| self.cwd.clone());
-                    self.mode = Mode::Launch(Launch::new(&self.cwd, &fallback));
+                KeyCode::Char('n') if ctrl => {
+                    let (base, fallback) = (self.jobs_dir(), self.target_dir());
+                    self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
                 }
-                KeyCode::Char('h') => self.mode = Mode::Harness(0),
-                KeyCode::Char('/') => self.mode = Mode::Filter,
-                KeyCode::Char('r') => {
+                KeyCode::Char('e') if ctrl => self.edit_job(),
+                KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
+                KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
+                KeyCode::Char('r') if ctrl => {
                     self.refresh()?;
                     self.status = "refreshed".into();
                 }
+                KeyCode::Char(c) if !ctrl => self.text.push(c),
                 _ => {}
             },
         }
@@ -1703,60 +1761,22 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        // Hidden, the list has the screen; expanded, the pane takes most of it and the list
-        // keeps the cursor in view.
-        let pane_size = match self.pane {
-            Pane::Hidden => 0,
-            Pane::Peek => 40,
-            Pane::More => 75,
-        };
-        let [head, list, pane, foot] = Layout::vertical([
+        let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Percentage(pane_size),
+            Constraint::Length(1),
             Constraint::Length(1),
         ])
         .areas(frame.area());
-        let enter = self.enter_label();
-        frame.render_widget(
-            Paragraph::new(header_lines(self.data.summary(), enter, self.pane)),
-            head,
-        );
+        frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
         self.draw_list(frame, list);
-        let mut title = self
-            .selected()
-            .map(|r| r.text().trim().to_owned())
-            .unwrap_or_default();
-        self.pane_height = pane.height.saturating_sub(1) as usize;
-        let (from, to) = self.window();
-        // Reading rather than glancing: the title says where in the transcript the pane is.
-        if (self.pane == Pane::More || self.pane_scroll > 0) && to > from {
-            title = format!(
-                "{title} · lines {}-{to} of {} · pgup pgdn scroll",
-                from + 1,
-                self.details.len()
-            );
-        }
-        let lines: Vec<Line> = self.details[from..to]
-            .iter()
-            .map(|l| Line::raw(l.as_str()))
-            .collect();
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                Block::new()
-                    .borders(Borders::TOP)
-                    .border_style(dim())
-                    .title(Span::styled(format!(" {title} "), dim())),
-            ),
-            pane,
-        );
-        let footer = match &self.mode {
+        let line = match &self.mode {
             Mode::Filter => Line::from(vec![
                 Span::styled("/", bold()),
                 Span::raw(self.filter.clone()),
                 Span::styled("▏", dim()),
             ]),
-            Mode::Launch(l) => l.line(),
+            Mode::Job(f) => f.line(),
             Mode::Harness(i) => {
                 let mut spans = vec![Span::styled("open › ", Style::default().fg(ORANGE))];
                 choices(
@@ -1767,13 +1787,10 @@ impl App {
                 );
                 Line::from(spans)
             }
-            Mode::Normal if !self.filter.is_empty() => Line::from(vec![
-                Span::styled(format!("filter: {}  ", self.filter), dim()),
-                Span::styled(self.status.clone(), dim()),
-            ]),
-            Mode::Normal => Line::styled(self.status.clone(), dim()),
+            Mode::Normal => self.composer(),
         };
-        frame.render_widget(Paragraph::new(footer), foot);
+        frame.render_widget(Paragraph::new(line), prompt);
+        frame.render_widget(Paragraph::new(self.hint_line()), foot);
     }
 
     fn draw_list(&mut self, frame: &mut Frame, area: Rect) {
@@ -2013,15 +2030,20 @@ fn watch_group(log: PathBuf, child: u32) -> (mpsc::Sender<()>, std::thread::Join
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }
 
-    fn typed(l: &mut Launch, text: &str) {
+    fn typed(f: &mut JobForm, text: &str) {
         for c in text.chars() {
-            assert_eq!(l.key(KeyCode::Char(c), false), LaunchAction::Stay);
+            assert_eq!(f.key(KeyCode::Char(c), false), FormAction::Stay);
         }
+    }
+
+    fn enter(f: &mut JobForm) -> FormAction {
+        f.key(KeyCode::Enter, false)
     }
 
     #[test]
@@ -2245,7 +2267,10 @@ mod tests {
         app.settle();
         assert_eq!(app.enter_label(), "attach");
         app.stop();
-        assert_eq!(app.status, "x again to forget this thread");
+        assert_eq!(
+            app.status,
+            "ctrl+x again to forget this thread · esc keeps it"
+        );
     }
 
     #[test]
@@ -2294,133 +2319,87 @@ mod tests {
     }
 
     #[test]
-    fn empty_dir_means_the_fallback_and_interactive_launches_there() {
+    fn the_job_wizard_checks_each_answer_and_hands_over_a_claude_job() {
         let base = dir();
-        let mut l = Launch::new(base.path(), base.path());
-        assert_eq!(l.step, Step::Dir);
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::Harness);
-        assert_eq!(l.kind(), HarnessKind::Claude);
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::How);
-        assert!(!l.managed);
+        let mut f = JobForm::new(base.path(), base.path(), None);
+        assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(
-            l.key(KeyCode::Enter, false),
-            LaunchAction::Interactive(base.path().canonicalize().unwrap(), HarnessKind::Claude)
+            (f.step, f.error.is_some()),
+            (Step::Name, true),
+            "an empty name stays"
         );
-    }
-
-    #[test]
-    fn a_bad_directory_stays_on_the_question_with_an_inline_error() {
-        let base = dir();
-        let mut l = Launch::new(base.path(), base.path());
-        typed(&mut l, "nope");
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::Dir);
-        assert!(l.error.as_deref().unwrap().starts_with("not a directory: "));
-        assert!(l.line().to_string().contains("not a directory"));
-        // The next key clears the error; a corrected path goes through.
-        for _ in 0..4 {
-            l.key(KeyCode::Backspace, false);
+        typed(&mut f, "bad name");
+        assert_eq!(f.error, None, "the next key clears the error");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Name);
+        for _ in 0..8 {
+            f.key(KeyCode::Backspace, false);
         }
-        assert_eq!(l.error, None);
-        std::fs::create_dir(base.path().join("ok")).unwrap();
-        typed(&mut l, "ok");
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::Harness);
-        assert_eq!(
-            l.target(),
-            base.path().join("ok").canonicalize().unwrap().as_path()
-        );
+        typed(&mut f, "nightly");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Dir);
+        assert!(f.line().to_string().contains("new job · dir › "));
+        // An empty directory means the placeholder, kept in ~ form.
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Schedule);
+        assert_eq!(f.dir, fleet::tilde(&base.path().canonicalize().unwrap()));
+        typed(&mut f, "not cron");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Schedule);
+        assert!(f.error.is_some());
+        f.schedule.clear();
+        typed(&mut f, "0 2 * * *");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Prompt);
+        assert_eq!(enter(&mut f), FormAction::Stay, "the task cannot be empty");
+        // Backspace on an empty answer steps back, and forward again keeps the answers.
+        f.key(KeyCode::Backspace, false);
+        assert_eq!(f.step, Step::Schedule);
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        typed(&mut f, "triage the TODOs");
+        match enter(&mut f) {
+            FormAction::Save(None, job) => {
+                assert_eq!(job.name, "nightly");
+                assert_eq!(job.harness, HarnessKind::Claude);
+                assert_eq!(job.schedule, "0 2 * * *");
+                assert_eq!(job.cwd, PathBuf::from(&f.dir));
+                assert_eq!(job.prompt, "triage the TODOs");
+                assert_eq!(job.model, None);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
-    fn managed_asks_for_a_prompt_and_dispatches_it() {
+    fn editing_keeps_the_fields_the_wizard_does_not_ask_about() {
         let base = dir();
-        let mut l = Launch::new(base.path(), base.path());
-        l.key(KeyCode::Enter, false);
-        l.key(KeyCode::Enter, false);
-        assert_eq!(l.key(KeyCode::Right, false), LaunchAction::Stay);
-        assert!(l.managed);
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::Prompt);
-        // An empty prompt does not dispatch.
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::Prompt);
-        typed(&mut l, " fix the test ");
-        assert_eq!(
-            l.key(KeyCode::Enter, false),
-            LaunchAction::Managed(
-                base.path().canonicalize().unwrap(),
-                HarnessKind::Claude,
-                "fix the test".into()
-            )
-        );
+        let mut j = config::Job::new("one", "0 9 * * *", Path::new("."), "first");
+        j.model = Some("sonnet".into());
+        j.budget_usd = Some(0.5);
+        let mut f = JobForm::new(base.path(), base.path(), Some(j));
+        assert_eq!((f.name.as_str(), f.dir.as_str()), ("one", "."));
+        assert!(f.line().to_string().starts_with("edit one · name › one"));
+        for _ in 0..3 {
+            assert_eq!(enter(&mut f), FormAction::Stay);
+        }
+        assert_eq!(f.step, Step::Prompt);
+        typed(&mut f, ", revised");
+        match enter(&mut f) {
+            FormAction::Save(Some(old), job) => {
+                assert_eq!(old, "one");
+                assert_eq!(job.prompt, "first, revised");
+                assert_eq!(job.model.as_deref(), Some("sonnet"));
+                assert_eq!(job.budget_usd, Some(0.5));
+                assert_eq!(
+                    job.cwd,
+                    PathBuf::from(fleet::tilde(&base.path().canonicalize().unwrap()))
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(f.key(KeyCode::Esc, false), FormAction::Cancel);
     }
 
-    #[test]
-    fn harness_cycles_through_the_known_list_and_managed_codex_is_refused_inline() {
-        let base = dir();
-        let mut l = Launch::new(base.path(), base.path());
-        l.key(KeyCode::Enter, false);
-        assert_eq!(l.kind(), harness::KNOWN[0]);
-        l.key(KeyCode::Right, false);
-        assert_eq!(l.kind(), HarnessKind::Codex);
-        l.key(KeyCode::Right, false);
-        assert_eq!(l.kind(), HarnessKind::Claude, "wraps around");
-        l.key(KeyCode::Left, false);
-        assert_eq!(l.kind(), HarnessKind::Codex);
-        assert!(l.line().to_string().contains("[>_ codex]"));
-        l.key(KeyCode::Enter, false);
-        assert_eq!(
-            l.key(KeyCode::Enter, false),
-            LaunchAction::Interactive(base.path().canonicalize().unwrap(), HarnessKind::Codex),
-            "interactive needs no adapter"
-        );
-        l.key(KeyCode::Char('m'), false);
-        assert!(l.managed);
-        assert_eq!(l.key(KeyCode::Enter, false), LaunchAction::Stay);
-        assert_eq!(l.step, Step::How, "no adapter, so no prompt step");
-        assert!(l.error.as_deref().unwrap().contains("not available"));
-    }
-
-    #[test]
-    fn esc_cancels_anywhere_and_backspace_steps_back() {
-        let base = dir();
-        let mut l = Launch::new(base.path(), base.path());
-        l.key(KeyCode::Enter, false);
-        l.key(KeyCode::Enter, false);
-        l.key(KeyCode::Char('m'), false);
-        l.key(KeyCode::Enter, false);
-        assert_eq!(l.step, Step::Prompt);
-        typed(&mut l, "a");
-        l.key(KeyCode::Backspace, false);
-        assert_eq!(l.step, Step::Prompt, "backspace edits text first");
-        l.key(KeyCode::Backspace, false);
-        assert_eq!(l.step, Step::How);
-        l.key(KeyCode::Backspace, false);
-        assert_eq!(l.step, Step::Harness);
-        l.key(KeyCode::Backspace, false);
-        assert_eq!(l.step, Step::Dir);
-        assert_eq!(l.key(KeyCode::Esc, false), LaunchAction::Cancel);
-        // Control characters never reach the text.
-        let mut l = Launch::new(base.path(), base.path());
-        l.key(KeyCode::Char('c'), true);
-        assert_eq!(l.dir, "");
-    }
-
-    #[test]
-    fn the_dir_question_shows_the_fallback_as_a_placeholder() {
-        let base = dir();
-        let l = Launch::new(base.path(), base.path());
-        let text = l.line().to_string();
-        assert!(text.starts_with("new task · dir › "));
-        assert!(text.contains(&fleet::tilde(base.path())));
-    }
-
-    use std::fs;
-
-    /// A live registry entry for this test process, so `ps` vouches for the pid.
     fn registry(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
         fs::create_dir_all(claude.join("sessions")).unwrap();
         fs::write(
@@ -2499,82 +2478,64 @@ mod tests {
     }
 
     #[test]
-    fn tab_shows_more_of_the_transcript_and_the_pane_pages() {
-        let dir = tempfile::tempdir().unwrap();
-        let claude = dir.path();
-        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
-        let project = claude.join("projects/-src-one");
-        fs::create_dir_all(&project).unwrap();
-        let turn = |n: usize| {
-            format!(
-                "{{\"type\":\"user\",\"message\":{{\"content\":\"prompt {n}\"}}}}\n{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"reply {n}\"}}]}}}}\n"
-            )
-        };
+    fn ctrl_x_on_a_job_with_no_run_arms_then_deletes_it() {
+        let d = dir();
+        let jobs = d.path().join("jobs.yaml");
         fs::write(
-            project.join(format!("{A}.jsonl")),
-            (0..20).map(turn).collect::<String>(),
+            &jobs,
+            format!(
+                "version: 1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: {}\n    prompt: first\n",
+                d.path().display()
+            ),
         )
         .unwrap();
-        let mut app = app(claude);
+        let mut app =
+            App::new(Path::new("cones-not-installed"), &jobs, d.path(), d.path()).unwrap();
         app.refresh().unwrap();
-        assert_eq!(key(&app).as_deref(), Some(A));
-        let prompts = |app: &App| app.details.iter().filter(|l| l.starts_with("> ")).count();
-        assert_eq!(app.pane, Pane::Hidden, "the pane starts hidden");
-        assert_eq!(prompts(&app), 1, "collapsed: the last exchange");
-        assert!(app.details.contains(&"reply 19".to_owned()));
-        app.toggle_more();
-        assert_eq!(app.pane, Pane::Peek, "one tab peeks");
-        assert_eq!(prompts(&app), 1);
-        app.toggle_more();
-        assert_eq!(app.pane, Pane::More);
-        assert_eq!(prompts(&app), MORE, "expanded: the last {MORE} exchanges");
-        assert!(app.details.contains(&"> prompt 8".to_owned()));
-        assert!(!app.details.contains(&"> prompt 7".to_owned()));
-        // Paging: the pane starts pinned to the end, pages up in screenfuls, clamps at the top
-        // and comes back down; a reload keeps the place, moving rows resets it.
-        let n = app.details.len();
-        app.pane_height = 10;
-        assert_eq!(app.window(), (n - 10, n));
-        app.scroll_pane(1);
-        assert_eq!(app.window(), (n - 20, n - 10));
-        for _ in 0..50 {
-            app.scroll_pane(1);
-        }
-        assert_eq!(app.window(), (0, 10), "clamped at the start");
-        app.scroll_pane(-1);
-        assert_eq!(app.window(), (10, 20));
-        let place = app.pane_scroll;
-        app.refresh().unwrap();
-        assert_eq!(
-            app.pane_scroll, place,
-            "a reload does not yank the reader back"
+        assert!(matches!(app.selected().unwrap().kind, Kind::Job(_)));
+        assert_eq!(app.stop_verb(), "delete");
+        app.stop();
+        assert!(
+            app.status.contains("again to delete job one"),
+            "{}",
+            app.status
         );
-        app.step(1);
-        assert_eq!(app.window(), (n - 10, n), "a new row reads from its end");
-        app.scroll_pane(1);
-        app.toggle_more();
-        assert_eq!(app.pane, Pane::Hidden, "a third tab hides the pane again");
-        assert_eq!(prompts(&app), 1);
-        assert_eq!(app.pane_scroll, 0, "tab back pins to the end again");
-        // A pane taller than the text shows all of it and cannot scroll.
-        app.pane_height = 100;
-        assert_eq!(app.window(), (0, app.details.len()));
-        app.scroll_pane(1);
-        assert_eq!(app.pane_scroll, 0);
+        assert!(
+            fs::read_to_string(&jobs).unwrap().contains("name: one"),
+            "armed only"
+        );
+        app.stop();
+        assert!(!fs::read_to_string(&jobs).unwrap().contains("name: one"));
+        assert!(app.status.starts_with("job one deleted"), "{}", app.status);
     }
 
     #[test]
-    fn hint_line_names_what_tab_does_next() {
-        let text = |pane: Pane| {
-            header_lines(Line::raw("s"), "attach", pane)[2]
-                .spans
+    fn the_bottom_lines_name_the_next_harness_and_what_ctrl_x_does() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let text = |l: Line| {
+            l.spans
                 .iter()
                 .map(|s| s.content.to_string())
                 .collect::<String>()
         };
-        assert!(text(Pane::Hidden).contains("enter attach · tab peek · x x stop"));
-        assert!(text(Pane::Hidden).contains("n new task · h harness · / filter"));
-        assert!(text(Pane::Peek).contains("enter attach · tab more · x x stop"));
-        assert!(text(Pane::More).contains("enter attach · tab hide · x x stop"));
+        assert!(text(app.composer()).starts_with("claude › an instruction for "));
+        assert!(text(app.hint_line()).contains("tab codex · ctrl+x stop · ctrl+n new job"));
+        app.harness = (app.harness + 1) % harness::KNOWN.len();
+        assert!(text(app.composer()).starts_with(">_ codex › "));
+        assert!(text(app.hint_line()).contains("tab claude"));
+        app.text = "fix the tests".into();
+        assert!(text(app.hint_line()).starts_with("enter start codex in "));
+        app.status = "back from attach".into();
+        assert_eq!(
+            text(app.hint_line()),
+            "back from attach",
+            "a status replaces the hints"
+        );
+        assert_eq!(
+            uncolored("backgrounded · \x1b[36m7890c11a\x1b[39m (idle)"),
+            "backgrounded · 7890c11a (idle)"
+        );
     }
 }

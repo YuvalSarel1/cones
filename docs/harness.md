@@ -56,7 +56,7 @@ What `cones run` and `cones coordinator start` need to launch a harness. The com
 | No user or project settings, no MCP, no slash commands | reported: `--setting-sources ""`, `--strict-mcp-config --mcp-config`, `--disable-slash-commands` | unknown |
 | Version and flag probe | reported: `claude --version` against `>=2.1, <3`; every compiled flag against `claude --help` | unknown |
 | Background session with a skill | reported: `claude --bg --plugin-dir <dir> /<skill>` | unknown |
-| Interactive session in a directory (the dashboard's `n`) | reported: `claude` run in that cwd, resolved from the launch PATH | reported: `codex` run in that cwd, the same way |
+| Session in a directory with a first instruction (the dashboard's composer) | reported: `claude --bg` with the instruction in that cwd, resolved from the launch PATH | reported: `codex --remote` with the instruction in that cwd, as a client of the daemon |
 
 ## Control
 
@@ -68,7 +68,7 @@ What `stop`, `attach`, `logs` and the timeout need.
 | Stop a background session | reported: `claude stop <id>`. The daemon respawns a killed worker, so a signal is not enough. | `-`: Codex has no daemon-owned sessions in the fleet; `app-server` processes are not listed. |
 | Kill a run at the timeout | cones owns it: SIGTERM to the process group, SIGKILL two seconds later | unknown |
 | Attach to a session | reported: `claude attach <id>` in its cwd, for registry kind `bg`; an `interactive` session is refused, `claude attach` takes background jobs only | `-`: Codex has no attach command. `cones attach` refuses a Codex row. |
-| Read a session's output | reported: the transcript, see Observe | reported: the rollout, when matched; `cones logs` and the details pane read it. |
+| Read a session's output | reported: the transcript, see Observe | reported: the rollout, when matched; `cones logs` reads it. |
 
 ## Open
 

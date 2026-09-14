@@ -28,19 +28,23 @@
 <text x="328" y="284" font-size="13.5" fill="#e6edf3" >transcript, never estimated</text>
 <text x="316" y="304" font-size="13.5" fill="#e6edf3" >• stop and attach from CLI and</text>
 <text x="328" y="324" font-size="13.5" fill="#e6edf3" >TUI</text>
-<text x="316" y="344" font-size="13.5" fill="#e6edf3" >• dashboard: details pane,</text>
-<text x="328" y="364" font-size="13.5" fill="#e6edf3" >dispatch, grouping</text>
-<text x="582" y="64" font-size="13.5" fill="#e6edf3" >• n launches in any folder,</text>
-<text x="594" y="84" font-size="13.5" fill="#e6edf3" >interactive or managed</text>
-<text x="582" y="104" font-size="13.5" fill="#e6edf3" >• tab reads more of a session,</text>
-<text x="594" y="124" font-size="13.5" fill="#e6edf3" >attach returns to the row</text>
-<text x="582" y="144" font-size="13.5" fill="#e6edf3" >• key hints follow claude agents</text>
-<text x="582" y="164" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
-<text x="594" y="184" font-size="13.5" fill="#e6edf3" >colors</text>
-<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
-<text x="594" y="224" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
-<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
-<text x="594" y="264" font-size="13.5" fill="#e6edf3" >in the binary</text>
+<text x="316" y="344" font-size="13.5" fill="#e6edf3" >• dashboard: grouping, filter, a</text>
+<text x="328" y="364" font-size="13.5" fill="#e6edf3" >harness&#x27;s own agents view</text>
+<text x="582" y="64" font-size="13.5" fill="#e6edf3" >• composer: an instruction</text>
+<text x="594" y="84" font-size="13.5" fill="#e6edf3" >starts a session in the</text>
+<text x="594" y="104" font-size="13.5" fill="#e6edf3" >selected folder, any harness</text>
+<text x="582" y="124" font-size="13.5" fill="#e6edf3" >• jobs added, edited and deleted</text>
+<text x="594" y="144" font-size="13.5" fill="#e6edf3" >from the dashboard</text>
+<text x="582" y="164" font-size="13.5" fill="#e6edf3" >• attach returns to the row;</text>
+<text x="594" y="184" font-size="13.5" fill="#e6edf3" >ctrl+x stops</text>
+<text x="582" y="204" font-size="13.5" fill="#e6edf3" >• keys and hints follow claude</text>
+<text x="594" y="224" font-size="13.5" fill="#e6edf3" >agents</text>
+<text x="582" y="244" font-size="13.5" fill="#e6edf3" >• per-harness marks, spinners,</text>
+<text x="594" y="264" font-size="13.5" fill="#e6edf3" >colors</text>
+<text x="582" y="284" font-size="13.5" fill="#e6edf3" >• doctor: login, job env,</text>
+<text x="594" y="304" font-size="13.5" fill="#e6edf3" >version drift, flags</text>
+<text x="582" y="324" font-size="13.5" fill="#e6edf3" >• cones coordinator start, skill</text>
+<text x="594" y="344" font-size="13.5" fill="#e6edf3" >in the binary</text>
 <rect x="36" y="412" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="450" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="470" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>
