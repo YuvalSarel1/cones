@@ -151,6 +151,7 @@ impl Data {
             ("active", "working"),
             ("blocked", "need input"),
             ("idle", "idle"),
+            ("done", "done"),
         ] {
             let n = self.count(state);
             let style = if n == 0 { dim() } else { color(state) };
@@ -654,8 +655,8 @@ fn icon(state: &str) -> &str {
         "active" | "started" => "▲",
         "blocked" => "⚠",
         "idle" => "△",
-        "exited" => "▵",
-        "ok" => "✓",
+        "exited" | "stopped" => "▵",
+        "ok" | "done" => "✓",
         "skipped" | "-" => "–",
         _ => "✗",
     }
@@ -708,9 +709,11 @@ fn label(state: &str) -> &str {
 
 fn color(status: &str) -> Style {
     match status {
-        "active" | "started" | "ok" => Style::default().fg(Color::Green),
+        // Claude's own agents view: working is plain, green is for finished work.
+        "active" | "started" => plain(),
+        "ok" | "done" => Style::default().fg(Color::Green),
         "blocked" | "skipped" => Style::default().fg(Color::Yellow),
-        "idle" | "exited" | "-" => dim(),
+        "idle" | "exited" | "stopped" | "-" => dim(),
         _ => Style::default().fg(Color::Red),
     }
 }

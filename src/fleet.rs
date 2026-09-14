@@ -75,7 +75,7 @@ impl Session {
 fn claude() -> String {
     "claude".into()
 }
-pub const STATES: [&str; 3] = ["active", "idle", "blocked"];
+pub const STATES: [&str; 6] = ["active", "idle", "blocked", "done", "failed", "stopped"];
 
 /// Claude's config directory: `$CLAUDE_CONFIG_DIR`, the same override Claude Code honors, or
 /// `~/.claude`. Holds `sessions/`, `projects/` and `jobs/`.
@@ -195,11 +195,15 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
         cwd,
-        // A status this version does not know renders as Claude's own word, never as a guess.
-        state: match v["status"].as_str().unwrap_or("-") {
-            "busy" | "shell" => "active",
-            "blocked" | "waiting" | "needs_user" | "needs_trust" => "blocked",
-            other => other,
+        // The same order `claude agents` reads a row's word in: a finished job's own state first,
+        // then the registry status, then a job whose tempo is blocked. A status this version does
+        // not know renders as Claude's own word, never as a guess.
+        state: match (job["state"].as_str(), v["status"].as_str().unwrap_or("-")) {
+            (Some(done @ ("done" | "failed" | "stopped")), _) => done,
+            (_, "busy" | "shell") => "active",
+            (_, "blocked" | "waiting" | "needs_user" | "needs_trust") => "blocked",
+            _ if job["tempo"].as_str() == Some("blocked") => "blocked",
+            (_, other) => other,
         }
         .into(),
         // Start, last activity, model and context are the transcript's own words; the registry

@@ -54,7 +54,7 @@ enum Action {
     Ls {
         #[arg(long)]
         job: Option<String>,
-        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","active","idle","blocked","exited"])]
+        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","active","idle","blocked","done","stopped","exited"])]
         status: Option<String>,
         #[arg(long)]
         json: bool,

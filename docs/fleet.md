@@ -32,12 +32,17 @@ Every value is a line Claude wrote, and the table names the line. Nothing is rea
 | `tokens_in`, `tokens_out` | Summed over every transcript message with `usage`, once per message id, recounted when the file grows; input includes cache reads and cache creation. Absent until the first such message |
 | `context_tokens` | The prompt size on the same message `model` comes from: `input_tokens` plus `cache_creation_input_tokens` and `cache_read_input_tokens`, the fields Claude's statusLine `current_usage` carries. There is no window field: Claude Code states the window size only in its statusLine payload, which reaches nothing outside the session, so the cell has no denominator and no percentage |
 
-| State | Registry `status` | Dashboard label |
-| --- | --- | --- |
-| `active` | `busy`, `shell` | working |
-| `idle` | `idle` | idle |
-| `blocked` | `blocked`, `waiting`, `needs_user`, `needs_trust` | needs input |
-| the word itself | any other value | the word itself |
+The state is read in the order `claude agents` reads it for its own rows: a background job's `state` in `state.json` when it is `done`, `failed` or `stopped`; then the registry `status`; then a job whose `tempo` is `blocked`.
+
+| State | Source | Dashboard label | Color |
+| --- | --- | --- | --- |
+| `done`, `failed`, `stopped` | job `state` | the word itself | green, red, dim |
+| `active` | status `busy`, `shell` | working | plain |
+| `blocked` | status `blocked`, `waiting`, `needs_user`, `needs_trust`; or job `tempo` `blocked` | needs input | yellow |
+| `idle` | status `idle` | idle | dim |
+| the word itself | any other status | the word itself | red |
+
+Working is plain and green is kept for finished work, as in Claude's own agents view.
 
 A registry entry is a live session only when its pid is running and the process start time `ps` prints under UTC equals the entry's `procStart`; a gone pid or a reused one is a crashed session and is skipped. An entry marked `spare` is a warm worker Claude's daemon keeps ready for the next `claude --bg`, not a session anyone started; it is skipped too, as `claude agents` skips it. There is no exited state: when a session ends Claude removes its entry and the row leaves the list. Those two are what the removed hook offered that the registry does not, an exited row that lingered for an hour and the name of the last hook event and tool; everything else the hook recorded comes from the registry or the transcript.
 

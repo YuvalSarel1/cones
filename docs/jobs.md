@@ -54,7 +54,7 @@ jobs:
 
 | Column | Cell | Default |
 | --- | --- | --- |
-| `state` | working, needs input, idle or exited | yes |
+| `state` | working, needs input, idle, done, failed, stopped or exited | yes |
 | `model` | The bare API model id on the last message with usage, `claude-fable-5-1` | yes |
 | `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
 | `activity` | Time since the transcript's last timestamp | yes |
