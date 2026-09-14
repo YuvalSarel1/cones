@@ -23,6 +23,8 @@ The dashboard opens an agent only when leaving it keeps it working. An agent tha
 | Codex service processes | `codex app-server`, `mcp-server`, `login`, `update`, `doctor` and the like | no; they run no session | | | | |
 | Subagents | the Agent tool inside a session | no; they run inside their parent's process and the registry has one entry per pid | | | | part of the parent row |
 
+The folder's coordinator is one of the Claude kinds above: background when `cones coordinator start` launched it, interactive when `/start-orchestrator` was typed in a terminal. Its row says `orchestrator`, in orange, because the skill's status file names its pid and folder (see [fleet.md](fleet.md#the-coordinator-one-session-per-folder)); everything else about it follows its kind's row.
+
 The dashboard's `ctrl+o` key opens a harness's own agents view with no row picked: `claude agents`, or Codex's `resume` picker as a daemon client. What is opened from inside that view follows the harness's rules, not this table.
 
 `cones attach <id>` at the shell follows the same table: a ledger run resumes when finished and refuses while in flight, a Claude background session attaches, a Claude interactive session or a Codex row is refused with the reason, and a session whose pid is gone but whose id is known resumes in the background and attaches.

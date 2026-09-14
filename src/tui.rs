@@ -284,10 +284,19 @@ impl Data {
                     (icon(&s.state).into(), color(&s.state)),
                     (logo(&s.harness), brand(&s.harness)),
                     // The same words as the footer, on the row, so a session that cannot be
-                    // joined from here is known before it is selected.
+                    // joined from here is known before it is selected. The folder's
+                    // orchestrator says so here and carries its title in cones' orange, so it
+                    // is told from the workers at a glance.
                     (
-                        if s.own_terminal() { "own terminal" } else { "" }.into(),
-                        dim(),
+                        [
+                            s.coordinator.then_some("orchestrator"),
+                            s.own_terminal().then_some("own terminal"),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                        if s.coordinator { lit() } else { dim() },
                     ),
                     (
                         // A long title would push every metric column off a 120-column screen.
@@ -297,7 +306,7 @@ impl Data {
                                 .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
                             40,
                         ),
-                        plain(),
+                        if s.coordinator { lit() } else { plain() },
                     ),
                 ];
                 row.extend(self.columns.iter().map(|c| cell(c, s, by_state)));
@@ -423,10 +432,11 @@ impl Data {
                 let mut out = vec![
                     fleet::tilde(&s.cwd),
                     format!(
-                        "{} · {} {} · {} · started {} · last activity {} · {} context · {} tokens · pid {} · {}",
+                        "{} · {} {}{} · {} · started {} · last activity {} · {} context · {} tokens · pid {} · {}",
                         logo(&s.harness),
                         label(&s.state),
                         s.kind.as_deref().unwrap_or(""),
+                        if s.coordinator { " orchestrator" } else { "" },
                         s.model.as_deref().unwrap_or("-"),
                         stamp(s.started),
                         stamp(s.last_activity),
@@ -702,6 +712,10 @@ fn bold() -> Style {
 fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
+/// cones' own orange, bold: the header cone and the folder's orchestrator.
+fn lit() -> Style {
+    Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+}
 
 /// What is typed with a block cursor after it, or the placeholder with the cursor on its first
 /// letter: how Claude Code draws its own input.
@@ -933,7 +947,7 @@ pub enum FormAction {
 /// A row of options with the picked one lit and bracketed, then the keys that move and the
 /// verb `enter` performs.
 fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, enter: &str) {
-    let lit = Style::default().fg(ORANGE).add_modifier(Modifier::BOLD);
+    let lit = lit();
     for (i, o) in options.iter().enumerate() {
         spans.push(Span::styled(
             format!(
@@ -1241,6 +1255,7 @@ fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
         cost_usd: None,
         title: Some(prompt.lines().next().unwrap_or("").trim().to_owned()),
         last: Some("starting".into()),
+        coordinator: false,
     }
 }
 
@@ -3090,6 +3105,7 @@ mod tests {
             cost_usd: None,
             title: None,
             last: None,
+            coordinator: false,
         });
         app.apply(data);
         app.filter = "209aa1a4".into();
@@ -3120,6 +3136,7 @@ mod tests {
             cost_usd: None,
             title: None,
             last: None,
+            coordinator: false,
         };
         data.sessions
             .push(session("aaaa-interactive", "interactive"));
@@ -3133,6 +3150,52 @@ mod tests {
         };
         assert_eq!(marker("aaaa-interactive"), "own terminal");
         assert_eq!(marker("bbbb-background"), "");
+    }
+
+    #[test]
+    fn the_list_names_the_folders_orchestrator_in_orange() {
+        let d = dir();
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        let session = |id: &str, kind: &str, coordinator: bool| Session {
+            session_id: id.into(),
+            harness: "claude".into(),
+            kind: Some(kind.into()),
+            cwd: PathBuf::from("/x"),
+            state: "active".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: Some(1),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: Some("sweep".into()),
+            last: None,
+            coordinator,
+        };
+        data.sessions.push(session("aaaa-worker", "bg", false));
+        data.sessions.push(session("bbbb-orchestrator", "bg", true));
+        data.sessions
+            .push(session("cccc-typed", "interactive", true));
+        let row = |id: &str| {
+            data.rows(false)
+                .into_iter()
+                .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
+                .unwrap()
+        };
+        assert_eq!(row("aaaa-worker").cells[2].0.trim(), "");
+        assert_eq!(row("aaaa-worker").cells[3].1, plain());
+        let marked = row("bbbb-orchestrator");
+        assert_eq!(marked.cells[2].0.trim(), "orchestrator");
+        assert_eq!(marked.cells[2].1, lit());
+        assert_eq!(marked.cells[3].1, lit());
+        assert_eq!(
+            row("cccc-typed").cells[2].0.trim(),
+            "orchestrator · own terminal"
+        );
     }
 
     #[test]
@@ -3164,6 +3227,7 @@ mod tests {
             cost_usd: None,
             title: None,
             last: None,
+            coordinator: false,
         });
         app.apply(data);
         app.filter = "codex-77".into();
@@ -3198,6 +3262,7 @@ mod tests {
             cost_usd: None,
             title: None,
             last: None,
+            coordinator: false,
         });
         app.apply(data);
         app.filter = "dddd-dae".into();

@@ -63,6 +63,11 @@ pub struct Session {
     /// First line of the assistant's most recent text: what the session is doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
+    /// The folder's orchestrator. The start-orchestrator skill writes
+    /// `<claude dir>/orchestrator/<sha1 of the folder>.json` naming its session pid and cwd
+    /// every tick; this session's pid and cwd match it. A title is never the evidence.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub coordinator: bool,
 }
 
 impl Session {
@@ -109,10 +114,17 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         .filter_map(|b| serde_json::from_slice(&b).ok())
         .collect();
     let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()));
+    let coordinators = coordinators(claude);
     out.extend(
         values
             .iter()
-            .filter_map(|v| session(claude, v, &starts, true)),
+            .filter_map(|v| session(claude, v, &starts, true))
+            .map(|mut s| {
+                s.coordinator = s
+                    .pid
+                    .is_some_and(|p| coordinators.contains(&(p, s.cwd.clone())));
+                s
+            }),
     );
     out.sort_by(|a, b| {
         (a.started.is_none(), a.started, &a.session_id).cmp(&(
@@ -122,6 +134,21 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         ))
     });
     Ok(out)
+}
+
+/// The live orchestrators as (pid, folder), from the status files the start-orchestrator skill
+/// rewrites every tick under `<claude dir>/orchestrator/`. Both must match a session: a stale
+/// file whose pid was reused names some other process, but not one in the same folder.
+fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
+    fs::read_dir(claude.join("orchestrator"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let v: Value = serde_json::from_slice(&fs::read(e.path()).ok()?).ok()?;
+            Some((v["pid"].as_u64()? as u32, PathBuf::from(v["cwd"].as_str()?)))
+        })
+        .collect()
 }
 
 /// Start time of each live pid as `ps` prints it under UTC. Claude writes that same text to the
@@ -259,6 +286,7 @@ fn session(
             .filter(|s| !s.trim().is_empty())
             .map(Into::into)
             .or(d.last),
+        coordinator: false,
     })
 }
 /// `context_window.context_window_size` from the statusLine payload the user's statusLine command
@@ -783,6 +811,44 @@ mod tests {
         assert_eq!(
             sessions(dir.path()).unwrap()[0].title.as_deref(),
             Some("Publish the dashboard")
+        );
+    }
+
+    #[test]
+    fn the_orchestrator_status_file_marks_its_session_by_pid_and_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("sessions")).unwrap();
+        fs::create_dir_all(dir.path().join("orchestrator")).unwrap();
+        // Two live entries share this process's pid; only the one in the status file's folder
+        // is the orchestrator, so a reused pid in another folder is not.
+        for (name, cwd) in [("aaaaaaaa", "/src/example"), ("bbbbbbbb", "/src/other")] {
+            fs::write(
+                dir.path().join(format!("sessions/{name}.json")),
+                serde_json::json!({
+                    "pid": std::process::id(), "sessionId": format!("{name}-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                    "cwd": cwd, "kind": "bg", "jobId": name, "status": "idle"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        fs::write(
+            dir.path().join("orchestrator/status.json"),
+            serde_json::json!({"cwd": "/src/example", "pid": std::process::id(), "peers": []})
+                .to_string(),
+        )
+        .unwrap();
+        let marks: Vec<(String, bool)> = sessions(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.cwd.display().to_string(), s.coordinator))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                ("/src/example".to_owned(), true),
+                ("/src/other".to_owned(), false)
+            ]
         );
     }
 

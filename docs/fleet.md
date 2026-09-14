@@ -91,6 +91,8 @@ cones coordinator start ~/src/app  # another folder
 
 Each start rewrites the plugin under `~/.cones/coordinator/plugin` (or the `--state-dir`), then runs `claude --bg --plugin-dir <that> /cones:start-orchestrator` in the folder, so the coordinator is an ordinary background session loaded with the skill for that session only: it shows in `cones ls` and the dashboard, `claude attach <id>` opens it, and telling it "stop orchestrator" ends its role. The skill writes `~/.claude/orchestrator/<sha1 of the folder>.json` with its pid and peers every tick, the same file a hand-typed `/start-orchestrator` from an installed copy of the skill writes, so `cones coordinator start` and the skill's own guard both see a coordinator started either way: when that file names a live process for the folder, the command prints it and does nothing.
 
+The dashboard reads the same file to mark the coordinator's row: a session whose pid and cwd it names says `orchestrator` where a row says `own terminal`, and its title is in cones' orange, bold, so it is told from the workers at a glance. A hand-typed coordinator in its own terminal says `orchestrator · own terminal`. The mark is that file's pid, never the session's title; `cones ls --json` carries it as `coordinator: true`.
+
 The copy under `assets/coordinator/` is the upstream skill with one line changed, the helper path, which cones fills in when it writes the plugin. Update it by copying the upstream files over and re-applying that line.
 
 ## The dashboard: jobs, sessions and runs on one screen
@@ -123,7 +125,7 @@ Under the composer, its hint line names only the keys that act on the selected r
 | --- | --- |
 | Menu | `runs`, `agents`, `folder`: three rows above the tables, described under [the menu](#the-menu-runs-agents-folder) |
 | Jobs | enabled marker, name, schedule, harness, on/off, last run status |
-| Sessions | icon, harness, `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd |
+| Sessions | icon, harness, `orchestrator` on the folder's coordinator and `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason |
 
 There is no details pane for now; a session is read by opening it, a run by `cones logs`. `cones ls --json` and `Data::details` still carry what the pane showed, so it can come back.

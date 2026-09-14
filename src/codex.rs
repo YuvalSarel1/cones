@@ -568,6 +568,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 context_window: t.context_window,
                 cost_usd: None,
                 last: t.last,
+                coordinator: false,
             }
         })
         .collect();
@@ -693,6 +694,7 @@ pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session>
                 context_window: tail.context_window,
                 cost_usd: None,
                 last: tail.last,
+                coordinator: false,
                 session_id: id,
             })
         })
