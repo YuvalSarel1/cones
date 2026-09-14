@@ -30,51 +30,54 @@
 <text x="285.8" y="150" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">claude  </text>
 <text x="353.2" y="150" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">on       </text>
 <text x="429.1" y="150" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">ok</text>
-<text x="16.0" y="190" xml:space="preserve" textLength="826.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               title                            state    model             activity  context  last</text>
+<text x="16.0" y="190" xml:space="preserve" textLength="834.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               title                             state    model             activity  context  last</text>
 <text x="16.0" y="210" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator sweep setup         </text>
-<text x="420.6" y="230" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="230" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  5m        161k     session 34332 mid-rework,</text>
-<text x="32.9" y="250" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="250" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">claude agents back navigation    </text>
-<text x="420.6" y="250" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="250" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  5s        195k     Format, regenerate the das</text>
-<text x="16.0" y="290" xml:space="preserve" textLength="177.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work/pocs/workbench</text>
-<text x="32.9" y="310" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="310" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator agent coordination  </text>
-<text x="420.6" y="310" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="310" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  3s        170k     session context exhausted;</text>
-<text x="32.9" y="330" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="330" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sync optimization planning       </text>
-<text x="420.6" y="330" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="330" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  1s        375k     Finding how the risk parit</text>
-<text x="32.9" y="350" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="350" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">cortex token verification        </text>
-<text x="420.6" y="350" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="350" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  49s       142k     filing bug and applying lo</text>
-<text x="32.9" y="370" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">✢  claude  </text>
-<text x="142.4" y="370" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">react infinite update loop       </text>
-<text x="420.6" y="370" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
-<text x="496.5" y="370" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  15s       85k      Reading cdp helper connect</text>
+<text x="32.9" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="230" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator sweep setup          </text>
+<text x="429.1" y="230" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="230" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  3m        206k     2 sessions split on src/t</text>
+<text x="32.9" y="250" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="250" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">dashboard composer input styling  </text>
+<text x="429.1" y="250" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="250" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  4s        71k      Regenerating the SVG from</text>
+<text x="32.9" y="270" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="270" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">terminal state restoration        </text>
+<text x="429.1" y="270" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="270" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  1m        69k      Running the TUI in a pseu</text>
+<text x="16.0" y="310" xml:space="preserve" textLength="177.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work/pocs/workbench</text>
+<text x="32.9" y="330" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="330" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">orchestrator agent coordination   </text>
+<text x="429.1" y="330" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="330" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  24m       315k     API Error: Can&#x27;t reach th</text>
+<text x="32.9" y="350" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="350" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sync optimization planning        </text>
+<text x="429.1" y="350" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="350" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  0s        214k     applying improvements to</text>
+<text x="32.9" y="370" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757">·  claude  </text>
+<text x="142.4" y="370" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">graph widget usage analytics      </text>
+<text x="429.1" y="370" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">working  </text>
+<text x="504.9" y="370" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  32s       145k     investigating event instr</text>
 <text x="16.0" y="410" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">runs</text>
 <text x="16.0" y="430" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">     job           status  started         took  cost   reason</text>
 <text x="32.9" y="450" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
 <text x="58.1" y="450" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
 <text x="176.2" y="450" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
 <text x="243.6" y="450" xml:space="preserve" textLength="244.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-12 09:09:25  5s    $0.02  </text>
-<text x="16.0" y="670" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">claude › </text>
-<text x="91.9" y="670" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">an instruction for ~/personal/cones · enter starts claude there</text>
+<text x="16.0" y="630" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
+<text x="16.0" y="650" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">claude › </text>
+<text x="91.9" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">a</text>
+<text x="100.3" y="650" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">n instruction for ~/personal/cones · enter starts claude there</text>
+<text x="16.0" y="670" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
 <text x="16.0" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
 <text x="58.1" y="690" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> start job · </text>
-<text x="167.7" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
-<text x="193.0" y="690" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> codex · </text>
-<text x="268.9" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+x</text>
-<text x="319.5" y="690" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> delete · </text>
-<text x="403.8" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+n</text>
-<text x="454.4" y="690" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> new job · </text>
-<text x="547.1" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+e</text>
-<text x="597.7" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> edit · </text>
+<text x="167.7" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+x</text>
+<text x="218.3" y="690" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> delete · </text>
+<text x="302.6" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+e</text>
+<text x="353.2" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> edit · </text>
+<text x="420.6" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
+<text x="445.9" y="690" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> codex · </text>
+<text x="521.8" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+n</text>
+<text x="572.4" y="690" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> new job · </text>
 <text x="665.1" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+s</text>
 <text x="715.7" y="690" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> regroup · </text>
 <text x="808.4" y="690" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">ctrl+o</text>

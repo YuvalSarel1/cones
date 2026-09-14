@@ -23,7 +23,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -598,6 +598,24 @@ fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
 
+/// What is typed with a block cursor after it, or the placeholder with the cursor on its first
+/// letter: how Claude Code draws its own input.
+fn typed(value: &str, placeholder: &str) -> Vec<Span<'static>> {
+    let cursor = Modifier::REVERSED;
+    if !value.is_empty() {
+        return vec![
+            Span::raw(value.to_owned()),
+            Span::styled(" ", Style::default().add_modifier(cursor)),
+        ];
+    }
+    let mut rest = placeholder.chars();
+    let first = rest.next().map_or(" ".to_owned(), |c| c.to_string());
+    vec![
+        Span::styled(first, dim().add_modifier(cursor)),
+        Span::styled(rest.as_str().to_owned(), dim()),
+    ]
+}
+
 /// One glyph per state, cone-shaped where it can be: a solid cone is busy, a hollow one is
 /// resting, a warning cone wants a human. `-` is a session whose harness reported no state, a
 /// Codex before its first turn; it is not a failure.
@@ -892,12 +910,7 @@ impl JobForm {
             Step::Prompt => ("prompt", &self.prompt, "the task"),
         };
         let mut spans = vec![Span::styled(format!("{title} · {what} › "), ask)];
-        if value.is_empty() {
-            spans.push(Span::styled(hint.to_owned(), dim()));
-        } else {
-            spans.push(Span::raw(value.clone()));
-        }
-        spans.push(Span::styled("▏", dim()));
+        spans.extend(typed(value, hint));
         if let Some(e) = &self.error {
             spans.push(Span::styled(
                 format!("  {e}"),
@@ -1514,19 +1527,28 @@ impl App {
         }
     }
 
-    /// What ctrl+x does to the selected row, for the hint line.
-    fn stop_verb(&self) -> &'static str {
-        match self.selected().map(|r| &r.kind) {
-            Some(Kind::Job(name))
-                if !self
+    /// What ctrl+x does to the selected row, for the hint line; nothing on a row it cannot act on.
+    fn stop_verb(&self) -> Option<&'static str> {
+        let live = |name: &str| {
+            self.data
+                .runs
+                .iter()
+                .any(|r| r.started.job.as_deref() == Some(name) && r.status() == "started")
+        };
+        match &self.selected()?.kind {
+            Kind::Job(name) if live(name) => Some("stop"),
+            Kind::Job(_) => Some("delete"),
+            Kind::Run(_, s) if s == "started" => Some("stop"),
+            Kind::Run(..) => None,
+            Kind::Session(id, _) => {
+                let daemon = self
                     .data
-                    .runs
+                    .sessions
                     .iter()
-                    .any(|r| r.started.job.as_deref() == Some(name) && r.status() == "started") =>
-            {
-                "delete"
+                    .any(|s| &s.session_id == id && s.kind.as_deref() == Some("daemon"));
+                Some(if daemon { "forget" } else { "stop" })
             }
-            _ => "stop",
+            _ => None,
         }
     }
 
@@ -1537,18 +1559,13 @@ impl App {
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
         )];
-        if self.text.is_empty() {
-            spans.push(Span::styled(
-                format!(
-                    "an instruction for {} · enter starts {kind} there",
-                    fleet::tilde(&self.target_dir())
-                ),
-                dim(),
-            ));
-        } else {
-            spans.push(Span::raw(self.text.clone()));
-            spans.push(Span::styled("▏", dim()));
-        }
+        spans.extend(typed(
+            &self.text,
+            &format!(
+                "an instruction for {} · enter starts {kind} there",
+                fleet::tilde(&self.target_dir())
+            ),
+        ));
         Line::from(spans)
     }
 
@@ -1574,16 +1591,27 @@ impl App {
             Mode::Normal if !self.text.is_empty() => {
                 hints(&[("enter", &start), ("tab", &next), ("esc", "clear")])
             }
-            Mode::Normal => hints(&[
-                ("enter", self.enter_label()),
-                ("tab", &next),
-                ("ctrl+x", self.stop_verb()),
-                ("ctrl+n", "new job"),
-                ("ctrl+e", "edit"),
-                ("ctrl+s", "regroup"),
-                ("ctrl+o", "agents"),
-                ("esc", "quit"),
-            ]),
+            // Only what acts on the selected row, then the keys that act everywhere.
+            Mode::Normal => {
+                let mut keys = vec![];
+                if self.selected().is_some() {
+                    keys.push(("enter", self.enter_label()));
+                }
+                if let Some(verb) = self.stop_verb() {
+                    keys.push(("ctrl+x", verb));
+                }
+                if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
+                    keys.push(("ctrl+e", "edit"));
+                }
+                keys.extend([
+                    ("tab", next.as_str()),
+                    ("ctrl+n", "new job"),
+                    ("ctrl+s", "regroup"),
+                    ("ctrl+o", "agents"),
+                    ("esc", "quit"),
+                ]);
+                hints(&keys)
+            }
         };
         if !self.filter.is_empty() {
             line.spans
@@ -1764,18 +1792,18 @@ impl App {
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(1),
+            Constraint::Length(3),
             Constraint::Length(1),
         ])
         .areas(frame.area());
         frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
         self.draw_list(frame, list);
         let line = match &self.mode {
-            Mode::Filter => Line::from(vec![
-                Span::styled("/", bold()),
-                Span::raw(self.filter.clone()),
-                Span::styled("▏", dim()),
-            ]),
+            Mode::Filter => {
+                let mut spans = vec![Span::styled("/ ", bold())];
+                spans.extend(typed(&self.filter, "text a row must contain"));
+                Line::from(spans)
+            }
             Mode::Job(f) => f.line(),
             Mode::Harness(i) => {
                 let mut spans = vec![Span::styled("open › ", Style::default().fg(ORANGE))];
@@ -1789,7 +1817,11 @@ impl App {
             }
             Mode::Normal => self.composer(),
         };
-        frame.render_widget(Paragraph::new(line), prompt);
+        // Ruled above and below, as Claude Code frames its input.
+        let frame_lines = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(dim());
+        frame.render_widget(Paragraph::new(line).block(frame_lines), prompt);
         frame.render_widget(Paragraph::new(self.hint_line()), foot);
     }
 
@@ -2493,7 +2525,17 @@ mod tests {
             App::new(Path::new("cones-not-installed"), &jobs, d.path(), d.path()).unwrap();
         app.refresh().unwrap();
         assert!(matches!(app.selected().unwrap().kind, Kind::Job(_)));
-        assert_eq!(app.stop_verb(), "delete");
+        assert_eq!(app.stop_verb(), Some("delete"));
+        let hint: String = app
+            .hint_line()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(
+            hint.starts_with("enter start job · ctrl+x delete · ctrl+e edit · tab codex"),
+            "a job row offers its own keys first: {hint}"
+        );
         app.stop();
         assert!(
             app.status.contains("again to delete job one"),
@@ -2521,7 +2563,11 @@ mod tests {
                 .collect::<String>()
         };
         assert!(text(app.composer()).starts_with("claude › an instruction for "));
-        assert!(text(app.hint_line()).contains("tab codex · ctrl+x stop · ctrl+n new job"));
+        let hint = text(app.hint_line());
+        assert!(
+            hint.starts_with("tab codex · ctrl+n new job"),
+            "nothing selected, no row-bound keys: {hint}"
+        );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
