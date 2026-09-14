@@ -55,7 +55,8 @@ SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout,
            "ctrl+x removes a session with claude rm, hides a finished run", "states, keys and hints follow claude agents",
            "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary",
            "coordinator: two-way channel to Codex agents",
-           "viewers live inside the dashboard; leaving and returning is a focus change"]
+           "viewers live inside the dashboard; leaving and returning is a focus change",
+           "a fleet strip under a viewer; ctrl+] cycles live viewers"]
 FOOT = ("cones owns the clock, supervision, budgets and the ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine. "
         "Seeing a harness's sessions never waits on enforcing its budgets.")

@@ -65,6 +65,8 @@
 <text x="582" y="404" font-size="13.5" fill="#e6edf3" >• viewers live inside the</text>
 <text x="594" y="424" font-size="13.5" fill="#e6edf3" >dashboard; leaving and</text>
 <text x="594" y="444" font-size="13.5" fill="#e6edf3" >returning is a focus change</text>
+<text x="582" y="464" font-size="13.5" fill="#e6edf3" >• a fleet strip under a viewer;</text>
+<text x="594" y="484" font-size="13.5" fill="#e6edf3" >ctrl+] cycles live viewers</text>
 <rect x="36" y="612" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="650" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="670" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>

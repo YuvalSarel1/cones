@@ -25,7 +25,7 @@ use ratatui::{
     crossterm::{
         event::{
             self, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
-            KeyEventKind, KeyModifiers, MouseEvent,
+            KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
         },
         execute,
     },
@@ -849,6 +849,36 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
+/// Keep `spans` within `width` columns by cutting from the right end, so what is cut is the
+/// tail of the last span that fits in part and everything after it.
+fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let w = span.width();
+        if used + w <= width {
+            used += w;
+            out.push(span);
+            continue;
+        }
+        let mut text = String::new();
+        let mut taken = 0;
+        for c in span.content.chars() {
+            let cw = Span::raw(c.to_string()).width();
+            if used + taken + cw > width {
+                break;
+            }
+            taken += cw;
+            text.push(c);
+        }
+        if !text.is_empty() {
+            out.push(Span::styled(text, span.style));
+        }
+        break;
+    }
+    out
+}
+
 /// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
 /// to a ledger run collapse into that run's row.
 pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
@@ -1182,7 +1212,7 @@ struct App {
     /// The viewers alive inside the dashboard, focused or parsing off-screen; at most
     /// `MAX_VIEWERS`, the least recently focused closes when another opens.
     viewers: Vec<Open>,
-    /// The viewer that has the whole frame and the keys; an index into `viewers`.
+    /// The viewer that has the pane above the strip and the keys; an index into `viewers`.
     focus: Option<usize>,
     /// The real terminal's default colors, probed once at start, for viewers that ask.
     colors: viewer::Colors,
@@ -1677,20 +1707,25 @@ impl App {
         self.viewers.iter().position(|o| o.key == key)
     }
 
-    /// Give a viewer the frame and the keys.
+    /// The rows a viewer's pane has: the frame less the strip under it, never fewer than one.
+    fn pane_rows(&self) -> u16 {
+        self.size.0.saturating_sub(1).max(1)
+    }
+
+    /// Give a viewer the pane and the keys.
     fn focus(&mut self, i: usize) {
         self.focus = Some(i);
-        let size = self.size;
+        let (rows, cols) = (self.pane_rows(), self.size.1);
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
-        open.viewer.resize(size.0, size.1);
+        open.viewer.resize(rows, cols);
         let line = format!("focus {} ({})", open.key, open.what);
         self.debug(|| line);
     }
 
     /// Open `c` as a viewer under `key`, or return to the live viewer that already has that
-    /// key. The viewer takes the whole frame; a fourth viewer closes the least recently
-    /// focused one. The background agent stays in its daemon throughout.
+    /// key. The viewer takes the pane above the strip; a fourth viewer closes the least
+    /// recently focused one. The background agent stays in its daemon throughout.
     fn open(
         &mut self,
         terminal_size: (u16, u16),
@@ -1708,7 +1743,7 @@ impl App {
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
         match Viewer::spawn(
             c,
-            terminal_size.0,
+            self.pane_rows(),
             terminal_size.1,
             normal,
             self.colors.clone(),
@@ -1864,6 +1899,117 @@ impl App {
         self.viewers.get_mut(i)
     }
 
+    /// ctrl+]: the next live viewer by index while one is focused, wrapping; from the
+    /// dashboard, the most recently focused one.
+    fn cycle_viewer(&mut self) {
+        match self.focus {
+            Some(i) => {
+                if self.viewers.len() > 1 {
+                    self.focus((i + 1) % self.viewers.len());
+                }
+            }
+            None => {
+                let recent = self
+                    .viewers
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, o)| o.last_focused)
+                    .map(|(i, _)| i);
+                match recent {
+                    Some(i) => self.focus(i),
+                    None => self.status = "no viewer open".into(),
+                }
+            }
+        }
+    }
+
+    /// The dashboard's one row under a focused viewer, as tmux keeps a status bar under a
+    /// pane: the cone, the viewer's name, the fleet counts the header shows, the session
+    /// elsewhere that needs input, and the keys that leave. The counts stay live because the
+    /// reload loop runs while a viewer is focused. The ends get the width first; the middle
+    /// is cut from its right, and the needs-input note is shown whole or not at all. On a
+    /// width too narrow for both ends, `ctrl+] next` goes first, then `ctrl+z back`.
+    fn strip(&self, i: usize, width: u16) -> Line<'static> {
+        let open = &self.viewers[i];
+        let width = width as usize;
+        let working = self.data.sessions.iter().any(|s| s.state == "active")
+            || self.data.runs.iter().any(|r| r.status() == "started");
+        let cone = if working {
+            SPINNER[self.tick % SPINNER.len()]
+        } else {
+            SPINNER[0]
+        };
+        let left = Span::styled(format!("{cone} cones"), Style::default().fg(ORANGE));
+        let name = open
+            .viewer
+            .title()
+            .filter(|t| !t.trim().is_empty())
+            .map(str::to_owned)
+            .or_else(|| {
+                self.data
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == open.key)
+                    .and_then(|s| s.title.clone())
+            })
+            .unwrap_or_else(|| open.what.clone());
+        let mut middle = vec![
+            Span::styled(" · ", dim()),
+            Span::styled(name, plain()),
+            Span::styled(" · ", dim()),
+        ];
+        middle.extend(self.data.summary().spans);
+        // A Codex thread started from the composer keeps a launch key until its first ctrl+z
+        // records it, so its own row cannot be told apart from another's; no alert until then.
+        let has_id = open.record.is_none() || open.recorded;
+        let alert = self
+            .data
+            .sessions
+            .iter()
+            .filter(|s| has_id && s.state == "blocked" && s.session_id != open.key)
+            .max_by_key(|s| s.last_activity)
+            .map(|s| {
+                let title = s
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| s.session_id.chars().take(8).collect());
+                Span::styled(
+                    format!(" · {} needs input", clip(&title, 24)),
+                    Style::default().fg(Color::Yellow),
+                )
+            });
+        let mut keys = vec![Span::styled("ctrl+z back", dim())];
+        if self.viewers.len() > 1 {
+            keys.push(Span::styled(" · ctrl+] next", dim()));
+        }
+        let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
+        while !keys.is_empty() && ends(&keys) > width {
+            keys.pop();
+        }
+        let ends = ends(&keys);
+        let room = width.saturating_sub(ends);
+        let used: usize = middle.iter().map(Span::width).sum();
+        if let Some(alert) = alert
+            && used + alert.width() <= room
+        {
+            middle.push(alert);
+        }
+        let mut middle = fit(middle, room);
+        // A cut that leaves a separator at the end, whole or in part, drops it.
+        while middle
+            .last()
+            .is_some_and(|s| matches!(s.content.trim(), "" | "·"))
+        {
+            middle.pop();
+        }
+        let used: usize = middle.iter().map(Span::width).sum();
+        let mut spans = vec![left];
+        spans.extend(middle);
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(ends + used))));
+        spans.extend(keys);
+        Line::from(spans)
+    }
+
     /// Whether the real terminal should report the mouse: only while the focused viewer asks.
     fn wants_mouse(&self) -> bool {
         self.focus
@@ -1890,7 +2036,14 @@ impl App {
         }
     }
 
+    /// A mouse event goes to the focused viewer, relative to its pane. The strip row under
+    /// the pane is the dashboard's: a press or wheel there goes nowhere, and a drag or release
+    /// that crosses onto it is clamped to the pane's last row so the viewer sees the button
+    /// let go.
     fn mouse(&mut self, ev: MouseEvent) {
+        let Some(ev) = self.pane_mouse(ev) else {
+            return;
+        };
         if let Some(open) = self.focused() {
             let mode = open.viewer.screen().mouse_protocol_mode();
             let bytes = viewer::encode_mouse(ev, (0, 0), mode);
@@ -1898,6 +2051,18 @@ impl App {
                 open.viewer.write(&bytes);
             }
         }
+    }
+
+    /// `ev` as the pane sees it, or nothing when the strip row swallows it.
+    fn pane_mouse(&self, mut ev: MouseEvent) -> Option<MouseEvent> {
+        let pane_rows = self.pane_rows();
+        if self.size.0 >= 2 && ev.row >= pane_rows {
+            if !matches!(ev.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_)) {
+                return None;
+            }
+            ev.row = pane_rows - 1;
+        }
+        Some(ev)
     }
 
     fn prepare_viewer(
@@ -2365,6 +2530,9 @@ impl App {
                 if self.selected().is_some() {
                     keys.push(("enter", self.enter_label()));
                 }
+                if !self.viewers.is_empty() {
+                    keys.push(("ctrl+]", "viewer"));
+                }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
                 }
@@ -2534,13 +2702,20 @@ impl App {
 
     /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
     /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
-    /// until the next key. While a viewer has the frame every key but ctrl+z is its, in the
-    /// classic encoding; ctrl+z leaves it running and comes back here.
+    /// until the next key. While a viewer has the pane every key but ctrl+z and ctrl+] is its,
+    /// in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+] moves to
+    /// the next live viewer.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
             if ctrl && code == KeyCode::Char('z') {
                 self.unfocus();
+                return Ok(false);
+            }
+            // The terminal sends ctrl+] as the byte 0x1d, which crossterm reports as ctrl+5;
+            // a kitty-protocol terminal would name the bracket.
+            if ctrl && matches!(code, KeyCode::Char(']' | '5')) {
+                self.cycle_viewer();
                 return Ok(false);
             }
             let bytes = viewer::encode_key(code, mods, open.viewer.screen().application_cursor());
@@ -2713,6 +2888,7 @@ impl App {
                         Ok(path) => attach(&mut self.text, &path),
                         Err(e) => self.status = e,
                     },
+                    KeyCode::Char(']' | '5') if ctrl => self.cycle_viewer(),
                     KeyCode::Char(c) if !ctrl => self.text.push(c),
                     _ => {}
                 }
@@ -2724,15 +2900,26 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         self.size = (area.height, area.width);
-        // A focused viewer has the whole frame: its emulated screen, cell for cell, and the
-        // terminal's own cursor where the screen puts it, off a wide character's second half.
-        if let Some(open) = self.focused() {
-            open.viewer.resize(area.height, area.width);
+        // A focused viewer has every row but the last: its emulated screen, cell for cell,
+        // and the terminal's own cursor where the screen puts it, off a wide character's
+        // second half. The last row is the dashboard's strip, so the viewer's own status line
+        // sits right above it. Nothing else of the dashboard is drawn.
+        if let Some(i) = self.focus {
+            let pane = if area.height >= 2 {
+                let [pane, strip] =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+                frame.render_widget(Paragraph::new(self.strip(i, area.width)), strip);
+                pane
+            } else {
+                area
+            };
+            let open = &mut self.viewers[i];
+            open.viewer.resize(pane.height, pane.width);
             let screen = open.viewer.screen();
-            viewer::render(screen, area, frame.buffer_mut());
+            viewer::render(screen, pane, frame.buffer_mut());
             if !screen.hide_cursor() {
                 let (row, mut col) = screen.cursor_position();
-                col = col.min(area.width.saturating_sub(1));
+                col = col.min(pane.width.saturating_sub(1));
                 if col > 0
                     && screen
                         .cell(row, col)
@@ -2740,8 +2927,8 @@ impl App {
                 {
                     col -= 1;
                 }
-                if row < area.height {
-                    frame.set_cursor_position((area.x + col, area.y + row));
+                if row < pane.height {
+                    frame.set_cursor_position((pane.x + col, pane.y + row));
                 }
             }
             return;
@@ -4107,6 +4294,245 @@ mod tests {
             "{screen:#?}"
         );
         assert!(!screen[0].starts_with("VIEW"), "{screen:#?}");
+    }
+
+    #[test]
+    fn a_focused_viewer_sits_on_a_pane_above_the_dashboards_strip() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
+        app.focus = Some(0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.pump() {
+            assert!(Instant::now() < deadline, "the viewer never drew");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 80);
+        assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
+        let strip = &screen[11];
+        assert!(strip.contains("cones"), "{strip:?}");
+        assert!(
+            strip.contains("· attach ·"),
+            "with no title the viewer's what names it: {strip:?}"
+        );
+        assert!(
+            strip.contains("idle"),
+            "the fleet counts are on it: {strip:?}"
+        );
+        assert!(strip.trim_end().ends_with("ctrl+z back"), "{strip:?}");
+        assert!(
+            !strip.contains("ctrl+] next"),
+            "one viewer has no next: {strip:?}"
+        );
+        assert_eq!(
+            app.viewers[0].viewer.screen().size(),
+            (11, 80),
+            "the viewer is sized to the pane, not the frame"
+        );
+    }
+
+    #[test]
+    fn ctrl_bracket_cycles_live_viewers_and_the_strip_offers_it() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open("run:r1", "attach", "ONE"));
+        app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
+        app.focus(0);
+        assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, Some(1));
+        // crossterm reports the byte 0x1d a terminal sends for ctrl+] as ctrl+5.
+        assert!(!app.key(KeyCode::Char('5'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, Some(0), "wraps");
+        assert_eq!(app.viewers.len(), 2, "cycling closes nothing");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 80);
+        assert!(
+            screen[11].trim_end().ends_with("ctrl+z back · ctrl+] next"),
+            "{:?}",
+            screen[11]
+        );
+    }
+
+    #[test]
+    fn ctrl_bracket_from_the_dashboard_returns_to_the_last_viewer_or_says_none_is_open() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(!app.hint_line().to_string().contains("ctrl+]"));
+        assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, None);
+        assert_eq!(app.status, "no viewer open");
+        app.viewers.push(viewer_open("run:r1", "attach", "ONE"));
+        app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
+        app.focus(0);
+        app.unfocus();
+        app.status.clear();
+        assert!(
+            app.hint_line().to_string().contains("ctrl+] viewer"),
+            "{}",
+            app.hint_line()
+        );
+        assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, Some(0), "the most recently focused viewer");
+    }
+
+    /// A session in `state` with `title`, `secs` seconds ago.
+    fn session(id: &str, state: &str, title: &str, secs: i64) -> Session {
+        Session {
+            session_id: id.into(),
+            harness: "claude".into(),
+            kind: Some("bg".into()),
+            cwd: PathBuf::from("/x"),
+            state: state.into(),
+            started: None,
+            last_activity: Some(chrono::Utc::now() - chrono::Duration::seconds(secs)),
+            model: None,
+            pid: None,
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: Some(title.into()),
+            last: None,
+            coordinator: false,
+        }
+    }
+
+    #[test]
+    fn the_strip_names_the_latest_other_session_that_needs_input_and_fits_a_narrow_width() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+        // The focused session itself is blocked and the most recent; it is never the alert.
+        data.sessions
+            .push(session(A, "blocked", "the one on screen", 1));
+        data.sessions
+            .push(session(B, "blocked", "an older prompt", 60));
+        data.sessions.push(session(
+            C,
+            "blocked",
+            "a title far longer than the twenty-four columns it gets",
+            30,
+        ));
+        app.apply(data);
+        app.viewers.push(viewer_open(A, "attach", "ONE"));
+        app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
+        app.size = (12, 200);
+        app.focus(0);
+        let line = app.strip(0, 200);
+        let text = line.to_string();
+        assert!(
+            text.contains("· the one on screen ·"),
+            "the row's title names the viewer: {text}"
+        );
+        assert!(
+            text.contains(" · a title far longer than… needs input"),
+            "the most recent other blocked session, clipped to 24: {text}"
+        );
+        assert!(!text.contains("the one on screen needs input"), "{text}");
+        assert!(!text.contains("an older prompt needs input"), "{text}");
+        let alert = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("needs input"))
+            .expect("the alert is its own span");
+        assert_eq!(alert.style.fg, Some(Color::Yellow));
+        assert!(
+            text.trim_end().ends_with("ctrl+z back · ctrl+] next"),
+            "{text}"
+        );
+        assert_eq!(line.width(), 200, "padded to the width");
+
+        // Too narrow for the alert: it is dropped whole, and the middle is cut from its right.
+        let text = app.strip(0, 60).to_string();
+        assert!(!text.contains("needs"), "no partial note: {text}");
+        assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
+        assert!(
+            text.trim_end().ends_with("ctrl+z back · ctrl+] next"),
+            "{text}"
+        );
+        assert_eq!(app.strip(0, 60).width(), 60);
+
+        // Narrower than both ends: `ctrl+] next` goes first, then `ctrl+z back`.
+        let text = app.strip(0, 24).to_string();
+        assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
+        assert!(!text.contains("next"), "{text}");
+        assert!(app.strip(0, 24).width() <= 24);
+        let text = app.strip(0, 10).to_string();
+        assert_eq!(text, "▲ cones   ", "{text}");
+
+        // A thread started from the composer has no id until its first ctrl+z, so its own
+        // prompt cannot be told from another's; no alert until then.
+        app.viewers[0].key = "codex:start:1".into();
+        app.viewers[0].record = Some((PathBuf::from("/x"), chrono::Utc::now()));
+        app.viewers[0].what = "codex in ~/x".into();
+        let text = app.strip(0, 200).to_string();
+        assert!(!text.contains("needs input"), "{text}");
+        assert!(text.contains("· codex in ~/x ·"), "{text}");
+        app.viewers[0].recorded = true;
+        assert!(app.strip(0, 200).to_string().contains("needs input"));
+    }
+
+    #[test]
+    fn a_one_row_frame_is_all_pane_and_the_strip_row_swallows_the_mouse() {
+        use ratatui::crossterm::event::MouseButton;
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
+        app.focus = Some(0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.pump() {
+            assert!(Instant::now() < deadline, "the viewer never drew");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 1)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 80);
+        assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
+        assert!(
+            !screen[0].contains("cones"),
+            "no strip on one row: {screen:#?}"
+        );
+        assert_eq!(app.viewers[0].viewer.screen().size(), (1, 80));
+        let ev = |kind, row| MouseEvent {
+            kind,
+            column: 3,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let down = MouseEventKind::Down(MouseButton::Left);
+        assert_eq!(app.pane_mouse(ev(down, 0)).map(|e| e.row), Some(0));
+
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.pane_mouse(ev(down, 10)).map(|e| e.row), Some(10));
+        assert!(
+            app.pane_mouse(ev(down, 11)).is_none(),
+            "a press on the strip"
+        );
+        assert!(
+            app.pane_mouse(ev(MouseEventKind::ScrollUp, 11)).is_none(),
+            "a wheel on the strip"
+        );
+        assert_eq!(
+            app.pane_mouse(ev(MouseEventKind::Up(MouseButton::Left), 11))
+                .map(|e| e.row),
+            Some(10),
+            "a release that crossed onto the strip lands on the pane's last row"
+        );
+        assert_eq!(
+            app.pane_mouse(ev(MouseEventKind::Drag(MouseButton::Left), 11))
+                .map(|e| e.row),
+            Some(10)
+        );
     }
 
     #[test]
