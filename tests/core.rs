@@ -417,7 +417,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     fs::create_dir_all(claude.join("jobs/aaaaaaaa")).unwrap();
     fs::write(
         claude.join("jobs/aaaaaaaa/state.json"),
-        r#"{"state":"working","detail":"Inspecting job state files","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl"}"#,
+        r#"{"state":"working","detail":"Inspecting job state files","updatedAt":"2026-09-12T13:14:31.892Z","linkScanPath":"/t/b.jsonl","cwd":"/src/launch"}"#,
     )
     .unwrap();
     let bg = |job: &str| {
@@ -432,13 +432,17 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             b.title.as_deref(),
             b.last.as_deref(),
             b.transcript_path.as_deref().and_then(|p| p.to_str()),
+            b.cwd.to_str(),
         ),
         (
             Some("bg"),
             Some("job b"),
             Some("Inspecting job state files"),
             Some("/t/b.jsonl"),
-        )
+            Some("/src/launch"),
+        ),
+        "a job's row sits in its launch directory, as in `claude agents`, even after the \
+         session entered a worktree and the registry cwd moved"
     );
     assert_eq!(
         (

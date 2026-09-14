@@ -199,7 +199,9 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         session_id: id.into(),
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
-        cwd,
+        // The folder `claude agents` files the row under: a background job's launch directory
+        // from its own state, since EnterWorktree rewrites the registry cwd to the worktree.
+        cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
         // The same order `claude agents` reads a row's word in: a finished job's own state first,
         // then the registry status, then a job whose tempo is blocked. A status this version does
         // not know renders as Claude's own word, never as a guess.

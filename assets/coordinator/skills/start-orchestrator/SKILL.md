@@ -49,7 +49,7 @@ so a stopped-but-alive session does not block a restart.
 
 ## Scope rules
 
-- Message only pids on `roster.now`. Registry cwd decides, not ListAgents. Verify the pid is
+- Message only pids on `roster.now`. A bg job's launch dir (`jobs/<jobId>/state.json` cwd) decides, then the registry cwd, not ListAgents; the registry cwd moves into the worktree when an agent runs EnterWorktree, its job cwd stays put. Verify the pid is
   alive before every SendMessage; agents come and go.
 - Codex rows (`CODEX:<cwd>`) go through `$S/codex.sh`, not SendMessage: `codex.sh send <pid>
   <text>` queues the message on the agent's thread (Codex runs it when its current turn ends),

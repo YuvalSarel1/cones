@@ -4,7 +4,12 @@
 D="$1"; WB="$2"; SELF="$3"; JOB="$4"
 for f in ~/.claude/sessions/*.json; do
   p=$(basename "$f" .json); kill -0 "$p" 2>/dev/null || continue
-  python3 -c "import json;d=json.load(open('$f'));print(f\"{d.get('cwd','')}\t{d.get('kind','')}\t{d.get('pid','')}\t{d.get('name','')}\")" 2>/dev/null
+  # A bg job's launch dir is its state.json cwd; the registry cwd moves with EnterWorktree (2026-09-14).
+  python3 -c "
+import json,os;d=json.load(open('$f'));c=d.get('cwd','');j=d.get('jobId')
+try: c=json.load(open(os.path.expanduser(f'~/.claude/jobs/{j}/state.json'))).get('cwd') or c
+except Exception: pass
+print(f\"{c}\t{d.get('kind','')}\t{d.get('pid','')}\t{d.get('name','')}\")" 2>/dev/null
 done | awk -F'\t' -v wb="$WB" -v self="$SELF" '($1==wb || index($1, wb"/")==1) && $2=="bg" && $3!=self {print $3 "\t" $4}' | sort > "$D/roster.now"
 # codex has no registry: pid + cwd
 for p in $(pgrep -x codex); do

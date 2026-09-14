@@ -21,7 +21,7 @@ Every value is a line Claude wrote, and the table names the line. Nothing is rea
 
 | Field | Source |
 | --- | --- |
-| `session_id`, `pid`, `cwd`, `kind` | The registry entry: `sessionId`, `pid`, `cwd` and `kind`, which is `bg` for a session Claude's daemon owns and `interactive` otherwise |
+| `session_id`, `pid`, `cwd`, `kind` | The registry entry: `sessionId`, `pid`, `cwd` and `kind`, which is `bg` for a session Claude's daemon owns and `interactive` otherwise. A background job's `cwd` is the launch directory from `~/.claude/jobs/<jobId>/state.json`, the folder `claude agents` files it under; the registry `cwd` follows the session into a worktree when it runs EnterWorktree, and the transcript path follows it too |
 | `state` | The registry `status`, mapped as below |
 | `started` | The `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read for it |
 | `last_activity` | The `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and the transcript file's mtime are not read |
