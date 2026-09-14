@@ -27,7 +27,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{OnceLock, mpsc},
@@ -187,12 +187,17 @@ impl Data {
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
     /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, &HashSet::new())
+        self.rows_excluding(by_state, &HashSet::new(), &mut Widths::new())
     }
 
     /// A confirmed delete leaves the list immediately while the harness command finishes.
     /// The source data stays intact so a failed command can restore its row.
-    fn rows_excluding(&self, by_state: bool, deleting: &HashSet<&str>) -> Vec<Row> {
+    fn rows_excluding(
+        &self,
+        by_state: bool,
+        deleting: &HashSet<&str>,
+        widths: &mut Widths,
+    ) -> Vec<Row> {
         let mut out = Vec::new();
         let header = |out: &mut Vec<Row>, title: &str| {
             out.push(Row {
@@ -226,8 +231,11 @@ impl Data {
                     ]
                 })
                 .collect();
-            let (names, cells) =
-                columns(&["", "job", "schedule", "", "enabled", "last run"], cells);
+            let (names, cells) = columns(
+                &["", "job", "schedule", "", "enabled", "last run"],
+                cells,
+                widths,
+            );
             out.push(names);
             for (j, cells) in self.jobs.iter().zip(cells) {
                 out.push(Row {
@@ -294,7 +302,7 @@ impl Data {
             "last" if by_state => "dir",
             c => c,
         }));
-        let (names, cells) = columns(&names, cells);
+        let (names, cells) = columns(&names, cells, widths);
         if !flat.is_empty() {
             out.push(Row {
                 kind: Kind::Blank,
@@ -354,6 +362,7 @@ impl Data {
             let (names, cells) = columns(
                 &["", "job", "status", "started", "took", "cost", "reason"],
                 cells,
+                widths,
             );
             out.push(names);
             for (r, cells) in runs.iter().zip(cells) {
@@ -597,18 +606,24 @@ fn uncolored(text: &str) -> String {
     out
 }
 
-/// Pad each column to its widest cell, two spaces apart.
-fn table(rows: Vec<Vec<(String, Style)>>) -> Vec<Vec<(String, Style)>> {
+/// The widest each table's columns have been, keyed by its column names. A column only grows
+/// for the life of the dashboard, so a cell that changes length (`59s` to `1m`, `working` to
+/// `needs input`, a long title leaving) never moves the columns beside it.
+pub type Widths = HashMap<Vec<String>, Vec<usize>>;
+
+/// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames.
+fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(String, Style)>> {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..cols)
-        .map(|c| {
-            rows.iter()
-                .filter_map(|r| r.get(c))
-                .map(|(t, _)| t.chars().count())
-                .max()
-                .unwrap_or(0)
-        })
-        .collect();
+    widths.resize(widths.len().max(cols), 0);
+    for (c, w) in widths.iter_mut().enumerate() {
+        let now = rows
+            .iter()
+            .filter_map(|r| r.get(c))
+            .map(|(t, _)| t.chars().count())
+            .max()
+            .unwrap_or(0);
+        *w = (*w).max(now);
+    }
     rows.into_iter()
         .map(|r| {
             let n = r.len();
@@ -650,10 +665,15 @@ fn cell(column: &str, s: &Session, by_state: bool) -> (String, Style) {
 
 /// Column names as a dim row padded together with the table beneath it, indented past the cursor
 /// gutter so each name sits over its column.
-fn columns(names: &[&str], rows: Vec<Vec<(String, Style)>>) -> (Row, Vec<Vec<(String, Style)>>) {
+fn columns(
+    names: &[&str],
+    rows: Vec<Vec<(String, Style)>>,
+    widths: &mut Widths,
+) -> (Row, Vec<Vec<(String, Style)>>) {
+    let key: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
     let mut all = vec![names.iter().map(|n| ((*n).to_owned(), dim())).collect()];
     all.extend(rows);
-    let mut all = table(all);
+    let mut all = table(all, widths.entry(key).or_default());
     let mut cells = all.remove(0);
     cells[0].0.insert_str(0, "  ");
     (
@@ -1103,6 +1123,8 @@ struct App {
     cursor: usize,
     scroll: usize,
     by_state: bool,
+    /// Column widths so far, so a value changing length never shifts the table.
+    widths: Widths,
     filter: String,
     mode: Mode,
     status: String,
@@ -1172,6 +1194,7 @@ impl App {
             cursor: 0,
             scroll: 0,
             by_state: false,
+            widths: Widths::new(),
             filter: String::new(),
             mode: Mode::Normal,
             status: String::new(),
@@ -1346,8 +1369,10 @@ impl App {
             .map(|a| a.id.as_str())
             .collect();
         self.rows = menu_rows(&self.cwd);
-        self.rows
-            .extend(self.data.rows_excluding(self.by_state, &deleting));
+        self.rows.extend(
+            self.data
+                .rows_excluding(self.by_state, &deleting, &mut self.widths),
+        );
         self.apply_filter();
         if let Some(k) = &keep
             && let Some(i) = self
@@ -3406,5 +3431,33 @@ mod tests {
             Some("folder"),
             "a reload keeps the menu row"
         );
+    }
+
+    #[test]
+    fn columns_never_shrink() {
+        let row = |a: &str, b: &str| vec![(a.to_owned(), plain()), (b.to_owned(), plain())];
+        let mut widths = Widths::new();
+        let (_, wide) = columns(
+            &["state", "age"],
+            vec![row("needs input", "59s")],
+            &mut widths,
+        );
+        let (_, narrow) = columns(&["state", "age"], vec![row("idle", "1m")], &mut widths);
+        assert_eq!(
+            wide[0][0].0.len(),
+            narrow[0][0].0.len(),
+            "a shorter value keeps the width"
+        );
+        let (_, wider) = columns(
+            &["state", "age"],
+            vec![row("needs more input", "1m")],
+            &mut widths,
+        );
+        assert!(
+            wider[0][0].0.len() > wide[0][0].0.len(),
+            "a longer value widens it"
+        );
+        let (_, other) = columns(&["j", "age"], vec![row("x", "1m")], &mut widths);
+        assert_eq!(other[0][0].0, "x  ", "another table has its own widths");
     }
 }
