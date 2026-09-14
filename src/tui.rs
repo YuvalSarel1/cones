@@ -1404,9 +1404,11 @@ impl App {
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if let Some(Kind::Session(id, _)) = row.map(|r| &r.kind)
-            && self.data.sessions.iter().any(|s| {
-                &s.session_id == id && s.harness != "claude" && s.kind.as_deref() != Some("daemon")
-            })
+            && self
+                .data
+                .sessions
+                .iter()
+                .any(|s| &s.session_id == id && s.own_terminal())
         {
             return "own terminal";
         }
@@ -1433,25 +1435,23 @@ impl App {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
                 };
-                let (harness, cwd, daemon) = (
-                    s.harness.clone(),
-                    s.cwd.clone(),
-                    s.kind.as_deref() == Some("daemon"),
-                );
-                // A Codex thread behind the daemon reopens with a client; a TUI running in
-                // another terminal cannot be joined.
-                if harness == "codex" && daemon {
+                let (harness, cwd, own_terminal) =
+                    (s.harness.clone(), s.cwd.clone(), s.own_terminal());
+                // A TUI running in another terminal cannot be joined: a Codex TUI, or an
+                // interactive Claude, which `claude attach` does not know.
+                if own_terminal {
+                    self.status = format!(
+                        "{harness} runs in its own terminal and cannot be joined from here"
+                    );
+                    return Ok(());
+                }
+                // A Codex thread behind the daemon reopens with a client.
+                if harness == "codex" {
                     match harness::codex_resume(&id, &cwd) {
                         Ok(c) => self.foreground(terminal, c, "codex", OnStop::Kill),
                         Err(e) => self.status = format!("codex resume failed: {e:#}"),
                     }
                     self.reload();
-                    return Ok(());
-                }
-                if harness != "claude" {
-                    self.status = format!(
-                        "{harness} runs in its own terminal and cannot be joined from here"
-                    );
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
@@ -2038,6 +2038,42 @@ mod tests {
             panic!("must exit after SIGCONT")
         };
         assert_eq!(st.code(), Some(3));
+    }
+
+    #[test]
+    fn an_interactive_claude_row_offers_no_attach_and_says_own_terminal() {
+        let d = dir();
+        let mut app = App::new(
+            Path::new("cones"),
+            &d.path().join("jobs.yaml"),
+            d.path(),
+            d.path(),
+        )
+        .unwrap();
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: "209aa1a4-1700-4242-a71e-57d6293b69ab".into(),
+            harness: "claude".into(),
+            kind: Some("interactive".into()),
+            cwd: PathBuf::from("/x"),
+            state: "active".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: Some(88144),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+        });
+        app.apply(data);
+        app.filter = "209aa1a4".into();
+        app.apply_filter();
+        app.settle();
+        assert_eq!(app.enter_label(), "own terminal");
     }
 
     #[test]

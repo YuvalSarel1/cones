@@ -306,6 +306,10 @@ fn execute(cli: Cli) -> Result<i32> {
                         .context("unknown harness in fleet state")?;
                     let adapter = harness::adapter(kind)?;
                     let mut command = if s.pid.is_some_and(cones::fleet::alive) {
+                        ensure!(
+                            !s.own_terminal(),
+                            "this claude runs interactively in its own terminal; `claude attach` takes background sessions only"
+                        );
                         adapter.attach(&s.session_id, &s.cwd)?
                     } else {
                         adapter.resume(&s.session_id, &s.cwd)?

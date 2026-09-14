@@ -59,6 +59,19 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
 }
+
+impl Session {
+    /// A harness that runs in someone else's terminal cannot be joined from here: a Codex TUI,
+    /// or an interactive Claude, which `claude attach` does not know (it takes background jobs
+    /// only). Background Claude and Codex daemon threads open fine.
+    pub fn own_terminal(&self) -> bool {
+        match (self.harness.as_str(), self.kind.as_deref()) {
+            ("claude", Some("interactive")) => true,
+            ("claude", _) | ("codex", Some("daemon")) => false,
+            _ => true,
+        }
+    }
+}
 fn claude() -> String {
     "claude".into()
 }
