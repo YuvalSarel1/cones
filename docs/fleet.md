@@ -30,7 +30,8 @@ Every value is a line Claude wrote, and the table names the line. Nothing is rea
 | `title` | Claude's `ai-title`, or a user-set `agent-name`, read from the transcript tail; the registry `name` when the transcript has neither |
 | `last` | For a background job, the one-line `detail` Claude keeps in the job's `state.json`; otherwise the first line of the assistant's most recent text |
 | `tokens_in`, `tokens_out` | Summed over every transcript message with `usage`, once per message id, recounted when the file grows; input includes cache reads and cache creation. Absent until the first such message |
-| `context_tokens` | The prompt size on the same message `model` comes from: `input_tokens` plus `cache_creation_input_tokens` and `cache_read_input_tokens`, the fields Claude's statusLine `current_usage` carries. There is no window field: Claude Code states the window size only in its statusLine payload, which reaches nothing outside the session, so the cell has no denominator and no percentage |
+| `context_tokens` | The prompt size on the same message `model` comes from: `input_tokens` plus `cache_creation_input_tokens` and `cache_read_input_tokens`, the fields Claude's statusLine `current_usage` carries |
+| `context_window` | `context_window.context_window_size` from the statusLine payload, the only place Claude Code states it. Only a statusLine command sees that payload, so cones reads it from `~/.claude/statusline/<session id>.json` when your statusLine command saves it there (one line, see [harness.md](harness.md)). Absent otherwise, and the cell shows the prompt alone |
 
 The state is read in the order `claude agents` reads it for its own rows: a background job's `state` in `state.json` when it is `done`, `failed` or `stopped`; then the registry `status`; then a job whose `tempo` is `blocked`.
 
@@ -64,6 +65,7 @@ The rest comes from the rollout file Codex writes for the session, `~/.codex/ses
 | `last_activity` | The `timestamp` of the rollout's last line; absent with no rollout, the process start does not stand in for it |
 | `model` | `turn_context.model` on the rollout's last turn, verbatim, such as `openai.gpt-6-astra` |
 | `transcript_path` | The rollout file; `cones logs` reads it |
+| `context_window` | `token_count.info.model_context_window` on the same event |
 | `kind`, `tokens_in`, `tokens_out`, `context_tokens`, `cost_usd` | Not shown for Codex |
 
 `cones stop` on a Codex row sends SIGTERM to the pid after checking it still runs a `codex` binary.
@@ -120,7 +122,7 @@ Under the composer, its hint line names only the keys that act on the selected r
 
 There is no details pane for now; a session is read by opening it, a run by `cones logs`. `cones ls --json` and `Data::details` still carry what the pane showed, so it can come back.
 
-Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: the prompt size Claude reported on the session's last message, with no window and no percentage, since Claude Code states the window size only in the statusLine payload. `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Each of `model`, `age`, `activity` and `context` is `-` until the transcript holds the line it reads.
+Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k/200k`: the prompt size the harness reported on the session's last message over the window it stated, or `98k` alone when nothing stated a window (a Claude session whose statusLine command does not save its payload). `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Each of `model`, `age`, `activity` and `context` is `-` until the transcript holds the line it reads.
 
 Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session whose transcript reports no start sorts last, by id.
 

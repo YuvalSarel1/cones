@@ -65,6 +65,8 @@ pub struct Tail {
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
     pub context_tokens: Option<u64>,
+    /// `token_count.info.model_context_window` on that event.
+    pub context_window: Option<u64>,
 }
 
 /// Every live Codex session, oldest first by process start. No Codex home means Codex is not
@@ -257,6 +259,7 @@ pub fn tail(lines: &str) -> Tail {
                     t.context_tokens = info["last_token_usage"]["total_tokens"]
                         .as_u64()
                         .or(t.context_tokens);
+                    t.context_window = info["model_context_window"].as_u64().or(t.context_window);
                 }
                 _ => {}
             }
@@ -500,6 +503,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 tokens_in: t.tokens_in,
                 tokens_out: t.tokens_out,
                 context_tokens: t.context_tokens,
+                context_window: t.context_window,
                 cost_usd: None,
                 last: t.last,
             }
@@ -623,6 +627,7 @@ pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session>
                 tokens_in: tail.tokens_in,
                 tokens_out: tail.tokens_out,
                 context_tokens: tail.context_tokens,
+                context_window: tail.context_window,
                 cost_usd: None,
                 last: tail.last,
                 session_id: id,
@@ -763,7 +768,7 @@ mod tests {
             text.push_str(&format!(
                 r##"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"# AGENTS.md instructions"}}]}}}}
 {{"timestamp":"{at}","type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"UserMessage","content":[{{"type":"text","text":"\n  **fix** the flaky test\nplease"}}]}}}}}}
-{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":900,"output_tokens":40}},"last_token_usage":{{"total_tokens":120}}}}}}}}
+{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":900,"output_tokens":40}},"last_token_usage":{{"total_tokens":120}},"model_context_window":272000}}}}}}
 {{"timestamp":"{at}","type":"event_msg","payload":{{"type":"task_complete"}}}}"##
             ));
             text.push('\n');
@@ -844,10 +849,11 @@ mod tests {
             (
                 rows[0].tokens_in,
                 rows[0].tokens_out,
-                rows[0].context_tokens
+                rows[0].context_tokens,
+                rows[0].context_window
             ),
-            (Some(900), Some(40), Some(120)),
-            "tokens from the rollout's last token_count"
+            (Some(900), Some(40), Some(120), Some(272_000)),
+            "tokens and window from the rollout's last token_count"
         );
         assert_eq!(
             (rows[0].state.as_str(), rows[0].title.as_deref()),

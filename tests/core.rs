@@ -338,9 +338,28 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     );
     assert_eq!((s.tokens_in, s.tokens_out), (Some(320), Some(12)));
     assert_eq!(
-        (s.context_tokens, s.model.as_deref()),
-        (Some(210), Some("claude-fable-5-1")),
+        (s.context_tokens, s.context_window, s.model.as_deref()),
+        (Some(210), None, Some("claude-fable-5-1")),
         "the last message's prompt is the context in use and its model id is shown verbatim"
+    );
+    assert_eq!(
+        cones::fleet::context(&s),
+        "210",
+        "no window until the harness states one"
+    );
+    // The window comes only from the statusLine payload, saved by the user's statusLine command
+    // as statusline/<session id>.json; the model name never stands in for it.
+    let sidecar = claude.join("statusline");
+    fs::create_dir_all(&sidecar).unwrap();
+    fs::write(
+        sidecar.join(format!("{id}.json")),
+        r#"{"session_id":"x","model":{"id":"claude-fable-5-1[1m]"},"context_window":{"context_window_size":200000,"used_percentage":0.1}}"#,
+    )
+    .unwrap();
+    let s = get();
+    assert_eq!(
+        (s.context_window, cones::fleet::context(&s).as_str()),
+        (Some(200_000), "210/200k")
     );
     let rfc = |t: Option<chrono::DateTime<chrono::Utc>>| t.map(|t| t.to_rfc3339());
     assert_eq!(
@@ -377,7 +396,8 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         ),
         "a <synthetic> line is activity but no model report: context and model keep the real one"
     );
-    assert_eq!(cones::fleet::context(&big), "300k");
+    // Over the stated window shows as reported, never clamped or re-guessed.
+    assert_eq!(cones::fleet::context(&big), "300k/200k");
     assert_eq!((big.tokens_in, big.tokens_out), (Some(300_330), Some(13)));
     for (status, state) in [
         ("idle", "idle"),
@@ -568,8 +588,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "the cones-owned session collapses into its run row and the dead pid is stale"
     );
     // The JSON `cones ls --json` prints is the same record the table renders: model, start,
-    // last activity and context come from the transcript, and there is no window or update
-    // time field to disagree with the cells.
+    // last activity and context come from the transcript; the window is absent when no statusLine
+    // command saved one, and there is no update time field to disagree with the cells.
     let json = serde_json::to_value(&rows[0]).unwrap();
     assert_eq!(
         (

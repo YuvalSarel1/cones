@@ -382,8 +382,8 @@ impl Data {
                 let Some(s) = self.sessions.iter().find(|s| &s.session_id == id) else {
                     return vec![];
                 };
-                // Model, start, last activity and context are the transcript's words, `-` when
-                // it has none; the harness reports no window, so the context has no denominator.
+                // Model, start, last activity and context are the harness's words, `-` when it
+                // has none; the window shows only when the harness stated one.
                 let stamp = |t: Option<chrono::DateTime<chrono::Utc>>| {
                     t.map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M:%S").to_string())
                 };
@@ -2486,6 +2486,7 @@ mod tests {
             tokens_in: None,
             tokens_out: None,
             context_tokens: None,
+            context_window: None,
             cost_usd: None,
             title: None,
             last: None,
@@ -2515,6 +2516,7 @@ mod tests {
             tokens_in: None,
             tokens_out: None,
             context_tokens: None,
+            context_window: None,
             cost_usd: None,
             title: None,
             last: None,
@@ -2558,6 +2560,7 @@ mod tests {
             tokens_in: None,
             tokens_out: None,
             context_tokens: None,
+            context_window: None,
             cost_usd: None,
             title: None,
             last: None,
@@ -2591,6 +2594,7 @@ mod tests {
             tokens_in: None,
             tokens_out: None,
             context_tokens: None,
+            context_window: None,
             cost_usd: None,
             title: None,
             last: None,

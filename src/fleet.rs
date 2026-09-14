@@ -46,10 +46,15 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_out: Option<u64>,
     /// The prompt size Claude reported on the last message with usage: input plus cache creation
-    /// and cache read. There is no window field; Claude states the window size only in its
-    /// statusLine payload, which reaches nothing outside the session.
+    /// and cache read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
+    /// The window the harness states: Codex's `model_context_window` in the rollout; for Claude,
+    /// `context_window.context_window_size` from the statusLine payload, which only a statusLine
+    /// command sees, so it is read from `<claude dir>/statusline/<session id>.json` when that
+    /// command saved it there (see docs/harness.md). None when nothing reported one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     /// Claude's own session title (`ai-title`, or a user-set `agent-name`).
@@ -216,6 +221,7 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         tokens_in: d.report.tokens_in,
         tokens_out: d.report.tokens_out,
         context_tokens: d.report.context,
+        context_window: statusline_window(dir, id),
         cost_usd: None,
         title: d
             .title
@@ -228,6 +234,13 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
             .or(d.last),
     })
 }
+/// `context_window.context_window_size` from the statusLine payload the user's statusLine command
+/// saved as `<claude dir>/statusline/<session id>.json`; None when it saved nothing.
+fn statusline_window(claude: &Path, id: &str) -> Option<u64> {
+    let text = fs::read_to_string(claude.join("statusline").join(format!("{id}.json"))).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["context_window"]["context_window_size"].as_u64()
+}
+
 #[derive(Default, Clone)]
 struct Details {
     title: Option<String>,
@@ -633,13 +646,15 @@ pub fn cost(usd: f64) -> String {
     }
 }
 
-/// The prompt size Claude reported on the session's last message: "98k", with no denominator and
-/// no percentage. Claude Code states the window size only in the statusLine payload, which
-/// reaches nothing outside the session; the transcript carries the bare model id, the registry
-/// nothing. Guessing 200k, or 1M from a `[1m]` in settings.json, once rendered live sessions at
-/// 194%. A missing denominator beats a wrong one.
+/// The prompt size the harness reported on the session's last message over the window it
+/// stated: "98k/200k", or "98k" alone when nothing stated a window. The denominator is never
+/// guessed: 200k, or 1M from a `[1m]` in settings.json, once rendered live sessions at 194%.
 pub fn context(s: &Session) -> String {
-    s.context_tokens.map_or_else(|| "-".into(), short)
+    match (s.context_tokens, s.context_window) {
+        (Some(t), Some(w)) => format!("{}/{}", short(t), short(w)),
+        (Some(t), None) => short(t),
+        (None, _) => "-".into(),
+    }
 }
 
 pub fn tokens(s: &Session) -> String {
