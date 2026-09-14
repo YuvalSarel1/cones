@@ -48,7 +48,7 @@ Job policies cover the headless runs cones launches. Sessions started elsewhere,
 
 ## Roadmap
 
-Now: the v0.1.0 tag and the public release. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, next fire time in `ls`, run diffs, sleep and wake proof. [Source](assets/roadmap.py).
+Now: the v0.1.0 tag and the public release. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, jump to an own-terminal session's pane, next fire time in `ls`, run diffs, sleep and wake proof. [Source](assets/roadmap.py).
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
 

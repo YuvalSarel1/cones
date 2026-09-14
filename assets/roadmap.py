@@ -10,6 +10,10 @@
 # writer lock is out of the code: no runner flock, no `workspace` skip reason, no `cones lock`,
 # no validate rule against overlap: allow with write: true; the internal ledger and admission
 # locks stay. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
+# 2026-09-14, owner: "Status transitions" is gone, an agent reporting into cones is coordinator
+# messaging; "Touched files" is LATER, its details pane is gone and run diffs cover cones' own runs;
+# "Jump to pane" is NEXT, since own terminal rows now refuse to open and this is the missing half of
+# moving between agents.
 # Roster, participants, gating, knowledge transfer and messaging belong to the coordinator skill;
 # hooks mean hooks on jobs cones launches, never instrumentation of sessions it did not start.
 import html, textwrap, pathlib
@@ -23,15 +27,14 @@ COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
     ("overlap: continue", "REL", "A tick that finds the previous run still going stops it and starts the new run with claude --resume on run 1's session id, so run 2 keeps what run 1 learned."),
     ("Job lifecycle hooks", "CTL", "Opt-in commands on start, exit and failure for jobs cones launches, set in jobs.yaml. Nothing hooks sessions cones did not start."),
     ("Next fire time in ls", "OBS", "Each job row shows its next tick, computed from the compiled StartCalendarInterval list and confirmed against the loaded plist."),
+    ("Jump to pane", "CTL", "Enter on an own terminal row resolves pid to tty to tmux or iTerm pane and switches the user there; the session is never joined or stopped."),
     ("Run diffs", "OBS", "A write run records git diff --stat of its cwd at exit; cones logs and the details pane show what the run changed."),
-    ("Touched files", "OBS", "Edit and Write paths read from the session's transcript; ls --json and the details pane show each footprint. Bash edits are not seen."),
-    ("Status transitions", "OBS", "cones status 'text' records a one-line check-in per session that fills the last column, kept apart from the active/idle/blocked state Claude reports."),
     ("Sleep/wake proof", "REL", "One slept-through tick fires one run on wake, none after a reboot past one; observed in cones ls --json and written into the README."),
 ]), ("LATER", "Needs a second harness or Mac", "#bc8cff", [
     ("Codex budget probe", "HAR", "Measure Codex usage events to decide whether a token budget can be enforced; the result gates Codex jobs, not Codex in the fleet."),
     ("Codex jobs", "HAR", "Real token budget, rejected when unenforceable. Same policy file, second harness."),
     ("Fleet session records", "OBS", "A session cones did not launch gets a ledger record when it leaves Claude's registry: cwd, duration, tokens, dollars as last reported. ls totals it, daily_budget_usd ignores it."),
-    ("Jump to pane", "CTL", "Enter on a foreign session resolves pid to tty to tmux or iTerm pane and switches there, instead of resuming a copy."),
+    ("Touched files", "OBS", "Edit and Write paths read from the session's transcript; ls --json shows each footprint. Bash edits are not seen."),
     ("Retries with backoff", "REL", "Bounded retry for transient failures, chain visible in the ledger."),
     ("Worktree per run", "REL", "Concurrent writers each get a worktree. Recipe from claude-squad, ported as git commands. Only if shared directories prove insufficient."),
     ("File triggers", "HAR", "Run on path change via launchd WatchPaths; a few plist lines, no watcher process."),
