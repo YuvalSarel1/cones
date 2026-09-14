@@ -54,7 +54,9 @@ elif sys.argv[1] in ("attach", "agents"):
     saved = termios.tcgetattr(0)
     tty.setraw(0)
     print("\x1b[?1049h\x1b[2J\x1b[HCONES_FIXTURE_VIEWER", flush=True)
-    while os.read(0, 1) != b"\x1a":
+    # The dashboard keeps a left viewer alive off-screen and closes it by closing its pty,
+    # so end of input is the exit; a 0x1a byte still is, for a client run by hand.
+    while os.read(0, 1) not in (b"", b"\x1a"):
         pass
     if control["stop_viewer"]:
         os.kill(os.getpid(), signal.SIGTSTP)

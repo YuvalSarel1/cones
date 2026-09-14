@@ -16,11 +16,19 @@ use crate::{
     launchd,
     ledger::{Ledger, Run},
     output, runner,
+    viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
 use ratatui::{
-    DefaultTerminal, Frame,
-    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    Frame,
+    backend::Backend,
+    crossterm::{
+        event::{
+            self, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
+            KeyEventKind, KeyModifiers, MouseEvent,
+        },
+        execute,
+    },
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -40,12 +48,12 @@ use std::{
 static SHELL_TTY: OnceLock<Option<libc::termios>> = OnceLock::new();
 
 /// Put the tty back the way the shell had it, after ratatui has left raw mode and the
-/// alternate screen: the line discipline from `SHELL_TTY`, and off with every mode a child
-/// turns on and may not have turned off: mouse reports, focus events, bracketed paste,
-/// colour-scheme reports, kitty keys and modifyOtherKeys. Claude Code enables all of these
-/// and disables them only on its own way out; a viewer killed on ctrl-z, or a child that
-/// crashed, leaves them on, and a shell with them on echoes garbage on every click, focus
-/// change and paste. Invisible on a terminal where nothing was left on.
+/// alternate screen: the line discipline from `SHELL_TTY`, and off with every mode the
+/// dashboard itself turns on (bracketed paste, mouse reports while a viewer wants them) and
+/// every mode a child of an earlier build may have left on: focus events, colour-scheme
+/// reports, kitty keys, modifyOtherKeys, synchronized output. A shell with them on echoes
+/// garbage on every click, focus change and paste. Invisible on a terminal where nothing was
+/// left on. Viewers never reach this terminal, so nothing of theirs is on it.
 fn hand_back_tty() {
     if let Some(Some(t)) = SHELL_TTY.get() {
         unsafe {
@@ -59,7 +67,7 @@ fn reset_terminal_protocols() {
     use std::io::Write;
     let mut out = std::io::stdout();
     let _ = out.write_all(
-        b"\x18\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
+        b"\x18\x1b\\\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
     );
     let _ = out.flush();
 }
@@ -1153,6 +1161,37 @@ struct App {
     armed: Option<String>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
+    /// The viewers alive inside the dashboard, focused or parsing off-screen; at most
+    /// `MAX_VIEWERS`, the least recently focused closes when another opens.
+    viewers: Vec<Open>,
+    /// The viewer that has the whole frame and the keys; an index into `viewers`.
+    focus: Option<usize>,
+    /// The real terminal's default colors, probed once at start, for viewers that ask.
+    colors: viewer::Colors,
+    /// Whether the real terminal reports the mouse to the dashboard right now; on only while
+    /// the focused viewer asks for mouse reports.
+    mouse_capture: bool,
+    /// Clear the terminal before the next frame: set when a viewer leaves the frame.
+    needs_clear: bool,
+    /// The last frame's rows and columns, which is the pane a viewer opens at.
+    size: (u16, u16),
+}
+
+/// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
+const MAX_VIEWERS: usize = 3;
+
+/// A viewer and what the dashboard knows about it.
+struct Open {
+    /// The row key it opened from, or `agents:<harness>` for a harness's own agents view.
+    key: String,
+    /// `attach`, `codex`, `claude agents`, `logs`: the word in the status line.
+    what: String,
+    viewer: Viewer,
+    /// A Codex thread to record from its rollout once the viewer is left or ends.
+    record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
+    recorded: bool,
+    first_paint_logged: bool,
+    last_focused: Instant,
 }
 
 struct PendingStop {
@@ -1164,6 +1203,7 @@ struct PendingStop {
 
 struct Opening {
     what: String,
+    key: String,
     command: mpsc::Receiver<Result<Command>>,
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     prompt: Option<String>,
@@ -1212,6 +1252,12 @@ impl App {
             feedback: None,
             armed: None,
             log: None,
+            viewers: Vec::new(),
+            focus: None,
+            colors: viewer::Colors::default(),
+            mouse_capture: false,
+            needs_clear: false,
+            size: (24, 80),
         })
     }
 
@@ -1511,44 +1557,246 @@ impl App {
         };
     }
 
-    /// Keep Cones on the physical alternate screen while the harness owns its viewer's PTY.
-    /// The background agent remains in the native daemon throughout the hand-off.
-    fn foreground(&mut self, terminal: &mut DefaultTerminal, c: Command, what: &str) {
-        self.status = format!("opening {what}");
-        let _ = terminal.draw(|frame| self.draw(frame));
-        self.debug(|| format!("foreground {what}: {c:?}; retaining dashboard screen"));
-        let log = self.log.clone();
+    /// The viewer key a row opens: a session's id, `run:<id>` for a run's log or attach.
+    fn viewer_key(kind: &Kind) -> Option<String> {
+        match kind {
+            Kind::Session(id, _) => Some(id.clone()),
+            Kind::Run(id, _) => Some(format!("run:{id}")),
+            _ => None,
+        }
+    }
+
+    fn viewer_index(&self, key: &str) -> Option<usize> {
+        self.viewers.iter().position(|o| o.key == key)
+    }
+
+    /// Give a viewer the frame and the keys.
+    fn focus(&mut self, i: usize) {
+        self.focus = Some(i);
+        let size = self.size;
+        let open = &mut self.viewers[i];
+        open.last_focused = Instant::now();
+        open.viewer.resize(size.0, size.1);
+        let line = format!("focus {} ({})", open.key, open.what);
+        self.debug(|| line);
+    }
+
+    /// Open `c` as a viewer under `key`, or return to the live viewer that already has that
+    /// key. The viewer takes the whole frame; a fourth viewer closes the least recently
+    /// focused one. The background agent stays in its daemon throughout.
+    fn open(
+        &mut self,
+        terminal_size: (u16, u16),
+        c: Command,
+        what: &str,
+        key: String,
+        record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
+    ) {
+        self.size = terminal_size;
+        if let Some(i) = self.viewer_index(&key) {
+            self.focus(i);
+            return;
+        }
+        self.debug(|| format!("open {what} as {key}: {c:?}"));
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
-        let result = crate::viewer::run(c, normal, move |message| {
-            if let Some(path) = &log {
-                debug_line(path, message);
+        match Viewer::spawn(
+            c,
+            terminal_size.0,
+            terminal_size.1,
+            normal,
+            self.colors.clone(),
+        ) {
+            Ok(viewer) => {
+                // The least recently focused makes room only once the new one is running.
+                while self.viewers.len() >= MAX_VIEWERS {
+                    let oldest = self
+                        .viewers
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, o)| o.last_focused)
+                        .map(|(i, _)| i)
+                        .unwrap();
+                    self.close(oldest);
+                }
+                self.viewers.push(Open {
+                    key,
+                    what: what.to_owned(),
+                    viewer,
+                    record,
+                    recorded: false,
+                    first_paint_logged: false,
+                    last_focused: Instant::now(),
+                });
+                let pid = self.viewers.last().unwrap().viewer.pid();
+                self.debug(|| format!("viewer pid {pid}; the dashboard keeps the terminal"));
+                self.focus(self.viewers.len() - 1);
             }
-        });
+            Err(e) => self.status = format!("{what} failed: {e}"),
+        }
+    }
+
+    /// Close a viewer for good: its process group dies with it. A Codex thread it opened is
+    /// recorded first, so its row stays.
+    fn close(&mut self, i: usize) {
+        let open = self.viewers.remove(i);
+        match self.focus {
+            Some(f) if f == i => {
+                self.focus = None;
+                self.needs_clear = true;
+            }
+            Some(f) if f > i => self.focus = Some(f - 1),
+            _ => {}
+        }
+        self.debug(|| format!("close {} ({})", open.key, open.what));
+        if let Some((dir, since)) = &open.record
+            && !open.recorded
+        {
+            self.record_codex(dir, *since);
+        }
+    }
+
+    /// Ctrl+Z inside a viewer: the dashboard takes the frame back and the viewer keeps
+    /// parsing off-screen, so `enter` on its row returns to its current screen at once.
+    fn unfocus(&mut self) {
+        let Some(i) = self.focus.take() else {
+            return;
+        };
+        self.needs_clear = true;
         self.feedback = Some(("return_to_draw", Instant::now()));
-        reset_terminal_protocols();
-        let _ = terminal.hide_cursor();
-        self.status = match result {
-            Ok(outcome) if outcome.detached || outcome.status.is_some_and(|s| s.success()) => {
-                format!("back from {what}")
+        let open = &mut self.viewers[i];
+        open.last_focused = Instant::now();
+        self.status = format!("left {} · enter returns to it", open.what);
+        let record = (!open.recorded).then(|| open.record.clone()).flatten();
+        if let Some((dir, since)) = record {
+            self.viewers[i].recorded = true;
+            // A thread started from the composer had no id when its viewer opened; now that
+            // it has one, its row's `enter` returns here instead of opening a second client.
+            if let Some(id) = self.record_codex(&dir, since) {
+                self.viewers[i].key = id;
             }
-            Ok(outcome) => {
-                let error = String::from_utf8_lossy(&outcome.stderr);
+        }
+        self.invalidate();
+        let open = &self.viewers[i];
+        let line = format!(
+            "dashboard back: {}; viewer pid {} title {:?}",
+            self.status,
+            open.viewer.pid(),
+            open.viewer.title()
+        );
+        self.debug(|| line);
+    }
+
+    /// Feed every viewer: read what it wrote, answer its queries, hand it its input, and
+    /// take a viewer that ended off the list with its exit in the status line. Returns true
+    /// when the focused viewer's screen changed.
+    fn pump(&mut self) -> bool {
+        let mut dirty = false;
+        let mut i = 0;
+        while i < self.viewers.len() {
+            let focused = self.focus == Some(i);
+            let open = &mut self.viewers[i];
+            let mut lines = Vec::new();
+            let mut failed = None;
+            match open.viewer.pump() {
+                Ok(changed) => dirty |= changed && focused,
+                Err(e) => failed = Some(format!("{} failed: {e}", open.what)),
+            }
+            if !open.first_paint_logged
+                && let Some(d) = open.viewer.first_paint()
+            {
+                open.first_paint_logged = true;
+                lines.push(format!(
+                    "timing viewer_first_paint ms={:.3}",
+                    d.as_secs_f64() * 1000.0
+                ));
+            }
+            let exited = open.viewer.exited();
+            for line in lines {
+                self.debug(|| line);
+            }
+            // A viewer the dashboard cannot pump is as gone as one that exited.
+            if let Some(message) = failed {
+                if focused {
+                    self.feedback = Some(("return_to_draw", Instant::now()));
+                }
+                self.status = message;
+                self.close(i);
+                self.invalidate();
+                self.debug(|| format!("viewer dropped: {}", self.status));
+                continue;
+            }
+            let Some(status) = exited else {
+                i += 1;
+                continue;
+            };
+            let open = &self.viewers[i];
+            let what = open.what.clone();
+            let message = if status.success() {
+                format!("back from {what}")
+            } else {
+                let error = String::from_utf8_lossy(open.viewer.stderr_tail());
                 match error.lines().rev().find(|line| !line.trim().is_empty()) {
                     Some(line) => format!("{what} failed: {}", line.trim_start_matches("Error: ")),
-                    None => format!("{what} exited with {}", outcome.status.unwrap()),
+                    None => format!("{what} exited with {status}"),
                 }
+            };
+            if focused {
+                self.feedback = Some(("return_to_draw", Instant::now()));
             }
-            Err(error) => format!("{what} failed: {error}"),
-        };
-        // Invalidate ratatui's previous frame: the viewer drew over that same screen.
-        let _ = terminal.clear();
-        let _ = terminal.draw(|frame| self.draw(frame));
-        self.debug(|| format!("dashboard back: {}; {}", self.status, term_state()));
+            // The exit message first: a Codex thread recorded in `close` replaces it.
+            self.status = message;
+            self.close(i);
+            self.invalidate();
+            self.debug(|| format!("viewer exited: {}", self.status));
+        }
+        dirty
+    }
+
+    fn focused(&mut self) -> Option<&mut Open> {
+        let i = self.focus?;
+        self.viewers.get_mut(i)
+    }
+
+    /// Whether the real terminal should report the mouse: only while the focused viewer asks.
+    fn wants_mouse(&self) -> bool {
+        self.focus
+            .and_then(|i| self.viewers.get(i))
+            .is_some_and(|o| {
+                o.viewer.screen().mouse_protocol_mode() != viewer::MouseProtocolMode::None
+            })
+    }
+
+    /// Pasted text: wrapped for a focused viewer that asked for bracketed paste, raw
+    /// otherwise; into the composer when nothing is focused.
+    fn paste(&mut self, text: &str) {
+        if let Some(open) = self.focused() {
+            if open.viewer.screen().bracketed_paste() {
+                let mut bytes = b"\x1b[200~".to_vec();
+                bytes.extend_from_slice(text.as_bytes());
+                bytes.extend_from_slice(b"\x1b[201~");
+                open.viewer.write(&bytes);
+            } else {
+                open.viewer.write(text.as_bytes());
+            }
+        } else if matches!(self.mode, Mode::Normal) {
+            self.text.push_str(text);
+        }
+    }
+
+    fn mouse(&mut self, ev: MouseEvent) {
+        if let Some(open) = self.focused() {
+            let mode = open.viewer.screen().mouse_protocol_mode();
+            let bytes = viewer::encode_mouse(ev, (0, 0), mode);
+            if !bytes.is_empty() {
+                open.viewer.write(&bytes);
+            }
+        }
     }
 
     fn prepare_viewer(
         &mut self,
         what: String,
+        key: String,
         record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
         prompt: Option<String>,
         prepare: impl FnOnce() -> Result<Command> + Send + 'static,
@@ -1560,6 +1808,7 @@ impl App {
         });
         self.opening = Some(Opening {
             what,
+            key,
             command: rx,
             record,
             prompt,
@@ -1567,7 +1816,7 @@ impl App {
     }
 
     /// Called after drawing so even a slow native daemon start has immediate feedback.
-    fn poll_opening(&mut self, terminal: &mut DefaultTerminal) -> bool {
+    fn poll_opening(&mut self) -> bool {
         let Some(opening) = &self.opening else {
             return false;
         };
@@ -1581,11 +1830,13 @@ impl App {
         let opening = self.opening.take().unwrap();
         match command {
             Ok(command) => {
-                self.foreground(terminal, command, &opening.what);
-                if let Some((dir, since)) = opening.record {
-                    self.record_codex(&dir, since);
-                }
-                self.invalidate();
+                self.open(
+                    self.size,
+                    command,
+                    &opening.what,
+                    opening.key,
+                    opening.record,
+                );
             }
             Err(error) => {
                 self.status = format!("{} failed: {error:#}", opening.what);
@@ -1613,29 +1864,41 @@ impl App {
         true
     }
 
-    /// After a Codex client launched here returns: keep the thread it opened, so its row stays
-    /// and `enter` resumes it. A thread left before its first turn is gone with the client.
-    fn record_codex(&mut self, dir: &Path, since: chrono::DateTime<chrono::Utc>) {
+    /// After a Codex client launched here is left or returns: keep the thread it opened, so
+    /// its row stays and `enter` resumes it, and hand back the thread's id. A thread left
+    /// before its first turn is gone with the client.
+    fn record_codex(&mut self, dir: &Path, since: chrono::DateTime<chrono::Utc>) -> Option<String> {
         let home = codex::home(&self.claude);
         match codex::launched(&home, dir, since) {
             Some(t) => {
-                let short: String = t.id.chars().take(8).collect();
+                let id = t.id.clone();
+                let short: String = id.chars().take(8).collect();
                 self.status = match codex::remember(&self.state, t) {
                     Ok(()) => format!("codex thread {short} kept · enter on its row returns to it"),
                     Err(e) => format!("could not record codex thread {short}: {e}"),
                 };
+                Some(id)
             }
-            None if !self.status.contains("failed") => {
-                self.status = "codex thread will appear when the harness reports it".into()
+            None => {
+                if !self.status.contains("failed") {
+                    self.status = "codex thread will appear when the harness reports it".into();
+                }
+                None
             }
-            None => {}
         }
     }
 
-    /// The footer's `enter` verb for the selected row: a session of a harness that cannot be
-    /// joined from here says so instead of promising an attach.
+    /// The footer's `enter` verb for the selected row: `return` on a row whose viewer is
+    /// alive inside the dashboard; a session of a harness that cannot be joined from here
+    /// says so instead of promising an attach.
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
+        if row
+            .and_then(|r| Self::viewer_key(&r.kind))
+            .is_some_and(|k| self.viewer_index(&k).is_some())
+        {
+            return "return";
+        }
         if let Some(Kind::Session(id, _)) = row.map(|r| &r.kind)
             && self
                 .data
@@ -1648,7 +1911,7 @@ impl App {
         enter_verb(row.map(|r| &r.kind))
     }
 
-    fn enter(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn enter(&mut self) -> Result<()> {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return Ok(());
         };
@@ -1661,6 +1924,11 @@ impl App {
             return Ok(());
         }
         self.debug(|| format!("enter on {:?}: {}", kind.key(), enter_verb(Some(&kind))));
+        // A row whose viewer is alive returns to its current screen; nothing is started.
+        if let Some(i) = Self::viewer_key(&kind).and_then(|k| self.viewer_index(&k)) {
+            self.focus(i);
+            return Ok(());
+        }
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
             // A headless run cannot be attached while it runs; follow its log instead. A live
@@ -1668,8 +1936,7 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, c, "logs");
-                self.invalidate();
+                self.open(self.size, c, "logs", format!("run:{id}"), None);
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1689,24 +1956,21 @@ impl App {
                 }
                 // A Codex thread behind the daemon reopens with a client.
                 if harness == "codex" {
-                    self.prepare_viewer("codex".into(), None, None, move || {
+                    let key = id.clone();
+                    self.prepare_viewer("codex".into(), key, None, None, move || {
                         harness::codex_resume(&id, &cwd)
                     });
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
-                    Ok(c) => self.foreground(terminal, c, "attach"),
+                    Ok(c) => self.open(self.size, c, "attach", id, None),
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
-                // Back on the same row, read again by id: the session may have changed state,
-                // or ended, while it was open. Filter and grouping were never touched.
-                self.invalidate();
             }
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
-                self.foreground(terminal, c, "attach");
-                self.invalidate();
+                self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
             Kind::Menu("runs") => self.new_job(),
             Kind::Menu("agents") => self.mode = Mode::Harness(0),
@@ -1750,7 +2014,7 @@ impl App {
     /// The composer's `enter`: a session in the selected row's directory with the text as its
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
-    fn start(&mut self, _terminal: &mut DefaultTerminal) {
+    fn start(&mut self) {
         // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
         // ledger like any other, instead of a bare session.
         if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
@@ -1770,7 +2034,10 @@ impl App {
         if kind == HarnessKind::Codex {
             let record = Some((dir.clone(), since));
             let retry = Some(prompt.clone());
-            self.prepare_viewer(what, record, retry, move || {
+            // A new thread has no id yet; the key is unique to this launch until the thread is
+            // recorded on the first ctrl+z, when the viewer takes the thread's id as its key.
+            let key = format!("codex:start:{}", since.timestamp_millis());
+            self.prepare_viewer(what, key, record, retry, move || {
                 match harness::start(kind, &dir, prompt.trim())? {
                     Start::Foreground(command) => Ok(command),
                     Start::Background(_) => anyhow::bail!("expected a Codex viewer"),
@@ -2032,6 +2299,13 @@ impl App {
         }
         match self.armed.take() {
             Some(armed) if armed == id => {
+                // A viewer on the row goes first: a client of a session being removed has
+                // nothing left to show.
+                for key in [id.clone(), format!("run:{id}")] {
+                    if let Some(i) = self.viewer_index(&key) {
+                        self.close(i);
+                    }
+                }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
@@ -2135,14 +2409,21 @@ impl App {
 
     /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
     /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
-    /// until the next key.
-    fn key(
-        &mut self,
-        code: KeyCode,
-        mods: KeyModifiers,
-        terminal: &mut DefaultTerminal,
-    ) -> Result<bool> {
+    /// until the next key. While a viewer has the frame every key but ctrl+z is its, in the
+    /// classic encoding; ctrl+z leaves it running and comes back here.
+    fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
+        if let Some(open) = self.focused() {
+            if ctrl && code == KeyCode::Char('z') {
+                self.unfocus();
+                return Ok(false);
+            }
+            let bytes = viewer::encode_key(code, mods, open.viewer.screen().application_cursor());
+            if !bytes.is_empty() {
+                open.viewer.write(&bytes);
+            }
+            return Ok(false);
+        }
         self.status.clear();
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
             return Ok(false);
@@ -2176,17 +2457,23 @@ impl App {
                     KeyCode::Enter => {
                         let kind = harness::KNOWN[i];
                         self.mode = Mode::Normal;
+                        let key = format!("agents:{kind}");
+                        if let Some(i) = self.viewer_index(&key) {
+                            self.focus(i);
+                            return Ok(false);
+                        }
                         if kind == HarnessKind::Codex {
-                            self.prepare_viewer("codex agents".into(), None, None, move || {
-                                harness::agents(kind)
-                            });
+                            self.prepare_viewer(
+                                "codex agents".into(),
+                                key,
+                                None,
+                                None,
+                                move || harness::agents(kind),
+                            );
                             return Ok(false);
                         }
                         match harness::agents(kind) {
-                            Ok(c) => {
-                                self.foreground(terminal, c, &format!("{kind} agents"));
-                                self.invalidate();
-                            }
+                            Ok(c) => self.open(self.size, c, &format!("{kind} agents"), key, None),
                             Err(e) => self.status = e.to_string(),
                         }
                     }
@@ -2280,8 +2567,8 @@ impl App {
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
                     KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
-                    KeyCode::Enter if self.text.trim().is_empty() => self.enter(terminal)?,
-                    KeyCode::Enter => self.start(terminal),
+                    KeyCode::Enter if self.text.trim().is_empty() => self.enter()?,
+                    KeyCode::Enter => self.start(),
                     KeyCode::Backspace => {
                         self.text.pop();
                     }
@@ -2310,6 +2597,30 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        self.size = (area.height, area.width);
+        // A focused viewer has the whole frame: its emulated screen, cell for cell, and the
+        // terminal's own cursor where the screen puts it, off a wide character's second half.
+        if let Some(open) = self.focused() {
+            open.viewer.resize(area.height, area.width);
+            let screen = open.viewer.screen();
+            viewer::render(screen, area, frame.buffer_mut());
+            if !screen.hide_cursor() {
+                let (row, mut col) = screen.cursor_position();
+                col = col.min(area.width.saturating_sub(1));
+                if col > 0
+                    && screen
+                        .cell(row, col)
+                        .is_some_and(|c| c.is_wide_continuation())
+                {
+                    col -= 1;
+                }
+                if row < area.height {
+                    frame.set_cursor_position((area.x + col, area.y + row));
+                }
+            }
+            return;
+        }
         let line = match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
@@ -2422,8 +2733,9 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     app.timing("startup_load", started);
     app.feedback = Some(("startup_to_draw", started));
     app.rebuild();
-    // Ctrl+Z detaches a native viewer; it never suspends the dashboard. Viewers get their
-    // default signal handlers back on their own terminal in pre_exec.
+    // Ctrl+Z is a dashboard key: it leaves the focused viewer running off-screen. It never
+    // suspends the dashboard, and a viewer never sees it. Viewers get their default signal
+    // handlers back on their own pty in pre_exec.
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
@@ -2433,6 +2745,18 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         (libc::tcgetattr(0, &mut t) == 0).then_some(t)
     });
     let mut terminal = ratatui::init();
+    // ratatui's hook leaves raw mode and the alternate screen; the modes the dashboard turns
+    // on itself (bracketed paste, mouse reports) come off here on a panic as on a quit.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        hand_back_tty();
+        hook(info);
+    }));
+    // Before crossterm's first poll, so the replies do not land as keystrokes.
+    app.colors = viewer::probe_colors(Duration::from_millis(150));
+    app.debug(|| format!("terminal colors {:?}", app.colors));
+    let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let result = (|| -> Result<()> {
         let animation = Instant::now();
         let mut drawn_tick = usize::MAX;
@@ -2444,12 +2768,32 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 app.reload();
             }
             app.poll();
+            let dirty = app.pump();
+            let wants_mouse = app.wants_mouse();
+            if wants_mouse != app.mouse_capture {
+                if wants_mouse {
+                    execute!(std::io::stdout(), EnableMouseCapture)?;
+                } else {
+                    execute!(std::io::stdout(), DisableMouseCapture)?;
+                }
+                app.mouse_capture = wants_mouse;
+            }
             if redraw
+                || dirty
                 || app.feedback.is_some()
                 || app.tick != drawn_tick
                 || app.refreshed != drawn_refresh
             {
                 let drawing = Instant::now();
+                if app.needs_clear {
+                    // A belt over ratatui's diff: the frame a viewer left is not trusted.
+                    // Not `Terminal::clear`, which asks the terminal where its cursor is and
+                    // fails on one that does not answer; a plain clear and a forgotten
+                    // previous buffer give the same full repaint.
+                    terminal.backend_mut().clear()?;
+                    terminal.swap_buffers();
+                    app.needs_clear = false;
+                }
                 terminal.draw(|f| app.draw(f))?;
                 if let Some((phase, started)) = app.feedback.take() {
                     app.timing("draw", drawing);
@@ -2461,27 +2805,34 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 drawn_refresh = app.refreshed;
                 redraw = false;
             }
-            if app.poll_opening(&mut terminal) {
+            if app.poll_opening() {
                 continue;
             }
             // Commands and fresh data can land between animation frames. Check them promptly
-            // without repainting idle frames or making the spinner depend on key frequency.
-            if event::poll(Duration::from_millis(25))? {
+            // without repainting idle frames or making the spinner depend on key frequency. A
+            // focused viewer's output is polled tighter, so typing into it feels direct.
+            let wait = Duration::from_millis(if app.focus.is_some() { 8 } else { 25 });
+            if event::poll(wait)? {
                 let e = event::read()?;
                 redraw = true;
                 app.debug(|| format!("event {e:?}"));
-                if let Event::Key(k) = e
-                    && k.kind == KeyEventKind::Press
-                {
-                    app.feedback = Some(("input_to_draw", Instant::now()));
-                    if app.key(k.code, k.modifiers, &mut terminal)? {
-                        return Ok(());
+                match e {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => {
+                        app.feedback = Some(("input_to_draw", Instant::now()));
+                        if app.key(k.code, k.modifiers)? {
+                            return Ok(());
+                        }
                     }
+                    Event::Paste(text) => app.paste(&text),
+                    Event::Mouse(m) => app.mouse(m),
+                    _ => {}
                 }
             }
         }
     })();
     app.debug(|| format!("dashboard loop ended: {result:?}"));
+    // Viewers die with the dashboard: their process groups, never the agents behind them.
+    app.viewers.clear();
     ratatui::restore();
     hand_back_tty();
     result.context("dashboard")?;
@@ -3013,6 +3364,7 @@ mod tests {
         let (release, wait) = mpsc::channel();
         app.prepare_viewer(
             "codex".into(),
+            "codex:test".into(),
             None,
             Some("fix the lag".into()),
             move || {
@@ -3459,5 +3811,92 @@ mod tests {
         );
         let (_, other) = columns(&["j", "age"], vec![row("x", "1m")], &mut widths);
         assert_eq!(other[0][0].0, "x  ", "another table has its own widths");
+    }
+
+    /// A shell on a pty that draws `text` at the top left and then waits, as a viewer.
+    fn viewer_open(key: &str, what: &str, text: &str) -> Open {
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", &format!("printf '\\033[H{text}'; sleep 5")]);
+        Open {
+            key: key.into(),
+            what: what.into(),
+            viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
+            record: None,
+            recorded: false,
+            first_paint_logged: false,
+            last_focused: Instant::now(),
+        }
+    }
+
+    fn rows(t: &Terminal<ratatui::backend::TestBackend>, width: usize) -> Vec<String> {
+        t.backend()
+            .buffer()
+            .content()
+            .chunks(width)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn a_focused_viewer_takes_the_frame_and_ctrl_z_brings_the_composer_back() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
+        app.focus = Some(0);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.pump() {
+            assert!(Instant::now() < deadline, "the viewer never drew");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 80);
+        assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
+        assert!(
+            !screen.iter().any(|r| r.contains("an instruction for")),
+            "the composer is not drawn under a viewer: {screen:#?}"
+        );
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, None);
+        assert!(app.status.starts_with("left attach"), "{}", app.status);
+        assert_eq!(app.viewers.len(), 1, "the viewer is alive off-screen");
+        assert!(app.needs_clear);
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 80);
+        assert!(
+            screen.iter().any(|r| r.contains("an instruction for")),
+            "{screen:#?}"
+        );
+        assert!(!screen[0].starts_with("VIEW"), "{screen:#?}");
+    }
+
+    #[test]
+    fn enter_on_a_row_with_a_live_viewer_returns_to_it_without_spawning() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.viewers.push(viewer_open(A, "attach", "SESSION"));
+        assert_eq!(app.enter_label(), "return");
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(app.viewers.len(), 1, "nothing was spawned");
+        assert!(!app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap());
+        assert_eq!(app.focus, Some(0), "a plain key goes to the viewer");
+        app.unfocus();
+        assert_eq!(app.enter_label(), "return");
+        assert!(
+            app.text.is_empty(),
+            "the key went to the viewer, not the composer"
+        );
+        app.close(0);
+        assert!(app.viewers.is_empty());
+        assert_eq!(
+            app.enter_label(),
+            "own terminal",
+            "with the viewer gone the row's own verb is back"
+        );
     }
 }

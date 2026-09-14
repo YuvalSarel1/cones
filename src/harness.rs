@@ -53,7 +53,9 @@ pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 /// session outlives the viewer is refused here with the reason, not parked or proxied. The
 /// viewer is another matter: `viewer.rs` runs the client (`claude attach`, a Codex `--remote`
 /// client, `claude agents`) on a pty the dashboard owns, because the viewer's lifetime was
-/// always the dashboard's to end; the agent stays in its daemon.
+/// always the dashboard's to end; the agent stays in its daemon. The viewer's bytes are parsed
+/// by a terminal emulator the dashboard draws, never copied to the terminal, so leaving a
+/// viewer is a focus change and it keeps running until the dashboard closes it.
 pub enum Start {
     /// Returns on its own once the session is up; nothing to wait on.
     Background(std::process::Command),

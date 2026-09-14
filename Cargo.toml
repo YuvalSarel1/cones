@@ -21,6 +21,7 @@ sha2 = "0.10"
 signal-hook = "0.3"
 uuid = { version = "1", features = ["v4"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+vt100 = "0.16"
 
 [dev-dependencies]
 tempfile = "3"
