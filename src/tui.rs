@@ -1140,8 +1140,12 @@ struct App {
     text: String,
     /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
     harness: usize,
-    /// A `claude --bg` in flight on its own thread; its one line lands in the status.
-    started: Vec<mpsc::Receiver<(String, Option<String>)>>,
+    /// A `claude --bg` in flight on its own thread, keyed by its placeholder row's id; its one
+    /// line lands in the status.
+    started: Vec<(String, mpsc::Receiver<Launched>)>,
+    /// Sessions the composer started that Claude does not list yet: a row from the moment
+    /// `enter` is pressed, handed over to the registry's row once that appears.
+    pending: Vec<Pending>,
     opening: Option<Opening>,
     tick: usize,
     refreshed: Instant,
@@ -1179,6 +1183,66 @@ struct App {
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
 const MAX_VIEWERS: usize = 3;
+
+/// What a launch thread reports: its status line, and the instruction to hand back if it failed.
+type Launched = (String, Option<String>);
+
+/// A row for a session the composer started, until Claude lists it. `short` is the id
+/// `claude --bg` printed, None until it returns; the row is matched to the registry by it.
+struct Pending {
+    session: Session,
+    short: Option<String>,
+    at: Instant,
+}
+
+impl Pending {
+    fn matches(&self, s: &Session) -> bool {
+        s.harness == "claude"
+            && s.cwd == self.session.cwd
+            && self
+                .short
+                .as_deref()
+                .is_some_and(|short| s.session_id.starts_with(short))
+    }
+}
+
+// ponytail: a launch whose row never shows up (claude changed what --bg prints) leaves after
+// this long instead of sitting there forever; matching on the registry's own start time if it bites.
+const PENDING_TTL: Duration = Duration::from_secs(90);
+
+/// The id in `claude --bg`'s one line, `backgrounded · <short id> (idle)`.
+fn short_id(status: &str) -> Option<String> {
+    status
+        .split("backgrounded · ")
+        .nth(1)?
+        .split_whitespace()
+        .next()
+        .map(str::to_owned)
+}
+
+/// The row a just-started Claude session gets before Claude lists it: the instruction's first
+/// line as its title, working, in the directory it was started in.
+fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
+    Session {
+        session_id: id.to_owned(),
+        harness: "claude".into(),
+        kind: Some("bg".into()),
+        cwd: dir.to_owned(),
+        state: "started".into(),
+        started: Some(chrono::Utc::now()),
+        last_activity: None,
+        model: None,
+        pid: None,
+        transcript_path: None,
+        tokens_in: None,
+        tokens_out: None,
+        context_tokens: None,
+        context_window: None,
+        cost_usd: None,
+        title: Some(prompt.lines().next().unwrap_or("").trim().to_owned()),
+        last: Some("starting".into()),
+    }
+}
 
 /// A viewer and what the dashboard knows about it.
 struct Open {
@@ -1241,6 +1305,7 @@ impl App {
             text: String::new(),
             harness: 0,
             started: Vec::new(),
+            pending: Vec::new(),
             opening: None,
             tick: 0,
             refreshed: Instant::now(),
@@ -1337,24 +1402,45 @@ impl App {
     fn poll(&mut self) {
         self.poll_stops();
         let mut launched = false;
-        for rx in std::mem::take(&mut self.started) {
+        for (id, rx) in std::mem::take(&mut self.started) {
             match rx.try_recv() {
                 Ok((message, retry)) => {
-                    self.status = message;
-                    if self.text.is_empty()
-                        && let Some(prompt) = retry
-                    {
-                        self.text = prompt;
+                    match retry {
+                        // A failed launch takes its row with it and puts the instruction back.
+                        Some(prompt) => {
+                            self.pending.retain(|p| p.session.session_id != id);
+                            if self.text.is_empty() {
+                                self.text = prompt;
+                            }
+                        }
+                        None => {
+                            if let Some(p) =
+                                self.pending.iter_mut().find(|p| p.session.session_id == id)
+                            {
+                                p.short = short_id(&message);
+                            }
+                        }
                     }
+                    self.status = message;
                     launched = true;
                 }
-                Err(mpsc::TryRecvError::Empty) => self.started.push(rx),
+                Err(mpsc::TryRecvError::Empty) => self.started.push((id, rx)),
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    self.pending.retain(|p| p.session.session_id != id);
                     self.status = "session launch stopped unexpectedly".into();
+                    launched = true;
                 }
             }
         }
         if launched {
+            self.data.sessions.retain(|s| {
+                !s.session_id.starts_with("starting:")
+                    || self
+                        .pending
+                        .iter()
+                        .any(|p| p.session.session_id == s.session_id)
+            });
+            self.rebuild();
             self.invalidate();
         }
         let Some(rx) = &self.loading else {
@@ -1397,6 +1483,12 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
+        // A started session's row is handed over once the registry lists it.
+        self.pending.retain(|p| {
+            !data.sessions.iter().any(|s| p.matches(s)) && p.at.elapsed() < PENDING_TTL
+        });
+        data.sessions
+            .extend(self.pending.iter().map(|p| p.session.clone()));
         self.data = data;
         self.rebuild();
         self.refreshed = Instant::now();
@@ -1940,6 +2032,9 @@ impl App {
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
+            Kind::Session(id, _) if id.starts_with("starting:") => {
+                self.status = "still starting · its row fills in when Claude lists it".into();
+            }
             Kind::Session(id, _) => {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
@@ -2047,6 +2142,17 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         self.status = format!("starting {what}");
+        // The row is there the moment enter is pressed; the registry fills it in when it lists
+        // the session.
+        let id = format!("starting:{}", since.timestamp_millis());
+        let session = placeholder(&id, &dir, &prompt);
+        self.data.sessions.push(session.clone());
+        self.pending.push(Pending {
+            session,
+            short: None,
+            at: Instant::now(),
+        });
+        self.rebuild();
         std::thread::spawn(move || {
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
@@ -2071,7 +2177,7 @@ impl App {
             };
             let _ = tx.send(feedback);
         });
-        self.started.push(rx);
+        self.started.push((id, rx));
     }
 
     /// ctrl+x on a job with no run in flight: once arms, again removes the job from jobs.yaml
@@ -2272,6 +2378,10 @@ impl App {
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
+            Some(Kind::Session(id, _)) if id.starts_with("starting:") => {
+                self.status = "still starting · nothing to stop yet".into();
+                return;
+            }
             Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
             // A job row with a run in flight stops that run; with none, ctrl+x deletes the job.
             Some(Kind::Job(name)) => {
@@ -3294,6 +3404,69 @@ mod tests {
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    /// `enter` in the composer puts a row up at once, titled with the instruction, and the
+    /// registry's row takes over when Claude lists the id `--bg` printed. A failed launch takes
+    /// the row away and hands the instruction back.
+    #[test]
+    fn a_started_session_has_a_row_at_once_until_claude_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        let session = placeholder("starting:1", claude, "fix the tests\nplease");
+        app.data.sessions.push(session.clone());
+        app.pending.push(Pending {
+            session,
+            short: None,
+            at: Instant::now(),
+        });
+        app.rebuild();
+        let has = |app: &App, id: &str| app.rows.iter().any(|r| r.kind.key() == Some(id));
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.kind.key() == Some("starting:1"))
+            .unwrap();
+        assert!(row.text().contains("fix the tests") && row.working());
+        // Claude printed the id; the registry does not list it yet, so the row stays.
+        app.pending[0].short = short_id("started claude in ~: backgrounded · aaaaaaaa (idle)");
+        assert_eq!(app.pending[0].short.as_deref(), Some("aaaaaaaa"));
+        app.refresh().unwrap();
+        assert!(has(&app, "starting:1"));
+        registry(
+            claude,
+            A,
+            claude.to_str().unwrap(),
+            "idle",
+            1_757_682_871_000,
+        );
+        app.refresh().unwrap();
+        assert!(
+            !has(&app, "starting:1") && has(&app, A),
+            "the listed row took over"
+        );
+        // A launch that fails: its row goes and the instruction is back in the composer.
+        let session = placeholder("starting:2", claude, "again");
+        app.data.sessions.push(session.clone());
+        app.pending.push(Pending {
+            session,
+            short: None,
+            at: Instant::now(),
+        });
+        app.rebuild();
+        assert!(has(&app, "starting:2"));
+        let (tx, rx) = mpsc::channel();
+        tx.send((
+            "claude in ~ failed: no".to_owned(),
+            Some("again".to_owned()),
+        ))
+        .unwrap();
+        app.started.push(("starting:2".to_owned(), rx));
+        app.poll();
+        assert!(!has(&app, "starting:2") && app.pending.is_empty());
+        assert_eq!(app.text, "again");
+    }
 
     #[test]
     fn kind_key_is_the_id_without_the_state() {
