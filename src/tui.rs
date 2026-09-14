@@ -1,7 +1,8 @@
 //! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
 //! or by state, and runs, with a composer at the bottom like `claude agents`: type an
 //! instruction, `enter` starts a session in the selected row's directory under the harness
-//! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`).
+//! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`);
+//! `ctrl+x` on a finished run deletes its ledger records.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
@@ -1534,6 +1535,24 @@ impl App {
         }
     }
 
+    /// ctrl+x on a run that is not in flight: once arms, again within two seconds drops its
+    /// records, output and archived transcript. `esc` keeps it.
+    fn delete_run(&mut self, id: String) {
+        match self.armed.take() {
+            Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
+                self.status = match Ledger::new(&self.state).and_then(|l| l.forget(&id)) {
+                    Ok(()) => "run deleted".into(),
+                    Err(e) => format!("delete failed: {e:#}"),
+                };
+                self.reload();
+            }
+            _ => {
+                self.status = "ctrl+x again to delete this run · esc keeps it".into();
+                self.armed = Some((id, Instant::now()));
+            }
+        }
+    }
+
     /// ctrl+e: the wizard on the selected job, filled in from the file as written.
     fn edit_job(&mut self) {
         let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
@@ -1566,7 +1585,7 @@ impl App {
             Kind::Job(name) if live(name) => Some("stop"),
             Kind::Job(_) => Some("delete"),
             Kind::Run(_, s) if s == "started" => Some("stop"),
-            Kind::Run(..) => None,
+            Kind::Run(..) => Some("delete"),
             Kind::Session(id, _) => {
                 let daemon = self
                     .data
@@ -1650,6 +1669,7 @@ impl App {
     /// ctrl+x once arms, ctrl+x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
+            Some(Kind::Run(id, s)) if s != "started" => return self.delete_run(id),
             Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
             // A job row with a run in flight stops that run; with none, ctrl+x deletes the job.
             Some(Kind::Job(name)) => {
@@ -2581,6 +2601,38 @@ mod tests {
         app.stop();
         assert!(!fs::read_to_string(&jobs).unwrap().contains("name: one"));
         assert!(app.status.starts_with("job one deleted"), "{}", app.status);
+    }
+
+    #[test]
+    fn ctrl_x_on_a_finished_run_arms_then_deletes_its_records_and_output() {
+        let d = dir();
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        start.fired_at = Some(chrono::Utc::now());
+        ledger.append(&start).unwrap();
+        ledger
+            .append(&crate::ledger::Record::new(
+                A.into(),
+                crate::ledger::Status::Ok,
+            ))
+            .unwrap();
+        let output = d.path().join("output").join(A);
+        fs::create_dir_all(&output).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(matches!(&app.selected().unwrap().kind, Kind::Run(id, s) if id == A && s == "ok"));
+        assert_eq!(app.stop_verb(), Some("delete"));
+        app.stop();
+        assert!(
+            app.status.contains("again to delete this run"),
+            "{}",
+            app.status
+        );
+        assert_eq!(ledger.runs().unwrap().len(), 1, "armed only");
+        app.stop();
+        assert_eq!(app.status, "run deleted");
+        assert!(ledger.runs().unwrap().is_empty());
+        assert!(!output.exists());
     }
 
     #[test]

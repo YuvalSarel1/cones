@@ -251,6 +251,36 @@ impl Ledger {
         runs.sort_by_key(|r| r.started.fired_at);
         Ok(runs)
     }
+    /// Drops every record of a finished run, with its output and archived transcript. Refused
+    /// while the run's lease is held: a live worker would append a terminal record for a run
+    /// that is gone.
+    pub fn forget(&self, run_id: &str) -> Result<()> {
+        let _lease = self.run_lock(run_id)?.context("run is still going")?;
+        let mut f = private_file(&self.state.join("runs.jsonl"))?;
+        f.lock_exclusive()?;
+        let mut bytes = Vec::new();
+        f.read_to_end(&mut bytes)?;
+        let kept: Vec<u8> = bytes
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .filter(|line| serde_json::from_slice::<Record>(line).is_ok_and(|r| r.run_id != run_id))
+            .flat_map(|line| line.iter().copied().chain(*b"\n"))
+            .collect();
+        f.set_len(0)?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&kept)?;
+        f.sync_all()?;
+        for dir in ["output", "transcripts"] {
+            let _ = std::fs::remove_dir_all(self.state.join(dir).join(run_id));
+        }
+        let _ = std::fs::remove_file(
+            self.state
+                .join("locks")
+                .join("runs")
+                .join(format!("{run_id}.lock")),
+        );
+        Ok(())
+    }
     pub fn reserved_spend(&self, job: &str) -> Result<f64> {
         let cutoff = Utc::now() - chrono::Duration::hours(24);
         Ok(self
