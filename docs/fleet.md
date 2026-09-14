@@ -58,7 +58,7 @@ The rest comes from the rollout file Codex writes for the session, `~/.codex/ses
 | `state` | The rollout's last turn event: `active` after `task_started`, `idle` after `task_complete` or `turn_aborted`, `-` with no rollout. Codex records no needs-input event there, so a turn waiting on an approval reads as working |
 | `last_activity` | The `timestamp` of the rollout's last line; absent with no rollout, the process start does not stand in for it |
 | `model` | `turn_context.model` on the rollout's last turn, verbatim, such as `openai.gpt-6-astra` |
-| `transcript_path` | The rollout file; `cones logs` and the details pane read it |
+| `transcript_path` | The rollout file; `cones logs` reads it |
 | `kind`, `tokens_in`, `tokens_out`, `context_tokens`, `cost_usd` | Not shown for Codex |
 
 `cones stop` on a Codex row sends SIGTERM to the pid after checking it still runs a `codex` binary.
@@ -86,15 +86,15 @@ The copy under `assets/coordinator/` is the upstream skill with one line changed
 
 `cones tui` reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
-Its hint line reads `↑↓ move · enter <verb> · tab peek · x x stop · e edit jobs · s regroup · n new task · h harness · / filter · q quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, and `open` with nothing selected; `tab peek` reads `tab more` while the pane is showing and `tab hide` while it is expanded.
+Under the composer, its hint line reads `enter <verb> · tab <harness> · ctrl+x <stop|delete> · ctrl+n new job · ctrl+e edit · ctrl+s regroup · ctrl+o agents · esc quit`, where the verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, `own terminal` on a session that cannot be joined from here and `open` with nothing selected; `tab` names the harness it switches to, and `ctrl+x` reads `delete` on a job with no run in flight. With an instruction typed it reads `enter start <harness> in <dir> · tab <harness> · esc clear`. The last action's status takes the line until the next key.
 
-| Pane | Columns | Details pane |
-| --- | --- | --- |
-| Jobs | enabled marker, name, schedule, harness, on/off, last run status | schedule, policy line, prompt |
-| Sessions | icon, harness, `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd | model, start, last activity, context and tokens on one line, then the last prompt and full reply; with `tab`, the last 12 exchanges |
-| Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason | captured output and harness stderr |
+| Pane | Columns |
+| --- | --- |
+| Jobs | enabled marker, name, schedule, harness, on/off, last run status |
+| Sessions | icon, harness, `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from [jobs.yaml](jobs.md#dashboard-columns): by default state, model, age, activity, context, last message or cwd |
+| Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason |
 
-The details pane starts hidden, so the list has the screen. `tab` shows it as the bottom 40% of the screen, where it shows the end of its text; a second `tab` expands it to 75% and, on a session, reads the last 12 prompts and replies from the transcript instead of the last one, so a session can be read before it is opened; nothing is shown that the transcript does not record, so a turn that was all tool calls shows its prompt alone. `pgup` and `pgdn` (or `shift+↑` `↓`) page through the text; the pane title then reads `lines 41-80 of 120`. The pane stays pinned to the end until it is paged up, so a working session keeps scrolling by itself, and moving to another row or pressing `tab` again pins it back. A third `tab` hides the pane again.
+There is no details pane for now; a session is read by opening it, a run by `cones logs`. `cones ls --json` and `Data::details` still carry what the pane showed, so it can come back.
 
 Each table opens with a dim row naming its columns, padded to the table beneath; the cursor skips it and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table. The context cell reads `98k`: the prompt size Claude reported on the session's last message, with no window and no percentage, since Claude Code states the window size only in the statusLine payload. `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Each of `model`, `age`, `activity` and `context` is `-` until the transcript holds the line it reads.
 
