@@ -110,7 +110,7 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `e` | Open jobs.yaml in `$VISUAL` or `$EDITOR`, then run `cones install` on return so launchd matches the file; an install error shows on the status line. |
 | `ctrl+s` (or `s`) | Regroup sessions by state or by directory. |
 | `n` | New task, in any folder: four questions on the footer line, described below. `esc` cancels at any of them. |
-| `h` | Open a harness's own agents view without picking a row first: `claude agents`, or Codex's `resume` picker as a client of its app-server daemon, so a thread picked there keeps working when the client is left. `←` `→` pick the harness, `enter` opens, `esc` cancels. Ctrl+Z comes back here; Claude's agents view types `q` into its prompt rather than quitting. |
+| `h` | Open a harness's own agents view without picking a row first: `claude agents`, or Codex's `resume` picker as a client of its app-server daemon, so a thread picked there keeps working when the client is left. `←` `→` pick the harness, `enter` opens, `esc` cancels. `esc` in Claude's agents view quits it and comes back here (`q` types into its prompt; Ctrl+Z comes back too). Its keys cannot be rebound to do this: Claude's `Agents` keybinding context accepts only its own two actions, and `~/.claude/keybindings.json` is global, not per launch. |
 | `/` | Filter rows by text; `enter` keeps the filter, `esc` clears it. |
 | `r` | Reload now; the dashboard reloads every second on its own, so the key is left off the hint line to keep it inside 120 columns. |
 | `esc`, `q`, `ctrl+c` | Quit. |
