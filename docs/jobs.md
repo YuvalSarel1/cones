@@ -50,7 +50,7 @@ jobs:
 
 ## Dashboard columns
 
-`columns` picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line of Claude's own transcript or registry, named in [fleet.md](fleet.md#the-fleet-every-claude-session-on-the-mac); it is `-` until that line exists, never an estimate.
+`columns` picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line the harness wrote, Claude's transcript or registry, Codex's rollout, named in [fleet.md](fleet.md#the-fleet-every-claude-and-codex-session-on-the-mac); it is `-` until that line exists, never an estimate.
 
 | Column | Cell | Default |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ jobs:
 | `model` | The bare API model id on the last message with usage, `claude-fable-5-1` | yes |
 | `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
 | `activity` | Time since the transcript's last timestamp | yes |
-| `context` | `98k`: the prompt size Claude reported on the last message. No window, so no percentage | yes |
+| `context` | `98k/200k`: the prompt size the harness reported on the last message over the window it stated; `98k` alone when no window was stated, see [fleet.md](fleet.md#the-fleet-every-claude-and-codex-session-on-the-mac) | yes |
 | `last` | First line of the last reply, or the directory when grouped by state | yes |
 | `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
 

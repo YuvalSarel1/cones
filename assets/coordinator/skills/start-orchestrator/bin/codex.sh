@@ -3,6 +3,8 @@
 #   codex.sh thread <pid>            -> "<thread-uuid>\t<rollout-path>"
 #   codex.sh send   <pid> <message>  -> queues the message; Codex runs it when its current turn ends
 #   codex.sh last   <pid>            -> last assistant text in the rollout (the reply, once it lands)
+# send appends the reply protocol: one JSON line into ~/.claude/orchestrator/<sha1 of WB>/inbox.jsonl
+# (WB from $WB, else $PWD); sweep.sh prints new lines as mail: and the watcher fires on them.
 # Delivery needs a live client on the thread (TUI or `codex --remote ... resume`); a queued message
 # to an idle thread waits in ~/.codex/queue_1.sqlite until one attaches. Gating is advisory: Codex
 # has no pre-commit hook the orchestrator can hold.
@@ -23,7 +25,11 @@ thread() {
 }
 case "$cmd" in
   thread) thread ;;
-  send) id=$(thread | cut -f1); codex queue --thread "$id" --message "$*" ;;
+  send) id=$(thread | cut -f1); inbox=~/.claude/orchestrator/$(printf '%s' "${WB:-$PWD}" | shasum -a 1 | cut -c1-40)/inbox.jsonl
+        codex queue --thread "$id" --message "$* 
+
+How to answer: you cannot message the orchestrator; it reads a file every 10 s. Reply by appending ONE JSON line, then carry on:
+printf '%s\\n' '{\"from\":\"codex:$id\",\"text\":\"<your answer, one paragraph>\"}' >> $inbox" ;;
   last) r=$(thread | cut -f2); grep '"payload":{"type":"message","id":"[^"]*","role":"assistant"' "$r" | tail -1 \
         | python3 -c 'import json,sys;l=sys.stdin.read();print("".join(c.get("text","") for c in json.loads(l)["payload"]["content"]) if l else "")' ;;
   *) sed -n '2,7p' "$0" >&2; exit 2 ;;

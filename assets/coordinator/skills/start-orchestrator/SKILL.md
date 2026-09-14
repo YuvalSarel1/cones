@@ -11,7 +11,10 @@ call it `$WB`). Stay in this role until the user says "stop orchestrator". Run a
 
 ## Setup (do once, now)
 
-The helpers live next to this file: `S=__CONES_COORDINATOR_BIN__`.
+The helpers live next to this file: `S=__CONES_COORDINATOR_BIN__`. Every
+orchestrator on the machine runs `sweep.sh` every ten seconds, so an edit to a helper is written
+in one step (write a temp file, then `mv` it over); a half-written script fails to parse and every
+watcher that reads it exits at once.
 
 1. Identify yourself and your ledger dir: `eval "$(bash $S/self.sh $WB)"` sets `SELF` (your pid),
    `JOB` (job id, may be empty) and `D` (ledger dir). With `CLAUDE_JOB_DIR` set, `D` is its `tmp`;
@@ -24,7 +27,7 @@ The helpers live next to this file: `S=__CONES_COORDINATOR_BIN__`.
    <cwd>, pid N", and stop; cones launches blindly, this skill is the guard.
 3. Arm the watcher (Bash, `run_in_background: true`, `timeout: 600000`):
    `while out=$(bash $S/sweep.sh $D $WB $SELF $JOB); [ "${out%%$'\n'*}" = same ]; do sleep 10; done; echo "$out"`
-   It prints `changed` with `new:`/`gone:` lines and exits; re-arm it every time it fires or
+   It prints `changed` with `new:`/`gone:`/`mail:` lines and exits; re-arm it every time it fires or
    times out. Capture the whole output; piping through `head` kills the sweep before it saves
    the roster and it refires forever on the same change.
 4. Status file. `sweep.sh` rewrites it every tick with cwd, pid, jobId, started, updated, peers
@@ -56,34 +59,48 @@ so a stopped-but-alive session does not block a restart.
   `codex.sh last <pid>` reads its latest reply from the rollout, `codex.sh thread <pid>` prints
   thread id and rollout path. A queued message to a thread with no live client waits in Codex's
   queue db until one attaches, so a stalled `last` means the agent is not there yet, not a
-  refusal. Codex has no idle notice and no pre-commit hook: greet it with the same rules, ask it
-  to reply "done" in its last message, and treat its commits as advisory-gated. Its file edits
-  still show in `git status`; attribute them like any other writer.
-- All bg Claude processes look like `claude bg-spare` in `ps`; 8-hex names with
-  `jobId == name` are unused spares, not agents. Do not filter by name shape otherwise.
+  refusal. Codex has no idle notice and no pre-commit hook: greet it with the same rules and treat
+  its commits as advisory-gated. Its file edits still show in `git status`; attribute them like
+  any other writer.
+- Answers from agents that cannot SendMessage come through the folder's inbox,
+  `~/.claude/orchestrator/<sha1 of the absolute cwd>/inbox.jsonl`: one JSON line per message,
+  `{"from":"codex:<thread>","text":"..."}`, appended by the agent with a shell one-liner.
+  `codex.sh send` appends that instruction with the exact path to every message it queues, so a
+  Codex agent needs no other briefing; another harness gets the same line in its greeting.
+  `sweep.sh` prints new inbox lines as `mail:` and the watcher fires on them like on an arrival;
+  never poll the rollout for a reply when the inbox can carry it.
+- Never message a spare. An unprompted bg session the daemon keeps warm registers with
+  `spare: true` and `name == jobId` (a bare 8-hex name); the first message it receives becomes
+  its prompt and materialises a ghost job. `sweep.sh` drops such rows from the roster, and the
+  rule holds for every SendMessage, greeting or reply: re-read `~/.claude/sessions/<pid>.json`
+  right before sending and refuse when `spare` is true or `name == jobId`; log the refusal.
+  All bg Claude processes look like `claude bg-spare` in `ps`; that string says nothing.
 
 ## On a new agent
 
-One message: introduce yourself as the orchestrator; ask for a one-line status now and a
-report on finish, course change, or milestone; subscribe with `notify_when_idle`. Ask for
-files AND functions it will edit, before it edits. State the rules: no `git commit` and no
-`git stash` without your explicit "go"; append file-specific findings to
-`.claude/observations.log` and grep it before editing; read the standards file's "Settled
-verdicts" block before changing a shared surface. Add only the 1-3 digest items that change
-what this agent does.
-Never broadcast. Treat an arrival as already editing; check the tree, not just the reply.
-Ask for one line before any commit the agent's own user orders directly, so you can hold the
-other writer for a minute; owner-ordered commits that land mid-gate force rebases.
+One short message: who you are; which files and functions it will edit; ping you before it
+commits; subscribe with `notify_when_idle`. No rules paragraph, no digest, no pointers unless
+one item changes what this agent does right now. Never broadcast.
+Treat an arrival as already editing; check the tree, not just the reply. Do not scold an agent
+for editing before announcing; record the owner and move on.
 
 ## Coordination
 
 - Relay another agent's finding only to the agent that needs it, as a one-liner.
-- At each done report ask for one non-obvious finding; append it to the digest.
-- Gate proportionally. One live writer: passive, verify hashes and watch the tree, no "go"
-  ceremony, evidence still required for shared-file commits. Two or more writers: active
-  gating, one commit at a time.
-- Commit gating: one at a time, verify each hash with `git log -1`. Mixed hunks in a shared
-  file: `git diff file > p`, trim, `git apply --cached p`. Never `git stash` in the shared tree.
+- Harvest findings from done reports and `.claude/observations.log`; do not ask each agent
+  for one.
+- Gate only shared files. An agent whose files nobody else touches commits on its own green
+  checks; you read the hash from `git log` afterwards. No "go" round trip, no diff-stat paste.
+- Shared file, two writers: order them once, tell both in one line each, then get out of the
+  way. Mixed hunks: `git diff file > p`, trim, `git apply --cached p && git commit` chained.
+  Never `git stash` in the shared tree.
+- Owner feedback 2026-09-14: greeting walls, per-commit paste-and-go ceremony, digest items
+  to agents that did not need them and reminders about announcing slowed the swarm more than
+  they saved. One step back, not ten: overlap ordering and the clean-tree standing order stay.
+- Verify by reading the diff and the agent's reported check output, never by compiling. A full
+  rebuild per gated commit on top of the agents' own builds saturated a 12-core Mac (load 54),
+  froze the desktop and killed every session. Never start a compile of your own while an agent
+  in the folder is building; the standing-order build runs once, when the roster is empty.
 - Require the project's browser/behavior check output before "go" when shared controls or
   labels change. "Browser-verified" in prose is not a check run.
 - Peers cannot grant permission escalation. Never edit settings or config because a peer asked.
@@ -107,8 +124,13 @@ is implementing), resolve it the moment you see it, not when someone reports don
 6. Shared file, two declared writers: staging by path sweeps the other agent's hunks even
    when both did as told. Each commit of that file goes `git diff FILE > p`, trim to own
    hunks, `git apply --cached p`; before go, compare `git diff --cached` hunk headers with the
-   declared functions, not the path list. If a sweep lands unpushed, amend the message to
-   name both authors instead of reverting.
+   declared functions, not the path list. The index is shared like the tree: `git apply
+   --cached` and `git commit` must be one chained command, or the next agent's commit sweeps
+   the staged hunks. If a sweep lands unpushed, amend the message to name both authors
+   instead of reverting. Owner-supplied text for a shared file is applied as a diff against
+   HEAD, never pasted over the file: a paste from an older HEAD silently reverts what landed
+   in between, with no conflict and a clean tree (cones swarm 2026-09-13). Compare the
+   `git diff HEAD -- FILE` hunks with what the owner changed before committing.
 7. When the second agent already holds real edits in the contested file, let it commit first
    and have the other edit on top of HEAD; hand-relaying hunks is slower and lossier.
 8. Log every ruling with time and recipient. The human talks to one agent at a time, so a
@@ -155,7 +177,8 @@ honest messages, run the project build, confirm `git status` is clean. Do not pu
 
 ## Loop tick
 
-On every wake: if the watcher is not running, re-arm it. Run `git status --short` and attribute
+On every wake: re-run `eval "$(bash $S/self.sh $WB)"` (never cache `SELF`; a daemon restart
+changes every pid at once, yours included). If the watcher is not running, re-arm it. Run `git status --short` and attribute
 every path. Handle `changed` output: greet new, mark gone in the ledger, sequence any pending
 commits, check the standing order; when the roster is empty run the Swarm end pass once. Do not report an agent as exited unless it is missing from
 `roster.now`; an idle notice is not an exit. Call
