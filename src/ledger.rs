@@ -251,35 +251,20 @@ impl Ledger {
         runs.sort_by_key(|r| r.started.fired_at);
         Ok(runs)
     }
-    /// Drops every record of a finished run, with its output and archived transcript. Refused
-    /// while the run's lease is held: a live worker would append a terminal record for a run
-    /// that is gone.
-    pub fn forget(&self, run_id: &str) -> Result<()> {
-        let _lease = self.run_lock(run_id)?.context("run is still going")?;
-        let mut f = private_file(&self.state.join("runs.jsonl"))?;
-        f.lock_exclusive()?;
-        let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
-        let kept: Vec<u8> = bytes
-            .split(|b| *b == b'\n')
-            .filter(|line| !line.is_empty())
-            .filter(|line| serde_json::from_slice::<Record>(line).is_ok_and(|r| r.run_id != run_id))
-            .flat_map(|line| line.iter().copied().chain(*b"\n"))
-            .collect();
-        f.set_len(0)?;
-        f.seek(SeekFrom::Start(0))?;
-        f.write_all(&kept)?;
-        f.sync_all()?;
-        for dir in ["output", "transcripts"] {
-            let _ = std::fs::remove_dir_all(self.state.join(dir).join(run_id));
-        }
-        let _ = std::fs::remove_file(
-            self.state
-                .join("locks")
-                .join("runs")
-                .join(format!("{run_id}.lock")),
-        );
+    /// Hides a run from the dashboard for good. The ledger, output and transcript stay: one id
+    /// per line in `hidden`, appended.
+    pub fn hide(&self, run_id: &str) -> Result<()> {
+        let mut f = private_file(&self.state.join("hidden"))?;
+        f.seek(SeekFrom::End(0))?;
+        writeln!(f, "{run_id}")?;
         Ok(())
+    }
+    pub fn hidden(&self) -> Result<std::collections::BTreeSet<String>> {
+        Ok(std::fs::read_to_string(self.state.join("hidden"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect())
     }
     pub fn reserved_spend(&self, job: &str) -> Result<f64> {
         let cutoff = Utc::now() - chrono::Duration::hours(24);

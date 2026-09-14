@@ -2,7 +2,7 @@
 //! or by state, and runs, with a composer at the bottom like `claude agents`: type an
 //! instruction, `enter` starts a session in the selected row's directory under the harness
 //! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`);
-//! `ctrl+x` on a finished run deletes its ledger records.
+//! `ctrl+x` on a finished run hides it here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
@@ -125,7 +125,10 @@ pub struct Data {
 
 impl Data {
     pub fn load(jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
-        let runs = Ledger::new(state)?.runs()?;
+        let ledger = Ledger::new(state)?;
+        let hidden = ledger.hidden()?;
+        let mut runs = ledger.runs()?;
+        runs.retain(|r| !hidden.contains(&r.started.run_id));
         let sessions = fleet_rows(claude, state, &runs)?;
         Ok(Self {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
@@ -1535,19 +1538,19 @@ impl App {
         }
     }
 
-    /// ctrl+x on a run that is not in flight: once arms, again within two seconds drops its
-    /// records, output and archived transcript. `esc` keeps it.
-    fn delete_run(&mut self, id: String) {
+    /// ctrl+x on a run that is not in flight: once arms, again within two seconds hides it from
+    /// the dashboard for good. The ledger, `cones ls` and `cones attach` still have it.
+    fn hide_run(&mut self, id: String) {
         match self.armed.take() {
             Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
-                self.status = match Ledger::new(&self.state).and_then(|l| l.forget(&id)) {
-                    Ok(()) => "run deleted".into(),
-                    Err(e) => format!("delete failed: {e:#}"),
+                self.status = match Ledger::new(&self.state).and_then(|l| l.hide(&id)) {
+                    Ok(()) => "run hidden · cones ls still has it".into(),
+                    Err(e) => format!("hide failed: {e:#}"),
                 };
                 self.reload();
             }
             _ => {
-                self.status = "ctrl+x again to delete this run · esc keeps it".into();
+                self.status = "ctrl+x again to hide this run · esc keeps it".into();
                 self.armed = Some((id, Instant::now()));
             }
         }
@@ -1602,7 +1605,7 @@ impl App {
             Kind::Job(name) if live(name) => Some("stop"),
             Kind::Job(_) => Some("delete"),
             Kind::Run(_, s) if s == "started" => Some("stop"),
-            Kind::Run(..) => Some("delete"),
+            Kind::Run(..) => Some("hide"),
             Kind::Session(id, _) => Some(self.session_verb(id)),
             _ => None,
         }
@@ -1679,7 +1682,7 @@ impl App {
     /// ctrl+x once arms, ctrl+x again within two seconds stops: the `claude agents` convention.
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
-            Some(Kind::Run(id, s)) if s != "started" => return self.delete_run(id),
+            Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
             Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
             // A job row with a run in flight stops that run; with none, ctrl+x deletes the job.
             Some(Kind::Job(name)) => {
@@ -2613,7 +2616,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_x_on_a_finished_run_arms_then_deletes_its_records_and_output() {
+    fn ctrl_x_on_a_finished_run_arms_then_hides_it_and_the_ledger_keeps_it() {
         let d = dir();
         let ledger = Ledger::new(d.path()).unwrap();
         let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
@@ -2625,23 +2628,23 @@ mod tests {
                 crate::ledger::Status::Ok,
             ))
             .unwrap();
-        let output = d.path().join("output").join(A);
-        fs::create_dir_all(&output).unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert!(matches!(&app.selected().unwrap().kind, Kind::Run(id, s) if id == A && s == "ok"));
-        assert_eq!(app.stop_verb(), Some("delete"));
+        assert_eq!(app.stop_verb(), Some("hide"));
         app.stop();
         assert!(
-            app.status.contains("again to delete this run"),
+            app.status.contains("again to hide this run"),
             "{}",
             app.status
         );
-        assert_eq!(ledger.runs().unwrap().len(), 1, "armed only");
+        app.refresh().unwrap();
+        assert!(key(&app).is_some(), "armed only");
         app.stop();
-        assert_eq!(app.status, "run deleted");
-        assert!(ledger.runs().unwrap().is_empty());
-        assert!(!output.exists());
+        assert!(app.status.starts_with("run hidden"), "{}", app.status);
+        app.refresh().unwrap();
+        assert!(key(&app).is_none(), "gone from the dashboard");
+        assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
     }
 
     #[test]
