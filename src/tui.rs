@@ -221,6 +221,12 @@ impl Data {
                 let mut row = vec![
                     (icon(&s.state).into(), color(&s.state)),
                     (logo(&s.harness), brand(&s.harness)),
+                    // The same words as the footer, on the row, so a session that cannot be
+                    // joined from here is known before it is selected.
+                    (
+                        if s.own_terminal() { "own terminal" } else { "" }.into(),
+                        dim(),
+                    ),
                     (
                         // A long title would push every metric column off a 120-column screen.
                         clip(
@@ -236,7 +242,7 @@ impl Data {
                 row
             })
             .collect();
-        let mut names = vec!["", "", "title"];
+        let mut names = vec!["", "", "", "title"];
         names.extend(self.columns.iter().map(|c| match c.as_str() {
             "tokens" => "tokens in/out",
             "last" if by_state => "dir",
@@ -504,8 +510,8 @@ fn header_lines(summary: Line<'static>, enter: &str, pane: Pane) -> Vec<Line<'st
         ("e", "edit jobs"),
         ("s", "regroup"),
         ("n", "new task"),
+        ("h", "harness"),
         ("/", "filter"),
-        ("r", "refresh"),
         ("q", "quit"),
     ];
     let [top, mut middle, mut hints] = cone();
@@ -731,6 +737,26 @@ pub enum LaunchAction {
     Managed(PathBuf, HarnessKind, String),
 }
 
+/// A row of options with the picked one lit and bracketed, then the keys that move and the
+/// verb `enter` performs.
+fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, enter: &str) {
+    let lit = Style::default().fg(ORANGE).add_modifier(Modifier::BOLD);
+    for (i, o) in options.iter().enumerate() {
+        spans.push(Span::styled(
+            format!(
+                "{}{o}{}",
+                if i == picked { "[" } else { " " },
+                if i == picked { "]" } else { " " }
+            ),
+            if i == picked { lit } else { dim() },
+        ));
+    }
+    spans.push(Span::styled(
+        format!("  ←→ pick · enter {enter} · esc cancel"),
+        dim(),
+    ));
+}
+
 /// The `n` prompt: a directory, a harness, interactive or managed, then the task for a managed
 /// run. `enter` answers a question, `esc` cancels, backspace on an empty answer steps back.
 /// Pure: every filesystem fact comes in through `base`, `fallback` and `launch_dir`.
@@ -865,19 +891,8 @@ impl Launch {
     /// the inline error when there is one.
     fn line(&self) -> Line<'static> {
         let ask = Style::default().fg(ORANGE);
-        let lit = Style::default().fg(ORANGE).add_modifier(Modifier::BOLD);
         let choices = |spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize| {
-            for (i, o) in options.iter().enumerate() {
-                spans.push(Span::styled(
-                    format!(
-                        "{}{o}{}",
-                        if i == picked { "[" } else { " " },
-                        if i == picked { "]" } else { " " }
-                    ),
-                    if i == picked { lit } else { dim() },
-                ));
-            }
-            spans.push(Span::styled("  ←→ pick · enter next · esc cancel", dim()));
+            choices(spans, options, picked, "next");
         };
         let mut spans = vec![Span::styled("new task", ask)];
         match self.step {
@@ -944,6 +959,8 @@ enum Mode {
     Normal,
     Filter,
     Launch(Launch),
+    /// The `h` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
+    Harness(usize),
 }
 
 struct App {
@@ -1579,6 +1596,43 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
+            // The harness's own list of its agents, as a viewer this dashboard waits on: `claude
+            // agents`, or Codex's resume picker on the daemon. No row is needed first.
+            Mode::Harness(i) => {
+                let i = *i;
+                match code {
+                    KeyCode::Esc => self.mode = Mode::Normal,
+                    KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::Tab
+                    | KeyCode::Char(' ')
+                    | KeyCode::Char('h')
+                    | KeyCode::Char('j')
+                    | KeyCode::Char('k')
+                    | KeyCode::Char('l') => {
+                        self.mode = Mode::Harness((i + 1) % harness::KNOWN.len());
+                    }
+                    KeyCode::Enter => {
+                        let kind = harness::KNOWN[i];
+                        self.mode = Mode::Normal;
+                        match harness::agents(kind) {
+                            Ok(c) => {
+                                self.foreground(
+                                    terminal,
+                                    c,
+                                    &format!("{kind} agents"),
+                                    OnStop::Kill,
+                                );
+                                self.reload();
+                            }
+                            Err(e) => self.status = e.to_string(),
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Mode::Launch(launch) => match launch.key(code, ctrl) {
                 LaunchAction::Stay => {}
                 LaunchAction::Cancel => self.mode = Mode::Normal,
@@ -1636,6 +1690,7 @@ impl App {
                     let fallback = self.selected_cwd().unwrap_or_else(|| self.cwd.clone());
                     self.mode = Mode::Launch(Launch::new(&self.cwd, &fallback));
                 }
+                KeyCode::Char('h') => self.mode = Mode::Harness(0),
                 KeyCode::Char('/') => self.mode = Mode::Filter,
                 KeyCode::Char('r') => {
                     self.refresh()?;
@@ -1702,6 +1757,16 @@ impl App {
                 Span::styled("▏", dim()),
             ]),
             Mode::Launch(l) => l.line(),
+            Mode::Harness(i) => {
+                let mut spans = vec![Span::styled("open › ", Style::default().fg(ORANGE))];
+                choices(
+                    &mut spans,
+                    &["claude agents", ">_ codex resume"],
+                    *i,
+                    "open",
+                );
+                Line::from(spans)
+            }
             Mode::Normal if !self.filter.is_empty() => Line::from(vec![
                 Span::styled(format!("filter: {}  ", self.filter), dim()),
                 Span::styled(self.status.clone(), dim()),
@@ -2074,6 +2139,42 @@ mod tests {
         app.apply_filter();
         app.settle();
         assert_eq!(app.enter_label(), "own terminal");
+    }
+
+    #[test]
+    fn the_list_marks_a_session_that_runs_in_its_own_terminal() {
+        let d = dir();
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        let session = |id: &str, kind: &str| Session {
+            session_id: id.into(),
+            harness: "claude".into(),
+            kind: Some(kind.into()),
+            cwd: PathBuf::from("/x"),
+            state: "active".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: Some(1),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+        };
+        data.sessions
+            .push(session("aaaa-interactive", "interactive"));
+        data.sessions.push(session("bbbb-background", "bg"));
+        let marker = |id: &str| {
+            data.rows(false)
+                .into_iter()
+                .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
+                .map(|r| r.cells[2].0.trim().to_owned())
+                .unwrap()
+        };
+        assert_eq!(marker("aaaa-interactive"), "own terminal");
+        assert_eq!(marker("bbbb-background"), "");
     }
 
     #[test]
@@ -2472,6 +2573,7 @@ mod tests {
                 .collect::<String>()
         };
         assert!(text(Pane::Hidden).contains("enter attach · tab peek · x x stop"));
+        assert!(text(Pane::Hidden).contains("n new task · h harness · / filter"));
         assert!(text(Pane::Peek).contains("enter attach · tab more · x x stop"));
         assert!(text(Pane::More).contains("enter attach · tab hide · x x stop"));
     }

@@ -569,7 +569,9 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
     for s in [
-        "claude  fix the widget",
+        "claude  ",
+        "own terminal  ",
+        "fix the widget",
         "claude-fable-5-1",
         "100k  ",
         "Running the tests",
