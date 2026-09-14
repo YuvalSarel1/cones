@@ -47,10 +47,13 @@ pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 /// outlives the viewer opens from the dashboard, because leaving must keep it working.
 ///
 /// Two other ways to leave a harness were tried and rejected: stopping the client with SIGTSTP
-/// parks the agent, which freezes it until re-entered, and a cones-owned pty proxy (dtach
-/// style) keeps it running but makes cones the owner of the agent's terminal and lifetime,
-/// which belong to the harness. A harness with no mode whose session outlives the viewer is
-/// refused here with the reason, not parked or proxied.
+/// parks the agent, which freezes it until re-entered, and running the agent itself behind a
+/// cones-owned pty proxy (dtach style), which keeps it running but makes cones the owner of the
+/// agent's terminal and lifetime, which belong to the harness. A harness with no mode whose
+/// session outlives the viewer is refused here with the reason, not parked or proxied. The
+/// viewer is another matter: `viewer.rs` runs the client (`claude attach`, a Codex `--remote`
+/// client, `claude agents`) on a pty the dashboard owns, because the viewer's lifetime was
+/// always the dashboard's to end; the agent stays in its daemon.
 pub enum Start {
     /// Returns on its own once the session is up; nothing to wait on.
     Background(std::process::Command),
