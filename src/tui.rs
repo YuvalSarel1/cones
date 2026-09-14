@@ -2,7 +2,8 @@
 //! or by state, and runs, with a composer at the bottom like `claude agents`: type an
 //! instruction, `enter` starts a session in the selected row's directory under the harness
 //! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`);
-//! `ctrl+x` on a finished run hides it here for good; the ledger keeps it.
+//! `ctrl+x` marks the row red and a second press acts; any other key keeps it. On a finished
+//! run it hides the row here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
@@ -990,8 +991,8 @@ struct App {
     /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
     /// never holds the spinner or a keypress.
     loading: Option<mpsc::Receiver<Result<Data>>>,
-    /// A run id and when ctrl-x was first pressed on it; the second press within two seconds stops it.
-    armed: Option<(String, Instant)>,
+    /// The row key ctrl+x armed; stays until ctrl+x confirms or any other key clears it.
+    armed: Option<String>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
 }
@@ -1521,11 +1522,11 @@ impl App {
         }
     }
 
-    /// ctrl+x on a job with no run in flight: once arms, again within two seconds removes the
-    /// job from jobs.yaml and reinstalls launchd. `esc` keeps it.
+    /// ctrl+x on a job with no run in flight: once arms, again removes the job from jobs.yaml
+    /// and reinstalls launchd. Any other key keeps it.
     fn delete_job(&mut self, name: String) {
         match self.armed.take() {
-            Some((armed, at)) if armed == name && at.elapsed() < Duration::from_secs(2) => {
+            Some(armed) if armed == name => {
                 match config::write_job(&self.jobs_path, Some(&name), None) {
                     Ok(()) => {
                         self.install(&format!("job {name} deleted"));
@@ -1535,17 +1536,17 @@ impl App {
                 }
             }
             _ => {
-                self.status = format!("ctrl+x again to delete job {name} · esc keeps it");
-                self.armed = Some((name, Instant::now()));
+                self.status = format!("ctrl+x again to delete job {name} · any other key keeps it");
+                self.armed = Some(name);
             }
         }
     }
 
-    /// ctrl+x on a run that is not in flight: once arms, again within two seconds hides it from
-    /// the dashboard for good. The ledger, `cones ls` and `cones attach` still have it.
+    /// ctrl+x on a run that is not in flight: once arms, again hides it from the dashboard for
+    /// good. The ledger, `cones ls` and `cones attach` still have it.
     fn hide_run(&mut self, id: String) {
         match self.armed.take() {
-            Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
+            Some(armed) if armed == id => {
                 self.status = match Ledger::new(&self.state).and_then(|l| l.hide(&id)) {
                     Ok(()) => "run hidden · cones ls still has it".into(),
                     Err(e) => format!("hide failed: {e:#}"),
@@ -1553,8 +1554,8 @@ impl App {
                 self.reload();
             }
             _ => {
-                self.status = "ctrl+x again to hide this run · esc keeps it".into();
-                self.armed = Some((id, Instant::now()));
+                self.status = "ctrl+x again to hide this run · any other key keeps it".into();
+                self.armed = Some(id);
             }
         }
     }
@@ -1682,7 +1683,8 @@ impl App {
         line
     }
 
-    /// ctrl+x once arms, ctrl+x again within two seconds stops: the `claude agents` convention.
+    /// ctrl+x once arms and marks the row, ctrl+x again stops; any other key disarms, so the
+    /// mark stays for as long as the user looks at it: the `claude agents` convention.
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
@@ -1707,7 +1709,7 @@ impl App {
         // background session's conversation.
         let verb = self.session_verb(&id);
         match self.armed.take() {
-            Some((armed, at)) if armed == id && at.elapsed() < Duration::from_secs(2) => {
+            Some(armed) if armed == id => {
                 self.status = if verb == "forget" {
                     match codex::forget(&self.state, &id) {
                         Ok(()) => "thread forgotten · codex resume still has it".into(),
@@ -1726,11 +1728,11 @@ impl App {
                 };
             }
             _ => {
-                self.armed = Some((id, Instant::now()));
+                self.armed = Some(id);
                 self.status = if verb == "forget" {
-                    "ctrl+x again to forget this thread · esc keeps it".into()
+                    "ctrl+x again to forget this thread · any other key keeps it".into()
                 } else {
-                    format!("ctrl+x again to {verb} · esc keeps it")
+                    format!("ctrl+x again to {verb} · any other key keeps it")
                 };
             }
         }
@@ -1807,45 +1809,53 @@ impl App {
                     }
                 }
             },
-            Mode::Normal => match code {
-                KeyCode::Char('c') if ctrl => return Ok(true),
-                // esc backs out one thing at a time: an armed ctrl+x, the text, the dashboard.
-                KeyCode::Esc => {
-                    if self.armed.take().is_some() {
-                        self.status = "kept".into();
-                    } else if !self.text.is_empty() {
-                        self.text.clear();
-                    } else {
-                        return Ok(true);
+            Mode::Normal => {
+                // Any key but ctrl+x disarms an armed ctrl+x, so the mark stays until the user
+                // does something else, as in `claude agents`.
+                let armed = self.armed.take();
+                match code {
+                    KeyCode::Char('c') if ctrl => return Ok(true),
+                    KeyCode::Char('x') if ctrl => {
+                        self.armed = armed;
+                        self.stop();
                     }
+                    // esc backs out one thing at a time: the armed ctrl+x, the text, the dashboard.
+                    KeyCode::Esc => {
+                        if armed.is_some() {
+                            self.status = "kept".into();
+                        } else if !self.text.is_empty() {
+                            self.text.clear();
+                        } else {
+                            return Ok(true);
+                        }
+                    }
+                    KeyCode::Up => self.step(-1),
+                    KeyCode::Down => self.step(1),
+                    KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
+                    KeyCode::Enter if self.text.trim().is_empty() => self.enter(terminal)?,
+                    KeyCode::Enter => self.start(terminal),
+                    KeyCode::Backspace => {
+                        self.text.pop();
+                    }
+                    KeyCode::Char('s') if ctrl => {
+                        self.by_state = !self.by_state;
+                        self.refresh()?;
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        let (base, fallback) = (self.jobs_dir(), self.target_dir());
+                        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
+                    }
+                    KeyCode::Char('e') if ctrl => self.edit_job(),
+                    KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
+                    KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
+                    KeyCode::Char('r') if ctrl => {
+                        self.refresh()?;
+                        self.status = "refreshed".into();
+                    }
+                    KeyCode::Char(c) if !ctrl => self.text.push(c),
+                    _ => {}
                 }
-                KeyCode::Up => self.step(-1),
-                KeyCode::Down => self.step(1),
-                KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
-                KeyCode::Enter if self.text.trim().is_empty() => self.enter(terminal)?,
-                KeyCode::Enter => self.start(terminal),
-                KeyCode::Backspace => {
-                    self.text.pop();
-                }
-                KeyCode::Char('x') if ctrl => self.stop(),
-                KeyCode::Char('s') if ctrl => {
-                    self.by_state = !self.by_state;
-                    self.refresh()?;
-                }
-                KeyCode::Char('n') if ctrl => {
-                    let (base, fallback) = (self.jobs_dir(), self.target_dir());
-                    self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
-                }
-                KeyCode::Char('e') if ctrl => self.edit_job(),
-                KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
-                KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
-                KeyCode::Char('r') if ctrl => {
-                    self.refresh()?;
-                    self.status = "refreshed".into();
-                }
-                KeyCode::Char(c) if !ctrl => self.text.push(c),
-                _ => {}
-            },
+            }
         }
         Ok(false)
     }
@@ -1903,11 +1913,15 @@ impl App {
             .map(|(n, &i)| {
                 let row = &self.rows[i];
                 let selected = n == self.cursor;
+                let armed = self
+                    .armed
+                    .as_deref()
+                    .is_some_and(|a| row.kind.key() == Some(a));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 if row.kind.selectable() {
                     spans.push(Span::styled(
                         if selected { "▌ " } else { "  " },
-                        Style::default().fg(ORANGE),
+                        Style::default().fg(if armed { Color::Red } else { ORANGE }),
                     ));
                 }
                 let (frames, brand) = spinner(row);
@@ -1920,7 +1934,10 @@ impl App {
                     } else {
                         (text.clone(), *style)
                     };
-                    spans.push(Span::styled(text, style));
+                    spans.push(Span::styled(
+                        text,
+                        if armed { style.fg(Color::Red) } else { style },
+                    ));
                 }
                 let line = Line::from(spans);
                 if selected { line.style(bold()) } else { line }
@@ -1976,10 +1993,6 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 }
             } else {
                 app.tick += 1;
-                if matches!(app.armed, Some((_, at)) if at.elapsed() >= Duration::from_secs(2)) {
-                    app.armed = None;
-                    app.status.clear();
-                }
             }
         }
     })();
@@ -2368,7 +2381,7 @@ mod tests {
         app.stop();
         assert_eq!(
             app.status,
-            "ctrl+x again to forget this thread · esc keeps it"
+            "ctrl+x again to forget this thread · any other key keeps it"
         );
     }
 
@@ -2643,6 +2656,17 @@ mod tests {
         );
         app.refresh().unwrap();
         assert!(key(&app).is_some(), "armed only");
+        // The arm marks the row red and has no timer: it stays until the next key.
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let marked = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "▌" && c.fg == Color::Red);
+        assert!(marked, "the armed row is red");
+        assert_eq!(app.armed.as_deref(), Some(A));
         app.stop();
         assert!(app.status.starts_with("run hidden"), "{}", app.status);
         app.refresh().unwrap();
