@@ -36,6 +36,9 @@ pub struct Process {
     pub started: DateTime<Utc>,
     /// Working directory as `lsof -d cwd` prints it; `None` when lsof could not read it.
     pub cwd: Option<PathBuf>,
+    /// The thread id a `resume <id>` argument names: a client of the daemon, or a plain TUI
+    /// resuming a thread. Its rollout is that thread's, whatever the cwd and start time say.
+    pub thread: Option<String>,
 }
 
 /// The `session_meta` line Codex writes first in every rollout file.
@@ -57,6 +60,11 @@ pub struct Tail {
     pub last_activity: Option<DateTime<Utc>>,
     /// `turn_context.model` on the last turn, verbatim.
     pub model: Option<String>,
+    /// `token_count.info.total_token_usage` on the last such event: input (cache-inclusive) and
+    /// output, and `last_token_usage.total_tokens` as the prompt the last request carried.
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub context_tokens: Option<u64>,
 }
 
 /// Every live Codex session, oldest first by process start. No Codex home means Codex is not
@@ -142,12 +150,19 @@ pub fn processes(ps: &str) -> Vec<Process> {
             if program != "codex" || words.next().is_some_and(|a| NOT_SESSIONS.contains(&a)) {
                 return None;
             }
+            let mut words = command.split_whitespace();
+            let thread = words
+                .find(|w| *w == "resume")
+                .and_then(|_| words.next())
+                .filter(|w| w.len() == 36 && w.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()))
+                .map(str::to_owned);
             Some(Process {
                 pid: pid.parse().ok()?,
                 started: NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
                     .ok()?
                     .and_utc(),
                 cwd: None,
+                thread,
             })
         })
         .collect()
@@ -234,6 +249,15 @@ pub fn tail(lines: &str) -> Tail {
             match v["payload"]["type"].as_str() {
                 Some("task_started") => t.state = Some("active"),
                 Some("task_complete" | "turn_aborted") => t.state = Some("idle"),
+                Some("token_count") => {
+                    let info = &v["payload"]["info"];
+                    let total = &info["total_token_usage"];
+                    t.tokens_in = total["input_tokens"].as_u64().or(t.tokens_in);
+                    t.tokens_out = total["output_tokens"].as_u64().or(t.tokens_out);
+                    t.context_tokens = info["last_token_usage"]["total_tokens"]
+                        .as_u64()
+                        .or(t.context_tokens);
+                }
                 _ => {}
             }
         }
@@ -259,16 +283,26 @@ pub fn titles(index: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// Thread names as Codex 0.154 keeps them: the `threads` table of the newest `state_*.sqlite`
-/// under the Codex home, `name` (the name Codex or the user gave) else `title` (the first
-/// prompt). `session_index.jsonl` stopped being written with the move to sqlite, so it is read
-/// behind the database, for threads older than the move.
+/// What Codex 0.154 keeps about every thread in the `threads` table of the newest
+/// `state_*.sqlite` under its home: `name` (the name Codex or the user gave) else `title` (the
+/// first prompt), the rollout path and the cwd. `session_index.jsonl` stopped being written with
+/// the move to sqlite, so it is read behind the database, for threads older than the move.
+#[derive(Debug, Default)]
+pub struct Index {
+    pub titles: HashMap<String, String>,
+    /// Rollout path and cwd per thread id, from the database only.
+    pub threads: HashMap<String, (PathBuf, PathBuf)>,
+}
+
 // ponytail: shells out to /usr/bin/sqlite3 (13 ms for a hundred threads) instead of adding a
 // sqlite crate; the table is read in full every tick, cache by mtime if it ever shows.
-pub fn names(codex: &Path) -> HashMap<String, String> {
-    let mut out = fs::read_to_string(codex.join("session_index.jsonl"))
-        .map(|t| titles(&t))
-        .unwrap_or_default();
+pub fn index(codex: &Path) -> Index {
+    let mut out = Index {
+        titles: fs::read_to_string(codex.join("session_index.jsonl"))
+            .map(|t| titles(&t))
+            .unwrap_or_default(),
+        threads: HashMap::new(),
+    };
     let mut dbs: Vec<PathBuf> = fs::read_dir(codex)
         .into_iter()
         .flatten()
@@ -285,20 +319,109 @@ pub fn names(codex: &Path) -> HashMap<String, String> {
     let Ok(run) = Command::new("sqlite3")
         .args(["-readonly", "-json"])
         .arg(&db)
-        .arg("select id, coalesce(name, title) as t from threads where coalesce(name, title) <> ''")
+        .arg("select id, coalesce(name, title) as t, rollout_path, cwd from threads")
         .stderr(Stdio::null())
         .output()
     else {
         return out;
     };
     for v in serde_json::from_slice::<Vec<Value>>(&run.stdout).unwrap_or_default() {
-        if let (Some(id), Some(t)) = (v["id"].as_str(), v["t"].as_str())
-            && let Some(first) = crate::fleet::headline(t)
-        {
-            out.insert(id.to_owned(), first);
+        let Some(id) = v["id"].as_str() else { continue };
+        if let Some(first) = v["t"].as_str().and_then(crate::fleet::headline) {
+            out.titles.insert(id.to_owned(), first);
+        }
+        if let (Some(r), Some(c)) = (v["rollout_path"].as_str(), v["cwd"].as_str()) {
+            out.threads
+                .insert(id.to_owned(), (PathBuf::from(r), PathBuf::from(c)));
         }
     }
     out
+}
+
+/// Which process holds each thread open: Codex flocks `thread-writer-locks/<thread id>.lock`
+/// for as long as a thread is loaded, and one `lsof` on those files names the holder. A lock
+/// file nobody holds (its process died) is not listed, so it does not count. Empty when the
+/// directory does not exist (Codex before 0.154).
+pub fn locks(codex: &Path) -> HashMap<String, u32> {
+    let files: Vec<PathBuf> = fs::read_dir(codex.join("thread-writer-locks"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|e| e == "lock")
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| !n.starts_with('.'))
+        })
+        .collect();
+    if files.is_empty() {
+        return HashMap::new();
+    }
+    let lsof = Command::new("/usr/sbin/lsof")
+        .args(["-nPw", "-Fpn"])
+        .args(&files)
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    parse_locks(&lsof)
+}
+
+/// Thread id to pid from `lsof -Fpn` output: a `p<pid>` line, then `n<path>` lines.
+pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
+    let mut out = HashMap::new();
+    let mut pid = None;
+    for line in lsof.lines() {
+        if let Some(p) = line.strip_prefix('p') {
+            pid = p.trim().parse().ok();
+        } else if let (Some(p), Some(path)) = (pid, line.strip_prefix('n'))
+            && let Some(id) = Path::new(path).file_stem().and_then(|s| s.to_str())
+        {
+            out.insert(id.to_owned(), p);
+        }
+    }
+    out
+}
+
+/// The app-server daemon's pid from `app-server-daemon/app-server.pid`, when that process runs.
+pub fn daemon_pid(codex: &Path) -> Option<u32> {
+    let text = fs::read_to_string(codex.join("app-server-daemon/app-server.pid")).ok()?;
+    let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
+    Command::new("/bin/kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .ok()?
+        .success()
+        .then_some(pid)
+}
+
+/// The rollout file for a thread id: the database says, else the file named `...-<id>.jsonl`
+/// under `sessions/`.
+fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
+    if let Some((path, _)) = index.threads.get(id)
+        && path.is_file()
+    {
+        return Some(path.clone());
+    }
+    let suffix = format!("-{id}.jsonl");
+    let mut stack = vec![codex.join("sessions")];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&suffix))
+            {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 /// Which rollout each process wrote, by the two facts a rollout records: its cwd and its start.
@@ -335,17 +458,30 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         return Vec::new();
     };
     let rollouts = rollouts(codex, since);
-    let owned = attribute(procs, &rollouts);
-    let titles = names(codex);
+    let guessed = attribute(procs, &rollouts);
+    let index = index(codex);
+    let held: HashMap<u32, String> = locks(codex)
+        .into_iter()
+        .map(|(id, pid)| (pid, id))
+        .collect();
     let mut out: Vec<Session> = procs
         .iter()
         .map(|p| {
-            let rollout = owned.get(&p.pid);
+            // What the process states about its thread (a lock it holds, a `resume <id>`
+            // argument) beats the cwd-and-start guess.
+            let stated = p
+                .thread
+                .as_deref()
+                .or_else(|| held.get(&p.pid).map(String::as_str))
+                .and_then(|id| rollout_for(codex, &index, id))
+                .and_then(|path| meta_of(&path).map(|m| (path, m)));
+            let rollout = stated.as_ref().or_else(|| guessed.get(&p.pid).copied());
             let t = rollout.map(|(path, _)| tail_of(path)).unwrap_or_default();
             let id =
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
             Session {
-                title: titles
+                title: index
+                    .titles
                     .get(&id)
                     .cloned()
                     .or_else(|| rollout.and_then(|(path, _)| prompt_of(path))),
@@ -361,9 +497,9 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 started: Some(p.started),
                 pid: Some(p.pid),
                 transcript_path: rollout.map(|(path, _)| path.clone()),
-                tokens_in: None,
-                tokens_out: None,
-                context_tokens: None,
+                tokens_in: t.tokens_in,
+                tokens_out: t.tokens_out,
+                context_tokens: t.context_tokens,
                 cost_usd: None,
                 last: t.last,
             }
@@ -430,35 +566,67 @@ pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread
         })
 }
 
-/// Fleet rows for recorded threads no live client shows: `kind` is `daemon`, which `enter`
-/// resumes; state and last reply come from the rollout's tail, the title from the index. A
-/// thread whose rollout is gone is not a row. `live` are the process-table rows, which carry
-/// the same id while a client is attached.
+/// Fleet rows for threads the app-server daemon holds and no live client shows: `kind` is
+/// `daemon`, which `enter` resumes. A thread is the daemon's when its writer lock is held by
+/// the daemon's pid, whoever opened it (the dashboard's composer, the VS Code extension,
+/// another `--remote` client, the `h` picker). The record file cones wrote for its own launches
+/// is read too, for a Codex without lock files. State, last reply and tokens come from the
+/// rollout's tail, the title from `index`. A thread whose rollout is gone is not a row. `live`
+/// are the process-table rows, which carry the same id while a client is attached.
 pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
-    let titles = names(codex);
-    threads(state)
+    let index = index(codex);
+    let daemon = daemon_pid(codex);
+    let mut ids: Vec<(String, Option<Thread>)> = locks(codex)
         .into_iter()
-        .filter(|t| t.rollout.is_file() && !live.iter().any(|s| s.session_id == t.id))
-        .map(|t| {
-            let tail = tail_of(&t.rollout);
-            Session {
-                title: titles.get(&t.id).cloned().or_else(|| prompt_of(&t.rollout)),
-                session_id: t.id,
+        .filter(|(_, pid)| Some(*pid) == daemon)
+        .map(|(id, _)| (id, None))
+        .collect();
+    for t in threads(state) {
+        if !ids.iter().any(|(id, _)| *id == t.id) {
+            ids.push((t.id.clone(), Some(t)));
+        }
+    }
+    ids.sort_by(|a, b| a.0.cmp(&b.0));
+    ids.into_iter()
+        .filter(|(id, _)| !live.iter().any(|s| s.session_id == *id))
+        .filter_map(|(id, record)| {
+            let rollout = record
+                .as_ref()
+                .map(|t| t.rollout.clone())
+                .filter(|p| p.is_file())
+                .or_else(|| rollout_for(codex, &index, &id))?;
+            let meta = meta_of(&rollout);
+            let tail = tail_of(&rollout);
+            Some(Session {
+                title: index
+                    .titles
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| prompt_of(&rollout)),
                 harness: "codex".into(),
                 kind: Some("daemon".into()),
-                cwd: t.cwd,
+                cwd: index
+                    .threads
+                    .get(&id)
+                    .map(|(_, cwd)| cwd.clone())
+                    .or_else(|| meta.as_ref().map(|m| m.cwd.clone()))
+                    .or_else(|| record.as_ref().map(|t| t.cwd.clone()))
+                    .unwrap_or_default(),
                 state: tail.state.unwrap_or("-").into(),
                 last_activity: tail.last_activity,
                 model: tail.model,
-                started: Some(t.started),
+                started: meta
+                    .map(|m| m.started)
+                    .or_else(|| record.as_ref().map(|t| t.started)),
                 pid: None,
-                transcript_path: Some(t.rollout),
-                tokens_in: None,
-                tokens_out: None,
-                context_tokens: None,
+                transcript_path: Some(rollout),
+                tokens_in: tail.tokens_in,
+                tokens_out: tail.tokens_out,
+                context_tokens: tail.context_tokens,
                 cost_usd: None,
                 last: tail.last,
-            }
+                session_id: id,
+            })
         })
         .collect()
 }
@@ -564,6 +732,25 @@ fn tail_of(path: &Path) -> Tail {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_process_states_its_thread_by_lock_or_resume_argument() {
+        let ps = "  7 Sun Sep 13 15:19:19 2026 /usr/local/bin/codex --remote unix:///s.sock resume 01a09fed-867a-7a42-b7b9-22fbcbd280d7\n  8 Sun Sep 13 15:19:19 2026 codex resume\n  9 Sun Sep 13 15:19:19 2026 codex app-server --listen unix://\n";
+        let procs = processes(ps);
+        assert_eq!(procs.len(), 2, "app-server runs no session");
+        assert_eq!(
+            procs[0].thread.as_deref(),
+            Some("01a09fed-867a-7a42-b7b9-22fbcbd280d7")
+        );
+        assert_eq!(procs[1].thread, None, "a bare resume picks later");
+        let held = parse_locks(
+            "p22416\nf12\nn/Users/u/.codex/thread-writer-locks/01a09fed-867a-7a42-b7b9-22fbcbd280d7.lock\n",
+        );
+        assert_eq!(
+            held.get("01a09fed-867a-7a42-b7b9-22fbcbd280d7").copied(),
+            Some(22416)
+        );
+    }
+
     fn rollout(home: &Path, name: &str, id: &str, cwd: &Path, at: &str, turn: bool) -> PathBuf {
         let dir = home.join("sessions/2026/09/13");
         fs::create_dir_all(&dir).unwrap();
@@ -576,6 +763,7 @@ mod tests {
             text.push_str(&format!(
                 r##"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"# AGENTS.md instructions"}}]}}}}
 {{"timestamp":"{at}","type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"UserMessage","content":[{{"type":"text","text":"\n  **fix** the flaky test\nplease"}}]}}}}}}
+{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":900,"output_tokens":40}},"last_token_usage":{{"total_tokens":120}}}}}}}}
 {{"timestamp":"{at}","type":"event_msg","payload":{{"type":"task_complete"}}}}"##
             ));
             text.push('\n');
@@ -635,7 +823,7 @@ mod tests {
             .is_ok()
         {
             let db = home.join("state_5.sqlite");
-            let sql = "create table threads(id text, name text, title text); insert into threads values('dddd', null, 'fix the build'), ('eeee', 'Green CI', 'x');";
+            let sql = "create table threads(id text, name text, title text, rollout_path text, cwd text); insert into threads values('dddd', null, 'fix the build', '', ''), ('eeee', 'Green CI', 'x', '', '');";
             assert!(
                 Command::new("sqlite3")
                     .arg(&db)
@@ -645,13 +833,22 @@ mod tests {
                     .success()
             );
             assert_eq!(
-                names(&home).get("eeee").map(String::as_str),
+                index(&home).titles.get("eeee").map(String::as_str),
                 Some("Green CI")
             );
         }
         let rows = thread_rows(&home, &state, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind.as_deref(), Some("daemon"));
+        assert_eq!(
+            (
+                rows[0].tokens_in,
+                rows[0].tokens_out,
+                rows[0].context_tokens
+            ),
+            (Some(900), Some(40), Some(120)),
+            "tokens from the rollout's last token_count"
+        );
         assert_eq!(
             (rows[0].state.as_str(), rows[0].title.as_deref()),
             ("idle", Some("fix the build"))
