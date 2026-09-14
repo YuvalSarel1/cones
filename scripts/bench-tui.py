@@ -179,6 +179,11 @@ def measure(args):
                      "--state-dir", str(state), "tui", "--debug")
                 tmux("set-option", "-s", "exit-empty", "off")
                 sample("startup", start, wait(lambda s: selected(s, "Bench Alpha")))
+                # 160 columns draws the viewer beside the list, where enter and ctrl+z move
+                # only the keys. ctrl+\ once runs full screen, so the transitions below are
+                # the ones this bench has always timed; the rule leaving says it took.
+                keys("C-\\")
+                wait(lambda s: "│" not in s)
                 # A FIFO holds a real background transcript read until after the viewer
                 # returns. Its registry values were already captured, so the result is stale.
                 # This exercises the race without timing guesses or production test hooks.

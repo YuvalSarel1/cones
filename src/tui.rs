@@ -50,7 +50,7 @@ static SHELL_TTY: OnceLock<Option<libc::termios>> = OnceLock::new();
 /// Put the tty back the way the shell had it, after ratatui has left raw mode and the
 /// alternate screen: the line discipline from `SHELL_TTY`, and off with every mode the
 /// dashboard itself turns on (bracketed paste, mouse reports while a viewer wants them) and
-/// every mode a child of an earlier build may have left on: focus events, colour-scheme
+/// every mode a child of an earlier build may have left on: focus events, color-scheme
 /// reports, kitty keys, modifyOtherKeys, synchronized output. A shell with them on echoes
 /// garbage on every click, focus change and paste. Invisible on a terminal where nothing was
 /// left on. Viewers never reach this terminal, so nothing of theirs is on it.
@@ -1212,7 +1212,7 @@ struct App {
     /// The viewers alive inside the dashboard, focused or parsing off-screen; at most
     /// `MAX_VIEWERS`, the least recently focused closes when another opens.
     viewers: Vec<Open>,
-    /// The viewer that has the pane above the strip and the keys; an index into `viewers`.
+    /// The viewer that has the pane and the keys; an index into `viewers`.
     focus: Option<usize>,
     /// The real terminal's default colors, probed once at start, for viewers that ask.
     colors: viewer::Colors,
@@ -1221,8 +1221,14 @@ struct App {
     mouse_capture: bool,
     /// Clear the terminal before the next frame: set when a viewer leaves the frame.
     needs_clear: bool,
-    /// The last frame's rows and columns, which is the pane a viewer opens at.
+    /// The last frame's rows and columns.
     size: (u16, u16),
+    /// The pane viewers are drawn in and sized to, from the last frame: the column beside the
+    /// list on a wide frame, else the frame less the strip row under it.
+    pane: Rect,
+    /// Whether a frame at least `SPLIT_MIN` wide draws the viewer beside the list; ctrl+\
+    /// toggles it, and off it the viewer takes the whole frame as on a narrow terminal.
+    split: bool,
     /// The selected row's viewer key and when the cursor arrived on it; after `REST` a Claude
     /// session row's viewer opens out of sight.
     rest: Option<(String, Instant)>,
@@ -1236,6 +1242,9 @@ const REST: Duration = Duration::from_millis(400);
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
 const MAX_VIEWERS: usize = 3;
+
+/// The frame width from which the selected or focused viewer is drawn beside the list.
+const SPLIT_MIN: u16 = 140;
 
 /// What a launch thread reports: its status line, and the instruction to hand back if it failed.
 type Launched = (String, Option<String>);
@@ -1381,6 +1390,8 @@ impl App {
             mouse_capture: false,
             needs_clear: false,
             size: (24, 80),
+            pane: Rect::new(0, 0, 80, 23),
+            split: true,
             rest: None,
             prespawned: None,
         })
@@ -1722,9 +1733,99 @@ impl App {
         self.viewers.iter().position(|o| o.key == key)
     }
 
-    /// The rows a viewer's pane has: the frame less the strip under it, never fewer than one.
-    fn pane_rows(&self) -> u16 {
-        self.size.0.saturating_sub(1).max(1)
+    /// The last frame as a rectangle.
+    fn frame(&self) -> Rect {
+        Rect::new(0, 0, self.size.1, self.size.0)
+    }
+
+    /// Whether a frame `width` columns wide draws the viewer beside the list.
+    fn split_active(&self, width: u16) -> bool {
+        self.split && width >= SPLIT_MIN
+    }
+
+    /// A wide frame's columns: the list, half the width within 60 to 100 columns; a one
+    /// column rule; the viewer pane with the rest, full height.
+    fn split_areas(frame: Rect) -> [Rect; 3] {
+        let list = (frame.width / 2).clamp(60, 100);
+        Layout::horizontal([
+            Constraint::Length(list),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(frame)
+    }
+
+    /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list on
+    /// a wide frame, else the frame less the strip row under it, never fewer than one row.
+    /// Spawn, focus and draw all size the viewer by this, so focusing never resizes it.
+    fn pane(&self, frame: Rect) -> Rect {
+        if self.split_active(frame.width) {
+            return Self::split_areas(frame)[2];
+        }
+        let height = if frame.height >= 2 {
+            frame.height - 1
+        } else {
+            1
+        };
+        Rect { height, ..frame }
+    }
+
+    /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
+    /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
+    /// paints; else the one focused last. On a narrow frame only a focused viewer is drawn.
+    fn shown(&self) -> Option<usize> {
+        if self.focus.is_some() {
+            return self.focus;
+        }
+        if !self.split_active(self.size.1) {
+            return None;
+        }
+        self.selected()
+            .and_then(|r| Self::viewer_key(&r.kind))
+            .and_then(|k| self.viewer_index(&k))
+            .or_else(|| self.most_recently_focused())
+    }
+
+    /// The viewer the user was in last; a speculative viewer was never in front.
+    fn most_recently_focused(&self) -> Option<usize> {
+        self.viewers
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| !o.speculative)
+            .max_by_key(|(_, o)| o.last_focused)
+            .map(|(i, _)| i)
+    }
+
+    /// What an empty pane says `enter` on the selected row would put there: a run, or a
+    /// session that is listed and can be joined from here; nothing for any other row.
+    fn pane_hint(&self) -> Option<&'static str> {
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::Run(..)) => Some("enter opens the selected run here"),
+            Some(Kind::Session(id, _))
+                if !id.starts_with("starting:")
+                    && !self
+                        .data
+                        .sessions
+                        .iter()
+                        .any(|s| &s.session_id == id && s.own_terminal()) =>
+            {
+                Some("enter opens the selected session here")
+            }
+            _ => None,
+        }
+    }
+
+    /// ctrl+\: the viewer beside the list or over the whole frame. Only a frame at least
+    /// `SPLIT_MIN` wide draws the difference, so a narrower one says so and keeps its state,
+    /// rather than flip something that would surface later when the terminal widens.
+    fn toggle_split(&mut self) {
+        if self.size.1 < SPLIT_MIN {
+            self.status = format!("split needs {SPLIT_MIN} columns");
+            return;
+        }
+        self.split = !self.split;
+        self.needs_clear = true;
+        self.debug(|| format!("split {}", self.split));
     }
 
     /// Give a viewer the pane and the keys. A viewer opened ahead of `enter` becomes an
@@ -1743,10 +1844,10 @@ impl App {
             }
         }
         self.focus = Some(i);
-        let (rows, cols) = (self.pane_rows(), self.size.1);
+        let pane = self.pane;
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
-        open.viewer.resize(rows, cols);
+        open.viewer.resize(pane.height, pane.width);
         let line = format!("focus {} ({})", open.key, open.what);
         self.debug(|| line);
     }
@@ -1763,6 +1864,7 @@ impl App {
         record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     ) {
         self.size = terminal_size;
+        self.pane = self.pane(self.frame());
         if let Some(i) = self.viewer_index(&key) {
             self.focus(i);
             return;
@@ -1771,8 +1873,8 @@ impl App {
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
         match Viewer::spawn(
             c,
-            self.pane_rows(),
-            terminal_size.1,
+            self.pane.height,
+            self.pane.width,
             normal,
             self.colors.clone(),
         ) {
@@ -1885,8 +1987,8 @@ impl App {
                 let line = format!("{c:?}");
                 Viewer::spawn(
                     c,
-                    self.pane_rows(),
-                    self.size.1,
+                    self.pane.height,
+                    self.pane.width,
                     normal,
                     self.colors.clone(),
                 )
@@ -1946,7 +2048,7 @@ impl App {
         match self.focus {
             Some(f) if f == i => {
                 self.focus = None;
-                self.needs_clear = true;
+                self.needs_clear = !self.split_active(self.size.1);
             }
             Some(f) if f > i => self.focus = Some(f - 1),
             _ => {}
@@ -1965,7 +2067,9 @@ impl App {
         let Some(i) = self.focus.take() else {
             return;
         };
-        self.needs_clear = true;
+        // Beside the list nothing leaves the frame, so ratatui's diff is enough; a viewer
+        // that had the whole frame is not trusted to have left it clean.
+        self.needs_clear = !self.split_active(self.size.1);
         self.feedback = Some(("return_to_draw", Instant::now()));
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
@@ -1992,17 +2096,18 @@ impl App {
 
     /// Feed every viewer: read what it wrote, answer its queries, hand it its input, and
     /// take a viewer that ended off the list with its exit in the status line. Returns true
-    /// when the focused viewer's screen changed.
+    /// when the screen of the viewer on view changed.
     fn pump(&mut self) -> bool {
         let mut dirty = false;
         let mut i = 0;
         while i < self.viewers.len() {
             let focused = self.focus == Some(i);
+            let on_view = self.shown() == Some(i);
             let open = &mut self.viewers[i];
             let mut lines = Vec::new();
             let mut failed = None;
             match open.viewer.pump() {
-                Ok(changed) => dirty |= changed && focused,
+                Ok(changed) => dirty |= changed && on_view,
                 Err(e) => failed = Some(format!("{} failed: {e}", open.what)),
             }
             if !open.first_paint_logged
@@ -2092,19 +2197,10 @@ impl App {
                     self.focus(j);
                 }
             }
-            None => {
-                let recent = self
-                    .viewers
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, o)| !o.speculative)
-                    .max_by_key(|(_, o)| o.last_focused)
-                    .map(|(i, _)| i);
-                match recent {
-                    Some(i) => self.focus(i),
-                    None => self.status = "no viewer open".into(),
-                }
-            }
+            None => match self.most_recently_focused() {
+                Some(i) => self.focus(i),
+                None => self.status = "no viewer open".into(),
+            },
         }
     }
 
@@ -2113,7 +2209,8 @@ impl App {
     /// elsewhere that needs input, and the keys that leave. The counts stay live because the
     /// reload loop runs while a viewer is focused. The ends get the width first; the middle
     /// is cut from its right, and the needs-input note is shown whole or not at all. On a
-    /// width too narrow for both ends, `ctrl+] next` goes first, then `ctrl+z back`.
+    /// width too narrow for both ends, `ctrl+\ split` goes first, then `ctrl+] next`, then
+    /// `ctrl+z back`.
     fn strip(&self, i: usize, width: u16) -> Line<'static> {
         let open = &self.viewers[i];
         let width = width as usize;
@@ -2166,6 +2263,10 @@ impl App {
         let mut keys = vec![Span::styled("ctrl+z back", dim())];
         if self.live_viewers() > 1 {
             keys.push(Span::styled(" · ctrl+] next", dim()));
+        }
+        // Full screen on a wide frame is a choice; the way back to the split is here.
+        if width >= SPLIT_MIN as usize {
+            keys.push(Span::styled(" · ctrl+\\ split", dim()));
         }
         let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
         while !keys.is_empty() && ends(&keys) > width {
@@ -2221,31 +2322,39 @@ impl App {
         }
     }
 
-    /// A mouse event goes to the focused viewer, relative to its pane. The strip row under
-    /// the pane is the dashboard's: a press or wheel there goes nowhere, and a drag or release
-    /// that crosses onto it is clamped to the pane's last row so the viewer sees the button
-    /// let go.
+    /// A mouse event goes to the focused viewer, relative to its pane. Outside the pane, the
+    /// strip row or the list, is the dashboard's: a press, move or wheel there goes nowhere,
+    /// and a drag or release that crosses out is clamped to the pane's nearest edge so the
+    /// viewer sees the button let go.
     fn mouse(&mut self, ev: MouseEvent) {
         let Some(ev) = self.pane_mouse(ev) else {
             return;
         };
+        let pane = self.pane;
         if let Some(open) = self.focused() {
             let mode = open.viewer.screen().mouse_protocol_mode();
-            let bytes = viewer::encode_mouse(ev, (0, 0), mode);
+            let bytes = viewer::encode_mouse(ev, (pane.x, pane.y), mode);
             if !bytes.is_empty() {
                 open.viewer.write(&bytes);
             }
         }
     }
 
-    /// `ev` as the pane sees it, or nothing when the strip row swallows it.
+    /// `ev` as the pane sees it, or nothing when it fell outside the pane and is dropped.
     fn pane_mouse(&self, mut ev: MouseEvent) -> Option<MouseEvent> {
-        let pane_rows = self.pane_rows();
-        if self.size.0 >= 2 && ev.row >= pane_rows {
+        let p = self.pane;
+        let inside =
+            (p.left()..p.right()).contains(&ev.column) && (p.top()..p.bottom()).contains(&ev.row);
+        if !inside {
             if !matches!(ev.kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_)) {
                 return None;
             }
-            ev.row = pane_rows - 1;
+            ev.column = ev
+                .column
+                .clamp(p.left(), p.right().saturating_sub(1).max(p.left()));
+            ev.row = ev
+                .row
+                .clamp(p.top(), p.bottom().saturating_sub(1).max(p.top()));
         }
         Some(ev)
     }
@@ -2676,6 +2785,29 @@ impl App {
         {
             return Line::styled(action.message(), dim());
         }
+        let prefix = (!self.filter.is_empty())
+            .then(|| Span::styled(format!("filter: {}  ", self.filter), dim()));
+        // Beside the list a focused viewer has no strip; the keys that leave it are here.
+        let mut line = if self.focus.is_some() {
+            let mut keys = vec![("ctrl+z", "back")];
+            if self.live_viewers() > 1 {
+                keys.push(("ctrl+]", "next"));
+            }
+            keys.push(("ctrl+\\", "full screen"));
+            hints(&keys)
+        } else {
+            self.mode_hints(prefix.as_ref().map_or(0, Span::width))
+        };
+        if let Some(prefix) = prefix {
+            line.spans.insert(0, prefix);
+        }
+        line
+    }
+
+    /// The keys for the mode, unfocused. The Normal line is one row with no wrap, so the
+    /// keys that act everywhere go, last first, until it fits the column it is drawn in
+    /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
+    fn mode_hints(&self, taken: usize) -> Line<'static> {
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
             format!("run once in {}", fleet::tilde(&self.cwd))
@@ -2686,7 +2818,7 @@ impl App {
                 fleet::tilde(&self.target_dir())
             )
         };
-        let mut line = match &self.mode {
+        match &self.mode {
             Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
             Mode::Job(form) if form.step == Step::Dir => hints(&[
                 ("enter", "next"),
@@ -2720,6 +2852,10 @@ impl App {
                 if self.live_viewers() > 0 {
                     keys.push(("ctrl+]", "viewer"));
                 }
+                if !self.viewers.is_empty() && self.size.1 >= SPLIT_MIN {
+                    let what = if self.split { "full screen" } else { "split" };
+                    keys.push(("ctrl+\\", what));
+                }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
                 }
@@ -2733,14 +2869,24 @@ impl App {
                     ("ctrl+o", "agents"),
                     ("esc", "quit"),
                 ]);
-                hints(&keys)
+                let room = (self.hint_width() as usize).saturating_sub(taken);
+                let mut line = hints(&keys);
+                while keys.len() > 2 && line.width() > room {
+                    keys.remove(keys.len() - 2);
+                    line = hints(&keys);
+                }
+                line
             }
-        };
-        if !self.filter.is_empty() {
-            line.spans
-                .insert(0, Span::styled(format!("filter: {}  ", self.filter), dim()));
         }
-        line
+    }
+
+    /// The columns the hint line has: the list column beside a viewer, else the frame.
+    fn hint_width(&self) -> u16 {
+        if self.split_active(self.size.1) {
+            Self::split_areas(self.frame())[0].width
+        } else {
+            self.size.1
+        }
     }
 
     /// ctrl+x once arms and marks the row, ctrl+x again stops; any other key disarms, so the
@@ -2889,9 +3035,9 @@ impl App {
 
     /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
     /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
-    /// until the next key. While a viewer has the pane every key but ctrl+z and ctrl+] is its,
-    /// in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+] moves to
-    /// the next live viewer.
+    /// until the next key. While a viewer has the keys every key but ctrl+z, ctrl+] and ctrl+\
+    /// is its, in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+]
+    /// moves to the next live viewer, ctrl+\ toggles the viewer beside the list.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
@@ -2905,6 +3051,11 @@ impl App {
                 self.cycle_viewer();
                 return Ok(false);
             }
+            // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
+            if ctrl && matches!(code, KeyCode::Char('\\' | '4')) {
+                self.toggle_split();
+                return Ok(false);
+            }
             let bytes = viewer::encode_key(code, mods, open.viewer.screen().application_cursor());
             if !bytes.is_empty() {
                 open.viewer.write(&bytes);
@@ -2913,6 +3064,10 @@ impl App {
         }
         self.status.clear();
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
+            return Ok(false);
+        }
+        if ctrl && matches!(code, KeyCode::Char('\\' | '4')) {
+            self.toggle_split();
             return Ok(false);
         }
         match &mut self.mode {
@@ -3087,40 +3242,87 @@ impl App {
     fn draw(&mut self, frame: &mut Frame) {
         let area = frame.area();
         self.size = (area.height, area.width);
-        // A focused viewer has every row but the last: its emulated screen, cell for cell,
-        // and the terminal's own cursor where the screen puts it, off a wide character's
-        // second half. The last row is the dashboard's strip, so the viewer's own status line
-        // sits right above it. Nothing else of the dashboard is drawn.
-        if let Some(i) = self.focus {
-            let pane = if area.height >= 2 {
-                let [pane, strip] =
-                    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-                frame.render_widget(Paragraph::new(self.strip(i, area.width)), strip);
-                pane
+        self.pane = self.pane(area);
+        // A wide frame: the dashboard in its column on the left, a rule, and the viewer on
+        // view in the pane, full height. Focus changes the rule's color and where keys go,
+        // nothing else; the header has the counts, so there is no strip.
+        if self.split_active(area.width) {
+            let [list, rule, pane] = Self::split_areas(area);
+            self.draw_dashboard(frame, list);
+            let style = if self.focus.is_some() {
+                Style::default().fg(ORANGE)
             } else {
-                area
+                dim()
             };
-            let open = &mut self.viewers[i];
-            open.viewer.resize(pane.height, pane.width);
-            let screen = open.viewer.screen();
-            viewer::render(screen, pane, frame.buffer_mut());
-            if !screen.hide_cursor() {
-                let (row, mut col) = screen.cursor_position();
-                col = col.min(pane.width.saturating_sub(1));
-                if col > 0
-                    && screen
-                        .cell(row, col)
-                        .is_some_and(|c| c.is_wide_continuation())
-                {
-                    col -= 1;
+            let buf = frame.buffer_mut();
+            for y in rule.top()..rule.bottom() {
+                if let Some(cell) = buf.cell_mut((rule.x, y)) {
+                    cell.set_symbol("│");
+                    cell.set_style(style);
                 }
-                if row < pane.height {
-                    frame.set_cursor_position((pane.x + col, pane.y + row));
+            }
+            match self.shown() {
+                Some(i) => self.draw_viewer(frame, i, pane),
+                None => {
+                    if let Some(hint) = self.pane_hint() {
+                        let row = Rect {
+                            y: pane.y + pane.height / 2,
+                            height: 1,
+                            ..pane
+                        };
+                        let hint = Paragraph::new(Line::styled(hint, dim())).centered();
+                        frame.render_widget(hint, row);
+                    }
                 }
             }
             return;
         }
-        let line = match &self.mode {
+        // A focused viewer has every row but the last: its emulated screen, cell for cell.
+        // The last row is the dashboard's strip, so the viewer's own status line sits right
+        // above it. Nothing else of the dashboard is drawn.
+        if let Some(i) = self.focus {
+            if area.height >= 2 {
+                let strip = Rect {
+                    y: area.bottom() - 1,
+                    height: 1,
+                    ..area
+                };
+                frame.render_widget(Paragraph::new(self.strip(i, area.width)), strip);
+            }
+            let pane = self.pane;
+            self.draw_viewer(frame, i, pane);
+            return;
+        }
+        self.draw_dashboard(frame, area);
+    }
+
+    /// Viewer `i`'s emulated screen in `pane`, sized to it, and while it has the keys the
+    /// terminal's own cursor where the screen puts it, off a wide character's second half.
+    fn draw_viewer(&mut self, frame: &mut Frame, i: usize, pane: Rect) {
+        let focused = self.focus == Some(i);
+        let open = &mut self.viewers[i];
+        open.viewer.resize(pane.height, pane.width);
+        let screen = open.viewer.screen();
+        viewer::render(screen, pane, frame.buffer_mut());
+        if focused && !screen.hide_cursor() {
+            let (row, mut col) = screen.cursor_position();
+            col = col.min(pane.width.saturating_sub(1));
+            if col > 0
+                && screen
+                    .cell(row, col)
+                    .is_some_and(|c| c.is_wide_continuation())
+            {
+                col -= 1;
+            }
+            if row < pane.height {
+                frame.set_cursor_position((pane.x + col, pane.y + row));
+            }
+        }
+    }
+
+    /// The dashboard in `area`: header, list, composer and hint line.
+    fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
+        let mut line = match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
                 spans.extend(typed(&self.filter, "text a row must contain"));
@@ -3144,6 +3346,13 @@ impl App {
             }
             Mode::Normal => self.composer(),
         };
+        // While a viewer has the keys the terminal's cursor is in the pane, so the input's
+        // own block cursor is off: one cursor on the frame.
+        if self.focus.is_some() {
+            for span in &mut line.spans {
+                span.style = span.style.remove_modifier(Modifier::REVERSED);
+            }
+        }
         // Ruled above and below, as Claude Code frames its input; grows with the text, as its input does.
         let frame_lines = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
@@ -3152,14 +3361,14 @@ impl App {
             .wrap(Wrap { trim: false })
             .block(frame_lines);
         // line_count already counts the two rules, so this is the whole framed box.
-        let rows = input.line_count(frame.area().width).clamp(3, 10) as u16;
+        let rows = input.line_count(area.width).clamp(3, 10) as u16;
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
             Constraint::Length(rows),
             Constraint::Length(1),
         ])
-        .areas(frame.area());
+        .areas(area);
         frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
         self.draw_list(frame, list);
         frame.render_widget(input, prompt);
@@ -4646,14 +4855,17 @@ mod tests {
             .expect("the alert is its own span");
         assert_eq!(alert.style.fg, Some(Color::Yellow));
         assert!(
-            text.trim_end().ends_with("ctrl+z back · ctrl+] next"),
-            "{text}"
+            text.trim_end()
+                .ends_with("ctrl+z back · ctrl+] next · ctrl+\\ split"),
+            "a frame wide enough for the split offers it: {text}"
         );
         assert_eq!(line.width(), 200, "padded to the width");
 
         // Too narrow for the alert: it is dropped whole, and the middle is cut from its right.
+        // Under SPLIT_MIN there is no split to offer.
         let text = app.strip(0, 60).to_string();
         assert!(!text.contains("needs"), "no partial note: {text}");
+        assert!(!text.contains("split"), "{text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
         assert!(
             text.trim_end().ends_with("ctrl+z back · ctrl+] next"),
@@ -4734,6 +4946,345 @@ mod tests {
                 .map(|e| e.row),
             Some(10)
         );
+    }
+
+    /// Pump viewer `i` until row 0 of its screen starts with `text`.
+    fn wait_paint(app: &mut App, i: usize, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            app.pump();
+            let screen = app.viewers[i].viewer.screen();
+            let row: String = (0..screen.size().1)
+                .filter_map(|c| screen.cell(0, c))
+                .map(|c| c.contents())
+                .collect();
+            if row.starts_with(text) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "the viewer never drew {text}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The cells of row `y` from column `x.start` to `x.end`, as text.
+    fn cells(
+        t: &Terminal<ratatui::backend::TestBackend>,
+        y: u16,
+        x: std::ops::Range<u16>,
+    ) -> String {
+        let buf = t.backend().buffer();
+        x.map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(""))
+            .collect()
+    }
+
+    /// A dashboard on a background session whose viewer is alive but not focused, drawn once
+    /// on a frame `width` columns wide and 30 rows tall.
+    fn split_setup(
+        width: u16,
+    ) -> (
+        tempfile::TempDir,
+        App,
+        Terminal<ratatui::backend::TestBackend>,
+    ) {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.viewers.push(viewer_open(A, "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        (d, app, t)
+    }
+
+    #[test]
+    fn a_wide_frame_shows_the_selected_rows_viewer_beside_the_list_and_focus_only_moves_the_keys() {
+        use ratatui::crossterm::event::MouseButton;
+        let (_d, mut app, mut t) = split_setup(200);
+        // LIST = clamp(200 / 2, 60, 100).
+        let list = 100u16;
+        let screen = rows(&t, 200);
+        let left: Vec<String> = (0..30).map(|y| cells(&t, y, 0..list)).collect();
+        assert!(
+            left.iter().any(|r| r.contains("an instruction for")),
+            "the composer is in the list column: {left:#?}"
+        );
+        assert!(
+            left.iter().any(|r| r.contains(&A[..8])),
+            "the session's row is in the list column: {left:#?}"
+        );
+        assert!(
+            cells(&t, 0, list + 1..200).starts_with("VIEW"),
+            "the pane starts right of the rule: {screen:#?}"
+        );
+        assert!(
+            !screen.iter().any(|r| r.contains("ctrl+z back")),
+            "no strip beside the list: {screen:#?}"
+        );
+        assert_eq!(
+            app.viewers[0].viewer.screen().size(),
+            (30, 200 - list - 1),
+            "the viewer is sized to the pane"
+        );
+        assert_eq!(app.pane, Rect::new(list + 1, 0, 200 - list - 1, 30));
+        let rule = t.backend().buffer().cell((list, 0)).unwrap().clone();
+        assert_eq!(rule.symbol(), "│");
+        assert_ne!(rule.fg, ORANGE, "the rule is dim while nothing is focused");
+        assert!(
+            left[29].contains("ctrl+\\ full screen"),
+            "unfocused, the hint line offers full screen: {:?}",
+            left[29]
+        );
+
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(
+            app.viewers[0].viewer.screen().size(),
+            (30, 200 - list - 1),
+            "focusing does not resize the viewer"
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        let hint = cells(&t, 29, 0..list);
+        assert!(hint.contains("ctrl+z back"), "{hint:?}");
+        assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
+        assert!(
+            !hint.contains("ctrl+] next"),
+            "one viewer has no next: {hint:?}"
+        );
+        assert!(cells(&t, 0, list + 1..200).starts_with("VIEW"));
+        assert_eq!(
+            t.backend().buffer().cell((list, 5)).unwrap().fg,
+            ORANGE,
+            "the rule is orange while the viewer is focused"
+        );
+        let reversed = |t: &Terminal<ratatui::backend::TestBackend>| {
+            let buf = t.backend().buffer();
+            (0..30)
+                .flat_map(|y| (0..list).map(move |x| (x, y)))
+                .any(|pos| buf.cell(pos).unwrap().modifier.contains(Modifier::REVERSED))
+        };
+        assert!(
+            !reversed(&t),
+            "the composer draws no block cursor while the viewer has the terminal's"
+        );
+        app.filter = "one".into();
+        assert!(
+            app.hint_line()
+                .to_string()
+                .starts_with("filter: one  ctrl+z back"),
+            "a kept filter stays on the focused hint line: {}",
+            app.hint_line()
+        );
+        app.filter.clear();
+        // The mouse is the pane's: a press on the list goes nowhere, a release there lands on
+        // the pane's left edge, and the pane's origin is taken off what the viewer sees.
+        let ev = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let down = MouseEventKind::Down(MouseButton::Left);
+        assert!(app.pane_mouse(ev(down, 10, 3)).is_none());
+        assert!(
+            app.pane_mouse(ev(MouseEventKind::ScrollUp, list, 3))
+                .is_none()
+        );
+        assert_eq!(
+            app.pane_mouse(ev(down, list + 1, 3))
+                .map(|e| (e.column, e.row)),
+            Some((list + 1, 3))
+        );
+        assert_eq!(
+            app.pane_mouse(ev(MouseEventKind::Up(MouseButton::Left), 10, 40))
+                .map(|e| (e.column, e.row)),
+            Some((list + 1, 29))
+        );
+        let inside = app.pane_mouse(ev(down, list + 1, 0)).unwrap();
+        assert_eq!(
+            viewer::encode_mouse(
+                inside,
+                (app.pane.x, app.pane.y),
+                viewer::MouseProtocolMode::Press
+            ),
+            b"\x1b[<0;1;1M"
+        );
+
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, None);
+        assert!(
+            !app.needs_clear,
+            "nothing left the frame, so ctrl+z beside the list does not clear it"
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            cells(&t, 0, list + 1..200).starts_with("VIEW"),
+            "the selected row's viewer stays on view after ctrl+z"
+        );
+        assert!(
+            cells(&t, 29, 0..list).starts_with("left attach"),
+            "the status has the hint line: {:?}",
+            cells(&t, 29, 0..list)
+        );
+        assert!(
+            reversed(&t),
+            "unfocused, the composer's block cursor is back"
+        );
+        // Full screen on the same wide frame: the strip offers the split back.
+        app.toggle_split();
+        app.enter().unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let strip = cells(&t, 29, 0..200);
+        assert!(
+            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            "{strip:?}"
+        );
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(
+            app.needs_clear,
+            "a viewer that had the frame is cleared away"
+        );
+    }
+
+    #[test]
+    fn the_hint_line_drops_keys_from_its_end_to_fit_the_list_column() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        // 130 columns is under SPLIT_MIN, so the line has the whole frame and fits it.
+        app.size = (30, 130);
+        let wide = app.hint_line().to_string();
+        assert!(wide.ends_with("ctrl+o agents · esc quit"), "{wide}");
+        let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
+        // 140 columns: the list column is 70, which the whole line does not fit.
+        app.size = (30, 140);
+        let fitted = app.hint_line();
+        assert!(fitted.width() <= 70, "{fitted}");
+        let fitted = fitted.to_string();
+        assert!(
+            fitted.starts_with("enter attach · "),
+            "the selected row's key stays: {fitted}"
+        );
+        assert!(fitted.ends_with(" · esc quit"), "quit stays: {fitted}");
+        assert!(
+            keys(&fitted).iter().all(|k| keys(&wide).contains(k)),
+            "only whole keys go: {fitted}"
+        );
+        app.filter = "one".into();
+        let filtered = app.hint_line();
+        assert!(filtered.width() <= 70, "{filtered}");
+        assert!(
+            filtered
+                .to_string()
+                .starts_with("filter: one  enter attach")
+        );
+    }
+
+    #[test]
+    fn an_empty_pane_says_what_enter_does_and_says_nothing_on_a_row_that_cannot_open() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 160);
+        assert!(
+            screen[15].contains("enter opens the selected session here"),
+            "{screen:#?}"
+        );
+        assert!(
+            !screen[29].contains("ctrl+\\"),
+            "no viewer alive, nothing to toggle: {:?}",
+            screen[29]
+        );
+        // Up past the table lands on the menu, which opens no viewer.
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu(_))) {
+            app.step(-1);
+        }
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 160);
+        assert!(
+            !screen
+                .iter()
+                .any(|r| r.contains("enter opens the selected session here")),
+            "{screen:#?}"
+        );
+    }
+
+    #[test]
+    fn ctrl_backslash_toggles_the_split_and_never_reaches_the_viewer() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(silent_open("run:r1"));
+        app.focus(0);
+        app.size = (30, 200);
+        assert!(app.split, "on by default");
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(!app.split);
+        assert_eq!(app.focus, Some(0));
+        // crossterm reports the byte 0x1c a terminal sends for ctrl+\ as ctrl+4.
+        assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split);
+        assert_eq!(app.focus, Some(0));
+        app.unfocus();
+        app.status.clear();
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(!app.split);
+        assert_eq!(app.focus, None);
+        assert!(app.text.is_empty(), "nothing typed into the composer");
+        app.size = (30, 200);
+        assert!(
+            app.hint_line().to_string().contains("ctrl+\\ split"),
+            "{}",
+            app.hint_line()
+        );
+        assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split);
+        assert!(
+            app.hint_line().to_string().contains("ctrl+\\ full screen"),
+            "{}",
+            app.hint_line()
+        );
+        app.size = (30, 80);
+        assert!(
+            !app.hint_line().to_string().contains("ctrl+\\"),
+            "a narrow frame has no split to offer: {}",
+            app.hint_line()
+        );
+        app.needs_clear = false;
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split, "a narrow frame keeps its state");
+        assert_eq!(app.status, "split needs 140 columns");
+        assert!(!app.needs_clear, "nothing changed, nothing to repaint");
+    }
+
+    #[test]
+    fn a_narrow_frame_keeps_the_viewer_full_screen_over_the_strip() {
+        let (_d, mut app, mut t) = split_setup(120);
+        let screen = rows(&t, 120);
+        assert!(
+            !screen.iter().any(|r| r.contains("VIEW")),
+            "unfocused on a narrow frame the list is alone: {screen:#?}"
+        );
+        assert!(screen.iter().any(|r| r.contains("an instruction for")));
+        assert_eq!(app.pane, Rect::new(0, 0, 120, 29));
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 120);
+        assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
+        assert!(
+            screen[29].trim_end().ends_with("ctrl+z back"),
+            "the strip: {:?}",
+            screen[29]
+        );
+        assert!(!screen.iter().any(|r| r.contains("an instruction for")));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 120));
     }
 
     #[test]

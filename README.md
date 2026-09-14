@@ -31,7 +31,7 @@ cargo install --git https://github.com/YuvalSarel1/cones
 cones tui
 ```
 
-`Enter` opens a session or follows a running job's output. `Ctrl+Z` comes back from an opened session, which keeps running; `Enter` on its row returns to it at once; a strip under an opened session keeps the fleet's counts in view. A harness that cannot be left and re-entered is not opened from here, and the dashboard says why. Type an instruction at the bottom and `Enter` starts a session with it in the selected row's directory, under the harness `Tab` picks; `Ctrl+X` twice stops a session or deletes a job.
+`Enter` opens a session or follows a running job's output. `Ctrl+Z` comes back from an opened session, which keeps running; `Enter` on its row returns to it at once; a strip under an opened session keeps the fleet's counts in view. A harness that cannot be left and re-entered is not opened from here, and the dashboard says why. Type an instruction at the bottom and `Enter` starts a session with it in the selected row's directory, under the harness `Tab` picks; `Ctrl+X` twice stops a session or deletes a job. On a wide terminal the selected session shows live beside the list.
 
 ```sh
 cones run --prompt "Read this repo and summarize its TODOs."
