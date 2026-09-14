@@ -5,8 +5,11 @@ pub mod harness;
 pub mod launchd;
 pub mod ledger;
 pub mod output;
+#[cfg(target_os = "macos")]
+mod process_info;
 pub mod runner;
 pub mod tui;
+mod viewer;
 
 use anyhow::{Context, Result, bail};
 use std::{

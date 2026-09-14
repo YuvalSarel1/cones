@@ -19,8 +19,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use ratatui::{
-    DefaultTerminal, Frame, Terminal, TerminalOptions, Viewport,
-    backend::CrosstermBackend,
+    DefaultTerminal, Frame,
     crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -30,7 +29,7 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{OnceLock, mpsc},
     time::{Duration, Instant},
 };
@@ -48,15 +47,19 @@ static SHELL_TTY: OnceLock<Option<libc::termios>> = OnceLock::new();
 /// crashed, leaves them on, and a shell with them on echoes garbage on every click, focus
 /// change and paste. Invisible on a terminal where nothing was left on.
 fn hand_back_tty() {
-    use std::io::Write;
     if let Some(Some(t)) = SHELL_TTY.get() {
         unsafe {
             libc::tcsetattr(0, libc::TCSANOW, t);
         }
     }
+    reset_terminal_protocols();
+}
+
+fn reset_terminal_protocols() {
+    use std::io::Write;
     let mut out = std::io::stdout();
     let _ = out.write_all(
-        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
+        b"\x18\x1b\\\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
     );
     let _ = out.flush();
 }
@@ -184,6 +187,12 @@ impl Data {
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
     /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
+        self.rows_excluding(by_state, &HashSet::new())
+    }
+
+    /// A confirmed delete leaves the list immediately while the harness command finishes.
+    /// The source data stays intact so a failed command can restore its row.
+    fn rows_excluding(&self, by_state: bool, deleting: &HashSet<&str>) -> Vec<Row> {
         let mut out = Vec::new();
         let header = |out: &mut Vec<Row>, title: &str| {
             out.push(Row {
@@ -228,7 +237,11 @@ impl Data {
             }
         }
         let mut groups: BTreeMap<String, Vec<&Session>> = BTreeMap::new();
-        for s in &self.sessions {
+        for s in self
+            .sessions
+            .iter()
+            .filter(|s| !deleting.contains(s.session_id.as_str()))
+        {
             let key = if by_state {
                 // A rank digit orders the groups (needs input first); it is stripped for display.
                 let rank = match s.state.as_str() {
@@ -1098,7 +1111,8 @@ struct App {
     /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
     harness: usize,
     /// A `claude --bg` in flight on its own thread; its one line lands in the status.
-    started: Option<mpsc::Receiver<String>>,
+    started: Vec<mpsc::Receiver<(String, Option<String>)>>,
+    opening: Option<Opening>,
     tick: usize,
     refreshed: Instant,
     /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
@@ -1121,8 +1135,16 @@ struct App {
 
 struct PendingStop {
     id: String,
+    label: String,
     verb: &'static str,
     result: mpsc::Receiver<Result<bool>>,
+}
+
+struct Opening {
+    what: String,
+    command: mpsc::Receiver<Result<Command>>,
+    record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
+    prompt: Option<String>,
 }
 
 impl PendingStop {
@@ -1132,13 +1154,8 @@ impl PendingStop {
             "forget" => "forgetting",
             _ => "stopping",
         };
-        format!("{action} {}", self.id.chars().take(8).collect::<String>())
+        format!("{action} {}", self.label)
     }
-}
-
-enum Waited {
-    Exited(std::process::ExitStatus),
-    Stopped,
 }
 
 impl App {
@@ -1160,7 +1177,8 @@ impl App {
             status: String::new(),
             text: String::new(),
             harness: 0,
-            started: None,
+            started: Vec::new(),
+            opening: None,
             tick: 0,
             refreshed: Instant::now(),
             loading: None,
@@ -1249,11 +1267,25 @@ impl App {
     /// the last good data stays on screen.
     fn poll(&mut self) {
         self.poll_stops();
-        if let Some(rx) = &self.started
-            && let Ok(msg) = rx.try_recv()
-        {
-            self.status = msg;
-            self.started = None;
+        let mut launched = false;
+        for rx in std::mem::take(&mut self.started) {
+            match rx.try_recv() {
+                Ok((message, retry)) => {
+                    self.status = message;
+                    if self.text.is_empty()
+                        && let Some(prompt) = retry
+                    {
+                        self.text = prompt;
+                    }
+                    launched = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => self.started.push(rx),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.status = "session launch stopped unexpectedly".into();
+                }
+            }
+        }
+        if launched {
             self.invalidate();
         }
         let Some(rx) = &self.loading else {
@@ -1307,8 +1339,15 @@ impl App {
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
+        let deleting = self
+            .stopping
+            .iter()
+            .filter(|a| matches!(a.verb, "delete" | "forget"))
+            .map(|a| a.id.as_str())
+            .collect();
         self.rows = menu_rows(&self.cwd);
-        self.rows.extend(self.data.rows(self.by_state));
+        self.rows
+            .extend(self.data.rows_excluding(self.by_state, &deleting));
         self.apply_filter();
         if let Some(k) = &keep
             && let Some(i) = self
@@ -1447,132 +1486,106 @@ impl App {
         };
     }
 
-    /// Hand the terminal to a child, take it back when it exits, and surface its last stderr line.
-    /// Hand the terminal to a child, take it back when it exits, and surface its last stderr
-    /// line. The child runs in its own process group and owns the tty, like a shell job, so
-    /// ctrl-c and ctrl-z reach it and everything it forked, and nothing else; `on_stop` says
-    /// what a stop means.
-    fn foreground(&mut self, terminal: &mut DefaultTerminal, mut c: Command, what: &str) {
-        use std::io::Read;
-        use std::os::unix::process::CommandExt;
-        let height = terminal.size().map(|s| s.height).unwrap_or(0);
-        self.debug(|| {
-            format!(
-                "foreground {what}: {c:?} in {:?}; size={:?}; {}",
-                c.get_current_dir(),
-                terminal.size().ok(),
-                term_state()
-            )
-        });
-        ratatui::restore();
-        self.debug(|| format!("restored; {}", term_state()));
-        // The normal screen is blank while the child has the terminal: the child starts over
-        // it, and on the way out leaves its own screen to it, so neither gap shows the shell.
-        // Not the last frame: `claude attach` execs into `claude agents` on the left key and
-        // is seconds on the normal screen while it starts, and a dead dashboard there reads
-        // as a live one that ignores keys.
-        let mut still = Terminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            TerminalOptions {
-                viewport: Viewport::Inline(height),
-            },
-        )
-        .ok();
-        if let Some(t) = still.as_mut() {
-            let _ = t.clear();
-        }
-        c.stderr(Stdio::piped());
-        // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
-        unsafe {
-            libc::signal(libc::SIGINT, libc::SIG_IGN);
-            c.pre_exec(|| {
-                libc::setpgid(0, 0);
-                libc::tcsetpgrp(0, libc::getpid());
-                for sig in [libc::SIGINT, libc::SIGTSTP, libc::SIGTTOU, libc::SIGTTIN] {
-                    libc::signal(sig, libc::SIG_DFL);
-                }
-                Ok(())
-            });
-        }
-        let started = Instant::now();
-        let r = c.spawn().and_then(|mut c| {
-            self.debug(|| format!("child pid {}; waiting", c.id()));
-            let pid = c.id() as libc::pid_t;
-            let stderr = c.stderr.take().map(|mut e| {
-                std::thread::spawn(move || {
-                    let mut v = Vec::new();
-                    let _ = e.read_to_end(&mut v);
-                    v
-                })
-            });
-            let watch = self.log.as_ref().map(|p| watch_group(p.clone(), c.id()));
-            let status = loop {
-                let w = wait_or_stopped(&mut c, true, &|m| self.debug(|| m));
-                match w {
-                    // The child still owns the tty; it only needs to run again.
-                    Ok(Waited::Stopped) => unsafe {
-                        libc::kill(-pid, libc::SIGCONT);
-                    },
-                    Ok(Waited::Exited(st)) => {
-                        self.debug(|| format!("child exited after {:?}: {st}", started.elapsed()));
-                        break Ok(st);
-                    }
-                    Err(e) => break Err(e),
-                }
-            };
-            // Dropping the sender ends the watcher at once. Joining a thread that slept a
-            // whole second here once left the tty cooked and unread for that long: the
-            // dashboard looked frozen and keystrokes echoed onto it.
-            if let Some((stop, t)) = watch {
-                drop(stop);
-                let _ = t.join();
+    /// Keep Cones on the physical alternate screen while the harness owns its viewer's PTY.
+    /// The background agent remains in the native daemon throughout the hand-off.
+    fn foreground(&mut self, terminal: &mut DefaultTerminal, c: Command, what: &str) {
+        self.status = format!("opening {what}");
+        let _ = terminal.draw(|frame| self.draw(frame));
+        self.debug(|| format!("foreground {what}: {c:?}; retaining dashboard screen"));
+        let log = self.log.clone();
+        let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
+        let result = crate::viewer::run(c, normal, move |message| {
+            if let Some(path) = &log {
+                debug_line(path, message);
             }
-            let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
-            status.map(|st| (st, stderr))
         });
-        unsafe {
-            libc::tcsetpgrp(0, libc::getpgrp());
-            libc::signal(libc::SIGINT, libc::SIG_DFL);
-        }
-        match &r {
-            Ok((st, err)) => self.debug(|| {
-                format!(
-                    "child done after {:?}: {st}; stderr_tail={:?}; {}",
-                    started.elapsed(),
-                    String::from_utf8_lossy(err)
-                        .lines()
-                        .rev()
-                        .find(|l| !l.trim().is_empty()),
-                    term_state()
-                )
-            }),
-            Err(e) => self.debug(|| format!("child failed: {e}; {}", term_state())),
-        }
-        if let Some(t) = still.as_mut() {
-            let _ = t.clear();
-        }
-        hand_back_tty();
-        *terminal = ratatui::init();
         self.feedback = Some(("return_to_draw", Instant::now()));
-        self.debug(|| {
-            format!(
-                "dashboard back: size={:?}; {}",
-                terminal.size().ok(),
-                term_state()
-            )
-        });
-        self.status = match r {
-            Ok((st, _)) if st.success() => format!("back from {what}"),
-            Ok((st, err)) => {
-                let err = String::from_utf8_lossy(&err);
-                let last = err.lines().rev().find(|l| !l.trim().is_empty());
-                match last {
-                    Some(l) => format!("{what} failed: {}", l.trim_start_matches("Error: ")),
-                    None => format!("{what} exited with {st}"),
+        reset_terminal_protocols();
+        let _ = terminal.hide_cursor();
+        self.status = match result {
+            Ok(outcome) if outcome.detached || outcome.status.is_some_and(|s| s.success()) => {
+                format!("back from {what}")
+            }
+            Ok(outcome) => {
+                let error = String::from_utf8_lossy(&outcome.stderr);
+                match error.lines().rev().find(|line| !line.trim().is_empty()) {
+                    Some(line) => format!("{what} failed: {}", line.trim_start_matches("Error: ")),
+                    None => format!("{what} exited with {}", outcome.status.unwrap()),
                 }
             }
-            Err(e) => format!("{what} failed: {e}"),
+            Err(error) => format!("{what} failed: {error}"),
         };
+        // Invalidate ratatui's previous frame: the viewer drew over that same screen.
+        let _ = terminal.clear();
+        let _ = terminal.draw(|frame| self.draw(frame));
+        self.debug(|| format!("dashboard back: {}; {}", self.status, term_state()));
+    }
+
+    fn prepare_viewer(
+        &mut self,
+        what: String,
+        record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
+        prompt: Option<String>,
+        prepare: impl FnOnce() -> Result<Command> + Send + 'static,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        self.status = format!("opening {what} · esc cancels");
+        std::thread::spawn(move || {
+            let _ = tx.send(prepare());
+        });
+        self.opening = Some(Opening {
+            what,
+            command: rx,
+            record,
+            prompt,
+        });
+    }
+
+    /// Called after drawing so even a slow native daemon start has immediate feedback.
+    fn poll_opening(&mut self, terminal: &mut DefaultTerminal) -> bool {
+        let Some(opening) = &self.opening else {
+            return false;
+        };
+        let command = match opening.command.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Err(anyhow::anyhow!("viewer preparation stopped"))
+            }
+            Ok(command) => command,
+        };
+        let opening = self.opening.take().unwrap();
+        match command {
+            Ok(command) => {
+                self.foreground(terminal, command, &opening.what);
+                if let Some((dir, since)) = opening.record {
+                    self.record_codex(&dir, since);
+                }
+                self.invalidate();
+            }
+            Err(error) => {
+                self.status = format!("{} failed: {error:#}", opening.what);
+                if self.text.is_empty()
+                    && let Some(prompt) = opening.prompt
+                {
+                    self.text = prompt;
+                }
+            }
+        }
+        self.feedback = Some(("opening_result_to_draw", Instant::now()));
+        true
+    }
+
+    fn cancel_opening(&mut self) -> bool {
+        let Some(opening) = self.opening.take() else {
+            return false;
+        };
+        if self.text.is_empty()
+            && let Some(prompt) = opening.prompt
+        {
+            self.text = prompt;
+        }
+        self.status = "opening cancelled".into();
+        true
     }
 
     /// After a Codex client launched here returns: keep the thread it opened, so its row stays
@@ -1588,7 +1601,7 @@ impl App {
                 };
             }
             None if !self.status.contains("failed") => {
-                self.status = "codex left before its first turn; nothing to come back to".into()
+                self.status = "codex thread will appear when the harness reports it".into()
             }
             None => {}
         }
@@ -1651,11 +1664,9 @@ impl App {
                 }
                 // A Codex thread behind the daemon reopens with a client.
                 if harness == "codex" {
-                    match harness::codex_resume(&id, &cwd) {
-                        Ok(c) => self.foreground(terminal, c, "codex"),
-                        Err(e) => self.status = format!("codex resume failed: {e:#}"),
-                    }
-                    self.invalidate();
+                    self.prepare_viewer("codex".into(), None, None, move || {
+                        harness::codex_resume(&id, &cwd)
+                    });
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
@@ -1719,7 +1730,7 @@ impl App {
     /// The composer's `enter`: a session in the selected row's directory with the text as its
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
-    fn start(&mut self, terminal: &mut DefaultTerminal) {
+    fn start(&mut self, _terminal: &mut DefaultTerminal) {
         // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
         // ledger like any other, instead of a bare session.
         if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
@@ -1736,40 +1747,44 @@ impl App {
         // Rollout timestamps are the thread's own clock; a little slack covers it.
         let since = chrono::Utc::now() - chrono::Duration::seconds(5);
         self.debug(|| format!("start {what}: {prompt:?}"));
-        match harness::start(kind, &dir, prompt.trim()) {
-            Ok(Start::Background(mut c)) => {
-                let (tx, rx) = mpsc::channel();
-                self.status = format!("starting {what}");
-                std::thread::spawn(move || {
-                    let msg = match c.stdin(Stdio::null()).output() {
-                        Ok(o) if o.status.success() => format!(
-                            "started {what}: {}",
-                            uncolored(String::from_utf8_lossy(&o.stdout).trim())
-                        ),
-                        Ok(o) => {
-                            let err = String::from_utf8_lossy(&o.stderr);
-                            let last = err.lines().rev().find(|l| !l.trim().is_empty());
-                            format!("{what} failed: {}", last.unwrap_or("").trim())
-                        }
-                        Err(e) => format!("{what} failed: {e}"),
-                    };
-                    let _ = tx.send(msg);
-                });
-                self.started = Some(rx);
-            }
-            Ok(Start::Foreground(c)) => {
-                self.foreground(terminal, c, &what);
-                if kind == HarnessKind::Codex {
-                    self.record_codex(&dir, since);
+        if kind == HarnessKind::Codex {
+            let record = Some((dir.clone(), since));
+            let retry = Some(prompt.clone());
+            self.prepare_viewer(what, record, retry, move || {
+                match harness::start(kind, &dir, prompt.trim())? {
+                    Start::Foreground(command) => Ok(command),
+                    Start::Background(_) => anyhow::bail!("expected a Codex viewer"),
                 }
-                self.invalidate();
-            }
-            Err(e) => {
-                // The instruction is not lost to a refusal.
-                self.text = prompt;
-                self.status = e.to_string();
-            }
+            });
+            return;
         }
+        let (tx, rx) = mpsc::channel();
+        self.status = format!("starting {what}");
+        std::thread::spawn(move || {
+            // Capability checks and the command both run off the input thread.
+            let result = (|| -> Result<String> {
+                let Start::Background(mut command) = harness::start(kind, &dir, prompt.trim())?
+                else {
+                    anyhow::bail!("expected a background Claude session");
+                };
+                let output = command.stdin(Stdio::null()).output()?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+                Ok(format!(
+                    "started {what}: {}",
+                    uncolored(String::from_utf8_lossy(&output.stdout).trim())
+                ))
+            })();
+            let feedback = match result {
+                Ok(message) => (message, None),
+                Err(error) => (format!("{what} failed: {error:#}"), Some(prompt)),
+            };
+            let _ = tx.send(feedback);
+        });
+        self.started.push(rx);
     }
 
     /// ctrl+x on a job with no run in flight: once arms, again removes the job from jobs.yaml
@@ -2012,8 +2027,17 @@ impl App {
         work: impl FnOnce() -> Result<bool> + Send + 'static,
     ) {
         let (tx, rx) = mpsc::channel();
+        let label = self
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .and_then(|s| s.title.as_deref())
+            .and_then(fleet::headline)
+            .unwrap_or_else(|| id.chars().take(8).collect());
         let action = PendingStop {
             id,
+            label,
             verb,
             result: rx,
         };
@@ -2035,6 +2059,7 @@ impl App {
             let _ = tx.send(result);
         });
         self.stopping.push(action);
+        self.rebuild();
     }
 
     fn poll_stops(&mut self) {
@@ -2055,20 +2080,20 @@ impl App {
                 Ok(true) if matches!(action.verb, "delete" | "forget") => {
                     self.removed_sessions.insert(action.id.clone());
                     self.data.sessions.retain(|s| s.session_id != action.id);
-                    self.rebuild();
                     if action.verb == "delete" {
-                        "deleted · claude --resume still has it".into()
+                        format!("deleted {} · claude --resume still has it", action.label)
                     } else {
-                        "thread forgotten · codex resume still has it".into()
+                        format!("forgot {} · codex resume still has it", action.label)
                     }
                 }
                 Ok(true) => "stop requested".into(),
                 Ok(false) => "already finished".into(),
-                Err(e) => format!("{} failed: {e:#}", action.verb),
+                Err(e) => format!("{} failed: {}: {e:#}", action.verb, action.label),
             };
             self.debug(|| format!("{}: {}", action.id, self.status));
         }
         if finished {
+            self.rebuild();
             self.feedback
                 .get_or_insert(("action_result_to_draw", Instant::now()));
             self.invalidate();
@@ -2086,6 +2111,9 @@ impl App {
     ) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         self.status.clear();
+        if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
+            return Ok(false);
+        }
         match &mut self.mode {
             Mode::Filter => {
                 match code {
@@ -2115,6 +2143,12 @@ impl App {
                     KeyCode::Enter => {
                         let kind = harness::KNOWN[i];
                         self.mode = Mode::Normal;
+                        if kind == HarnessKind::Codex {
+                            self.prepare_viewer("codex agents".into(), None, None, move || {
+                                harness::agents(kind)
+                            });
+                            return Ok(false);
+                        }
                         match harness::agents(kind) {
                             Ok(c) => {
                                 self.foreground(terminal, c, &format!("{kind} agents"));
@@ -2346,11 +2380,8 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     app.timing("startup_load", started);
     app.feedback = Some(("startup_to_draw", started));
     app.rebuild();
-    // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
-    // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
-    // suspend the dashboard from under the user. Children get the default back in pre_exec.
-    // A foreground child owns the tty as its own process group; taking it back with tcsetpgrp
-    // from the background is SIGTTOU unless ignored.
+    // Ctrl+Z detaches a native viewer; it never suspends the dashboard. Viewers get their
+    // default signal handlers back on their own terminal in pre_exec.
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
@@ -2388,6 +2419,9 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 drawn_refresh = app.refreshed;
                 redraw = false;
             }
+            if app.poll_opening(&mut terminal) {
+                continue;
+            }
             // Commands and fresh data can land between animation frames. Check them promptly
             // without repainting idle frames or making the spinner depend on key frequency.
             if event::poll(Duration::from_millis(25))? {
@@ -2410,50 +2444,6 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     hand_back_tty();
     result.context("dashboard")?;
     Ok(0)
-}
-
-/// Wait for the child that holds the terminal. Ctrl-z in a child that leaves ISIG on (Codex,
-/// vi and Claude's agents view do; interactive Claude and its attach view eat the key) stops the
-/// child's process group. `Child::wait` would then block forever on a cooked terminal nobody
-/// reads. With `kill_on_stop` the child is a viewer that has already restored the tty: it is
-/// killed where it stands, group and all, and the session it showed is untouched. Otherwise the
-/// stop is reported and the caller resumes it.
-///
-/// To re-check what a program does on ctrl-z, run it as a foreground job of an interactive
-/// shell on a pty and read its ps state. A program forked straight onto a pty is an orphaned
-/// process group, and the kernel discards its tty stops, so that probe says nothing ever stops.
-fn wait_or_stopped(
-    child: &mut Child,
-    kill_on_stop: bool,
-    debug: &dyn Fn(String),
-) -> std::io::Result<Waited> {
-    use std::os::unix::process::ExitStatusExt;
-    let pid = child.id() as libc::pid_t;
-    let mut status: libc::c_int = 0;
-    loop {
-        let r = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) };
-        if r == -1 {
-            let e = std::io::Error::last_os_error();
-            if e.kind() == std::io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e);
-        }
-        if libc::WIFSTOPPED(status) {
-            let sig = libc::WSTOPSIG(status);
-            if kill_on_stop {
-                debug(format!("child stopped by signal {sig}; killing the viewer"));
-                unsafe {
-                    libc::kill(-pid, libc::SIGKILL);
-                }
-                continue;
-            }
-            debug(format!("child stopped by signal {sig}"));
-            return Ok(Waited::Stopped);
-        }
-        // ponytail: the pid is reaped here, so `Child::wait` would fail; the status is kept.
-        return Ok(Waited::Exited(ExitStatusExt::from_raw(status)));
-    }
 }
 
 fn debug_line(path: &Path, msg: impl std::fmt::Display) {
@@ -2517,45 +2507,10 @@ fn tty_state() -> String {
     }
 }
 
-/// While a child holds the terminal, log every change of the tty's modes and foreground group,
-/// sampled twenty times a second, and once a second the dashboard's process group and the
-/// child's (its own, shared with what it forks): `T` in the state column is a stopped child.
-/// A child that restores a cooked tty and then lingers before exiting shows up as the gap
-/// between the `tty` line and `child exited`. Dropping the sender stops the watcher at once.
-fn watch_group(log: PathBuf, child: u32) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
-    let (stop, rx) = mpsc::channel::<()>();
-    let pgrp = format!("{},{child}", unsafe { libc::getpgrp() });
-    let t = std::thread::spawn(move || {
-        let (mut tree, mut tty) = (String::new(), String::new());
-        for n in 0u32.. {
-            // ponytail: only changes are logged, so an idle attach costs a few lines.
-            let now = tty_state();
-            if now != tty {
-                debug_line(&log, format!("tty: {now}"));
-                tty = now;
-            }
-            if n % 20 == 0 {
-                let out = Command::new("ps")
-                    .args(["-o", "pid=,ppid=,stat=,tpgid=,command=", "-g", &pgrp])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_owned())
-                    .unwrap_or_else(|e| format!("ps failed: {e}"));
-                if out != tree {
-                    debug_line(&log, format!("child tree:\n{out}"));
-                    tree = out;
-                }
-            }
-            if rx.recv_timeout(Duration::from_millis(50)) != Err(mpsc::RecvTimeoutError::Timeout) {
-                break;
-            }
-        }
-    });
-    (stop, t)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
     use std::fs;
 
     fn dir() -> tempfile::TempDir {
@@ -2587,21 +2542,6 @@ mod tests {
     }
 
     #[test]
-    fn watcher_stops_when_its_sender_drops() {
-        let d = dir();
-        let (stop, t) = watch_group(d.path().join("log"), std::process::id());
-        std::thread::sleep(Duration::from_millis(120));
-        let t0 = Instant::now();
-        drop(stop);
-        t.join().unwrap();
-        assert!(
-            t0.elapsed() < Duration::from_millis(500),
-            "{:?}",
-            t0.elapsed()
-        );
-    }
-
-    #[test]
     fn debug_log_appends_only_when_enabled() {
         let d = dir();
         let path = d.path().join("tui-debug.log");
@@ -2616,55 +2556,6 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with(" one") && lines[1].ends_with(" two"));
         assert!(term_state().contains("pgrp="));
-    }
-
-    fn job(script: &str) -> Child {
-        use std::os::unix::process::CommandExt;
-        Command::new("sh")
-            .args(["-c", script])
-            .process_group(0)
-            .spawn()
-            .unwrap()
-    }
-
-    #[test]
-    fn a_stopped_viewer_is_killed_with_its_group_at_once() {
-        use std::os::unix::process::ExitStatusExt;
-        let mut c = job("sleep 30 & kill -STOP $$; wait");
-        let started = Instant::now();
-        let log = std::sync::Mutex::new(vec![]);
-        let w = wait_or_stopped(&mut c, true, &|m| log.lock().unwrap().push(m)).unwrap();
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "did not hang on the stop"
-        );
-        let Waited::Exited(st) = w else {
-            panic!("viewer must exit")
-        };
-        assert_eq!(st.signal(), Some(libc::SIGKILL));
-        assert!(log.lock().unwrap()[0].ends_with("killing the viewer"));
-        std::thread::sleep(Duration::from_millis(50));
-        let ps = Command::new("ps")
-            .args(["-o", "pid=", "-g", &c.id().to_string()])
-            .output()
-            .unwrap();
-        assert!(
-            ps.stdout.trim_ascii().is_empty(),
-            "the group died with the viewer: {ps:?}"
-        );
-    }
-
-    #[test]
-    fn a_stopped_harness_is_reported_and_finishes_once_continued() {
-        let mut c = job("kill -STOP $$; exit 3");
-        let w = wait_or_stopped(&mut c, false, &|_| {}).unwrap();
-        assert!(matches!(w, Waited::Stopped));
-        assert!(c.try_wait().unwrap().is_none(), "still alive, stopped");
-        unsafe { libc::kill(-(c.id() as libc::pid_t), libc::SIGCONT) };
-        let Waited::Exited(st) = wait_or_stopped(&mut c, false, &|_| {}).unwrap() else {
-            panic!("must exit after SIGCONT")
-        };
-        assert_eq!(st.code(), Some(3));
     }
 
     #[test]
@@ -3074,6 +2965,27 @@ mod tests {
     }
 
     #[test]
+    fn slow_viewer_preparation_can_be_cancelled_without_losing_the_instruction() {
+        let d = dir();
+        let mut app = app(d.path());
+        let (release, wait) = mpsc::channel();
+        app.prepare_viewer(
+            "codex".into(),
+            None,
+            Some("fix the lag".into()),
+            move || {
+                wait.recv_timeout(Duration::from_secs(2))?;
+                Ok(Command::new("not-executed"))
+            },
+        );
+        assert!(app.status.starts_with("opening codex"));
+        assert!(app.cancel_opening());
+        assert_eq!(app.text, "fix the lag");
+        assert!(app.opening.is_none());
+        release.send(()).unwrap();
+    }
+
+    #[test]
     fn returning_discards_the_old_snapshot_and_reads_again_without_waiting_for_the_tick() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1);
@@ -3097,10 +3009,11 @@ mod tests {
     }
 
     #[test]
-    fn slow_delete_keeps_navigation_live_and_removes_only_after_success() {
+    fn slow_delete_removes_the_row_at_confirmation_and_keeps_navigation_live() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1);
         registry(d.path(), B, "/src/one", "idle", 2);
+        registry(d.path(), C, "/src/one", "idle", 3);
         let mut app = app(d.path());
         app.refresh().unwrap();
         let (release, wait) = mpsc::channel();
@@ -3110,17 +3023,29 @@ mod tests {
         });
         assert_eq!(app.status, "deleting aaaaaaaa");
         assert_eq!(app.stopping.len(), 1);
-        app.stop();
-        assert_eq!(app.stopping.len(), 1, "a repeated delete is not submitted");
-        assert!(app.armed.is_none());
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(B),
+            "the neighbor is selected immediately"
+        );
+        assert!(app.rows.iter().all(|r| r.kind.key() != Some(A)));
         app.poll();
-        assert_eq!(app.data.sessions.len(), 2, "no success was reported yet");
+        assert_eq!(
+            app.data.sessions.len(),
+            3,
+            "source values remain until acknowledgement"
+        );
         app.step(1);
-        assert_eq!(key(&app).as_deref(), Some(B), "input is still handled");
+        assert_eq!(key(&app).as_deref(), Some(C), "input is still handled");
+        app.refresh().unwrap();
+        assert!(
+            app.rows.iter().all(|r| r.kind.key() != Some(A)),
+            "refresh cannot restore a pending deletion"
+        );
         release.send(()).unwrap();
         poll_until(&mut app, |a| a.stopping.is_empty());
         assert!(app.data.sessions.iter().all(|s| s.session_id != A));
-        assert_eq!(key(&app).as_deref(), Some(B));
+        assert_eq!(key(&app).as_deref(), Some(C));
         poll_until(&mut app, |a| a.loading.is_none());
         // Claude has acknowledged the removal, but its registry can still contain the row.
         app.refresh().unwrap();
@@ -3143,6 +3068,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         app.stopping.push(PendingStop {
             id: A.into(),
+            label: "aaaaaaaa".into(),
             verb: "delete",
             result: rx,
         });
@@ -3159,15 +3085,16 @@ mod tests {
     }
 
     #[test]
-    fn failed_delete_keeps_the_row_and_reports_the_error() {
+    fn failed_delete_restores_the_row_and_reports_the_error() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1);
         let mut app = app(d.path());
         app.refresh().unwrap();
         app.queue_stop(A.into(), "delete", || anyhow::bail!("harness refused"));
+        assert!(app.rows.iter().all(|r| r.kind.key() != Some(A)));
         poll_until(&mut app, |a| a.stopping.is_empty());
-        assert_eq!(app.status, "delete failed: harness refused");
-        assert_eq!(key(&app).as_deref(), Some(A));
+        assert_eq!(app.status, "delete failed: aaaaaaaa: harness refused");
+        assert!(app.rows.iter().any(|r| r.kind.key() == Some(A)));
         assert!(app.removed_sessions.is_empty());
         poll_until(&mut app, |a| a.loading.is_none());
     }
@@ -3209,11 +3136,13 @@ mod tests {
         app.stopping = vec![
             PendingStop {
                 id: A.into(),
+                label: "aaaaaaaa".into(),
                 verb: "delete",
                 result: first_rx,
             },
             PendingStop {
                 id: B.into(),
+                label: "bbbbbbbb".into(),
                 verb: "delete",
                 result: second_rx,
             },
@@ -3221,12 +3150,17 @@ mod tests {
         second_tx.send(Ok(true)).unwrap();
         app.poll();
         assert_eq!(app.stopping.len(), 1);
-        assert_eq!(key(&app).as_deref(), Some(A));
+        assert!(
+            app.rows
+                .iter()
+                .all(|r| !matches!(r.kind, Kind::Session(..))),
+            "the other deletion is still pending"
+        );
         first_tx.send(Err(anyhow::anyhow!("refused"))).ok().unwrap();
         app.poll();
         assert!(app.stopping.is_empty());
-        assert_eq!(key(&app).as_deref(), Some(A));
-        assert_eq!(app.status, "delete failed: refused");
+        assert!(app.rows.iter().any(|r| r.kind.key() == Some(A)));
+        assert_eq!(app.status, "delete failed: aaaaaaaa: refused");
         poll_until(&mut app, |a| a.loading.is_none());
         assert_eq!(app.data.sessions.len(), 1);
         assert_eq!(app.data.sessions[0].session_id, A);

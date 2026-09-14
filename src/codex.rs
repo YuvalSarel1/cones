@@ -87,21 +87,32 @@ pub fn sessions(codex: &Path) -> Vec<Session> {
     if procs.is_empty() {
         return Vec::new();
     }
+    #[cfg(target_os = "macos")]
+    for p in &mut procs {
+        p.cwd = crate::process_info::cwd(p.pid);
+    }
     let list = procs
         .iter()
+        .filter(|p| p.cwd.is_none())
         .map(|p| p.pid.to_string())
         .collect::<Vec<_>>()
         .join(",");
     // lsof exits non-zero when one pid has gone; the others are still printed.
-    let lsof = Command::new("/usr/sbin/lsof")
-        .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let lsof = if list.is_empty() {
+        String::new()
+    } else {
+        Command::new("/usr/sbin/lsof")
+            .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
+            .stdin(Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
+    };
     let cwds = cwds(&lsof);
     for p in &mut procs {
-        p.cwd = cwds.get(&p.pid).cloned();
+        if p.cwd.is_none() {
+            p.cwd = cwds.get(&p.pid).cloned();
+        }
     }
     rows(codex, &procs)
 }
@@ -345,7 +356,10 @@ pub fn index(codex: &Path) -> Index {
 /// for as long as a thread is loaded, and one `lsof` on those files names the holder. A lock
 /// file nobody holds (its process died) is not listed, so it does not count. Empty when the
 /// directory does not exist (Codex before 0.154).
-pub fn locks(codex: &Path) -> HashMap<String, u32> {
+pub fn locks(codex: &Path, pids: &[u32]) -> HashMap<String, u32> {
+    if pids.is_empty() {
+        return HashMap::new();
+    }
     let files: Vec<PathBuf> = fs::read_dir(codex.join("thread-writer-locks"))
         .into_iter()
         .flatten()
@@ -361,9 +375,51 @@ pub fn locks(codex: &Path) -> HashMap<String, u32> {
     if files.is_empty() {
         return HashMap::new();
     }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let allowed: HashMap<(u64, u64), String> = files
+            .iter()
+            .filter_map(|p| {
+                let metadata = fs::metadata(p).ok()?;
+                Some((
+                    (metadata.dev(), metadata.ino()),
+                    p.file_stem()?.to_str()?.to_owned(),
+                ))
+            })
+            .collect();
+        let mut out = HashMap::new();
+        let mut unreadable = Vec::new();
+        for &pid in pids {
+            match crate::process_info::open_files(pid) {
+                Ok(paths) => {
+                    for file in paths {
+                        if let Some(id) = allowed.get(&(file.device, file.inode)) {
+                            out.insert(id.clone(), pid);
+                        }
+                    }
+                }
+                Err(_) => unreadable.push(pid),
+            }
+        }
+        if !unreadable.is_empty() {
+            out.extend(locks_with_lsof(&files, &unreadable));
+        }
+        out
+    }
+    #[cfg(not(target_os = "macos"))]
+    locks_with_lsof(&files, pids)
+}
+
+fn locks_with_lsof(files: &[PathBuf], pids: &[u32]) -> HashMap<String, u32> {
+    let pids = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
     let lsof = Command::new("/usr/sbin/lsof")
-        .args(["-nPw", "-Fpn"])
-        .args(&files)
+        .args(["-nPw", "-a", "-p", &pids, "-Fpn"])
+        .args(files)
         .stdin(Stdio::null())
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -464,8 +520,10 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let rollouts = rollouts(codex, since);
     let guessed = attribute(procs, &rollouts);
     let index = index(codex);
-    let locks = locks(codex);
     let daemon = daemon_pid(codex);
+    // Only these processes can hold a lock that matters here: the clients and the daemon.
+    let pids: Vec<u32> = procs.iter().map(|p| p.pid).chain(daemon).collect();
+    let locks = locks(codex, &pids);
     let held: HashMap<u32, String> = locks.iter().map(|(id, pid)| (*pid, id.clone())).collect();
     let mut out: Vec<Session> = procs
         .iter()
@@ -584,11 +642,12 @@ pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread
 pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
     let index = index(codex);
     let daemon = daemon_pid(codex);
-    let mut ids: Vec<(String, Option<Thread>)> = locks(codex)
-        .into_iter()
-        .filter(|(_, pid)| Some(*pid) == daemon)
-        .map(|(id, _)| (id, None))
-        .collect();
+    let mut ids: Vec<(String, Option<Thread>)> =
+        locks(codex, &daemon.into_iter().collect::<Vec<_>>())
+            .into_iter()
+            .filter(|(_, pid)| Some(*pid) == daemon)
+            .map(|(id, _)| (id, None))
+            .collect();
     for t in threads(state) {
         if !ids.iter().any(|(id, _)| *id == t.id) {
             ids.push((t.id.clone(), Some(t)));

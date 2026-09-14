@@ -109,7 +109,11 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         .filter_map(|b| serde_json::from_slice(&b).ok())
         .collect();
     let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()));
-    out.extend(values.iter().filter_map(|v| session(claude, v, &starts)));
+    out.extend(
+        values
+            .iter()
+            .filter_map(|v| session(claude, v, &starts, true)),
+    );
     out.sort_by(|a, b| {
         (a.started.is_none(), a.started, &a.session_id).cmp(&(
             b.started.is_none(),
@@ -153,7 +157,12 @@ fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
 
 /// One registry entry as a fleet row. Pure apart from the transcript read; `starts` is the
 /// process table from `process_starts`.
-fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Session> {
+fn session(
+    dir: &Path,
+    v: &Value,
+    starts: &HashMap<u32, String>,
+    read_transcript: bool,
+) -> Option<Session> {
     let pid = v["pid"].as_u64()? as u32;
     let id = v["sessionId"].as_str()?;
     // A warm spare the daemon keeps ready for the next `claude --bg` has an entry too; it is
@@ -194,7 +203,11 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
     } else {
         job["linkScanPath"].as_str().map(PathBuf::from)
     };
-    let d = transcript.as_deref().map(details).unwrap_or_default();
+    let d = if read_transcript {
+        transcript.as_deref().map(details).unwrap_or_default()
+    } else {
+        Details::default()
+    };
     Some(Session {
         session_id: id.into(),
         harness: claude(),
@@ -231,12 +244,15 @@ fn session(dir: &Path, v: &Value, starts: &HashMap<u32, String>) -> Option<Sessi
         title: d
             .title
             .or_else(|| {
+                // Claude names a job after its short id until it has a title; that is not a name.
+                let named = |n: &&str| !n.is_empty() && Some(*n) != v["jobId"].as_str() && *n != id;
                 job["name"]
                     .as_str()
-                    .filter(|n| !n.is_empty())
+                    .filter(named)
+                    .or_else(|| v["name"].as_str().filter(named))
                     .map(Into::into)
             })
-            .or_else(|| v["name"].as_str().filter(|n| !n.is_empty()).map(Into::into)),
+            .or(d.report.first_prompt),
         // A background job's one-line status from Claude beats the transcript's last text.
         last: job["detail"]
             .as_str()
@@ -480,6 +496,8 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
 /// What one pass over a transcript reads out of Claude's own lines.
 #[derive(Default, Clone)]
 struct Report {
+    /// The user's first instruction, used while Claude has not supplied a descriptive name.
+    first_prompt: Option<String>,
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
     /// The prompt size on the last message with usage.
@@ -514,6 +532,17 @@ fn report(transcript: &Path) -> Result<Report> {
             r.last_activity = Some(t);
         }
         let message = &event["message"];
+        if r.first_prompt.is_none() && event["type"] == "user" && event["isMeta"] != true {
+            r.first_prompt = match &message["content"] {
+                Value::String(text) => headline(text),
+                Value::Array(blocks) => blocks
+                    .iter()
+                    .filter(|b| b["type"] == "text")
+                    .filter_map(|b| b["text"].as_str())
+                    .find_map(headline),
+                _ => None,
+            };
+        }
         let Some(u) = message.get("usage") else {
             continue;
         };
@@ -569,11 +598,40 @@ pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
         .find(|s| s.session_id == session_id))
 }
 
+/// Control needs the target's current identity and owner, not every session's transcript.
+/// Keep the registry's pid/start check, including spare and reused-pid rejection.
+fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
+    match fs::read_dir(claude.join("sessions")) {
+        Ok(entries) => {
+            for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+                if path.extension().is_none_or(|e| e != "json") {
+                    continue;
+                }
+                let Some(value) = fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                else {
+                    continue;
+                };
+                if value["sessionId"].as_str() == Some(session_id) {
+                    let starts = process_starts(value["pid"].as_u64().into_iter());
+                    return Ok(session(claude, &value, &starts, false));
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(crate::codex::sessions(&crate::codex::home(claude))
+        .into_iter()
+        .find(|s| s.session_id == session_id))
+}
+
 /// Stop the harness behind a fleet session. Returns false when the process is already
 /// gone. The pid came from the registry, so the command is checked first: a reused pid never
 /// gets signalled.
 pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
-    let session = find(claude, session_id)?.context("no such run or session")?;
+    let session = control_session(claude, session_id)?.context("no such run or session")?;
     // A background session belongs to Claude's daemon, which respawns a worker whose process
     // dies (`attempt` in ~/.claude/daemon/roster.json). `claude stop` ends it but leaves the
     // job record, so `claude agents` keeps listing it as stopped; `claude rm` ends it and
@@ -690,4 +748,77 @@ pub fn tilde(path: &Path) -> String {
             || path.display().to_string(),
             |rest| format!("~/{}", rest.display()),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unnamed_claude_session_uses_its_first_instruction_until_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let project = dir.path().join("projects/-src-example");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let path = registry.join("session.json");
+        let mut entry = serde_json::json!({
+            "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
+            "kind": "bg", "name": "aaaaaaaa", "jobId": "aaaaaaaa", "status": "idle"
+        });
+        fs::write(&path, entry.to_string()).unwrap();
+        let transcript = project.join(format!("{id}.jsonl"));
+        fs::write(&transcript, concat!(
+            "{\"type\":\"user\",\"isMeta\":true,\"message\":{\"content\":\"environment instructions\"}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"text\":\"tool output\"}]}}\n",
+            "{\"type\":\"user\",\"message\":{\"content\":\"\\ninstall push clear worktrees\\nextra detail\"}}\n"
+        )).unwrap();
+        assert_eq!(
+            sessions(dir.path()).unwrap()[0].title.as_deref(),
+            Some("install push clear worktrees")
+        );
+        entry["name"] = Value::String("Publish the dashboard".into());
+        fs::write(&path, entry.to_string()).unwrap();
+        assert_eq!(
+            sessions(dir.path()).unwrap()[0].title.as_deref(),
+            Some("Publish the dashboard")
+        );
+    }
+
+    #[test]
+    fn control_lookup_does_not_read_a_blocked_transcript() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, time::Duration};
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let job = dir.path().join("jobs/aaaaaaaa");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        let pipe = dir.path().join("transcript.fifo");
+        let raw = CString::new(pipe.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        fs::write(
+            registry.join("entry.json"),
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
+                "kind": "bg", "jobId": "aaaaaaaa", "status": "idle"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({"linkScanPath": pipe}).to_string(),
+        )
+        .unwrap();
+        let root = dir.path().to_owned();
+        let (tx, rx) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            tx.send(control_session(&root, id).unwrap().unwrap().session_id)
+                .unwrap();
+        });
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), id);
+        task.join().unwrap();
+    }
 }

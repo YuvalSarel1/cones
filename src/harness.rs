@@ -166,6 +166,23 @@ pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
 /// The daemon's address, starting it if it is not running: `codex app-server daemon start` is
 /// idempotent and prints JSON with `socketPath` either way. Experimental in Codex 0.154.
 fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
+    // The harness already reported this address. Probe the local socket before reusing it;
+    // restarting the CLI on every Enter added about half a second on a busy machine.
+    type Addresses = BTreeMap<(PathBuf, PathBuf), String>;
+    static ADDRESSES: std::sync::Mutex<Addresses> = std::sync::Mutex::new(BTreeMap::new());
+    let home = crate::codex::home(&crate::fleet::claude_dir()?);
+    let key = (codex.to_owned(), home);
+    let cached = ADDRESSES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&key)
+        .cloned();
+    if let Some(remote) = cached
+        && let Some(socket) = remote.strip_prefix("unix://")
+        && std::os::unix::net::UnixStream::connect(socket).is_ok()
+    {
+        return Ok((codex.to_owned(), remote));
+    }
     let out = std::process::Command::new(codex)
         .args(["app-server", "daemon", "start"])
         .output()
@@ -176,7 +193,12 @@ fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
             String::from_utf8_lossy(&out.stderr).trim()
         )
     })?;
-    Ok((codex.to_owned(), format!("unix://{sock}")))
+    let remote = format!("unix://{sock}");
+    ADDRESSES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, remote.clone());
+    Ok((codex.to_owned(), remote))
 }
 
 /// `socketPath` from the first JSON line the daemon command prints.
@@ -631,5 +653,41 @@ mod tests {
             Some("/u/.codex/app-server-control/app-server-control.sock")
         );
         assert_eq!(socket_path("not json"), None);
+    }
+
+    #[test]
+    fn a_live_daemon_address_is_reused_and_a_stale_one_is_rediscovered() {
+        use std::{
+            fs,
+            os::unix::{fs::PermissionsExt, net::UnixListener},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("codex");
+        let first_path = dir.path().join("first.sock");
+        let first = UnixListener::bind(&first_path).unwrap();
+        let advertise = |socket: &Path| {
+            let json = serde_json::json!({"socketPath": socket})
+                .to_string()
+                .replace('\'', "'\\''");
+            fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' '{json}'\n")).unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        };
+        advertise(&first_path);
+        let (_, address) = codex_remote(&program).unwrap();
+        fs::write(&program, "#!/bin/sh\nexit 99\n").unwrap();
+        assert_eq!(
+            codex_remote(&program).unwrap().1,
+            address,
+            "an existing daemon does not require another CLI startup"
+        );
+        drop(first);
+        fs::remove_file(first_path).unwrap();
+        let second_path = dir.path().join("second.sock");
+        let _second = UnixListener::bind(&second_path).unwrap();
+        advertise(&second_path);
+        assert_eq!(
+            codex_remote(&program).unwrap().1,
+            format!("unix://{}", second_path.display())
+        );
     }
 }

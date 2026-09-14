@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import statistics
 import subprocess
 import sys
@@ -22,10 +23,11 @@ import uuid
 
 LIMITS = {
     "delete_feedback": 200,
+    "delete_row_removal": 200,
     "navigation_during_delete": 200,
     "detach_to_frame": 250,
     "detach_to_fresh_data": 500,
-    "delete_ack_to_removal": 250,
+    "delete_failure_to_restore": 200,
 }
 
 FAKE_CLAUDE = r'''
@@ -51,19 +53,14 @@ if sys.argv[1] == "rm":
 elif sys.argv[1] in ("attach", "agents"):
     saved = termios.tcgetattr(0)
     tty.setraw(0)
-    print("\x1b[2J\x1b[HCONES_FIXTURE_VIEWER", flush=True)
+    print("\x1b[?1049h\x1b[2J\x1b[HCONES_FIXTURE_VIEWER", flush=True)
     while os.read(0, 1) != b"\x1a":
         pass
-    p = registry / "alpha.json"
-    v = json.loads(p.read_text())
-    v.update(name=control["next_title"], status="busy")
-    temp = p.with_suffix(".tmp")
-    temp.write_text(json.dumps(v))
-    temp.replace(p)
-    mark("viewer_done")
     if control["stop_viewer"]:
         os.kill(os.getpid(), signal.SIGTSTP)
     termios.tcsetattr(0, termios.TCSANOW, saved)
+    print("\x1b[?1049l", end="", flush=True)
+    time.sleep(control["exit_delay"])
 else:
     print("unexpected fixture command", file=sys.stderr)
     sys.exit(2)
@@ -116,7 +113,8 @@ def measure(args):
         registry.mkdir(parents=True)
         state = root / "state"
         control = {"delay": args.delay_ms / 1000, "fail": True,
-                   "next_title": "", "stop_viewer": False}
+                   "next_title": "", "stop_viewer": False,
+                   "exit_delay": args.exit_delay_ms / 1000}
         alpha_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         alpha = {"pid": os.getpid(), "sessionId": alpha_id, "cwd": str(root),
                  "kind": "bg", "status": "idle", "name": "Bench Alpha"}
@@ -162,6 +160,10 @@ def measure(args):
         def selected(text, title):
             return any("▌" in line and title in line for line in text.splitlines())
 
+        def listed(text, title):
+            return any(title in line and re.match(r"^[ ▌]+\S+\s+claude\s+", line)
+                       for line in text.splitlines())
+
         pipe_writer = None
         try:
             for n in range(args.runs):
@@ -194,41 +196,59 @@ def measure(args):
                         if error.errno != errno.ENXIO or time.monotonic() >= deadline:
                             raise
                         time.sleep(.01)
+                terminal_log = root / f"terminal-{n}.raw"
+                tmux("pipe-pane", "-o", "-t", "bench:0.0",
+                     "cat > " + shlex.quote(str(terminal_log)))
                 start = time.monotonic()
                 keys("Enter")
                 sample("enter_to_viewer", start,
                        wait(lambda s: "CONES_FIXTURE_VIEWER" in s))
+                # The background agent's state changes independently of its viewer.
+                entry = json.loads((registry / "alpha.json").read_text())
+                entry.update(name=control["next_title"], status="busy")
+                (registry / "alpha.tmp").write_text(json.dumps(entry))
+                (registry / "alpha.tmp").replace(registry / "alpha.json")
+                returned = time.monotonic()
                 keys("C-z")
                 frame = wait(lambda s: "an instruction for" in s)
-                returned = json.loads((root / "viewer_done.json").read_text())
                 sample("detach_to_frame", returned, frame)
                 (job / "state.json").unlink()
                 if transcript:
                     transcript.with_suffix(".saved").rename(transcript)
                 os.close(pipe_writer)
                 pipe_writer = None
-                fresh = wait(lambda s: control["next_title"] in s)
+                fresh = wait(lambda s: listed(s, control["next_title"]))
                 sample("detach_to_fresh_data", returned, fresh)
                 start = time.monotonic()
                 keys("C-x", "C-x")
                 feedback = wait(lambda s: "deleting" in s or "delete failed:" in s)
                 sample("delete_feedback", start, feedback)
                 wait(lambda s: "fixture refused deletion" in s)
-                if control["next_title"] not in screen():
+                if not listed(screen(), control["next_title"]):
                     raise RuntimeError("failed deletion removed its row")
+                sample("delete_failure_to_restore",
+                       json.loads((root / "command_done.json").read_text()), time.monotonic())
+                keys("Up")
+                wait(lambda s: selected(s, control["next_title"]))
                 configure(fail=False)
                 (root / "command_done.json").unlink(missing_ok=True)
+                start = time.monotonic()
                 keys("C-x", "C-x")
+                sample("delete_row_removal", start, wait(lambda s: not listed(s, control["next_title"])))
                 time.sleep(.02)
                 start = time.monotonic()
-                keys("Down")
+                keys("Down", "Up")
                 sample("navigation_during_delete", start,
                        wait(lambda s: selected(s, "Bench Beta")))
-                removed = wait(lambda s: control["next_title"] not in s)
-                acknowledged = json.loads((root / "command_done.json").read_text())
-                sample("delete_ack_to_removal", acknowledged, removed)
+                wait(lambda s: "claude --resume still has it" in s)
                 if not selected(screen(), "Bench Beta"):
                     raise RuntimeError("deletion moved the cursor away from its selected neighbor")
+                tmux("pipe-pane", "-t", "bench:0.0")
+                raw = terminal_log.read_bytes()
+                if b"CONES_FIXTURE_VIEWER" not in raw:
+                    raise RuntimeError("terminal capture did not contain the viewer")
+                if any(s in raw for s in (b"\x1b[?1049l", b"\x1b[?1047l", b"\x1b[?47l")):
+                    raise RuntimeError("a transition exposed the original terminal")
                 keys("C-c")
                 tmux("kill-session", "-t", "bench", check=False)
                 completed += 1
@@ -248,6 +268,7 @@ def measure(args):
     result = {"binary": str(binary), "runs": args.runs, "completed_runs": completed,
               "failures": failures, "sessions": args.sessions,
               "command_delay_ms": args.delay_ms, "transcript_mb": args.transcript_mb,
+              "viewer_exit_delay_ms": args.exit_delay_ms,
               "screen_timings": summarize(samples), "debug_timings": summarize(timings)}
     errors = []
     for phase, limit in LIMITS.items():
@@ -265,13 +286,14 @@ def main():
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--sessions", type=int, default=16)
     parser.add_argument("--delay-ms", type=int, default=500)
+    parser.add_argument("--exit-delay-ms", type=int, default=500)
     parser.add_argument("--transcript-mb", type=int, default=0)
     parser.add_argument("--output", type=Path, help="save JSON results and a sibling .log")
     parser.add_argument("--check", action="store_true", help="fail when a screen latency budget is exceeded")
     args = parser.parse_args()
     if args.log:
         result = summarize(log_samples(args.log))
-    elif not args.binary or args.runs < 1 or args.sessions < 2 or args.delay_ms < 0 or args.transcript_mb < 0:
+    elif not args.binary or args.runs < 1 or args.sessions < 2 or min(args.delay_ms, args.exit_delay_ms, args.transcript_mb) < 0:
         parser.error("provide a binary, positive runs, at least two sessions and nonnegative delays/sizes")
     else:
         result = measure(args)
