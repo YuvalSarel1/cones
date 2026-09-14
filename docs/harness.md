@@ -65,7 +65,7 @@ What `stop`, `attach`, `logs` and the timeout need.
 | Need | Claude Code | Codex |
 | --- | --- | --- |
 | Stop an interactive session | reported: the registry pid. cones checks the process name with `ps` before SIGTERM. | reported: the process table pid, checked the same way before SIGTERM. |
-| Stop a background session | reported: `claude stop <id>`. The daemon respawns a killed worker, so a signal is not enough. | `-`: Codex has no daemon-owned sessions in the fleet; `app-server` processes are not listed. |
+| Stop a background session | reported: `claude rm <id>`. The daemon respawns a killed worker, so a signal is not enough; `claude stop` ends the process but `claude agents` keeps the stopped record until `claude rm`. | `-`: Codex has no daemon-owned sessions in the fleet; `app-server` processes are not listed. |
 | Kill a run at the timeout | cones owns it: SIGTERM to the process group, SIGKILL two seconds later | unknown |
 | Attach to a session | reported: `claude attach <id>` in its cwd, for registry kind `bg`; an `interactive` session is refused, `claude attach` takes background jobs only | `-`: Codex has no attach command. `cones attach` refuses a Codex row. |
 | Read a session's output | reported: the transcript, see Observe | reported: the rollout, when matched; `cones logs` reads it. |

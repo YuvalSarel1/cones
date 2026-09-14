@@ -547,18 +547,21 @@ pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
 pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     let session = find(claude, session_id)?.context("no such run or session")?;
     // A background session belongs to Claude's daemon, which respawns a worker whose process
-    // dies (`attempt` in ~/.claude/daemon/roster.json). Only `claude stop` ends one for good.
+    // dies (`attempt` in ~/.claude/daemon/roster.json). `claude stop` ends it but leaves the
+    // job record, so `claude agents` keeps listing it as stopped; `claude rm` ends it and
+    // drops the record, what ctrl+x does in `claude agents`. The transcript stays, so
+    // `claude --resume <session>` still has the conversation.
     if session.kind.as_deref() == Some("bg") {
         let claude = crate::harness::executable("claude", &crate::harness::launch_path())
             .context("claude not found")?;
         let short = session_id.get(..8).context("invalid session id")?;
         let out = Command::new(claude)
-            .args(["stop", short])
+            .args(["rm", short])
             .stdin(Stdio::null())
             .output()?;
         ensure!(
             out.status.success(),
-            "claude stop: {}{}",
+            "claude rm: {}{}",
             String::from_utf8_lossy(&out.stdout).trim(),
             String::from_utf8_lossy(&out.stderr).trim()
         );
