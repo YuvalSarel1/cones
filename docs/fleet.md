@@ -91,6 +91,25 @@ The copy under `assets/coordinator/` is the upstream skill with one line changed
 
 `cones tui` reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, and reads `N working · N need input · N idle · N jobs · N runs` on its summary line.
 
+Stop and delete commands also run in the background, with their progress in the hint line.
+A successful delete removes the row immediately. Returning from a harness or completing an
+action requests fresh data and discards any read started before the transition.
+
+For intermittent delays, run `cones tui --debug`, then summarize the log with
+`python3 scripts/bench-tui.py --log ~/.cones/tui-debug.log`. The timings separate harness
+commands, data reads, discarded snapshots, row rebuilding and the first draw after input
+or returning from a harness. Time spent using a harness is excluded from return latency.
+
+`python3 scripts/bench-tui.py target/release/cones --check --output /tmp/cones-bench.json`
+measures repeated transitions through the real TUI in an isolated tmux server with fixture
+harnesses. It exercises delayed deletions, failures, navigation during a command, normal
+detach, a viewer stopped with Ctrl+Z, and a transcript read held across the transition.
+It reports p50, p95 and maximum screen latency,
+with separate harness acknowledgement and rendering times. `--transcript-mb 16` adds a
+large transcript; `--runs` and `--sessions` change repetition and fleet size. These are local
+regression budgets, not guarantees for real harness startup or filesystem performance.
+The benchmark needs tmux and spends no model tokens. Nothing is installed into user sessions.
+
 Under the composer, its hint line names only the keys that act on the selected row, then the ones that act everywhere: `enter <verb> · ctrl+x <stop|delete|forget> · ctrl+e edit · tab <harness> · ctrl+n new job · ctrl+s regroup · ctrl+o agents · esc quit`. The verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run and `own terminal` on a session that cannot be joined from here; `ctrl+x` reads `delete` on a job with no run in flight, `forget` on a Codex daemon thread, `delete` on a finished run and on a Claude background session, which `claude rm` removes from `claude agents` as well; `ctrl+e` shows on a job only; with nothing selected the line starts at `tab`, which names the harness it switches to. With an instruction typed it reads `enter start <harness> in <dir> · tab <harness> · esc clear`. The last action's status takes the line until the next key.
 
 | Pane | Columns |

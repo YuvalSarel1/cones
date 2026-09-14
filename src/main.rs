@@ -85,7 +85,7 @@ enum Action {
     Doctor,
     /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
     Tui {
-        /// Append every terminal hand-off and input event to STATE_DIR/tui-debug.log.
+        /// Log terminal hand-offs, input events and transition timings to STATE_DIR/tui-debug.log.
         #[arg(long)]
         debug: bool,
     },

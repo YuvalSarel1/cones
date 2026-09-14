@@ -991,10 +991,36 @@ struct App {
     /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
     /// never holds the spinner or a keypress.
     loading: Option<mpsc::Receiver<Result<Data>>>,
+    loading_started: Option<Instant>,
+    /// A transition happened after the current read started. Discard that read and run again.
+    reload_pending: bool,
+    /// Harness commands can take seconds. Keep input and drawing alive while they finish.
+    stopping: Vec<PendingStop>,
+    /// Successful delete/forget commands take effect here before the registry catches up.
+    removed_sessions: HashSet<String>,
+    /// Only transitions and slow frames are timed, so idle drawing does not fill the log.
+    feedback: Option<(&'static str, Instant)>,
     /// The row key ctrl+x armed; stays until ctrl+x confirms or any other key clears it.
     armed: Option<String>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
+}
+
+struct PendingStop {
+    id: String,
+    verb: &'static str,
+    result: mpsc::Receiver<Result<bool>>,
+}
+
+impl PendingStop {
+    fn message(&self) -> String {
+        let action = match self.verb {
+            "delete" => "deleting",
+            "forget" => "forgetting",
+            _ => "stopping",
+        };
+        format!("{action} {}", self.id.chars().take(8).collect::<String>())
+    }
 }
 
 enum Waited {
@@ -1025,6 +1051,11 @@ impl App {
             tick: 0,
             refreshed: Instant::now(),
             loading: None,
+            loading_started: None,
+            reload_pending: false,
+            stopping: Vec::new(),
+            removed_sessions: HashSet::new(),
+            feedback: None,
             armed: None,
             log: None,
         })
@@ -1037,6 +1068,15 @@ impl App {
         }
     }
 
+    fn timing(&self, phase: &str, started: Instant) {
+        self.debug(|| {
+            format!(
+                "timing {phase} ms={:.3}",
+                started.elapsed().as_secs_f64() * 1000.0
+            )
+        });
+    }
+
     fn selected(&self) -> Option<&Row> {
         self.visible.get(self.cursor).map(|&i| &self.rows[i])
     }
@@ -1044,6 +1084,7 @@ impl App {
     /// Reload and stay on the selected row, found again by its key: a session whose state
     /// changed is still the same row, a row that is gone leaves the cursor at its position, on
     /// the neighbor. The filter and the grouping are fields, so a reload never touches them.
+    #[cfg(test)]
     fn refresh(&mut self) -> Result<()> {
         let data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
         self.apply(data);
@@ -1061,39 +1102,98 @@ impl App {
             self.state.clone(),
             self.claude.clone(),
         );
+        let started = Instant::now();
+        let log = self.log.clone();
+        self.debug(|| "refresh started".into());
         std::thread::spawn(move || {
-            let _ = tx.send(Data::load(&jobs, &state, &claude));
+            let data = Data::load(&jobs, &state, &claude);
+            if let Some(log) = log {
+                debug_line(
+                    &log,
+                    format!(
+                        "timing refresh_read ms={:.3}",
+                        started.elapsed().as_secs_f64() * 1000.0
+                    ),
+                );
+            }
+            let _ = tx.send(data);
         });
         self.loading = Some(rx);
+        self.loading_started = Some(started);
+    }
+
+    /// A command or terminal hand-off invalidates any read already in flight. Keep one reader,
+    /// but do not let its old snapshot delay a fresh read by another polling interval.
+    fn invalidate(&mut self) {
+        if self.loading.is_some() {
+            self.reload_pending = true;
+        } else {
+            self.reload();
+        }
     }
 
     /// Apply a finished reload, if one has landed. A failed read shows in the status line and
     /// the last good data stays on screen.
     fn poll(&mut self) {
+        self.poll_stops();
         if let Some(rx) = &self.started
             && let Ok(msg) = rx.try_recv()
         {
             self.status = msg;
             self.started = None;
-            self.reload();
+            self.invalidate();
         }
         let Some(rx) = &self.loading else {
             return;
         };
-        match rx.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => return,
-            Ok(Ok(data)) => self.apply(data),
-            Ok(Err(e)) => self.status = format!("reload failed: {e:#}"),
-            Err(mpsc::TryRecvError::Disconnected) => {}
+        let result = rx.try_recv();
+        if matches!(result, Err(mpsc::TryRecvError::Empty)) {
+            return;
         }
         self.loading = None;
+        if std::mem::take(&mut self.reload_pending) {
+            if let Some(started) = self.loading_started.take() {
+                self.timing("refresh_discard", started);
+            }
+            self.reload();
+            return;
+        }
+        if let Some(started) = self.loading_started.take() {
+            self.timing("refresh_received", started);
+        }
+        match result {
+            Err(mpsc::TryRecvError::Empty) => {}
+            Ok(Ok(data)) => self.apply(data),
+            Ok(Err(e)) => {
+                self.status = format!("reload failed: {e:#}");
+                self.refreshed = Instant::now();
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.status = "reload failed: worker disconnected".into();
+                self.refreshed = Instant::now();
+            }
+        }
     }
 
-    fn apply(&mut self, data: Data) {
+    fn apply(&mut self, mut data: Data) {
+        if self.status.starts_with("reload failed:") {
+            self.status.clear();
+        }
+        self.removed_sessions
+            .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
+        data.sessions
+            .retain(|s| !self.removed_sessions.contains(&s.session_id));
+        self.data = data;
+        self.rebuild();
+        self.refreshed = Instant::now();
+    }
+
+    /// Grouping and acknowledged removals only need the data already on screen.
+    fn rebuild(&mut self) {
+        let started = Instant::now();
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        self.data = data;
         self.rows = self.data.rows(self.by_state);
         self.apply_filter();
         if let Some(k) = keep
@@ -1105,7 +1205,7 @@ impl App {
             self.cursor = i;
         }
         self.settle();
-        self.refreshed = Instant::now();
+        self.timing("rebuild", started);
     }
 
     /// Rows that match the filter, plus the headers that still have something under them.
@@ -1332,6 +1432,7 @@ impl App {
         }
         hand_back_tty();
         *terminal = ratatui::init();
+        self.feedback = Some(("return_to_draw", Instant::now()));
         self.debug(|| {
             format!(
                 "dashboard back: size={:?}; {}",
@@ -1392,6 +1493,14 @@ impl App {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return Ok(());
         };
+        if let Some(action) = self
+            .stopping
+            .iter()
+            .find(|a| Some(a.id.as_str()) == kind.key())
+        {
+            self.status = action.message();
+            return Ok(());
+        }
         self.debug(|| format!("enter on {:?}: {}", kind.key(), enter_verb(Some(&kind))));
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
@@ -1400,7 +1509,8 @@ impl App {
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
-                self.foreground(terminal, c, "logs")
+                self.foreground(terminal, c, "logs");
+                self.invalidate();
             }
             // A listed session is live, so `claude attach` runs straight from here; the
             // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
@@ -1424,7 +1534,7 @@ impl App {
                         Ok(c) => self.foreground(terminal, c, "codex"),
                         Err(e) => self.status = format!("codex resume failed: {e:#}"),
                     }
-                    self.reload();
+                    self.invalidate();
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
@@ -1433,13 +1543,13 @@ impl App {
                 }
                 // Back on the same row, read again by id: the session may have changed state,
                 // or ended, while it was open. Filter and grouping were never touched.
-                self.reload();
+                self.invalidate();
             }
             Kind::Run(id, _) => {
                 let mut c = self.me();
                 c.args(["attach", &id]);
                 self.foreground(terminal, c, "attach");
-                self.reload();
+                self.invalidate();
             }
             _ => {}
         }
@@ -1514,7 +1624,7 @@ impl App {
                 if kind == HarnessKind::Codex {
                     self.record_codex(&dir, since);
                 }
-                self.reload();
+                self.invalidate();
             }
             Err(e) => {
                 // The instruction is not lost to a refusal.
@@ -1532,7 +1642,7 @@ impl App {
                 match config::write_job(&self.jobs_path, Some(&name), None) {
                     Ok(()) => {
                         self.install(&format!("job {name} deleted"));
-                        self.reload();
+                        self.invalidate();
                     }
                     Err(e) => self.status = format!("delete failed: {e:#}"),
                 }
@@ -1553,7 +1663,7 @@ impl App {
                     Ok(()) => "run hidden · cones ls still has it".into(),
                     Err(e) => format!("hide failed: {e:#}"),
                 };
-                self.reload();
+                self.invalidate();
             }
             _ => {
                 self.status = "ctrl+x again to hide this run · any other key keeps it".into();
@@ -1639,6 +1749,13 @@ impl App {
         if !self.status.is_empty() {
             return Line::styled(self.status.clone(), dim());
         }
+        if let Some(action) = self
+            .stopping
+            .iter()
+            .find(|a| self.selected().and_then(|r| r.kind.key()) == Some(a.id.as_str()))
+        {
+            return Line::styled(action.message(), dim());
+        }
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = format!(
             "start {} in {}",
@@ -1710,24 +1827,22 @@ impl App {
         // `codex resume` still has a forgotten thread; `claude --resume` still has a deleted
         // background session's conversation.
         let verb = self.session_verb(&id);
+        if let Some(action) = self.stopping.iter().find(|a| a.id == id) {
+            self.status = action.message();
+            self.armed = None;
+            return;
+        }
         match self.armed.take() {
             Some(armed) if armed == id => {
-                self.status = if verb == "forget" {
-                    match codex::forget(&self.state, &id) {
-                        Ok(()) => "thread forgotten · codex resume still has it".into(),
-                        Err(e) => format!("forget failed: {e}"),
+                let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
+                self.queue_stop(id, verb, move || {
+                    if verb == "forget" {
+                        codex::forget(&state, &target)?;
+                        Ok(true)
+                    } else {
+                        Ledger::new(&state).and_then(|l| runner::stop(&l, &claude, &target))
                     }
-                } else {
-                    match Ledger::new(&self.state).and_then(|l| runner::stop(&l, &self.claude, &id))
-                    {
-                        Ok(true) if verb == "delete" => {
-                            "deleted · claude --resume still has it".into()
-                        }
-                        Ok(true) => "stop requested".into(),
-                        Ok(false) => "already finished".into(),
-                        Err(e) => format!("{verb} failed: {e:#}"),
-                    }
-                };
+                });
             }
             _ => {
                 self.armed = Some(id);
@@ -1737,6 +1852,76 @@ impl App {
                     format!("ctrl+x again to {verb} · any other key keeps it")
                 };
             }
+        }
+    }
+
+    fn queue_stop(
+        &mut self,
+        id: String,
+        verb: &'static str,
+        work: impl FnOnce() -> Result<bool> + Send + 'static,
+    ) {
+        let (tx, rx) = mpsc::channel();
+        let action = PendingStop {
+            id,
+            verb,
+            result: rx,
+        };
+        self.status = action.message();
+        self.debug(|| self.status.clone());
+        let log = self.log.clone();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let result = work();
+            if let Some(log) = log {
+                debug_line(
+                    &log,
+                    format!(
+                        "timing command_{verb} ms={:.3}",
+                        started.elapsed().as_secs_f64() * 1000.0
+                    ),
+                );
+            }
+            let _ = tx.send(result);
+        });
+        self.stopping.push(action);
+    }
+
+    fn poll_stops(&mut self) {
+        let mut finished = false;
+        for action in std::mem::take(&mut self.stopping) {
+            let result = match action.result.try_recv() {
+                Err(mpsc::TryRecvError::Empty) => {
+                    self.stopping.push(action);
+                    continue;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow::anyhow!("action worker disconnected"))
+                }
+                Ok(result) => result,
+            };
+            finished = true;
+            self.status = match result {
+                Ok(true) if matches!(action.verb, "delete" | "forget") => {
+                    self.removed_sessions.insert(action.id.clone());
+                    self.data.sessions.retain(|s| s.session_id != action.id);
+                    self.rebuild();
+                    if action.verb == "delete" {
+                        "deleted · claude --resume still has it".into()
+                    } else {
+                        "thread forgotten · codex resume still has it".into()
+                    }
+                }
+                Ok(true) => "stop requested".into(),
+                Ok(false) => "already finished".into(),
+                Err(e) => format!("{} failed: {e:#}", action.verb),
+            };
+            self.debug(|| format!("{}: {}", action.id, self.status));
+        }
+        if finished {
+            self.feedback
+                .get_or_insert(("action_result_to_draw", Instant::now()));
+            self.invalidate();
         }
     }
 
@@ -1783,7 +1968,7 @@ impl App {
                         match harness::agents(kind) {
                             Ok(c) => {
                                 self.foreground(terminal, c, &format!("{kind} agents"));
-                                self.reload();
+                                self.invalidate();
                             }
                             Err(e) => self.status = e.to_string(),
                         }
@@ -1801,7 +1986,7 @@ impl App {
                         Ok(()) => {
                             self.mode = Mode::Normal;
                             self.install(&format!("job {} saved", job.name));
-                            self.reload();
+                            self.invalidate();
                         }
                         Err(e) => {
                             if let Mode::Job(form) = &mut self.mode {
@@ -1841,7 +2026,7 @@ impl App {
                     }
                     KeyCode::Char('s') if ctrl => {
                         self.by_state = !self.by_state;
-                        self.refresh()?;
+                        self.rebuild();
                     }
                     KeyCode::Char('n') if ctrl => {
                         let (base, fallback) = (self.jobs_dir(), self.target_dir());
@@ -1851,8 +2036,8 @@ impl App {
                     KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('r') if ctrl => {
-                        self.refresh()?;
-                        self.status = "refreshed".into();
+                        self.invalidate();
+                        self.status = "refresh requested".into();
                     }
                     KeyCode::Char(c) if !ctrl => self.text.push(c),
                     _ => {}
@@ -1950,6 +2135,7 @@ impl App {
 }
 
 pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: bool) -> Result<i32> {
+    let started = Instant::now();
     let mut app = App::new(exe, jobs_path, state, claude)?;
     if debug {
         app.log = Some(state.join("tui-debug.log"));
@@ -1961,7 +2147,9 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             )
         });
     }
-    app.refresh()?;
+    app.timing("startup_load", started);
+    app.feedback = Some(("startup_to_draw", started));
+    app.rebuild();
     // Raw mode makes ctrl-z a key, but a child that has just restored the terminal and exited
     // leaves a gap in which ctrl-z is SIGTSTP to the whole foreground group; ignored, it cannot
     // suspend the dashboard from under the user. Children get the default back in pre_exec.
@@ -1977,24 +2165,47 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     });
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
+        let animation = Instant::now();
+        let mut drawn_tick = usize::MAX;
+        let mut drawn_refresh = app.refreshed;
+        let mut redraw = true;
         loop {
+            app.tick = (animation.elapsed().as_millis() / 100) as usize;
             if app.refreshed.elapsed() >= Duration::from_secs(1) {
                 app.reload();
             }
             app.poll();
-            terminal.draw(|f| app.draw(f))?;
-            // ponytail: one poll cadence drives both the spinner and input.
-            if event::poll(Duration::from_millis(100))? {
+            if redraw
+                || app.feedback.is_some()
+                || app.tick != drawn_tick
+                || app.refreshed != drawn_refresh
+            {
+                let drawing = Instant::now();
+                terminal.draw(|f| app.draw(f))?;
+                if let Some((phase, started)) = app.feedback.take() {
+                    app.timing("draw", drawing);
+                    app.timing(phase, started);
+                } else if drawing.elapsed() >= Duration::from_millis(16) {
+                    app.timing("slow_draw", drawing);
+                }
+                drawn_tick = app.tick;
+                drawn_refresh = app.refreshed;
+                redraw = false;
+            }
+            // Commands and fresh data can land between animation frames. Check them promptly
+            // without repainting idle frames or making the spinner depend on key frequency.
+            if event::poll(Duration::from_millis(25))? {
                 let e = event::read()?;
+                redraw = true;
                 app.debug(|| format!("event {e:?}"));
                 if let Event::Key(k) = e
                     && k.kind == KeyEventKind::Press
-                    && app.key(k.code, k.modifiers, &mut terminal)?
                 {
-                    return Ok(());
+                    app.feedback = Some(("input_to_draw", Instant::now()));
+                    if app.key(k.code, k.modifiers, &mut terminal)? {
+                        return Ok(());
+                    }
                 }
-            } else {
-                app.tick += 1;
             }
         }
     })();
@@ -2056,7 +2267,12 @@ fn debug_line(path: &Path, msg: impl std::fmt::Display) {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(f, "{} {msg}", chrono::Local::now().format("%H:%M:%S%.3f"));
+        let _ = writeln!(
+            f,
+            "{} pid={} {msg}",
+            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+            std::process::id()
+        );
     }
 }
 
@@ -2549,9 +2765,8 @@ mod tests {
         assert_eq!(Kind::Blank.key(), None);
     }
 
-    /// The trip through the harness is `foreground` then `refresh`; the terminal part cannot
-    /// run under a test, the state part can. The filter and grouping are fields, the row is
-    /// found again by id.
+    /// The terminal hand-off invalidates the previous read. The filter and grouping are
+    /// fields, and applying the new data finds the selected row again by id.
     #[test]
     fn coming_back_lands_on_the_same_row_with_filter_and_grouping_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -2589,6 +2804,210 @@ mod tests {
         app.filter.clear();
         app.refresh().unwrap();
         assert!(key(&app).is_some());
+    }
+
+    fn poll_until(app: &mut App, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !done(app) {
+            app.poll();
+            assert!(Instant::now() < deadline, "background work did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn returning_discards_the_old_snapshot_and_reads_again_without_waiting_for_the_tick() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let stale = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        registry(d.path(), A, "/src/one", "busy", 1);
+        app.invalidate();
+        app.invalidate(); // Multiple transitions still queue just one fresh read.
+        let refreshed = app.refreshed;
+        tx.send(Ok(stale)).ok().unwrap();
+        app.poll();
+        assert_eq!(app.refreshed, refreshed, "the old snapshot was not applied");
+        assert!(app.loading.is_some(), "the next read starts immediately");
+        assert!(!app.reload_pending);
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(app.data.sessions[0].state, "active");
+        assert_eq!(key(&app).as_deref(), Some(A));
+    }
+
+    #[test]
+    fn slow_delete_keeps_navigation_live_and_removes_only_after_success() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        registry(d.path(), B, "/src/one", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let (release, wait) = mpsc::channel();
+        app.queue_stop(A.into(), "delete", move || {
+            wait.recv_timeout(Duration::from_secs(3)).unwrap();
+            Ok(true)
+        });
+        assert_eq!(app.status, "deleting aaaaaaaa");
+        assert_eq!(app.stopping.len(), 1);
+        app.stop();
+        assert_eq!(app.stopping.len(), 1, "a repeated delete is not submitted");
+        assert!(app.armed.is_none());
+        app.poll();
+        assert_eq!(app.data.sessions.len(), 2, "no success was reported yet");
+        app.step(1);
+        assert_eq!(key(&app).as_deref(), Some(B), "input is still handled");
+        release.send(()).unwrap();
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        assert!(app.data.sessions.iter().all(|s| s.session_id != A));
+        assert_eq!(key(&app).as_deref(), Some(B));
+        poll_until(&mut app, |a| a.loading.is_none());
+        // Claude has acknowledged the removal, but its registry can still contain the row.
+        app.refresh().unwrap();
+        assert!(app.data.sessions.iter().all(|s| s.session_id != A));
+        assert!(app.removed_sessions.contains(A));
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert!(app.removed_sessions.is_empty(), "the registry caught up");
+    }
+
+    #[test]
+    fn delete_completion_invalidates_a_snapshot_captured_before_the_command() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let stale = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let (data_tx, data_rx) = mpsc::channel();
+        app.loading = Some(data_rx);
+        let (tx, rx) = mpsc::channel();
+        app.stopping.push(PendingStop {
+            id: A.into(),
+            verb: "delete",
+            result: rx,
+        });
+        tx.send(Ok(true)).unwrap();
+        data_tx.send(Ok(stale)).ok().unwrap();
+        app.poll();
+        assert!(app.data.sessions.is_empty());
+        assert!(app.loading.is_some(), "a fresh read starts on completion");
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert!(
+            app.data.sessions.is_empty(),
+            "the stale row cannot reappear"
+        );
+    }
+
+    #[test]
+    fn failed_delete_keeps_the_row_and_reports_the_error() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.queue_stop(A.into(), "delete", || anyhow::bail!("harness refused"));
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        assert_eq!(app.status, "delete failed: harness refused");
+        assert_eq!(key(&app).as_deref(), Some(A));
+        assert!(app.removed_sessions.is_empty());
+        poll_until(&mut app, |a| a.loading.is_none());
+    }
+
+    #[test]
+    fn a_failed_reload_keeps_the_screen_and_the_next_read_can_recover() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        tx.send(Err(anyhow::anyhow!("unreadable ledger")))
+            .ok()
+            .unwrap();
+        app.poll();
+        assert_eq!(app.status, "reload failed: unreadable ledger");
+        assert_eq!(key(&app).as_deref(), Some(A));
+        assert!(app.loading.is_none());
+        registry(d.path(), A, "/src/one", "busy", 1);
+        app.invalidate();
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(app.data.sessions[0].state, "active");
+        assert!(
+            app.status.is_empty(),
+            "a recovered read clears its old error"
+        );
+    }
+
+    #[test]
+    fn concurrent_deletions_reconcile_by_id_when_results_arrive_out_of_order() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        registry(d.path(), B, "/src/one", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let (first_tx, first_rx) = mpsc::channel();
+        let (second_tx, second_rx) = mpsc::channel();
+        app.stopping = vec![
+            PendingStop {
+                id: A.into(),
+                verb: "delete",
+                result: first_rx,
+            },
+            PendingStop {
+                id: B.into(),
+                verb: "delete",
+                result: second_rx,
+            },
+        ];
+        second_tx.send(Ok(true)).unwrap();
+        app.poll();
+        assert_eq!(app.stopping.len(), 1);
+        assert_eq!(key(&app).as_deref(), Some(A));
+        first_tx.send(Err(anyhow::anyhow!("refused"))).ok().unwrap();
+        app.poll();
+        assert!(app.stopping.is_empty());
+        assert_eq!(key(&app).as_deref(), Some(A));
+        assert_eq!(app.status, "delete failed: refused");
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(app.data.sessions.len(), 1);
+        assert_eq!(app.data.sessions[0].session_id, A);
+    }
+
+    #[test]
+    fn a_stop_request_preserves_the_reported_state_until_the_harness_changes_it() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "busy", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.queue_stop(A.into(), "stop", || Ok(true));
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        assert_eq!(app.status, "stop requested");
+        assert_eq!(app.data.sessions[0].state, "active");
+        assert!(app.removed_sessions.is_empty());
+        poll_until(&mut app, |a| a.loading.is_none());
+    }
+
+    #[test]
+    fn regrouping_uses_the_displayed_data_without_waiting_for_a_load() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "busy", 1);
+        registry(d.path(), B, "/src/two", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        app.step(1);
+        app.by_state = true;
+        app.rebuild();
+        assert_eq!(key(&app).as_deref(), Some(B));
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Header && r.text() == "idle")
+        );
+        assert!(app.loading.is_some());
+        drop(tx);
     }
 
     #[test]
