@@ -67,6 +67,9 @@
 <text x="594" y="444" font-size="13.5" fill="#e6edf3" >returning is a focus change</text>
 <text x="582" y="464" font-size="13.5" fill="#e6edf3" >• a fleet strip under a viewer;</text>
 <text x="594" y="484" font-size="13.5" fill="#e6edf3" >ctrl+] cycles live viewers</text>
+<text x="582" y="504" font-size="13.5" fill="#e6edf3" >• a session&#x27;s viewer opens while</text>
+<text x="594" y="524" font-size="13.5" fill="#e6edf3" >the cursor rests on its row;</text>
+<text x="594" y="544" font-size="13.5" fill="#e6edf3" >enter is instant</text>
 <rect x="36" y="612" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="650" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="670" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>

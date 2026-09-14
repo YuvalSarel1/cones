@@ -1223,7 +1223,16 @@ struct App {
     needs_clear: bool,
     /// The last frame's rows and columns, which is the pane a viewer opens at.
     size: (u16, u16),
+    /// The selected row's viewer key and when the cursor arrived on it; after `REST` a Claude
+    /// session row's viewer opens out of sight.
+    rest: Option<(String, Instant)>,
+    /// The key the resting cursor already opened once, so a refused attach is not started
+    /// again while the cursor stays there; cleared when the cursor moves.
+    prespawned: Option<String>,
 }
+
+/// How long the cursor rests on a Claude session row before its viewer opens ahead of `enter`.
+const REST: Duration = Duration::from_millis(400);
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
 const MAX_VIEWERS: usize = 3;
@@ -1300,7 +1309,11 @@ struct Open {
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     recorded: bool,
     first_paint_logged: bool,
+    /// For a speculative viewer, which was never focused, this is when it was spawned.
     last_focused: Instant,
+    /// Opened while the cursor rested on its row, before `enter` asked for it. Not counted
+    /// against `MAX_VIEWERS`, never evicted, at most one at a time; the first focus clears it.
+    speculative: bool,
 }
 
 struct PendingStop {
@@ -1368,6 +1381,8 @@ impl App {
             mouse_capture: false,
             needs_clear: false,
             size: (24, 80),
+            rest: None,
+            prespawned: None,
         })
     }
 
@@ -1712,8 +1727,21 @@ impl App {
         self.size.0.saturating_sub(1).max(1)
     }
 
-    /// Give a viewer the pane and the keys.
-    fn focus(&mut self, i: usize) {
+    /// Give a viewer the pane and the keys. A viewer opened ahead of `enter` becomes an
+    /// ordinary one here, and the log gets how long it had been running; it now counts, so
+    /// the least recently focused viewers make room for it first, as they would in `open`.
+    fn focus(&mut self, mut i: usize) {
+        if std::mem::take(&mut self.viewers[i].speculative) {
+            let spawned = self.viewers[i].last_focused;
+            self.timing("viewer_prespawn_hit", spawned);
+            while self.live_viewers() > MAX_VIEWERS {
+                let oldest = self.least_recently_focused(Some(i)).unwrap();
+                self.close(oldest);
+                if oldest < i {
+                    i -= 1;
+                }
+            }
+        }
         self.focus = Some(i);
         let (rows, cols) = (self.pane_rows(), self.size.1);
         let open = &mut self.viewers[i];
@@ -1749,15 +1777,10 @@ impl App {
             self.colors.clone(),
         ) {
             Ok(viewer) => {
-                // The least recently focused makes room only once the new one is running.
-                while self.viewers.len() >= MAX_VIEWERS {
-                    let oldest = self
-                        .viewers
-                        .iter()
-                        .enumerate()
-                        .min_by_key(|(_, o)| o.last_focused)
-                        .map(|(i, _)| i)
-                        .unwrap();
+                // The least recently focused makes room only once the new one is running. A
+                // speculative viewer was never asked for, so it neither counts nor goes.
+                while self.live_viewers() >= MAX_VIEWERS {
+                    let oldest = self.least_recently_focused(None).unwrap();
                     self.close(oldest);
                 }
                 self.viewers.push(Open {
@@ -1768,12 +1791,151 @@ impl App {
                     recorded: false,
                     first_paint_logged: false,
                     last_focused: Instant::now(),
+                    speculative: false,
                 });
                 let pid = self.viewers.last().unwrap().viewer.pid();
                 self.debug(|| format!("viewer pid {pid}; the dashboard keeps the terminal"));
                 self.focus(self.viewers.len() - 1);
             }
             Err(e) => self.status = format!("{what} failed: {e}"),
+        }
+    }
+
+    /// The viewers the user has been in: every one but a speculative viewer.
+    fn live_viewers(&self) -> usize {
+        self.viewers.iter().filter(|o| !o.speculative).count()
+    }
+
+    /// The viewer eviction takes: the least recently focused one the user has been in,
+    /// other than `keep`.
+    fn least_recently_focused(&self, keep: Option<usize>) -> Option<usize> {
+        self.viewers
+            .iter()
+            .enumerate()
+            .filter(|(i, o)| !o.speculative && Some(*i) != keep)
+            .min_by_key(|(_, o)| o.last_focused)
+            .map(|(i, _)| i)
+    }
+
+    /// Note which row the cursor is on and since when; a new row starts the rest over.
+    fn track_rest(&mut self) {
+        let key = self.selected().and_then(|r| Self::viewer_key(&r.kind));
+        match (&self.rest, key) {
+            (Some((k, _)), Some(key)) if *k == key => {}
+            (_, Some(key)) => {
+                self.rest = Some((key, Instant::now()));
+                self.prespawned = None;
+            }
+            (_, None) => {
+                self.rest = None;
+                self.prespawned = None;
+            }
+        }
+    }
+
+    /// The Claude session whose viewer opens ahead of `enter`: the whole policy in one place.
+    /// The dashboard has the frame, in the normal mode with the composer empty and nothing
+    /// being prepared; the cursor has rested for `REST` on a Claude background session that
+    /// is listed, not being stopped or removed, has no viewer yet and was not tried during
+    /// this rest. A background job that finished is still listed while its daemon lives, and
+    /// an attach to it would only be refused, so it is not tried. Only `claude attach` is
+    /// side-effect free for its session: `cones attach` on a finished run resumes it, and a
+    /// Codex client shows up in the fleet.
+    fn prespawn_target(&self) -> Option<(String, PathBuf)> {
+        if !matches!(self.mode, Mode::Normal)
+            || self.focus.is_some()
+            || self.opening.is_some()
+            || !self.text.trim().is_empty()
+        {
+            return None;
+        }
+        let (rested, since) = self.rest.as_ref()?;
+        if since.elapsed() < REST || self.prespawned.as_deref() == Some(rested.as_str()) {
+            return None;
+        }
+        let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
+            return None;
+        };
+        if id != rested
+            || id.starts_with("starting:")
+            || self.viewer_index(id).is_some()
+            || self.stopping.iter().any(|a| &a.id == id)
+            || self.removed_sessions.contains(id)
+        {
+            return None;
+        }
+        let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+        if s.harness != "claude"
+            || s.own_terminal()
+            || matches!(s.state.as_str(), "done" | "failed" | "stopped")
+        {
+            return None;
+        }
+        Some((id.clone(), s.cwd.clone()))
+    }
+
+    /// Open `claude attach` on `id` out of sight, so `enter` on its row finds it drawn. The
+    /// previous speculative viewer goes; a failure is a debug line, since nothing was asked for.
+    fn prespawn(&mut self, id: String, cwd: PathBuf) {
+        self.prespawned = Some(id.clone());
+        let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
+        let viewer = harness::adapter(HarnessKind::Claude)
+            .and_then(|h| h.attach(&id, &cwd))
+            .and_then(|c| {
+                let line = format!("{c:?}");
+                Viewer::spawn(
+                    c,
+                    self.pane_rows(),
+                    self.size.1,
+                    normal,
+                    self.colors.clone(),
+                )
+                .map(|v| (v, line))
+                .map_err(Into::into)
+            });
+        let (viewer, command) = match viewer {
+            Ok(viewer) => viewer,
+            Err(e) => {
+                self.debug(|| format!("prespawn {id} failed: {e:#}"));
+                return;
+            }
+        };
+        if let Some(i) = self.viewers.iter().position(|o| o.speculative) {
+            self.close(i);
+        }
+        self.viewers.push(Open {
+            key: id,
+            what: "attach".into(),
+            viewer,
+            record: None,
+            recorded: false,
+            first_paint_logged: false,
+            last_focused: Instant::now(),
+            speculative: true,
+        });
+        let open = self.viewers.last().unwrap();
+        let line = format!("prespawn {} pid {}: {command}", open.key, open.viewer.pid());
+        self.debug(|| line);
+    }
+
+    /// A speculative viewer whose session left the list has nothing to show; close it quietly.
+    fn close_orphan_speculative(&mut self) {
+        let gone = self.viewers.iter().position(|o| {
+            o.speculative && !self.data.sessions.iter().any(|s| s.session_id == o.key)
+        });
+        if let Some(i) = gone {
+            let key = self.viewers[i].key.clone();
+            self.debug(|| format!("prespawn {key} dropped: its session left the list"));
+            self.close(i);
+        }
+    }
+
+    /// Once a loop turn, after the reload landed and the viewers were pumped.
+    fn prespawn_tick(&mut self) {
+        self.close_orphan_speculative();
+        self.track_rest();
+        if let Some((id, cwd)) = self.prespawn_target() {
+            self.prespawn(id, cwd);
         }
     }
 
@@ -1853,8 +2015,26 @@ impl App {
                 ));
             }
             let exited = open.viewer.exited();
+            let speculative = open.speculative;
             for line in lines {
                 self.debug(|| line);
+            }
+            // A speculative viewer was never asked for: its end is the log's business only.
+            if speculative && (failed.is_some() || exited.is_some()) {
+                let open = &self.viewers[i];
+                let key = open.key.clone();
+                let error = String::from_utf8_lossy(open.viewer.stderr_tail());
+                let last = error.lines().rev().find(|line| !line.trim().is_empty());
+                let why = match (failed, last) {
+                    (Some(failed), _) => failed,
+                    (None, Some(last)) => {
+                        format!("exited with {}: {}", exited.unwrap(), last.trim())
+                    }
+                    (None, None) => format!("exited with {}", exited.unwrap()),
+                };
+                self.debug(|| format!("prespawn {key} ended: {why}"));
+                self.close(i);
+                continue;
             }
             // A viewer the dashboard cannot pump is as gone as one that exited.
             if let Some(message) = failed {
@@ -1900,12 +2080,16 @@ impl App {
     }
 
     /// ctrl+]: the next live viewer by index while one is focused, wrapping; from the
-    /// dashboard, the most recently focused one.
+    /// dashboard, the most recently focused one. A speculative viewer is not on the round.
     fn cycle_viewer(&mut self) {
         match self.focus {
             Some(i) => {
-                if self.viewers.len() > 1 {
-                    self.focus((i + 1) % self.viewers.len());
+                let n = self.viewers.len();
+                let next = (1..n)
+                    .map(|d| (i + d) % n)
+                    .find(|&j| !self.viewers[j].speculative);
+                if let Some(j) = next {
+                    self.focus(j);
                 }
             }
             None => {
@@ -1913,6 +2097,7 @@ impl App {
                     .viewers
                     .iter()
                     .enumerate()
+                    .filter(|(_, o)| !o.speculative)
                     .max_by_key(|(_, o)| o.last_focused)
                     .map(|(i, _)| i);
                 match recent {
@@ -1979,7 +2164,7 @@ impl App {
                 )
             });
         let mut keys = vec![Span::styled("ctrl+z back", dim())];
-        if self.viewers.len() > 1 {
+        if self.live_viewers() > 1 {
             keys.push(Span::styled(" · ctrl+] next", dim()));
         }
         let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
@@ -2161,13 +2346,15 @@ impl App {
     }
 
     /// The footer's `enter` verb for the selected row: `return` on a row whose viewer is
-    /// alive inside the dashboard; a session of a harness that cannot be joined from here
-    /// says so instead of promising an attach.
+    /// alive inside the dashboard and has been seen, so a speculative one still says
+    /// `attach`; a session of a harness that cannot be joined from here says so instead of
+    /// promising an attach.
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if row
             .and_then(|r| Self::viewer_key(&r.kind))
-            .is_some_and(|k| self.viewer_index(&k).is_some())
+            .and_then(|k| self.viewer_index(&k))
+            .is_some_and(|i| !self.viewers[i].speculative)
         {
             return "return";
         }
@@ -2530,7 +2717,7 @@ impl App {
                 if self.selected().is_some() {
                     keys.push(("enter", self.enter_label()));
                 }
-                if !self.viewers.is_empty() {
+                if self.live_viewers() > 0 {
                     keys.push(("ctrl+]", "viewer"));
                 }
                 if let Some(verb) = self.stop_verb() {
@@ -3081,6 +3268,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             }
             app.poll();
             let dirty = app.pump();
+            app.prespawn_tick();
             let wants_mouse = app.wants_mouse();
             if wants_mouse != app.mouse_capture {
                 if wants_mouse {
@@ -3634,12 +3822,24 @@ mod tests {
     }
 
     fn registry(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
+        registry_kind(claude, id, cwd, status, started, "interactive");
+    }
+
+    /// A background session as Claude's daemon lists it: kind `bg` with a job id.
+    fn registry_bg(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
+        registry_kind(claude, id, cwd, status, started, "bg");
+    }
+
+    fn registry_kind(claude: &Path, id: &str, cwd: &str, status: &str, started: i64, kind: &str) {
         fs::create_dir_all(claude.join("sessions")).unwrap();
+        let mut entry = serde_json::json!({"pid": std::process::id(), "sessionId": id, "cwd": cwd,
+            "kind": kind, "status": status, "startedAt": started, "updatedAt": started});
+        if kind == "bg" {
+            entry["jobId"] = serde_json::Value::String(id[..8].to_owned());
+        }
         fs::write(
             claude.join("sessions").join(format!("{id}.json")),
-            serde_json::json!({"pid": std::process::id(), "sessionId": id, "cwd": cwd,
-                "kind": "interactive", "status": status, "startedAt": started, "updatedAt": started})
-            .to_string(),
+            entry.to_string(),
         )
         .unwrap();
     }
@@ -4250,6 +4450,7 @@ mod tests {
             recorded: false,
             first_paint_logged: false,
             last_focused: Instant::now(),
+            speculative: false,
         }
     }
 
@@ -4561,6 +4762,259 @@ mod tests {
             app.enter_label(),
             "own terminal",
             "with the viewer gone the row's own verb is back"
+        );
+    }
+
+    /// A viewer that writes nothing: `/bin/sleep` on a pty. These tests never look at a
+    /// viewer's screen, so a shell that draws would only add to the close.
+    fn silent_open(key: &str) -> Open {
+        let mut c = Command::new("/bin/sleep");
+        c.arg("5");
+        Open {
+            key: key.into(),
+            what: "attach".into(),
+            viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
+            record: None,
+            recorded: false,
+            first_paint_logged: false,
+            last_focused: Instant::now(),
+            speculative: false,
+        }
+    }
+
+    /// `silent_open` marked as opened ahead of `enter`.
+    fn speculative_open(key: &str) -> Open {
+        let mut open = silent_open(key);
+        open.speculative = true;
+        open
+    }
+
+    fn rested(app: &mut App, key: &str, age: Duration) {
+        app.rest = Some((key.into(), Instant::now() - age));
+    }
+
+    const OLD: Duration = Duration::from_millis(500);
+
+    #[test]
+    fn a_rested_claude_session_row_is_the_prespawn_target_and_nothing_else_is() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        rested(&mut app, A, OLD);
+        assert_eq!(
+            app.prespawn_target(),
+            Some((A.to_owned(), PathBuf::from("/src/one")))
+        );
+        rested(&mut app, A, Duration::from_millis(100));
+        assert_eq!(app.prespawn_target(), None, "the cursor has not rested yet");
+        rested(&mut app, A, OLD);
+        app.prespawned = Some(A.into());
+        assert_eq!(app.prespawn_target(), None, "tried once during this rest");
+        app.prespawned = None;
+        app.mode = Mode::Filter;
+        assert_eq!(app.prespawn_target(), None, "not while the filter is typed");
+        app.mode = Mode::Normal;
+        app.text = "an instruction".into();
+        assert_eq!(app.prespawn_target(), None, "enter would start a session");
+        app.text = "  ".into();
+        assert!(
+            app.prespawn_target().is_some(),
+            "blank text is what enter treats as empty"
+        );
+        app.text.clear();
+        let state = std::mem::replace(&mut app.data.sessions[0].state, "done".into());
+        assert_eq!(
+            app.prespawn_target(),
+            None,
+            "a finished job is not attached"
+        );
+        app.data.sessions[0].state = state;
+        app.viewers.push(silent_open("run:r1"));
+        app.focus = Some(0);
+        assert_eq!(
+            app.prespawn_target(),
+            None,
+            "not while a viewer has the frame"
+        );
+        app.focus = None;
+        app.viewers.clear();
+        let (_tx, rx) = mpsc::channel();
+        app.opening = Some(Opening {
+            what: "codex".into(),
+            key: B.into(),
+            command: rx,
+            record: None,
+            prompt: None,
+        });
+        assert_eq!(
+            app.prespawn_target(),
+            None,
+            "not while a viewer is prepared"
+        );
+        app.opening = None;
+        app.viewers.push(silent_open(A));
+        assert_eq!(app.prespawn_target(), None, "its viewer is already alive");
+        app.viewers.clear();
+        assert!(app.prespawn_target().is_some(), "the policy is back to yes");
+        // A stop in flight on the row, and a removal the registry has not caught up with.
+        let (_tx, rx) = mpsc::channel();
+        app.stopping.push(PendingStop {
+            id: A.into(),
+            label: "one".into(),
+            verb: "delete",
+            result: rx,
+        });
+        assert_eq!(app.prespawn_target(), None, "not while it is being stopped");
+        app.stopping.clear();
+        app.removed_sessions.insert(A.into());
+        assert_eq!(app.prespawn_target(), None, "not once it was removed");
+    }
+
+    /// An interactive Claude runs in its own terminal, which `claude attach` refuses.
+    #[test]
+    fn an_own_terminal_row_is_never_a_prespawn_target() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        rested(&mut app, A, OLD);
+        assert_eq!(app.prespawn_target(), None, "own terminal");
+    }
+
+    /// A finished run's attach resumes it, so it is never opened ahead of time.
+    #[test]
+    fn a_run_row_is_never_a_prespawn_target() {
+        let d = dir();
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        start.fired_at = Some(chrono::Utc::now());
+        ledger.append(&start).unwrap();
+        ledger
+            .append(&crate::ledger::Record::new(
+                A.into(),
+                crate::ledger::Status::Ok,
+            ))
+            .unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(matches!(&app.selected().unwrap().kind, Kind::Run(id, _) if id == A));
+        app.track_rest();
+        assert_eq!(
+            app.rest.as_ref().map(|(k, _)| k.as_str()),
+            Some("run:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        );
+        rested(&mut app, &format!("run:{A}"), OLD);
+        assert_eq!(app.prespawn_target(), None, "a run row is never a target");
+    }
+
+    #[test]
+    fn a_speculative_viewer_neither_counts_toward_the_limit_nor_gets_evicted() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for k in ["one", "two", "three"] {
+            app.viewers.push(silent_open(k));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.viewers.push(speculative_open(A));
+        // The oldest by focus time is the first one, older than the speculative viewer.
+        app.viewers[0].last_focused = Instant::now() - Duration::from_secs(60);
+        let mut c = Command::new("/bin/sleep");
+        c.arg("5");
+        app.open((12, 80), c, "attach", "four".into(), None);
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, vec!["two", "three", A, "four"], "{keys:?}");
+        assert!(app.viewers[2].speculative, "the speculative one survived");
+        assert_eq!(app.live_viewers(), MAX_VIEWERS);
+        assert_eq!(app.focus, Some(3));
+    }
+
+    /// The speculative viewer did not count while hidden; once `enter` takes it, the limit
+    /// holds again, and the least recently focused viewer goes, not the one just entered.
+    #[test]
+    fn entering_a_speculative_viewer_with_three_live_ones_closes_the_oldest() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for k in ["one", "two", "three"] {
+            app.viewers.push(silent_open(k));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.viewers.insert(0, speculative_open(A));
+        // The speculative viewer is the oldest by time; "one" is the oldest the user was in.
+        app.viewers[0].last_focused = Instant::now() - Duration::from_secs(60);
+        app.viewers[1].last_focused = Instant::now() - Duration::from_secs(30);
+        app.focus(0);
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, vec![A, "two", "three"], "{keys:?}");
+        assert_eq!(app.focus, Some(0));
+        assert!(!app.viewers[0].speculative);
+        assert_eq!(app.live_viewers(), MAX_VIEWERS);
+    }
+
+    /// The same with the speculative viewer last, so closing shifts its index.
+    #[test]
+    fn entering_a_speculative_viewer_keeps_the_focus_on_it_after_the_shift() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for k in ["one", "two", "three"] {
+            app.viewers.push(silent_open(k));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        app.viewers.push(speculative_open(A));
+        app.viewers[0].last_focused = Instant::now() - Duration::from_secs(60);
+        app.focus(3);
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, vec!["two", "three", A], "{keys:?}");
+        assert_eq!(app.focus, Some(2));
+        assert!(!app.viewers[2].speculative);
+    }
+
+    #[test]
+    fn enter_on_a_row_with_a_speculative_viewer_makes_it_the_real_one() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.viewers.push(speculative_open(A));
+        assert_eq!(
+            app.enter_label(),
+            "attach",
+            "the user has not been there, so the verb does not say return"
+        );
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(app.viewers.len(), 1, "nothing was spawned");
+        assert!(!app.viewers[0].speculative);
+        app.unfocus();
+        assert_eq!(app.enter_label(), "return");
+    }
+
+    #[test]
+    fn a_speculative_viewer_closes_when_its_session_leaves_the_list() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(speculative_open(A));
+        app.viewers.push(silent_open(B));
+        app.refresh().unwrap();
+        app.prespawn_tick();
+        assert_eq!(app.viewers.len(), 2, "the session is still listed");
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        // The loop's turn after the reload landed; the rest is fresh, so nothing spawns.
+        app.prespawn_tick();
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![B],
+            "the speculative viewer went; a viewer the user has been in stays"
         );
     }
 }

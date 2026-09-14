@@ -455,11 +455,48 @@ impl Viewer {
     }
 }
 
+/// How long a close waits for a killed viewer to be reaped before giving up on it.
+const REAP: Duration = Duration::from_secs(2);
+
 impl Drop for Viewer {
+    /// Kill the viewer and reap it while draining the pty. On macOS a killed session leader
+    /// whose output still sits unread on the master stays in exit state until that output is
+    /// read, and a plain `wait` blocks for good; so the master is read between `WNOHANG`
+    /// waits until the child is gone, or `REAP` has passed.
     fn drop(&mut self) {
-        if !self.reaped {
-            self.kill();
-            let _ = self.child.wait();
+        if self.reaped {
+            return;
+        }
+        self.kill();
+        let pid = self.child.id() as i32;
+        let deadline = Instant::now() + REAP;
+        let mut bytes = [0u8; 8192];
+        loop {
+            let mut status = 0;
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            let interrupted =
+                waited < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted;
+            if waited != 0 && !interrupted {
+                return;
+            }
+            while self.master_open {
+                match self.master.read(&mut bytes) {
+                    Ok(0) => self.master_open = false,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(_) => self.master_open = false,
+                }
+            }
+            while let Ok(n) = self.stderr.read(&mut bytes) {
+                if n == 0 {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }
@@ -747,6 +784,33 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(v.exited().unwrap().success());
+    }
+
+    /// A viewer that floods its pty and was never pumped still closes at once: the master is
+    /// drained while the killed child is reaped, so nothing waits on a process macOS keeps in
+    /// exit until its output is read.
+    #[test]
+    fn a_flooding_viewer_nobody_pumped_closes_at_once() {
+        let mut c = Command::new("/bin/sh");
+        c.args([
+            "-c",
+            "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+        ]);
+        let v = Viewer::spawn(c, 4, 20, None, Colors::default()).unwrap();
+        std::thread::sleep(Duration::from_millis(150));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        std::thread::spawn(move || {
+            drop(v);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("drop did not return");
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "close took {:?}: the child was not reaped once its output was drained",
+            started.elapsed()
+        );
     }
 
     #[test]
