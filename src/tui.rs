@@ -25,7 +25,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -2048,15 +2048,6 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let [head, list, prompt, foot] = Layout::vertical([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(3),
-            Constraint::Length(1),
-        ])
-        .areas(frame.area());
-        frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
-        self.draw_list(frame, list);
         let line = match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
@@ -2076,11 +2067,24 @@ impl App {
             }
             Mode::Normal => self.composer(),
         };
-        // Ruled above and below, as Claude Code frames its input.
+        // Ruled above and below, as Claude Code frames its input; grows with the text, as its input does.
         let frame_lines = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(dim());
-        frame.render_widget(Paragraph::new(line).block(frame_lines), prompt);
+        let input = Paragraph::new(line)
+            .wrap(Wrap { trim: false })
+            .block(frame_lines);
+        let rows = input.line_count(frame.area().width).clamp(1, 8) as u16;
+        let [head, list, prompt, foot] = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(rows + 2),
+            Constraint::Length(1),
+        ])
+        .areas(frame.area());
+        frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
+        self.draw_list(frame, list);
+        frame.render_widget(input, prompt);
         frame.render_widget(Paragraph::new(self.hint_line()), foot);
     }
 
@@ -3093,6 +3097,25 @@ mod tests {
         app.refresh().unwrap();
         assert!(key(&app).is_none(), "gone from the dashboard");
         assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
+    }
+
+    #[test]
+    fn the_composer_wraps_a_long_instruction_instead_of_cutting_it() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.text = "one two three four five six seven eight nine ten eleven twelve LAST".into();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 14)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = t
+            .backend()
+            .buffer()
+            .content()
+            .chunks(40)
+            .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        assert!(screen.iter().any(|r| r.contains("LAST")), "{screen:#?}");
+        assert!(screen.iter().any(|r| r.contains("one two")), "{screen:#?}");
     }
 
     #[test]
