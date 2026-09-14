@@ -259,6 +259,48 @@ pub fn titles(index: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// Thread names as Codex 0.154 keeps them: the `threads` table of the newest `state_*.sqlite`
+/// under the Codex home, `name` (the name Codex or the user gave) else `title` (the first
+/// prompt). `session_index.jsonl` stopped being written with the move to sqlite, so it is read
+/// behind the database, for threads older than the move.
+// ponytail: shells out to /usr/bin/sqlite3 (13 ms for a hundred threads) instead of adding a
+// sqlite crate; the table is read in full every tick, cache by mtime if it ever shows.
+pub fn names(codex: &Path) -> HashMap<String, String> {
+    let mut out = fs::read_to_string(codex.join("session_index.jsonl"))
+        .map(|t| titles(&t))
+        .unwrap_or_default();
+    let mut dbs: Vec<PathBuf> = fs::read_dir(codex)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("state_") && n.ends_with(".sqlite"))
+        })
+        .collect();
+    dbs.sort();
+    let Some(db) = dbs.pop() else { return out };
+    let Ok(run) = Command::new("sqlite3")
+        .args(["-readonly", "-json"])
+        .arg(&db)
+        .arg("select id, coalesce(name, title) as t from threads where coalesce(name, title) <> ''")
+        .stderr(Stdio::null())
+        .output()
+    else {
+        return out;
+    };
+    for v in serde_json::from_slice::<Vec<Value>>(&run.stdout).unwrap_or_default() {
+        if let (Some(id), Some(t)) = (v["id"].as_str(), v["t"].as_str())
+            && let Some(first) = crate::fleet::headline(t)
+        {
+            out.insert(id.to_owned(), first);
+        }
+    }
+    out
+}
+
 /// Which rollout each process wrote, by the two facts a rollout records: its cwd and its start.
 /// A rollout belongs to a process when that process is the only live Codex in the rollout's
 /// directory that started at or before it; the newest such rollout is the live thread, since
@@ -286,7 +328,7 @@ pub fn attribute<'a>(
     out
 }
 
-/// Fleet rows for live processes: the rollout each wrote, its title from the session index,
+/// Fleet rows for live processes: the rollout each wrote, its title from `names`,
 /// last reply and state from its tail. Reads only under `codex`.
 pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let Some(since) = procs.iter().map(|p| p.started).min() else {
@@ -294,9 +336,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     };
     let rollouts = rollouts(codex, since);
     let owned = attribute(procs, &rollouts);
-    let titles = fs::read_to_string(codex.join("session_index.jsonl"))
-        .map(|t| titles(&t))
-        .unwrap_or_default();
+    let titles = names(codex);
     let mut out: Vec<Session> = procs
         .iter()
         .map(|p| {
@@ -305,7 +345,10 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
             let id =
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
             Session {
-                title: titles.get(&id).cloned(),
+                title: titles
+                    .get(&id)
+                    .cloned()
+                    .or_else(|| rollout.and_then(|(path, _)| prompt_of(path))),
                 session_id: id,
                 harness: "codex".into(),
                 kind: None,
@@ -392,16 +435,14 @@ pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread
 /// thread whose rollout is gone is not a row. `live` are the process-table rows, which carry
 /// the same id while a client is attached.
 pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
-    let titles = fs::read_to_string(codex.join("session_index.jsonl"))
-        .map(|t| titles(&t))
-        .unwrap_or_default();
+    let titles = names(codex);
     threads(state)
         .into_iter()
         .filter(|t| t.rollout.is_file() && !live.iter().any(|s| s.session_id == t.id))
         .map(|t| {
             let tail = tail_of(&t.rollout);
             Session {
-                title: titles.get(&t.id).cloned(),
+                title: titles.get(&t.id).cloned().or_else(|| prompt_of(&t.rollout)),
                 session_id: t.id,
                 harness: "codex".into(),
                 kind: Some("daemon".into()),
@@ -465,6 +506,41 @@ fn meta_of(path: &Path) -> Option<Meta> {
     Some(m)
 }
 
+/// The first prompt of a rollout, cached: Codex names a thread in `session_index.jsonl` only
+/// some time after the first turn (a daemon thread from VS Code had none an hour in), so a row
+/// without a name shows what was asked instead of `-`. The prompt is the first `UserMessage`
+/// item; the `role: user` messages before it carry AGENTS.md and skills, not the ask.
+// ponytail: scans the head line by line and stops at the first prompt; a rollout with no prompt
+// yet is not cached, so the next tick reads it again.
+fn prompt_of(path: &Path) -> Option<String> {
+    static CACHE: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(p) = cache.get(path) {
+        return Some(p.clone());
+    }
+    let p = std::io::BufReader::new(fs::File::open(path).ok()?)
+        .lines()
+        .map_while(Result::ok)
+        .find_map(|l| prompt(&l))?;
+    cache.insert(path.to_owned(), p.clone());
+    Some(p)
+}
+
+/// The headline of a `UserMessage` item_completed event, if `line` is one.
+pub fn prompt(line: &str) -> Option<String> {
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    let item = &v["payload"]["item"];
+    if v["type"] != "event_msg" || item["type"] != "UserMessage" {
+        return None;
+    }
+    item["content"]
+        .as_array()?
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .find_map(crate::fleet::headline)
+}
+
 /// The rollout's tail, recomputed only when the file grew; the dashboard reloads every second.
 fn tail_of(path: &Path) -> Tail {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
@@ -498,7 +574,9 @@ mod tests {
         text.push('\n');
         if turn {
             text.push_str(&format!(
-                r#"{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"task_complete"}}}}"#
+                r##"{{"timestamp":"{at}","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"# AGENTS.md instructions"}}]}}}}
+{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"UserMessage","content":[{{"type":"text","text":"\n  **fix** the flaky test\nplease"}}]}}}}}}
+{{"timestamp":"{at}","type":"event_msg","payload":{{"type":"task_complete"}}}}"##
             ));
             text.push('\n');
         }
@@ -540,11 +618,37 @@ mod tests {
             1,
             "remembering twice keeps one entry"
         );
+        assert_eq!(
+            thread_rows(&home, &state, &[])[0].title.as_deref(),
+            Some("fix the flaky test"),
+            "unnamed thread shows its first prompt, not AGENTS.md"
+        );
         fs::write(
             home.join("session_index.jsonl"),
             r#"{"id":"dddd","thread_name":"fix the build","updated_at":"x"}"#,
         )
         .unwrap();
+        if Command::new("sqlite3")
+            .arg("-version")
+            .stdout(Stdio::null())
+            .status()
+            .is_ok()
+        {
+            let db = home.join("state_5.sqlite");
+            let sql = "create table threads(id text, name text, title text); insert into threads values('dddd', null, 'fix the build'), ('eeee', 'Green CI', 'x');";
+            assert!(
+                Command::new("sqlite3")
+                    .arg(&db)
+                    .arg(sql)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            assert_eq!(
+                names(&home).get("eeee").map(String::as_str),
+                Some("Green CI")
+            );
+        }
         let rows = thread_rows(&home, &state, &[]);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind.as_deref(), Some("daemon"));
