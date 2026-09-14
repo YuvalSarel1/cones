@@ -2300,11 +2300,12 @@ impl App {
         let input = Paragraph::new(line)
             .wrap(Wrap { trim: false })
             .block(frame_lines);
-        let rows = input.line_count(frame.area().width).clamp(1, 8) as u16;
+        // line_count already counts the two rules, so this is the whole framed box.
+        let rows = input.line_count(frame.area().width).clamp(3, 10) as u16;
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(rows + 2),
+            Constraint::Length(rows),
             Constraint::Length(1),
         ])
         .areas(frame.area());
