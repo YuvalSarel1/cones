@@ -1245,9 +1245,11 @@ impl App {
         });
         ratatui::restore();
         self.debug(|| format!("restored; {}", term_state()));
-        // The frame stays on the normal screen: the child starts over it, and on the way out
-        // leaves its own screen to it, so neither gap shows the shell. Erased before the
-        // dashboard is back.
+        // The normal screen is blank while the child has the terminal: the child starts over
+        // it, and on the way out leaves its own screen to it, so neither gap shows the shell.
+        // Not the last frame: `claude attach` execs into `claude agents` on the left key and
+        // is seconds on the normal screen while it starts, and a dead dashboard there reads
+        // as a live one that ignores keys.
         let mut still = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             TerminalOptions {
@@ -1256,7 +1258,7 @@ impl App {
         )
         .ok();
         if let Some(t) = still.as_mut() {
-            let _ = t.draw(|f| self.draw(f));
+            let _ = t.clear();
         }
         c.stderr(Stdio::piped());
         // ponytail: ctrl-c must reach only the child; the dashboard ignores it while waiting.
