@@ -195,6 +195,11 @@ pub fn executable(name: &str, path: &str) -> Option<PathBuf> {
     })
 }
 
+/// The fixed PATH harnesses are looked up on, independent of the caller's environment, so the
+/// dashboard launches the same `claude` and `codex` from any shell. A fake harness placed first
+/// on the caller's `PATH` therefore never reaches the dashboard: a scripted `enter` in the
+/// composer starts a real session with whatever was typed and spends tokens. A probe puts its
+/// fake harness in one of these directories, or sends no `enter`.
 pub fn launch_path() -> String {
     let home = dirs::home_dir().unwrap_or_default();
     [
