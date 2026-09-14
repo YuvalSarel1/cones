@@ -515,7 +515,7 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
-        Some(Kind::Menu("runs")) => "run once",
+        Some(Kind::Menu("runs")) => "new job",
         Some(Kind::Menu("agents")) => "agents",
         Some(Kind::Menu(_)) => "pick folder",
         _ => "open",
@@ -530,7 +530,7 @@ fn menu_rows(folder: &Path) -> Vec<Row> {
     let items = [
         (
             "runs",
-            "type an instruction, enter runs it once under a job's policy".to_owned(),
+            "enter opens the job wizard · an instruction runs once under a job's policy".to_owned(),
         ),
         (
             "agents",
@@ -1683,12 +1683,7 @@ impl App {
                 self.foreground(terminal, c, "attach");
                 self.invalidate();
             }
-            Kind::Menu("runs") => {
-                self.status = format!(
-                    "type an instruction, enter runs it once in {}",
-                    fleet::tilde(&self.cwd)
-                )
-            }
+            Kind::Menu("runs") => self.new_job(),
             Kind::Menu("agents") => self.mode = Mode::Harness(0),
             Kind::Menu(_) => self.mode = Mode::Folder(String::new()),
             _ => {}
@@ -1825,6 +1820,13 @@ impl App {
         }
     }
 
+    /// ctrl+n, and enter on the menu's `runs` row: the wizard on a new job, its directory
+    /// defaulting to the selected row's.
+    fn new_job(&mut self) {
+        let (base, fallback) = (self.jobs_dir(), self.target_dir());
+        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
+    }
+
     /// ctrl+e: the wizard on the selected job, filled in from the file as written.
     fn edit_job(&mut self) {
         let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
@@ -1921,6 +1923,12 @@ impl App {
         };
         let mut line = match &self.mode {
             Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
+            Mode::Job(form) if form.step == Step::Dir => hints(&[
+                ("enter", "next"),
+                ("tab", "complete"),
+                ("backspace", "on an empty answer goes back"),
+                ("esc", "cancel"),
+            ]),
             Mode::Job(_) => hints(&[
                 ("enter", "next"),
                 ("backspace", "on an empty answer goes back"),
@@ -2193,6 +2201,17 @@ impl App {
                 }
                 _ => {}
             },
+            // The wizard's directory completes as the folder prompt does, from the jobs
+            // file's directory, where a relative answer is taken from.
+            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Dir => {
+                let (grown, names) = complete_dir(&form.dir, &form.base);
+                if grown == form.dir {
+                    self.status = names.join("  ");
+                } else {
+                    form.dir = grown;
+                    self.status.clear();
+                }
+            }
             Mode::Job(form) => match form.key(code, ctrl) {
                 FormAction::Stay => {}
                 FormAction::Cancel => self.mode = Mode::Normal,
@@ -2245,10 +2264,7 @@ impl App {
                         self.by_state = !self.by_state;
                         self.rebuild();
                     }
-                    KeyCode::Char('n') if ctrl => {
-                        let (base, fallback) = (self.jobs_dir(), self.target_dir());
-                        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
-                    }
+                    KeyCode::Char('n') if ctrl => self.new_job(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
@@ -3324,7 +3340,7 @@ mod tests {
         assert!(text(app.composer()).starts_with("claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter run once · tab codex · ctrl+n new job"),
+            hint.starts_with("enter new job · tab codex · ctrl+n new job"),
             "an empty dashboard opens on the menu's runs row: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
