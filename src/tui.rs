@@ -648,6 +648,41 @@ fn typed(value: &str, placeholder: &str) -> Vec<Span<'static>> {
     ]
 }
 
+/// `ctrl+v` in the composer, as in Claude Code: the clipboard's image lands as a PNG under the
+/// temp dir and its path is typed into the instruction, where the harness reads it as a file.
+/// A terminal paste of text arrives as keys; only an image needs the clipboard itself.
+fn paste_image() -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir().join("cones");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = dir.join(format!("pasted-{stamp}.png"));
+    // ponytail: macOS clipboard via osascript; wl-paste/xclip if this ever runs on Linux.
+    let open = format!(
+        "set f to open for access POSIX file \"{}\" with write permission",
+        path.display()
+    );
+    let out = Command::new("osascript")
+        .args(["-e", &open])
+        .args(["-e", "write (the clipboard as «class PNGf») to f"])
+        .args(["-e", "close access f"])
+        .output()
+        .map_err(|e| format!("osascript: {e}"))?;
+    if !out.status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Err("no image on the clipboard".into());
+    }
+    Ok(path)
+}
+
+/// Splice an attachment's path into the instruction, spaced from what is typed either side.
+fn attach(text: &mut String, path: &Path) {
+    if !text.is_empty() && !text.ends_with(' ') {
+        text.push(' ');
+    }
+    text.push_str(&path.display().to_string());
+    text.push(' ');
+}
+
 /// One glyph per state, cone-shaped where it can be: a solid cone is busy, a hollow one is
 /// resting, a warning cone wants a human. `-` is a session whose harness reported no state, a
 /// Codex before its first turn; it is not a failure.
@@ -1770,9 +1805,12 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Harness(_) => Line::default(),
-            Mode::Normal if !self.text.is_empty() => {
-                hints(&[("enter", &start), ("tab", &next), ("esc", "clear")])
-            }
+            Mode::Normal if !self.text.is_empty() => hints(&[
+                ("enter", &start),
+                ("tab", &next),
+                ("ctrl+v", "paste image"),
+                ("esc", "clear"),
+            ]),
             // Only what acts on the selected row, then the keys that act everywhere.
             Mode::Normal => {
                 let mut keys = vec![];
@@ -2039,6 +2077,10 @@ impl App {
                         self.invalidate();
                         self.status = "refresh requested".into();
                     }
+                    KeyCode::Char('v') if ctrl => match paste_image() {
+                        Ok(path) => attach(&mut self.text, &path),
+                        Err(e) => self.status = e,
+                    },
                     KeyCode::Char(c) if !ctrl => self.text.push(c),
                     _ => {}
                 }
@@ -2368,6 +2410,20 @@ mod tests {
 
     fn dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn attach_spaces_the_path_from_the_text() {
+        let png = Path::new("/tmp/cones/pasted-1.png");
+        let mut text = String::new();
+        attach(&mut text, png);
+        assert_eq!(text, "/tmp/cones/pasted-1.png ");
+        let mut text = "look at".to_owned();
+        attach(&mut text, png);
+        assert_eq!(text, "look at /tmp/cones/pasted-1.png ");
+        let mut text = "look at ".to_owned();
+        attach(&mut text, png);
+        assert_eq!(text, "look at /tmp/cones/pasted-1.png ");
     }
 
     fn typed(f: &mut JobForm, text: &str) {
