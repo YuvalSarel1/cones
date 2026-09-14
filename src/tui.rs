@@ -27,11 +27,7 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -1324,12 +1320,18 @@ impl App {
                     Ok(Waited::Stopped) => unsafe {
                         libc::kill(-pid, libc::SIGCONT);
                     },
-                    Ok(Waited::Exited(st)) => break Ok(st),
+                    Ok(Waited::Exited(st)) => {
+                        self.debug(|| format!("child exited after {:?}: {st}", started.elapsed()));
+                        break Ok(st);
+                    }
                     Err(e) => break Err(e),
                 }
             };
+            // Dropping the sender ends the watcher at once. Joining a thread that slept a
+            // whole second here once left the tty cooked and unread for that long: the
+            // dashboard looked frozen and keystrokes echoed onto it.
             if let Some((stop, t)) = watch {
-                stop.store(true, Ordering::Relaxed);
+                drop(stop);
                 let _ = t.join();
             }
             let stderr = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
@@ -1866,8 +1868,32 @@ fn debug_line(path: &Path, msg: impl std::fmt::Display) {
 /// foreground, and what ctrl-z and ctrl-c do to this process.
 fn term_state() -> String {
     unsafe {
+        let disposition = |sig| {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(sig, std::ptr::null(), &mut old);
+            match old.sa_sigaction {
+                libc::SIG_DFL => "dfl",
+                libc::SIG_IGN => "ign",
+                _ => "handler",
+            }
+        };
+        format!(
+            "{} pgrp={} tstp={} int={} raw={:?}",
+            tty_state(),
+            libc::getpgrp(),
+            disposition(libc::SIGTSTP),
+            disposition(libc::SIGINT),
+            ratatui::crossterm::terminal::is_raw_mode_enabled().ok()
+        )
+    }
+}
+
+/// The tty's line discipline and who owns its foreground; readable from the background, so
+/// the watcher can sample it while a child holds the terminal.
+fn tty_state() -> String {
+    unsafe {
         let mut t: libc::termios = std::mem::zeroed();
-        let tty = if libc::tcgetattr(0, &mut t) == 0 {
+        let modes = if libc::tcgetattr(0, &mut t) == 0 {
             format!(
                 "icanon={} echo={} isig={} ixon={} opost={}",
                 t.c_lflag & libc::ICANON != 0,
@@ -1879,52 +1905,41 @@ fn term_state() -> String {
         } else {
             format!("tcgetattr: {}", std::io::Error::last_os_error())
         };
-        let disposition = |sig| {
-            let mut old: libc::sigaction = std::mem::zeroed();
-            libc::sigaction(sig, std::ptr::null(), &mut old);
-            match old.sa_sigaction {
-                libc::SIG_DFL => "dfl",
-                libc::SIG_IGN => "ign",
-                _ => "handler",
-            }
-        };
-        format!(
-            "{tty} fg_pgrp={} pgrp={} tstp={} int={} raw={:?}",
-            libc::tcgetpgrp(0),
-            libc::getpgrp(),
-            disposition(libc::SIGTSTP),
-            disposition(libc::SIGINT),
-            ratatui::crossterm::terminal::is_raw_mode_enabled().ok()
-        )
+        format!("{modes} fg_pgrp={}", libc::tcgetpgrp(0))
     }
 }
 
-/// While a child holds the terminal, log the dashboard's process group and the child's (its own,
-/// shared with what it forks) and the tty's foreground group once a second: `T` in the state
-/// column is a stopped child.
-fn watch_group(log: PathBuf, child: u32) -> (Arc<AtomicBool>, std::thread::JoinHandle<()>) {
-    let stop = Arc::new(AtomicBool::new(false));
-    let flag = stop.clone();
+/// While a child holds the terminal, log every change of the tty's modes and foreground group,
+/// sampled twenty times a second, and once a second the dashboard's process group and the
+/// child's (its own, shared with what it forks): `T` in the state column is a stopped child.
+/// A child that restores a cooked tty and then lingers before exiting shows up as the gap
+/// between the `tty` line and `child exited`. Dropping the sender stops the watcher at once.
+fn watch_group(log: PathBuf, child: u32) -> (mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let (stop, rx) = mpsc::channel::<()>();
     let pgrp = format!("{},{child}", unsafe { libc::getpgrp() });
     let t = std::thread::spawn(move || {
-        let mut last = String::new();
-        while !flag.load(Ordering::Relaxed) {
-            let out = Command::new("ps")
-                .args(["-o", "pid=,ppid=,stat=,tpgid=,command=", "-g", &pgrp])
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_owned())
-                .unwrap_or_else(|e| format!("ps failed: {e}"));
-            // ponytail: only changes are logged, so an idle attach costs one line.
-            if out != last {
-                debug_line(
-                    &log,
-                    format!("child tree:\n{out}\n  fg_pgrp={}", unsafe {
-                        libc::tcgetpgrp(0)
-                    }),
-                );
-                last = out;
+        let (mut tree, mut tty) = (String::new(), String::new());
+        for n in 0u32.. {
+            // ponytail: only changes are logged, so an idle attach costs a few lines.
+            let now = tty_state();
+            if now != tty {
+                debug_line(&log, format!("tty: {now}"));
+                tty = now;
             }
-            std::thread::sleep(Duration::from_secs(1));
+            if n % 20 == 0 {
+                let out = Command::new("ps")
+                    .args(["-o", "pid=,ppid=,stat=,tpgid=,command=", "-g", &pgrp])
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_owned())
+                    .unwrap_or_else(|e| format!("ps failed: {e}"));
+                if out != tree {
+                    debug_line(&log, format!("child tree:\n{out}"));
+                    tree = out;
+                }
+            }
+            if rx.recv_timeout(Duration::from_millis(50)) != Err(mpsc::RecvTimeoutError::Timeout) {
+                break;
+            }
         }
     });
     (stop, t)
@@ -1942,6 +1957,21 @@ mod tests {
         for c in text.chars() {
             assert_eq!(l.key(KeyCode::Char(c), false), LaunchAction::Stay);
         }
+    }
+
+    #[test]
+    fn watcher_stops_when_its_sender_drops() {
+        let d = dir();
+        let (stop, t) = watch_group(d.path().join("log"), std::process::id());
+        std::thread::sleep(Duration::from_millis(120));
+        let t0 = Instant::now();
+        drop(stop);
+        t.join().unwrap();
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            t0.elapsed()
+        );
     }
 
     #[test]
