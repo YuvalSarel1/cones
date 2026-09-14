@@ -41,9 +41,17 @@ COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
 SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
            "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
-           "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI", "Codex sessions from the process table and rollout file", "model, start, activity and context read from the transcript, never estimated", "stop and attach from CLI and TUI",
-           "dashboard: grouping, filter, a harness's own agents view", "composer: an instruction starts a session in the selected folder, any harness", "jobs added, edited and deleted from the dashboard", "attach returns to the row; ctrl+x stops", "keys and hints follow claude agents",
-           "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary"]
+           "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI",
+           "Codex sessions: process table, rollout file, app-server threads joined and left like Claude",
+           "model, start, activity and context read from the transcript, never estimated", "context window as the harness states it",
+           "stop and attach from CLI and TUI", "viewers on a private pty; the shell never shows between transitions",
+           "own terminal rows: a session cones cannot join says so, no stolen tty",
+           "dashboard: grouping, filter, a harness's own agents view", "menu: runs, agents, folder",
+           "composer: an instruction starts a session in the selected folder, any harness", "image paste into the composer",
+           "jobs added, edited and deleted from the dashboard", "attach returns to the row; ctrl+x stops",
+           "ctrl+x removes a session with claude rm, hides a finished run", "states, keys and hints follow claude agents",
+           "per-harness marks, spinners, colors", "doctor: login, job env, version drift, flags", "cones coordinator start, skill in the binary",
+           "coordinator: two-way channel to Codex agents"]
 FOOT = ("cones owns the clock, supervision, budgets and the ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine. "
         "Seeing a harness's sessions never waits on enforcing its budgets.")
