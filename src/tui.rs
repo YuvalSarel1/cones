@@ -29,9 +29,35 @@ use std::{
     collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc,
+    sync::{OnceLock, mpsc},
     time::{Duration, Instant},
 };
+
+/// The tty as the shell handed it over, read once at start. Crossterm snapshots the tty at
+/// every raw-mode entry and hands that snapshot back on exit; after a child, the snapshot is
+/// whatever the child left, so a child that died raw would reach the shell through it.
+static SHELL_TTY: OnceLock<Option<libc::termios>> = OnceLock::new();
+
+/// Put the tty back the way the shell had it, after ratatui has left raw mode and the
+/// alternate screen: the line discipline from `SHELL_TTY`, and off with every mode a child
+/// turns on and may not have turned off: mouse reports, focus events, bracketed paste,
+/// colour-scheme reports, kitty keys and modifyOtherKeys. Claude Code enables all of these
+/// and disables them only on its own way out; a viewer killed on ctrl-z, or a child that
+/// crashed, leaves them on, and a shell with them on echoes garbage on every click, focus
+/// change and paste. Invisible on a terminal where nothing was left on.
+fn hand_back_tty() {
+    use std::io::Write;
+    if let Some(Some(t)) = SHELL_TTY.get() {
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, t);
+        }
+    }
+    let mut out = std::io::stdout();
+    let _ = out.write_all(
+        b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
+    );
+    let _ = out.flush();
+}
 
 const ORANGE: Color = Color::Indexed(208);
 /// The header cone's lit and shadow sides, one hue either side of ORANGE.
@@ -1294,6 +1320,7 @@ impl App {
         if let Some(t) = still.as_mut() {
             let _ = t.clear();
         }
+        hand_back_tty();
         *terminal = ratatui::init();
         self.debug(|| {
             format!(
@@ -1890,6 +1917,10 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
     }
+    SHELL_TTY.get_or_init(|| unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        (libc::tcgetattr(0, &mut t) == 0).then_some(t)
+    });
     let mut terminal = ratatui::init();
     let result = (|| -> Result<()> {
         loop {
@@ -1919,6 +1950,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     })();
     app.debug(|| format!("dashboard loop ended: {result:?}"));
     ratatui::restore();
+    hand_back_tty();
     result.context("dashboard")?;
     Ok(0)
 }
