@@ -1190,20 +1190,17 @@ mod tests {
         );
     }
 
+    // The signal itself is covered end to end by the runner suite, which spawns a
+    // harness-named process. Keep this one process-free so it cannot flake.
     #[test]
-    fn terminate_signals_a_matching_client_and_refuses_a_reused_pid() {
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("codex");
-        fs::copy("/bin/sleep", &fake).unwrap();
-        let mut child = std::process::Command::new(&fake).arg("30").spawn().unwrap();
-        assert!(terminate(child.id(), "codex").unwrap());
-        assert!(!child.wait().unwrap().success(), "SIGTERM ends the client");
+    fn terminate_refuses_a_pid_that_runs_something_else() {
         assert!(
             terminate(std::process::id(), "codex")
                 .unwrap_err()
                 .to_string()
                 .contains("refusing to signal a reused pid"),
-            "a pid running something else is left alone"
+            "a reused pid is left alone"
         );
+        assert!(terminate(1, "codex").is_err(), "launchd is never a client");
     }
 }
