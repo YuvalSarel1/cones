@@ -1,8 +1,26 @@
 #!/usr/bin/env python3
 """Measure the actual TUI in an isolated tmux server, or summarize a --debug log.
 
+    python3 scripts/bench-tui.py --log ~/.cones/tui-debug.log
+
+summarizes a `cones tui --debug` log for intermittent delays. The timings separate harness
+commands, data reads, discarded snapshots, row rebuilding, a viewer's spawn to its first text
+and the first draw after input or returning from a viewer. Time spent inside a viewer is
+excluded from return latency.
+
+    python3 scripts/bench-tui.py target/release/cones --check --output /tmp/cones-bench.json
+
+measures repeated transitions through the real TUI in an isolated tmux server with fixture
+harnesses: delayed deletions, failures, navigation during a command, leaving a viewer with
+Ctrl+Z, and a transcript read held across the transition. It reports p50, p95 and maximum
+screen latency, with separate harness acknowledgement and rendering times; --check compares
+them with LIMITS below. --transcript-mb 16 adds a large transcript; --runs and --sessions
+change repetition and fleet size. These are local regression budgets, not guarantees for real
+harness startup or filesystem performance.
+
 Only fixture harnesses run. Their home, registry, ledger and tmux server are temporary.
-Requires tmux; uses no Python packages and spends no model tokens.
+Requires tmux; uses no Python packages and spends no model tokens. Nothing is installed into
+user sessions.
 """
 import argparse
 import errno

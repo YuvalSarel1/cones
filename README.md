@@ -52,4 +52,4 @@ Now: the v0.1.0 tag and the public release. Next: `overlap: continue`, lifecycle
 
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
 
-[Job configuration](docs/jobs.md) · [What a run does](docs/runs.md) · [Sessions and dashboard](docs/fleet.md) · [Kinds of agent](docs/kinds.md) · [What cones needs from a harness](docs/harness.md) · [Commands](docs/cli.md)
+[The dashboard](docs/dashboard.md) · [Scheduled jobs](docs/jobs.md) · [The coordinator](docs/coordinator.md) · [What cones needs from a harness](docs/harness.md) · [Commands](docs/cli.md)

@@ -1,6 +1,6 @@
 # Command reference
 
-Back to the [README](../README.md). Job fields are in [jobs.md](jobs.md), run behavior in [runs.md](runs.md), the fleet and dashboard in [fleet.md](fleet.md).
+Back to the [README](../README.md). Jobs and runs are in [jobs.md](jobs.md), the dashboard in [dashboard.md](dashboard.md), where every session fact comes from in [harness.md](harness.md).
 
 Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (default `~/.cones`).
 
@@ -13,11 +13,22 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones run --prompt "..." [JOB]` | One-off task in the current directory under the named job's policy (default: the first job), or under the read-only defaults when there is no jobs file. Named `adhoc-<8 hex>`. |
 | `cones ls [--job NAME] [--status S] [--json]` | Runs newest first, then live sessions oldest first by start time. Columns: id, job or cwd, status or state, fired time or the session's start (its transcript's first timestamp, `-` when it has none), harness, dollars, reason or tokens in/out. `--status` takes `started`, `ok`, `failed`, `timeout`, `skipped`, `crashed`, `active`, `idle`, `blocked`, `done`, `stopped` or `exited`. `--job` hides sessions. `--json` prints one run record per line. |
 | `cones logs ID [--follow] [--raw]` | A run's events rendered as tool calls and text, with the harness stderr tail appended; `--raw` prints the JSON events. For a session id, the last assistant lines of its transcript. Ctrl+C detaches, the run keeps going. |
-| `cones stop ID` | A run ends `failed` / `interrupted` after cones checks the worker pid still belongs to its supervisor. A session ends through `claude rm`, which also drops its record from `claude agents`, or SIGTERM as described in [fleet.md](fleet.md). Prints `stop requested` or `already finished`. |
+| `cones stop ID` | A run ends `failed` / `interrupted` after cones checks the worker pid still belongs to its supervisor. A session ends through `claude rm`, which also drops its record from `claude agents`, or SIGTERM, per the kinds table in [harness.md](harness.md#kinds). Prints `stop requested` or `already finished`. |
 | `cones attach ID [--print-command]` | A finished run or a session whose process is gone is resumed in the background and attached to, in its cwd; the archived transcript is restored into Claude's store if the native one is missing. A live session is attached directly. `--print-command` prints the command instead. A running headless run cannot be attached; follow its log. |
-| `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [fleet.md](fleet.md#the-coordinator-one-session-per-folder). |
+| `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [coordinator.md](coordinator.md). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
-| `cones tui [--debug]` | The dashboard. `--debug` appends to `STATE_DIR/tui-debug.log`: the terminal's state at start, every input event, each viewer's open (with its pid and command; one opened while the cursor rested is a `prespawn` line, and its end carries the last line of its stderr), focus, leave, close and exit, the time from a viewer's spawn to its first text (`viewer_first_paint`), how long a viewer opened while the cursor rested had been running when `enter` took it (`viewer_prespawn_hit`), command durations, refresh reads and discarded snapshots, transition-to-draw timings (`startup_to_draw`, `input_to_draw`, `action_result_to_draw`, `opening_result_to_draw`, `return_to_draw`) and frames taking at least 16ms (`slow_draw`). |
+| `cones tui [--debug]` | The dashboard, described in [dashboard.md](dashboard.md). `--debug` appends to `STATE_DIR/tui-debug.log`: the terminal's state at start, every input event, each viewer's open (with its pid and command; one opened while the cursor rested is a `prespawn` line, and its end carries the last line of its stderr), focus, leave, close and exit, the time from a viewer's spawn to its first text (`viewer_first_paint`), how long a viewer opened while the cursor rested had been running when `enter` took it (`viewer_prespawn_hit`), command durations, refresh reads and discarded snapshots, transition-to-draw timings (`startup_to_draw`, `input_to_draw`, `action_result_to_draw`, `opening_result_to_draw`, `return_to_draw`) and frames taking at least 16ms (`slow_draw`). |
+
+## Sessions at the shell
+
+```sh
+cones ls --status blocked        # sessions waiting on a permission, trust or user prompt
+cones logs SESSION_UUID --follow # the session's transcript, Ctrl+C returns
+cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes back
+cones stop SESSION_UUID          # ends the session
+```
+
+Every Claude Code and Codex session on the Mac is a row, whoever started it; which rows `attach` and `stop` act on, and how, is the kinds table in [harness.md](harness.md#kinds).
 
 ## Run a prompt without a job
 

@@ -1,0 +1,106 @@
+# The dashboard
+
+Back to the [README](../README.md). Which rows open and where every cell comes from is in [harness.md](harness.md); the job file in [jobs.md](jobs.md); commands in [cli.md](cli.md).
+
+`cones tui` shows jobs, live sessions and runs on one screen. It reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, and reads `N working · N need input · N idle · N jobs · N runs` on its summary line. Stop and delete commands run in the background too, with their progress in the hint line: a confirmed delete removes the row at once, before `claude rm` returns, and a failed one puts it back with the error; the hint line names the session by its title. Returning from a viewer or completing an action requests fresh data and discards any read started before the transition. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
+
+## The screen
+
+| Pane | Columns |
+| --- | --- |
+| Menu | `runs`, `agents`, `folder`: three rows above the tables, described under [the menu](#the-menu) |
+| Jobs | enabled marker, name, schedule, harness, on/off, last run status |
+| Sessions | icon, harness, `orchestrator` on the folder's coordinator and `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from jobs.yaml, described under [columns](#columns) |
+| Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason |
+| Viewer | the selected or focused session's live screen, on a terminal at least 140 columns wide |
+
+There is no details pane for now; a session is read by opening it, a run by `cones logs`. `cones ls --json` still carries what the pane showed, so it can come back.
+
+Each table opens with a dim row naming its columns, padded to the table beneath. A column only grows for the life of the dashboard: a cell that changes length (`59s` to `1m`, `working` to `needs input`, a long title leaving) never moves the columns beside it, so a column that was once wide stays wide until the dashboard restarts. The cursor skips the naming row and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table.
+
+Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. A folder the menu's `folder` prompt picked keeps a group of its own after the session groups, with one dim row while nothing runs there, until `ctrl+x` twice removes it; the folders are one path per line in `~/.cones/folders`. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session whose transcript reports no start sorts last, by id.
+
+| State | Label | Color |
+| --- | --- | --- |
+| `done`, `failed`, `stopped` | the word itself | green, red, dim |
+| `active` | working | plain |
+| `blocked` | needs input | yellow |
+| `idle` | idle | dim |
+| anything else | the word itself | red |
+
+Working is plain and green is kept for finished work, as in Claude's own agents view. Which harness fact each state comes from is the State row in [harness.md](harness.md#observe). The folder's coordinator says `orchestrator` and its title is orange, as [coordinator.md](coordinator.md) describes.
+
+Under the composer, the hint line names only the keys that act on the selected row, then the ones that act everywhere: `enter <verb> · ctrl+] viewer · ctrl+x <stop|delete|hide|forget> · ctrl+e edit · tab <harness> · ctrl+n new job · ctrl+s regroup · ctrl+o agents · esc quit`, where `ctrl+] viewer` shows only while at least one viewer is alive inside the dashboard. The verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, `return` on a row whose viewer is alive inside the dashboard and `own terminal` on a session that cannot be joined from here; `ctrl+x` reads `delete` on a job with no run in flight, `forget` on a Codex daemon thread, `hide` on a finished run and `delete` on a Claude background session, which `claude rm` removes from `claude agents` as well; `ctrl+e` shows on a job only; on a menu row the verb is `new job`, `agents` or `pick folder`, and on a pinned folder's row `start here`, with `ctrl+x` reading `remove`. With an instruction typed it reads `enter start <harness> in <dir> · tab <harness> · ctrl+v paste image · esc clear`, or `enter run once in <dir>` on the menu's `runs` row. The last action's status takes the line until the next key. On a list column too narrow for every key, the keys that act everywhere go, last first, while the selected row's key and `esc quit` stay.
+
+## Columns
+
+`columns` in jobs.yaml picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line the harness wrote, named in the Observe table of [harness.md](harness.md#observe); it is `-` until that line exists, never an estimate.
+
+| Column | Cell | Default |
+| --- | --- | --- |
+| `state` | working, needs input, idle, done, failed or stopped, as in the table above | yes |
+| `model` | The bare API model id on the last message with usage, `claude-fable-5-1` or `openai.gpt-6-astra` | yes |
+| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
+| `activity` | Time since the transcript's last timestamp | yes |
+| `context` | `98k/200k`: the prompt size the harness reported on the last message over the window it stated; `98k` alone when nothing stated a window (a Claude session whose statusLine command does not save its payload) | yes |
+| `last` | First line of the last reply, or the directory when grouped by state | yes |
+| `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
+
+`age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Cost is not a column: the harnesses write tokens to the transcript and no price, so live sessions have no dollars to show. Run rows take theirs from the ledger.
+
+## Keys
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | Move between rows; `↑` past the first table lands on the menu. Every other plain key types into the composer at the bottom, so the actions are on ctrl, as in `claude agents`. |
+| `enter` | With the composer empty: on a job, start a run in the background; on a running run, follow its log (Ctrl+C returns); on a finished run or a session, open it as a viewer, described under [viewers](#viewers), and Ctrl+Z comes back to the same row with the filter and grouping as they were; on a row whose viewer is still alive inside the dashboard, the verb reads `return` and `enter` shows its current screen in one frame; on a Codex thread the daemon holds (kind `daemon`), open a resume client on it; on a Codex TUI or an interactive Claude running in its own terminal, the row and the hint line say `own terminal` and `enter` explains; on a menu row, `runs` opens the `ctrl+n` wizard, `agents` opens the `ctrl+o` picker and `folder` asks for a directory. With an instruction typed: start a session with it, described under [the composer](#the-composer). |
+| `tab` | The harness the next session starts under, `claude` or `>_ codex`; the composer's prefix shows it. |
+| `←` `→` and readline's keys | Edit the instruction where the block cursor is, on the character the next key acts on. `←` `→` move a character, `alt+←` `alt+→`, `ctrl+←` `ctrl+→` or `alt+b` `alt+f` a word, `home` `end` or `ctrl+a` `ctrl+e` to the ends of the line; `backspace` and `delete` take a character, `alt+backspace` or `ctrl+w` a word back, `alt+d` a word forward, `ctrl+u` everything before the cursor, `ctrl+k` everything after. These are what macOS terminals send for the shortcuts their users press: VS Code, iTerm2 with natural text editing and Ghostty turn cmd+←/→ into ctrl+a/ctrl+e, cmd+delete into ctrl+u and option+delete into ctrl+w or alt+backspace, and option+←/→ into alt+b/alt+f or alt+arrows; cmd itself never reaches a terminal program. A text paste lands at the cursor. |
+| `ctrl+x` twice | Stop the selected run or session. On a Claude background session: `claude rm`, so the record leaves `claude agents` too and `claude --resume` still has the conversation. On a finished run: hide its row for good; the ledger keeps the run and `cones ls` still lists it. On a Codex daemon thread: forget its record, `codex resume` still has it. On a job: stop its run in flight; with none, delete the job from jobs.yaml and reinstall launchd. On a pinned folder: remove it. The first press marks the row red and stays armed until the second press; any other key keeps it. |
+| `ctrl+n` | Add a job: the wizard, described under [the job wizard](#the-job-wizard). |
+| `ctrl+e` | With the composer empty, edit the selected job in the same wizard, filled in from the file; with an instruction typed it is end of line, as cmd+→ arrives. |
+| `ctrl+s` | Regroup sessions by state or by directory. |
+| `ctrl+o` | Open a harness's own agents view without picking a row first: `claude agents`, or Codex's `resume` picker as a client of its app-server daemon, so a thread picked there keeps working when the client is left. `←` `→` pick the harness, `enter` opens, `esc` cancels. `esc` in Claude's agents view quits it and comes back here (`q` types into its prompt); Ctrl+Z comes back too and leaves the view running, so `ctrl+o` then `enter` on that harness returns to it. Its keys cannot be rebound to do this: Claude's `Agents` keybinding context accepts only its own two actions, and `~/.claude/keybindings.json` is global, not per launch. |
+| `ctrl+f` | Filter rows by text; `enter` keeps the filter, `esc` clears it. A kept filter shows at the left of the hint line. |
+| `ctrl+]` | Inside a viewer, focus the next live viewer, wrapping; with one viewer it does nothing. From the dashboard, return to the most recently focused viewer, or say `no viewer open`. Never forwarded to a viewer. The terminal sends it as the byte 0x1d, the same byte as ctrl+5, so the dashboard takes both spellings. |
+| `ctrl+\` | On a terminal at least 140 columns wide, toggle between the viewer beside the list and the viewer over the whole frame; the hint line offers it while a viewer is alive, and the strip under a full-screen viewer offers the split back. On a narrower terminal the key changes nothing and the hint line says `split needs 140 columns`. Never forwarded to a viewer. The terminal sends it as the byte 0x1c, the same byte as ctrl+4, so the dashboard takes both spellings. |
+| `ctrl+v` | Paste the clipboard's image into the instruction, as Claude Code does: it is written as a PNG under `$TMPDIR/cones/pasted-<time>.png` and its path is typed into the composer, where the harness reads it as a file. Text pastes arrive as one paste, into the composer, or into the focused viewer, and need no key. With no image on the clipboard the status line says so. cmd+v is the terminal's own paste and carries text only, so an image needs ctrl+v; the composer's placeholder says so. macOS only, through `osascript`. |
+| `ctrl+r` | Reload now; the dashboard reloads every second on its own, so the key is left off the hint line. |
+| `esc` | Backs out one thing at a time: an armed `ctrl+x`, the typed instruction, then the dashboard. `ctrl+c` twice within 1.5 s quits; a single press only says so, since one aimed at a viewer that has just closed must not take the dashboard with it. Inside a viewer both are the viewer's keys; only Ctrl+Z, `ctrl+]` and `ctrl+\` are the dashboard's. |
+
+## Viewers
+
+A session, a finished run or an agents view opens as a viewer: a terminal the dashboard emulates and draws inside its own frame, so the shell never shows, not while the viewer starts and not while it shuts down, and no mode a viewer turns on is left on the terminal. The rule behind it is in [harness.md](harness.md#kinds): the dashboard opens a session only when leaving it keeps it working, so nothing here parks a harness with SIGSTOP, a viewer that stops itself is closed, and where a harness cannot be left and re-entered the dashboard says so and does not open it. How the emulation works is the module doc at the top of `src/viewer.rs`.
+
+Ctrl+Z never suspends the dashboard. It is a focus change: the dashboard takes the frame back and redraws at once, the viewer stays alive off-screen, and `enter` on its row returns to its current screen in one frame, with no second `claude attach` start to wait for. While the cursor rests on a Claude background session row for a moment, its viewer opens out of sight, so `enter` shows it at once; only those rows are opened this way, since joining one changes nothing in the fleet, while resuming a finished run or opening a Codex client would show there, and until `enter` has been on it the hint line still reads `attach`. The three most recently used viewers are kept; when a fourth opens, the least recently focused closes; `ctrl+x` confirmed on a row closes its viewer first; every viewer closes with the dashboard. The session a viewer showed is untouched in every case.
+
+On a terminal at least 140 columns wide the frame is two columns: the list on the left, half the width within 60 to 100 columns, a rule, and a pane with the rest. The pane draws the focused viewer, else the selected row's viewer, else the viewer focused last; with none it says what `enter` does. Focusing changes only where the keys go: the rule turns orange, the composer's block cursor gives way to the viewer's, and the hint line reads `ctrl+z back · ctrl+] next · ctrl+\ full screen`, with the filter in front as always. `ctrl+\` toggles full screen. On a narrower terminal that is the only layout, and while a viewer is focused the frame's last row is the dashboard's strip, as a tmux status bar sits under a pane: the cone, the viewer's name (its own window title, else its row's title), the same fleet counts the header shows, and the keys that leave. The counts stay live, and when a session other than the one shown needs input the strip says so in yellow with that session's title, so a prompt waiting in one session is seen from inside another.
+
+Inside a viewer every key is the viewer's except Ctrl+Z, `ctrl+]` and `ctrl+\`. Keys reach it in the classic xterm encoding, so chords that encoding cannot express, shift+enter among them, arrive as their plain key. Pasted text arrives as one paste, and the mouse works inside the pane and nowhere else. A viewer picks the same light or dark theme it would in a shell.
+
+Opening a session runs `claude attach <short id>` from the dashboard itself; a finished run goes through `cones attach`, which resumes it. A Codex client needs the daemon's socket first, so the command is prepared on a thread with `opening codex` in the hint line; `esc` cancels it and the instruction stays in the composer, and the address is kept and probed, so the second open does not start the CLI again. On return the dashboard reloads and finds the row again by its id, so a session that went from idle to working while it was open, and so moved to another group, is still the selected row. A session that ended while open leaves the cursor on its neighbor.
+
+For intermittent delays, `cones tui --debug` writes timings to `STATE_DIR/tui-debug.log` (the lines are listed in [cli.md](cli.md)) and `scripts/bench-tui.py` summarizes that log or measures the real TUI against fixture harnesses; its header says how.
+
+## The menu
+
+Three rows sit above the tables: `runs`, `agents`, `folder`. A fresh dashboard opens on the first table, and `↑` from there lands on them. They act on the menu's folder: the directory the dashboard was started in until `folder` picks another, so work can start in a directory nothing runs in yet. `runs` turns the composer into a supervised one-off run: type an instruction and `enter` starts `cones run --prompt` with it in that folder, under the first job's policy, in the ledger like any other run; with nothing typed, `enter` opens the job wizard, the same as `ctrl+n`. `agents` opens the same harness picker as `ctrl+o`. `folder` asks for a directory on the prompt line, relative to the current folder with `~` expanded; `tab` completes it as a shell completes `cd`: one match fills in with a trailing `/`, several fill in what they share and a second `tab` lists them on the hint line, and hidden folders are offered only after a `.`; a path that is not a directory is refused on the hint line and the prompt stays. The `folder` row names the folder, and the composer on any menu row starts its session there. The folder taken also gets a row of its own in the sessions table, whether or not anything runs there, so the place is on screen from the moment it is picked; the row stays across restarts until `ctrl+x` twice on it removes the folder, and a session starting there takes its group over. With the row selected the composer starts its session in that folder, and the hint line's `ctrl+x` reads `remove`.
+
+## The composer
+
+Above the hint line is a composer drawn like Claude Code's own input: ruled above and below, with a block cursor on the character the next key acts on, after what is typed when nothing follows it, or on the first letter of the placeholder, and it is three rows tall, one of text between the rules, until an instruction outruns the width; then it wraps and grows a line at a time (up to eight), so nothing typed is cut off. Its prefix is the harness `tab` picked; type an instruction and `enter` starts a session with it in the selected row's directory (a job's `cwd`, a session's, a run's), or the menu's folder from a menu row, so starting work never depends on a session already being there. Claude starts as a background session (`claude --bg` with the instruction) on a thread, so the dashboard never waits; its row is there the moment `enter` is pressed, working, titled with the instruction's first line, and the registry's row takes over once Claude lists the id `--bg` printed. Until then `enter` and `ctrl+x` on it say it is still starting; a launch that fails takes the row away and puts the instruction back in the composer. Once listed, `enter` on the row attaches and Ctrl+Z comes back. Codex has no background mode, so it opens here as a thread of its app-server daemon with the TUI as a client, as [harness.md](harness.md#kinds) describes; leaving the client keeps the thread and the dashboard records its id to resume it. A harness that cannot be left running is refused with the reason on the hint line and the instruction stays in the composer. There is no policy and no ledger here: it is the harness natively in that directory, with its own permission prompts. A supervised one-off run is the menu's `runs` row, or `cones run --prompt` from a shell.
+
+Under the composer, the hint line names the keys, or shows the last action's result until the next key.
+
+## The job wizard
+
+Jobs are added, edited and deleted from the dashboard; the file stays yours to edit by hand too. `ctrl+n`, or `enter` on the menu's `runs` row, asks four questions on the prompt line, each answered with `enter`; backspace on an empty answer goes back one, `esc` cancels.
+
+| Question | Answer |
+| --- | --- |
+| `name ›` | 1-80 letters, digits, `-` or `_`; the launchd label is `local.cones.<name>`. |
+| `dir ›` | A directory. `~` expands, a relative path is taken from the jobs file's directory, and the placeholder is the selected row's directory, or the dashboard's cwd with nothing selected; `enter` on an empty answer takes it. `tab` completes it as the `folder` prompt does. A path that is not an existing directory stays on the question with `not a directory: /path` inline. Stored in `~` form. |
+| `schedule ›` | Five-field local-time cron, as in `0 9 * * 1-5`, checked the way `cones install` checks it. |
+| `prompt ›` | The task. |
+
+The job is a Claude job under the file's defaults; model, budget, tools and the rest are edited in the file, see [jobs.md](jobs.md). Saving rewrites only that job's block of jobs.yaml, found by its `- name:` line, so comments elsewhere and the other jobs' formatting survive; the whole file is validated first and a bad answer comes back inline with the file untouched. `ctrl+e` on a job row opens the same wizard filled in from the file, and saving keeps every field the wizard does not ask about. `ctrl+x` twice on a job with no run in flight removes its block. After each of these the dashboard runs `cones install`, so launchd matches the file; an install error shows on the hint line.
