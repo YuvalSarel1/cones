@@ -5,7 +5,7 @@
 <rect x="58.15" y="23.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="30" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">┌── </text>
 <text x="150.9" y="30" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">cones </text>
-<text x="201.5" y="30" xml:space="preserve" textLength="328.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">── ~/personal/cones/.claude/worktrees┐│</text>
+<text x="201.5" y="30" xml:space="preserve" textLength="328.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">─────────────────── ~/personal/cones ┐│</text>
 <rect x="24.43" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="32.9" y="33" width="8.4" height="20" rx="0" fill="#ff8700"/>
 <rect x="32.86" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
@@ -17,8 +17,8 @@
 <rect x="66.58" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
 <rect x="75.01" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▇ </text>
-<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">3</text>
+<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▁ </text>
+<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">2</text>
 <text x="159.3" y="50" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> working  </text>
 <text x="243.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇ </text>
 <text x="260.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#d29922" font-weight="700">1</text>
@@ -27,7 +27,7 @@
 <text x="395.3" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">0</text>
 <text x="403.8" y="50" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> idle</text>
 <text x="462.8" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓ </text>
-<text x="479.6" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">3</text>
+<text x="479.6" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">1</text>
 <text x="488.1" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950"> d</text>
 <text x="513.4" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">││</text>
 <text x="530.2" y="50" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
@@ -57,41 +57,30 @@
 <text x="16.0" y="150" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state        title                           │</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
 <text x="521.8" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
+<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="190" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      </text>
 <text x="252.0" y="190" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">orchestrator sweep setup        </text>
 <text x="521.8" y="190" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
+<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
 <text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="210" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
-<text x="252.0" y="210" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">model and agent selection defaul</text>
+<text x="142.4" y="210" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">needs input  </text>
+<text x="252.0" y="210" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">config categories iteration     </text>
 <text x="521.8" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
 <text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      peek pane responsive sizing     </text>
+<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      tab bounce behavior             </text>
 <text x="521.8" y="230" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="250" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
-<text x="58.1" y="250" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="250" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
-<text x="252.0" y="250" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">button hover pane preview       </text>
 <text x="521.8" y="250" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="270" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
-<text x="58.1" y="270" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="270" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      pi parity documentation         </text>
+<text x="16.0" y="270" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
 <text x="521.8" y="270" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="290" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
+<text x="32.9" y="290" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
 <text x="58.1" y="290" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="290" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">needs input  </text>
-<text x="252.0" y="290" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">config categories iteration     </text>
+<text x="142.4" y="290" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
+<text x="252.0" y="290" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">exposure channel permissions sco</text>
 <text x="521.8" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="310" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="330" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
 <text x="521.8" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="350" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
-<text x="58.1" y="350" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="350" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
-<text x="252.0" y="350" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">exposure channel permissions sco</text>
 <text x="521.8" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="390" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
@@ -118,9 +107,7 @@
 <text x="58.1" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> jobs · </text>
 <text x="125.6" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">← →</text>
 <text x="150.9" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> pick · </text>
-<text x="218.3" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
-<text x="243.6" y="690" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> codex · </text>
-<text x="319.5" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">esc</text>
-<text x="344.8" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> quit</text>
+<text x="218.3" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">esc</text>
+<text x="243.6" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> quit</text>
 <text x="521.8" y="690" xml:space="preserve" textLength="505.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│───────────────────────────────────────────────────────────</text>
 </svg>

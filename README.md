@@ -40,12 +40,13 @@ Open the dashboard. Existing sessions appear automatically; no jobs file is need
 cones tui
 ```
 
-To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Tab` switches between Claude Code and Codex.
+To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Ctrl+O` switches between Claude Code and Codex.
 
 | Key | Action |
 | --- | --- |
 | `↑` `↓` | Select a row. |
 | `Enter` | With no instruction typed, open a session, start a job or follow a run's output. |
+| `Tab` | Bounce between the dashboard and the session in the pane. |
 | `Ctrl+Z` | Return from an opened session while it keeps working. |
 | `Esc` | Clear the instruction, or quit the dashboard when it is empty. |
 

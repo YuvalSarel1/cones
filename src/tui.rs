@@ -2765,12 +2765,8 @@ const GUIDE: &[(&str, &str)] = &[
         "types an instruction; enter starts a session with it in the selected row's directory",
     ),
     (
-        "tab",
-        "the harness the next session starts under, claude or codex",
-    ),
-    (
         "ctrl+o",
-        "the model and provider the next sessions start with, seeded from the defaults; the composer's prefix shows them",
+        "the harness, model and provider the next sessions start with, seeded from the defaults; the composer's prefix shows them",
     ),
     (
         "ctrl+v",
@@ -2785,6 +2781,10 @@ const GUIDE: &[(&str, &str)] = &[
         "delete a character; ctrl+w alt+d a word; ctrl+u ctrl+k everything before or after the cursor",
     ),
     ("", "Viewers"),
+    (
+        "tab",
+        "into the pane's viewer and back out to the list; shift+tab inside a viewer is the client's",
+    ),
     (
         "ctrl+z",
         "back to the list from a viewer or a button's screen; the viewer stays alive and enter on its row gives it the keys again",
@@ -4078,7 +4078,7 @@ impl App {
     /// elsewhere that needs input, and the keys that leave. The counts stay live because the
     /// reload loop runs while a viewer is focused. The ends get the width first; the middle
     /// is cut from its right, and the needs-input note is shown whole or not at all. On a
-    /// width too narrow for both ends, `ctrl+\ split` goes first, then `ctrl+z back`.
+    /// width too narrow for both ends, `ctrl+\ split` goes first, then `tab back`.
     fn strip(&self, i: usize, width: u16) -> Line<'static> {
         let open = &self.viewers[i];
         let width = width as usize;
@@ -4123,7 +4123,7 @@ impl App {
             });
         // Full screen is a choice; the way back to the split is here.
         let mut keys = vec![
-            Span::styled("ctrl+z back", dim()),
+            Span::styled("tab back", dim()),
             Span::styled(" · ctrl+\\ split", dim()),
         ];
         let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
@@ -4892,8 +4892,8 @@ impl App {
         words
     }
 
-    /// The composer: the harness `tab` picked with the model and provider the next session
-    /// starts with, then the instruction or a short placeholder.
+    /// The composer: the harness `ctrl+o` picked with the model and provider the next
+    /// session starts with, then the instruction or a short placeholder.
     fn composer(&self) -> Line<'static> {
         let kind = harness::KNOWN[self.harness].to_string();
         let words = self.session_words();
@@ -4935,7 +4935,7 @@ impl App {
             .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
         // Beside the list a focused viewer has no strip; the keys that leave it are here.
         let mut line = if self.focus.is_some() {
-            hints(&[("ctrl+z", "back"), ("ctrl+\\", "full screen")])
+            hints(&[("tab", "back"), ("ctrl+\\", "full screen")])
         } else {
             self.mode_hints(prefix.as_ref().map_or(0, Span::width))
         };
@@ -4949,7 +4949,6 @@ impl App {
     /// keys that act everywhere go, last first, until it fits the column it is drawn in
     /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
-        let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if self.menu_is("jobs") || self.on_new_job() {
             "new job with it".to_owned()
         } else {
@@ -5010,8 +5009,7 @@ impl App {
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
-                ("tab", &next),
-                ("ctrl+o", "model"),
+                ("ctrl+o", "harness · model"),
                 ("ctrl+v", "paste image"),
                 ("esc", "clear"),
             ]),
@@ -5030,10 +5028,10 @@ impl App {
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                keys.extend([
-                    ("tab", next.as_str()),
-                    ("esc", if self.jobs_view { "back" } else { "quit" }),
-                ]);
+                if self.shown().is_some() {
+                    keys.push(("tab", "pane"));
+                }
+                keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
                 let room = (self.hint_width() as usize).saturating_sub(taken);
                 let mut line = hints(&keys);
                 while keys.len() > 2 && line.width() > room {
@@ -5222,11 +5220,18 @@ impl App {
     /// the viewer beside the list. Two states only, the list or a viewer: a third, the viewer
     /// inside over the split, and a ctrl+] that focused the pane in place or cycled viewers
     /// were taken out on 2026-09-15 as too much to hold in mind. ctrl+\ means the same thing
-    /// in both states, the pane or the whole frame, so it is the one key both take.
+    /// in both states, the pane or the whole frame, so it is the one key both take; tab is
+    /// the other, the bounce from the list into the pane's viewer and back out of it.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
             if ctrl && code == KeyCode::Char('z') {
+                self.unfocus();
+                return Ok(false);
+            }
+            // tab bounces back to the list, as it bounces into the pane from there. shift+tab
+            // is still the client's, so a harness that cycles modes with it keeps that key.
+            if code == KeyCode::Tab && mods.is_empty() {
                 self.unfocus();
                 return Ok(false);
             }
@@ -5471,7 +5476,12 @@ impl App {
                     }
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
-                    KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
+                    // tab bounces into the pane's viewer and back; the harness the next
+                    // session starts under is ctrl+o's, with the model and provider.
+                    KeyCode::Tab => match self.shown() {
+                        Some(i) => self.focus(i),
+                        None => self.status = "nothing in the pane".into(),
+                    },
                     // shift+enter attaches over the whole frame, pane or no pane, and leaves
                     // the layout as it was. Claude Code's terminal bindings send it as ESC CR,
                     // which crossterm reports as alt+enter; a kitty-protocol terminal reports
@@ -7360,7 +7370,7 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            hint.starts_with("enter start job · ctrl+x delete · ctrl+e edit · tab codex"),
+            hint.starts_with("enter start job · ctrl+x delete · ctrl+e edit · esc back"),
             "a job row offers its own keys first: {hint}"
         );
         app.stop();
@@ -7552,7 +7562,7 @@ mod tests {
     }
 
     #[test]
-    fn the_bottom_lines_name_the_next_harness_and_what_ctrl_x_does() {
+    fn the_bottom_lines_name_the_harness_and_what_ctrl_x_does() {
         let d = dir();
         let mut app = app(d.path());
         // The pane off: this is about the frame alone.
@@ -7567,12 +7577,11 @@ mod tests {
         assert_eq!(text(app.composer()), "✻ claude › Type an instruction…");
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter add folder · ← → pick · tab codex · esc quit"),
+            hint.starts_with("enter add folder · ← → pick · esc quit"),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
-        assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.menu = 1;
@@ -8028,13 +8037,13 @@ mod tests {
             "with no title the viewer's what names it: {strip:?}"
         );
         // The counts are on it, cut from their right where the keys begin: at 80 columns the
-        // split key now sits beside `ctrl+z back` whatever the width, so there is less middle.
+        // split key now sits beside `tab back` whatever the width, so there is less middle.
         assert!(
             strip.contains("0 working"),
             "the fleet counts are on it: {strip:?}"
         );
         assert!(
-            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            strip.trim_end().ends_with("tab back · ctrl+\\ split"),
             "{strip:?}"
         );
         assert!(
@@ -8136,7 +8145,7 @@ mod tests {
             .expect("the alert is its own span");
         assert_eq!(alert.style.fg, Some(Color::Yellow));
         assert!(
-            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            text.trim_end().ends_with("tab back · ctrl+\\ split"),
             "a frame wide enough for the split offers it: {text}"
         );
         assert_eq!(line.width(), 200, "padded to the width");
@@ -8147,14 +8156,14 @@ mod tests {
         assert!(!text.contains("needs"), "no partial note: {text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
         assert!(
-            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            text.trim_end().ends_with("tab back · ctrl+\\ split"),
             "{text}"
         );
         assert_eq!(app.strip(0, 60).width(), 60);
 
-        // Narrower than both ends: `ctrl+z back` goes too.
+        // Narrower than both ends: `tab back` goes too.
         let text = app.strip(0, 24).to_string();
-        assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
+        assert!(text.trim_end().ends_with("tab back"), "{text}");
         assert!(app.strip(0, 24).width() <= 24);
         let text = app.strip(0, 10).to_string();
         assert_eq!(text, "▲ cones   ", "{text}");
@@ -8345,7 +8354,7 @@ mod tests {
             "the pane starts right of the rule: {screen:#?}"
         );
         assert!(
-            !screen.iter().any(|r| r.contains("ctrl+z back")),
+            !screen.iter().any(|r| r.contains("tab back")),
             "no strip beside the list: {screen:#?}"
         );
         assert_eq!(
@@ -8363,7 +8372,12 @@ mod tests {
             left[29]
         );
 
-        // enter focuses the pane's viewer where it is.
+        // tab bounces into the pane's viewer and back out; enter focuses it too.
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.focus, Some(0));
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.focus, None, "tab in the viewer comes back to the list");
+        app.status.clear();
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
         assert_eq!(
@@ -8373,7 +8387,7 @@ mod tests {
         );
         t.draw(|f| app.draw(f)).unwrap();
         let hint = cells(&t, 29, 0..list);
-        assert!(hint.contains("ctrl+z back"), "{hint:?}");
+        assert!(hint.contains("tab back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
         assert!(!hint.contains("ctrl+]"), "{hint:?}");
         assert!(cells(&t, 0, list + 1..200).starts_with("VIEW"));
@@ -8396,7 +8410,7 @@ mod tests {
         assert!(
             app.hint_line()
                 .to_string()
-                .starts_with("filter: one  ctrl+z back"),
+                .starts_with("filter: one  tab back"),
             "a kept filter stays on the focused hint line: {}",
             app.hint_line()
         );
@@ -8470,7 +8484,7 @@ mod tests {
         assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
         let strip = cells(&t, 29, 0..200);
         assert!(
-            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            strip.trim_end().ends_with("tab back · ctrl+\\ split"),
             "{strip:?}"
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
@@ -8511,7 +8525,7 @@ mod tests {
         app.size = (30, 130);
         app.split = false;
         let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("tab codex · esc quit"), "{wide}");
+        assert!(wide.ends_with("ctrl+x delete · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
         // 140 columns with the pane on: the list column is 70; a long filter in front leaves
         // the keys no room.
@@ -8778,10 +8792,10 @@ mod tests {
         let args = harness::session_args(HarnessKind::Claude, None, "hi", &app.session_policy());
         assert!(args.contains(&"--model".into()) && args.contains(&"opus".into()));
         // Codex shows its own model, none set, and the provider still.
-        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert_eq!(app.session_words(), ["codex", "bedrock"]);
-        // The form's harness row is tab's pick too: keeping codex there is a tab press.
-        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        // The form's harness row carries the pick, back round to claude.
+        app.harness = (app.harness + 1) % harness::KNOWN.len();
         app.key(KeyCode::Char('o'), ctrl).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -9650,9 +9664,7 @@ mod tests {
         let screen = rows(&t, 120);
         assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
         assert!(
-            screen[29]
-                .trim_end()
-                .ends_with("ctrl+z back · ctrl+\\ split"),
+            screen[29].trim_end().ends_with("tab back · ctrl+\\ split"),
             "the strip: {:?}",
             screen[29]
         );
