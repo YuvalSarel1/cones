@@ -73,6 +73,8 @@ fn reset_terminal_protocols() {
 }
 
 const ORANGE: Color = Color::Indexed(208);
+/// A second ctrl+c within this window quits the dashboard, as in Claude Code.
+const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// The header cone's lit and shadow sides, one hue either side of ORANGE.
 const LIT: Color = Color::Indexed(214);
 const SHADE: Color = Color::Indexed(202);
@@ -1309,6 +1311,9 @@ struct App {
     feedback: Option<(&'static str, Instant)>,
     /// The row key ctrl+x armed; stays until ctrl+x confirms or any other key clears it.
     armed: Option<String>,
+    /// When ctrl+c was last pressed; a second press within `QUIT_CONFIRM` quits. A single
+    /// ctrl+c aimed at a viewer that has just closed must not take the dashboard with it.
+    quit_armed: Option<Instant>,
     /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
     /// The viewers alive inside the dashboard, focused or parsing off-screen; at most
@@ -1486,6 +1491,7 @@ impl App {
             removed_sessions: HashSet::new(),
             feedback: None,
             armed: None,
+            quit_armed: None,
             log: None,
             viewers: Vec::new(),
             focus: None,
@@ -3353,7 +3359,16 @@ impl App {
                     return Ok(false);
                 }
                 match code {
-                    KeyCode::Char('c') if ctrl => return Ok(true),
+                    KeyCode::Char('c') if ctrl => {
+                        if self
+                            .quit_armed
+                            .replace(Instant::now())
+                            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM)
+                        {
+                            return Ok(true);
+                        }
+                        self.status = "ctrl+c again quits".into();
+                    }
                     KeyCode::Char('x') if ctrl => {
                         self.armed = armed;
                         self.stop();
@@ -4635,6 +4650,18 @@ mod tests {
         app.stop();
         assert!(!fs::read_to_string(&jobs).unwrap().contains("name: one"));
         assert!(app.status.starts_with("job one deleted"), "{}", app.status);
+    }
+
+    #[test]
+    fn ctrl_c_quits_only_when_pressed_twice_in_quick_succession() {
+        let d = dir();
+        let mut app = app(d.path());
+        let c = |app: &mut App| app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        assert!(!c(&mut app), "one ctrl+c only arms");
+        assert_eq!(app.status, "ctrl+c again quits");
+        assert!(c(&mut app), "the second quits");
+        app.quit_armed = Some(Instant::now() - QUIT_CONFIRM);
+        assert!(!c(&mut app), "a stale arm is a first press again");
     }
 
     #[test]
