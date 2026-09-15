@@ -5495,6 +5495,13 @@ impl App {
             self.needs_clear = true;
             return Ok(false);
         }
+        // ctrl+\ is the pane's key from a button's screen too, the one meaning it has
+        // everywhere: the screen moves between the pane and the whole list, keys and all,
+        // and a form mid-edit keeps what is typed, since only the layout changes.
+        if ctrl && matches!(code, KeyCode::Char('\\' | '4')) && self.panel_focused() {
+            self.toggle_split();
+            return Ok(false);
+        }
         match &mut self.mode {
             Mode::Filter => {
                 match code {
@@ -9219,6 +9226,38 @@ mod tests {
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z comes back out");
+    }
+
+    /// ctrl+\ means the pane wherever it is pressed: a button's screen with the keys moves
+    /// between the pane and the whole list without losing the field it has open.
+    #[test]
+    fn ctrl_backslash_moves_a_buttons_screen_off_the_pane_and_back() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        while !app.menu_is("config") {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
+        let typed = match &app.mode {
+            Mode::Config(f) => f.values[f.row].clone(),
+            _ => panic!("the editor is open on a field"),
+        };
+        assert!(app.split_active());
+        for on in [false, true] {
+            app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.split_active(), on, "the pane goes off and comes back");
+            assert!(
+                matches!(&app.mode, Mode::Config(f) if f.open && f.values[f.row] == typed),
+                "and the editor keeps the keys and what is typed in it"
+            );
+        }
     }
 
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
