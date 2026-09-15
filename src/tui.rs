@@ -580,8 +580,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let mut out = String::new();
     let summary = data.summary(0);
     let width = summary.width() + 16;
-    let folder = std::env::current_dir().map_or_else(|_| String::new(), |p| fleet::tilde(&p));
-    for line in header_lines(summary, &folder, width) {
+    for line in header_lines(summary, width) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -706,7 +705,7 @@ fn cone() -> [Vec<Span<'static>>; 3] {
 }
 
 /// Keep the header's right border visible when clipping counts.
-fn header_lines(summary: Line<'static>, folder: &str, width: usize) -> Vec<Line<'static>> {
+fn header_lines(summary: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let mascot = cone();
     if width < 24 {
         return mascot
@@ -721,18 +720,13 @@ fn header_lines(summary: Line<'static>, folder: &str, width: usize) -> Vec<Line<
             })
             .collect();
     }
-    let inner = width - 14;
-    let folder = fit(
-        vec![Span::styled(format!(" {folder} "), dim())],
-        inner.saturating_sub(11),
-    );
-    let folder_width: usize = folder.iter().map(Span::width).sum();
-    let mut top = vec![
+    // The box wraps the counts, so it stops where they do.
+    let inner = (summary.width() + 2).min(width - 14);
+    let top = vec![
         Span::styled("── ", dim()),
         Span::styled("cones ", lit()),
-        Span::styled("─".repeat(inner - 9 - folder_width), dim()),
+        Span::styled("─".repeat(inner - 9), dim()),
     ];
-    top.extend(folder);
     let summary = fit(summary.spans, inner - 2);
     let used: usize = summary.iter().map(Span::width).sum();
     let mut middle = vec![Span::raw(" ")];
@@ -5690,7 +5684,6 @@ impl App {
         frame.render_widget(
             Paragraph::new(header_lines(
                 self.data.summary(spinner_frame(self.tick)),
-                &fleet::tilde(&self.cwd),
                 head.width as usize,
             )),
             head,
@@ -6147,24 +6140,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_keeps_its_border_at_narrow_widths_and_with_wide_folder_names() {
+    fn header_fits_the_counts_and_keeps_its_border_at_narrow_widths() {
+        let summary = Line::raw("123 working  4 input  5 idle  6 done  ·  7 jobs  8 runs");
+        let fitted = summary.width() + 16;
         for width in [0, 1, 7, 23, 24, 40, 60, 80, 120] {
-            let lines = header_lines(
-                Line::raw("123 working  4 input  5 idle  6 done  ·  7 jobs  8 runs"),
-                "~/个人/projects/a-long-folder",
-                width,
-            );
+            let lines = header_lines(summary.clone(), width);
             assert_eq!(lines.len(), 3);
             assert!(lines.iter().all(|line| line.width() <= width));
             if width >= 24 {
-                assert!(lines.iter().all(|line| line.width() == width));
+                let want = width.min(fitted);
+                assert!(lines.iter().all(|line| line.width() == want), "{width}");
                 for (line, border) in lines.iter().zip(['┐', '│', '┘']) {
                     assert!(line.to_string().ends_with(border));
                 }
             }
             if width == 120 {
-                let summary = lines[1].to_string();
-                assert!(summary.contains("123 working") && summary.contains("8 runs"));
+                let counts = lines[1].to_string();
+                assert!(counts.contains("123 working") && counts.contains("8 runs"));
             }
         }
     }
