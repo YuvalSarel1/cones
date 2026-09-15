@@ -3933,10 +3933,22 @@ impl App {
                     }
                 }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
+                // A live `--remote … resume` client on the row keeps the daemon holding the
+                // thread, so it gets the SIGTERM a plain Codex TUI gets; the thread stays
+                // resumable in the daemon.
+                let client = self
+                    .data
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == id)
+                    .is_some_and(|s| s.pid.is_some());
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
                         Ledger::new(&state)?.hide(&target)?;
+                        if client {
+                            fleet::stop(&claude, &target)?;
+                        }
                         Ok(true)
                     } else {
                         Ledger::new(&state).and_then(|l| runner::stop(&l, &claude, &target))
