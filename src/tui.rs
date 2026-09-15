@@ -3708,6 +3708,18 @@ impl App {
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
                     KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
+                    // shift+enter attaches over the whole frame. Claude Code's terminal bindings
+                    // send it as ESC CR, which crossterm reports as alt+enter; a kitty-protocol
+                    // terminal reports the shift itself.
+                    KeyCode::Enter
+                        if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+                            && self.text.trim().is_empty() =>
+                    {
+                        if self.split && self.size.1 >= SPLIT_MIN {
+                            self.toggle_split();
+                        }
+                        self.enter()?;
+                    }
                     KeyCode::Enter if self.text.trim().is_empty() => self.enter()?,
                     KeyCode::Enter => self.start(),
                     KeyCode::Char('s') if ctrl => {
@@ -5736,6 +5748,29 @@ mod tests {
 
     /// A dashboard on a background session whose viewer is alive but not focused, drawn once
     /// on a frame `width` columns wide and 30 rows tall.
+    /// shift+enter on a session row, beside the list, attaches over the whole frame, as
+    /// enter then ctrl+\ would; the ESC CR Claude Code's terminal bindings send for it,
+    /// alt+enter to crossterm, does the same. Full-frame already, it is enter.
+    #[test]
+    fn shift_enter_attaches_over_the_whole_frame() {
+        let (_d, mut app, mut t) = split_setup(200);
+        for mods in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            app.split = true;
+            app.unfocus();
+            assert!(!app.key(KeyCode::Enter, mods).unwrap());
+            assert!(!app.split, "{mods:?} picks the full frame");
+            assert_eq!(app.focus, Some(0));
+            t.draw(|f| app.draw(f)).unwrap();
+            assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
+        }
+        app.unfocus();
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
+        assert!(
+            !app.split && app.focus == Some(0),
+            "full-frame already, it attaches"
+        );
+    }
+
     fn split_setup(
         width: u16,
     ) -> (
