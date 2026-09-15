@@ -133,31 +133,6 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     }
 }
 
-/// The harness's own list of its agents, opened without picking a row first: `claude agents`,
-/// or Codex's `resume` picker as a client of the app-server daemon, so a thread picked there
-/// keeps working after the client is left, as a thread opened with `n` does. A thread resumed
-/// this way is not recorded: `launched` reads rollouts started after the launch only, and
-/// the daemon has no thread list yet, so once left it is a row again only when a client shows
-/// it.
-pub fn agents(kind: HarnessKind) -> Result<std::process::Command> {
-    let name = kind.to_string();
-    let path = executable(&name, &launch_path())
-        .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
-    Ok(match kind {
-        HarnessKind::Claude => {
-            let mut c = std::process::Command::new(path);
-            c.arg("agents");
-            c
-        }
-        HarnessKind::Codex => {
-            let (path, remote) = codex_remote(&path)?;
-            let mut c = std::process::Command::new(path);
-            c.args(["--remote", &remote, "resume", "--all"]);
-            c
-        }
-    })
-}
-
 /// The client that reopens a daemon thread in its directory.
 pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
     let path = executable("codex", &launch_path())

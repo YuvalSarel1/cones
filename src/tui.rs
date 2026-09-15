@@ -1433,16 +1433,6 @@ pub enum FormAction {
 const WHEN: [&str; 6] = ["once", "hourly", "daily", "weekdays", "weekly", "cron"];
 const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-/// A row of options with the picked one lit and bracketed, then the keys that move and the
-/// verb `enter` performs.
-fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, enter: &str) {
-    picks(spans, options, picked);
-    spans.push(Span::styled(
-        format!("  ←→ pick · enter {enter} · esc cancel"),
-        dim(),
-    ));
-}
-
 /// A row of options with the picked one lit and bracketed.
 fn picks(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize) {
     let lit = lit();
@@ -2581,8 +2571,6 @@ enum Mode {
     Job(Box<JobForm>),
     /// The menu's `config` button: the editor of jobs.yaml's `defaults` block.
     Config(Box<ConfigForm>),
-    /// The `ctrl+o` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
-    Harness(usize),
     /// The menu's `folder` prompt: the path typed so far.
     Folder(Input),
     /// The `ctrl+n` prompt: the selected Claude session's new title.
@@ -2619,10 +2607,6 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "ctrl+f",
         "filter rows by text; enter keeps the filter, esc clears it",
-    ),
-    (
-        "ctrl+o",
-        "a harness's own agents view: claude agents or codex resume",
     ),
     (
         "ctrl+n",
@@ -2863,7 +2847,7 @@ fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
 
 /// A viewer and what the dashboard knows about it.
 struct Open {
-    /// The row key it opened from, or `agents:<harness>` for a harness's own agents view.
+    /// The row key it opened from.
     key: String,
     /// `attach`, `codex`, `claude agents`, `logs`: the word in the status line.
     what: String,
@@ -3399,8 +3383,8 @@ impl App {
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
     /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
     /// paints; on any other session row nothing, so a Codex row never has a Claude session's
-    /// screen under its name; on a row that is not a session, the one focused last, never a
-    /// harness's agents view. On a narrow frame only a focused viewer is drawn.
+    /// screen under its name; on a row that is not a session, the one focused last. On a
+    /// narrow frame only a focused viewer is drawn.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -3439,14 +3423,12 @@ impl App {
         }
     }
 
-    /// The viewer the user was in last; a speculative viewer was never in front, and a
-    /// harness's agents view is a list, not an agent, so leaving it shows the agent seen
-    /// before it, not the list under the cursor's row.
+    /// The viewer the user was in last; a speculative viewer was never in front.
     fn most_recently_focused(&self) -> Option<usize> {
         self.viewers
             .iter()
             .enumerate()
-            .filter(|(_, o)| !o.speculative && !o.key.starts_with("agents:"))
+            .filter(|(_, o)| !o.speculative)
             .max_by_key(|(_, o)| o.last_focused)
             .map(|(i, _)| i)
     }
@@ -4732,7 +4714,6 @@ impl App {
                 ("ctrl+s", "save"),
                 ("esc", "cancel"),
             ]),
-            Mode::Harness(_) => Line::default(),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
                 ("enter", "add"),
@@ -5002,41 +4983,6 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            // The harness's own list of its agents, as a viewer this dashboard waits on: `claude
-            // agents`, or Codex's resume picker on the daemon. No row is needed first.
-            Mode::Harness(i) => {
-                let i = *i;
-                match code {
-                    KeyCode::Esc => self.mode = Mode::Normal,
-                    KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::Char(' ') => {
-                        self.mode = Mode::Harness((i + 1) % harness::KNOWN.len());
-                    }
-                    KeyCode::Enter => {
-                        let kind = harness::KNOWN[i];
-                        self.mode = Mode::Normal;
-                        let key = format!("agents:{kind}");
-                        if let Some(i) = self.viewer_index(&key) {
-                            self.focus(i);
-                            return Ok(false);
-                        }
-                        if kind == HarnessKind::Codex {
-                            self.prepare_viewer(
-                                "codex agents".into(),
-                                key,
-                                None,
-                                None,
-                                move || harness::agents(kind),
-                            );
-                            return Ok(false);
-                        }
-                        match harness::agents(kind) {
-                            Ok(c) => self.open(self.size, c, &format!("{kind} agents"), key, None),
-                            Err(e) => self.status = e.to_string(),
-                        }
-                    }
-                    _ => {}
-                }
-            }
             Mode::Guide(top) => {
                 let top = *top;
                 match code {
@@ -5243,7 +5189,6 @@ impl App {
                     // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
-                    KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
@@ -5347,16 +5292,6 @@ impl App {
             }
             Mode::Job(f) => f.line(),
             Mode::Config(f) => f.line(),
-            Mode::Harness(i) => {
-                let mut spans = vec![Span::styled("open › ", Style::default().fg(ORANGE))];
-                choices(
-                    &mut spans,
-                    &["claude agents", ">_ codex resume"],
-                    *i,
-                    "open",
-                );
-                Line::from(spans)
-            }
             Mode::Folder(input) => {
                 let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
                 spans.extend(input.spans(&fleet::tilde(&self.cwd)));
@@ -8926,37 +8861,6 @@ mod tests {
         wait_paint(&mut app, 1, "CODEX LIVE");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("CODEX LIVE"));
-    }
-
-    #[test]
-    fn leaving_the_agents_view_shows_the_agent_seen_before_it_not_the_list() {
-        let d = dir();
-        let mut app = app(d.path());
-        app.refresh().unwrap();
-        // A's viewer was in front, then `claude agents` opened over it; ctrl+z leaves that.
-        app.viewers.push(viewer_open("a", "attach", "VIEW"));
-        wait_paint(&mut app, 0, "VIEW");
-        app.viewers
-            .push(viewer_open("agents:claude", "claude agents", "LIST"));
-        wait_paint(&mut app, 1, "LIST");
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
-        t.draw(|f| app.draw(f)).unwrap();
-        app.focus(1);
-        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.focus.is_none());
-        // The cursor is on a menu row, which has no viewer of its own.
-        assert!(matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)));
-        assert_eq!(
-            app.shown(),
-            Some(0),
-            "the pane shows A, not the agents list"
-        );
-        t.draw(|f| app.draw(f)).unwrap();
-        let screen = rows(&t, 200).join("\n");
-        assert!(
-            screen.contains("VIEW") && !screen.contains("LIST"),
-            "{screen}"
-        );
     }
 
     #[test]
