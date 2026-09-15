@@ -77,11 +77,12 @@ const ORANGE: Color = Color::Indexed(208);
 /// A second ctrl+c within this window quits the dashboard, as in Claude Code.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// A working row's icon: a bar that fills and empties, the same family as the sparkline and
-/// the resting `▁`. One animation for every harness; until 2026-09-15 each harness spun its
-/// own mark, and Claude's star spent a third of its cycle as a dot, so a working row read as
-/// less than an idle one.
-const SPINNER: [&str; 14] = [
-    "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+/// the resting `▁`, holding two extra frames full and two empty so the turn reads as a breath
+/// rather than a flicker. One animation for every harness; until 2026-09-15 each harness spun
+/// its own mark, and Claude's star spent a third of its cycle as a dot, so a working row read
+/// as less than an idle one.
+const SPINNER: [&str; 18] = [
+    "▁", "▁", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "█", "█", "▇", "▆", "▅", "▄", "▃", "▂",
 ];
 /// Milliseconds per spinner frame; the draw loop ticks every 100.
 const FRAME_MS: usize = 160;
