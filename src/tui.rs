@@ -2095,10 +2095,10 @@ impl App {
     /// The dashboard has the frame, in the normal mode with the composer empty and nothing
     /// being prepared; the cursor has rested for `REST` on a Claude background session that
     /// is listed, not being stopped or removed, has no viewer yet and was not tried during
-    /// this rest. A background job that finished is still listed while its daemon lives, and
-    /// an attach to it would only be refused, so it is not tried. Only `claude attach` is
-    /// side-effect free for its session: `cones attach` on a finished run resumes it, and a
-    /// Codex client shows up in the fleet.
+    /// this rest. A background job whose prompt is done is still a live worker that `claude
+    /// attach` joins and continues, so it is tried like a working one; a failed or stopped one
+    /// has no worker to join. Only `claude attach` is side-effect free for its session:
+    /// `cones attach` on a finished run resumes it, and a Codex client shows up in the fleet.
     fn prespawn_target(&self) -> Option<(String, PathBuf)> {
         if !matches!(self.mode, Mode::Normal)
             || self.focus.is_some()
@@ -2126,7 +2126,7 @@ impl App {
         let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
         if s.harness != "claude"
             || s.own_terminal()
-            || matches!(s.state.as_str(), "done" | "failed" | "stopped")
+            || matches!(s.state.as_str(), "failed" | "stopped")
         {
             return None;
         }
@@ -5994,11 +5994,12 @@ mod tests {
         );
         app.text.clear();
         let state = std::mem::replace(&mut app.data.sessions[0].state, "done".into());
-        assert_eq!(
-            app.prespawn_target(),
-            None,
-            "a finished job is not attached"
+        assert!(
+            app.prespawn_target().is_some(),
+            "a job whose prompt is done is a live worker that enter attaches"
         );
+        app.data.sessions[0].state = "stopped".into();
+        assert_eq!(app.prespawn_target(), None, "a stopped job has no worker");
         app.data.sessions[0].state = state;
         app.viewers.push(silent_open("run:r1"));
         app.focus = Some(0);
