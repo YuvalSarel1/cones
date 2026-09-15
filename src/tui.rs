@@ -1846,14 +1846,59 @@ impl JobForm {
 
 /// A field the config editor shows: the group it sits under, its name, the words beside it on
 /// its row, the fuller explanation under the list while it is selected, what an empty answer
-/// means (the built-in), and the options when it is picked rather than typed.
+/// means (the built-in), and how its value is entered.
 struct Field {
     group: &'static str,
     name: &'static str,
     short: &'static str,
     long: &'static str,
     builtin: &'static str,
-    picks: Option<&'static [&'static str]>,
+    input: Answer,
+}
+
+/// How a field takes its value: typed; one of a few words, `-` for the built-in; those words
+/// or something typed, named for the help line; or any of a list, joined with commas in the
+/// order they were added.
+enum Answer {
+    Typed,
+    Pick(&'static [&'static str]),
+    PickOrType(&'static [&'static str], &'static str),
+    Many(&'static [&'static str]),
+}
+
+impl Field {
+    /// The words a field offers, when it offers any.
+    fn picks(&self) -> Option<&'static [&'static str]> {
+        match self.input {
+            Answer::Typed => None,
+            Answer::Pick(o) | Answer::PickOrType(o, _) | Answer::Many(o) => Some(o),
+        }
+    }
+
+    /// Whether typing edits the value.
+    fn typed(&self) -> bool {
+        !matches!(self.input, Answer::Pick(_))
+    }
+
+    /// Whether `value` is shown as picks: empty or every comma-separated item is an option.
+    /// A trailing comma is a list being typed, so space keeps typing.
+    fn picked(&self, value: &str) -> bool {
+        match self.picks() {
+            Some(o) => {
+                !value.trim_end().ends_with(',') && items(value).iter().all(|v| o.contains(v))
+            }
+            None => false,
+        }
+    }
+}
+
+/// The comma-separated items of a list value.
+fn items(value: &str) -> Vec<&str> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .collect()
 }
 
 const BOOL: &[&str] = &["-", "false", "true"];
@@ -1877,7 +1922,7 @@ const FIELDS: [Field; 17] = [
         short: "time limit (min)",
         long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
         builtin: "30",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "jobs",
@@ -1885,7 +1930,7 @@ const FIELDS: [Field; 17] = [
         short: "cost per run (USD)",
         long: "Maximum cost per run in USD. Claude stops when the budget is reached.",
         builtin: "2.00",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "jobs",
@@ -1893,7 +1938,7 @@ const FIELDS: [Field; 17] = [
         short: "cost per 24h (USD)",
         long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
         builtin: "none",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "jobs",
@@ -1901,7 +1946,7 @@ const FIELDS: [Field; 17] = [
         short: "allow file changes",
         long: "false disables Claude's Edit, Write and Bash tools and makes Codex read-only. true permits writes and sandboxes allowed Bash commands.",
         builtin: "false",
-        picks: Some(BOOL),
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "jobs",
@@ -1909,24 +1954,23 @@ const FIELDS: [Field; 17] = [
         short: "when already running",
         long: "When a job is already running: skip the next run, allow both, or replace the active run.",
         builtin: "skip",
-        picks: Some(&["-", "skip", "allow", "replace"]),
+        input: Answer::Pick(&["-", "skip", "allow", "replace"]),
     },
     Field {
         group: "claude",
         name: "model",
-        short: "fable, opus, sonnet, haiku",
-        long: "The alias passed to Claude as --model. - leaves the choice to Claude.",
+        short: "alias or model id",
+        long: "The alias or model id passed to Claude as --model. - leaves the choice to Claude.",
         builtin: "default",
-        // ponytail: aliases only; a full model id needs the yaml, typed picks if asked.
-        picks: Some(&["-", "fable", "opus", "sonnet", "haiku"]),
+        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
     },
     Field {
         group: "claude",
         name: "tools",
         short: "allowed tools",
-        long: "Comma-separated: Read, Grep, Glob, Edit, Write, Bash or Bash(pattern). write: false removes Edit, Write and Bash.",
+        long: "Space adds or removes a tool; type for Bash(pattern). write: false removes Edit, Write and Bash.",
         builtin: "Read, Grep, Glob",
-        picks: None,
+        input: Answer::Many(&["Read", "Grep", "Glob", "Edit", "Write", "Bash"]),
     },
     Field {
         group: "claude",
@@ -1934,7 +1978,7 @@ const FIELDS: [Field; 17] = [
         short: "turns per run",
         long: "Maximum assistant turns per run. Empty leaves the limit to Claude.",
         builtin: "none",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "codex",
@@ -1942,7 +1986,7 @@ const FIELDS: [Field; 17] = [
         short: "empty uses default",
         long: "Empty uses Codex's default model. Codex jobs are currently unavailable because their dollar budget cannot be enforced.",
         builtin: "default",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "codex",
@@ -1950,7 +1994,7 @@ const FIELDS: [Field; 17] = [
         short: "disable sandbox",
         long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
         builtin: "false",
-        picks: Some(BOOL),
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
@@ -1958,15 +2002,15 @@ const FIELDS: [Field; 17] = [
         short: "failure alerts",
         long: "Notify on failures, timeouts and runs skipped for budget.",
         builtin: "false",
-        picks: Some(BOOL),
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
         name: "columns",
         short: "session columns",
-        long: "Comma-separated: state, model, age, activity, context, tokens, last, sparkline. state appears before the title; the rest follow in the order given.",
+        long: "Space adds or removes a column. state appears before the title; the rest follow in the order they were added.",
         builtin: "state, context, sparkline, model, activity, last",
-        picks: None,
+        input: Answer::Many(&config::COLUMNS),
     },
     Field {
         group: "cones",
@@ -1974,7 +2018,7 @@ const FIELDS: [Field; 17] = [
         short: "bar count",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
         builtin: "16",
-        picks: None,
+        input: Answer::Typed,
     },
     Field {
         group: "cones",
@@ -1982,7 +2026,7 @@ const FIELDS: [Field; 17] = [
         short: "time per bar",
         long: "Time per bar, such as 30s, 1m or 5m. Maximum 24h.",
         builtin: "1m",
-        picks: None,
+        input: Answer::PickOrType(&["-", "30s", "1m", "5m", "15m", "1h"], "a duration"),
     },
     Field {
         group: "cones",
@@ -1990,7 +2034,7 @@ const FIELDS: [Field; 17] = [
         short: "count per bar",
         long: "lines: all transcript lines. messages: assistant replies. tools: tool calls. tokens: output tokens.",
         builtin: "lines",
-        picks: Some(&["-", "lines", "messages", "tools", "tokens"]),
+        input: Answer::Pick(&["-", "lines", "messages", "tools", "tokens"]),
     },
     Field {
         group: "cones",
@@ -1998,7 +2042,7 @@ const FIELDS: [Field; 17] = [
         short: "chart scale",
         long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number sets the count for a full bar.",
         builtin: "fleet",
-        picks: None,
+        input: Answer::PickOrType(&["-", "fleet", "row", "log"], "a number"),
     },
     Field {
         group: "cones",
@@ -2006,7 +2050,7 @@ const FIELDS: [Field; 17] = [
         short: "ctrl+x mark (s)",
         long: "Seconds the red ctrl+x mark stays when no other key is pressed, up to 600. 0 keeps it until the next key.",
         builtin: "2",
-        picks: None,
+        input: Answer::Typed,
     },
 ];
 
@@ -2057,6 +2101,8 @@ pub struct ConfigForm {
     before: String,
     /// The cursor in the selected value, a byte offset; past the end means after it.
     cursor: usize,
+    /// The option under the cursor while a `Many` field shows its picks.
+    pick: usize,
 }
 
 impl ConfigForm {
@@ -2106,6 +2152,7 @@ impl ConfigForm {
             open: false,
             before: String::new(),
             cursor: usize::MAX,
+            pick: 0,
         }
     }
 
@@ -2120,6 +2167,7 @@ impl ConfigForm {
         self.open = true;
         self.before = self.values[self.row].clone();
         self.cursor = usize::MAX;
+        self.pick = 0;
     }
 
     fn field(&self) -> &'static Field {
@@ -2285,21 +2333,64 @@ impl ConfigForm {
                 }
                 _ => self.open = false,
             },
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.field().picks.is_some() => {
-                let opts = self.field().picks.unwrap_or_default();
-                let n = opts.len();
-                let at = opts
-                    .iter()
-                    .position(|o| *o == self.values[self.row])
-                    .unwrap_or(0);
-                let at = (at + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
-                self.values[self.row] = if at == 0 {
-                    String::new()
-                } else {
-                    opts[at].to_owned()
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab
+                if self.field().picked(&self.values[self.row]) =>
+            {
+                let f = self.field();
+                let opts = f.picks().unwrap_or_default();
+                let step = |at: usize| {
+                    (at + if code == KeyCode::Left {
+                        opts.len() - 1
+                    } else {
+                        1
+                    }) % opts.len()
                 };
+                if matches!(f.input, Answer::Many(_)) {
+                    self.pick = step(self.pick);
+                } else {
+                    let at = opts
+                        .iter()
+                        .position(|o| *o == self.values[self.row])
+                        .unwrap_or(0);
+                    self.values[self.row] = match step(at) {
+                        0 => String::new(),
+                        at => opts[at].to_owned(),
+                    };
+                }
             }
-            _ if self.field().picks.is_none() => {
+            // Space adds the option under the cursor to a list or takes it out.
+            KeyCode::Char(' ')
+                if matches!(self.field().input, Answer::Many(_))
+                    && self.field().picked(&self.values[self.row]) =>
+            {
+                let opt = self.field().picks().unwrap_or_default()[self.pick];
+                let mut have = items(&self.values[self.row]);
+                match have.iter().position(|v| *v == opt) {
+                    Some(i) => {
+                        have.remove(i);
+                    }
+                    None => have.push(opt),
+                }
+                self.values[self.row] = have.join(", ");
+            }
+            // A letter jumps to the option that starts with it.
+            KeyCode::Char(c) if !self.field().typed() => {
+                let opts = self.field().picks().unwrap_or_default();
+                if let Some(o) = opts.iter().find(|o| o.starts_with(c)) {
+                    self.values[self.row] = if *o == "-" {
+                        String::new()
+                    } else {
+                        (*o).to_owned()
+                    };
+                }
+            }
+            _ if self.field().typed() => {
+                // Typing over a single pick starts from empty rather than appending to it.
+                if matches!(self.field().input, Answer::PickOrType(..))
+                    && self.field().picked(&self.values[self.row])
+                {
+                    self.values[self.row].clear();
+                }
                 if let Some(at) = edit(&mut self.values[self.row], self.cursor, code, mods) {
                     self.cursor = at;
                 }
@@ -2430,16 +2521,37 @@ impl ConfigForm {
             spans.push(Span::styled("  enter edits", dim()));
             return Line::from(spans);
         }
-        let help = if let Some(opts) = f.picks {
-            let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
-            picks(&mut spans, opts, at);
-            format!("  - is the built-in, {}", f.builtin)
-        } else {
-            spans.extend(typed(value, self.cursor, f.builtin));
-            if value.is_empty() {
-                "  the built-in; type to set it".to_owned()
-            } else {
-                format!("  empty is the built-in, {}", f.builtin)
+        let help = match f.input {
+            Answer::Many(opts) if f.picked(value) => {
+                let have = items(value);
+                for (i, o) in opts.iter().enumerate() {
+                    let style = if have.contains(o) { lit() } else { dim() };
+                    let (l, r) = if i == self.pick {
+                        ("[", "]")
+                    } else {
+                        (" ", " ")
+                    };
+                    spans.push(Span::styled(format!("{l}{o}{r}"), style));
+                }
+                "  space adds or removes; none is the built-in".to_owned()
+            }
+            Answer::Pick(opts) | Answer::PickOrType(opts, _) if f.picked(value) => {
+                let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
+                picks(&mut spans, opts, at);
+                match f.input {
+                    Answer::PickOrType(_, what) => {
+                        format!("  - is the built-in, {}, or {what}", f.builtin)
+                    }
+                    _ => format!("  - is the built-in, {}", f.builtin),
+                }
+            }
+            _ => {
+                spans.extend(typed(value, self.cursor, f.builtin));
+                if value.is_empty() {
+                    "  the built-in; type to set it".to_owned()
+                } else {
+                    format!("  empty is the built-in, {}", f.builtin)
+                }
             }
         };
         spans.push(Span::styled(help, dim()));
@@ -4605,8 +4717,11 @@ impl App {
             }
             Mode::Config(form) if form.open => {
                 let mut keys = vec![];
-                if form.field().picks.is_some() {
+                if form.field().picked(&form.values[form.row]) {
                     keys.push(("← →", "pick"));
+                    if matches!(form.field().input, Answer::Many(_)) {
+                        keys.push(("space", "toggle"));
+                    }
                 }
                 keys.extend([("enter", "keep"), ("esc", "back")]);
                 hints(&keys)
@@ -8169,12 +8284,81 @@ mod tests {
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "lines"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
+        // bound offers its words and also takes a typed number, which replaces a pick.
+        go(&mut app, "sparkline.bound");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("sparkline.bound › [-] fleet  row  log"), "{s}");
+        assert!(s.contains("or a number"), "{s}");
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "row"));
+        for c in "20".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("sparkline.bound › 20"), "typed, no picks: {s}");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "20"));
+        // model takes a full id the same way.
+        go(&mut app, "model");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "claude-opus-5".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "claude-opus-5")
+        );
+        // On a pure pick a letter jumps to its option and - to the built-in.
+        go(&mut app, "write");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('t'), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "true"));
+        app.key(KeyCode::Char('-'), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        // A list: ← → move over the options, space adds or removes the one under the cursor,
+        // in the order added.
+        go(&mut app, "columns");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("columns › [state] model  age "), "{s}");
+        assert!(s.contains("space toggle"), "{s}");
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "age, state"));
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("columns › [state] model  age "), "{s}");
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "age"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        // Typing into a list keeps typing past its picks: a Bash pattern among the tools.
+        go(&mut app, "tools");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        for c in ", Bash(git *)".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "Read, Bash(git *)"));
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("tools › Read, Bash(git *)"), "{s}");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("disable sandbox"), "{s}");
         assert!(s.contains("empty uses default"), "{s}");
-        assert!(s.contains("fable, opus, sonnet, haiku"), "{s}");
+        assert!(s.contains("alias or model id"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();

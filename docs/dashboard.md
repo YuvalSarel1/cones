@@ -164,9 +164,9 @@ Open `config` from the menu to edit job defaults and dashboard settings in jobs.
 
 Each row shows a field, value and short hint, with the selected field explained below. Long values are truncated in the row and shown fully on the prompt line. The columns and help block keep their positions as selection changes.
 
-`↑` `↓` move between fields and `enter` opens the selected one on the prompt line: `← →` pick where the field has options, typing edits where it is free text, `enter` keeps the value and returns to the list, `esc` puts the old value back. A value that fails its own check stays open with the error beside its row. On the list `ctrl+s` checks the whole block and writes the file; a bad value opens its field with the error and nothing is written. `esc` on the list cancels.
+`↑` `↓` move between fields and `enter` opens the selected one on the prompt line. `enter` keeps the value and returns to the list, `esc` puts the old value back. A value that fails its own check stays open with the error beside its row. On the list `ctrl+s` checks the whole block and writes the file; a bad value opens its field with the error and nothing is written. `esc` on the list cancels.
 
-`↑` `↓` select a field. Edit its value on the prompt line, or use `←` `→` to choose an option. `enter` saves; `esc` cancels. Empty values, or `-` in a picker, use the dimmed built-in defaults. Setting any sparkline field saves the full block, with built-ins filling the rest.
+How a field takes its value depends on what it holds. A number or free text is typed. A field with a few words, `write`, `overlap`, `notify`, `codex_full_access` and `sparkline.metric`, shows them on the prompt line: `← →` pick, a letter jumps to the word that starts with it, and `-` is the built-in. `model`, `sparkline.bucket` and `sparkline.bound` show their usual words the same way and also take something typed, a model id, a duration or a count; typing replaces the pick. `tools` and `columns` are lists: `← →` move over the options, `space` adds the one under the cursor or takes it out, in the order added, and typing past the options, a `Bash(pattern)` say, turns the line into text. Empty values, or `-` in a pick, use the dimmed built-in defaults. Setting any sparkline field saves the full block, with built-ins filling the rest.
 
 | Field | Row | Under the list |
 | --- | --- | --- |
@@ -175,15 +175,15 @@ Each row shows a field, value and short hint, with the selected field explained 
 | `daily_budget_usd` | cost per 24h (USD) | Rolling cap per job; active runs reserve `budget_usd`, runs over the cap are skipped |
 | `write` | allow file changes | `false` disables Edit, Write and Bash for Claude and makes Codex read-only; `true` permits writes and sandboxes allowed Bash commands |
 | `overlap` | when already running | `skip`, `allow` or `replace` |
-| `model` | e.g. sonnet, opus | Empty uses Claude's default |
-| `tools` | allowed tools | Comma-separated; `write: false` removes Edit, Write and Bash |
+| `model` | alias or model id | `fable`, `opus`, `sonnet`, `haiku` or a typed model id; empty uses Claude's default |
+| `tools` | allowed tools | `space` adds or removes a tool, type for `Bash(pattern)`; `write: false` removes Edit, Write and Bash |
 | `max_turns` | turns per run | Maximum assistant turns; empty leaves the limit to Claude |
 | `codex_model` | empty uses default | Empty uses Codex's default; Codex jobs are currently unavailable |
 | `codex_full_access` | disable sandbox | `true` allows all paths and the network; Codex jobs are currently unavailable |
 | `notify` | failure alerts | Failures, timeouts and runs skipped for budget |
-| `columns` | session columns | Comma-separated; `state` precedes the title, the rest follow in the given order |
+| `columns` | session columns | `space` adds or removes a column; `state` precedes the title, the rest follow in the order added |
 | `sparkline.bars` | bar count | 1 to 64 bars, oldest first; 16 bars at `1m` show 16 minutes |
-| `sparkline.bucket` | time per bar | `30s`, `1m`, `5m`, at most `24h` |
+| `sparkline.bucket` | time per bar | `30s`, `1m`, `5m`, `15m`, `1h` or a typed duration, at most `24h` |
 | `sparkline.metric` | count per bar | Transcript lines, assistant replies, tool calls or output tokens |
 | `sparkline.bound` | chart scale | `fleet`, `row`, `log` or a fixed count for a full bar |
 | `mark_secs` | ctrl+x mark (s) | Seconds the red `ctrl+x` mark stays with no key pressed, 0 to 600; `0` keeps it until a key |
