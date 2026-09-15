@@ -84,7 +84,7 @@ sparkline:
 | `metric` | What is counted in a bucket, from the transcript lines timestamped inside it. `lines` is every line, tool results and progress notes included. `messages` is assistant replies, a streamed reply counted once by its id. `tools` is tool calls, one per `tool_use` block. `tokens` is output tokens on those replies. The Codex row of the Observe table in [harness.md](harness.md#observe) names the rollout lines each reads. |
 | `bound` | What a full bar means. `fleet` scales every row to the busiest bucket on screen, so rows compare and one hot session flattens the rest. `row` scales each row to its own busiest bucket, so it shows shape only. `log` is `fleet` on a log scale, so quiet rows still show. A number is the count that fills a bar, the same tomorrow; a bucket over it draws full. |
 
-A bucket with nothing in it is the lowest bar, and a row with nothing in the window is dim. The buckets are recounted on every reload from the activity the transcript pass already collects, so the column costs no extra read.
+A bucket with nothing in it is the lowest bar, and a row with nothing in the window is dim. Bucket edges sit on the clock, a `1m` bucket running from :00 to :59, so the bars hold still between reloads, step left once per bucket and only the newest one grows; measured back from the instant of each reload, as they were for an hour on 2026-09-15, the edges slid a second at a time and the row danced. The buckets are recounted on every reload from the activity the transcript pass already collects, so the column costs no extra read.
 
 ## Keys
 

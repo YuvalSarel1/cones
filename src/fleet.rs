@@ -94,16 +94,22 @@ impl Activity {
 }
 
 /// The sparkline's buckets for one session, oldest first: `metric` summed over its activity in
-/// each `bucket` of seconds back from `now`. A line after `now` counts in the newest bucket.
+/// each `bucket` of seconds. The edges sit on the clock, a 1m bucket running from :00 to :59,
+/// not back from the instant of the reload: measured from `now` itself the edges slid a
+/// second per reload and lines near one hopped between bars, so the row danced. Pinned, the
+/// bars step left once per bucket and only the newest one grows. A line after `now` counts in
+/// the newest bucket.
 pub fn buckets(
     activity: &[Activity],
     spark: &crate::config::Sparkline,
     now: DateTime<Utc>,
 ) -> Vec<u64> {
     let secs = spark.bucket_seconds().unwrap_or(60) as i64;
+    // The last second of the current bucket.
+    let edge = now.timestamp() - now.timestamp().rem_euclid(secs) + secs - 1;
     let mut out = vec![0; spark.bars];
     for a in activity {
-        let ago = (now - a.at).num_seconds().max(0);
+        let ago = (edge - a.at.timestamp()).max(0);
         let i = (ago / secs) as usize;
         if i >= spark.bars {
             continue;
@@ -930,19 +936,39 @@ mod tests {
             metric: metric.into(),
             bound: bound.into(),
         };
-        // Oldest left: the prompt five minutes back, the reply's two lines in the next minute,
-        // quiet, the tool result a minute ago, nothing in the newest minute.
+        // Buckets sit on the clock: 10:00 to 10:05 inclusive at 10:05:00. Oldest left: the
+        // prompt and the reply's two lines in the 10:00 minute, quiet, the tool result in the
+        // 10:04 minute, nothing yet in 10:05.
         assert_eq!(
             buckets(&r.activity, &spark("lines", "fleet"), now),
-            [1, 2, 0, 0, 1, 0]
+            [3, 0, 0, 0, 1, 0]
         );
         assert_eq!(
             buckets(&r.activity, &spark("tools", "fleet"), now),
-            [0, 2, 0, 0, 0, 0]
+            [2, 0, 0, 0, 0, 0]
         );
         assert_eq!(
             buckets(&r.activity, &spark("tokens", "fleet"), now),
-            [0, 40, 0, 0, 0, 0]
+            [40, 0, 0, 0, 0, 0]
+        );
+        // Any second inside the same minute sees the same bars; the next minute steps left.
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(
+            buckets(
+                &r.activity,
+                &spark("lines", "fleet"),
+                at("2026-09-15T10:05:59Z")
+            ),
+            [3, 0, 0, 0, 1, 0],
+            "the edges do not slide with the reload"
+        );
+        assert_eq!(
+            buckets(
+                &r.activity,
+                &spark("lines", "fleet"),
+                at("2026-09-15T10:06:00Z")
+            ),
+            [0, 0, 0, 1, 0, 0]
         );
 
         assert_eq!(bars(&[0.0, 1.0, 2.0, 4.0, 8.0], 8.0), "▁▁▂▄█");
@@ -968,22 +994,22 @@ mod tests {
         };
         assert_eq!(
             rows("fleet"),
-            ("▁▁▁▁▁▁".into(), "▁▁▁▁▁█".into()),
+            ("▁▁▁▁▁▁".into(), "▁▁▁▁█▁".into()),
             "one scale: a's few lines are a sliver of b's 30"
         );
         assert_eq!(
             rows("row"),
-            ("▄█▁▁▄▁".into(), "▁▁▁▁▁█".into()),
+            ("█▁▁▁▃▁".into(), "▁▁▁▁█▁".into()),
             "each row to its own peak"
         );
         assert_eq!(
             rows("4"),
-            ("▂▄▁▁▂▁".into(), "▁▁▁▁▁█".into()),
+            ("▆▁▁▁▂▁".into(), "▁▁▁▁█▁".into()),
             "a fixed count fills a bar"
         );
         assert_eq!(
             rows("log").0,
-            "▂▃▁▁▂▁",
+            "▄▁▁▁▂▁",
             "log lifts the quiet row above the sliver fleet gave it"
         );
     }
