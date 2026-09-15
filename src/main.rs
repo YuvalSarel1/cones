@@ -510,31 +510,17 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
                 format!("job {} enables Codex full access", job.name),
             );
         }
-        if job.tools.iter().any(|t| t == "Bash" || t == "Bash(*)") {
+        if job.write {
             report(
                 "WARN",
                 format!(
-                    "job {} permits broad Bash{}; native sandbox and ordinary permission checks remain enabled",
+                    "job {} permits Edit, Write and Bash{}; native sandbox and ordinary permission checks remain enabled",
                     job.name,
                     if job.archive_transcript {
                         " and archives plaintext transcripts"
                     } else {
                         ""
                     }
-                ),
-            );
-        }
-        if !job.write
-            && job
-                .tools
-                .iter()
-                .any(|t| matches!(t.split('(').next().unwrap_or(""), "Edit" | "Write" | "Bash"))
-        {
-            report(
-                "WARN",
-                format!(
-                    "job {}: write: false removes Edit, Write and Bash from the compiled allowlist",
-                    job.name
                 ),
             );
         }
@@ -604,7 +590,6 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
         // Probe exactly the switches the compiler emits for a job that uses every option.
         let mut sample = config::adhoc(None, "doctor probe", std::path::Path::new("/"))?;
         sample.write = true;
-        sample.tools = ["Read", "Edit", "Write", "Bash"].map(String::from).to_vec();
         sample.model = Some("sonnet".into());
         sample.max_turns = Some(1);
         let sample = harness::adapter(sample.harness)?

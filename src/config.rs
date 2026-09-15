@@ -39,7 +39,6 @@ pub struct Policy {
     pub budget_usd: Option<f64>,
     pub daily_budget_usd: Option<f64>,
     pub write: Option<bool>,
-    pub tools: Option<Vec<String>>,
     pub max_turns: Option<u32>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
@@ -79,8 +78,6 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub write: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_full_access: Option<bool>,
@@ -110,7 +107,6 @@ impl Job {
             budget_usd: None,
             daily_budget_usd: None,
             write: None,
-            tools: None,
             max_turns: None,
             codex_full_access: None,
             overlap: None,
@@ -469,10 +465,6 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         d.daily_budget_usd.map(|v| v.to_string()),
     );
     put("write", d.write.map(|v| v.to_string()));
-    put(
-        "tools",
-        d.tools.as_ref().map(|t| format!("[{}]", t.join(", "))),
-    );
     put("max_turns", d.max_turns.map(|v| v.to_string()));
     put("model", d.model.clone());
     put("codex_model", d.codex_model.clone());
@@ -607,7 +599,6 @@ pub struct ResolvedJob {
     pub budget_usd: f64,
     pub daily_budget_usd: Option<f64>,
     pub write: bool,
-    pub tools: Vec<String>,
     pub max_turns: Option<u32>,
     pub codex_full_access: bool,
     pub overlap: Overlap,
@@ -648,7 +639,6 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             budget_usd: 2.0,
             daily_budget_usd: None,
             write: false,
-            tools: vec!["Read".into(), "Grep".into(), "Glob".into()],
             max_turns: None,
             codex_full_access: false,
             overlap: Overlap::Skip,
@@ -685,17 +675,10 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
 }
 
 fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
-    // A default that belongs to one harness (tools, max_turns and model to Claude,
-    // codex_full_access and codex_model to Codex) applies only to that harness's jobs; on a
-    // job it is checked as written.
+    // A default that belongs to one harness (max_turns and model to Claude, codex_full_access
+    // and codex_model to Codex) applies only to that harness's jobs; on a job it is checked as
+    // written.
     let claude = j.harness == HarnessKind::Claude;
-    let tools = j.tools.or_else(|| d.tools.clone().filter(|_| claude));
-    if !claude && tools.is_some() {
-        bail!(
-            "job {}: Codex has no per-tool allowlist; remove tools and choose write: false (read-only) or write: true (workspace-write)",
-            j.name
-        );
-    }
     let full = j
         .codex_full_access
         .or(d.codex_full_access.filter(|_| !claude))
@@ -794,10 +777,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     }
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
-    let tools = tools.unwrap_or_else(|| match j.harness {
-        HarnessKind::Claude => vec!["Read".into(), "Grep".into(), "Glob".into()],
-        HarnessKind::Codex => vec![],
-    });
     Ok(ResolvedJob {
         name: j.name,
         schedule: j.schedule,
@@ -812,7 +791,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         budget_usd: budget,
         daily_budget_usd: daily,
         write,
-        tools,
         max_turns,
         codex_full_access: full,
         overlap,
@@ -896,7 +874,6 @@ mod tests {
             budget_usd: Some(0.25),
             daily_budget_usd: Some(2.0),
             write: Some(true),
-            tools: Some(vec!["Read".into(), "Edit".into()]),
             max_turns: Some(3),
             overlap: Some(Overlap::Replace),
             notify: Some(true),
@@ -909,7 +886,7 @@ mod tests {
         write_config(&p, &d, Some(&cols), None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  tools: [Read, Edit]\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
+            text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert!(
@@ -922,7 +899,7 @@ mod tests {
             "the rest is untouched"
         );
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
-        assert_eq!(read_jobs(&p).unwrap()[0].tools, ["Read", "Edit"]);
+        assert!(read_jobs(&p).unwrap()[0].write);
 
         // Nothing set removes the block and the line; a file without them gets them after version.
         write_config(&p, &Policy::default(), None, None, None).unwrap();
@@ -1083,18 +1060,17 @@ mod tests {
     #[test]
     fn a_harness_default_applies_only_to_that_harness_and_a_job_keeps_its_own_model() {
         let (_d, p) = file(
-            "version: 1\ndefaults:\n  tools: [Read, Edit]\n  max_turns: 3\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
+            "version: 1\ndefaults:\n  max_turns: 3\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
         );
         let jobs = read_jobs(&p).unwrap();
         let (c, x, own) = (&jobs[0], &jobs[1], &jobs[2]);
-        assert_eq!(c.tools, ["Read", "Edit"]);
         assert_eq!((c.max_turns, c.codex_full_access), (Some(3), false));
         assert_eq!(c.model.as_deref(), Some("sonnet"));
-        assert!(
-            x.tools.is_empty(),
-            "Claude's tools do not reach a Codex job"
+        assert_eq!(
+            (x.max_turns, x.codex_full_access),
+            (None, true),
+            "Claude's max_turns does not reach a Codex job"
         );
-        assert_eq!((x.max_turns, x.codex_full_access), (None, true));
         assert_eq!(x.model.as_deref(), Some("o3"));
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();

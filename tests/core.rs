@@ -46,7 +46,7 @@ fn config_text(extra: &str) -> String {
     )
 }
 #[test]
-fn yaml_rejects_typos_duplicates_and_unsupported_codex_tools() {
+fn yaml_rejects_typos_duplicates_and_unknown_fields() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
     fs::write(&path, config_text("    budegt_usd: 1\n")).unwrap();
@@ -56,13 +56,12 @@ fn yaml_rejects_typos_duplicates_and_unsupported_codex_tools() {
             .to_string()
             .contains("invalid jobs")
     );
-    fs::write(
-        &path,
-        config_text("    tools: []\n").replace("harness: claude", "harness: codex"),
-    )
-    .unwrap();
+    fs::write(&path, config_text("    tools: [Read]\n")).unwrap();
     let error = config::read_jobs(&path).unwrap_err().to_string();
-    assert!(error.contains("no per-tool allowlist") && error.contains("write: false"));
+    assert!(
+        error.contains("invalid jobs"),
+        "the old allowlist is an unknown field: {error}"
+    );
     fs::write(&path, config_text("    timeout_min: .nan\n")).unwrap();
     assert!(config::read_jobs(&path).is_err());
     fs::write(&path, config_text("    env: [NODE_OPTIONS]\n")).unwrap();
@@ -78,36 +77,26 @@ fn yaml_rejects_typos_duplicates_and_unsupported_codex_tools() {
     );
 }
 #[test]
-fn policy_inherits_defaults_and_strips_write_tools() {
+fn policy_inherits_defaults_and_write_decides_the_allowlist() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
-    let text = config_text("    tools: [Read, Edit, Write, 'Bash(git status *)']\n").replace(
+    let text = config_text("").replace(
         "jobs:\n",
         "defaults:\n  budget_usd: 0.5\n  max_turns: 4\njobs:\n",
     );
     fs::write(&path, text).unwrap();
-    let job = config::read_jobs(&path).unwrap().remove(0);
+    let mut job = config::read_jobs(&path).unwrap().remove(0);
     assert_eq!(job.budget_usd, 0.5);
     assert_eq!(job.max_turns, Some(4));
-    assert_eq!(cones::harness::effective_tools(&job).unwrap(), vec!["Read"]);
-}
-
-#[test]
-fn scoped_bash_guarantees_are_rejected_without_intercepting_the_harness() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("jobs.yaml");
-    fs::write(
-        &path,
-        config_text("    write: true\n    tools: ['Bash(git status *)']\n"),
-    )
-    .unwrap();
-    let mut job = config::read_jobs(&path).unwrap().remove(0);
-    let error = cones::harness::effective_tools(&job)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("pre-approvals"));
-    job.tools = vec!["Bash".into()];
-    assert_eq!(cones::harness::effective_tools(&job).unwrap(), vec!["Bash"]);
+    assert_eq!(
+        cones::harness::effective_tools(&job),
+        ["Read", "Grep", "Glob"]
+    );
+    job.write = true;
+    assert_eq!(
+        cones::harness::effective_tools(&job),
+        ["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
+    );
 }
 #[test]
 fn plist_uses_argument_arrays_and_explicit_environment() {
@@ -714,7 +703,10 @@ fn adhoc_job_borrows_policy_or_defaults_to_read_only() {
     let dir = tempfile::tempdir().unwrap();
     let plain = cones::config::adhoc(None, "fix it", dir.path()).unwrap();
     assert!(plain.name.starts_with("adhoc-") && !plain.write && plain.enabled);
-    assert_eq!(plain.tools, ["Read", "Grep", "Glob"]);
+    assert_eq!(
+        cones::harness::effective_tools(&plain),
+        ["Read", "Grep", "Glob"]
+    );
     let mut template = plain.clone();
     template.write = true;
     template.budget_usd = 9.0;

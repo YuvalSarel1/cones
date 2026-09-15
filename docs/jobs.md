@@ -24,8 +24,7 @@ jobs:
     harness: claude
     cwd: ~/src/myrepo
     prompt: "Read the TODOs and draft TRIAGE.md."
-    write: true                    # false removes Edit, Write and Bash
-    tools: ["Read", "Grep", "Glob", "Edit", "Write"]
+    write: true                    # adds Edit, Write and sandboxed Bash to Read, Grep, Glob
     model: sonnet
     max_turns: 5
     overlap: skip                  # skip | allow | replace
@@ -47,8 +46,7 @@ jobs:
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
 | `budget_usd` | `2.00` | Per-run cap, passed as `--max-budget-usd`. |
 | `daily_budget_usd` | none | Rolling 24-hour cap per job. At least `budget_usd`. |
-| `write` | `false` | `false` strips Edit, Write and Bash from the compiled allowlist even if `tools` lists them. `true` keeps them and turns on Claude's sandbox when Bash is listed. |
-| `tools` | `Read, Grep, Glob` | Any of Read, Grep, Glob, Edit, Write, Bash, or a `Bash(pattern)` rule. |
+| `write` | `false` | `false` allows Read, Grep and Glob. `true` adds Edit, Write and Bash, and turns on Claude's sandbox. There is no per-tool list: Claude treats a scoped `Bash(pattern)` rule as a pre-approval, not an exclusive allowlist, so cones cannot promise one. |
 | `max_turns` | none | Passed as `--max-turns`. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
@@ -59,10 +57,9 @@ jobs:
 
 `cones validate` compiles every job's policy and prints `<name>  valid  <harness>`, or the first error with the job's name. Beyond the per-field rules it rejects:
 
-- `Bash(pattern)` rules other than `Bash(*)` with `write: true`. Claude treats a scoped Bash rule as a pre-approval, so other commands still reach ordinary permission checks; use `Bash` for sandboxed Bash, or stay read-only. A read-only job strips the rules with the rest of Bash.
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - An `env` name that could change execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
-- `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` or `tools` on a Codex job, an unknown tool name, a `claude` binary missing from the launchd PATH.
+- `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a Codex job, a `claude` binary missing from the launchd PATH.
 
 ## What the harness is told
 
@@ -76,11 +73,11 @@ The job compiles to one `claude` command with a fixed argv. `cones validate` and
 | No user or project settings | `--setting-sources ""` |
 | No MCP servers | `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` |
 | No slash commands | `--disable-slash-commands` |
-| Tool allowlist | `--tools <bases> --allowedTools <rules>`, from `tools` and `write` |
+| Tool allowlist | `--tools` and `--allowedTools`, both `Read,Grep,Glob` or with `write` `Read,Grep,Glob,Edit,Write,Bash` |
 | Pinned session ID | `--session-id <fresh uuid>`. cones generates it, so the ledger, the transcript, `attach` and the fleet agree; a mismatch ends the run with reason `session_mismatch`. |
 | Dollar budget | `--max-budget-usd <budget_usd>` |
 | Job name | `--name <job>` |
-| Sandbox when Bash is allowed | `--settings` with `sandbox.enabled` and `sandbox.failIfUnavailable` true, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands` false, `excludedCommands` empty |
+| Sandbox when `write` is true | `--settings` with `sandbox.enabled` and `sandbox.failIfUnavailable` true, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands` false, `excludedCommands` empty |
 | Model, turn cap | `--model <m>`, `--max-turns <n>` when set |
 | The task | `-- <prompt>` as the final positional argument |
 
@@ -163,4 +160,4 @@ Status: this has not been observed through a real lid-close or reboot yet. The c
 
 ## Codex
 
-`harness: codex` is parsed: Codex jobs take no `tools` list, choose `write: false` (read-only) or `write: true` (workspace-write), and may set `codex_full_access`. Status: no Codex adapter exists in v0.1.0. `cones validate` and `cones install` stop with `codex execution is not available in v0.1; its dollar budget cannot yet be enforced`, `cones doctor` reports the job as FAIL, and `cones run` of such a job records a `failed` run with reason `validation: ...`. The blocker is a native dollar budget for Codex; see the roadmap in the [README](../README.md).
+`harness: codex` is parsed: Codex jobs choose `write: false` (read-only) or `write: true` (workspace-write), and may set `codex_full_access`. Status: no Codex adapter exists in v0.1.0. `cones validate` and `cones install` stop with `codex execution is not available in v0.1; its dollar budget cannot yet be enforced`, `cones doctor` reports the job as FAIL, and `cones run` of such a job records a `failed` run with reason `validation: ...`. The blocker is a native dollar budget for Codex; see the roadmap in the [README](../README.md).

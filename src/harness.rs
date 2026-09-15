@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     ffi::OsString,
     path::{Path, PathBuf},
 };
@@ -376,36 +376,15 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
     Ok(env)
 }
 
-pub fn effective_tools(job: &ResolvedJob) -> Result<Vec<String>> {
-    let mut tools = BTreeSet::new();
-    for rule in &job.tools {
-        let base = rule.split('(').next().unwrap_or("");
-        ensure!(
-            matches!(base, "Read" | "Grep" | "Glob" | "Edit" | "Write" | "Bash"),
-            "job {}: unsupported Claude tool {rule}; supported tools: Read, Grep, Glob, Edit, Write, Bash",
-            job.name
-        );
-        if rule != base {
-            ensure!(
-                base == "Bash"
-                    && rule.starts_with("Bash(")
-                    && rule.ends_with(')')
-                    && rule.len() > 6
-                    && !rule[5..rule.len() - 1].contains(['(', ')', '\n', '\r', '\0', ',']),
-                "job {}: invalid tool rule {rule}; only Bash(command pattern) rules are supported",
-                job.name
-            );
-        }
-        ensure!(
-            !job.write || base != "Bash" || matches!(rule.as_str(), "Bash" | "Bash(*)"),
-            "job {}: Claude's scoped Bash rules are pre-approvals, not an exclusive command allowlist; use Read/Grep/Glob or explicitly allow sandboxed Bash",
-            job.name
-        );
-        if job.write || matches!(base, "Read" | "Grep" | "Glob") {
-            tools.insert(rule.clone());
-        }
+/// The tools a Claude job may call: read-only, or with `write` the editing tools and
+/// sandboxed Bash. This is the whole allowlist; cones never scopes Bash by pattern because Claude
+/// treats a scoped Bash rule as a pre-approval, not an exclusive allowlist.
+pub fn effective_tools(job: &ResolvedJob) -> &'static [&'static str] {
+    if job.write {
+        &["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
+    } else {
+        &["Read", "Grep", "Glob"]
     }
-    Ok(tools.into_iter().collect())
 }
 
 impl Harness for Claude {
@@ -415,8 +394,7 @@ impl Harness for Claude {
             "Claude adapter requires a Claude job"
         );
         uuid::Uuid::parse_str(session_id)?;
-        let tools = effective_tools(job)?;
-        let bases: BTreeSet<_> = tools.iter().map(|t| t.split('(').next().unwrap()).collect();
+        let tools = effective_tools(job).join(",");
         let mut args: Vec<String> = [
             "--print",
             "--output-format",
@@ -435,9 +413,9 @@ impl Harness for Claude {
             "{\"mcpServers\":{}}",
             "--disable-slash-commands",
             "--tools",
-            &bases.into_iter().collect::<Vec<_>>().join(","),
+            &tools,
             "--allowedTools",
-            &tools.join(","),
+            &tools,
             "--session-id",
             session_id,
             "--max-budget-usd",
@@ -448,7 +426,7 @@ impl Harness for Claude {
         .into_iter()
         .map(String::from)
         .collect();
-        if tools.iter().any(|t| t == "Bash" || t.starts_with("Bash(")) {
+        if job.write {
             // Require native filesystem/network isolation without expanding permissions
             // through sandbox auto-approval.
             args.extend([
@@ -545,7 +523,7 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
         "v":2, "harness":job.harness, "program":invocation.program,
         "enforcement":"native-flags",
         "args":args,
-        "cwd":job.cwd, "write":job.write, "tools":effective_tools(job)?,
+        "cwd":job.cwd, "write":job.write, "tools":effective_tools(job),
         "permission_mode":"dontAsk", "permission_prompts":"none",
         "safe_mode":true, "restricted":true, "mcp":false,
         "timeout_s":invocation.timeout_s, "budget_usd":job.budget_usd,

@@ -555,12 +555,11 @@ impl Data {
                         fleet::tilde(&j.cwd)
                     ),
                     format!(
-                        "timeout {:.0}m · budget ${:.2} · write {} · overlap {:?} · tools {}",
+                        "timeout {:.0}m · budget ${:.2} · write {} · overlap {:?}",
                         j.timeout_min,
                         j.budget_usd,
                         if j.write { "yes" } else { "no" },
                         j.overlap,
-                        j.tools.join(",")
                     ),
                     String::new(),
                 ];
@@ -1531,7 +1530,7 @@ fn slug(prompt: &str) -> String {
 /// list is, with every answer so far above the current one. `enter` answers, `← →` pick an
 /// option, `↑` or backspace on an empty answer steps back, `esc` cancels. `once` runs the
 /// task now instead of writing a job. Editing keeps every field the wizard does not ask
-/// about (model, budget, tools). Pure: filesystem facts come in through `base`, `fallback`
+/// about (model, budget, write). Pure: filesystem facts come in through `base`, `fallback`
 /// and `launch_dir`; the file is written by the dashboard on `Save`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobForm {
@@ -1918,7 +1917,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// The fields under their groups. A field named for a harness reaches only that harness.
-const FIELDS: [Field; 18] = [
+const FIELDS: [Field; 17] = [
     Field {
         group: "runs",
         name: "bedrock",
@@ -1971,7 +1970,7 @@ const FIELDS: [Field; 18] = [
         group: "jobs",
         name: "write",
         short: "allow file changes",
-        long: "false disables Claude's Edit, Write and Bash tools and makes Codex read-only. true permits writes and sandboxes allowed Bash commands.",
+        long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
         builtin: "false",
         input: Answer::Pick(BOOL),
     },
@@ -1982,14 +1981,6 @@ const FIELDS: [Field; 18] = [
         long: "When a job is already running: skip the next run, allow both, or replace the active run.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "allow", "replace"]),
-    },
-    Field {
-        group: "jobs",
-        name: "tools",
-        short: "allowed tools",
-        long: "Space adds or removes a tool; type for Bash(pattern). write: false removes Edit, Write and Bash.",
-        builtin: "Read, Grep, Glob",
-        input: Answer::Many(&["Read", "Grep", "Glob", "Edit", "Write", "Bash"]),
     },
     Field {
         group: "jobs",
@@ -2159,7 +2150,6 @@ impl ConfigForm {
                     .unwrap_or_default()
                     .to_owned(),
                 "model" => d.model.clone().unwrap_or_default(),
-                "tools" => d.tools.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
                 "max_turns" => d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
@@ -2240,7 +2230,6 @@ impl ConfigForm {
                 .filter(|t| !t.is_empty())
                 .collect()
         };
-        let tools = list("tools");
         let columns = list("columns");
         if let Some(bad) = columns
             .iter()
@@ -2256,7 +2245,6 @@ impl ConfigForm {
             budget_usd: num("budget_usd", "dollars, as in 2.00")?,
             daily_budget_usd: num("daily_budget_usd", "dollars, as in 10.00")?,
             write: flag("write"),
-            tools: (!tools.is_empty()).then_some(tools),
             max_turns: match v("max_turns") {
                 "" => None,
                 t => Some(
@@ -8353,7 +8341,7 @@ mod tests {
         };
         let (col, tall) = (column(&s, "time limit (min)"), height(&s));
         assert_eq!(column(&s, "count per bar"), col, "{s}");
-        assert_eq!(column(&s, "allowed tools"), col, "{s}");
+        assert_eq!(column(&s, "Claude turns per run"), col, "{s}");
         let go = |app: &mut App, name: &str| {
             while let Mode::Config(f) = &app.mode
                 && f.row != field_at(name)
@@ -8450,18 +8438,6 @@ mod tests {
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "age"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        // Typing into a list keeps typing past its picks: a Bash pattern among the tools.
-        go(&mut app, "tools");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
-        for c in ", Bash(git *)".chars() {
-            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
-        }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "Read, Bash(git *)"));
-        t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
-        assert!(s.contains("tools › Read, Bash(git *)"), "{s}");
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
@@ -8477,7 +8453,7 @@ mod tests {
             "the selected field is explained: {s}"
         );
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
-        assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
+        assert!(s.contains("2.00"), "built-ins show dim: {s}");
         assert!(
             s.matches("system default").count() >= 4,
             "harness-owned fields read system default when empty: {s}"
@@ -8489,7 +8465,7 @@ mod tests {
                 && at("model") < at("codex_model")
                 && at("codex_model") < at("\njobs  supervised runs only")
                 && at("\njobs  supervised runs only") < at("timeout_min")
-                && at("overlap") < at("tools")
+                && at("overlap") < at("max_turns")
                 && at("max_turns") < at("codex_full_access")
                 && at("codex_full_access") < at("\ncones  display and alerts")
                 && at("\ncones  display and alerts") < at("notify")
@@ -8595,7 +8571,7 @@ mod tests {
         );
         assert_eq!(saved.model.as_deref(), Some("sonnet"));
         assert_eq!(
-            saved.tools, None,
+            saved.max_turns, None,
             "empty leaves the built-in out of the file"
         );
 
