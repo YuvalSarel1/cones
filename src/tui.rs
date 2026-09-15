@@ -1917,7 +1917,15 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// The fields under their groups. A field named for a harness reaches only that harness.
-const FIELDS: [Field; 17] = [
+const FIELDS: [Field; 18] = [
+    Field {
+        group: "runs",
+        name: "harness",
+        short: "claude or codex",
+        long: "The harness a job runs under when it names none, and the one the composer starts on; tab still cycles it per session. Codex jobs are still unavailable.",
+        builtin: "claude",
+        input: Answer::Pick(&["-", "claude", "codex"]),
+    },
     Field {
         group: "runs",
         name: "bedrock",
@@ -2150,6 +2158,7 @@ impl ConfigForm {
                     .unwrap_or_default()
                     .to_owned(),
                 "model" => d.model.clone().unwrap_or_default(),
+                "harness" => d.harness.map(|h| h.to_string()).unwrap_or_default(),
                 "max_turns" => d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
@@ -2263,6 +2272,11 @@ impl ConfigForm {
             model: text("model"),
             codex_model: text("codex_model"),
             bedrock: flag("bedrock"),
+            harness: match v("harness") {
+                "claude" => Some(HarnessKind::Claude),
+                "codex" => Some(HarnessKind::Codex),
+                _ => None,
+            },
         };
         // The sparkline block: every field empty leaves it out; otherwise the built-in fills
         // what is not typed, and the block is checked the way jobs.yaml is read.
@@ -2982,7 +2996,7 @@ impl App {
             text: String::new(),
             caret: 0,
             images: Vec::new(),
-            harness: 0,
+            harness: Self::harness_at(config::defaults(jobs_path).harness),
             session: None,
             started: Vec::new(),
             pending: Vec::new(),
@@ -4475,6 +4489,14 @@ impl App {
             .unwrap_or_else(|| self.cwd.clone())
     }
 
+    /// Where `kind` sits in `harness::KNOWN`; None, the built-in, is Claude.
+    fn harness_at(kind: Option<HarnessKind>) -> usize {
+        harness::KNOWN
+            .iter()
+            .position(|k| Some(*k) == kind)
+            .unwrap_or(0)
+    }
+
     /// What the next session runs under: the model and provider `ctrl+o` set, else the
     /// `defaults` block's, which reach a session as they reach a job.
     fn session_policy(&self) -> config::Policy {
@@ -5292,6 +5314,7 @@ impl App {
                 ConfigAction::Cancel => self.mode = Mode::Normal,
                 // The session form keeps its policy for the composer; nothing is written.
                 ConfigAction::Save(policy, ..) if form.group.is_some() => {
+                    self.harness = Self::harness_at(policy.harness);
                     self.session = Some(*policy);
                     self.mode = Mode::Normal;
                     self.status = format!("next session: {}", self.session_words().join(" · "));
@@ -5396,8 +5419,9 @@ impl App {
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('o') if ctrl => {
-                        self.mode =
-                            Mode::Config(Box::new(ConfigForm::session(&self.session_policy())));
+                        let mut policy = self.session_policy();
+                        policy.harness = Some(harness::KNOWN[self.harness]);
+                        self.mode = Mode::Config(Box::new(ConfigForm::session(&policy)));
                     }
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
@@ -6586,7 +6610,7 @@ mod tests {
         match enter(&mut f) {
             FormAction::Save(None, job) => {
                 assert_eq!(job.name, "nightly");
-                assert_eq!(job.harness, HarnessKind::Claude);
+                assert_eq!(job.harness, None, "the file's default harness applies");
                 assert_eq!(job.schedule, "30 8 * * 1-5");
                 assert_eq!(job.cwd, PathBuf::from(&f.dir));
                 assert_eq!(job.prompt, "triage the TODOs");
@@ -8600,6 +8624,10 @@ mod tests {
         assert!(s.contains("next session"), "{s}");
         assert!(s.contains("bedrock") && s.contains("codex_model"), "{s}");
         assert!(!s.contains("timeout_min") && !s.contains("notify"), "{s}");
+        assert!(
+            s.contains("harness            claude"),
+            "the harness row shows tab's pick, not the built-in dim: {s}"
+        );
         // Down from the last shown row stays; the hidden rows are never visited.
         for _ in 0..5 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
@@ -8608,7 +8636,8 @@ mod tests {
         for _ in 0..5 {
             app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")));
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
@@ -8636,6 +8665,17 @@ mod tests {
         assert!(args.contains(&"--model".into()) && args.contains(&"opus".into()));
         // Codex shows its own model, none set, and the provider still.
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.session_words(), ["codex", "bedrock"]);
+        // The form's harness row is tab's pick too: keeping codex there is a tab press.
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('o'), ctrl).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('s'), ctrl).unwrap();
+        assert_eq!(app.harness, 1, "codex");
         assert_eq!(app.session_words(), ["codex", "bedrock"]);
     }
 
@@ -8820,8 +8860,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            s.contains("AWS_ variables"),
-            "the selected field is explained: {s}"
+            s.contains("when it names none"),
+            "the selected field, harness, is explained: {s}"
         );
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("2.00"), "built-ins show dim: {s}");
@@ -8831,7 +8871,8 @@ mod tests {
         );
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\nruns  every job and session") < at("bedrock")
+            at("\nruns  every job and session") < at("  harness")
+                && at("  harness") < at("bedrock")
                 && at("bedrock") < at("model")
                 && at("model") < at("codex_model")
                 && at("codex_model") < at("\njobs  supervised runs only")

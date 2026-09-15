@@ -50,6 +50,9 @@ pub struct Policy {
     /// Where the harness sends its requests: `true` Amazon Bedrock, `false` the harness's own
     /// endpoint, unset whatever the harness's own configuration says.
     pub bedrock: Option<bool>,
+    /// The harness a job runs under when it names none, and the one the dashboard's composer
+    /// starts on; unset is Claude.
+    pub harness: Option<HarnessKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,7 +60,9 @@ pub struct Policy {
 pub struct Job {
     pub name: String,
     pub schedule: String,
-    pub harness: HarnessKind,
+    /// Unset takes `defaults.harness`, else Claude.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<HarnessKind>,
     pub cwd: PathBuf,
     pub prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,13 +95,13 @@ pub struct Job {
 }
 
 impl Job {
-    /// A Claude job with only the four fields the dashboard's wizard asks for; everything else
-    /// is the file's defaults.
+    /// A job with only the four fields the dashboard's wizard asks for; everything else,
+    /// the harness included, is the file's defaults.
     pub fn new(name: &str, schedule: &str, cwd: &Path, prompt: &str) -> Self {
         Self {
             name: name.to_owned(),
             schedule: schedule.to_owned(),
-            harness: HarnessKind::Claude,
+            harness: None,
             cwd: cwd.to_owned(),
             prompt: prompt.to_owned(),
             model: None,
@@ -483,6 +488,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     );
     put("notify", d.notify.map(|v| v.to_string()));
     put("bedrock", d.bedrock.map(|v| v.to_string()));
+    put("harness", d.harness.map(|v| v.to_string()));
     out
 }
 
@@ -678,7 +684,8 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     // A default that belongs to one harness (max_turns and model to Claude, codex_full_access
     // and codex_model to Codex) applies only to that harness's jobs; on a job it is checked as
     // written.
-    let claude = j.harness == HarnessKind::Claude;
+    let kind = j.harness.or(d.harness).unwrap_or(HarnessKind::Claude);
+    let claude = kind == HarnessKind::Claude;
     let full = j
         .codex_full_access
         .or(d.codex_full_access.filter(|_| !claude))
@@ -695,7 +702,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         j.name
     );
     ensure!(
-        max_turns.is_none() || j.harness == HarnessKind::Claude,
+        max_turns.is_none() || claude,
         "job {}: max_turns is supported only by Claude",
         j.name
     );
@@ -780,7 +787,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     Ok(ResolvedJob {
         name: j.name,
         schedule: j.schedule,
-        harness: j.harness,
+        harness: kind,
         cwd: fs::canonicalize(cwd)?,
         prompt: j.prompt,
         model,
@@ -873,6 +880,7 @@ mod tests {
             timeout_min: Some(5.0),
             budget_usd: Some(0.25),
             daily_budget_usd: Some(2.0),
+            harness: None,
             write: Some(true),
             max_turns: Some(3),
             overlap: Some(Overlap::Replace),
@@ -1055,6 +1063,23 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    /// `defaults.harness` is the harness of a job that names none; a job's own `harness:`
+    /// wins, and with neither it is Claude.
+    #[test]
+    fn a_job_without_a_harness_takes_the_default_harness() {
+        let (_d, p) = file(
+            "version: 1\ndefaults:\n  harness: codex\njobs:\n  - name: d\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
+        );
+        let jobs = read_jobs(&p).unwrap();
+        assert_eq!(jobs[0].harness, HarnessKind::Codex);
+        assert_eq!(jobs[1].harness, HarnessKind::Claude);
+        let (_d, p) = file(
+            "version: 1\njobs:\n  - name: d\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
+        );
+        assert_eq!(read_jobs(&p).unwrap()[0].harness, HarnessKind::Claude);
+        assert_eq!(defaults(&p).harness, None);
     }
 
     #[test]
