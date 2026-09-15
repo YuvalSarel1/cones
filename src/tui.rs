@@ -2524,10 +2524,12 @@ impl ConfigForm {
             let mut spans = vec![];
             for (n, c) in self.arrange.order.iter().enumerate() {
                 if n == self.arrange.shown {
-                    spans.push(Span::styled("·  ", dim()));
+                    spans.push(Span::styled("· ", dim()));
                 }
+                // Pad inside the span so the cursor's block sits even around the
+                // name, and keep the gap to the next name outside it.
                 spans.push(Span::styled(
-                    format!("{c}  "),
+                    format!(" {c} "),
                     if n == self.arrange.at && i == self.row {
                         pressed()
                     } else if n < self.arrange.shown && !built {
@@ -2536,6 +2538,7 @@ impl ConfigForm {
                         dim()
                     },
                 ));
+                spans.push(Span::raw(" "));
             }
             return spans;
         }
