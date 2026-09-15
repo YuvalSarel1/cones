@@ -119,6 +119,12 @@ impl Kind {
     }
 }
 
+/// One row of the sessions table: a job in its folder's group, or a session.
+enum Entry<'a> {
+    Job(&'a ResolvedJob),
+    Session(&'a Session),
+}
+
 pub struct Row {
     pub kind: Kind,
     pub cells: Vec<(String, Style)>,
@@ -157,14 +163,15 @@ impl Data {
         let sessions = fleet_rows(claude, state, &runs)?;
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
         let folders = ledger.folders()?;
-        // Only the folders that get a row: a folder a session runs in shows the session.
+        let jobs = config::read_jobs(jobs_path).unwrap_or_default();
+        // Only the folders that get a row: a folder a session or a job is in shows those.
         let git = folders
             .iter()
-            .filter(|f| !seen.contains(f))
+            .filter(|f| !seen.contains(f) && !jobs.iter().any(|j| &j.cwd == *f))
             .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
             .collect();
         Ok(Self {
-            jobs: config::read_jobs(jobs_path).unwrap_or_default(),
+            jobs,
             runs,
             sessions,
             columns: config::columns(jobs_path),
@@ -172,6 +179,11 @@ impl Data {
             recent: ledger.recent(&seen)?,
             git,
         })
+    }
+
+    /// Whether `dir` has a group of its own already: a session runs there or a job lives there.
+    fn has_rows_in(&self, dir: &Path) -> bool {
+        self.sessions.iter().any(|s| s.cwd == dir) || self.jobs.iter().any(|j| j.cwd == dir)
     }
 
     fn count(&self, state: &str) -> usize {
@@ -238,42 +250,18 @@ impl Data {
                 cells: vec![(title.to_owned(), bold())],
             });
         };
-        if !self.jobs.is_empty() {
-            header(&mut out, "jobs");
-            let cells = self
-                .jobs
-                .iter()
-                .map(|j| {
-                    let last = self
-                        .runs
-                        .iter()
-                        .rev()
-                        .find(|r| r.started.job.as_deref() == Some(&j.name))
-                        .map_or("-".to_owned(), |r| r.status());
-                    vec![
-                        (if j.enabled { "◆" } else { "◇" }.into(), color(&last)),
-                        (j.name.clone(), plain()),
-                        (j.schedule.clone(), dim()),
-                        (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
-                        (if j.enabled { "on" } else { "off" }.into(), plain()),
-                        (last.clone(), color(&last)),
-                    ]
-                })
-                .collect();
-            let (names, cells) = columns(
-                &["", "job", "schedule", "", "enabled", "last run"],
-                cells,
-                widths,
-            );
-            out.push(names);
-            for (j, cells) in self.jobs.iter().zip(cells) {
-                out.push(Row {
-                    kind: Kind::Job(j.name.clone()),
-                    cells,
-                });
-            }
+        // Jobs sit in their folder's group with the sessions, first, in jobs.yaml order, so a
+        // folder with a job has a group whether or not anything runs there; grouped by state
+        // they are one group of their own, last.
+        let mut groups: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+        for j in &self.jobs {
+            let key = if by_state {
+                "5jobs".to_owned()
+            } else {
+                fleet::tilde(&j.cwd)
+            };
+            groups.entry(key).or_default().push(Entry::Job(j));
         }
-        let mut groups: BTreeMap<String, Vec<&Session>> = BTreeMap::new();
         for s in self
             .sessions
             .iter()
@@ -291,47 +279,69 @@ impl Data {
             } else {
                 fleet::tilde(&s.cwd)
             };
-            groups.entry(key).or_default().push(s);
+            groups.entry(key).or_default().push(Entry::Session(s));
         }
         // One table across all groups, so columns line up between directories.
-        let flat: Vec<(&String, &&Session)> = groups
+        let flat: Vec<(&String, &Entry)> = groups
             .iter()
-            .flat_map(|(key, group)| group.iter().map(move |s| (key, s)))
+            .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
         let cells = flat
             .iter()
-            .map(|(_, s)| {
-                let mut row = vec![
-                    (icon(&s.state).into(), color(&s.state)),
-                    (logo(&s.harness), brand(&s.harness)),
-                    // The same words as the footer, on the row, so a session that cannot be
-                    // joined from here is known before it is selected. The folder's
-                    // orchestrator says so here and carries its title in cones' orange, so it
-                    // is told from the workers at a glance.
-                    (
-                        [
-                            s.coordinator.then_some("orchestrator"),
-                            s.own_terminal().then_some("own terminal"),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" · "),
-                        if s.coordinator { lit() } else { dim() },
-                    ),
-                    (
-                        // A long title would push every metric column off a 120-column screen.
-                        clip(
-                            &s.title
-                                .clone()
-                                .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
-                            40,
+            .map(|(_, e)| match e {
+                Entry::Session(s) => {
+                    let mut row = vec![
+                        (icon(&s.state).into(), color(&s.state)),
+                        (logo(&s.harness), brand(&s.harness)),
+                        // The same words as the footer, on the row, so a session that cannot be
+                        // joined from here is known before it is selected. The folder's
+                        // orchestrator says so here and carries its title in cones' orange, so it
+                        // is told from the workers at a glance.
+                        (
+                            [
+                                s.coordinator.then_some("orchestrator"),
+                                s.own_terminal().then_some("own terminal"),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>()
+                            .join(" · "),
+                            if s.coordinator { lit() } else { dim() },
                         ),
-                        if s.coordinator { lit() } else { plain() },
-                    ),
-                ];
-                row.extend(self.columns.iter().map(|c| cell(c, s, by_state)));
-                row
+                        (
+                            // A long title would push every metric column off a 120-column screen.
+                            clip(
+                                &s.title
+                                    .clone()
+                                    .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+                                40,
+                            ),
+                            if s.coordinator { lit() } else { plain() },
+                        ),
+                    ];
+                    row.extend(self.columns.iter().map(|c| cell(c, s, by_state)));
+                    row
+                }
+                Entry::Job(j) => {
+                    let last = self
+                        .runs
+                        .iter()
+                        .rev()
+                        .find(|r| r.started.job.as_deref() == Some(&j.name));
+                    let status = last.map_or("-".to_owned(), |r| r.status());
+                    let mut row = vec![
+                        (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
+                        (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
+                        (format!("job · {}", j.schedule), dim()),
+                        (j.name.clone(), plain()),
+                    ];
+                    row.extend(
+                        self.columns
+                            .iter()
+                            .map(|c| job_cell(c, j, last, &status, by_state)),
+                    );
+                    row
+                }
             })
             .collect();
         let mut names = vec!["", "", "", "title"];
@@ -349,7 +359,7 @@ impl Data {
             out.push(names);
         }
         let mut current: Option<&String> = None;
-        for ((key, s), cells) in flat.iter().zip(cells) {
+        for ((key, e), cells) in flat.iter().zip(cells) {
             if current != Some(key) {
                 if current.is_none() {
                     out.push(Row {
@@ -361,14 +371,15 @@ impl Data {
                 }
                 current = Some(key);
             }
-            out.push(Row {
-                kind: Kind::Session(s.session_id.clone(), s.state.clone()),
-                cells,
-            });
+            let kind = match e {
+                Entry::Session(s) => Kind::Session(s.session_id.clone(), s.state.clone()),
+                Entry::Job(j) => Kind::Job(j.name.clone()),
+            };
+            out.push(Row { kind, cells });
         }
         // ponytail: pinned folders trail the session groups instead of sorting among them.
         for dir in &self.folders {
-            if self.sessions.iter().any(|s| &s.cwd == dir) {
+            if self.has_rows_in(dir) {
                 continue;
             }
             header(&mut out, &fleet::tilde(dir));
@@ -808,6 +819,30 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
 /// One configurable session cell; `last` shows the directory when rows are grouped by state,
 /// since the group title no longer names it. `model`, `age`, `activity` and `context` are the
 /// transcript's own words and read `-` until it has them.
+/// A job's cell under a session column: the last run's status where a session shows its state,
+/// its model, how long since the last run fired, its directory when grouped by state; the
+/// columns that are a session's alone stay blank.
+fn job_cell(
+    column: &str,
+    j: &ResolvedJob,
+    last: Option<&Run>,
+    status: &str,
+    by_state: bool,
+) -> (String, Style) {
+    match column {
+        "state" if !j.enabled => ("off".into(), dim()),
+        "state" => (status.to_owned(), color(status)),
+        "model" => (j.model.clone().unwrap_or_else(|| "-".into()), dim()),
+        "age" | "activity" => (
+            last.and_then(|r| r.started.fired_at)
+                .map_or_else(|| "-".into(), fleet::age),
+            dim(),
+        ),
+        "last" if by_state => (fleet::tilde(&j.cwd), dim()),
+        _ => (String::new(), dim()),
+    }
+}
+
 fn cell(column: &str, s: &Session, by_state: bool) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
@@ -5721,6 +5756,73 @@ mod tests {
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Folder(t) if t == "/src/one"));
         app.mode = Mode::Normal;
+    }
+
+    /// A job sits in its folder's group ahead of the sessions there, under the session columns,
+    /// so a folder with a job has a group whether or not anything runs; grouped by state the
+    /// jobs are one group of their own, last; a pinned folder with a job needs no placeholder.
+    #[test]
+    fn a_job_sits_in_its_folders_group() {
+        let d = dir();
+        let claude = d.path();
+        let cwd = claude.canonicalize().unwrap();
+        let jobs = claude.join("jobs.yaml");
+        fs::write(
+            &jobs,
+            format!(
+                "version: 1\njobs:\n  - name: nightly\n    schedule: \"0 2 * * *\"\n    harness: claude\n    cwd: {}\n    prompt: first\n    model: sonnet\n    enabled: false\n",
+                cwd.display()
+            ),
+        )
+        .unwrap();
+        registry(claude, A, cwd.to_str().unwrap(), "idle", 1_757_682_871_000);
+        registry(claude, B, "/src/other", "idle", 1_757_682_871_000);
+        let mut app = App::new(Path::new("cones"), &jobs, claude, claude).unwrap();
+        app.pin_folder(cwd.clone()).unwrap();
+        app.refresh().unwrap();
+        let keys: Vec<String> = app
+            .rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                Kind::Header => Some(format!("# {}", r.text())),
+                Kind::Folder(_) => Some("folder".into()),
+                k => k.key().map(str::to_owned),
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "menu".to_owned(),
+                format!("# {}", fleet::tilde(&cwd)),
+                "nightly".into(),
+                A.into(),
+                "# /src/other".into(),
+                B.into(),
+            ],
+            "the job leads its folder's group and the pinned folder has no placeholder"
+        );
+        let job = app
+            .rows
+            .iter()
+            .find(|r| r.kind.key() == Some("nightly"))
+            .unwrap();
+        let text = job.text();
+        assert!(text.contains("job · 0 2 * * *"), "{text}");
+        assert!(text.contains("nightly"), "{text}");
+        assert!(
+            text.contains(" off "),
+            "a disabled job says so under state: {text}"
+        );
+        assert!(text.contains("sonnet"), "{text}");
+        app.by_state = true;
+        app.rebuild();
+        let headers: Vec<String> = app
+            .rows
+            .iter()
+            .filter(|r| r.kind == Kind::Header)
+            .map(Row::text)
+            .collect();
+        assert_eq!(headers, vec!["idle".to_owned(), "jobs".into()]);
     }
 
     /// A folder the prompt picks has a row from then on, with nothing running there, across

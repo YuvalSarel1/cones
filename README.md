@@ -13,7 +13,7 @@ Supports Claude Code and Codex sessions. Scheduled jobs currently use Claude Cod
 
 [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
 
-<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: jobs, live Claude Code sessions grouped by directory, and recent runs" width="100%"></a></p>
+<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: jobs and live sessions grouped by folder, and recent runs" width="100%"></a></p>
 
 ## What you can do
 
