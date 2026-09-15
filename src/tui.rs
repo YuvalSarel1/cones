@@ -591,13 +591,20 @@ fn menu_rows(folder: &Path) -> Vec<Row> {
         ),
         ("folder", format!("{dir} · enter picks another")),
     ];
-    items
-        .into_iter()
-        .map(|(name, text)| Row {
-            kind: Kind::Menu(name),
-            cells: vec![(format!("{name:<8}"), plain()), (text, dim())],
-        })
-        .collect()
+    // A blank row keeps the menu off the cone; each name is a filled button, the picked one
+    // orange (`draw_list`), so the menu reads as controls rather than as a fourth table.
+    std::iter::once(Row {
+        kind: Kind::Blank,
+        cells: vec![],
+    })
+    .chain(items.into_iter().map(|(name, text)| Row {
+        kind: Kind::Menu(name),
+        cells: vec![
+            (format!(" {name:<7}"), button()),
+            (format!("  {text}"), dim()),
+        ],
+    }))
+    .collect()
 }
 
 /// The header cone: one orange hue in three tones, lit on the left, shadowed on the right, so
@@ -737,6 +744,10 @@ fn bold() -> Style {
 }
 fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
+}
+/// A menu button at rest: white on a dark fill, as a terminal draws a key cap.
+fn button() -> Style {
+    Style::default().bg(Color::Indexed(237)).fg(Color::White)
 }
 /// cones' own orange, bold: the header cone and the folder's orchestrator.
 fn lit() -> Style {
@@ -3708,6 +3719,12 @@ impl App {
                         )
                     } else {
                         (text.clone(), *style)
+                    };
+                    // The picked menu button lights up in the cone's orange.
+                    let style = if selected && c == 0 && matches!(row.kind, Kind::Menu(_)) {
+                        style.bg(ORANGE).fg(Color::Black)
+                    } else {
+                        style
                     };
                     spans.push(Span::styled(
                         text,
