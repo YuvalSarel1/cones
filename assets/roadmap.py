@@ -6,10 +6,9 @@ W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"
 CAT = {"OBS": ("See", "#d2a8ff"), "CTL": ("Move and control", "#56d4dd"),
        "HAR": ("Harnesses", "#79c0ff"), "REL": ("Reliability", "#f0883e")}
-COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
-    ("Public release", "REL", "Version, install steps and verification record are in; tag v0.1.0 and publish under the personal account. Owner action, no code left."),
-]), ("NEXT", "Everyday control of jobs", "#58a6ff", [
+COLS = [("NOW", "Runs that continue, not collide", "#3fb950", [
     ("overlap: continue", "REL", "A tick that finds the previous run still going stops it and starts the new run with claude --resume on run 1's session id, so run 2 keeps what run 1 learned."),
+]), ("NEXT", "Everyday control of jobs", "#58a6ff", [
     ("Job lifecycle hooks", "CTL", "Opt-in commands on start, exit and failure for jobs cones launches, set in jobs.yaml. Nothing hooks sessions cones did not start."),
     ("Next fire time in ls", "OBS", "Each job row shows its next tick, computed from the compiled StartCalendarInterval list and confirmed against the loaded plist."),
     ("Jump to pane", "CTL", "Enter on an own terminal row resolves pid to tty to tmux or iTerm pane and switches the user there; the session is never joined or stopped."),
@@ -26,7 +25,7 @@ COLS = [("NOW", "One dashboard, every harness", "#3fb950", [
     ("Webhook triggers", "HAR", "Run on an HTTP call. Needs a listener process, so after single-machine fleet control."),
     ("More Macs", "HAR", "Multi-machine after single-machine fleet control is in regular use."),
 ])]
-SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
+SHIPPED = ["public release: brew tap, cargo install, v0.1.0", "launchd schedule, no daemon between ticks", "dollar budget, timeout, turn cap", "rolling daily budget",
            "read-only or sandboxed-write policy", "overlap skip / allow / replace", "one-off runs: cones run --prompt",
            "opt-in failure notification", "durable JSONL run ledger", "dollars per run in ls and the ledger", "live event stream",
            "fleet from Claude's own session registry, no hook", "every Claude session in ls and the TUI",
