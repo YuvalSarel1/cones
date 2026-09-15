@@ -5,7 +5,7 @@ import html, re, subprocess, sys, time
 
 COLS, ROWS = 120, 34
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
-CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, named on the menu's folder row
+CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, where the menu row launches
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the cone's tones and the menu button fill

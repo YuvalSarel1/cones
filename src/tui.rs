@@ -563,7 +563,7 @@ fn ansi(text: &str, style: Style) -> String {
 }
 
 /// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
-/// while it is picked. `folder`'s explanation is led by the folder itself, in `App::menu_cells`.
+/// while it is picked.
 const MENU: [(&str, &str, &str); 4] = [
     (
         "runs",
@@ -571,7 +571,11 @@ const MENU: [(&str, &str, &str); 4] = [
         "an instruction runs once, under a job's policy",
     ),
     ("agents", "agents", "a harness's own agents view"),
-    ("folder", "pick folder", "the folder the menu works in"),
+    (
+        "folder",
+        "add folder",
+        "a row for a folder nothing runs in, to start work there",
+    ),
     ("help", "guide", "the keys and what they do"),
 ];
 
@@ -590,8 +594,8 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
 
 /// The top menu: one row of buttons above the tables, reached with `↑` past the first table;
 /// `←` `→` pick one and `enter` presses it. `runs` makes the composer a supervised one-off run,
-/// `agents` opens a harness's agents view, `folder` picks the directory the menu works in,
-/// whether or not a session runs there, `help` opens the guide.
+/// `agents` opens a harness's agents view, `folder` adds a row for a directory nothing runs
+/// in, so work can start there, `help` opens the guide.
 fn menu_rows() -> Vec<Row> {
     // A blank row keeps the menu off the cone. The row's cells come from `App::menu_cells`
     // at draw time, since the picked button and its explanation change without a rebuild.
@@ -1349,7 +1353,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new job, agents, pick folder, help",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new job, agents, add folder, help",
     ),
     (
         "ctrl+x twice",
@@ -1415,8 +1419,8 @@ struct App {
     jobs_path: PathBuf,
     state: PathBuf,
     claude: PathBuf,
-    /// The menu's folder: the dashboard's own working directory until the `folder` button picks
-    /// another. Where a launch goes from the menu row or with nothing selected.
+    /// The dashboard's own working directory: where a launch goes from the menu row or with
+    /// nothing selected, and what the `folder` prompt takes a relative path from.
     cwd: PathBuf,
     /// The menu row's picked button, an index into `MENU`; `←` `→` move it.
     menu: usize,
@@ -3191,12 +3195,16 @@ impl App {
     }
 
     /// The menu's `folder` prompt took a directory: it gets a row at once and keeps it across
-    /// restarts until ctrl+x removes it.
+    /// restarts until ctrl+x removes it. The cursor moves onto the row, so the composer starts
+    /// its next session there. A directory something already runs in has its group; the
+    /// cursor stays where it was.
     fn pin_folder(&mut self, dir: PathBuf) -> Result<()> {
         if !self.data.folders.contains(&dir) {
-            self.data.folders.push(dir);
+            self.data.folders.push(dir.clone());
             self.save_folders()?;
         }
+        self.rebuild();
+        self.select_new(&fleet::tilde(&dir));
         Ok(())
     }
 
@@ -3634,8 +3642,6 @@ impl App {
                     _ => {}
                 }
             }
-            // The menu's folder: a directory, relative to the current one, checked before it
-            // is taken; the menu rows then show and launch into it.
             Mode::Guide(top) => {
                 let top = *top;
                 match code {
@@ -3664,17 +3670,20 @@ impl App {
                         self.status.clear();
                     }
                 }
+                // The folder prompt: a directory, relative to the dashboard's own, checked
+                // before it is taken; it gets a row and the cursor, so a launch goes there.
                 KeyCode::Enter => {
                     let text = text.clone();
                     match launch_dir(&text, &self.cwd, &self.cwd) {
                         Ok(dir) => {
-                            self.cwd = dir.clone();
                             self.mode = Mode::Normal;
+                            let name = fleet::tilde(&dir);
                             self.status = match self.pin_folder(dir) {
-                                Ok(()) => format!("working in {}", fleet::tilde(&self.cwd)),
+                                Ok(()) => format!(
+                                    "{name} added · type an instruction and enter starts a session there"
+                                ),
                                 Err(e) => format!("folder not saved: {e:#}"),
                             };
-                            self.rebuild();
                         }
                         Err(e) => self.status = e,
                     }
@@ -4008,13 +4017,7 @@ impl App {
             cells.push((" ".to_owned(), Style::default()));
         }
         if selected {
-            let (name, _, what) = MENU[self.menu];
-            let what = if name == "folder" {
-                format!("{} · {what}", fleet::tilde(&self.cwd))
-            } else {
-                what.to_owned()
-            };
-            cells.push((format!(" {what}"), dim()));
+            cells.push((format!(" {}", MENU[self.menu].2), dim()));
         }
         cells
     }
@@ -5411,10 +5414,11 @@ mod tests {
     }
 
     /// The menu sits above the tables: a fresh dashboard opens on the first table and `↑` from
-    /// there lands on the menu row. Picking a folder moves the row's target, so a session or a
-    /// run can start in a directory nothing runs in yet.
+    /// there lands on the menu row, which launches into the dashboard's own directory. The
+    /// `folder` prompt adds a row for a directory nothing runs in and moves the cursor onto it,
+    /// so a session can start there; the menu's own target does not move.
     #[test]
-    fn the_top_menu_is_reached_going_up_and_its_folder_moves_the_target() {
+    fn the_top_menu_is_reached_going_up_and_its_folder_prompt_adds_a_row() {
         let d = dir();
         let claude = d.path();
         registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
@@ -5424,29 +5428,46 @@ mod tests {
         app.step(-1);
         assert_eq!(key(&app).as_deref(), Some("menu"));
         assert!(app.menu_is("runs"), "runs is picked until ← → move it");
+        let home = app.cwd.clone();
         assert_eq!(
             app.target_dir(),
-            app.cwd,
-            "the menu row launches into the menu's folder"
+            home,
+            "the menu row launches into the dashboard's own directory"
         );
         let inside = claude.join("inside");
         fs::create_dir(&inside).unwrap();
-        assert!(launch_dir("nowhere-such-dir", &app.cwd, &app.cwd).is_err());
-        app.cwd = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
-        app.rebuild();
-        assert_eq!(
-            key(&app).as_deref(),
-            Some("menu"),
-            "the cursor stays on its row"
-        );
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(app.menu_is("folder"));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
-            app.menu_cells(true).last().unwrap().0.contains("inside"),
-            "the picked folder button names the folder"
+            matches!(app.mode, Mode::Folder(_)),
+            "enter opens the prompt"
         );
-        assert_eq!(app.target_dir(), inside.canonicalize().unwrap());
+        for c in "nowhere-such-dir".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Folder(_)),
+            "a missing directory is refused"
+        );
+        assert!(app.status.contains("not a directory"), "{}", app.status);
+        app.mode = Mode::Folder(inside.display().to_string());
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let inside = inside.canonicalize().unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(fleet::tilde(&inside).as_str()),
+            "the cursor moves onto the folder's row"
+        );
+        assert_eq!(app.target_dir(), inside, "so the composer starts there");
+        assert_eq!(app.cwd, home, "the menu's own target did not move");
+        app.step(-1);
+        app.step(-1);
+        assert_eq!(key(&app).as_deref(), Some("menu"));
+        assert_eq!(app.target_dir(), home);
         app.refresh().unwrap();
         assert_eq!(
             key(&app).as_deref(),
@@ -5470,9 +5491,7 @@ mod tests {
         app.refresh().unwrap();
         let picked = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
         let name = fleet::tilde(&picked);
-        app.cwd = picked.clone();
         app.pin_folder(picked.clone()).unwrap();
-        app.rebuild();
         let folder_row = |app: &App| {
             app.visible
                 .iter()
