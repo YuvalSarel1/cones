@@ -144,6 +144,8 @@ pub struct Data {
     pub folders: Vec<PathBuf>,
     /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
     pub recent: Vec<PathBuf>,
+    /// The git branch and tree state of each pinned folder nothing runs in, for its row.
+    pub git: BTreeMap<PathBuf, String>,
 }
 
 impl Data {
@@ -154,13 +156,21 @@ impl Data {
         runs.retain(|r| !hidden.contains(&r.started.run_id));
         let sessions = fleet_rows(claude, state, &runs)?;
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
+        let folders = ledger.folders()?;
+        // Only the folders that get a row: a folder a session runs in shows the session.
+        let git = folders
+            .iter()
+            .filter(|f| !seen.contains(f))
+            .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
+            .collect();
         Ok(Self {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
             runs,
             sessions,
             columns: config::columns(jobs_path),
-            folders: ledger.folders()?,
+            folders,
             recent: ledger.recent(&seen)?,
+            git,
         })
     }
 
@@ -362,13 +372,18 @@ impl Data {
                 continue;
             }
             header(&mut out, &fleet::tilde(dir));
+            let mut cells = vec![];
+            if let Some(g) = self.git.get(dir) {
+                cells.push((format!("{g} · "), plain()));
+            }
+            cells.push((
+                "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
+                    .to_owned(),
+                dim(),
+            ));
             out.push(Row {
                 kind: Kind::Folder(fleet::tilde(dir)),
-                cells: vec![(
-                    "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
-                        .to_owned(),
-                    dim(),
-                )],
+                cells,
             });
         }
         if !self.runs.is_empty() {
@@ -1156,6 +1171,30 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
     }
     path.canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// A folder's git state for a row nothing else fills: the branch and whether the tree is
+/// clean, from one `git status --porcelain --branch`; None outside a repository or without git.
+pub fn git_state(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["status", "--porcelain", "--branch"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    // `## main...origin/main [ahead 1]`, `## HEAD (no branch)`, `## No commits yet on main`.
+    let head = lines.next()?.strip_prefix("## ")?;
+    let branch = head.split("...").next().unwrap_or(head);
+    Some(match lines.count() {
+        0 => format!("{branch} · clean"),
+        1 => format!("{branch} · 1 change"),
+        n => format!("{branch} · {n} changes"),
+    })
 }
 
 /// Tab in the folder prompt, as a shell completes `cd`: `text` grown to the longest prefix
@@ -5694,6 +5733,14 @@ mod tests {
         registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
         let inside = claude.join("inside");
         fs::create_dir(&inside).unwrap();
+        assert!(
+            Command::new("git")
+                .args(["-C", inside.to_str().unwrap(), "init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        fs::write(inside.join("new.txt"), "").unwrap();
         let mut app = app(claude);
         app.refresh().unwrap();
         let picked = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
@@ -5705,6 +5752,18 @@ mod tests {
                 .position(|&i| app.rows[i].kind == Kind::Folder(name.clone()))
         };
         assert!(folder_row(&app).is_some(), "the folder has a row at once");
+        app.refresh().unwrap();
+        let row = &app.rows[app.visible[folder_row(&app).unwrap()]];
+        assert!(
+            row.text().contains(" · 1 change · nothing runs here"),
+            "the row leads with the branch and the tree state: {}",
+            row.text()
+        );
+        assert_eq!(
+            git_state(Path::new("/")),
+            None,
+            "outside a repository, nothing"
+        );
         assert!(
             app.rows
                 .iter()
