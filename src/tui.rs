@@ -3693,19 +3693,18 @@ impl App {
     }
 
     /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list
-    /// when the split is on, else the whole frame, each less the row under it that carries
-    /// the viewer's keys, the strip on a full frame and the hint line beside the list; never
-    /// fewer than one row. Spawn, focus and draw all size the viewer by this, so focusing
-    /// never resizes it, and the row is kept whether the viewer has the keys or not, so
-    /// taking them and giving them back never resizes it either.
+    /// the whole column, down to the last row, so a harness that hangs its status lines off
+    /// the bottom of its screen puts the lowest one on the frame's last row and the composer
+    /// sits as low as the harness's own box; the row that carries the viewer's keys is drawn
+    /// over the viewer's last row while the pane has them. A full frame keeps its last row
+    /// for the strip, which is the dashboard's, not the pane's. Spawn, focus and draw all
+    /// size the viewer by this, so taking the keys and giving them back never resizes it.
     fn pane(&self, frame: Rect) -> Rect {
-        let area = if self.split_active() {
-            self.split_areas(frame)[2]
-        } else {
-            frame
-        };
-        let height = area.height.saturating_sub(1).max(1);
-        Rect { height, ..area }
+        if self.split_active() {
+            return self.split_areas(frame)[2];
+        }
+        let height = frame.height.saturating_sub(1).max(1);
+        Rect { height, ..frame }
     }
 
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
@@ -5824,8 +5823,9 @@ impl App {
                 self.draw_panel(frame, name, pane);
                 return;
             }
-            // The viewer has the pane less its last row, kept for the keys whether the
-            // viewer has them or not, so neither taking them nor a redraw resizes it.
+            // The viewer has the whole column, the last row with it: a row held back is a
+            // row of the frame nothing draws in, since the list has only its hint line to
+            // put under the composer.
             let inner = self.pane;
             match self.shown() {
                 Some(i) if self.viewers[i].viewer.first_paint().is_some() => {
@@ -5837,9 +5837,11 @@ impl App {
                 Some(i) => self.viewers[i].viewer.resize(inner.height, inner.width),
                 None => {}
             }
-            // The row under the viewer: the keys that leave it, read under the viewer they
-            // act on, as a button's screen has its own. Clear while the list has the keys,
-            // where the hint line is its.
+            // The keys that leave the viewer, read under the viewer they act on, as a
+            // button's screen has its own. Drawn over the viewer's last row rather than in
+            // a row kept clear for it, so the viewer is the same size focused or not; while
+            // the list has the keys the row is the harness's, where the hint line is the
+            // list's own.
             if self.focus.is_some() && pane.height > 1 {
                 let row = Rect {
                     y: pane.bottom() - 1,
@@ -6015,9 +6017,9 @@ impl App {
     }
 
     /// The rows the composer keeps under its box, so its lower rule lands on the row the
-    /// harness draws its own on: the last rule on the viewer's screen, the rows the harness
-    /// keeps under it, and the pane's own key row. One row, the hint line, with nothing on
-    /// view or with the pane under the list, where the two boxes share no rows anyway.
+    /// harness draws its own on: the rows the harness keeps under its last rule, its status
+    /// lines. One row, the hint line, with nothing on view or with the pane under the list,
+    /// where the two boxes share no rows anyway.
     // ponytail: the rule is read off the screen every frame rather than counted per harness,
     // so a statusline of any height lines up; a frame where the harness draws no rule at all
     // puts the composer back on the hint line, one row lower.
@@ -6042,7 +6044,7 @@ impl App {
         (0..rows)
             .rev()
             .find(|&y| ruled(y))
-            .map_or(1, |y| rows - y)
+            .map_or(1, |y| rows - 1 - y)
             .clamp(1, 6)
     }
 
@@ -8659,14 +8661,15 @@ mod tests {
         let mut app = app(d.path());
         app.refresh().unwrap();
         let rule = "\u{2500}".repeat(60);
-        // The bottom of a Claude screen: an input box with two rows under it, painted only
-        // once the first draw has sized the viewer to the pane, 29 rows of 30.
+        // The bottom of a Claude screen: an input box with two status rows under it, hung
+        // off the bottom of the screen as a harness hangs them, painted only once the first
+        // draw has sized the viewer to the pane, the whole 30 rows of the frame.
         let mut c = Command::new("/bin/sh");
         c.args([
             "-c",
             &format!(
                 "printf 'VIEW'; read x; \
-                 printf '\\033[25;1H{rule}\\033[26;1H> \\033[27;1H{rule}\\033[28;1Hstatus\\033[29;1Hmode'; \
+                 printf '\\033[26;1H{rule}\\033[27;1H> \\033[28;1H{rule}\\033[29;1Hstatus\\033[30;1Hmode'; \
                  sleep 5"
             ),
         ]);
@@ -8683,7 +8686,7 @@ mod tests {
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 99));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
         app.viewers[0].viewer.write(b"\n");
         let deadline = Instant::now() + Duration::from_secs(3);
         while app.foot_rows() == 1 {
@@ -8693,24 +8696,30 @@ mod tests {
         }
         assert_eq!(
             app.foot_rows(),
-            3,
-            "two rows under the harness's rule, and the key row"
+            2,
+            "the two status rows the harness keeps under its rule"
         );
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200);
         assert_eq!(
-            cells(&t, 26, 0..1),
+            cells(&t, 27, 0..1),
             "\u{2500}",
             "the composer's lower rule is on the harness's row: {screen:#?}"
         );
         assert_eq!(
-            cells(&t, 26, 101..105),
+            cells(&t, 27, 101..105),
             "\u{2500}\u{2500}\u{2500}\u{2500}",
             "which is the row the harness ruled: {screen:#?}"
         );
         assert!(
-            cells(&t, 27, 0..100).starts_with("enter"),
+            cells(&t, 28, 0..100).starts_with("enter"),
             "the hint line is right under it: {screen:#?}"
+        );
+        assert_eq!(
+            cells(&t, 29, 101..105),
+            "mode",
+            "and the harness's last status row is the frame's last row, with no row \
+             of the pane held back: {screen:#?}"
         );
     }
 
@@ -8756,14 +8765,14 @@ mod tests {
             !screen.iter().any(|r| r.contains("tab back")),
             "unfocused, the row under the pane is clear: {screen:#?}"
         );
-        // A row of the pane is the viewer's keys, kept clear until it has them, so taking
-        // them never resizes it.
+        // The viewer has the whole column; the row of its keys is drawn over its last row
+        // once it has them, so taking them never resizes it.
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
-            (29, 200 - list - 1),
+            (30, 200 - list - 1),
             "the viewer is sized to the pane"
         );
-        assert_eq!(app.pane, Rect::new(list + 1, 0, 200 - list - 1, 29));
+        assert_eq!(app.pane, Rect::new(list + 1, 0, 200 - list - 1, 30));
         let rule = t.backend().buffer().cell((list, 0)).unwrap().clone();
         assert_eq!(rule.symbol(), "│");
         assert_ne!(rule.fg, ORANGE, "the rule is dim while nothing is focused");
@@ -8783,7 +8792,7 @@ mod tests {
         assert_eq!(app.focus, Some(0));
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
-            (29, 200 - list - 1),
+            (30, 200 - list - 1),
             "focusing beside the list does not resize the viewer"
         );
         t.draw(|f| app.draw(f)).unwrap();
@@ -8845,8 +8854,8 @@ mod tests {
         assert_eq!(
             app.pane_mouse(ev(MouseEventKind::Up(MouseButton::Left), 10, 40))
                 .map(|e| (e.column, e.row)),
-            Some((list + 1, 28)),
-            "a release off the frame lands on the viewer's last row, the keys' row below it"
+            Some((list + 1, 29)),
+            "a release off the frame lands on the viewer's last row"
         );
         let inside = app.pane_mouse(ev(down, list + 1, 0)).unwrap();
         assert_eq!(
@@ -8920,7 +8929,7 @@ mod tests {
             cells(&t, 0, list + 1..200).starts_with("VIEW"),
             "beside the list again"
         );
-        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200 - list - 1));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
     }
 
     #[test]
@@ -9953,8 +9962,8 @@ mod tests {
         // cursor is off the frame, and a key comes back to the bottom.
         app.focus(0);
         assert!(!app.key(KeyCode::PageUp, KeyModifiers::SHIFT).unwrap());
-        // A page is 28 rows but only twelve lines have left a 29-row pane.
-        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 12);
+        // A page is 29 rows but only eleven lines have left a 30-row pane.
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 11);
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
             cells(&t, 0, list + 1..list + 6) == "line1",
@@ -9999,7 +10008,7 @@ mod tests {
         };
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
-        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200 - list - 1));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
         // A second click is the viewer's, nothing more.
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
@@ -10156,7 +10165,7 @@ mod tests {
         app.viewers.push(speculative_open(A));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(blank(&t));
-        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 99));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
         // Once it paints, the screen is there.
         app.viewers.clear();
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
