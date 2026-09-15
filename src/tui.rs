@@ -2025,8 +2025,8 @@ impl App {
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
     /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
     /// paints; on any other session row nothing, so a Codex row never has a Claude session's
-    /// screen under its name; on a row that is not a session, the one focused last. On a
-    /// narrow frame only a focused viewer is drawn.
+    /// screen under its name; on a row that is not a session, the one focused last, never a
+    /// harness's agents view. On a narrow frame only a focused viewer is drawn.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -2056,12 +2056,14 @@ impl App {
             .and_then(|s| s.transcript_path.clone())
     }
 
-    /// The viewer the user was in last; a speculative viewer was never in front.
+    /// The viewer the user was in last; a speculative viewer was never in front, and a
+    /// harness's agents view is a list, not an agent, so leaving it shows the agent seen
+    /// before it, not the list under the cursor's row.
     fn most_recently_focused(&self) -> Option<usize> {
         self.viewers
             .iter()
             .enumerate()
-            .filter(|(_, o)| !o.speculative)
+            .filter(|(_, o)| !o.speculative && !o.key.starts_with("agents:"))
             .max_by_key(|(_, o)| o.last_focused)
             .map(|(i, _)| i)
     }
@@ -6112,6 +6114,40 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200).join("\n");
         assert!(!screen.contains("VIEW"), "{screen}");
+    }
+
+    #[test]
+    fn leaving_the_agents_view_shows_the_agent_seen_before_it_not_the_list() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        // A's viewer was in front, then `claude agents` opened over it; ctrl+z leaves that.
+        app.viewers.push(viewer_open("a", "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        app.viewers
+            .push(viewer_open("agents:claude", "claude agents", "LIST"));
+        wait_paint(&mut app, 1, "LIST");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        app.focus(1);
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.focus.is_none());
+        // The cursor is on a menu row, which has no viewer of its own.
+        assert!(matches!(
+            app.selected().map(|r| &r.kind),
+            Some(Kind::Menu(_))
+        ));
+        assert_eq!(
+            app.shown(),
+            Some(0),
+            "the pane shows A, not the agents list"
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 200).join("\n");
+        assert!(
+            screen.contains("VIEW") && !screen.contains("LIST"),
+            "{screen}"
+        );
     }
 
     #[test]
