@@ -1908,10 +1908,11 @@ const FIELDS: [Field; 16] = [
     Field {
         group: "claude",
         name: "model",
-        short: "e.g. sonnet, opus",
-        long: "Empty uses Claude's default model.",
+        short: "fable, opus, sonnet, haiku",
+        long: "The alias passed to Claude as --model. - leaves the choice to Claude.",
         builtin: "default",
-        picks: None,
+        // ponytail: aliases only; a full model id needs the yaml, typed picks if asked.
+        picks: Some(&["-", "fable", "opus", "sonnet", "haiku"]),
     },
     Field {
         group: "claude",
@@ -2016,13 +2017,14 @@ pub enum ConfigAction {
 /// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
 /// policy every job runs under unless it sets the field itself, and the dashboard's `columns:`
 /// line and `sparkline:` block, one row per field under its group where the list is. Every
-/// row is name, value, a few words, in three columns that stay put; the selected row's value
-/// is pressed, and the prompt line is where it is edited: the options with the current one
-/// bracketed where the field is picked, the value with a cursor where it is typed. `↑` `↓`
-/// move between fields, typing edits the selected one, `← →` pick, `enter` saves the block,
-/// `esc` cancels. The selected field's fuller explanation sits under the list. An empty
-/// answer leaves the field out of the file, so the built-in applies and shows dim in its
-/// place. Pure: the file is read and written by the dashboard.
+/// row is name, value, a few words, in three columns that stay put. `↑` `↓` move between
+/// fields and `enter` opens the selected one: its value is pressed and the prompt line is
+/// where it is edited, the options with the current one bracketed where the field is picked,
+/// the value with a cursor where it is typed; `← →` pick, typing edits, `enter` keeps the
+/// value and returns to the list, `esc` puts the old one back. On the list `ctrl+s` saves the
+/// block and `esc` cancels. The selected field's fuller explanation sits under the list. An
+/// empty answer leaves the field out of the file, so the built-in applies and shows dim in
+/// its place. Pure: the file is read and written by the dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigForm {
     pub row: usize,
@@ -2030,6 +2032,10 @@ pub struct ConfigForm {
     /// for the built-in.
     pub values: Vec<String>,
     pub error: Option<String>,
+    /// The selected field is open for editing; `before` is its value when it was opened, put
+    /// back by `esc`.
+    pub open: bool,
+    before: String,
     /// The cursor in the selected value, a byte offset; past the end means after it.
     cursor: usize,
 }
@@ -2076,6 +2082,8 @@ impl ConfigForm {
             row: 0,
             values,
             error: None,
+            open: false,
+            before: String::new(),
             cursor: usize::MAX,
         }
     }
@@ -2083,6 +2091,13 @@ impl ConfigForm {
     /// Select `row`, the cursor after its value.
     fn go(&mut self, row: usize) {
         self.row = row;
+        self.cursor = usize::MAX;
+    }
+
+    /// Open the selected field for editing.
+    fn enter(&mut self) {
+        self.open = true;
+        self.before = self.values[self.row].clone();
         self.cursor = usize::MAX;
     }
 
@@ -2189,27 +2204,45 @@ impl ConfigForm {
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
-        if code == KeyCode::Esc {
-            return ConfigAction::Cancel;
-        }
         self.error = None;
-        match code {
-            KeyCode::Enter => {
-                return match self.config() {
-                    Ok((p, c, s)) => ConfigAction::Save(Box::new(p), c, s),
-                    Err(e) => {
-                        // The error lands on the field it names.
-                        self.go(FIELDS
-                            .iter()
-                            .position(|f| e.starts_with(&format!("{}:", f.name)))
-                            .unwrap_or(self.row));
-                        self.error = Some(e);
-                        ConfigAction::Stay
-                    }
-                };
+        if !self.open {
+            match code {
+                KeyCode::Esc => return ConfigAction::Cancel,
+                KeyCode::Enter => self.enter(),
+                KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
+                    return match self.config() {
+                        Ok((p, c, s)) => ConfigAction::Save(Box::new(p), c, s),
+                        Err(e) => {
+                            // The error lands on the field it names, open to be fixed.
+                            self.go(FIELDS
+                                .iter()
+                                .position(|f| e.starts_with(&format!("{}:", f.name)))
+                                .unwrap_or(self.row));
+                            self.enter();
+                            self.error = Some(e);
+                            ConfigAction::Stay
+                        }
+                    };
+                }
+                KeyCode::Up => self.go(self.row.saturating_sub(1)),
+                KeyCode::Down => self.go((self.row + 1).min(FIELDS.len() - 1)),
+                _ => {}
             }
-            KeyCode::Up => self.go(self.row.saturating_sub(1)),
-            KeyCode::Down => self.go((self.row + 1).min(FIELDS.len() - 1)),
+            return ConfigAction::Stay;
+        }
+        match code {
+            KeyCode::Esc => {
+                self.values[self.row] = std::mem::take(&mut self.before);
+                self.open = false;
+            }
+            // The value is kept when the check passes for this field; another field's
+            // complaint waits for ctrl+s.
+            KeyCode::Enter => match self.config() {
+                Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
+                    self.error = Some(e);
+                }
+                _ => self.open = false,
+            },
             KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.field().picks.is_some() => {
                 let opts = self.field().picks.unwrap_or_default();
                 let n = opts.len();
@@ -2291,7 +2324,16 @@ impl ConfigForm {
                     format!("  {:<name_w$}  ", f.name),
                     if selected { lit() } else { bold() },
                 ),
-                Span::styled(value, if selected { pressed() } else { style }),
+                Span::styled(
+                    value,
+                    if selected && self.open {
+                        pressed()
+                    } else if selected {
+                        bold()
+                    } else {
+                        style
+                    },
+                ),
                 Span::styled(format!("{}{}", " ".repeat(gap), f.short), dim()),
             ];
             if selected && let Some(e) = &self.error {
@@ -2327,9 +2369,9 @@ impl ConfigForm {
         lines
     }
 
-    /// The prompt line, where the selected field is edited: its options with the current one
-    /// bracketed when it is picked, or its value under the cursor when it is typed, and what
-    /// leaving it empty means.
+    /// The prompt line: the selected field's value whole, with `enter` to open it; open, where
+    /// it is edited: its options with the current one bracketed when it is picked, or its
+    /// value under the cursor when it is typed, and what leaving it empty means.
     fn line(&self) -> Line<'static> {
         let f = self.field();
         let value = &self.values[self.row];
@@ -2337,6 +2379,15 @@ impl ConfigForm {
             format!("{} › ", f.name),
             Style::default().fg(ORANGE),
         )];
+        if !self.open {
+            if value.is_empty() {
+                spans.push(Span::styled(f.builtin.to_owned(), dim()));
+            } else {
+                spans.push(Span::raw(value.clone()));
+            }
+            spans.push(Span::styled("  enter edits", dim()));
+            return Line::from(spans);
+        }
         let help = if let Some(opts) = f.picks {
             let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
             picks(&mut spans, opts, at);
@@ -4464,14 +4515,20 @@ impl App {
                 keys.push(("esc", "cancel"));
                 hints(&keys)
             }
-            Mode::Config(form) => {
-                let mut keys = vec![("↑ ↓", "field")];
+            Mode::Config(form) if form.open => {
+                let mut keys = vec![];
                 if form.field().picks.is_some() {
                     keys.push(("← →", "pick"));
                 }
-                keys.extend([("enter", "save"), ("esc", "cancel")]);
+                keys.extend([("enter", "keep"), ("esc", "back")]);
                 hints(&keys)
             }
+            Mode::Config(_) => hints(&[
+                ("↑ ↓", "field"),
+                ("enter", "edit"),
+                ("ctrl+s", "save"),
+                ("esc", "cancel"),
+            ]),
             Mode::Harness(_) => Line::default(),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
@@ -4883,8 +4940,8 @@ impl App {
                     }
                 }
             },
-            // The whole block is checked and the file replaced at once; a bad value comes back
-            // inline on its field and the editor stays.
+            // ctrl+s checks the whole block and replaces the file at once; a bad value comes
+            // back inline on its field and the editor stays.
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
@@ -5643,6 +5700,7 @@ mod tests {
         );
 
         let mut c = ConfigForm::new(&config::Policy::default(), None, None);
+        c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
             c.key(KeyCode::Char(ch), KeyModifiers::NONE);
         }
@@ -5652,9 +5710,13 @@ mod tests {
             c.values[0], "105",
             "the defaults editor types where the cursor is"
         );
+        c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Down, KeyModifiers::NONE);
+        c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('2'), KeyModifiers::NONE);
+        c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Up, KeyModifiers::NONE);
+        c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('7'), KeyModifiers::NONE);
         assert_eq!(
             c.values[0], "1057",
@@ -7900,9 +7962,10 @@ mod tests {
     /// explains itself, enter presses it, and `help` is the guide.
     /// The menu's `config` button opens the config editor where the list is: the fields under
     /// their groups, `runs`, `tools` and `cones`, one row per field with its value and a few
-    /// words, the selected field explained under the list. Typing edits, ← → pick, enter
-    /// checks the lot and writes only the `defaults` block and the `columns:` line; a bad
-    /// value comes back on its field and nothing is written.
+    /// words, the selected field explained under the list. Enter opens a field: typing edits,
+    /// ← → pick, enter keeps the value; ctrl+s checks the lot and writes only the `defaults`
+    /// block and the `columns:` line; a bad value comes back on its field and nothing is
+    /// written.
     #[test]
     fn the_config_button_edits_the_defaults_block() {
         let d = dir();
@@ -7959,19 +8022,33 @@ mod tests {
         assert_eq!(column(&s, "count per bar"), col, "no bounce: {s}");
         assert_eq!(height(&s), tall, "no bounce: {s}");
         assert!(
+            s.contains("sparkline.metric › lines  enter edits"),
+            "closed, the prompt line shows the value: {s}"
+        );
+        assert!(s.contains("enter edit"), "{s}");
+        assert!(s.contains("ctrl+s save"), "{s}");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(
             s.contains("sparkline.metric › [-] lines"),
-            "the options sit on the prompt line: {s}"
+            "open, the options sit on the prompt line: {s}"
         );
         assert!(
             !s.contains("[-] lines  messages  tools  tokens   count per bar"),
             "not in the row: {s}"
         );
+        // Right picks lines; esc puts the built-in back and closes the field.
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "lines"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("disable sandbox"), "{s}");
         assert!(s.contains("empty uses default"), "{s}");
-        assert!(s.contains("e.g. sonnet, opus"), "{s}");
+        assert!(s.contains("fable, opus, sonnet, haiku"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -8006,21 +8083,29 @@ mod tests {
             "and read whole on the prompt line: {s}"
         );
         go(&mut app, "timeout_min");
+        // Closed, typing does nothing.
+        app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
 
-        // A word where a number goes: the error on its field, the file untouched.
+        // A word where a number goes: the error on its field, which stays open, the file
+        // untouched.
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "abc".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         match &app.mode {
-            Mode::Config(f) => assert!(
-                f.error
-                    .as_deref()
-                    .unwrap()
-                    .starts_with("timeout_min: a number"),
-                "{:?}",
-                f.error
-            ),
+            Mode::Config(f) => {
+                assert!(f.open);
+                assert!(
+                    f.error
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("timeout_min: a number"),
+                    "{:?}",
+                    f.error
+                )
+            }
             _ => panic!("stays open"),
         }
         assert!(!app.jobs_path.exists());
@@ -8028,24 +8113,33 @@ mod tests {
             app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Char('5'), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "0.25".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         go(&mut app, "write");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("write › [-] false  true"), "picks on write: {s}");
         assert!(s.contains("← → pick"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         go(&mut app, "model");
-        for c in "sonnet".chars() {
-            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for _ in 0..3 {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
 
         // The columns line is checked the same way and written beside the block.
         go(&mut app, "columns");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "speed".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
@@ -8064,6 +8158,8 @@ mod tests {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
+        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
         assert!(app.status.starts_with("config saved"), "{}", app.status);
         assert_eq!(config::columns(&app.jobs_path), ["state", "age"]);

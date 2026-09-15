@@ -164,6 +164,8 @@ Open `config` from the menu to edit job defaults and dashboard settings in jobs.
 
 Each row shows a field, value and short hint, with the selected field explained below. Long values are truncated in the row and shown fully on the prompt line. The columns and help block keep their positions as selection changes.
 
+`↑` `↓` move between fields and `enter` opens the selected one on the prompt line: `← →` pick where the field has options, typing edits where it is free text, `enter` keeps the value and returns to the list, `esc` puts the old value back. A value that fails its own check stays open with the error beside its row. On the list `ctrl+s` checks the whole block and writes the file; a bad value opens its field with the error and nothing is written. `esc` on the list cancels.
+
 `↑` `↓` select a field. Edit its value on the prompt line, or use `←` `→` to choose an option. `enter` saves; `esc` cancels. Empty values, or `-` in a picker, use the dimmed built-in defaults. Setting any sparkline field saves the full block, with built-ins filling the rest.
 
 | Field | Row | Under the list |
