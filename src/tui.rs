@@ -2765,6 +2765,10 @@ const GUIDE: &[(&str, &str)] = &[
         "types an instruction; enter starts a session with it in the selected row's directory",
     ),
     (
+        "shift+tab",
+        "the harness the next session starts under, claude or codex; the composer's prefix shows it",
+    ),
+    (
         "ctrl+o",
         "the harness, model and provider the next sessions start with, seeded from the defaults; the composer's prefix shows them",
     ),
@@ -4892,7 +4896,7 @@ impl App {
         words
     }
 
-    /// The composer: the harness `ctrl+o` picked with the model and provider the next
+    /// The composer: the harness `shift+tab` picked with the model and provider the next
     /// session starts with, then the instruction or a short placeholder.
     fn composer(&self) -> Line<'static> {
         let kind = harness::KNOWN[self.harness].to_string();
@@ -4949,6 +4953,7 @@ impl App {
     /// keys that act everywhere go, last first, until it fits the column it is drawn in
     /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
+        let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if self.menu_is("jobs") || self.on_new_job() {
             "new job with it".to_owned()
         } else {
@@ -5009,7 +5014,8 @@ impl App {
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
-                ("ctrl+o", "harness · model"),
+                ("shift+tab", &next),
+                ("ctrl+o", "model"),
                 ("ctrl+v", "paste image"),
                 ("esc", "clear"),
             ]),
@@ -5031,7 +5037,10 @@ impl App {
                 if self.shown().is_some() {
                     keys.push(("tab", "pane"));
                 }
-                keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
+                keys.extend([
+                    ("shift+tab", next.as_str()),
+                    ("esc", if self.jobs_view { "back" } else { "quit" }),
+                ]);
                 let room = (self.hint_width() as usize).saturating_sub(taken);
                 let mut line = hints(&keys);
                 while keys.len() > 2 && line.width() > room {
@@ -5476,12 +5485,17 @@ impl App {
                     }
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
-                    // tab bounces into the pane's viewer and back; the harness the next
-                    // session starts under is ctrl+o's, with the model and provider.
+                    // tab bounces into the pane's viewer and back; shift+tab, its sibling,
+                    // cycles the harness the next session starts under, which ctrl+o also
+                    // sets with the model and provider. A viewer's own shift+tab is its
+                    // client's, so the two never collide.
                     KeyCode::Tab => match self.shown() {
                         Some(i) => self.focus(i),
                         None => self.status = "nothing in the pane".into(),
                     },
+                    KeyCode::BackTab => {
+                        self.harness = (self.harness + 1) % harness::KNOWN.len();
+                    }
                     // shift+enter attaches over the whole frame, pane or no pane, and leaves
                     // the layout as it was. Claude Code's terminal bindings send it as ESC CR,
                     // which crossterm reports as alt+enter; a kitty-protocol terminal reports
@@ -7370,7 +7384,9 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            hint.starts_with("enter start job · ctrl+x delete · ctrl+e edit · esc back"),
+            hint.starts_with(
+                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab codex · esc back"
+            ),
             "a job row offers its own keys first: {hint}"
         );
         app.stop();
@@ -7577,11 +7593,12 @@ mod tests {
         assert_eq!(text(app.composer()), "✻ claude › Type an instruction…");
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter add folder · ← → pick · esc quit"),
+            hint.starts_with("enter add folder · ← → pick · shift+tab codex · esc quit"),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
-        app.harness = (app.harness + 1) % harness::KNOWN.len();
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(text(app.composer()).starts_with(">_ codex › "));
+        assert!(text(app.hint_line()).contains("shift+tab claude"));
         app.text = "fix the tests".into();
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.menu = 1;
@@ -8525,7 +8542,7 @@ mod tests {
         app.size = (30, 130);
         app.split = false;
         let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("ctrl+x delete · esc quit"), "{wide}");
+        assert!(wide.ends_with("shift+tab codex · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
         // 140 columns with the pane on: the list column is 70; a long filter in front leaves
         // the keys no room.
