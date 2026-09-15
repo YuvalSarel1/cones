@@ -5012,13 +5012,9 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
-            Mode::Normal if !self.text.is_empty() => hints(&[
-                ("enter", &start),
-                ("shift+tab", &next),
-                ("ctrl+o", "model"),
-                ("ctrl+v", "paste image"),
-                ("esc", "clear"),
-            ]),
+            Mode::Normal if !self.text.is_empty() => {
+                hints(&[("enter", &start), ("shift+tab", &next), ("ctrl+o", "model")])
+            }
             // Only what acts on the selected row, then the keys that act everywhere.
             Mode::Normal => {
                 let mut keys = vec![];
