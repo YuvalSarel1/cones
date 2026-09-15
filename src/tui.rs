@@ -642,6 +642,36 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The usage guide as a paragraph, keys in one column and their verbs dim beside them, from
+/// wrapped line `top`.
+fn guide(top: usize) -> Paragraph<'static> {
+    let width = GUIDE
+        .iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec![];
+    for (key, what) in GUIDE {
+        if key.is_empty() {
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            lines.push(Line::from(Span::styled(
+                (*what).to_owned(),
+                Style::default().fg(ORANGE),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {key:width$}  "), bold()),
+                Span::styled((*what).to_owned(), dim()),
+            ]));
+        }
+    }
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((top as u16, 0))
+}
+
 /// `text` without its ANSI color sequences, for a status line.
 fn uncolored(text: &str) -> String {
     let mut out = String::new();
@@ -1271,7 +1301,80 @@ enum Mode {
     Harness(usize),
     /// The menu's `folder` prompt: the path typed so far.
     Folder(String),
+    /// The usage guide, `ctrl+g`, drawn where the list is; the wrapped line at its top.
+    Guide(usize),
 }
+
+/// The usage guide: a key and what it does, in the words of docs/dashboard.md; an entry with
+/// no key is a heading. A test keeps every key here in that file.
+const GUIDE: &[(&str, &str)] = &[
+    ("", "Rows"),
+    (
+        "↑ ↓",
+        "move between rows; ↑ past the first table lands on the menu",
+    ),
+    (
+        "enter",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on a menu row: new job, agents, pick folder",
+    ),
+    (
+        "ctrl+x twice",
+        "stop the run or session; delete a job with no run in flight; hide a finished run; forget a Codex daemon thread; remove a pinned folder",
+    ),
+    ("ctrl+e", "edit the selected job in the wizard"),
+    ("ctrl+n", "add a job"),
+    ("ctrl+s", "regroup sessions by state or by directory"),
+    (
+        "ctrl+f",
+        "filter rows by text; enter keeps the filter, esc clears it",
+    ),
+    (
+        "ctrl+o",
+        "a harness's own agents view: claude agents or codex resume",
+    ),
+    (
+        "ctrl+r",
+        "reload now; the dashboard reloads every second on its own",
+    ),
+    ("", "Composer"),
+    (
+        "any key",
+        "types an instruction; enter starts a session with it in the selected row's directory",
+    ),
+    (
+        "tab",
+        "the harness the next session starts under, claude or codex",
+    ),
+    (
+        "ctrl+v",
+        "paste the clipboard's image; its path is typed into the instruction",
+    ),
+    (
+        "← →",
+        "move a character in the instruction; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
+    ),
+    (
+        "backspace",
+        "delete a character; ctrl+w alt+d a word; ctrl+u ctrl+k everything before or after the cursor",
+    ),
+    ("", "Viewers"),
+    (
+        "ctrl+z",
+        "back to the list; the viewer stays alive and enter on its row gives it the keys again",
+    ),
+    (
+        "ctrl+\\",
+        "inside a viewer on a wide terminal, its layout: beside the list or over the whole frame",
+    ),
+    ("wheel", "scrolls the pane's viewer back, focused or not"),
+    ("", "Leaving"),
+    (
+        "esc",
+        "backs out one thing at a time: an armed ctrl+x, the instruction, the dashboard",
+    ),
+    ("ctrl+c twice", "quit"),
+    ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
+];
 
 struct App {
     exe: PathBuf,
@@ -3085,6 +3188,7 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Harness(_) => Line::default(),
+            Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
                 ("enter", "work there"),
                 ("tab", "complete"),
@@ -3113,6 +3217,7 @@ impl App {
                     ("ctrl+n", "new job"),
                     ("ctrl+s", "regroup"),
                     ("ctrl+o", "agents"),
+                    ("ctrl+g", "guide"),
                     ("esc", "quit"),
                 ]);
                 let room = (self.hint_width() as usize).saturating_sub(taken);
@@ -3373,6 +3478,17 @@ impl App {
             }
             // The menu's folder: a directory, relative to the current one, checked before it
             // is taken; the menu rows then show and launch into it.
+            Mode::Guide(top) => {
+                let top = *top;
+                match code {
+                    KeyCode::Esc | KeyCode::Enter => self.mode = Mode::Normal,
+                    KeyCode::Char('g') if ctrl => self.mode = Mode::Normal,
+                    KeyCode::Up => self.mode = Mode::Guide(top.saturating_sub(1)),
+                    // ponytail: clamped to the entry count, not the wrapped line count.
+                    KeyCode::Down => self.mode = Mode::Guide((top + 1).min(GUIDE.len() - 1)),
+                    _ => {}
+                }
+            }
             Mode::Folder(text) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
@@ -3484,6 +3600,7 @@ impl App {
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
+                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
                     KeyCode::Char('r') if ctrl => {
                         self.invalidate();
                         self.status = "refresh requested".into();
@@ -3651,6 +3768,10 @@ impl App {
                 spans.extend(typed(text, text.len(), &fleet::tilde(&self.cwd)));
                 Line::from(spans)
             }
+            Mode::Guide(_) => Line::from(vec![
+                Span::styled("guide › ", Style::default().fg(ORANGE)),
+                Span::styled("the keys and what they do", dim()),
+            ]),
             Mode::Normal => self.composer(),
         };
         // While a viewer has the keys the terminal's cursor is in the pane, so the input's
@@ -3677,7 +3798,11 @@ impl App {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
-        self.draw_list(frame, list);
+        if let Mode::Guide(top) = self.mode {
+            frame.render_widget(guide(top), list);
+        } else {
+            self.draw_list(frame, list);
+        }
         frame.render_widget(input, prompt);
         frame.render_widget(Paragraph::new(self.hint_line()), foot);
     }
@@ -3925,6 +4050,40 @@ fn tty_state() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Every key the guide names is in the dashboard's docs, so the two never drift.
+    #[test]
+    fn guide_keys_are_documented() {
+        let docs = include_str!("../docs/dashboard.md");
+        for (key, _) in super::GUIDE {
+            for word in key.split_whitespace() {
+                assert!(docs.contains(word), "{word} is not in docs/dashboard.md");
+            }
+        }
+        // ctrl+g draws the guide where the list is; esc brings the list back.
+        let d = dir();
+        let mut app = app(d.path());
+        assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
+        assert!(matches!(app.mode, Mode::Guide(0)));
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("Viewers") && text.contains("this guide"),
+            "{text}"
+        );
+        assert!(text.contains("↑ ↓ scroll · esc back"), "{text}");
+        assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Guide(1)));
+        assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
     use super::*;
     use ratatui::Terminal;
     use std::fs;
@@ -5600,7 +5759,10 @@ mod tests {
         // 130 columns is under SPLIT_MIN, so the line has the whole frame and fits it.
         app.size = (30, 130);
         let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("ctrl+o agents · esc quit"), "{wide}");
+        assert!(
+            wide.ends_with("ctrl+o agents · ctrl+g guide · esc quit"),
+            "{wide}"
+        );
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
         // 140 columns: the list column is 70, which the whole line does not fit.
         app.size = (30, 140);
