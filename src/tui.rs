@@ -1,8 +1,8 @@
-//! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
-//! or by state, and runs, with a composer at the bottom like `claude agents`: type an
-//! instruction, `enter` starts a session in the selected row's directory under the harness
-//! `tab` picked. Jobs are added, edited and deleted here too (the `runs` button, `ctrl+e`,
-//! `ctrl+x`);
+//! `cones tui` is the native dashboard: every live harness session grouped by directory or by
+//! state, and runs, with a composer at the bottom like `claude agents`: type an instruction,
+//! `enter` starts a session in the selected row's directory under the harness `tab` picked.
+//! Jobs have a screen of their own behind the menu's `jobs` button, where they are started,
+//! added (the `new job` row), edited (`ctrl+e`) and deleted (`ctrl+x`); `esc` comes back.
 //! `ctrl+x` marks the row red and a second press acts; any other key keeps it. On a finished
 //! run it hides the row here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
@@ -111,6 +111,8 @@ pub enum Kind {
     /// A pinned folder nothing runs in, in `~` form: its group's one row until a session
     /// starts there or ctrl+x removes the folder.
     Folder(String),
+    /// The jobs screen's last row: enter opens the wizard on a new job.
+    NewJob,
 }
 
 impl Kind {
@@ -127,6 +129,7 @@ impl Kind {
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
             Kind::Menu => Some("menu"),
             Kind::Folder(dir) => Some(dir),
+            Kind::NewJob => Some("new job"),
             _ => None,
         }
     }
@@ -199,9 +202,9 @@ impl Data {
         })
     }
 
-    /// Whether `dir` has a group of its own already: a session runs there or a job lives there.
+    /// Whether `dir` has a group of its own already: a session runs there.
     fn has_rows_in(&self, dir: &Path) -> bool {
-        self.sessions.iter().any(|s| s.cwd == dir) || self.jobs.iter().any(|j| j.cwd == dir)
+        self.sessions.iter().any(|s| s.cwd == dir)
     }
 
     fn count(&self, state: &str) -> usize {
@@ -252,17 +255,20 @@ impl Data {
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
     /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, &HashSet::new(), &mut Widths::new())
+        self.rows_excluding(by_state, false, &HashSet::new(), &mut Widths::new())
     }
 
     /// A confirmed delete leaves the list immediately while the harness command finishes.
-    /// The source data stays intact so a failed command can restore its row.
+    /// The source data stays intact so a failed command can restore its row. `jobs_view` is
+    /// the jobs screen: the jobs alone, grouped as one, and no session, folder or run.
     fn rows_excluding(
         &self,
         by_state: bool,
+        jobs_view: bool,
         deleting: &HashSet<&str>,
         widths: &mut Widths,
     ) -> Vec<Row> {
+        let by_state = by_state || jobs_view;
         let mut out = Vec::new();
         let header = |out: &mut Vec<Row>, title: &str| {
             out.push(Row {
@@ -285,22 +291,19 @@ impl Data {
             (name.to_lowercase(), name)
         };
         let ranked = |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned());
-        // Jobs sit in their folder's group with the sessions, first, in jobs.yaml order, so a
-        // folder with a job has a group whether or not anything runs there; grouped by state
-        // they are one group of their own, after the sessions.
+        // On the jobs screen the jobs are one group in jobs.yaml order; the main screen has
+        // the sessions and the pinned folders.
         let mut groups: BTreeMap<(String, String), Vec<Entry>> = BTreeMap::new();
-        for j in &self.jobs {
-            let key = if by_state {
-                ranked(5, "jobs")
-            } else {
-                folder(&j.cwd)
-            };
-            groups.entry(key).or_default().push(Entry::Job(j));
+        for j in self.jobs.iter().filter(|_| jobs_view) {
+            groups
+                .entry(ranked(0, "jobs"))
+                .or_default()
+                .push(Entry::Job(j));
         }
         for s in self
             .sessions
             .iter()
-            .filter(|s| !deleting.contains(s.session_id.as_str()))
+            .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
         {
             let key = if by_state {
                 let rank = match s.state.as_str() {
@@ -317,7 +320,7 @@ impl Data {
         }
         // A pinned folder sorts among the live folders by name; grouped by state it follows the
         // jobs. The same key as the sessions use, so it joins its group rather than doubling it.
-        for dir in &self.folders {
+        for dir in self.folders.iter().filter(|_| !jobs_view) {
             let (sort, name) = folder(dir);
             let key = if by_state {
                 (format!("6{sort}"), name)
@@ -465,7 +468,19 @@ impl Data {
             };
             out.push(row);
         }
-        if !self.runs.is_empty() {
+        if jobs_view {
+            if !table {
+                header(&mut out, "jobs");
+            }
+            out.push(Row {
+                kind: Kind::NewJob,
+                cells: vec![
+                    ("+ new job".to_owned(), lit()),
+                    (" · a task once or on a schedule".to_owned(), dim()),
+                ],
+            });
+        }
+        if !jobs_view && !self.runs.is_empty() {
             header(&mut out, "runs");
             // ponytail: the newest 200 runs; paging when the ledger outgrows a screenful of scrolling.
             let runs: Vec<&Run> = self.runs.iter().rev().take(200).collect();
@@ -621,6 +636,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
             Kind::Menu => ("menu".to_owned(), "-".to_owned()),
             Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
+            Kind::NewJob => ("new job".to_owned(), "-".to_owned()),
         };
         out += &format!("{key}\t{aux}\t");
         if row.kind.selectable() {
@@ -669,7 +685,7 @@ fn ansi(text: &str, style: Style) -> String {
 /// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
 /// while it is picked.
 const MENU: [(&str, &str, &str); 5] = [
-    ("runs", "new run", "a task once or on a schedule"),
+    ("jobs", "jobs", "the jobs: start, edit, add one"),
     ("agents", "agents", "a harness's own agents view"),
     (
         "folder",
@@ -693,12 +709,13 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
         Some(Kind::Menu) => MENU[menu].1,
         Some(Kind::Folder(_)) => "start here",
+        Some(Kind::NewJob) => "new job",
         _ => "open",
     }
 }
 
 /// The top menu: one row of buttons above the tables, reached with `↑` past the first table;
-/// `←` `→` pick one and `enter` presses it. `runs` makes the composer a supervised one-off run,
+/// `←` `→` pick one and `enter` presses it. `jobs` opens the jobs screen,
 /// `agents` opens a harness's agents view, `folder` adds a row for a directory nothing runs
 /// in, so work can start there, `help` opens the guide.
 fn menu_rows() -> Vec<Row> {
@@ -1733,7 +1750,7 @@ impl JobForm {
     fn lines(&self) -> Vec<Line<'static>> {
         let title = match &self.original {
             Some(j) => format!("edit {}", j.name),
-            None => "new run".to_owned(),
+            None => "new job".to_owned(),
         };
         let mut lines = vec![
             Line::default(),
@@ -2382,13 +2399,16 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new run, agents, add folder, defaults, help",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: jobs, agents, add folder, defaults, help; on the jobs screen's last row, the wizard on a new job",
     ),
     (
         "ctrl+x twice",
         "stop the run or session; delete a job with no run in flight; hide a finished run; forget a Codex daemon thread; remove a pinned folder",
     ),
-    ("ctrl+e", "edit the selected job in the wizard"),
+    (
+        "ctrl+e",
+        "edit the selected job in the wizard, on the jobs screen",
+    ),
     (
         "ctrl+p",
         "pin the selected row's folder: it keeps a row after the last session there leaves",
@@ -2440,7 +2460,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Leaving"),
     (
         "esc",
-        "backs out one thing at a time: an armed ctrl+x, the instruction, the dashboard",
+        "backs out one thing at a time: an armed ctrl+x, the instruction, the jobs screen, the dashboard",
     ),
     ("ctrl+c twice", "quit"),
     ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
@@ -2463,6 +2483,8 @@ struct App {
     cursor: usize,
     scroll: usize,
     by_state: bool,
+    /// The menu's `jobs` button: the jobs screen where the tables are, until esc.
+    jobs_view: bool,
     /// Column widths so far, so a value changing length never shifts the table.
     widths: Widths,
     filter: Input,
@@ -2699,6 +2721,7 @@ impl App {
             cursor: 0,
             scroll: 0,
             by_state: false,
+            jobs_view: false,
             widths: Widths::new(),
             filter: Input::default(),
             mode: Mode::Normal,
@@ -2963,10 +2986,12 @@ impl App {
             .map(|a| a.id.as_str())
             .collect();
         self.rows = menu_rows();
-        self.rows.extend(
-            self.data
-                .rows_excluding(self.by_state, &deleting, &mut self.widths),
-        );
+        self.rows.extend(self.data.rows_excluding(
+            self.by_state,
+            self.jobs_view,
+            &deleting,
+            &mut self.widths,
+        ));
         self.apply_filter();
         if let Some(k) = &keep
             && let Some(i) = self
@@ -4056,6 +4081,7 @@ impl App {
         }
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
+            Kind::NewJob => self.new_job(),
             // A headless run cannot be attached while it runs; follow its log instead. A live
             // session attaches natively, ctrl-z comes back here.
             Kind::Run(id, s) if s == "started" => {
@@ -4101,7 +4127,7 @@ impl App {
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
             Kind::Menu => match MENU[self.menu].0 {
-                "runs" => self.new_job(),
+                "jobs" => self.show_jobs(),
                 "agents" => self.mode = Mode::Harness(0),
                 "folder" => self.mode = Mode::Folder(Input::default()),
                 "config" => {
@@ -4156,8 +4182,9 @@ impl App {
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
     fn start(&mut self) {
-        // The menu's `runs` row: the wizard, with the instruction as the task's first draft.
-        if self.menu_is("runs") {
+        // The menu's `jobs` button and the `new job` row: the wizard, with the instruction as
+        // the task's first draft.
+        if self.menu_is("jobs") || self.on_new_job() {
             self.new_job();
             return;
         }
@@ -4312,7 +4339,25 @@ impl App {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
 
-    /// enter on the menu's `runs` row: the wizard on a new run, seeded with what the composer
+    /// True on the jobs screen's `new job` row.
+    fn on_new_job(&self) -> bool {
+        matches!(self.selected().map(|r| &r.kind), Some(Kind::NewJob))
+    }
+
+    /// The menu's `jobs` button: the jobs screen where the tables were, the cursor on its first
+    /// row; esc comes back to the dashboard.
+    fn show_jobs(&mut self) {
+        self.jobs_view = true;
+        self.rebuild();
+        let first = self
+            .visible
+            .iter()
+            .position(|&i| matches!(self.rows[i].kind, Kind::Job(_) | Kind::NewJob));
+        self.cursor = first.unwrap_or(0);
+        self.settle();
+    }
+
+    /// enter on the `new job` row: the wizard on a new job, seeded with what the composer
     /// holds, its directory defaulting to the selected row's.
     fn new_job(&mut self) {
         let (base, fallback) = (self.jobs_dir(), self.target_dir());
@@ -4323,7 +4368,7 @@ impl App {
     /// ctrl+e: the wizard on the selected job, filled in from the file as written.
     fn edit_job(&mut self) {
         let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
-            self.status = "select a job to edit · the runs button adds one".into();
+            self.status = "select a job to edit · the menu's jobs button lists them".into();
             return;
         };
         match config::raw_jobs(&self.jobs_path) {
@@ -4432,8 +4477,8 @@ impl App {
     /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
-        let start = if self.menu_is("runs") {
-            "new run with it".to_owned()
+        let start = if self.menu_is("jobs") || self.on_new_job() {
+            "new job with it".to_owned()
         } else {
             format!(
                 "start {} in {}",
@@ -4508,7 +4553,7 @@ impl App {
                     ("ctrl+s", "regroup"),
                     ("ctrl+o", "agents"),
                     ("ctrl+g", "guide"),
-                    ("esc", "quit"),
+                    ("esc", if self.jobs_view { "back" } else { "quit" }),
                 ]);
                 let room = (self.hint_width() as usize).saturating_sub(taken);
                 let mut line = hints(&keys);
@@ -4922,13 +4967,17 @@ impl App {
                         self.armed = armed;
                         self.stop();
                     }
-                    // esc backs out one thing at a time: the armed ctrl+x, the text, the dashboard.
+                    // esc backs out one thing at a time: the armed ctrl+x, the text, the jobs
+                    // screen, the dashboard.
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
                         } else if !self.text.is_empty() {
                             self.text.clear();
                             self.images.clear();
+                        } else if self.jobs_view {
+                            self.jobs_view = false;
+                            self.rebuild();
                         } else {
                             return Ok(true);
                         }
@@ -6051,7 +6100,7 @@ mod tests {
             "once runs now; no name is asked"
         );
         let shown = f.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>();
-        assert!(shown[1].starts_with("new run"), "{shown:?}");
+        assert!(shown[1].starts_with("new job"), "{shown:?}");
         assert!(shown[3].contains("what   triage the TODOs"), "{shown:?}");
         assert!(shown[5].contains("[once] hourly"), "{shown:?}");
         assert_eq!(shown.len(), 6, "once asks nothing more: {shown:?}");
@@ -6737,6 +6786,7 @@ mod tests {
         let mut app =
             App::new(Path::new("cones-not-installed"), &jobs, d.path(), d.path()).unwrap();
         app.refresh().unwrap();
+        app.show_jobs();
         assert!(matches!(app.selected().unwrap().kind, Kind::Job(_)));
         assert_eq!(app.stop_verb(), Some("delete"));
         let hint: String = app
@@ -6919,14 +6969,14 @@ mod tests {
         assert!(text(app.composer()).starts_with("✻ claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter new run · ← → pick · tab codex · ctrl+p pin"),
-            "an empty dashboard opens on the menu row, runs picked: {hint}"
+            hint.starts_with("enter jobs · ← → pick · tab codex · ctrl+p pin"),
+            "an empty dashboard opens on the menu row, jobs picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
-        assert!(text(app.hint_line()).starts_with("enter new run with it"));
+        assert!(text(app.hint_line()).starts_with("enter new job with it"));
         app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.status = "back from attach".into();
@@ -6955,7 +7005,7 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A), "opens on the first table");
         app.step(-1);
         assert_eq!(key(&app).as_deref(), Some("menu"));
-        assert!(app.menu_is("runs"), "runs is picked until ← → move it");
+        assert!(app.menu_is("jobs"), "jobs is picked until ← → move it");
         let home = app.cwd.clone();
         assert_eq!(
             app.target_dir(),
@@ -7031,11 +7081,10 @@ mod tests {
         app.mode = Mode::Normal;
     }
 
-    /// A job sits in its folder's group ahead of the sessions there, under the session columns,
-    /// so a folder with a job has a group whether or not anything runs; grouped by state the
-    /// jobs are one group of their own, last; a pinned folder with a job needs no placeholder.
+    /// Jobs are off the dashboard: the menu's `jobs` button opens a screen with the jobs as one
+    /// table, each with its directory, and a `new job` row that opens the wizard; esc returns.
     #[test]
-    fn a_job_sits_in_its_folders_group() {
+    fn the_jobs_screen_lists_the_jobs_with_a_new_job_row() {
         let d = dir();
         let claude = d.path();
         let cwd = claude.canonicalize().unwrap();
@@ -7067,13 +7116,38 @@ mod tests {
             vec![
                 "menu".to_owned(),
                 format!("# {}", fleet::tilde(&cwd)),
-                "nightly".into(),
                 A.into(),
                 "# /src/other".into(),
                 B.into(),
             ],
-            "the job leads its folder's group and the pinned folder has no placeholder"
+            "the dashboard has no job row and the pinned folder has no placeholder"
         );
+        // The menu's jobs button: the jobs alone, the cursor on the first, a new job row last.
+        app.show_jobs();
+        let keys: Vec<String> = app
+            .rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                Kind::Header => Some(format!("# {}", r.text())),
+                k => k.key().map(str::to_owned),
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "menu".to_owned(),
+                "# jobs".into(),
+                "nightly".into(),
+                "new job".into()
+            ]
+        );
+        assert_eq!(key(&app).as_deref(), Some("nightly"));
+        assert_eq!(app.enter_label(), "start job");
+        app.step(1);
+        assert_eq!(app.enter_label(), "new job");
+        app.enter().unwrap();
+        assert!(matches!(app.mode, Mode::Job(_)));
+        app.mode = Mode::Normal;
         let job = app
             .rows
             .iter()
@@ -7090,6 +7164,20 @@ mod tests {
             "a disabled job says so under state: {text}"
         );
         assert!(text.contains("sonnet"), "{text}");
+        assert!(
+            text.contains(&fleet::tilde(&cwd)),
+            "the jobs screen shows each job's directory: {text}"
+        );
+        let hint: String = app
+            .hint_line()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(hint.ends_with("esc back"), "{hint}");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.jobs_view, "esc leaves the jobs screen");
+        assert!(app.rows.iter().all(|r| !matches!(r.kind, Kind::Job(_))));
         app.by_state = true;
         app.rebuild();
         let headers: Vec<String> = app
@@ -7098,7 +7186,7 @@ mod tests {
             .filter(|r| r.kind == Kind::Header)
             .map(Row::text)
             .collect();
-        assert_eq!(headers, vec!["idle".to_owned(), "jobs".into()]);
+        assert_eq!(headers, vec!["idle".to_owned()]);
     }
 
     /// A folder the prompt picks has a row from then on, with nothing running there, across
@@ -8103,18 +8191,18 @@ mod tests {
         };
         let s = screen(&mut app, &mut t);
         assert!(
-            s.contains(" runs   agents   folder   config   help "),
+            s.contains(" jobs   agents   folder   config   help "),
             "{s}"
         );
         assert!(
-            s.contains("on a schedule") && !s.contains("agents view"),
+            s.contains("start, edit, add one") && !s.contains("agents view"),
             "{s}"
         );
         assert!(s.contains("← → pick"), "{s}");
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         let s = screen(&mut app, &mut t);
         assert!(
-            s.contains("agents view") && !s.contains("on a schedule"),
+            s.contains("agents view") && !s.contains("start, edit, add one"),
             "{s}"
         );
         assert_eq!(app.enter_label(), "agents");
