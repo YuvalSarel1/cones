@@ -57,7 +57,7 @@ pub struct Session {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
-    /// Claude's own session title (`ai-title`, or a user-set `agent-name`).
+    /// Claude's own session title: a user-set `custom-title` or `agent-name`, else `ai-title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     /// First line of the assistant's most recent text: what the session is doing.
@@ -601,16 +601,20 @@ pub fn headline(text: &str) -> Option<String> {
         .map(|l| l.replace("**", ""))
 }
 
-/// Title and assistant headlines in transcript lines, Claude's or Codex's.
+/// Title and assistant headlines in transcript lines, Claude's or Codex's. A name the user set
+/// (`custom-title` from the resume picker or [`rename`], `agent-name` from `/rename`) beats the
+/// generated `ai-title` wherever it sits, as it does in Claude.
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
+    let mut ai = None;
     for line in lines.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         match v["type"].as_str() {
-            Some("ai-title") => out.0 = v["aiTitle"].as_str().map(Into::into),
+            Some("ai-title") => ai = v["aiTitle"].as_str().map(Into::into),
             Some("agent-name") => out.0 = v["agentName"].as_str().map(Into::into),
+            Some("custom-title") => out.0 = v["customTitle"].as_str().map(Into::into),
             Some("assistant") => out.1.extend(
                 v["message"]["content"]
                     .as_array()
@@ -624,7 +628,32 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
             _ => {}
         }
     }
+    out.0 = out.0.or(ai);
     out
+}
+
+/// Give a Claude session the title `name`: the `custom-title` line Claude's own resume picker
+/// appends on ctrl+r, so `claude --resume` shows it too. Claude has no way to rename a live
+/// session from outside; a running one keeps the name it holds in memory and may append it
+/// again after this line, and the registry entry is left alone.
+pub fn rename(session: &Session, name: &str) -> Result<()> {
+    use std::io::Write;
+    let name = name.trim();
+    ensure!(!name.is_empty(), "a title is needed");
+    ensure!(
+        session.harness == "claude",
+        "only Claude sessions can be renamed here"
+    );
+    let path = session
+        .transcript_path
+        .as_deref()
+        .context("this session has no transcript yet")?;
+    let line = serde_json::json!({
+        "type": "custom-title", "customTitle": name, "sessionId": session.session_id
+    });
+    let mut file = fs::OpenOptions::new().append(true).open(path)?;
+    writeln!(file, "{line}")?;
+    Ok(())
 }
 
 /// What one pass over a transcript reads out of Claude's own lines.
@@ -1145,5 +1174,52 @@ mod tests {
         entry["status"] = "busy".into();
         fs::write(&path, entry.to_string()).unwrap();
         assert_eq!(state(dir.path()), "active");
+    }
+
+    #[test]
+    fn a_title_the_user_set_beats_the_generated_one_and_rename_writes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("t.jsonl");
+        fs::write(
+            &transcript,
+            concat!(
+                "{\"type\":\"custom-title\",\"customTitle\":\"Mine\"}\n",
+                "{\"type\":\"ai-title\",\"aiTitle\":\"Generated later\"}\n"
+            ),
+        )
+        .unwrap();
+        assert_eq!(tail(&transcript, 1).0.as_deref(), Some("Mine"));
+        let session = Session {
+            session_id: "s1".into(),
+            harness: "claude".into(),
+            kind: None,
+            cwd: dir.path().to_owned(),
+            state: "idle".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: None,
+            transcript_path: Some(transcript.clone()),
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: Some("Mine".into()),
+            last: None,
+            coordinator: false,
+            activity: Vec::new(),
+        };
+        assert!(rename(&session, "  ").is_err(), "a blank title is refused");
+        rename(&session, " Ours ").unwrap();
+        assert_eq!(tail(&transcript, 1).0.as_deref(), Some("Ours"));
+        let codex = Session {
+            harness: "codex".into(),
+            ..session
+        };
+        assert!(
+            rename(&codex, "x").is_err(),
+            "codex threads are named in codex"
+        );
     }
 }

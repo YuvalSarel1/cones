@@ -2391,6 +2391,8 @@ enum Mode {
     Harness(usize),
     /// The menu's `folder` prompt: the path typed so far.
     Folder(Input),
+    /// The `ctrl+n` prompt: the selected Claude session's new title.
+    Rename(Input),
     /// The usage guide, `ctrl+g`, drawn where the list is; the wrapped line at its top.
     Guide(usize),
 }
@@ -2427,6 +2429,10 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "ctrl+o",
         "a harness's own agents view: claude agents or codex resume",
+    ),
+    (
+        "ctrl+n",
+        "rename the selected Claude session; the title is written where claude --resume reads it",
     ),
     (
         "ctrl+r",
@@ -3225,14 +3231,29 @@ impl App {
 
     /// The selected session's transcript, when the row is a session that has one.
     fn selected_transcript(&self) -> Option<PathBuf> {
+        self.selected_session()
+            .and_then(|s| s.transcript_path.clone())
+    }
+
+    fn selected_session(&self) -> Option<&fleet::Session> {
         let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
             return None;
         };
-        self.data
-            .sessions
-            .iter()
-            .find(|s| &s.session_id == id)
-            .and_then(|s| s.transcript_path.clone())
+        self.data.sessions.iter().find(|s| &s.session_id == id)
+    }
+
+    /// `ctrl+n`: the rename prompt, filled with the selected Claude session's title.
+    fn rename_selected(&mut self) {
+        match self.selected_session() {
+            Some(s) if s.harness == "claude" && s.transcript_path.is_some() => {
+                self.mode = Mode::Rename(Input::new(s.title.clone().unwrap_or_default()));
+            }
+            Some(s) if s.harness == "claude" => {
+                self.status = "this session has no transcript yet".into();
+            }
+            Some(_) => self.status = "only Claude sessions can be renamed here".into(),
+            None => self.status = "ctrl+n renames the selected session".into(),
+        }
     }
 
     /// The viewer the user was in last; a speculative viewer was never in front, and a
@@ -4532,6 +4553,7 @@ impl App {
                 ("↑ ↓", "recent"),
                 ("esc", "cancel"),
             ]),
+            Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
                 ("tab", &next),
@@ -4885,6 +4907,25 @@ impl App {
                     input.key(code, mods);
                 }
             },
+            Mode::Rename(input) => match code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    let name = input.text.trim().to_owned();
+                    let Some(session) = self.selected_session() else {
+                        self.mode = Mode::Normal;
+                        return Ok(false);
+                    };
+                    self.status = match fleet::rename(session, &name) {
+                        Ok(()) => format!("renamed to {name}"),
+                        Err(e) => format!("not renamed: {e:#}"),
+                    };
+                    self.mode = Mode::Normal;
+                    self.invalidate();
+                }
+                _ => {
+                    input.key(code, mods);
+                }
+            },
             Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Where => {
                 self.status = form.complete().join("  ");
             }
@@ -5021,6 +5062,7 @@ impl App {
                     KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
+                    KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
                         self.invalidate();
                         self.status = "refresh requested".into();
@@ -5191,6 +5233,11 @@ impl App {
             Mode::Folder(input) => {
                 let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
                 spans.extend(input.spans(&fleet::tilde(&self.cwd)));
+                Line::from(spans)
+            }
+            Mode::Rename(input) => {
+                let mut spans = vec![Span::styled("rename › ", Style::default().fg(ORANGE))];
+                spans.extend(input.spans("a title for the session"));
                 Line::from(spans)
             }
             Mode::Guide(_) => Line::from(vec![
@@ -8385,6 +8432,52 @@ mod tests {
         assert_eq!(app.rest_for(), REST);
         app.size = (30, 200);
         assert_eq!(app.rest_for(), REST_SPLIT);
+    }
+
+    #[test]
+    fn ctrl_n_renames_the_selected_claude_session_where_the_resume_picker_reads_it() {
+        let d = dir();
+        registry_kind(d.path(), A, "/src/one", "idle", 1, "interactive");
+        let dir = d.path().join("projects").join("-src-one");
+        fs::create_dir_all(&dir).unwrap();
+        let transcript = dir.join(format!("{A}.jsonl"));
+        fs::write(
+            &transcript,
+            "{\"type\":\"ai-title\",\"aiTitle\":\"Old title\"}\n",
+        )
+        .unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Rename(i) if i.text == "Old title"),
+            "the prompt opens on the current title"
+        );
+        app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        for c in "Ship it".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "renamed to Ship it");
+        let text = fs::read_to_string(&transcript).unwrap();
+        let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(last["type"], "custom-title");
+        assert_eq!(last["customTitle"], "Ship it");
+        assert_eq!(last["sessionId"], A);
+        app.refresh().unwrap();
+        assert_eq!(
+            app.selected_session().and_then(|s| s.title.as_deref()),
+            Some("Ship it"),
+            "the row shows the new title on the next read"
+        );
+        // Esc leaves the transcript alone.
+        app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(&app.mode, Mode::Rename(i) if i.text == "Ship it"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(fs::read_to_string(&transcript).unwrap(), text);
     }
 
     #[test]
