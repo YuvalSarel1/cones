@@ -2024,8 +2024,9 @@ impl App {
 
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
     /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
-    /// paints; else, unless the row is a session with a transcript to preview, the one
-    /// focused last. On a narrow frame only a focused viewer is drawn.
+    /// paints; on any other session row nothing, so a Codex row never has a Claude session's
+    /// screen under its name; on a row that is not a session, the one focused last. On a
+    /// narrow frame only a focused viewer is drawn.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -2037,7 +2038,7 @@ impl App {
             .selected()
             .and_then(|r| Self::viewer_key(&r.kind))
             .and_then(|k| self.viewer_index(&k));
-        if own.is_some() || self.selected_transcript().is_some() {
+        if own.is_some() || matches!(self.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
             return own;
         }
         self.most_recently_focused()
@@ -6039,6 +6040,52 @@ mod tests {
             "{}",
             cells(&t, 0, 101..200)
         );
+    }
+
+    #[test]
+    fn a_codex_row_without_a_viewer_never_shows_another_sessions_screen() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: "codex-77".into(),
+            harness: "codex".into(),
+            kind: None,
+            cwd: PathBuf::from("/src/one"),
+            state: "-".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: Some(77),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+            coordinator: false,
+        });
+        app.apply(data);
+        app.settle();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        // A's viewer painted and was the one focused last.
+        app.viewers.push(viewer_open(A, "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+        // The cursor moves onto the Codex row, which has no viewer and no transcript: the pane
+        // shows nothing of A.
+        app.step(1);
+        assert!(matches!(&app.selected().unwrap().kind, Kind::Session(id, _) if id == "codex-77"));
+        assert_eq!(app.shown(), None);
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 200).join("\n");
+        assert!(!screen.contains("VIEW"), "{screen}");
     }
 
     #[test]
