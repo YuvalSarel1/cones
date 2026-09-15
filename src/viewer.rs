@@ -1,11 +1,5 @@
-//! A viewer is a terminal the dashboard emulates and draws: `claude attach`, a Codex `--remote`
-//! client, `claude agents`, `cones logs`. It runs on a pty the dashboard owns, sized to its pane
-//! from spawn and resized with it; its bytes go to a vt100 parser and the dashboard renders the
-//! parser's screen as part of its own frame, so nothing the viewer writes reaches the real
-//! terminal. `Replies` is the terminal the viewer talks to: it answers queries, keeps the window
-//! title and holds the frame during a synchronized update. What the viewer sees and why (which
-//! queries are answered, the kitty keyboard left silent, synchronized frames) is
-//! `docs/dashboard.md`, Viewers.
+//! PTY-backed viewers rendered through vt100 into the dashboard. Viewer output never
+//! reaches the real terminal directly. See docs/dashboard.md for terminal behavior.
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
@@ -24,25 +18,18 @@ use std::{
 };
 pub use vt100::MouseProtocolMode;
 
-/// The last bytes of the viewer's stderr kept for its exit message.
 const STDERR_TAIL: usize = 16 * 1024;
 /// Input the viewer has not read yet; beyond this it is not reading at all.
 const INPUT_CAP: usize = 8 * 1024 * 1024;
-/// How long one pump keeps reading a pty that has more, so a flood of output cannot hold the
-/// dashboard's loop. macOS hands a pty master one KiB per read and the writer refills it in
-/// microseconds, so a pump that stopped at the first empty read would take a 100 KiB burst
-/// (a Codex client redrawing its transcript after a width change) one KiB per loop turn,
-/// drawing a partial page each time; a pump waits `PUMP_WAIT` for the next KiB instead.
+/// Bound pump time so output floods cannot block input. Wait briefly between reads
+/// to collect macOS's 1 KiB PTY chunks into a frame.
 const PUMP_MAX: Duration = Duration::from_millis(50);
 const PUMP_WAIT: Duration = Duration::from_millis(1);
-/// Lines kept after they leave the top of the screen, for the wheel to scroll back through.
 const SCROLLBACK: usize = 1000;
-/// How long a synchronized update (`CSI ?2026h`) holds the frame before it is drawn as is,
-/// so a viewer that never ends one does not look hung.
+/// Draw an unfinished synchronized update after this timeout to avoid freezing the pane.
 const SYNC_MAX: Duration = Duration::from_millis(150);
 
-/// The real terminal's default foreground and background in xterm `rgb:RRRR/GGGG/BBBB` form,
-/// handed to a viewer that asks (Codex asks at start, to pick a light or dark theme).
+/// Real terminal colors in xterm `rgb:RRRR/GGGG/BBBB` form.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Colors {
     pub fg: String,
@@ -58,11 +45,8 @@ impl Default for Colors {
     }
 }
 
-/// Ask the real terminal for its default colors with OSC 10 and 11 and read the answers raw
-/// from fd 0 for up to `timeout`, once more when a reply has begun but not ended. Called once,
-/// after raw mode is on and before crossterm's first poll, so the replies do not arrive as
-/// keystrokes. A terminal that does not answer leaves the defaults; anything read that is not
-/// a color reply is dropped.
+/// Probe OSC 10/11 after entering raw mode, before crossterm can treat replies as keys.
+/// Keep defaults on timeout; unrelated input read during the probe is dropped.
 pub fn probe_colors(timeout: Duration) -> Colors {
     let mut out = io::stdout().lock();
     if out
@@ -116,7 +100,6 @@ pub fn probe_colors(timeout: Duration) -> Colors {
     }
 }
 
-/// The `rgb:` values in OSC 10 and OSC 11 replies, terminated by BEL or ST, in that order.
 fn parse_color_replies(bytes: &[u8]) -> (Option<String>, Option<String>) {
     let find = |code: &[u8]| -> Option<String> {
         let start = bytes.windows(code.len()).position(|w| w == code)? + code.len();
@@ -131,17 +114,14 @@ fn parse_color_replies(bytes: &[u8]) -> (Option<String>, Option<String>) {
     (find(b"]10;"), find(b"]11;"))
 }
 
-/// Answers the terminal queries vt100 leaves to its callbacks, so a viewer that waits for a
-/// reply (Codex waits up to 100 ms at start) gets one at once. The kitty keyboard query is
-/// left unanswered on purpose: the dashboard forwards keys in the classic encoding, a silent
-/// query makes Codex fall back to it, and the DA1 reply ends its wait early.
+/// Answer terminal queries vt100 delegates. Leave kitty keyboard queries unanswered
+/// because input uses classic encoding; DA1 lets clients stop waiting.
 #[derive(Default)]
 pub(crate) struct Replies {
     pub(crate) out: Vec<u8>,
     colors: Colors,
     title: Option<String>,
-    /// The screen as it was when a synchronized update began (`CSI ?2026h`), shown until it
-    /// ends (`?2026l`): a frame Codex is still drawing keeps its cells and cursor to itself.
+    /// Pre-update screen held until synchronized output ends or times out.
     frozen: Option<(Instant, vt100::Screen)>,
 }
 
@@ -155,8 +135,6 @@ impl Replies {
         }
     }
 
-    /// The screen to draw: `live`, or the snapshot from before a synchronized update still
-    /// in progress.
     fn shown<'a>(&'a self, live: &'a vt100::Screen) -> &'a vt100::Screen {
         match &self.frozen {
             Some((since, screen)) if since.elapsed() < SYNC_MAX => screen,
@@ -175,7 +153,6 @@ impl vt100::Callbacks for Replies {
         c: char,
     ) {
         match (i1, i2, params, c) {
-            // DA1: a VT220 with ANSI color, which is what the renderer draws.
             (None, None, _, 'c') => self.out.extend_from_slice(b"\x1b[?62;22c"),
             (None, None, [[6]], 'n') => {
                 let (row, col) = screen.cursor_position();
@@ -233,8 +210,7 @@ fn nonblocking(fd: i32) -> io::Result<()> {
     Ok(())
 }
 
-/// The pty's ends stay with the dashboard: a job or a harness started while a viewer lives
-/// must not inherit them, or the pty outlives the viewer for as long as that process runs.
+/// Do not let later harness children inherit PTY descriptors and keep viewers alive.
 fn cloexec(fd: i32) -> io::Result<()> {
     if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(io::Error::last_os_error());
@@ -252,9 +228,7 @@ fn winsize(rows: u16, cols: u16) -> libc::winsize {
 }
 
 impl Viewer {
-    /// Start `command` on a fresh pty of `rows` by `cols` with the shell's line discipline
-    /// (`normal`), as its own session with its default signal handlers back, stderr piped
-    /// separately so an error message is not mistaken for screen content.
+    /// Spawn with shell termios and default signals. Capture stderr separately from the screen.
     pub fn spawn(
         mut command: Command,
         rows: u16,
@@ -336,10 +310,8 @@ impl Viewer {
         }
     }
 
-    /// Reap the child if it has ended, feed everything it wrote to the parser, answer its
-    /// queries and hand it the input it has not read yet. Returns true when the screen may
-    /// have changed. A viewer that stopped (SIGTSTP) is killed: a stopped client is dead
-    /// weight, and the agent behind it is untouched either way.
+    /// Pump output, replies and queued input; return whether the screen changed.
+    /// Kill stopped clients without affecting the daemon-owned agent.
     pub fn pump(&mut self) -> io::Result<bool> {
         if self.status.is_none() {
             let mut status = 0;
@@ -406,13 +378,11 @@ impl Viewer {
             }
         }
         self.flush();
-        // Inside a synchronized update nothing shown has changed yet.
         Ok(dirty && self.parser.callbacks().frozen.is_none())
     }
 
-    /// Feed one read to the parser, whole code points only: vte drops a byte when a two-byte
-    /// character is split across two `process` calls and an ASCII byte follows it, so a read
-    /// that ends inside a UTF-8 sequence keeps that tail for the next read.
+    /// Feed complete UTF-8 code points: splitting a two-byte character across vte calls
+    /// can discard the following ASCII byte.
     fn ingest(&mut self, read: &[u8]) {
         let mut chunk = std::mem::take(&mut self.partial);
         chunk.extend_from_slice(read);
@@ -429,7 +399,6 @@ impl Viewer {
         self.pending_input.extend_from_slice(&replies);
     }
 
-    /// Send the pty what it will take now; the rest waits for the next pump.
     fn flush(&mut self) {
         while !self.pending_input.is_empty() && self.master_open && self.status.is_none() {
             match self.master.write(&self.pending_input) {
@@ -443,10 +412,8 @@ impl Viewer {
         }
     }
 
-    /// Keys, mouse reports and pastes for the viewer. A viewer that has 8 MiB of input it has
-    /// not read is not reading; it is killed and its exit message says why.
+    /// Queue input; terminate a viewer that exceeds `INPUT_CAP` without consuming it.
     pub fn write(&mut self, bytes: &[u8]) {
-        // Input brings the screen back to the bottom, as a terminal's scrollKey does.
         self.parser.screen_mut().set_scrollback(0);
         self.pending_input.extend_from_slice(bytes);
         self.flush();
@@ -458,9 +425,7 @@ impl Viewer {
         }
     }
 
-    /// Show the screen `lines` further back into what has left its top (negative: toward
-    /// the bottom), clamped to what is kept: the wheel of a terminal whose program reads no
-    /// mouse. True when the view moved.
+    /// Scroll back by `lines` (negative moves forward); return whether the view moved.
     pub fn scroll(&mut self, lines: i32) -> bool {
         let before = self.parser.screen().scrollback();
         let after = (before as i64 + i64::from(lines)).clamp(0, SCROLLBACK as i64);
@@ -468,8 +433,7 @@ impl Viewer {
         self.parser.screen().scrollback() != before
     }
 
-    /// Size the screen and the pty to the pane; the tty driver raises SIGWINCH in the viewer.
-    /// A no-op when nothing changed, so the draw path can call it every frame.
+    /// Resize both emulator and PTY, sending SIGWINCH only when the size changes.
     pub fn resize(&mut self, rows: u16, cols: u16) {
         let size = winsize(rows, cols);
         if self.parser.screen().size() == (size.ws_row, size.ws_col) {
@@ -493,7 +457,6 @@ impl Viewer {
         &self.errors
     }
 
-    /// Spawn to the first chunk with text in it.
     pub fn first_paint(&self) -> Option<Duration> {
         self.first_paint
     }
@@ -503,14 +466,11 @@ impl Viewer {
     }
 }
 
-/// How long a close waits for a killed viewer to be reaped before giving up on it.
 const REAP: Duration = Duration::from_secs(2);
 
 impl Drop for Viewer {
-    /// Kill the viewer and reap it while draining the pty. On macOS a killed session leader
-    /// whose output still sits unread on the master stays in exit state until that output is
-    /// read, and a plain `wait` blocks for good; so the master is read between `WNOHANG`
-    /// waits until the child is gone, or `REAP` has passed.
+    /// Drain the PTY while reaping: macOS can keep a killed leader in exit state
+    /// until its unread output is consumed, blocking a plain wait.
     fn drop(&mut self) {
         if self.reaped {
             return;
@@ -549,10 +509,6 @@ impl Drop for Viewer {
     }
 }
 
-/// How many bytes at the end of `bytes` begin a UTF-8 sequence that is not complete yet:
-/// 0 when the chunk ends on a code point boundary. Malformed bytes count as complete, so
-/// nothing is held back for good.
-/// True when `fd` has something to read within `timeout`.
 fn readable(fd: i32, timeout: Duration) -> bool {
     let mut poll = libc::pollfd {
         fd,
@@ -579,9 +535,7 @@ fn utf8_tail(bytes: &[u8]) -> usize {
     0
 }
 
-/// Whether a chunk has a printable byte outside escape sequences. A heuristic on one chunk
-/// at a time: a sequence split across two chunks may count its tail as text, which only
-/// moves the first-paint timing by one read.
+/// Approximate first text for timing; a split escape sequence may count one read early.
 fn has_text(chunk: &[u8]) -> bool {
     let mut i = 0;
     while i < chunk.len() {
@@ -630,9 +584,7 @@ fn color(c: vt100::Color) -> Color {
     }
 }
 
-/// Draw the emulated screen into `area`, clipped to both. The cursor is the caller's: the
-/// frame shows the terminal's own cursor where the screen says, so it blinks and shapes as
-/// the user's terminal does.
+/// Render clipped cells; the caller draws the real terminal cursor.
 pub fn render(screen: &vt100::Screen, area: Rect, buf: &mut Buffer) {
     let (rows, cols) = screen.size();
     for row in 0..rows.min(area.height) {
@@ -676,10 +628,8 @@ fn modifier_param(mods: KeyModifiers) -> u8 {
         + 4 * u8::from(mods.contains(KeyModifiers::CONTROL))
 }
 
-/// A key as an xterm without the kitty protocol would send it, so the viewer sees what any
-/// terminal emulator would. `app_cursor` is the screen's DECCKM, which switches arrows and
-/// Home/End to the SS3 form. Control with a digit follows xterm's table, which is also how
-/// crossterm reports the raw bytes 0x1c to 0x1f (ctrl+\, ], ^, _) from the real terminal.
+/// Classic xterm encoding. DECCKM selects SS3 arrows/Home/End; control digits follow
+/// xterm's table, matching crossterm's decoding of bytes 0x1c to 0x1f.
 pub fn encode_key(code: KeyCode, mods: KeyModifiers, app_cursor: bool) -> Vec<u8> {
     let alt = mods.contains(KeyModifiers::ALT);
     let ctrl = mods.contains(KeyModifiers::CONTROL);
@@ -690,7 +640,6 @@ pub fn encode_key(code: KeyCode, mods: KeyModifiers, app_cursor: bool) -> Vec<u8
         }
         bytes
     };
-    // Keys with a CSI form: the plain sequence, or the parameterised one under a modifier.
     let csi = |plain: &str, number: u8, final_byte: char| -> Vec<u8> {
         if m == 1 {
             plain.as_bytes().to_vec()
@@ -763,9 +712,7 @@ pub fn encode_key(code: KeyCode, mods: KeyModifiers, app_cursor: bool) -> Vec<u8
     }
 }
 
-/// A mouse event in SGR form (`\x1b[<b;x;yM`), 1-based and relative to the pane at
-/// `origin` (x, y), filtered by what the viewer asked for: nothing, presses only, presses
-/// and releases and the wheel, drags too, or every move.
+/// SGR mouse encoding with 1-based coordinates relative to `origin`, filtered by reporting mode.
 pub fn encode_mouse(ev: MouseEvent, origin: (u16, u16), mode: MouseProtocolMode) -> Vec<u8> {
     use MouseProtocolMode as M;
     if mode == M::None {
@@ -833,7 +780,6 @@ mod tests {
         }
         assert!(v.first_paint().is_some());
         assert_eq!(v.screen().cursor_position(), (0, 5));
-        // The reply went straight back to the pty: nothing is left waiting.
         assert!(v.pending_input.is_empty());
         assert!(v.exited().is_none());
         while v.exited().is_none() {
@@ -844,9 +790,6 @@ mod tests {
         assert!(v.exited().unwrap().success());
     }
 
-    /// A viewer that floods its pty and was never pumped still closes at once: the master is
-    /// drained while the killed child is reaped, so nothing waits on a process macOS keeps in
-    /// exit until its output is read.
     #[test]
     fn a_flooding_viewer_nobody_pumped_closes_at_once() {
         let mut c = Command::new("/bin/sh");
@@ -1043,8 +986,7 @@ mod tests {
             "malformed bytes are not held"
         );
         assert_eq!(utf8_tail(b""), 0);
-        // The vte bug this guards against: a two-byte character split across two reads
-        // loses the ASCII byte after it. Split at the boundary utf8_tail finds, all is well.
+        // Regression: splitting a two-byte character can drop the next ASCII byte in vte.
         let mut broken = vt100::Parser::new(1, 10, 0);
         broken.process(b"\xc2");
         broken.process(b"\xb7 \xe2\x86\x90");
@@ -1067,7 +1009,6 @@ mod tests {
             assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
             std::thread::sleep(Duration::from_millis(5));
         }
-        // The update has begun: the pane still shows the frame before it, cursor and all.
         assert!(v.parser.callbacks().frozen.is_some());
         assert_eq!(text(v.screen(), 0), "one");
         assert_eq!(v.screen().cursor_position(), (0, 3));
@@ -1084,9 +1025,6 @@ mod tests {
         assert_eq!(v.screen().cursor_position(), (0, 3));
     }
 
-    /// A burst larger than the KiB a pty hands out per read lands in a few pumps, not one KiB
-    /// per loop turn with a partial page drawn between each: 120 KiB written a line at a time,
-    /// as a Codex client redrawing its transcript does, took 113 pumps before, 3 now.
     #[test]
     fn a_burst_lands_in_a_few_pumps_not_a_kib_per_turn() {
         let dir = tempfile::tempdir().unwrap();

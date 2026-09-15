@@ -159,8 +159,7 @@ impl Ledger {
             state: state.to_owned(),
         })
     }
-    /// Serialize admission and reservations, not execution. Different read-only runs can
-    /// execute concurrently once their durable start records have been written.
+    /// Serialize admission and reservations; release before concurrent execution.
     pub fn admission_lock(&self) -> Result<File> {
         let directory = self.state.join("locks").join("admission");
         private_dir(&directory)?;
@@ -168,8 +167,7 @@ impl Ledger {
         f.lock_exclusive()?;
         Ok(f)
     }
-    /// A lease held for the life of a run, so a later tick can tell a live run from a dead
-    /// supervisor whose PID was reused. `None` while the run is still active.
+    /// Try the run's lifetime lease; `None` means it is still held.
     pub fn run_lock(&self, run_id: &str) -> Result<Option<File>> {
         uuid::Uuid::parse_str(run_id)?;
         let directory = self.state.join("locks").join("runs");
@@ -251,8 +249,7 @@ impl Ledger {
         runs.sort_by_key(|r| r.started.fired_at);
         Ok(runs)
     }
-    /// Hides a run from the dashboard for good. The ledger, output and transcript stay: one id
-    /// per line in `hidden`, appended.
+    /// Hide a row without deleting its ledger record, output or transcript.
     pub fn hide(&self, run_id: &str) -> Result<()> {
         let mut f = private_file(&self.state.join("hidden"))?;
         f.seek(SeekFrom::End(0))?;
@@ -266,8 +263,6 @@ impl Ledger {
             .map(str::to_owned)
             .collect())
     }
-    /// The dashboard's pinned folders, one path per line in `folders`: a directory the menu's
-    /// `folder` prompt picked keeps its row while nothing runs there, until ctrl+x removes it.
     pub fn folders(&self) -> Result<Vec<PathBuf>> {
         Ok(std::fs::read_to_string(self.state.join("folders"))
             .unwrap_or_default()
@@ -284,11 +279,7 @@ impl Ledger {
         }
         Ok(())
     }
-    /// Folders a session has been seen in, one path per line in `recent`, newest first; the
-    /// `folder` prompt recalls them with ↑ ↓. `seen` adds the ones not yet listed at the front
-    /// and the file is rewritten only when that changed.
-    // ponytail: ordered by first sighting and capped at 20; by last activity if recall ever
-    // needs it, which means a timestamp per line.
+    /// Remember up to 20 folders in first-seen order, newest first; write only when changed.
     pub fn recent(&self, seen: &[PathBuf]) -> Result<Vec<PathBuf>> {
         let mut recent: Vec<PathBuf> = std::fs::read_to_string(self.state.join("recent"))
             .unwrap_or_default()

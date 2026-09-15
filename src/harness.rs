@@ -36,33 +36,14 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     }
 }
 
-/// The harnesses the dashboard can start, in the order `tab` offers them. pi is missing on
-/// purpose: the composer only opens a harness whose session outlives its viewer, and pi has no
-/// mode that does. pi sessions started in a terminal are still rows, read by [`crate::pi`].
+/// Composer harnesses. Each must support sessions that outlive their viewer; pi cannot.
 pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 
-/// A session started natively in `dir` with `prompt` as its first instruction, as typing the
-/// harness's name in a shell there would: no policy, no ledger, the harness's own permission
-/// prompts. Claude has a background mode, so `claude --bg` starts the session and returns; the
-/// row appears when Claude lists it and `enter` on it attaches. Codex has none: its TUI runs
-/// here as a `--remote` client of the app-server daemon, leaving the client keeps the thread,
-/// and the dashboard records its id from the rollout to resume it. Only a harness whose session
-/// outlives the viewer opens from the dashboard, because leaving must keep it working.
-///
-/// Two other ways to leave a harness were tried and rejected: stopping the client with SIGTSTP
-/// parks the agent, which freezes it until re-entered, and running the agent itself behind a
-/// cones-owned pty proxy (dtach style), which keeps it running but makes cones the owner of the
-/// agent's terminal and lifetime, which belong to the harness. A harness with no mode whose
-/// session outlives the viewer is refused here with the reason, not parked or proxied. The
-/// viewer is another matter: `viewer.rs` runs the client (`claude attach`, a Codex `--remote`
-/// client, `claude agents`) on a pty the dashboard owns, because the viewer's lifetime was
-/// always the dashboard's to end; the agent stays in its daemon. The viewer's bytes are parsed
-/// by a terminal emulator the dashboard draws, never copied to the terminal, so leaving a
-/// viewer is a focus change and it keeps running until the dashboard closes it.
+/// Native session launch with harness-owned permissions and lifetime.
+/// Background commands return after launch; foreground commands are daemon clients.
+/// See docs/harness.md and docs/dashboard.md for the ownership boundary.
 pub enum Start {
-    /// Returns on its own once the session is up; nothing to wait on.
     Background(std::process::Command),
-    /// Holds the terminal until it is left.
     Foreground(std::process::Command),
 }
 
@@ -76,10 +57,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy))
                 .current_dir(dir);
-            // Claude's provider switch is its environment variable, and Bedrock answers only
-            // with an AWS profile and region beside it. The shell's own setting stands when
-            // the policy says nothing.
-            // ponytail: a settings.json `env` that forces Bedrock still wins over `false`.
+            // Claude settings.json `env` can override this provider switch.
             match policy.bedrock {
                 Some(true) => {
                     c.env("CLAUDE_CODE_USE_BEDROCK", "1");
@@ -106,14 +84,11 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
                 .current_dir(dir);
             Start::Foreground(c)
         }
-        // Refused above by leave_and_return: pi has no mode whose session outlives the viewer.
         HarnessKind::Pi => bail!("pi sessions are seen here, not started"),
     })
 }
 
-/// The arguments of a session the composer starts: the defaults' model for the harness, and
-/// for Codex the provider `bedrock` picks (`amazon-bedrock` or its own `openai`), as its
-/// `-c` override of config.toml. Claude's provider is set in its environment instead.
+/// Model and provider overrides for native sessions; Claude selects its provider through env.
 pub fn session_args(
     kind: HarnessKind,
     remote: Option<(&str, &Path)>,
@@ -141,17 +116,13 @@ pub fn session_args(
                 args.extend(["-c".into(), format!("model_provider={provider}").into()]);
             }
         }
-        // pi is never started from the dashboard, so it compiles no session arguments.
         HarnessKind::Pi => {}
     }
     args.push(prompt.into());
     args
 }
 
-/// Whether this build of the harness can be opened from the dashboard and left running: Claude
-/// needs `--bg` and `attach`, Codex its app-server daemon (0.154 and later, experimental
-/// there). The message is the doctor line; the error is what the `n` prompt shows instead of
-/// opening a session that could not be left.
+/// Check that the installed harness can leave a session running after its viewer exits.
 pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
@@ -192,15 +163,12 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
                 "codex {ver}: threads behind the app-server daemon (experimental in Codex)"
             ))
         }
-        // pi has no background mode, no daemon and no attach: a session opened here would
-        // hold the viewer's terminal, and leaving it would stop the agent.
         HarnessKind::Pi => bail!(
             "pi runs in its own terminal: it has no background mode or attach, so a session opened here could not be left running"
         ),
     }
 }
 
-/// The client that reopens a daemon thread in its directory.
 pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
     let path = executable("codex", &launch_path())
         .ok_or_else(|| anyhow::anyhow!("codex not found on the launch PATH"))?;
@@ -210,11 +178,9 @@ pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
     Ok(c)
 }
 
-/// The daemon's address, starting it if it is not running: `codex app-server daemon start` is
-/// idempotent and prints JSON with `socketPath` either way. Experimental in Codex 0.154.
+/// Start the daemon idempotently and read its `socketPath` response.
 fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
-    // The harness already reported this address. Probe the local socket before reusing it;
-    // restarting the CLI on every Enter added about half a second on a busy machine.
+    // Reuse reported addresses only while their sockets accept connections.
     type Addresses = BTreeMap<(PathBuf, PathBuf), String>;
     static ADDRESSES: std::sync::Mutex<Addresses> = std::sync::Mutex::new(BTreeMap::new());
     let home = crate::codex::home(&crate::fleet::claude_dir()?);
@@ -248,7 +214,6 @@ fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
     Ok((codex.to_owned(), remote))
 }
 
-/// `socketPath` from the first JSON line the daemon command prints.
 pub fn socket_path(stdout: &str) -> Option<String> {
     stdout
         .lines()
@@ -264,11 +229,8 @@ pub fn executable(name: &str, path: &str) -> Option<PathBuf> {
     })
 }
 
-/// The fixed PATH harnesses are looked up on, independent of the caller's environment, so the
-/// dashboard launches the same `claude` and `codex` from any shell. A fake harness placed first
-/// on the caller's `PATH` therefore never reaches the dashboard: a scripted `enter` in the
-/// composer starts a real session with whatever was typed and spends tokens. A probe puts its
-/// fake harness in one of these directories, or sends no `enter`.
+/// Fixed harness PATH, independent of the shell. Tests must install fakes under a
+/// temporary HOME; prepending the caller's PATH does not override this lookup.
 pub fn launch_path() -> String {
     let home = dirs::home_dir().unwrap_or_default();
     [
@@ -287,9 +249,7 @@ pub fn launch_path() -> String {
     .join(":")
 }
 
-/// The coordinator is a skill, not cones: one Claude Code session per folder that greets the
-/// agents working there, gates their commits and relays findings. cones ships it as a plugin
-/// embedded in the binary and loads it for that session only; nothing lands in ~/.claude.
+/// Embedded coordinator plugin, loaded only for the session that starts it.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
 const COORDINATOR_FILES: [(&str, &str); 6] = [
     (
@@ -318,9 +278,7 @@ const COORDINATOR_FILES: [(&str, &str); 6] = [
     ),
 ];
 
-/// The skill's status file for `dir`, when it names a live process. The skill writes it under
-/// ~/.claude/orchestrator whether cones or a hand-typed /start-orchestrator started it, so
-/// either guard sees the other.
+/// Find the skill's live coordinator record, including coordinators started outside cones.
 pub fn coordinator_status(dir: &Path) -> Option<Value> {
     let files = std::fs::read_dir(dirs::home_dir()?.join(".claude/orchestrator")).ok()?;
     files.flatten().find_map(|entry| {
@@ -331,8 +289,7 @@ pub fn coordinator_status(dir: &Path) -> Option<Value> {
     })
 }
 
-/// Write the embedded plugin under `state` (rewritten on every start, so an upgraded binary
-/// carries its skill along) and return the plugin directory.
+/// Rewrite the embedded plugin on each start so upgrades include the current skill.
 pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
     let plugin = state.join("coordinator/plugin");
     let bin = plugin.join("skills").join(COORDINATOR_SKILL).join("bin");
@@ -347,8 +304,7 @@ pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
     Ok(plugin)
 }
 
-/// `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` in `dir`. The skill refuses a
-/// second instance per folder itself, so a blind launch is safe.
+/// The skill itself prevents duplicate coordinators for a folder.
 pub fn coordinator(dir: &Path, state: &Path) -> Result<std::process::Command> {
     let plugin = coordinator_plugin(state)?;
     let path =
@@ -391,10 +347,7 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
         );
     }
     if job.bedrock == Some(true) {
-        // Bedrock needs the shell's AWS credentials, so every AWS_ variable comes along; the
-        // job has nothing else to name a credential file or an SSO cache by. The profile and
-        // region the block resolved to are set over them, since they are what it was checked
-        // against.
+        // Inherit AWS credentials, then override profile and region with the validated job values.
         env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
         env.extend(std::env::vars().filter(|(k, _)| k.starts_with("AWS_")));
         for (key, set) in [
@@ -410,9 +363,8 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
     Ok(env)
 }
 
-/// The tools a Claude job may call: read-only, or with `write` the editing tools and
-/// sandboxed Bash. This is the whole allowlist; cones never scopes Bash by pattern because Claude
-/// treats a scoped Bash rule as a pre-approval, not an exclusive allowlist.
+/// Claude's complete tool allowlist. Scoped Bash rules only pre-approve commands;
+/// they do not enforce an exclusive allowlist.
 pub fn effective_tools(job: &ResolvedJob) -> &'static [&'static str] {
     if job.write {
         &["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
@@ -497,9 +449,7 @@ impl Harness for Claude {
         uuid::Uuid::parse_str(session_id)?;
         let path = executable("claude", &launch_path())
             .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
-        // Resume in the background, then attach: ctrl-z detaches instead of suspending a
-        // foreground process group, so the dashboard always gets its terminal back. The session
-        // outlives the terminal until it is exited or stopped, like any background session.
+        // Resume in the background so ctrl+z detaches without suspending the agent.
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(r#""$0" --bg --resume "$1" >/dev/null && exec "$0" attach "$2""#)
@@ -541,11 +491,8 @@ pub fn policy_hash(job: &ResolvedJob, invocation: &Invocation) -> Result<String>
 }
 
 pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Value> {
-    // Session IDs, prompts and secret values are not policy. Tool restrictions, executable,
-    // working directory, budget, timeout, model and named environment imports are.
+    // Exclude task text, generated session identity and secret values from the policy hash.
     let mut args = invocation.args.clone();
-    // Normalize generated session identity and the task text, retaining the actual compiled
-    // switches and settings. Changes to a compiler flag therefore change the audit hash.
     if let Some(i) = args.iter().position(|a| a == "--session-id") {
         args[i + 1] = "<session-id>".into();
     }
@@ -654,15 +601,11 @@ impl Outcome {
     }
 }
 
-/// Claude Code versions the compiled flags above were tested against; `cones doctor` warns
-/// when the installed version leaves the range.
+/// Tested Claude version range used by `cones doctor`.
 pub const TESTED_CLAUDE_RANGE: &str = ">=2.1, <3";
 
-/// Whether `claude --version` output such as `2.1.269 (Claude Code)` falls inside the tested
-/// range. `None` when the text has no leading version.
+/// `None` when the output has no leading version.
 pub fn claude_version_tested(output: &str) -> Option<bool> {
-    // ponytail: major.minor compare against the constant above; a semver crate if the range
-    // ever needs pre-release or patch bounds.
     let mut parts = output
         .split_whitespace()
         .next()?
@@ -672,8 +615,7 @@ pub fn claude_version_tested(output: &str) -> Option<bool> {
     Some((major, minor) >= (2, 1) && major < 3)
 }
 
-/// Every switch in a compiled argv up to the `--` that starts the prompt, so the set doctor
-/// probes against `claude --help` is whatever the compiler currently emits.
+/// Compiled switches before the prompt delimiter, used by doctor's flag probes.
 pub fn compiled_flags(args: &[String]) -> Vec<&str> {
     args.iter()
         .take_while(|a| *a != "--")
@@ -717,7 +659,6 @@ mod tests {
                 "fix it"
             ]
         );
-        // Nothing set: the harness's own model and provider, as before.
         assert_eq!(
             session_args(HarnessKind::Claude, None, "x", &Policy::default()),
             ["--bg", "--", "x"]
@@ -745,8 +686,6 @@ mod tests {
         let env = environment(&job).unwrap();
         assert_eq!(env["CLAUDE_CODE_USE_BEDROCK"], "1");
         assert_eq!(env["AWS_CONES_TEST_REGION"], "us-west-2");
-        // The block's profile and region are what the job was checked against, so they are
-        // set over anything of the same name the shell carried in.
         job.aws_profile = Some("claude".into());
         job.aws_region = Some("us-east-1".into());
         let env = environment(&job).unwrap();

@@ -45,19 +45,15 @@ pub struct Policy {
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
     pub notify: Option<bool>,
-    /// The model a Claude job runs on unless it names its own; `codex_model` the same for a
-    /// Codex job. A job's `model:` is one field, so the default is per harness.
+    /// Per-harness model defaults; each job has a single `model` override.
     pub model: Option<String>,
     pub codex_model: Option<String>,
-    /// Where the harness sends its requests: `true` Amazon Bedrock, `false` the harness's own
-    /// endpoint, unset whatever the harness's own configuration says.
+    /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
-    /// What Bedrock needs to answer: the AWS profile and region every run on it is given.
-    /// `bedrock: true` without both, here or in the environment, is refused.
+    /// Both must be configured when `bedrock` is true; shell values do not satisfy validation.
     pub aws_profile: Option<String>,
     pub aws_region: Option<String>,
-    /// The harness a job runs under when it names none, and the one the dashboard's composer
-    /// starts on; unset is Claude.
+    /// Default job harness; the composer starts on `Start::harness`.
     pub harness: Option<HarnessKind>,
 }
 
@@ -105,8 +101,6 @@ pub struct Job {
 }
 
 impl Job {
-    /// A job with only the four fields the dashboard's wizard asks for; everything else,
-    /// the harness included, is the file's defaults.
     pub fn new(name: &str, schedule: &str, cwd: &Path, prompt: &str) -> Self {
         Self {
             name: name.to_owned(),
@@ -148,27 +142,21 @@ pub struct JobsFile {
     #[serde(default)]
     pub defaults: Policy,
     pub jobs: Vec<Job>,
-    /// Session columns the dashboard shows after the harness and title, from `COLUMNS`.
     #[serde(default)]
     pub columns: Option<Vec<String>>,
-    /// The `sparkline` column's window, metric and scale.
     #[serde(default)]
     pub sparkline: Option<Sparkline>,
-    /// Which side the viewer pane sits on.
     #[serde(default)]
     pub pane: Option<Pane>,
-    /// What a new cones terminal comes up with: the composer's harness and the pane.
     #[serde(default)]
     pub start: Option<Start>,
-    /// Seconds an armed `ctrl+x` waits for its second press with no key pressed; 0 keeps the
-    /// mark until the next key. The built-in is `CONFIRM_SECS`.
+    /// Confirmation timeout in seconds; zero waits until the next key.
     #[serde(default)]
     pub confirm_secs: Option<f64>,
 }
 
 pub const CONFIRM_SECS: f64 = 2.0;
 
-/// `confirm_secs` as jobs.yaml accepts it: a finite count of seconds from 0 to 600.
 pub fn check_confirm_secs(secs: f64) -> Result<()> {
     ensure!(
         secs.is_finite() && (0.0..=600.0).contains(&secs),
@@ -190,9 +178,7 @@ pub const COLUMNS: [&str; 8] = [
 pub const DEFAULT_COLUMNS: [&str; 6] =
     ["state", "context", "sparkline", "model", "activity", "last"];
 
-/// The `sparkline` column: `bars` buckets of `bucket` each, newest on the right, one bar per
-/// bucket for the `metric` counted from the transcript lines the harness wrote in it, scaled so
-/// a full bar is `bound`. Every field has a built-in, so `sparkline:` may name only what changes.
+/// Sparkline settings; omitted fields use built-ins. See docs/dashboard.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Sparkline {
@@ -205,8 +191,7 @@ pub struct Sparkline {
     /// `tokens`, output tokens.
     #[serde(default = "lines")]
     pub metric: String,
-    /// `fleet`, the busiest bucket on screen; `row`, the row's own busiest bucket; `log`, the
-    /// fleet's on a log scale; or a number, the count that fills a bar, the same tomorrow.
+    /// `fleet`, `row`, `log`, or a positive numeric bound.
     #[serde(default = "fleet")]
     pub bound: String,
 }
@@ -227,8 +212,6 @@ fn fleet() -> String {
 pub const METRICS: [&str; 4] = ["lines", "messages", "tools", "tokens"];
 pub const BOUNDS: [&str; 3] = ["fleet", "row", "log"];
 
-/// Which side the viewer pane sits on, `right` or `bottom`. Whether the dashboard opens with
-/// the pane is `start.pane`. The field has a built-in, so `pane:` may name only what changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Pane {
@@ -242,10 +225,7 @@ fn right() -> String {
 
 pub const SIDES: [&str; 2] = ["right", "bottom"];
 
-/// What a new cones terminal comes up with: the harness the composer is on, which `ctrl+o`
-/// changes from there, and whether the viewer pane is open, which `ctrl+\` toggles. Neither
-/// is written back, so the block is the first state and nothing more. Both fields have a
-/// built-in, so `start:` may name only what changes.
+/// Initial dashboard state; runtime toggles do not write it back.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Start {
@@ -269,7 +249,6 @@ impl Default for Start {
 }
 
 impl Start {
-    /// The block as jobs.yaml lines.
     pub fn lines(&self) -> Vec<String> {
         vec![
             "start:".to_owned(),
@@ -296,7 +275,6 @@ impl Pane {
         Ok(())
     }
 
-    /// The block as jobs.yaml lines.
     pub fn lines(&self) -> Vec<String> {
         vec!["pane:".to_owned(), format!("  at: {}", self.at)]
     }
@@ -314,7 +292,6 @@ impl Default for Sparkline {
 }
 
 impl Sparkline {
-    /// The bucket in seconds, from `30s`, `5m` or `1h`.
     pub fn bucket_seconds(&self) -> Result<u64> {
         let t = self.bucket.trim();
         let what = || format!("sparkline bucket {t:?}: a count of s, m or h, as in 1m");
@@ -357,7 +334,6 @@ impl Sparkline {
         Ok(())
     }
 
-    /// The column's name, what it covers: `last 16m`.
     pub fn title(&self) -> String {
         let secs = self.bucket_seconds().unwrap_or(60) * self.bars as u64;
         let span = match secs {
@@ -369,7 +345,6 @@ impl Sparkline {
         format!("last {span}")
     }
 
-    /// The block as jobs.yaml lines.
     pub fn lines(&self) -> Vec<String> {
         vec![
             "sparkline:".to_owned(),
@@ -409,8 +384,7 @@ fn parse(path: &Path) -> Result<JobsFile> {
     Ok(doc)
 }
 
-/// The `sparkline` column's settings: `sparkline:` from jobs.yaml, or the built-in when the
-/// file is missing, invalid or silent on it.
+/// Read sparkline settings, falling back to built-ins if missing or invalid.
 pub fn sparkline(path: &Path) -> Sparkline {
     parse(path)
         .ok()
@@ -418,45 +392,41 @@ pub fn sparkline(path: &Path) -> Sparkline {
         .unwrap_or_default()
 }
 
-/// `sparkline:` as written, `None` when the file has none: what the config editor edits.
+/// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_sparkline(path: &Path) -> Option<Sparkline> {
     parse(path).ok().and_then(|d| d.sparkline)
 }
 
-/// The viewer pane's settings: `pane:` from jobs.yaml, or the built-in when the file is
-/// missing, invalid or silent on it.
+/// Read pane settings, falling back to built-ins if missing or invalid.
 pub fn pane(path: &Path) -> Pane {
     file_pane(path).unwrap_or_default()
 }
 
-/// `pane:` as written, `None` when the file has none: what the config editor edits.
+/// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_pane(path: &Path) -> Option<Pane> {
     parse(path).ok().and_then(|d| d.pane)
 }
 
-/// How long an armed `ctrl+x` stays armed: `confirm_secs:` from jobs.yaml, or the built-in.
 pub fn confirm_secs(path: &Path) -> f64 {
     file_confirm_secs(path).unwrap_or(CONFIRM_SECS)
 }
 
-/// What a new terminal comes up with: `start:` from jobs.yaml, or the built-in when the file
-/// is missing, invalid or silent on it.
+/// Read startup settings, falling back to built-ins if missing or invalid.
 pub fn start(path: &Path) -> Start {
     file_start(path).unwrap_or_default()
 }
 
-/// `start:` as written, `None` when the file has none: what the config editor edits.
+/// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_start(path: &Path) -> Option<Start> {
     parse(path).ok().and_then(|d| d.start)
 }
 
-/// `confirm_secs:` as written, `None` when the file has none: what the config editor edits.
+/// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_confirm_secs(path: &Path) -> Option<f64> {
     parse(path).ok().and_then(|d| d.confirm_secs)
 }
 
-/// The dashboard's session columns: `columns:` from jobs.yaml, or the default when the file is
-/// missing or invalid, so the fleet view works without any jobs.
+/// Read columns, falling back to built-ins if missing or invalid.
 pub fn columns(path: &Path) -> Vec<String> {
     parse(path)
         .ok()
@@ -464,8 +434,7 @@ pub fn columns(path: &Path) -> Vec<String> {
         .unwrap_or_else(|| DEFAULT_COLUMNS.iter().map(|c| (*c).to_owned()).collect())
 }
 
-/// `columns:` as written, `None` when the file has none or cannot be read: what the config
-/// editor edits.
+/// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_columns(path: &Path) -> Option<Vec<String>> {
     parse(path).ok().and_then(|d| d.columns)
 }
@@ -475,9 +444,8 @@ pub fn raw_jobs(path: &Path) -> Result<Vec<Job>> {
     Ok(parse(path)?.jobs)
 }
 
-/// One job's lines in jobs.yaml: from its `- ` item line to the next item or top-level key.
-/// Found by text, so the rest of the file, comments and quoting included, is never rewritten.
-/// Returns the item indent, the blocks as `(name, start, end)`, and where the list ends.
+/// Locate job blocks by text to preserve surrounding comments and formatting.
+/// Return item indent, `(name, start, end)` blocks, and list end.
 fn job_blocks(lines: &[&str], jobs_at: usize) -> (usize, Vec<(String, usize, usize)>, usize) {
     let mut starts: Vec<usize> = vec![];
     let mut indent = 2;
@@ -514,10 +482,8 @@ fn job_blocks(lines: &[&str], jobs_at: usize) -> (usize, Vec<(String, usize, usi
     (indent, blocks, end)
 }
 
-/// Rewrite jobs.yaml with `job` in place of the job named `old`, appended to the list when
-/// there is no such job, or with that job removed when `job` is `None`. Only the one block
-/// changes; the file is validated as a whole before it replaces the old one, so a bad answer
-/// comes back as the error and the file is untouched. Then `cones install` is the caller's.
+/// Replace or append `job`, or delete `old` when `job` is `None`. Validate the whole
+/// file before replacing it; the caller must reinstall launchd jobs.
 pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let lines: Vec<&str> = text.lines().collect();
@@ -546,7 +512,6 @@ pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()
                 }
             });
             out.splice(at..at, block);
-            // `jobs: []` becomes a list with an item.
             out[jobs_at] = "jobs:".into();
         }
         None => {
@@ -567,13 +532,11 @@ pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()
     Ok(())
 }
 
-/// The file's `defaults` block as written, or nothing set when the file is missing or does
-/// not parse, so the dashboard's config editor opens on what is there.
+/// Read defaults, returning an empty policy if the file is missing or invalid.
 pub fn defaults(path: &Path) -> Policy {
     parse(path).map(|d| d.defaults).unwrap_or_default()
 }
 
-/// The `defaults:` block as jobs.yaml lines, one per set field, in the order jobs.md lists them.
 fn defaults_lines(d: &Policy) -> Vec<String> {
     let mut out = vec!["defaults:".to_owned()];
     let mut put = |k: &str, v: Option<String>| {
@@ -612,8 +575,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     out
 }
 
-/// Where `key:` sits in `lines`, to the next top-level key, leaving the blank lines before it
-/// where they are.
+/// Find a top-level block, excluding trailing blank lines.
 fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     let s = lines.iter().position(|l| l.starts_with(key))?;
     let mut e = lines
@@ -628,13 +590,8 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     Some((s, e))
 }
 
-/// Rewrite the `defaults:` block, the `columns:` line, the `sparkline:`, `pane:` and `start:`
-/// blocks and the `confirm_secs:` line of jobs.yaml with what is passed:
-/// in place when the file has them, after `version:` when it does not, and a missing file is
-/// created around them with `jobs: []`. Only those change.
-/// The policy is checked as a Claude job would resolve it, so a default no job could run under
-/// is refused with the file untouched, whether or not the file has jobs; an unknown column or a
-/// sparkline or pane value cones cannot draw is refused the same way.
+/// Validate and replace dashboard settings and defaults while preserving job blocks.
+/// Create a missing file with `jobs: []`; validate defaults even when no jobs exist.
 pub fn write_config(
     path: &Path,
     d: &Policy,
@@ -668,8 +625,7 @@ jobs: []
     let mark = confirm_secs
         .map(|s| vec![format!("confirm_secs: {s}")])
         .unwrap_or_default();
-    // Last first, so each block's place is still where it was read: a block missing from
-    // the file goes after the nearest one before it in this order.
+    // Replace blocks in reverse order to keep offsets valid; insert missing ones after their predecessor.
     let order = [
         "defaults:",
         "columns:",
@@ -739,15 +695,12 @@ pub struct ResolvedJob {
     pub overlap: Overlap,
     pub notify: bool,
     pub bedrock: Option<bool>,
-    /// Set only with `bedrock: true`, and then never empty: what the run's AWS_PROFILE and
-    /// AWS_REGION are, from the block or from the environment cones was started in.
+    /// Validated Bedrock profile and region; both absent unless `bedrock` is true.
     pub aws_profile: Option<String>,
     pub aws_region: Option<String>,
 }
 
-/// A one-off job for `cones run --prompt`: the template's policy (or the read-only defaults)
-/// with a fresh name, the given prompt and `cwd`. Unique names keep ad-hoc runs out of each
-/// other's overlap rules.
+/// Use the template policy or read-only defaults, with a unique name to isolate overlap checks.
 pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result<ResolvedJob> {
     ensure!(
         !prompt.trim().is_empty() && !prompt.contains('\0'),
@@ -815,14 +768,8 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
         .collect()
 }
 
-/// What a run on Bedrock is given for AWS_PROFILE and AWS_REGION. `bedrock: true` needs both
-/// written beside it, since the switch alone points the harness at Bedrock with nothing to
-/// authenticate it and the session dies on its first call. With bedrock off or unset the two
-/// are carried but unused, so turning it off stays one edit.
-/// This is the whole rule: `resolve` and the dashboard's config editor both refuse here.
-// ponytail: the block only, never the environment. A rule that reads AWS_PROFILE would pass
-// or fail with the shell cones and its tests happen to be started from, and the run still
-// inherits every AWS_ variable for the credentials themselves.
+/// Require explicit profile and region for Bedrock. Validation must not depend on
+/// the caller's environment; credentials are inherited separately at launch.
 pub fn bedrock_aws(
     bedrock: Option<bool>,
     profile: Option<&str>,
@@ -838,8 +785,7 @@ pub fn bedrock_aws(
         .filter(|(_, v)| v.is_none())
         .map(|(n, _)| *n)
         .collect();
-    // The message names the field that is missing, not `bedrock`, so the config editor lands
-    // the cursor on the value to fill rather than on the switch that asked for it.
+    // Name missing fields so the config editor can focus them.
     ensure!(
         missing.is_empty(),
         "{}: needed by bedrock: true, since Bedrock is reached with a profile and a region \
@@ -850,9 +796,7 @@ pub fn bedrock_aws(
 }
 
 fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
-    // A default that belongs to one harness (max_turns and model to Claude, codex_full_access
-    // and codex_model to Codex) applies only to that harness's jobs; on a job it is checked as
-    // written.
+    // Apply harness-specific defaults only to matching jobs; explicit job values are always validated.
     let kind = j.harness.or(d.harness).unwrap_or(HarnessKind::Claude);
     let claude = kind == HarnessKind::Claude;
     let full = j
@@ -907,7 +851,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     let model = j.model.or_else(|| match kind {
         HarnessKind::Claude => d.model.clone(),
         HarnessKind::Codex => d.codex_model.clone(),
-        // No pi default: pi jobs are refused before one could reach it.
         HarnessKind::Pi => None,
     });
     ensure!(
@@ -1015,7 +958,6 @@ mod tests {
         let names: Vec<String> = raw_jobs(&p).unwrap().into_iter().map(|j| j.name).collect();
         assert_eq!(names, ["one", "two", "three"]);
 
-        // Editing keeps the fields the wizard does not ask about and the block's place.
         let mut two = raw_jobs(&p).unwrap().remove(1);
         two.prompt = "second, revised".into();
         write_job(&p, Some("two"), Some(&two)).unwrap();
@@ -1050,11 +992,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
     }
 
-    /// `bedrock: true` is a setting with two others behind it, so the switch cannot be turned
-    /// on alone: the file is refused, naming the field to fill, and either block or job may
-    /// carry them. Off or unset, the two are read and carried but nothing is required. The
-    /// rule is the block's alone and never the shell's, so it answers the same wherever the
-    /// tests run.
     #[test]
     fn bedrock_is_refused_without_the_profile_and_region_it_runs_on() {
         let bedrock = |p: &str, r: &str| {
@@ -1089,7 +1026,6 @@ mod tests {
                 (got, want) => panic!("{text}\nwanted {want:?}, got {got:?}"),
             }
         }
-        // A job carries its own, and bedrock off asks for nothing while keeping neither.
         let (_d, p) = file(
             "version: 1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    bedrock: true\n    aws_profile: claude\n    aws_region: us-east-1\n  - name: two\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    aws_profile: unused\n",
         );
@@ -1136,7 +1072,6 @@ mod tests {
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
         assert!(read_jobs(&p).unwrap()[0].write);
 
-        // Nothing set removes the block and the line; a file without them gets them after version.
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
@@ -1164,7 +1099,6 @@ mod tests {
         assert!(err.contains("unknown column"), "{err}");
         assert_eq!(file_columns(&p).as_deref(), Some(&cols[..]), "untouched");
 
-        // A missing file is created; a default no job could run under is refused, jobs or not.
         let missing = p.with_file_name("new.yaml");
         write_config(&missing, &d, None, None, None, None, None).unwrap();
         assert_eq!(
@@ -1226,7 +1160,6 @@ mod tests {
         assert_eq!(sp.fixed_bound(), Some(20.0));
         assert_eq!(sp.title(), "last 1h");
         assert_eq!(Sparkline::default().title(), "last 16m");
-        // A value cones cannot draw is refused with the file untouched.
         for (bad, msg) in [
             (
                 Sparkline {
@@ -1263,11 +1196,8 @@ mod tests {
             assert!(err.contains(msg), "{err}");
             assert_eq!(sparkline(&p), sp, "untouched after {msg}");
         }
-        // Nothing set removes the block.
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("sparkline"));
-        // The mark line follows the sparkline block, is read back, checked, and removed the
-        // same way.
         assert_eq!(confirm_secs(&p), CONFIRM_SECS, "built-in without a line");
         write_config(
             &p,
@@ -1292,7 +1222,6 @@ mod tests {
         assert_eq!(confirm_secs(&p), 3.5, "untouched after a refused value");
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("confirm_secs"));
-        // A block may name only what changes.
         let (_d, p) = file("version: 1\nsparkline:\n  metric: tokens\njobs: []\n");
         assert_eq!(
             sparkline(&p),
@@ -1303,8 +1232,6 @@ mod tests {
         );
     }
 
-    /// `defaults.harness` is the harness of a job that names none; a job's own `harness:`
-    /// wins, and with neither it is Claude.
     #[test]
     fn a_job_without_a_harness_takes_the_default_harness() {
         let (_d, p) = file(
@@ -1345,7 +1272,6 @@ mod tests {
             "the block sits between pane and confirm_secs: {text}"
         );
         assert_eq!((start(&p), file_start(&p)), (st, Some(st)));
-        // A block that names one field takes the built-in for the other.
         let (_d, p) = file("version: 1\nstart:\n  pane: false\njobs: []\n");
         assert_eq!(
             start(&p),
@@ -1389,7 +1315,6 @@ mod tests {
         assert_eq!(pane(&p), pn, "untouched after a side that is not a side");
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("pane"));
-        // A block may name only what changes.
         let (_d, p) = file("version: 1\npane:\n  at: bottom\njobs: []\n");
         assert_eq!(
             pane(&p),

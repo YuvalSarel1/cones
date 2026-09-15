@@ -1,14 +1,10 @@
-//! Codex in the fleet: fixture strings from a real Codex 0.154 rollout, `ps` and `lsof`. No
-//! Codex process runs and no model token is spent.
+//! Codex 0.154 rollout, ps and lsof fixtures; no harness or model calls.
 use cones::codex::{
     Meta, Process, attribute, cwds, home, meta, processes, rows, sessions, tail, titles,
 };
 use std::{fs, path::PathBuf};
 
-/// The first rollout line, trimmed to the fields cones reads.
 const CODEX_META: &str = r#"{"timestamp":"2026-09-12T09:17:08.160Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a094e7-c194-7980-9804-34f24290597e","id":"01a094e7-c194-7980-9804-34f24290597e","timestamp":"2026-09-12T09:16:51.535Z","cwd":"/Users/me/work/pocs/workbench","originator":"codex-tui","cli_version":"0.154.0","source":"vscode","base_instructions":{"text":"You are Codex"}}}"#;
-/// One turn: started, its context, the environment block and the prompt as user messages, a
-/// reply, usage, a torn line, complete.
 const CODEX_TURN: &str = r#"{"timestamp":"2026-09-12T09:33:11.539Z","ordinal":539,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a094f6"}}
 {"timestamp":"2026-09-12T09:33:11.540Z","ordinal":540,"type":"turn_context","payload":{"turn_id":"01a094f6","cwd":"/Users/me/work/pocs/workbench","model":"openai.gpt-6-astra","approval_policy":"never"}}
 {"timestamp":"2026-09-12T09:33:11.600Z","ordinal":540,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/Users/me</cwd>\n</environment_context>"}]}}
@@ -212,7 +208,6 @@ fn rows_read_the_rollout_and_the_session_index() {
     );
     assert_eq!(cones::fleet::tokens(matched), "-");
 
-    // The rollout is the session's log: `logs` and the details pane read Codex messages too.
     assert_eq!(
         cones::fleet::tail(&rollout, 5).1,
         ["For native Computer Use, the verified setup is the desktop app."]
@@ -231,8 +226,6 @@ fn rows_read_the_rollout_and_the_session_index() {
     assert!(rows(codex, &[]).is_empty());
 }
 
-/// A live `codex` on the developer's machine must not leak into a test's fleet: a temp Claude
-/// dir has no `.codex` beside it, so the process table is never read.
 #[test]
 fn no_codex_home_means_no_process_scan() {
     let dir = tempfile::tempdir().unwrap();

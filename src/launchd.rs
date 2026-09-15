@@ -336,9 +336,6 @@ pub fn exported_plist_path(name: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// launchd.plist(5): ticks missed while asleep are "coalesced into one event upon wake
-    /// from sleep", and RunAtLoad false means loading at login launches nothing. So a wake
-    /// fires at most one run per job, which the overlap policy then handles.
     #[test]
     fn plist_schedules_one_interval_per_tick_and_never_runs_at_load() {
         let mut job = crate::config::adhoc(None, "hi", Path::new("/tmp")).unwrap();

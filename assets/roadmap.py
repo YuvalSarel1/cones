@@ -1,21 +1,6 @@
 """Generates assets/roadmap.svg. Run: python3 assets/roadmap.py"""
-# Owner rulings on this roadmap, given while questioning "Lock holder in ls":
-# cones does not meddle in what jobs do. Two jobs that write one directory both run; a collision
-# is the coordinator skill's business or nobody's. Per-job `overlap` (skip, replace, allow) is the
-# only overlap policy cones holds, plus a wanted fourth mode, continue: stop run 1, start run 2
-# with `claude --resume` on run 1's session id.
-# Applied to this roadmap on 2026-09-13 by the owner's direction: "Lock holder in ls", "Other
-# coordinators" and "Cross-harness coordination" are gone; COORD is out of CAT; "Worktree per run"
-# is REL; "Touched files" and "Status transitions" are OBS; "overlap: continue" is in NEXT. The
-# writer lock is out of the code: no runner flock, no `workspace` skip reason, no `cones lock`,
-# no validate rule against overlap: allow with write: true; the internal ledger and admission
-# locks stay. Undecided: moving the embedded skill back to its own repo, installed by coordinator start.
-# 2026-09-14, owner: "Status transitions" is gone, an agent reporting into cones is coordinator
-# messaging; "Touched files" is LATER, its details pane is gone and run diffs cover cones' own runs;
-# "Jump to pane" is NEXT, since own terminal rows now refuse to open and this is the missing half of
-# moving between agents.
-# Roster, participants, gating, knowledge transfer and messaging belong to the coordinator skill;
-# hooks mean hooks on jobs cones launches, never instrumentation of sessions it did not start.
+# Owner scope: overlap is per job; shared-directory coordination belongs to the skill.
+# Lifecycle hooks apply only to cones jobs, never to externally started sessions.
 import html, textwrap, pathlib
 W = 860  # GitHub README column width, so text renders 1:1
 BG, CARD, LINE, FG, MUTED = "#0d1117", "#161b22", "#30363d", "#e6edf3", "#8b949e"

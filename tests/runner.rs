@@ -423,14 +423,13 @@ fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
         ]
     );
 }
-// A harness this test can stop has to be a binary the test built. macOS kills a copy of a
-// signed platform binary (/bin/sleep and friends) before `ps` can read its command, so
-// `fleet::stop` refuses the pid and the test fails for the platform's reason, not the code's.
+// Build a fixture binary: macOS kills renamed copies of signed system binaries
+// before their process identity can be checked.
 #[test]
 fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     let f = Fixture::new("success", 1.0);
     let fake = f.dir.path().join("claude");
-    // ps reports argv[0]; a copied sleep binary named claude looks like the real harness.
+    // Name the fixture claude so `ps` reports the expected harness.
     fs::copy("/bin/sleep", &fake).unwrap();
     let mut claude_proc = Command::new(&fake).arg("30").spawn().unwrap();
     let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().unwrap();
@@ -462,7 +461,6 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     );
     assert!(sleeper.try_wait().unwrap().is_none());
     sleeper.kill().unwrap();
-    // A session whose process is gone has left the fleet.
     assert!(cones::runner::stop(&ledger, &claude, "real").is_err());
 }
 #[test]
@@ -481,7 +479,6 @@ fn version_flag_prints_the_crate_version() {
 fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
     let f = Fixture::new("success", 1.0);
     let dir = f.dir.path().canonicalize().unwrap();
-    // The skill's status file names a live pid for this folder: start prints it and launches nothing.
     let status = f.dir.path().join(".claude/orchestrator");
     fs::create_dir_all(&status).unwrap();
     let live = serde_json::json!({"cwd": dir, "pid": std::process::id(), "jobId": "8077985c"});

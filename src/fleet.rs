@@ -1,8 +1,5 @@
-//! Fleet: every Claude Code session on this Mac, read from the registry Claude itself keeps,
-//! `~/.claude/sessions/<pid>.json`, plus each session's transcript for title, last reply, model,
-//! timestamps and tokens. Codex sessions join through [`crate::codex`], from the process table
-//! and Codex's rollout files. cones installs nothing into a session and runs nothing inside it.
-//! Every value is something the harness wrote; a value it did not write is `None`, never a guess.
+//! Fleet discovery from harness-owned registries and transcripts. Missing reports
+//! remain absent; state and usage are never estimated. See docs/harness.md.
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -21,22 +18,19 @@ pub struct Session {
     pub session_id: String,
     #[serde(default = "claude")]
     pub harness: String,
-    /// Claude's own kind: `bg` for a daemon-owned background session, `interactive` otherwise.
+    /// Native kind: Claude `bg`/`interactive`, or Codex `daemon`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub cwd: PathBuf,
-    /// `active`, `blocked` (waiting on a permission, trust or user prompt), `done`, `failed` or
-    /// `stopped` for a finished background job, and `idle` for a session between turns that has
-    /// no job of its own. See [`state`].
+    /// Normalized harness state; see `state` and docs/harness.md.
     pub state: String,
-    /// The `timestamp` of the first transcript line that carries one. Rows sort by this so they
-    /// hold still while the session works.
+    /// First reported timestamp; rows sort by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<DateTime<Utc>>,
     /// The `timestamp` of the last transcript line that carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<DateTime<Utc>>,
-    /// The bare API model id Claude wrote on the last message with usage, verbatim.
+    /// Model id reported by the harness, verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,37 +41,26 @@ pub struct Session {
     pub tokens_in: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens_out: Option<u64>,
-    /// The prompt size Claude reported on the last message with usage: input plus cache creation
-    /// and cache read.
+    /// Latest reported prompt size, including cache reads and creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_tokens: Option<u64>,
-    /// The window the harness states: Codex's `model_context_window` in the rollout; for Claude,
-    /// `context_window.context_window_size` from the statusLine payload, which only a statusLine
-    /// command sees, so it is read from `<claude dir>/statusline/<session id>.json` when that
-    /// command saved it there (see docs/harness.md). None when nothing reported one.
+    /// Reported window size. Claude requires a saved statusLine payload; see docs/harness.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
-    /// Claude's own session title: a user-set `custom-title` or `agent-name`, else `ai-title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
-    /// First line of the assistant's most recent text: what the session is doing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
-    /// The folder's orchestrator. The start-orchestrator skill writes
-    /// `<claude dir>/orchestrator/<sha1 of the folder>.json` naming its session pid and cwd
-    /// every tick; this session's pid and cwd match it. A title is never the evidence.
+    /// Matched by pid and cwd against the coordinator skill's status file, never by title.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coordinator: bool,
-    /// One entry per transcript line that carries a timestamp, oldest first: what the
-    /// `sparkline` column counts. Not in `cones ls --json`.
+    /// Timestamped activity for sparklines; excluded from JSON output.
     #[serde(skip)]
     pub activity: Vec<Activity>,
 }
 
-/// One transcript line the harness wrote, as the sparkline counts it: the line itself, the
-/// assistant messages, tool calls and output tokens it carried.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Activity {
     pub at: DateTime<Utc>,
@@ -95,19 +78,14 @@ impl Activity {
     }
 }
 
-/// The sparkline's buckets for one session, oldest first: `metric` summed over its activity in
-/// each `bucket` of seconds. The edges sit on the clock, a 1m bucket running from :00 to :59,
-/// not back from the instant of the reload: measured from `now` itself the edges slid a
-/// second per reload and lines near one hopped between bars, so the row danced. Pinned, the
-/// bars step left once per bucket and only the newest one grows. A line after `now` counts in
-/// the newest bucket.
+/// Clock-aligned buckets, oldest first, so reloads do not shift their boundaries.
+/// Future timestamps count in the newest bucket.
 pub fn buckets(
     activity: &[Activity],
     spark: &crate::config::Sparkline,
     now: DateTime<Utc>,
 ) -> Vec<u64> {
     let secs = spark.bucket_seconds().unwrap_or(60) as i64;
-    // The last second of the current bucket.
     let edge = now.timestamp() - now.timestamp().rem_euclid(secs) + secs - 1;
     let mut out = vec![0; spark.bars];
     for a in activity {
@@ -126,9 +104,6 @@ pub fn buckets(
     out
 }
 
-/// Every session's sparkline cell by session id, drawn against one bound: the busiest bucket
-/// on screen for `fleet` and `log`, the row's own for `row`, the number given otherwise. A
-/// bucket with nothing in it is the lowest bar; one over a fixed bound is the highest.
 pub fn sparklines(
     sessions: &[Session],
     spark: &crate::config::Sparkline,
@@ -165,8 +140,7 @@ pub fn sparklines(
         .collect()
 }
 
-/// One bar per value, the lowest for nothing and the highest at or over `bound`. The highest
-/// is `▇`, not `█`: the full block touches the row above and the chart bleeds into it.
+/// Use ▇ for full bars because █ touches the row above.
 pub fn bars(values: &[f64], bound: f64) -> String {
     const BARS: [char; 7] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇'];
     values
@@ -182,9 +156,7 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 }
 
 impl Session {
-    /// A harness that runs in someone else's terminal cannot be joined from here: a pi, a Codex
-    /// TUI, or an interactive Claude, which `claude attach` does not know (it takes background
-    /// jobs only). Background Claude and Codex daemon threads open fine.
+    /// Only Claude background sessions and Codex daemon threads are joinable.
     pub fn own_terminal(&self) -> bool {
         match (self.harness.as_str(), self.kind.as_deref()) {
             ("claude", Some("interactive")) => true,
@@ -197,8 +169,6 @@ fn claude() -> String {
     "claude".into()
 }
 
-/// Claude's config directory: `$CLAUDE_CONFIG_DIR`, the same override Claude Code honors, or
-/// `~/.claude`. Holds `sessions/`, `projects/` and `jobs/`.
 pub fn claude_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
@@ -208,10 +178,7 @@ pub fn claude_dir() -> Result<PathBuf> {
         .join(".claude"))
 }
 
-/// Every live session in Claude's registry, oldest first by start time; a session whose
-/// transcript reports no start sorts last, by id. A file whose process is gone, or whose pid now
-/// belongs to another process, is a crashed session and is skipped; unparsable files are skipped
-/// too, since Claude may be mid-write on one.
+/// Live registry sessions, oldest first. Skip malformed entries and mismatched pid/start pairs.
 pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(claude.join("sessions")) else {
@@ -240,9 +207,7 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     Ok(out)
 }
 
-/// The live orchestrators as (pid, folder), from the status files the start-orchestrator skill
-/// rewrites every tick under `<claude dir>/orchestrator/`. Both must match a session: a stale
-/// file whose pid was reused names some other process, but not one in the same folder.
+/// Match coordinator records by both pid and folder.
 fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
     fs::read_dir(claude.join("orchestrator"))
         .into_iter()
@@ -255,9 +220,7 @@ fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
         .collect()
 }
 
-/// Start time of each live pid as `ps` prints it under UTC. Claude writes that same text to the
-/// registry as `procStart`, so the two compare as strings and a reused pid never passes for the
-/// session that had it. One `ps` per refresh covers every entry.
+/// Batch process start times in Claude's UTC format to reject reused pids.
 fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
     // ps rejects the whole list when one pid is above the kernel's maximum (99998 on macOS);
     // such a pid runs nothing anyway.
@@ -286,8 +249,6 @@ fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
         .unwrap_or_default()
 }
 
-/// One registry entry as a fleet row. Pure apart from the transcript read; `starts` is the
-/// process table from `process_starts`.
 fn session(
     dir: &Path,
     v: &Value,
@@ -296,8 +257,7 @@ fn session(
 ) -> Option<Session> {
     let pid = v["pid"].as_u64()? as u32;
     let id = v["sessionId"].as_str()?;
-    // A warm spare the daemon keeps ready for the next `claude --bg` has an entry too; it is
-    // no one's session until claimed, and `claude agents` hides it as well.
+    // Unclaimed spare workers are registry entries but not user sessions.
     if v["spare"].as_bool() == Some(true) {
         return None;
     }
@@ -343,12 +303,9 @@ fn session(
         session_id: id.into(),
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
-        // The folder `claude agents` files the row under: a background job's launch directory
-        // from its own state, since EnterWorktree rewrites the registry cwd to the worktree.
+        // Keep background jobs grouped by launch cwd when their registry cwd moves into a worktree.
         cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
         state: state(&job, v["status"].as_str().unwrap_or("-")),
-        // Start, last activity, model and context are the transcript's own words; the registry
-        // `startedAt` and `updatedAt` and the file's mtime are not read for them.
         started: d.report.started,
         last_activity: d.report.last_activity,
         model: d.report.model,
@@ -359,9 +316,6 @@ fn session(
         context_tokens: d.report.context,
         context_window: statusline_window(dir, id),
         cost_usd: None,
-        // Then the job's own name, the one `claude agents` shows: a claimed spare keeps its
-        // 8-hex id as the registry name until Claude renames it, and a short job never gets an
-        // ai-title.
         title: d
             .title
             .or_else(|| {
@@ -374,7 +328,6 @@ fn session(
                     .map(Into::into)
             })
             .or(d.report.first_prompt),
-        // A background job's one-line status from Claude beats the transcript's last text.
         last: job["detail"]
             .as_str()
             .filter(|s| !s.trim().is_empty())
@@ -385,22 +338,8 @@ fn session(
     })
 }
 
-/// The word `claude agents --json` gives a row, read out of Claude Code 2.1.272 and mirrored
-/// here, from its two sources in its own order: a background job's state.json and the registry
-/// `status`. Busy first, since a new prompt flips the registry at once while Claude rewrites a
-/// finished job's state.json only with its first progress note, tens of seconds later. Then a
-/// job that has stopped taking turns: a state of done, failed or stopped, a tempo no longer
-/// active, and, for one that finished well, no routine or self-wake to bring it back. Then a
-/// blocked one. Every other job is working: Claude's own listing never calls a live background
-/// job idle, so neither does this. `shell` sits with busy because Claude's own listing puts it
-/// there: a job row reaches working either way, through the busy arm or the fallback, and on a
-/// row with no job Claude prints the status through a normalizer that keeps only `idle` and
-/// `waiting` and calls everything else busy. That last row is the one place the registry status
-/// is the answer, and where idle comes from; a status this version does not know renders as
-/// Claude's own word rather than the busy that normalizer would assume.
-///
-/// Pinned to another program's internals, so a row that disagrees with `claude agents` is a
-/// drift from 2.1.272 to check, not a mystery.
+/// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
+/// Registry busy wins because job state can lag a new turn. Background jobs never idle.
 fn state(job: &Value, status: &str) -> String {
     let job_state = job["state"].as_str();
     let tempo = job["tempo"].as_str();
@@ -425,8 +364,7 @@ fn state(job: &Value, status: &str) -> String {
     .into()
 }
 
-/// `context_window.context_window_size` from the statusLine payload the user's statusLine command
-/// saved as `<claude dir>/statusline/<session id>.json`; None when it saved nothing.
+/// Read only the window saved by the user's statusLine command.
 fn statusline_window(claude: &Path, id: &str) -> Option<u64> {
     let text = fs::read_to_string(claude.join("statusline").join(format!("{id}.json"))).ok()?;
     serde_json::from_str::<Value>(&text).ok()?["context_window"]["context_window_size"].as_u64()
@@ -439,8 +377,7 @@ struct Details {
     report: Report,
 }
 
-/// Title, last reply, model, timestamps and token counts from a transcript, recomputed only
-/// when the file grew. The dashboard reloads every second and the count reads the whole file.
+/// Cache by file length; a changed transcript requires a full usage recount.
 fn details(transcript: &Path) -> Details {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Details)>>> = Mutex::new(None);
     let len = fs::metadata(transcript).map_or(0, |m| m.len());
@@ -461,8 +398,7 @@ fn details(transcript: &Path) -> Details {
     d
 }
 
-/// Session title and the last `n` assistant texts (first line each) from a Claude transcript.
-/// Read from the end in growing windows, so a long session costs about as much as a short one.
+/// Read the title and last `n` assistant headlines from growing tail windows.
 pub fn tail(transcript: &Path, n: usize) -> (Option<String>, Vec<String>) {
     use std::io::{Read, Seek, SeekFrom};
     let mut out = (None, Vec::new());
@@ -488,7 +424,7 @@ pub fn tail(transcript: &Path, n: usize) -> (Option<String>, Vec<String>) {
             0
         };
         out = scan(&text[start..]);
-        // ponytail: one tool result can be a megabyte, so grow until both are found or 16 MiB.
+        // Large tool results may hide the title or reply; grow the window up to 16 MiB.
         if (out.0.is_some() && out.1.len() >= n) || window >= len || window >= 16 << 20 {
             break;
         }
@@ -499,8 +435,6 @@ pub fn tail(transcript: &Path, n: usize) -> (Option<String>, Vec<String>) {
     out
 }
 
-/// Print the last assistant lines of a session transcript and, with `follow`, each new one as it
-/// lands. Ctrl+C returns; the session in its own terminal is untouched.
 pub fn follow(transcript: &Path, follow: bool) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -534,19 +468,13 @@ pub fn follow(transcript: &Path, follow: bool) -> Result<()> {
     Ok(())
 }
 
-/// The last user prompt and the assistant's full reply to it, as pane lines: prompt lines
-/// quoted with `> `, a blank, then every assistant text since. Tool results are user messages
-/// too; only text counts as a prompt.
+/// Render the latest user prompt and reply, excluding tool-result user messages.
 pub fn exchange(transcript: &Path) -> Vec<String> {
     exchanges(transcript, 1)
 }
 
-/// The last `n` exchanges of a transcript, oldest first, each rendered as `exchange` renders
-/// one and separated by a blank line. Only what the transcript records appears: user text and
-/// assistant text; a turn that was all tool calls shows its prompt alone. Reads the tail of the
-/// file, 1 MiB for one exchange, 4 MiB for more.
+/// Render the last `n` exchanges, oldest first, from a bounded tail window.
 pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
-    // ponytail: an exchange older than the last few MiB is not what the pane is for.
     let bytes = if n <= 1 { 1 << 20 } else { 4 << 20 };
     let Ok(text) = crate::output::tail(transcript, bytes) else {
         return Vec::new();
@@ -578,9 +506,7 @@ pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
                     None => turns.push((String::new(), texts.collect())),
                 }
             }
-            // A Codex rollout: user turns are `input_text` blocks, replies `output_text`. Codex
-            // also files its environment and instruction blocks as user messages; they are
-            // tagged XML, not something the user typed.
+            // Codex also stores instructions as user messages; exclude those XML blocks.
             Some("response_item") if v["payload"]["type"] == "message" => {
                 let p = &v["payload"];
                 let inputs: Vec<&str> = p["content"]
@@ -594,7 +520,6 @@ pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
                 if p["role"] == "user" && !inputs.concat().trim().is_empty() {
                     turns.push((inputs.join("\n"), Vec::new()));
                 }
-                // Codex opens a reply with a newline; the pane already separates replies.
                 let mut replies = crate::codex::assistant_texts(&v).map(|t| t.trim().to_owned());
                 match turns.last_mut() {
                     Some((_, reply)) => reply.extend(replies),
@@ -623,7 +548,6 @@ pub fn exchanges(transcript: &Path, n: usize) -> Vec<String> {
     out
 }
 
-/// The first non-empty line of a reply, bold markers dropped: what a one-line cell shows.
 pub fn headline(text: &str) -> Option<String> {
     text.lines()
         .map(str::trim)
@@ -631,9 +555,7 @@ pub fn headline(text: &str) -> Option<String> {
         .map(|l| l.replace("**", ""))
 }
 
-/// Title and assistant headlines in transcript lines, Claude's or Codex's. A name the user set
-/// (`custom-title` from the resume picker or [`rename`], `agent-name` from `/rename`) beats the
-/// generated `ai-title` wherever it sits, as it does in Claude.
+/// User-set titles override generated titles regardless of their order in the transcript.
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
     let mut ai = None;
@@ -662,10 +584,8 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     out
 }
 
-/// Give a Claude session the title `name`: the `custom-title` line Claude's own resume picker
-/// appends on ctrl+r, so `claude --resume` shows it too. Claude has no way to rename a live
-/// session from outside; a running one keeps the name it holds in memory and may append it
-/// again after this line, and the registry entry is left alone.
+/// Append Claude's native `custom-title` record. A live session may overwrite it
+/// from memory; its registry entry is left alone.
 pub fn rename(session: &Session, name: &str) -> Result<()> {
     use std::io::Write;
     let name = name.trim();
@@ -686,29 +606,20 @@ pub fn rename(session: &Session, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// What one pass over a transcript reads out of Claude's own lines.
 #[derive(Default, Clone)]
 struct Report {
     /// The user's first instruction, used while Claude has not supplied a descriptive name.
     first_prompt: Option<String>,
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
-    /// The prompt size on the last message with usage.
     context: Option<u64>,
-    /// `message.model` on that same message, verbatim.
     model: Option<String>,
-    /// The `timestamp` on the first and the last line that carries one.
     started: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
-    /// Every line with a timestamp, with the messages, tool calls and output tokens on it.
     activity: Vec<Activity>,
 }
 
-/// Total input and output tokens in a Claude transcript, the last message's prompt size as the
-/// context in use, the model id on that message, and the first and last line timestamps.
-/// Streaming writes one line per content block with the same message id and usage, so each
-/// message is counted once. A message whose model is `<synthetic>` is Claude's own placeholder
-/// for a turn no model answered (all-zero usage); it is not a report and is skipped.
+/// Count streaming usage once per message id; skip `<synthetic>` placeholder messages.
 fn report(transcript: &Path) -> Result<Report> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
@@ -786,8 +697,6 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
-/// Every live session of every harness, oldest first by start time: Claude's registry, Codex's
-/// process table and rollouts, pi's process table and session files.
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
     let mut out = sessions(claude)?;
     out.extend(crate::codex::sessions(&crate::codex::home(claude)));
@@ -796,8 +705,7 @@ pub fn all(claude: &Path) -> Result<Vec<Session>> {
     Ok(out)
 }
 
-/// Fleet order: oldest start first, unknown starts last, the id breaking ties. Every list of
-/// rows goes through here, so rows joined from another source fall into place by age.
+/// Sort by oldest start, unknown starts last, then id.
 pub fn sort(out: &mut [Session]) {
     out.sort_by(|a, b| {
         (a.started.is_none(), a.started, &a.session_id).cmp(&(
@@ -808,15 +716,13 @@ pub fn sort(out: &mut [Session]) {
     });
 }
 
-/// What the fleet view shows, so `logs`, `attach` and `stop` act on every visible row.
 pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
     Ok(all(claude)?
         .into_iter()
         .find(|s| s.session_id == session_id))
 }
 
-/// Control needs the target's current identity and owner, not every session's transcript.
-/// Keep the registry's pid/start check, including spare and reused-pid rejection.
+/// Validate current pid/start identity without loading every transcript.
 fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
     match fs::read_dir(claude.join("sessions")) {
         Ok(entries) => {
@@ -845,16 +751,11 @@ fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
         .find(|s| s.session_id == session_id))
 }
 
-/// Stop the harness behind a fleet session. Returns false when the process is already
-/// gone. The pid came from the registry, so the command is checked first: a reused pid never
-/// gets signalled.
+/// Verify process identity before signalling; return false when already gone.
 pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     let session = control_session(claude, session_id)?.context("no such run or session")?;
-    // A background session belongs to Claude's daemon, which respawns a worker whose process
-    // dies (`attempt` in ~/.claude/daemon/roster.json). `claude stop` ends it but leaves the
-    // job record, so `claude agents` keeps listing it as stopped; `claude rm` ends it and
-    // drops the record, what ctrl+x does in `claude agents`. The transcript stays, so
-    // `claude --resume <session>` still has the conversation.
+    // Use `claude rm`: the daemon respawns killed workers, and `stop` leaves a job record.
+    // The transcript remains resumable.
     if session.kind.as_deref() == Some("bg") {
         let claude = crate::harness::executable("claude", &crate::harness::launch_path())
             .context("claude not found")?;
@@ -894,8 +795,6 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// True when a Claude settings file still carries entries from the removed `cones hook`. Each
-/// would run a command the binary no longer has, on every event of every session.
 pub fn stale_hook(settings: &Path) -> bool {
     let Ok(Ok(root)) = fs::read(settings).map(|b| serde_json::from_slice::<Value>(&b)) else {
         return false;
@@ -913,7 +812,6 @@ pub fn stale_hook(settings: &Path) -> bool {
     })
 }
 
-/// Time since a reported instant as a table cell: `4s`, `6m`, `2h`, `3d`.
 pub fn age(since: DateTime<Utc>) -> String {
     let s = (Utc::now() - since).num_seconds().max(0);
     match s {
@@ -924,7 +822,6 @@ pub fn age(since: DateTime<Utc>) -> String {
     }
 }
 
-/// Dollars for a table cell: cents, or four places when a run cost less than a cent.
 pub fn cost(usd: f64) -> String {
     if usd < 0.01 {
         format!("${usd:.4}")
@@ -933,9 +830,7 @@ pub fn cost(usd: f64) -> String {
     }
 }
 
-/// The prompt size the harness reported on the session's last message over the window it
-/// stated: "98k/200k", or "98k" alone when nothing stated a window. The denominator is never
-/// guessed: 200k, or 1M from a `[1m]` in settings.json, once rendered live sessions at 194%.
+/// Show reported prompt/window sizes; omit the denominator when no window was reported.
 pub fn context(s: &Session) -> String {
     match (s.context_tokens, s.context_window) {
         (Some(t), Some(w)) => format!("{}/{}", short(t), short(w)),
@@ -958,7 +853,6 @@ fn short(n: u64) -> String {
     }
 }
 
-/// `~/x` for paths under the home directory, so the column fits.
 pub fn tilde(path: &Path) -> String {
     dirs::home_dir()
         .and_then(|h| path.strip_prefix(h).ok())
@@ -976,8 +870,6 @@ mod tests {
     fn the_sparkline_counts_what_the_transcript_wrote_and_scales_to_its_bound() {
         let dir = tempfile::tempdir().unwrap();
         let transcript = dir.path().join("t.jsonl");
-        // Three timestamped lines: a user prompt, a streamed reply in two blocks (one usage,
-        // one tool call) and a tool result four minutes later.
         fs::write(&transcript, concat!(
             "{\"type\":\"user\",\"timestamp\":\"2026-09-15T10:00:00Z\",\"message\":{\"content\":\"go\"}}\n",
             "{\"type\":\"assistant\",\"timestamp\":\"2026-09-15T10:00:05Z\",\"message\":{\"id\":\"m1\",\"model\":\"claude-fable-5-1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":40},\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n",
@@ -998,9 +890,6 @@ mod tests {
             metric: metric.into(),
             bound: bound.into(),
         };
-        // Buckets sit on the clock: 10:00 to 10:05 inclusive at 10:05:00. Oldest left: the
-        // prompt and the reply's two lines in the 10:00 minute, quiet, the tool result in the
-        // 10:04 minute, nothing yet in 10:05.
         assert_eq!(
             buckets(&r.activity, &spark("lines", "fleet"), now),
             [3, 0, 0, 0, 1, 0]
@@ -1013,7 +902,6 @@ mod tests {
             buckets(&r.activity, &spark("tokens", "fleet"), now),
             [40, 0, 0, 0, 0, 0]
         );
-        // Any second inside the same minute sees the same bars; the next minute steps left.
         let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
         assert_eq!(
             buckets(
@@ -1208,7 +1096,6 @@ mod tests {
         assert_eq!(state(dir.path()), "active");
     }
 
-    /// `claude agents --json` derives a job row's state the same way, so the words match it.
     #[test]
     fn a_job_still_taking_turns_is_working_however_the_registry_rests() {
         let word = |job: Value, status| super::state(&job, status);

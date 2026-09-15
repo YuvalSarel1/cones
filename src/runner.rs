@@ -92,9 +92,8 @@ fn signal_run(run: &Record, signal: i32) -> Result<()> {
     Ok(())
 }
 
-// Called under the admission lock. Per-run leases distinguish live runs from PID reuse,
-// and the supervisor UUID remains the authority for signalling a surviving process group.
-/// Returns whether a terminal record was written for the orphan.
+// Called under admission lock; leases prove liveness and supervisor UUIDs authorize signalling.
+// Return whether an orphan terminal record was written.
 fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
     if active(ledger, run)? || ledger.resolve(&run.started.run_id)?.terminal.is_some() {
         return Ok(false);
@@ -134,9 +133,7 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
     Ok(true)
 }
 
-/// Opt-in macOS notification for runs that need a human: failed, timed out, orphaned or
-/// skipped on budget. `CONES_NOTIFIER` names a command taking (title, message) instead of
-/// osascript, which tests and terminal-notifier users rely on.
+/// `CONES_NOTIFIER` overrides osascript and receives (title, message).
 fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
     let wanted = matches!(status, Status::Failed | Status::Timeout) || reason == Some("budget");
     if !job.notify || !wanted {
@@ -540,7 +537,6 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
 }
 
 pub fn stop(ledger: &Ledger, claude: &Path, id: &str) -> Result<bool> {
-    // Not a ledger run: a Claude session from the registry.
     let Ok(run) = ledger.resolve(id) else {
         return crate::fleet::stop(claude, id);
     };
@@ -551,8 +547,7 @@ pub fn stop(ledger: &Ledger, claude: &Path, id: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// The worker child in its own process group with piped stdio, so a timeout or stop can
-/// terminate the whole tree and the invocation travels over stdin.
+/// Run the worker in a separate process group; receive its invocation over stdin.
 pub fn spawn_worker(executable: &Path, run_id: &str) -> Result<Child> {
     Ok(Command::new(executable)
         .args(["__worker", "--run-id", run_id])
@@ -563,7 +558,6 @@ pub fn spawn_worker(executable: &Path, run_id: &str) -> Result<Child> {
         .spawn()?)
 }
 
-/// The harness command that resumes a finished run's session in its working directory.
 pub fn resume_finished(run: &Run, harness: &dyn harness::Harness) -> Result<Command> {
     ensure!(
         run.terminal.is_some(),

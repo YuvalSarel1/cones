@@ -50,7 +50,7 @@ enum Action {
         #[arg(long, value_enum, default_value = "manual")]
         trigger: Trigger,
     },
-    /// List runs as tab-separated rows.
+    /// List runs and live sessions as tab-separated rows.
     Ls {
         #[arg(long)]
         job: Option<String>,
@@ -67,9 +67,9 @@ enum Action {
         #[arg(long)]
         raw: bool,
     },
-    /// Stop a running job, or a fleet Claude session, after verifying the process identity.
+    /// Stop a run or supported fleet session after verifying process identity.
     Stop { id: String },
-    /// Resume a completed run in its harness UI.
+    /// Attach to a Claude background session or resume a completed run.
     Attach {
         id: String,
         /// Show the native resume command without opening a TUI.
@@ -83,7 +83,7 @@ enum Action {
     },
     /// Check execution prerequisites and policy hazards.
     Doctor,
-    /// Dashboard: jobs, live sessions and runs, with a details pane and a dispatch prompt.
+    /// Dashboard with live session viewers, a composer and job controls.
     Tui {
         /// Log terminal hand-offs, input events and transition timings to STATE_DIR/tui-debug.log.
         #[arg(long)]
@@ -220,8 +220,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
-            // Sessions from Claude's registry that no cones run owns; same columns, cwd where the
-            // job name goes and the transcript's first timestamp where the fired time goes.
+            // Append unowned fleet sessions using the run table's columns.
             for s in cones::tui::fleet_rows(&claude, &state, &ledger.runs()?)?
                 .into_iter()
                 .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
@@ -260,7 +259,6 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Action::Logs { id, follow, raw } => {
             let ledger = Ledger::new(&state)?;
-            // Not a cones run: a fleet session. Its transcript is the log.
             if ledger.resolve(&id).is_err()
                 && let Some(s) = cones::fleet::find(&claude, &id)?
             {
@@ -291,12 +289,8 @@ fn execute(cli: Cli) -> Result<i32> {
             let ledger = Ledger::new(&state)?;
             let run = match ledger.resolve(&id) {
                 Ok(run) => run,
-                // Not a cones run: a session from Claude's registry. Attach while its harness is
-                // alive, resume in place once it is gone.
                 Err(e) => {
                     let s = cones::fleet::find(&claude, &id)?.ok_or(e)?;
-                    // A Codex row is seen, not driven: Codex has no attach command and cones
-                    // starts no Codex process.
                     ensure!(
                         s.harness == "claude",
                         "{} sessions are listed but cannot be attached; open them in their own terminal",
@@ -452,7 +446,6 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
         "launchd requires a logged-in macOS user; wake coalescing does not wake a sleeping Mac"
             .into(),
     );
-    // What the dashboard's n prompt can open and leave running, per harness build.
     for kind in harness::KNOWN {
         match harness::leave_and_return(kind) {
             Ok(m) => report("OK", format!("dashboard opens {m}")),
@@ -547,8 +540,7 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
                     ),
                 ),
             }
-            // The plist is what the scheduled run sees; the shell check above is what a
-            // reinstall would bake next.
+            // Check installed values separately from what a reinstall would capture.
             for name in &job.env {
                 report(
                     if env.contains_key(name) { "OK" } else { "FAIL" },

@@ -1,15 +1,6 @@
-//! `cones tui` is the native dashboard: every live harness session grouped by directory or by
-//! state, and runs, with a composer at the bottom like `claude agents`: type an instruction,
-//! `enter` starts a session in the selected row's directory under the harness `tab` picked.
-//! Jobs have a screen of their own behind the menu's `jobs` button, where they are started,
-//! added (the `new job` row), edited (`ctrl+e`) and deleted (`ctrl+x`); `esc` comes back.
-//! `ctrl+x` marks the row red and a second press acts; any other key keeps it, and so does
-//! `confirm_secs` seconds of no key (jobs.yaml, 2 by default). On a finished run it hides the row
-//! here for good; the ledger keeps it.
-//! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
-//! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
-//! `exited` are session states); a run status must not reuse those words or its rows sort and
-//! draw as sessions.
+//! Native dashboard; user-facing behavior is documented in docs/dashboard.md.
+//! Run statuses must not reuse `active`, `idle`, `blocked` or `exited`;
+//! shared match arms would sort and render those runs as sessions.
 use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
@@ -44,18 +35,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// The tty as the shell handed it over, read once at start. Crossterm snapshots the tty at
-/// every raw-mode entry and hands that snapshot back on exit; after a child, the snapshot is
-/// whatever the child left, so a child that died raw would reach the shell through it.
+/// Capture the shell tty before raw mode; a later snapshot could preserve a child's raw settings.
 static SHELL_TTY: OnceLock<Option<libc::termios>> = OnceLock::new();
 
-/// Put the tty back the way the shell had it, after ratatui has left raw mode and the
-/// alternate screen: the line discipline from `SHELL_TTY`, and off with every mode the
-/// dashboard itself turns on (bracketed paste, mouse reports while a viewer wants them) and
-/// every mode a child of an earlier build may have left on: focus events, color-scheme
-/// reports, kitty keys, modifyOtherKeys, synchronized output. A shell with them on echoes
-/// garbage on every click, focus change and paste. Invisible on a terminal where nothing was
-/// left on. Viewers never reach this terminal, so nothing of theirs is on it.
+/// Restore the shell's line discipline and disable reporting modes that would leak input to it.
 fn hand_back_tty() {
     if let Some(Some(t)) = SHELL_TTY.get() {
         unsafe {
@@ -75,22 +58,15 @@ fn reset_terminal_protocols() {
 }
 
 const ORANGE: Color = Color::Indexed(208);
-/// A second ctrl+c within this window quits the dashboard, as in Claude Code.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
-/// What a first ctrl+c says, while the composer's rules go red with it.
 const QUIT_HINT: &str = "ctrl+c again quits · any other key stays";
-/// A working row's icon: a bar that fills and empties, the same family as the sparkline and
-/// the resting `▁`, holding two extra frames full and two empty so the turn reads as a breath
-/// rather than a flicker. Full is `▇`, never `█`: the full block touches the row above and the
-/// bar reads as part of it. One animation for every harness; until 2026-09-15 each harness spun
-/// its own mark, and Claude's star spent a third of its cycle as a dot, so a working row read
-/// as less than an idle one.
+/// Repeated endpoints slow the pulse. Use ▇ because █ touches the row above.
 const SPINNER: [&str; 16] = [
     "▁", "▁", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "▇", "▇", "▆", "▅", "▄", "▃", "▂",
 ];
-/// Milliseconds per spinner frame; the draw loop ticks every 100.
+/// Milliseconds per spinner frame.
 const FRAME_MS: usize = 160;
-/// The strip's mark beside the word cones. Still: the mascot does not animate.
+/// The mascot stays still.
 const CONE: &str = "▲";
 
 fn spinner_frame(tick: usize) -> usize {
@@ -108,13 +84,10 @@ pub enum Kind {
     Session(String, String),
     /// Run id and status.
     Run(String, String),
-    /// The top menu row, its buttons in `MENU`, the picked one in `App::menu`. From
-    /// `App::rebuild`, never from `Data::rows`.
+    /// Inserted by `App::rebuild`, outside `Data::rows`.
     Menu,
-    /// A pinned folder nothing runs in, in `~` form: its group's one row until a session
-    /// starts there or ctrl+x removes the folder.
+    /// A pinned folder with no live sessions, in `~` form.
     Folder(String),
-    /// The jobs screen's last row: enter opens the wizard on a new job.
     NewJob,
 }
 
@@ -123,9 +96,7 @@ impl Kind {
         !matches!(self, Kind::Header | Kind::Columns | Kind::Blank)
     }
 
-    /// What names a row across reloads: the job name, the session id or the run id. The state
-    /// is left out on purpose, so a session that went from idle to working while it was open
-    /// is still the same row when the dashboard comes back.
+    /// Exclude state so a row keeps its identity across reloads.
     pub fn key(&self) -> Option<&str> {
         match self {
             Kind::Job(name) => Some(name),
@@ -138,11 +109,9 @@ impl Kind {
     }
 }
 
-/// One row of the sessions table: a job in its folder's group, or a session.
 enum Entry<'a> {
     Job(&'a ResolvedJob),
     Session(&'a Session),
-    /// A pinned folder nothing runs in: its group's one row.
     Folder(&'a Path),
 }
 
@@ -160,27 +129,23 @@ impl Row {
     }
 }
 
-/// Everything the dashboard shows, loaded in one pass.
 pub struct Data {
     pub jobs: Vec<ResolvedJob>,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
-    /// Session column names after the harness and title, from jobs.yaml's `columns:`.
+    /// Session column names from jobs.yaml's `columns:`.
     pub columns: Vec<String>,
-    /// The viewer pane's layout, from jobs.yaml.
     pub pane: config::Pane,
-    /// What a new cones terminal comes up with, from jobs.yaml: the composer's harness and
-    /// whether the pane is open. Read at startup and never again.
+    /// Applied at startup only.
     pub start: config::Start,
-    /// The `sparkline` column's window, metric and bound, from jobs.yaml.
     pub spark: config::Sparkline,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
     pub confirm_secs: f64,
-    /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
+    /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
-    /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
+    /// Previously seen session folders, newest first.
     pub recent: Vec<PathBuf>,
-    /// The git branch and tree state of each pinned folder nothing runs in, for its row.
+    /// Git state for pinned folders without sessions.
     pub git: BTreeMap<PathBuf, String>,
 }
 
@@ -194,7 +159,6 @@ impl Data {
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
         let folders = ledger.folders()?;
         let jobs = config::read_jobs(jobs_path).unwrap_or_default();
-        // Only the folders that get a row: a folder a session or a job is in shows those.
         let git = folders
             .iter()
             .filter(|f| !seen.contains(f) && !jobs.iter().any(|j| &j.cwd == *f))
@@ -215,7 +179,6 @@ impl Data {
         })
     }
 
-    /// Whether `dir` has a group of its own already: a session runs there.
     fn has_rows_in(&self, dir: &Path) -> bool {
         self.sessions.iter().any(|s| s.cwd == dir)
     }
@@ -224,9 +187,6 @@ impl Data {
         self.sessions.iter().filter(|s| s.state == state).count()
     }
 
-    /// The fleet in one line: the state's icon and count per state, each in the state's color,
-    /// then the jobs and runs. A count of zero goes dim so the live numbers stand out. The
-    /// working icon is the spinner's `frame`, so it moves with the rows while anything works.
     pub fn summary(&self, frame: usize) -> Line<'static> {
         let sep = || Span::styled("  ", plain());
         let mut spans = Vec::new();
@@ -265,15 +225,11 @@ impl Data {
         Line::from(spans)
     }
 
-    /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
-    /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
         self.rows_excluding(by_state, false, &HashSet::new(), &mut Widths::new())
     }
 
-    /// A confirmed delete leaves the list immediately while the harness command finishes.
-    /// The source data stays intact so a failed command can restore its row. `jobs_view` is
-    /// the jobs screen: the jobs alone, grouped as one, and no session, folder or run.
+    /// Hide pending deletions without changing source data, so failures can restore their rows.
     fn rows_excluding(
         &self,
         by_state: bool,
@@ -293,8 +249,7 @@ impl Data {
                 cells: vec![(title.to_owned(), bold())],
             });
         };
-        // A group's key sorts it and names it: folders by name with case set aside, shown in
-        // `~` form; grouped by state a rank digit leads, input first.
+        // Sort folders case-insensitively; state groups use a rank prefix to put input first.
         let folder = |dir: &Path| {
             let name = if dir.as_os_str().is_empty() {
                 "no directory".to_owned()
@@ -304,8 +259,6 @@ impl Data {
             (name.to_lowercase(), name)
         };
         let ranked = |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned());
-        // On the jobs screen the jobs are one group in jobs.yaml order; the main screen has
-        // the sessions and the pinned folders.
         let mut groups: BTreeMap<(String, String), Vec<Entry>> = BTreeMap::new();
         for j in self.jobs.iter().filter(|_| jobs_view) {
             groups
@@ -331,8 +284,6 @@ impl Data {
             };
             groups.entry(key).or_default().push(Entry::Session(s));
         }
-        // A pinned folder sorts among the live folders by name; grouped by state it follows the
-        // jobs. The same key as the sessions use, so it joins its group rather than doubling it.
         for dir in self.folders.iter().filter(|_| !jobs_view) {
             let (sort, name) = folder(dir);
             let key = if by_state {
@@ -351,12 +302,8 @@ impl Data {
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
-        // The state column sits before the title, where the eye lands after the icon, when
-        // the column set lists it; the other columns follow the title in their order. The
-        // jobs screen has the columns a job can fill, whatever the set says for sessions.
         let job_columns = ["model".to_owned(), "activity".to_owned(), "last".to_owned()];
-        // One set whatever the width, so a column never moves: the pane opening or a narrow
-        // terminal cuts the columns off the right edge, the rest stay where they were.
+        // Keep the same columns at every width; narrow panes clip the right edge.
         let set = &self.columns;
         let has_state = jobs_view || set.iter().any(|c| c == "state");
         let cols: Vec<&String> = if jobs_view {
@@ -377,10 +324,6 @@ impl Data {
                         if has_state {
                             cell("state", s, by_state, None)
                         } else {
-                            // The same words as the footer, on the row, so a session that
-                            // cannot be joined from here is known before it is selected. The
-                            // folder's orchestrator says so here and carries its title in cones'
-                            // orange, so it is told from the workers at a glance.
                             (
                                 [
                                     s.coordinator.then_some("orchestrator"),
@@ -418,8 +361,6 @@ impl Data {
                     let mut row = vec![
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
                         (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
-                        // The last run's status, or `off`, takes the state slot with the
-                        // schedule beside it.
                         if has_state {
                             let (word, style) = job_cell("state", j, last, &status, by_state);
                             (format!("{word} · {}", j.schedule), style)
@@ -504,7 +445,7 @@ impl Data {
         }
         if !jobs_view && !self.runs.is_empty() {
             header(&mut out, "runs");
-            // ponytail: the newest 200 runs; paging when the ledger outgrows a screenful of scrolling.
+            // Limit the run list to the newest 200 entries.
             let runs: Vec<&Run> = self.runs.iter().rev().take(200).collect();
             let cells = runs
                 .iter()
@@ -549,8 +490,7 @@ impl Data {
         out
     }
 
-    /// The details pane for one row: a job's policy and prompt, a session's last `exchanges`
-    /// prompts and replies from its transcript, or a run's captured output.
+    /// A job's policy, a session's last `exchanges` transcript entries, or a run's output.
     pub fn details(&self, kind: &Kind, exchanges: usize) -> Vec<String> {
         match kind {
             Kind::Job(name) => {
@@ -580,8 +520,6 @@ impl Data {
                 let Some(s) = self.sessions.iter().find(|s| &s.session_id == id) else {
                     return vec![];
                 };
-                // Model, start, last activity and context are the harness's words, `-` when it
-                // has none; the window shows only when the harness stated one.
                 let stamp = |t: Option<chrono::DateTime<chrono::Utc>>| {
                     t.map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M:%S").to_string())
                 };
@@ -634,9 +572,8 @@ impl Data {
     }
 }
 
-/// Tab-separated rows for scripts and tests: hidden key (`job`, `hdr`, session or run UUID),
-/// hidden aux (job name, session state or run status), then the display text with ANSI color.
-/// Three header lines carry Little feet and the bordered summary.
+/// TSV: hidden key, hidden auxiliary value, then ANSI display text.
+/// The first three lines are the mascot and summary header.
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
@@ -703,8 +640,7 @@ fn ansi(text: &str, style: Style) -> String {
     }
 }
 
-/// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
-/// while it is picked.
+/// Button name, action verb, explanation.
 const MENU: [(&str, &str, &str); 4] = [
     (
         "folder",
@@ -716,8 +652,6 @@ const MENU: [(&str, &str, &str); 4] = [
     ("help", "guide", "the keys and what they do"),
 ];
 
-/// What `enter` does to the selected row: start a job, follow a headless run, attach a session;
-/// on the menu row, press button `menu`.
 fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
     match kind {
         Some(Kind::Job(_)) => "start job",
@@ -730,13 +664,8 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
     }
 }
 
-/// The top menu: one row of buttons above the tables, reached with `↑` past the first table;
-/// `←` `→` pick one and `enter` presses it. `folder` adds a row for a directory nothing runs
-/// in, so work can start there, `jobs` opens the jobs screen, `config` edits the defaults,
-/// `help` opens the guide.
 fn menu_rows() -> Vec<Row> {
-    // A blank row keeps the menu off the cone. The row's cells come from `App::menu_cells`
-    // at draw time, since the picked button and its explanation change without a rebuild.
+    // Menu cells are drawn by `App::menu_cells` because selection changes without a rebuild.
     vec![
         Row {
             kind: Kind::Blank,
@@ -775,7 +704,7 @@ fn cone() -> [Vec<Span<'static>>; 3] {
     })
 }
 
-/// The mascot beside a three-row frame. Keep the right border visible when counts are clipped.
+/// Keep the header's right border visible when clipping counts.
 fn header_lines(summary: Line<'static>, folder: &str, width: usize) -> Vec<Line<'static>> {
     let mascot = cone();
     if width < 24 {
@@ -824,7 +753,6 @@ fn header_lines(summary: Line<'static>, folder: &str, width: usize) -> Vec<Line<
         .collect()
 }
 
-/// Key hints: each key lit and its verb dim, so the eye finds the key first.
 fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     let mut spans = vec![];
     for (i, (key, verb)) in keys.iter().enumerate() {
@@ -837,8 +765,6 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The usage guide as a paragraph, keys in one column and their verbs dim beside them, from
-/// wrapped line `top`.
 fn guide(top: usize) -> Paragraph<'static> {
     let width = GUIDE
         .iter()
@@ -848,8 +774,6 @@ fn guide(top: usize) -> Paragraph<'static> {
     let mut lines = vec![];
     for (key, what) in GUIDE {
         if key.is_empty() {
-            // A blank line above every heading; the first keeps the guide off the cone, as the
-            // list's blank row does.
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
                 (*what).to_owned(),
@@ -867,7 +791,6 @@ fn guide(top: usize) -> Paragraph<'static> {
         .scroll((top as u16, 0))
 }
 
-/// `text` without its ANSI color sequences, for a status line.
 fn uncolored(text: &str) -> String {
     let mut out = String::new();
     let mut esc = false;
@@ -882,9 +805,7 @@ fn uncolored(text: &str) -> String {
     out
 }
 
-/// The widest each table's columns have been, keyed by its column names. A column only grows
-/// for the life of the dashboard, so a cell that changes length (`59s` to `1m`, `working` to
-/// `input`, a long title leaving) never moves the columns beside it.
+/// Column widths only grow during a dashboard session, preventing shifts as values change.
 pub type Widths = HashMap<Vec<String>, Vec<usize>>;
 
 /// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames.
@@ -918,12 +839,7 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
         .collect()
 }
 
-/// One configurable session cell; `last` shows the directory when rows are grouped by state,
-/// since the group title no longer names it. `model`, `age`, `activity` and `context` are the
-/// transcript's own words and read `-` until it has them.
-/// A job's cell under a session column: the last run's status where a session shows its state,
-/// its model, how long since the last run fired, its directory when grouped by state; the
-/// columns that are a session's alone stay blank.
+/// `last` shows the directory when grouping by state; session-only columns stay blank.
 fn job_cell(
     column: &str,
     j: &ResolvedJob,
@@ -945,8 +861,7 @@ fn job_cell(
     }
 }
 
-/// A session's cell under `column`; `spark` is its sparkline, drawn once for the whole fleet so
-/// every row shares one bound.
+/// `spark` is scaled once for the fleet so rows share a bound.
 fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
@@ -970,8 +885,6 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
     }
 }
 
-/// Column names as a dim row padded together with the table beneath it, indented past the cursor
-/// gutter so each name sits over its column.
 fn columns(
     names: &[&str],
     rows: Vec<Vec<(String, Style)>>,
@@ -1001,22 +914,17 @@ fn bold() -> Style {
 fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
 }
-/// A menu button at rest: white on a dark fill, as a terminal draws a key cap.
 fn button() -> Style {
     Style::default().bg(Color::Indexed(237)).fg(Color::White)
 }
-/// The picked menu button, lit in the cone's orange.
 fn pressed() -> Style {
     Style::default().bg(ORANGE).fg(Color::Black)
 }
-/// cones' own orange, bold: the header cone and the folder's orchestrator.
 fn lit() -> Style {
     Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
 
-/// What is typed with a block cursor on the character at `cursor`, a byte offset, or after
-/// the text when it is at the end; or the placeholder with the cursor on its first letter: how
-/// Claude Code draws its own input.
+/// Render the cursor at a byte offset, or on the placeholder when empty.
 fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
     let block = Modifier::REVERSED;
     if !value.is_empty() {
@@ -1038,8 +946,7 @@ fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
     ]
 }
 
-/// `at`, a byte offset into `text` that may be stale, brought back inside it and onto a
-/// character boundary.
+/// Clamp a possibly stale byte offset to a character boundary.
 fn snap(text: &str, at: usize) -> usize {
     let mut at = at.min(text.len());
     while !text.is_char_boundary(at) {
@@ -1061,17 +968,13 @@ fn word_right(text: &str, at: usize) -> usize {
         .map_or(t.len(), |i| from + i)
 }
 
-/// Readline's editing of one line, for the composer. macOS terminals send the shortcuts their
-/// users press in the encodings below: VS Code, iTerm2 with natural text editing and Ghostty
-/// turn cmd+left and cmd+right into ctrl+a and ctrl+e, cmd+delete into ctrl+u, option+delete
-/// into ctrl+w or alt+backspace and option+left/right into alt+b/alt+f or alt+arrows; cmd
-/// itself never reaches a terminal program. Returns the cursor after the key, `None` when
-/// the key is not an edit.
+/// Readline editing; return the new byte offset, or `None` for an unhandled key.
+/// macOS cmd shortcuts arrive as control keys, and option shortcuts as alt keys.
 fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> Option<usize> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
     let alt = mods.contains(KeyModifiers::ALT);
     let at = snap(text, cursor);
-    // ponytail: a word is a run of non-spaces, for every word key alike.
+    // All word keys treat a word as a run of non-spaces.
     let prev = text[..at]
         .chars()
         .next_back()
@@ -1108,8 +1011,7 @@ fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> 
     })
 }
 
-/// A line being typed and the cursor in it, a byte offset. Every prompt the dashboard reads
-/// from the keyboard is one, so `edit`'s keys and `tab` on a path work the same in all of them.
+/// Editable text with a cursor stored as a byte offset.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Input {
     pub text: String,
@@ -1117,7 +1019,6 @@ pub struct Input {
 }
 
 impl Input {
-    /// `text` with the cursor after it.
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         Self {
@@ -1126,7 +1027,6 @@ impl Input {
         }
     }
 
-    /// An edit key applied where the cursor is; false for any other key.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         match edit(&mut self.text, self.at, code, mods) {
             Some(at) => {
@@ -1137,8 +1037,7 @@ impl Input {
         }
     }
 
-    /// `tab` on a path: the text grown as `complete_dir` grows it, the cursor after it; or,
-    /// when nothing grew, the names that still match, for the hint line.
+    /// Complete the path; return matching names only when the prefix cannot grow.
     fn complete(&mut self, base: &Path) -> Vec<String> {
         let (grown, names) = complete_dir(&self.text, base);
         if grown == self.text {
@@ -1153,15 +1052,12 @@ impl Input {
     }
 }
 
-/// `ctrl+v` in the composer, as in Claude Code: the clipboard's image lands as a PNG under the
-/// temp dir and its path is typed into the instruction, where the harness reads it as a file.
-/// A terminal paste of text arrives as keys; only an image needs the clipboard itself.
+/// Save a clipboard image as a temporary PNG for the harness to read by path.
 fn paste_image() -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("cones");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let path = dir.join(format!("pasted-{stamp}.png"));
-    // ponytail: macOS clipboard via osascript; wl-paste/xclip if this ever runs on Linux.
     let open = format!(
         "set f to open for access POSIX file \"{}\" with write permission",
         path.display()
@@ -1179,9 +1075,8 @@ fn paste_image() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// A pasted image sits in the instruction as one private-use character, `IMAGE` plus its index
-/// into `App::images`, as Claude Code's `[Image #n]`: drawn as that label, deleted as one
-/// character by any edit key, and expanded to the PNG's path at launch.
+/// Private-use markers encode image indices as single editable characters.
+/// Expand them to labels for display and PNG paths at launch.
 const IMAGE: u32 = 0xE000;
 
 fn image_marker(n: usize) -> char {
@@ -1194,8 +1089,7 @@ fn image_index(c: char) -> Option<usize> {
         .then(|| (c as u32 - IMAGE) as usize)
 }
 
-/// Splice image `n`'s marker into the instruction at `at`, spaced from what is typed either
-/// side; returns the cursor after it.
+/// Insert image `n`'s marker at byte offset `at` and return the new cursor.
 fn attach(text: &mut String, at: usize, n: usize) -> usize {
     let at = snap(text, at);
     let mut piece = String::new();
@@ -1210,18 +1104,13 @@ fn attach(text: &mut String, at: usize, n: usize) -> usize {
     at + piece.len()
 }
 
-/// The instruction with each image marker replaced by `f` of its index: the label on screen,
-/// the path at launch.
+/// Replace image markers with labels or paths from `f`.
 fn expand(text: &str, mut f: impl FnMut(usize) -> String) -> String {
     text.chars()
         .map(|c| image_index(c).map_or_else(|| c.to_string(), &mut f))
         .collect()
 }
 
-/// One glyph per state, one family: a bar. Working fills and empties (`SPINNER` draws it), a
-/// still full bar in yellow wants a human, the lowest bar is resting or stopped, dim, with the
-/// word telling the two apart. Finished work keeps `✓` and `✗`, as in `claude agents`. `-` is
-/// a session whose harness reported no state, a Codex before its first turn; not a failure.
 fn icon(state: &str) -> &str {
     match state {
         "active" | "started" => "▁",
@@ -1233,9 +1122,6 @@ fn icon(state: &str) -> &str {
     }
 }
 
-/// Which harness a session or job runs under, with the mark each app draws for itself: Claude's
-/// ✻, Codex's `>_` startup box title, pi's π window title. Still, in the harness's color; the
-/// state icon carries the motion.
 fn logo(harness: &str) -> String {
     match harness {
         "claude" => "✻ claude".into(),
@@ -1245,7 +1131,6 @@ fn logo(harness: &str) -> String {
     }
 }
 
-/// Each harness in the color it paints itself: Claude's orange, pi's teal accent; Codex has none.
 fn brand(harness: &str) -> Style {
     match harness {
         "claude" => Style::default().fg(Color::Rgb(215, 119, 87)),
@@ -1264,7 +1149,6 @@ fn label(state: &str) -> &str {
 
 fn color(status: &str) -> Style {
     match status {
-        // Claude's own agents view: working is plain, green is for finished work.
         "active" | "started" => plain(),
         "ok" | "done" => Style::default().fg(Color::Green),
         "blocked" | "skipped" => Style::default().fg(Color::Yellow),
@@ -1281,8 +1165,6 @@ fn clip(s: &str, n: usize) -> String {
     }
 }
 
-/// Keep `spans` within `width` columns by cutting from the right end, so what is cut is the
-/// tail of the last span that fits in part and everything after it.
 fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut used = 0;
@@ -1322,20 +1204,15 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
         .into_iter()
         .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect();
-    // Codex threads the dashboard launched behind the daemon show nothing in the process
-    // table while no client is attached; cones lists them from its own record.
+    // Detached daemon threads have no client in the process table; include their saved records.
     out.extend(codex::thread_rows(&codex::home(claude), state, &out));
-    // A thread ctrl+x forgot stays gone, even while another client has the daemon holding it
-    // again; its id is a line in `hidden`, like a hidden run.
     let hidden = Ledger::new(state)?.hidden()?;
     out.retain(|s| !hidden.contains(&s.session_id));
     fleet::sort(&mut out);
     Ok(out)
 }
 
-/// The directory a launch runs in: `text` with `~` expanded and a relative path taken from
-/// `base`, canonical, and an existing directory. Empty text means `fallback`, the row's cwd or
-/// the dashboard's own. The error is the one line the prompt shows inline.
+/// Resolve `text` relative to `base`; empty text uses `fallback`. Require an existing directory.
 pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, String> {
     let text = text.trim();
     let path = if text.is_empty() {
@@ -1350,8 +1227,6 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// A folder's git state for a row nothing else fills: the branch and whether the tree is
-/// clean, from one `git status --porcelain --branch`; None outside a repository or without git.
 pub fn git_state(dir: &Path) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -1374,9 +1249,8 @@ pub fn git_state(dir: &Path) -> Option<String> {
     })
 }
 
-/// Tab in the folder prompt, as a shell completes `cd`: `text` grown to the longest prefix
-/// every matching directory shares, with a `/` when only one is left, and the names that still
-/// match when there are several. Hidden directories match only a `.` prefix.
+/// Complete to the longest shared directory prefix; append `/` for a single match.
+/// Hidden directories require a `.` prefix.
 pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
     let (parent, partial) = match text.rfind('/') {
         Some(i) => (&text[..=i], &text[i + 1..]),
@@ -1417,7 +1291,6 @@ pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
     }
 }
 
-/// Where the wizard is: one question at a time, every answer so far kept on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
     What,
@@ -1427,22 +1300,18 @@ pub enum Step {
     Name,
 }
 
-/// What a key in the wizard asks the dashboard to do.
 #[derive(Debug, PartialEq)]
 pub enum FormAction {
     Stay,
     Cancel,
-    /// Run the task once, supervised, in the directory: `cones run --prompt` there.
     RunOnce(String, PathBuf),
     /// Write the job, replacing the one with this name when editing.
     Save(Option<String>, Box<config::Job>),
 }
 
-/// The `when` options: `once` runs now, the rest schedule a job; `cron` takes five fields.
 const WHEN: [&str; 6] = ["once", "hourly", "daily", "weekdays", "weekly", "cron"];
 const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
-/// A row of options with the picked one lit and bracketed.
 fn picks(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize) {
     let lit = lit();
     for (i, o) in options.iter().enumerate() {
@@ -1457,8 +1326,7 @@ fn picks(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize) {
     }
 }
 
-/// The `when` pick and the `at` answer a schedule comes from, so an edit opens on the same
-/// options that made it: `0 9 * * *` is daily at 09:00. Anything else is `cron` as written.
+/// Map common cron expressions to wizard presets; preserve others as raw cron.
 fn from_cron(schedule: &str) -> (usize, String) {
     let cron = (5, schedule.to_owned());
     let fields: Vec<&str> = schedule.split_whitespace().collect();
@@ -1482,8 +1350,6 @@ fn from_cron(schedule: &str) -> (usize, String) {
     }
 }
 
-/// The five-field schedule for a `when` pick and its `at` answer; the error is the one line
-/// the wizard shows inline. `cron` is checked the way `cones install` checks it.
 fn to_cron(when: usize, at: &str) -> Result<String, String> {
     let at = at.trim();
     let time = |t: &str| -> Result<(u8, u8), String> {
@@ -1522,7 +1388,6 @@ fn to_cron(when: usize, at: &str) -> Result<String, String> {
     })
 }
 
-/// A job name from the task's first words: `Read the TODOs!` becomes `read-the-todos`.
 fn slug(prompt: &str) -> String {
     let mut s = String::new();
     for c in prompt.trim().chars().take(60) {
@@ -1535,13 +1400,8 @@ fn slug(prompt: &str) -> String {
     s.trim_end_matches('-').to_owned()
 }
 
-/// The wizard the menu's `runs` button opens (`ctrl+e` on a job row edits): the task, where
-/// it runs, how often, at what time, and the job's name, one question at a time where the
-/// list is, with every answer so far above the current one. `enter` answers, `← →` pick an
-/// option, `↑` or backspace on an empty answer steps back, `esc` cancels. `once` runs the
-/// task now instead of writing a job. Editing keeps every field the wizard does not ask
-/// about (model, budget, write). Pure: filesystem facts come in through `base`, `fallback`
-/// and `launch_dir`; the file is written by the dashboard on `Save`.
+/// Job wizard state. Editing preserves fields the wizard does not expose;
+/// `FormAction::Save` leaves persistence to the dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobForm {
     pub step: Step,
@@ -1552,7 +1412,7 @@ pub struct JobForm {
     pub at: String,
     pub name: String,
     pub error: Option<String>,
-    /// The cursor in the answer being typed, a byte offset; past the end means after it.
+    /// Byte offset in the current answer.
     cursor: usize,
     schedule: String,
     /// The job being edited, as written in the file; `None` adds one.
@@ -1562,9 +1422,7 @@ pub struct JobForm {
 }
 
 impl JobForm {
-    /// `base` is where a relative directory is taken from, the jobs file's; `fallback` is what
-    /// an empty directory means and is shown as the placeholder; `seed` is what the composer
-    /// held, the task's first draft.
+    /// `base` resolves relative paths; `fallback` supplies an empty directory; `seed` fills the prompt.
     pub fn new(base: &Path, fallback: &Path, original: Option<config::Job>, seed: &str) -> Self {
         let (name, dir, prompt, (when, at)) = match &original {
             Some(j) => (
@@ -1595,14 +1453,11 @@ impl JobForm {
         }
     }
 
-    /// Move to `step`, the cursor after its answer.
     fn go(&mut self, step: Step) {
         self.step = step;
         self.cursor = usize::MAX;
     }
 
-    /// `tab` on `where`: the directory completed as the folder prompt's is, from the jobs
-    /// file's directory, where a relative answer is taken from.
     pub fn complete(&mut self) -> Vec<String> {
         let mut input = Input::new(std::mem::take(&mut self.dir));
         let names = input.complete(&self.base);
@@ -1611,7 +1466,6 @@ impl JobForm {
         names
     }
 
-    /// The answer being typed; `when` is picked, not typed.
     fn field(&mut self) -> Option<&mut String> {
         match self.step {
             Step::What => Some(&mut self.prompt),
@@ -1622,12 +1476,10 @@ impl JobForm {
         }
     }
 
-    /// Whether the pick needs a time: hourly and once do not.
     fn asks_at(&self) -> bool {
         self.when >= 2
     }
 
-    /// What an empty `at` means, and its placeholder.
     fn at_placeholder(&self) -> &'static str {
         match WHEN[self.when] {
             "weekly" => "mon 09:00",
@@ -1672,8 +1524,6 @@ impl JobForm {
         });
     }
 
-    /// Check the answer; move on, or at the last question hand the job over. The checks are the
-    /// file's own, so what passes here passes `cones install`.
     fn next(&mut self) -> FormAction {
         match self.step {
             Step::What => {
@@ -1743,16 +1593,12 @@ impl JobForm {
                 );
             }
         }
-        // The name is suggested from the task the first time it is asked.
         if self.step == Step::Name && self.name.is_empty() {
             self.name = slug(&self.prompt);
         }
         FormAction::Stay
     }
 
-    /// The wizard where the list is: a title, then every question the pick calls for, the
-    /// answered ones with their answers, the current one with the cursor or the options, the
-    /// ones to come dim with what an empty answer would mean.
     fn lines(&self) -> Vec<Line<'static>> {
         let title = match &self.original {
             Some(j) => format!("edit {}", j.name),
@@ -1811,7 +1657,6 @@ impl JobForm {
         lines
     }
 
-    /// The prompt line: the current question and what an answer looks like.
     fn line(&self) -> Line<'static> {
         let (what, help) = match self.step {
             Step::What => ("what", "the task, as you would type it to the harness"),
@@ -1843,14 +1688,10 @@ impl JobForm {
     }
 }
 
-/// A field the config editor shows: the group it sits under, the block inside that group when
-/// it has one, its name, the words beside it on its row, the fuller explanation under the list
-/// while it is selected, what an empty answer means (the built-in), and how its value is
-/// entered.
+/// A config field's grouping, display text, default and input control.
 struct Field {
     group: &'static str,
-    /// The dim sub-head above the row, shared by the rows around it; empty sits under the
-    /// group's own head.
+    /// Shared subheading; empty means directly under the group.
     sub: &'static str,
     name: &'static str,
     short: &'static str,
@@ -1859,21 +1700,15 @@ struct Field {
     input: Answer,
 }
 
-/// How a field takes its value, which is also the control its row draws: a number stepped by
-/// the amount given; free text; one of a few words, `-` for the built-in; or those words or
-/// something typed, named for the help line.
 enum Answer {
     Typed,
     Number(f64),
     Pick(&'static [&'static str]),
     PickOrType(&'static [&'static str], &'static str),
-    /// The `columns:` line. The row is the arranger itself: every column there is, the ones
-    /// the table draws first, and `← →` `space` `[ ]` change the set where it is read.
     Columns,
 }
 
 impl Field {
-    /// The words a field offers, when it offers any.
     fn picks(&self) -> Option<&'static [&'static str]> {
         match self.input {
             Answer::Typed | Answer::Number(_) | Answer::Columns => None,
@@ -1881,12 +1716,10 @@ impl Field {
         }
     }
 
-    /// Whether typing edits the value.
     fn typed(&self) -> bool {
         !matches!(self.input, Answer::Pick(_) | Answer::Columns)
     }
 
-    /// The amount `← →` steps a number field by, when the field is one.
     fn step(&self) -> Option<f64> {
         match self.input {
             Answer::Number(s) => Some(s),
@@ -1894,11 +1727,7 @@ impl Field {
         }
     }
 
-    /// The values `← →` walk, in order: every word the field offers, and `value` last when it
-    /// is something typed rather than one of them, so a value typed in is one more choice on
-    /// the row and a step off it lands on the built-in beside it. The ring is read from the
-    /// value each time, so stepping away drops what was typed, as picking another word in a
-    /// radio group does. `-` stands for the built-in and is held as the empty string.
+    /// Append a custom value to the option ring. Stepping away drops it; empty means built-in.
     fn ring(&self, value: &str) -> Vec<String> {
         let mut ring: Vec<String> = self
             .picks()
@@ -1912,8 +1741,6 @@ impl Field {
         ring
     }
 
-    /// How option `o` reads on the prompt line: `-` of a field the harness owns is
-    /// `system default`.
     fn label<'a>(&self, o: &'a str) -> &'a str {
         if o == "-" && self.builtin == SYSTEM {
             SYSTEM
@@ -1922,36 +1749,24 @@ impl Field {
         }
     }
 
-    /// Whether `value` is shown as picks: empty, the built-in, or one of the options.
     fn picked(&self, value: &str) -> bool {
         self.picks()
             .is_some_and(|o| value.is_empty() || o.contains(&value))
     }
 }
 
-/// The comma-separated items of a list value.
 const BOOL: &[&str] = &["-", "false", "true"];
 
-/// The built-in of a field cones leaves to the harness when it is empty: nothing is passed,
-/// and the harness's own configuration decides. The `-` pick of such a field reads this.
+/// Empty harness-owned fields pass no override to the harness.
 const SYSTEM: &str = "system default";
 
-/// The groups the editor shows, each with a line on what it holds, in the order a reader
-/// meets them: `cones` is every key outside the `defaults:` block, the `columns:` and
-/// `confirm_secs:` lines and the `start:`, `pane:` and `sparkline:` blocks; `harnesses` and
-/// `runs` are the `defaults:` block itself, how claude and codex are run and what a
-/// supervised run may do. A group's rows come first and its blocks after, each block under a
-/// dim sub-head named for the block in the file, `start`, `pane`, `sparkline`, or for the
-/// harness whose fields it holds.
 const GROUPS: [(&str, &str); 3] = [
     ("cones", "the dashboard itself"),
     ("harnesses", "how claude and codex are run"),
     ("runs", "every supervised run"),
 ];
 
-/// The fields under their groups and blocks. A field named for a harness reaches only that
-/// harness. `start.harness` is what the composer comes up on, `runs.harness` what a job that
-/// names none runs under: one row each, so neither has to mean both.
+/// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
 const FIELDS: [Field; 23] = [
     Field {
         group: "cones",
@@ -2171,9 +1986,7 @@ const FIELDS: [Field; 23] = [
     },
 ];
 
-/// The rows the session form shows: what the next session the composer starts runs on, the
-/// same `defaults` fields the editor shows, seeded from the policy that session would take.
-/// Nothing on this form is written to the file.
+/// Session overrides use these policy fields without writing jobs.yaml.
 const SESSION: [&str; 6] = [
     "harness",
     "model",
@@ -2183,7 +1996,6 @@ const SESSION: [&str; 6] = [
     "aws_region",
 ];
 
-/// Where `name` sits in `FIELDS`.
 fn field_at(name: &str) -> usize {
     FIELDS
         .iter()
@@ -2191,15 +2003,11 @@ fn field_at(name: &str) -> usize {
         .unwrap_or_else(|| panic!("no config field {name}"))
 }
 
-/// What a key in the config editor asks the dashboard to do.
 #[derive(Debug, PartialEq)]
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// A field closed on a new value, so the block is written and the editor stays where it
-    /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`,
-    /// `pane:` and `start:` blocks, None when every field of one is left to the built-in, and
-    /// the `confirm_secs:` line.
+    /// Validated values for the caller to persist. Empty columns and absent blocks use built-ins.
     Save(
         Box<config::Policy>,
         Vec<String>,
@@ -2210,50 +2018,31 @@ pub enum ConfigAction {
     ),
 }
 
-/// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
-/// policy every job runs under unless it sets the field itself, and the dashboard's `columns:`
-/// line and `sparkline:` block, one row per field under its group where the list is. Every row
-/// is a label and the control the field takes, drawn whole: every word a pick offers with the
-/// current one bracketed, a number between the arrows that step it, free text in a box. What a
-/// field accepts is read off its row rather than found by opening it. `↑` `↓` move between
-/// fields and `← →` change the selected one in place, writing the block under the key that
-/// moved it; `backspace` puts the built-in back. There is nothing to press to keep the block,
-/// and `esc` on the list only closes the editor. `enter` opens the one control a row cannot
-/// draw whole, the text of a typed value, where `enter` keeps it and `esc` puts the old one
-/// back. The selected field's fuller explanation sits under the list, and its key in jobs.yaml
-/// on the prompt line. An empty answer leaves the field out of the file, so the built-in
-/// applies and reads `default` in the control's place. Pure: the file is read and written by
-/// the dashboard.
+/// Config editor state. Changes emit `Save` immediately; empty values use built-ins.
+/// The dashboard owns file I/O, and session overrides stay in memory.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigForm {
     pub row: usize,
-    /// Each field as typed, in `FIELDS` order; a picked field holds its option's word, empty
-    /// for the built-in.
+    /// Values in `FIELDS` order; empty selects the built-in.
     pub values: Vec<String>,
     pub error: Option<String>,
-    /// The selected field is open for editing; `before` is its value when it was opened, put
-    /// back by `esc`.
+    /// `before` restores an open field on escape.
     pub open: bool,
     before: String,
-    /// The cursor in the selected value, a byte offset; past the end means after it.
+    /// Byte offset in the selected value.
     cursor: usize,
-    /// Only the `SESSION` rows are shown and visited, under one title and no group heads:
-    /// the form `ctrl+o` opens, seeded from the policy the next session would run under.
+    /// Show only `SESSION` fields for the next launch.
     pub session: bool,
-    /// The `columns` row's control: the arrangement it walks and rearranges. The set it
-    /// draws is the row's own value, so a column moved there is written like any other value.
     arrange: ColumnForm,
 }
 
 impl ConfigForm {
-    /// The `SESSION` rows alone, as the settings of the next session the composer starts.
     pub fn session(policy: &config::Policy) -> Self {
         let mut form = Self::new(policy, None, None, None, None, None);
         form.session = true;
         form
     }
 
-    /// Whether row `i` is on screen.
     fn shown(&self, i: usize) -> bool {
         !self.session || SESSION.contains(&FIELDS[i].name)
     }
@@ -2318,13 +2107,11 @@ impl ConfigForm {
         }
     }
 
-    /// Select `row`, the cursor after its value.
     fn go(&mut self, row: usize) {
         self.row = row;
         self.cursor = usize::MAX;
     }
 
-    /// Open the selected field for editing.
     fn enter(&mut self) {
         self.open = true;
         self.before = self.values[self.row].clone();
@@ -2335,8 +2122,6 @@ impl ConfigForm {
         &FIELDS[self.row]
     }
 
-    /// The values as a policy and the columns list; the error is the one line shown inline on
-    /// the field it names.
     #[allow(clippy::type_complexity)]
     fn config(
         &self,
@@ -2367,8 +2152,6 @@ impl ConfigForm {
             _ => None,
         };
         let text = |name: &str| Some(v(name).to_owned()).filter(|t| !t.is_empty());
-        // The row holds the list as the file's line reads it; empty is no line at all, so
-        // the built-in set applies.
         let columns: Vec<String> = v("columns")
             .split(',')
             .map(|c| c.trim().to_owned())
@@ -2405,17 +2188,13 @@ impl ConfigForm {
                 _ => None,
             },
         };
-        // Bedrock with nothing to authenticate it is refused here as the file refuses it, so
-        // the session form, which writes nothing and so never reaches `resolve`, cannot set
-        // one either. The message names `bedrock`, so it lands on that row.
+        // Session overrides bypass file resolution, so validate Bedrock credentials here too.
         config::bedrock_aws(
             policy.bedrock,
             policy.aws_profile.as_deref(),
             policy.aws_region.as_deref(),
         )
         .map_err(|e| format!("{e:#}"))?;
-        // The sparkline block: every field empty leaves it out; otherwise the built-in fills
-        // what is not typed, and the block is checked the way jobs.yaml is read.
         let spark = if ["bars", "bucket", "metric", "bound"]
             .iter()
             .all(|f| v(&format!("sparkline.{f}")).is_empty())
@@ -2448,7 +2227,6 @@ impl ConfigForm {
             })?;
             Some(s)
         };
-        // The pane block, the same way.
         let pane = if ["at"].iter().all(|f| v(&format!("pane.{f}")).is_empty()) {
             None
         } else {
@@ -2462,7 +2240,6 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        // The start block, the same way: no field typed leaves it out of the file.
         let start = if ["harness", "pane"]
             .iter()
             .all(|f| v(&format!("start.{f}")).is_empty())
@@ -2492,16 +2269,13 @@ impl ConfigForm {
         Ok((policy, columns, spark, pane, start, mark))
     }
 
-    /// `v` as a value the file takes, without the trailing zeros a step leaves behind.
     fn trim_num(v: f64) -> String {
         let s = format!("{v:.2}");
         s.trim_end_matches('0').trim_end_matches('.').to_owned()
     }
 
-    /// `← →` one place along the selected row's control: the next word of a pick's ring, or
-    /// the number stepped by its own amount, never below zero. The step lands back on the
-    /// step's grid so `0.25` reads `0.25` rather than what the arithmetic left. A built-in
-    /// that is not a number, `none` or `system default`, steps from zero. Whether it moved.
+    /// Step choices cyclically or numbers on their step grid, floored at zero.
+    /// Non-numeric built-ins step from zero; return whether the value changed.
     fn turn(&mut self, back: bool) -> bool {
         let f = self.field();
         let value = self.values[self.row].clone();
@@ -2522,10 +2296,7 @@ impl ConfigForm {
         next != at
     }
 
-    /// The block written for a value that just changed. The field's own complaint keeps the
-    /// cursor where it is and shows inline; another field's moves the cursor to the field it
-    /// names, since that is what stopped the block from being written. A value the block
-    /// takes goes to the dashboard to write, and a value that did not move writes nothing.
+    /// Validate changed values and focus the field named by a validation error.
     fn commit(&mut self) -> ConfigAction {
         let changed = self.values[self.row] != self.before;
         match self.config() {
@@ -2558,9 +2329,6 @@ impl ConfigForm {
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
-                // The columns row is the arranger itself: the list on it is walked and
-                // rearranged where it is read, as every other row's control is, and the line
-                // is written under the key that moved a column.
                 KeyCode::Left | KeyCode::Right | KeyCode::Char(' ' | '[' | ']')
                     if matches!(self.field().input, Answer::Columns) =>
                 {
@@ -2570,16 +2338,12 @@ impl ConfigForm {
                         return self.commit();
                     }
                 }
-                // The control is on the row, so `← →` change the value where it is read and
-                // the block is written under the key that moved it. There is nothing to open
-                // but the text of a typed value, the one control a row cannot draw whole.
                 KeyCode::Left | KeyCode::Right => {
                     self.before = self.values[self.row].clone();
                     if self.turn(code == KeyCode::Left) {
                         return self.commit();
                     }
                 }
-                // Back to the built-in, the one value no ring and no step reaches.
                 KeyCode::Backspace if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
@@ -2599,7 +2363,6 @@ impl ConfigForm {
                         self.go(r);
                     }
                 }
-                // A letter jumps to the word that starts with it.
                 KeyCode::Char(c) if !self.field().typed() => {
                     let f = self.field();
                     let opts = f.picks().unwrap_or_default();
@@ -2639,11 +2402,7 @@ impl ConfigForm {
         ConfigAction::Stay
     }
 
-    /// The editor where the list is: a title, the fields under their group headers, each row
-    /// name, value and a few words in three columns that hold still whichever row is selected,
-    /// the selected row's name lit and its value pressed, then the selected field's fuller
-    /// explanation, wrapped to `columns` with the rows' indent and padded to the tallest one so
-    /// the block keeps its height.
+    /// Render editor rows and return the selected row's line offset.
     fn lines(&self, columns: u16) -> (Vec<Line<'static>>, usize) {
         let title = if self.session {
             (
@@ -2660,8 +2419,6 @@ impl ConfigForm {
                 Span::styled(format!("  {}", title.1), dim()),
             ]),
         ];
-        // The label column is as wide as the widest label on screen, so every control starts
-        // in one column and the eye finds them without reading the labels.
         let label_w = (0..FIELDS.len())
             .filter(|&i| self.shown(i))
             .map(|i| FIELDS[i].short.chars().count())
@@ -2669,16 +2426,11 @@ impl ConfigForm {
             .unwrap_or(0);
         let indent = 4 + label_w + 2;
         let mut head: Option<(&str, &str)> = None;
-        // Where the selected row starts, so a list taller than the pane can be drawn from a
-        // line that keeps the row being changed on screen.
         let mut at = 0;
         for (i, f) in FIELDS.iter().enumerate() {
             if !self.shown(i) {
                 continue;
             }
-            // A group's head above its first row, a dim sub-head where a block inside it
-            // starts. The session form is one short list under its own title, so it shows
-            // neither.
             if !self.session && head.map(|(g, _)| g) != Some(f.group) {
                 let (name, what) = GROUPS
                     .iter()
@@ -2708,10 +2460,7 @@ impl ConfigForm {
                         Style::default().fg(Color::Red),
                     ));
                 }
-                // A control too wide for the pane takes as many rows as it needs, broken
-                // between words and hung under the column it started in. The break comes from
-                // the field and the width alone, so a row keeps its height whichever row is
-                // selected.
+                // Wrap controls between words at a stable indent, independent of selection.
                 flow(spans, indent, columns as usize)
             };
             let open = selected && self.open;
@@ -2719,9 +2468,7 @@ impl ConfigForm {
                 at = lines.len();
             }
             let mut drawn = row(open);
-            // A value being typed is a box where its words were, which can be the shorter of
-            // the two; the row keeps the height it has shut so the rows under it hold still
-            // while it is typed into.
+            // Keep the closed control's height while editing so later rows stay put.
             if open {
                 let shut = row(false).len();
                 drawn.resize_with(drawn.len().max(shut), Line::default);
@@ -2729,9 +2476,7 @@ impl ConfigForm {
             lines.extend(drawn);
         }
         lines.push(Line::default());
-        // The explanation wrapped here, not by the widget, so every line of it keeps the
-        // rows' indent rather than the second one falling back to the margin. Its height is
-        // the tallest field's, so moving down the list moves nothing else.
+        // Wrap explanations at the row indent and reserve the tallest explanation's height.
         let f = self.field();
         let explain = format!("    {:<label_w$}  ", f.name);
         let room = (columns as usize)
@@ -2758,9 +2503,6 @@ impl ConfigForm {
         (lines, at)
     }
 
-    /// The editor drawn in `body`, scrolled so the selected row is on screen: the list is
-    /// taller than the pane, and the row whose control the keys are on has to be the row the
-    /// eye can find. The selected row is held in the middle until the ends, which stay put.
     fn paragraph(&self, body: Rect) -> Paragraph<'static> {
         let (lines, at) = self.lines(body.width);
         let height = body.height as usize;
@@ -2772,21 +2514,11 @@ impl ConfigForm {
             .scroll((top as u16, 0))
     }
 
-    /// The control row `i` draws for its field, the whole of what the field accepts: every
-    /// word a pick offers with the current one bracketed and `…` after the ones that also
-    /// take something typed, a number between the arrows that step it, or free text in a box.
-    /// A value left empty shows the built-in dim in its place. The selected row's open text
-    /// carries the cursor, the one control a row cannot draw whole.
     fn control(&self, i: usize, open: bool) -> Vec<Span<'static>> {
         /// Columns the box of a typed value keeps, whatever is in it.
         const BOX_W: usize = 18;
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
-            // Every column there is: the ones the table draws first in their order, then a
-            // separator and the ones it does not, dim. One span per column, so a list longer
-            // than the pane breaks between names and hangs under the column it started in.
-            // The one under the cursor is pressed while the row is selected, and a row left
-            // to the built-in set reads dim whole.
             let built = value.is_empty();
             let mut spans = vec![];
             for (n, c) in self.arrange.order.iter().enumerate() {
@@ -2808,11 +2540,6 @@ impl ConfigForm {
         }
         if let Some(opts) = f.picks() {
             let ring = f.ring(value);
-            // A value typed into a pick-or-type field stands last in the ring, past the words,
-            // so it reads as one more choice rather than as none of them.
-            // `-` reads `default` beside the other words, rather than `-` or the whole of
-            // `system default`: the row has every word to fit, and the prompt line under it
-            // names the built-in the word stands for.
             let labels: Vec<&str> = opts
                 .iter()
                 .map(|o| if *o == "-" { "default" } else { *o })
@@ -2833,8 +2560,6 @@ impl ConfigForm {
             }
         }
         if f.step().is_some() {
-            // A built-in that is no number of its own, `none` or `system default`, reads
-            // `default` between the arrows rather than a word no step could have left there.
             let shown = match (value.is_empty(), f.builtin.parse::<f64>().is_ok()) {
                 (false, _) => value,
                 (true, true) => f.builtin,
@@ -2874,18 +2599,13 @@ impl ConfigForm {
         spans
     }
 
-    /// The prompt line: the `jobs.yaml` key the selected row writes, since the row itself
-    /// reads as words rather than as the file, then what a value the field can also take
-    /// would be and what leaving it empty means. The value is read and changed on the row,
-    /// so the line never holds a copy of it.
     fn line(&self) -> Line<'static> {
         let f = self.field();
         let mut spans = vec![Span::styled(
             format!("{} › ", f.name),
             Style::default().fg(ORANGE),
         )];
-        // Short enough that no field's line wraps in the pane: a line that grew by a row
-        // would move the list under it, which is what the controls on the rows are for.
+        // Keep this line short enough to avoid wrapping and shifting the list.
         let default = if f.builtin == SYSTEM {
             "default passes nothing".to_owned()
         } else {
@@ -2908,10 +2628,8 @@ impl ConfigForm {
     }
 }
 
-/// `spans` as lines of at most `width` columns, broken between spans and every line after the
-/// first indented to `indent`, so a control too wide for the pane hangs under the column it
-/// started in. The first span keeps at least one span beside it whatever the width, and a span
-/// wider than the room it has is left to the widget to clip.
+/// Wrap between spans with hanging indentation; keep the first two spans together.
+/// The widget clips any span wider than the available space.
 fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![];
     let mut row: Vec<Span<'static>> = vec![];
@@ -2932,8 +2650,7 @@ fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'sta
     lines
 }
 
-/// `text` broken at spaces into lines of at most `width` columns; a word longer than the
-/// width takes a line of its own.
+/// Wrap at spaces; oversized words occupy a line of their own.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = vec![];
     for word in text.split_whitespace() {
@@ -2948,7 +2665,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// The columns the table draws when jobs.yaml names none.
 fn built_columns() -> Vec<String> {
     config::DEFAULT_COLUMNS
         .iter()
@@ -2956,8 +2672,6 @@ fn built_columns() -> Vec<String> {
         .collect()
 }
 
-/// What a key did to an arrangement: moved the cursor and nothing else, changed which
-/// columns the table draws, kept them, or left them as they were found.
 enum Arranged {
     Stay,
     Shown(Vec<String>),
@@ -2965,11 +2679,7 @@ enum Arranged {
     Cancel(Vec<String>),
 }
 
-/// `ctrl+t`: the session columns arranged on the table they belong to. `order` is every
-/// column there is, the first `shown` of them the ones the table draws, in their order, and
-/// `at` is the one under the cursor. The table redraws under each key, so a set is picked
-/// against the rows it applies to and against the width it has to fit; `before` is what
-/// `esc` puts back.
+/// `order[..shown]` is the visible column set; `before` restores it on escape.
 #[derive(Debug, Clone, PartialEq)]
 struct ColumnForm {
     order: Vec<String>,
@@ -2979,8 +2689,6 @@ struct ColumnForm {
 }
 
 impl ColumnForm {
-    /// Seeded from the set on screen: those first, in their order, then every other column
-    /// there is, so what can be added is as visible as what is already there.
     fn new(columns: &[String]) -> Self {
         let mut order = columns.to_vec();
         order.extend(
@@ -2997,15 +2705,11 @@ impl ColumnForm {
         }
     }
 
-    /// The columns the table draws, in their order.
     fn chosen(&self) -> Vec<String> {
         self.order[..self.shown].to_vec()
     }
 
-    /// `← →` walk every column, `space` moves the one under the cursor between shown and
-    /// not, `[` `]` move a shown one along the row, `enter` keeps the arrangement and `esc`
-    /// drops it. A column leaving goes to the head of the ones not shown, so the cursor
-    /// stays on the name it acted on and `space` again brings it back as the last one shown.
+    /// Hiding a column keeps the cursor on it, so space can immediately restore it.
     fn key(&mut self, code: KeyCode) -> Arranged {
         match code {
             KeyCode::Left | KeyCode::Right => {
@@ -3043,9 +2747,6 @@ impl ColumnForm {
         }
     }
 
-    /// The prompt line: every column there is, the ones the table draws in their order, then
-    /// a separator and the ones it does not, dim. The one under the cursor is pressed, as a
-    /// menu button is.
     fn line(&self) -> Line<'static> {
         let mut spans = vec![Span::styled("columns › ", Style::default().fg(ORANGE))];
         for (i, c) in self.order.iter().enumerate() {
@@ -3072,20 +2773,15 @@ enum Mode {
     Normal,
     Filter,
     Job(Box<JobForm>),
-    /// The menu's `config` button: the editor of jobs.yaml's `defaults` block.
     Config(Box<ConfigForm>),
-    /// The menu's `folder` prompt: the path typed so far.
     Folder(Input),
-    /// The `ctrl+n` prompt: the selected Claude session's new title.
     Rename(Input),
-    /// The usage guide, `ctrl+g`, drawn where the list is; the wrapped line at its top.
+    /// Wrapped line offset in the usage guide.
     Guide(usize),
-    /// `ctrl+t`: the session columns being arranged, with the table live under them.
     Columns(Box<ColumnForm>),
 }
 
-/// The usage guide: a key and what it does, in the words of docs/dashboard.md; an entry with
-/// no key is a heading. A test keeps every key here in that file.
+/// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
 const GUIDE: &[(&str, &str)] = &[
     ("", "Rows"),
     (
@@ -3182,51 +2878,40 @@ struct App {
     jobs_path: PathBuf,
     state: PathBuf,
     claude: PathBuf,
-    /// The dashboard's own working directory: where a launch goes from the menu row or with
-    /// nothing selected, and what the `folder` prompt takes a relative path from.
+    /// Fallback launch directory and base for relative folder input.
     cwd: PathBuf,
-    /// The menu row's picked button, an index into `MENU`; `←` `→` move it.
+    /// Index into `MENU`.
     menu: usize,
     data: Data,
     rows: Vec<Row>,
-    /// The rows the list is not showing: the jobs rows while the main screen is up, for the
-    /// pane's preview of the `jobs` button; the main rows, menu included, while the jobs
-    /// screen is in the pane, for the list beside it.
+    /// Inactive list: jobs for menu previews, or main rows beside the jobs pane.
     other: Vec<Row>,
     /// Indexes into `rows` that pass the filter; the cursor indexes this list.
     visible: Vec<usize>,
     cursor: usize,
     scroll: usize,
     by_state: bool,
-    /// The menu's `jobs` button: the jobs screen where the tables are, until esc.
     jobs_view: bool,
-    /// Column widths so far, so a value changing length never shifts the table.
     widths: Widths,
     filter: Input,
     mode: Mode,
     status: String,
-    /// The composer: the instruction a session in the selected row's directory starts with,
-    /// and where in it the next key lands, a byte offset `snap` keeps honest.
+    /// Composer text; `caret` is a byte offset.
     text: String,
     caret: usize,
     /// The PNGs pasted into the instruction, in the order their markers were typed.
     images: Vec<PathBuf>,
-    /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
+    /// Index into `harness::KNOWN` for the next launch.
     harness: usize,
-    /// The model and provider the next sessions start with, once `ctrl+o` has set them; else
-    /// the `defaults` block's. They stay until set again.
+    /// Session overrides; `None` uses the file's defaults.
     session: Option<config::Policy>,
-    /// A `claude --bg` in flight on its own thread, keyed by its placeholder row's id; its one
-    /// line lands in the status.
+    /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
-    /// Sessions the composer started that Claude does not list yet: a row from the moment
-    /// `enter` is pressed, handed over to the registry's row once that appears.
+    /// Placeholder rows until the registry reports the launched sessions.
     pending: Vec<Pending>,
     opening: Option<Opening>,
     tick: usize,
     refreshed: Instant,
-    /// A reload in flight on its own thread; the loop applies it when it lands, so a slow read
-    /// never holds the spinner or a keypress.
     loading: Option<mpsc::Receiver<Result<Data>>>,
     loading_started: Option<Instant>,
     /// A transition happened after the current read started. Discard that read and run again.
@@ -3235,89 +2920,56 @@ struct App {
     stopping: Vec<PendingStop>,
     /// Successful delete/forget commands take effect here before the registry catches up.
     removed_sessions: HashSet<String>,
-    /// Only transitions and slow frames are timed, so idle drawing does not fill the log.
     feedback: Option<(&'static str, Instant)>,
-    /// The row key ctrl+x armed; stays until ctrl+x confirms, any other key clears it, or
-    /// `confirm_secs` pass since `armed_at` with no key.
+    /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     armed_at: Instant,
-    /// When ctrl+c was last pressed; a second press within `QUIT_CONFIRM` quits. A single
-    /// ctrl+c aimed at a viewer that has just closed must not take the dashboard with it.
+    /// Require a second ctrl+c so an interrupt aimed at a closing viewer cannot quit the dashboard.
     quit_armed: Option<Instant>,
-    /// `cones tui --debug`: every terminal hand-off and input event is appended here.
     log: Option<PathBuf>,
-    /// The viewers alive inside the dashboard, focused or parsing off-screen; at most
-    /// `MAX_VIEWERS`, the least recently focused closes when another opens.
     viewers: Vec<Open>,
     /// The viewer that has the pane and the keys; an index into `viewers`.
     focus: Option<usize>,
     /// The real terminal's default colors, probed once at start, for viewers that ask.
     colors: viewer::Colors,
-    /// Whether the real terminal reports the mouse to the dashboard right now: for split
-    /// clicks and viewer scrolling, including clients that leave the wheel to the terminal.
     mouse_capture: bool,
-    /// Clear the terminal before the next frame: set when a viewer leaves the frame.
     needs_clear: bool,
     /// The last frame's rows and columns.
     size: (u16, u16),
-    /// The pane viewers are drawn in and sized to, from the last frame: the column beside the
-    /// list on a wide frame, else the frame less the strip row under it.
+    /// Last drawn viewer rectangle, also used for sizing and mouse coordinates.
     pane: Rect,
-    /// Whether the viewer is drawn beside the list, at any width; `start.pane` from jobs.yaml
-    /// to begin with, then ctrl+\ toggles it, from the list or inside a viewer, and off it
-    /// the viewer takes the whole frame. A layout, not a state: it stays until toggled again.
+    /// Persistent layout preference, initialized from `start.pane`.
     split: bool,
-    /// The focused viewer has the whole frame whatever `split` says: shift+enter opened it
-    /// so, once. Cleared when the viewer is left, or when ctrl+\ inside it asks for the split.
+    /// Temporary full-frame override from shift+enter; cleared on exit or split toggle.
     full: bool,
-    /// The selected row's viewer key and when the cursor arrived on it; after `REST` a Claude
-    /// session row's viewer opens out of sight.
+    /// Selected viewer key and the time its cursor rest began.
     rest: Option<(String, Instant)>,
-    /// The key the resting cursor already opened once, so a refused attach is not started
-    /// again while the cursor stays there; cleared when the cursor moves.
+    /// Avoid retrying a refused speculative attach until the cursor moves.
     prespawned: Option<String>,
     /// Where the list rows were drawn last, so a click finds its row.
     list_area: Rect,
 }
 
-/// How long the cursor rests on a Claude session row before its viewer opens ahead of `enter`.
 const REST: Duration = Duration::from_millis(400);
 
-/// The rest beside the list, where the pane is waiting for the screen. Spawn to first text is
-/// 215 ms at the median and 475 ms at the 90th percentile (`viewer_first_paint` in the debug
-/// log, 217 attaches over two days), so 150 ms of rest was 40 percent of what the eye waited.
-/// 50 ms lets a held arrow key through and opens on every row a hand steps across.
+/// Shorter rest in split view reduces visible blank time while allowing held arrows through.
 const REST_SPLIT: Duration = Duration::from_millis(50);
 
-/// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
-/// The window title Claude's client sets in its own agent view, the screen `↑` opens from an
-/// attached session's composer. A client parked there shows Claude's session list, not the
-/// session the row names.
 const AGENT_VIEW_TITLE: &str = "claude agents";
 
-/// The viewers a dashboard keeps alive at once; opening another closes the least recently used
-/// `claude attach` of a listed session, the one kind a resting cursor reopens unseen in a
-/// quarter second. A Codex client, a harness's agents view or a resumed run has no such way
-/// back: closed, its pane stays blank until `enter` starts it over, so
-/// those stay until `ctrl+x` or the dashboard quits.
-// ponytail: only attaches count against the cap, so many Codex clients exceed it; a cap of
-// their own if the memory shows.
+/// Evict only listed-session Claude attaches, which can be reopened speculatively.
+/// Other clients stay alive and may exceed this cap.
 const MAX_VIEWERS: usize = 3;
 
-/// The viewers opened by a resting cursor kept alive beside them, the oldest closing first.
-/// Each is a `claude attach` process: 160 MB resident, idle CPU under a third of a percent,
-/// so two peeked plus three live is 800 MB at worst. One slot made every step between two rows
-/// a fresh attach, a quarter to half a second of blank pane; two covers that bounce. Not yet a
-/// setting; it will be one alongside `MAX_VIEWERS`.
+/// Two speculative slots avoid reattaching when moving between adjacent rows.
 const SPECULATIVE_VIEWERS: usize = 2;
 
-/// What a launch thread reports: its status line, and the instruction to hand back if it failed.
+/// Launch status and, on failure, the prompt to restore.
 type Launched = (String, Option<String>);
 
-/// A row for a session the composer started, until Claude lists it. `short` is the id
-/// `claude --bg` printed, None until it returns; the row is matched to the registry by it.
+/// Match a placeholder to the registry using the short id returned by `claude --bg`.
 struct Pending {
     session: Session,
     short: Option<String>,
@@ -3335,8 +2987,7 @@ impl Pending {
     }
 }
 
-// ponytail: a launch whose row never shows up (claude changed what --bg prints) leaves after
-// this long instead of sitting there forever; matching on the registry's own start time if it bites.
+// Expire placeholders if the launch never appears in the registry.
 const PENDING_TTL: Duration = Duration::from_secs(90);
 
 /// The id in `claude --bg`'s one line, `backgrounded · <short id> (idle)`.
@@ -3349,8 +3000,6 @@ fn short_id(status: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The row a just-started Claude session gets before Claude lists it: the instruction's first
-/// line as its title, working, in the directory it was started in.
 fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
     Session {
         session_id: id.to_owned(),
@@ -3375,7 +3024,6 @@ fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
     }
 }
 
-/// A viewer and what the dashboard knows about it.
 struct Open {
     /// The row key it opened from.
     key: String,
@@ -3388,10 +3036,7 @@ struct Open {
     first_paint_logged: bool,
     /// For a speculative viewer, which was never focused, this is when it was spawned.
     last_focused: Instant,
-    /// Opened while the cursor rested on its row, before `enter` asked for it. Not counted
-    /// against `MAX_VIEWERS`; speculative viewers have their own pool of `SPECULATIVE_VIEWERS`,
-    /// the oldest going first, so rows the cursor was on lately show at once whatever the
-    /// number of live viewers; the first focus clears it.
+    /// Unfocused attaches use the separate speculative pool until first focus.
     speculative: bool,
 }
 
@@ -3424,7 +3069,6 @@ impl PendingStop {
 impl App {
     fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
         let data = Data::load(jobs_path, state, claude)?;
-        // What a new terminal comes up with, before `data` moves into the dashboard.
         let start = data.start;
         Ok(Self {
             exe: exe.to_owned(),
@@ -3480,7 +3124,6 @@ impl App {
         })
     }
 
-    /// Append one timestamped line to the debug log, if `--debug` named one.
     fn debug(&self, msg: impl FnOnce() -> String) {
         if let Some(path) = &self.log {
             debug_line(path, msg());
@@ -3500,9 +3143,6 @@ impl App {
         self.visible.get(self.cursor).map(|&i| &self.rows[i])
     }
 
-    /// Reload and stay on the selected row, found again by its key: a session whose state
-    /// changed is still the same row, a row that is gone leaves the cursor at its position, on
-    /// the neighbor. The filter and the grouping are fields, so a reload never touches them.
     #[cfg(test)]
     fn refresh(&mut self) -> Result<()> {
         let data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
@@ -3510,7 +3150,6 @@ impl App {
         Ok(())
     }
 
-    /// Start a reload on a thread unless one is already running; `poll` lands it.
     fn reload(&mut self) {
         if self.loading.is_some() {
             return;
@@ -3541,8 +3180,7 @@ impl App {
         self.loading_started = Some(started);
     }
 
-    /// A command or terminal hand-off invalidates any read already in flight. Keep one reader,
-    /// but do not let its old snapshot delay a fresh read by another polling interval.
+    /// Invalidate an in-flight read without starting a second reader.
     fn invalidate(&mut self) {
         if self.loading.is_some() {
             self.reload_pending = true;
@@ -3551,8 +3189,6 @@ impl App {
         }
     }
 
-    /// Apply a finished reload, if one has landed. A failed read shows in the status line and
-    /// the last good data stays on screen.
     fn poll(&mut self) {
         self.poll_stops();
         let mut launched = false;
@@ -3560,7 +3196,6 @@ impl App {
             match rx.try_recv() {
                 Ok((message, retry)) => {
                     match retry {
-                        // A failed launch takes its row with it and puts the instruction back.
                         Some(prompt) => {
                             self.pending.retain(|p| p.session.session_id != id);
                             if self.text.is_empty() {
@@ -3633,8 +3268,7 @@ impl App {
         if self.status.starts_with("reload failed:") {
             self.status.clear();
         }
-        // The table shows the arrangement being picked, not the file's, until it is kept:
-        // a reload landing mid-pick would otherwise snap the columns back.
+        // Preserve an in-progress column arrangement when a reload arrives.
         if let Mode::Columns(form) = &self.mode {
             data.columns = form.chosen();
         }
@@ -3642,8 +3276,7 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
-        // A started session's row is handed over once the registry lists it. The cursor goes
-        // along only if it is still on the placeholder: moved off in the meantime, it stays.
+        // Follow a placeholder into its registry row only if the cursor is still on it.
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
@@ -3657,8 +3290,6 @@ impl App {
         });
         data.sessions
             .extend(self.pending.iter().map(|p| p.session.clone()));
-        // A session this read lists for the first time is the one just opened, from the
-        // composer, another terminal or the registry taking a placeholder's row over.
         let arrived = data
             .sessions
             .iter()
@@ -3681,9 +3312,7 @@ impl App {
         self.refreshed = Instant::now();
     }
 
-    /// Move the cursor to a session that just appeared, so the row that was opened is the one
-    /// under the cursor. Not while a viewer has the keys, nor while an instruction is being
-    /// typed for the selected row's directory: neither should have its target changed underneath.
+    /// Do not change the launch target while typing or move selection away from a focused viewer.
     fn select_new(&mut self, id: &str) {
         if self.focus.is_some() || !self.text.is_empty() {
             return;
@@ -3698,7 +3327,6 @@ impl App {
         }
     }
 
-    /// Grouping and acknowledged removals only need the data already on screen.
     fn rebuild(&mut self) {
         let started = Instant::now();
         let keep = self
@@ -3710,8 +3338,6 @@ impl App {
             .filter(|a| matches!(a.verb, "delete" | "forget"))
             .map(|a| a.id.as_str())
             .collect();
-        // The jobs screen in the pane has no menu row of its own: the menu stays on the list
-        // beside it, with `jobs` pressed.
         let in_pane = self.jobs_view && self.split_active();
         self.rows = if in_pane { vec![] } else { menu_rows() };
         self.rows.extend(self.data.rows_excluding(
@@ -3736,7 +3362,6 @@ impl App {
         {
             self.cursor = i;
         } else if keep.is_none() {
-            // A fresh dashboard opens on the first table; the menu is where `↑` ends.
             let below = |i: &usize| {
                 let k = &self.rows[*i].kind;
                 k.selectable() && *k != Kind::Menu
@@ -3747,10 +3372,8 @@ impl App {
         self.timing("rebuild", started);
     }
 
-    /// Rows that match the filter, plus the headers that still have something under them.
-    /// The keep-a-header-if-followed rule cannot tell a group title from any other unselectable
-    /// row, so every unselectable kind except Header is dropped from the match set while a needle
-    /// is set; a new unselectable kind needs the same treatment or it hides the title above it.
+    /// Keep matching rows and their group headers. Exclude other unselectable kinds
+    /// when filtering, or they can hide the header above them.
     fn apply_filter(&mut self) {
         let needle = self.filter.text.to_lowercase();
         let rows = &self.rows;
@@ -3779,7 +3402,6 @@ impl App {
             .collect();
     }
 
-    /// Move the cursor onto a selectable row and rebuild the pane.
     fn settle(&mut self) {
         if self.visible.is_empty() {
             self.cursor = 0;
@@ -3821,7 +3443,6 @@ impl App {
         c
     }
 
-    /// The working directory of the selected row: a job's cwd, a session's, a run's.
     fn selected_cwd(&self) -> Option<PathBuf> {
         match &self.selected()?.kind {
             Kind::Job(name) => self
@@ -3852,8 +3473,7 @@ impl App {
         }
     }
 
-    /// Start something in the background and forget it; the ledger and fleet files report back.
-    /// `dir` is the subprocess's working directory, which is where `cones run --prompt` runs.
+    /// `dir` is the child's cwd, used by `cones run --prompt`.
     fn spawn(&mut self, args: &[&str], dir: Option<&Path>, what: &str) {
         let mut c = self.me();
         if let Some(dir) = dir {
@@ -3871,7 +3491,6 @@ impl App {
         };
     }
 
-    /// The viewer key a row opens: a session's id, `run:<id>` for a run's log or attach.
     fn viewer_key(kind: &Kind) -> Option<String> {
         match kind {
             Kind::Session(id, _) => Some(id.clone()),
@@ -3884,17 +3503,14 @@ impl App {
         self.viewers.iter().position(|o| o.key == key)
     }
 
-    /// The last frame as a rectangle.
     fn frame(&self) -> Rect {
         Rect::new(0, 0, self.size.1, self.size.0)
     }
 
-    /// Whether the pane is drawn beside the list, at any width.
     fn split_active(&self) -> bool {
         self.split && !(self.full && self.pane_focused())
     }
 
-    /// How long the cursor rests on a row before its viewer opens: shorter beside the list.
     fn rest_for(&self) -> Duration {
         if self.split_active() {
             REST_SPLIT
@@ -3903,10 +3519,6 @@ impl App {
         }
     }
 
-    /// The split frame's parts: the list, a one cell rule, the viewer pane. `pane.at: right`
-    /// puts the list on the left at half the width, up to 100 columns, and the pane full
-    /// height with the rest; `bottom` puts the list on top at half the height and the pane
-    /// full width under it. No minimum: a small frame gets a small pane.
     fn split_areas(&self, frame: Rect) -> [Rect; 3] {
         if self.data.pane.at == "bottom" {
             return Layout::vertical([
@@ -3924,13 +3536,8 @@ impl App {
         .areas(frame)
     }
 
-    /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list
-    /// the whole column, down to the last row, so a harness that hangs its status lines off
-    /// the bottom of its screen puts the lowest one on the frame's last row and the composer
-    /// sits as low as the harness's own box; the row that carries the viewer's keys is drawn
-    /// over the viewer's last row while the pane has them. A full frame keeps its last row
-    /// for the strip, which is the dashboard's, not the pane's. Spawn, focus and draw all
-    /// size the viewer by this, so taking the keys and giving them back never resizes it.
+    /// Use the same viewer size for spawn, focus and draw. In split view, overlay hints
+    /// on its last row so focus changes never resize the harness.
     fn pane(&self, frame: Rect) -> Rect {
         if self.split_active() {
             return self.split_areas(frame)[2];
@@ -3939,11 +3546,7 @@ impl App {
         Rect { height, ..frame }
     }
 
-    /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
-    /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
-    /// paints; on any other session row nothing, so a Codex row never has a Claude session's
-    /// screen under its name; on a row that is not a session, the one focused last. On a
-    /// narrow frame only a focused viewer is drawn.
+    /// Session rows show only their own viewer. Non-session rows may keep the last focused viewer.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -3971,7 +3574,6 @@ impl App {
         self.data.sessions.iter().find(|s| &s.session_id == id)
     }
 
-    /// `ctrl+n`: the rename prompt, filled with the selected Claude session's title.
     fn rename_selected(&mut self) {
         match self.selected_session() {
             Some(s) if s.harness == "claude" && s.transcript_path.is_some() => {
@@ -3985,7 +3587,6 @@ impl App {
         }
     }
 
-    /// The viewer the user was in last; a speculative viewer was never in front.
     fn most_recently_focused(&self) -> Option<usize> {
         self.viewers
             .iter()
@@ -3995,9 +3596,6 @@ impl App {
             .map(|(i, _)| i)
     }
 
-    /// The menu button whose screen the pane shows, by `MENU` name: the one with the keys
-    /// (the jobs screen and its wizard, the config editor, the folder prompt, the guide), else
-    /// the picked one while the cursor is on the menu row. A focused viewer has the pane.
     fn panel(&self) -> Option<&'static str> {
         if self.focus.is_some() {
             return None;
@@ -4014,13 +3612,10 @@ impl App {
         })
     }
 
-    /// A menu button's screen is on view in the pane without the keys, only picked, so tab
-    /// can hand them to it as it hands them to a viewer there.
     fn panel_shown(&self) -> bool {
         self.split_active() && !self.panel_focused() && self.panel().is_some()
     }
 
-    /// A menu button's screen has the keys.
     fn panel_focused(&self) -> bool {
         self.jobs_view
             || matches!(
@@ -4029,13 +3624,10 @@ impl App {
             )
     }
 
-    /// Something in the pane has the keys, a viewer or a button's screen; with `full` set it
-    /// has the whole frame.
     fn pane_focused(&self) -> bool {
         self.focus.is_some() || self.panel_focused()
     }
 
-    /// The config editor on jobs.yaml as it is now.
     fn config_form(&self) -> Box<ConfigForm> {
         Box::new(ConfigForm::new(
             &config::defaults(&self.jobs_path),
@@ -4047,8 +3639,6 @@ impl App {
         ))
     }
 
-    /// esc or ctrl+z on the jobs screen: the list, with the cursor back on the menu row it
-    /// was opened from, so the pane keeps the jobs on view.
     fn leave_jobs(&mut self) {
         self.jobs_view = false;
         self.rebuild();
@@ -4061,10 +3651,7 @@ impl App {
         }
     }
 
-    /// ctrl+\: from the list, the pane on or off; inside a viewer, the viewer beside the
-    /// list or over the whole frame. A viewer shift+enter gave the whole frame goes beside
-    /// the list first, whatever the layout was. The list is rebuilt, since each layout has
-    /// its own column set.
+    /// A temporary full-frame override returns to split view before changing the persistent layout.
     fn toggle_split(&mut self) {
         let once = std::mem::take(&mut self.full) && self.pane_focused();
         self.split = once || !self.split;
@@ -4073,9 +3660,7 @@ impl App {
         self.debug(|| format!("split {}", self.split));
     }
 
-    /// Give a viewer the pane and the keys. A viewer opened ahead of `enter` becomes an
-    /// ordinary one here, and the log gets how long it had been running; it now counts, so
-    /// the least recently focused viewers make room for it first, as they would in `open`.
+    /// First focus promotes a speculative viewer into the live pool and enforces its cap.
     fn focus(&mut self, mut i: usize) {
         if std::mem::take(&mut self.viewers[i].speculative) {
             let spawned = self.viewers[i].last_focused;
@@ -4099,9 +3684,6 @@ impl App {
         self.debug(|| line);
     }
 
-    /// Open `c` as a viewer under `key`, or return to the live viewer that already has that
-    /// key. The viewer takes the pane above the strip; a fourth viewer closes the least
-    /// recently focused one. The background agent stays in its daemon throughout.
     fn open(
         &mut self,
         terminal_size: (u16, u16),
@@ -4126,8 +3708,7 @@ impl App {
             self.colors.clone(),
         ) {
             Ok(viewer) => {
-                // The least recently focused makes room only once the new one is running. A
-                // speculative viewer was never asked for, so it neither counts nor goes.
+                // Evict only after the new viewer starts successfully.
                 while self.live_viewers() >= MAX_VIEWERS {
                     let Some(oldest) = self.least_recently_focused(None) else {
                         break;
@@ -4152,14 +3733,11 @@ impl App {
         }
     }
 
-    /// The viewers the user has been in: every one but a speculative viewer.
     fn live_viewers(&self) -> usize {
         self.viewers.iter().filter(|o| !o.speculative).count()
     }
 
-    /// The viewer eviction takes: the least recently focused `claude attach` of a listed
-    /// session the user has been in, other than `keep`. Nothing else is evicted, since nothing
-    /// reopens it quietly, see `MAX_VIEWERS`.
+    /// Only listed-session Claude attaches can be reopened quietly; see `MAX_VIEWERS`.
     fn least_recently_focused(&self, keep: Option<usize>) -> Option<usize> {
         self.viewers
             .iter()
@@ -4174,7 +3752,6 @@ impl App {
             .map(|(i, _)| i)
     }
 
-    /// Note which row the cursor is on and since when; a new row starts the rest over.
     fn track_rest(&mut self) {
         let key = self.selected().and_then(|r| Self::viewer_key(&r.kind));
         match (&self.rest, key) {
@@ -4190,14 +3767,8 @@ impl App {
         }
     }
 
-    /// The Claude session whose viewer opens ahead of `enter`: the whole policy in one place.
-    /// The dashboard has the frame, in the normal mode with the composer empty and nothing
-    /// being prepared; the cursor has rested for `REST` on a Claude background session that
-    /// is listed, not being stopped or removed, has no viewer yet and was not tried during
-    /// this rest. A background job whose prompt is done is still a live worker that `claude
-    /// attach` joins and continues, so it is tried like a working one; a failed or stopped one
-    /// has no worker to join. Only `claude attach` is side-effect free for its session:
-    /// `cones attach` on a finished run resumes it, and a Codex client shows up in the fleet.
+    /// Only pre-open Claude attaches: resuming a finished run or starting a Codex client
+    /// changes the session or fleet. Done background jobs still have a joinable worker.
     fn prespawn_target(&self) -> Option<(String, PathBuf)> {
         if !matches!(self.mode, Mode::Normal)
             || self.focus.is_some()
@@ -4229,16 +3800,13 @@ impl App {
         Some((id.clone(), s.cwd.clone()))
     }
 
-    /// Whether `claude attach` has a worker to join in `s`: a Claude session not in its own
-    /// terminal and not failed or stopped. A background job whose prompt is done still has one.
+    /// Done Claude background jobs still have a worker; failed or stopped jobs do not.
     fn joinable(s: &Session) -> bool {
         s.harness == "claude"
             && !s.own_terminal()
             && !matches!(s.state.as_str(), "failed" | "stopped")
     }
 
-    /// Open `claude attach` on `id` out of sight, so `enter` on its row finds it drawn. The
-    /// previous speculative viewer goes; a failure is a debug line, since nothing was asked for.
     fn prespawn(&mut self, id: String, cwd: PathBuf) {
         self.prespawned = Some(id.clone());
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
@@ -4279,10 +3847,7 @@ impl App {
         self.debug(|| line);
     }
 
-    /// Speculative viewers pool beside the live ones, up to `SPECULATIVE_VIEWERS` of their
-    /// own, so a row the cursor was on lately shows at once; past that the oldest speculative
-    /// goes. The pool is not the live count's leftover: with three live viewers a single slot
-    /// made every step between two rows a fresh `claude attach`, half a second to its first text.
+    /// Speculative viewers have their own cap, independent of the live pool.
     fn pool_speculative(&mut self) {
         while self.viewers.len() - self.live_viewers() > SPECULATIVE_VIEWERS {
             let oldest = self
@@ -4297,7 +3862,6 @@ impl App {
         }
     }
 
-    /// A speculative viewer whose session left the list has nothing to show; close it quietly.
     fn close_orphan_speculative(&mut self) {
         let gone = self.viewers.iter().position(|o| {
             o.speculative && !self.data.sessions.iter().any(|s| s.session_id == o.key)
@@ -4318,8 +3882,7 @@ impl App {
         }
     }
 
-    /// Close a viewer for good: its process group dies with it. A Codex thread it opened is
-    /// recorded first, so its row stays.
+    /// Record new Codex threads before closing their viewers so their rows survive.
     fn close(&mut self, i: usize) {
         let had_frame = !self.split_active();
         let open = self.viewers.remove(i);
@@ -4339,14 +3902,11 @@ impl App {
         }
     }
 
-    /// Ctrl+Z inside a viewer: the dashboard takes the frame back and the viewer keeps
-    /// parsing off-screen, so `enter` on its row returns to its current screen at once.
     fn unfocus(&mut self) {
         if self.focus.is_none() {
             return;
         }
-        // Beside the list nothing leaves the frame, so ratatui's diff is enough; a viewer
-        // that had the whole frame is not trusted to have left it clean.
+        // A full-frame viewer requires a clear; split-view changes use ratatui's diff.
         self.needs_clear = !self.split_active();
         self.full = false;
         let i = self.focus.take().unwrap();
@@ -4357,8 +3917,7 @@ impl App {
         let record = (!open.recorded).then(|| open.record.clone()).flatten();
         if let Some((dir, since)) = record {
             self.viewers[i].recorded = true;
-            // A thread started from the composer had no id when its viewer opened; now that
-            // it has one, its row's `enter` returns here instead of opening a second client.
+            // Replace the launch key with the recorded thread id to reuse this client on return.
             if let Some(id) = self.record_codex(&dir, since) {
                 self.viewers[i].key = id;
             }
@@ -4372,18 +3931,13 @@ impl App {
             open.viewer.title()
         );
         self.debug(|| line);
-        // A client left in Claude's own agent view paints that list under the row's name, and
-        // `enter` there attaches whatever row its cursor sits on, so the viewer is dropped:
-        // the next rest on the row attaches the session again.
+        // Drop viewers left in Claude's agent list so the row cannot show or attach another session.
         if self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE) {
             self.close(i);
             self.status = "left the agent view · enter attaches the session again".into();
         }
     }
 
-    /// Feed every viewer: read what it wrote, answer its queries, hand it its input, and
-    /// take a viewer that ended off the list with its exit in the status line. Returns true
-    /// when the screen of the viewer on view changed.
     fn pump(&mut self) -> bool {
         let mut dirty = false;
         let mut i = 0;
@@ -4411,7 +3965,7 @@ impl App {
             for line in lines {
                 self.debug(|| line);
             }
-            // A speculative viewer was never asked for: its end is the log's business only.
+            // Speculative failures go only to the debug log.
             if speculative && (failed.is_some() || exited.is_some()) {
                 let open = &self.viewers[i];
                 let key = open.key.clone();
@@ -4428,7 +3982,6 @@ impl App {
                 self.close(i);
                 continue;
             }
-            // A viewer the dashboard cannot pump is as gone as one that exited.
             if let Some(message) = failed {
                 if focused {
                     self.feedback = Some(("return_to_draw", Instant::now()));
@@ -4471,12 +4024,7 @@ impl App {
         self.viewers.get_mut(i)
     }
 
-    /// The dashboard's one row under a focused viewer, as tmux keeps a status bar under a
-    /// pane: the cone, the viewer's name, the fleet counts the header shows, the session
-    /// elsewhere that needs input, and the keys that leave. The counts stay live because the
-    /// reload loop runs while a viewer is focused. The ends get the width first; the middle
-    /// is cut from its right, and the needs-input note is shown whole or not at all. On a
-    /// width too narrow for both ends, `ctrl+\ split` goes first, then `tab back`.
+    /// Give the strip's ends priority; show input alerts whole or omit them.
     fn strip(&self, i: usize, width: u16) -> Line<'static> {
         let open = &self.viewers[i];
         let width = width as usize;
@@ -4500,8 +4048,7 @@ impl App {
             Span::styled(" · ", dim()),
         ];
         middle.extend(self.data.summary(spinner_frame(self.tick)).spans);
-        // A Codex thread started from the composer keeps a launch key until its first ctrl+z
-        // records it, so its own row cannot be told apart from another's; no alert until then.
+        // Until the launched thread has an id, we cannot exclude its own row from input alerts.
         let has_id = open.record.is_none() || open.recorded;
         let alert = self
             .data
@@ -4519,7 +4066,6 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 )
             });
-        // Full screen is a choice; the way back to the split is here.
         let mut keys = vec![
             Span::styled("tab back", dim()),
             Span::styled(" · ctrl+\\ split", dim()),
@@ -4537,7 +4083,6 @@ impl App {
             middle.push(alert);
         }
         let mut middle = fit(middle, room);
-        // A cut that leaves a separator at the end, whole or in part, drops it.
         while middle
             .last()
             .is_some_and(|s| matches!(s.content.trim(), "" | "·"))
@@ -4552,17 +4097,13 @@ impl App {
         Line::from(spans)
     }
 
-    /// Split clicks and every focused viewer need mouse reports. A client that reads no
-    /// mouse leaves the wheel to our emulator, including in the full-frame layout.
+    /// Clients without mouse reporting leave wheel scrolling to our emulator.
     fn wants_mouse(&self) -> bool {
         self.split_active() || self.focus.is_some()
     }
 
-    /// Pasted text: wrapped for a focused viewer that asked for bracketed paste, raw
-    /// otherwise; into the composer when nothing is focused. An empty paste is cmd+v with
-    /// no text on the clipboard, an image: xterm.js (VS Code) brackets the nothing it read.
-    /// It becomes ctrl+v, the image paste Claude Code and Codex have, in a viewer; the
-    /// composer reads the image off the clipboard itself, as its own ctrl+v does.
+    /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
+    /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
         if text.is_empty() {
             if let Some(open) = self.focused() {
@@ -4588,7 +4129,6 @@ impl App {
         }
     }
 
-    /// `ctrl+v`: the clipboard's image as one `[Image #n]` at the cursor, or why not.
     fn attach_image(&mut self) {
         match paste_image() {
             Ok(path) => {
@@ -4599,8 +4139,6 @@ impl App {
         }
     }
 
-    /// The instruction out of the composer with each `[Image #n]` as its PNG's path, where
-    /// the harness reads it as a file; the composer is left empty.
     fn take_prompt(&mut self) -> String {
         let text = std::mem::take(&mut self.text);
         let images = std::mem::take(&mut self.images);
@@ -4612,19 +4150,13 @@ impl App {
         })
     }
 
-    /// An instruction back in the composer whole, cursor after it.
     fn fill(&mut self, text: String) {
         self.text = text;
         self.caret = self.text.len();
     }
 
-    /// A mouse event goes to the focused viewer, relative to its pane. Outside the pane, the
-    /// strip row or the list, is the dashboard's: a press, move or wheel there goes nowhere,
-    /// and a drag or release that crosses out is clamped to the pane's nearest edge so the
-    /// viewer sees the button let go. The wheel reaches the pane's viewer focused or not, and
-    /// does what a terminal's does: scrolls the emulated screen back when the viewer reads no
-    /// mouse (Codex, like a shell, leaves the wheel to the terminal) or shift is held, else
-    /// goes to the viewer.
+    /// Clamp drags and releases outside the pane so the viewer sees buttons released.
+    /// Shift-wheel or clients without mouse reporting scroll the emulator.
     fn mouse(&mut self, ev: MouseEvent) {
         if self.split_active() && !self.click(ev) {
             return;
@@ -4656,7 +4188,6 @@ impl App {
         }
     }
 
-    /// `ev` as the pane sees it, or nothing when it fell outside the pane and is dropped.
     fn pane_mouse(&self, mut ev: MouseEvent) -> Option<MouseEvent> {
         let p = self.pane;
         let inside =
@@ -4675,9 +4206,7 @@ impl App {
         Some(ev)
     }
 
-    /// A left click beside the list: on the pane it focuses the pane's viewer, on a list
-    /// row it selects the row and takes the keys back. True when the event is still the
-    /// viewer's.
+    /// Handle list clicks and focus changes; return whether the viewer should receive the event.
     fn click(&mut self, ev: MouseEvent) -> bool {
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return true;
@@ -4695,13 +4224,11 @@ impl App {
                     }
                     return self.focus.is_some();
                 }
-                // A click on a picked button's screen presses the button, as enter does.
                 Some(_) if !self.panel_focused() => {
                     self.full = false;
                     let _ = self.enter();
                     return false;
                 }
-                // The jobs screen's rows are the list here: the row under the pointer below.
                 Some(_) => {}
             }
         }
@@ -4714,8 +4241,7 @@ impl App {
             if n < self.visible.len() && self.rows[self.visible[n]].kind.selectable() {
                 self.cursor = n;
                 if self.rows[self.visible[n]].kind == Kind::Menu {
-                    // The button under the pointer, walking the row as `menu_cells` lays it
-                    // out: the "▌ " mark, then each button and a gap.
+                    // Match `menu_cells`: the two-column selection mark, then buttons and gaps.
                     let mut x = l.x + 2;
                     for (i, (name, ..)) in MENU.iter().enumerate() {
                         let w = name.chars().count() as u16 + 2;
@@ -4801,9 +4327,7 @@ impl App {
         true
     }
 
-    /// After a Codex client launched here is left or returns: keep the thread it opened, so
-    /// its row stays and `enter` resumes it, and hand back the thread's id. A thread left
-    /// before its first turn is gone with the client.
+    /// Record the launched thread for later resume; a client closed before its first turn has none.
     fn record_codex(&mut self, dir: &Path, since: chrono::DateTime<chrono::Utc>) -> Option<String> {
         let home = codex::home(&self.claude);
         match codex::launched(&home, dir, since) {
@@ -4825,10 +4349,6 @@ impl App {
         }
     }
 
-    /// The footer's `enter` verb for the selected row: `return` on a row whose viewer is
-    /// alive inside the dashboard and has been seen, so a speculative one still says
-    /// `attach`; a session of a harness that cannot be joined from here says so instead of
-    /// promising an attach.
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if row
@@ -4869,7 +4389,6 @@ impl App {
                 enter_verb(Some(&kind), self.menu)
             )
         });
-        // A row whose viewer is alive returns to its current screen; nothing is started.
         if let Some(i) = Self::viewer_key(&kind).and_then(|k| self.viewer_index(&k)) {
             self.focus(i);
             return Ok(());
@@ -4877,15 +4396,12 @@ impl App {
         match kind {
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
             Kind::NewJob => self.new_job(),
-            // A headless run cannot be attached while it runs; follow its log instead. A live
-            // session attaches natively, ctrl-z comes back here.
+            // Running headless jobs expose logs; completed runs can resume.
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
                 c.args(["logs", &id, "--follow"]);
                 self.open(self.size, c, "logs", format!("run:{id}"), None);
             }
-            // A listed session is live, so `claude attach` runs straight from here; the
-            // `cones attach` helper, which reloads the whole fleet first, is for finished runs.
             Kind::Session(id, _) if id.starts_with("starting:") => {
                 self.status = "still starting · its row fills in when Claude lists it".into();
             }
@@ -4895,15 +4411,13 @@ impl App {
                 };
                 let (harness, cwd, own_terminal) =
                     (s.harness.clone(), s.cwd.clone(), s.own_terminal());
-                // A TUI running in another terminal cannot be joined: a Codex TUI, or an
-                // interactive Claude, which `claude attach` does not know.
+                // Interactive clients in other terminals cannot be joined.
                 if own_terminal {
                     self.status = format!(
                         "{harness} runs in its own terminal and cannot be joined from here"
                     );
                     return Ok(());
                 }
-                // A Codex thread behind the daemon reopens with a client.
                 if harness == "codex" {
                     let key = id.clone();
                     self.prepare_viewer("codex".into(), key, None, None, move || {
@@ -4930,8 +4444,6 @@ impl App {
         Ok(())
     }
 
-    /// The picked menu button's screen, with the keys: what `enter` on the menu row opens,
-    /// and what tab gives the pane while the button's screen is only on view there.
     fn open_menu(&mut self) {
         match MENU[self.menu].0 {
             "folder" => self.mode = Mode::Folder(Input::default()),
@@ -4941,7 +4453,6 @@ impl App {
         }
     }
 
-    /// `cones install`, so launchd matches the file the wizard or ctrl+x just changed.
     fn install(&mut self, done: &str) {
         let r = self.me().arg("install").output();
         self.status = match r {
@@ -4958,8 +4469,6 @@ impl App {
         };
     }
 
-    /// Where the composer starts a session and the wizard's placeholder: the selected row's
-    /// directory, else the dashboard's own.
     fn target_dir(&self) -> PathBuf {
         self.selected_cwd().unwrap_or_else(|| self.cwd.clone())
     }
@@ -4972,7 +4481,6 @@ impl App {
             .unwrap_or_else(|| self.cwd.clone())
     }
 
-    /// Where `kind` sits in `harness::KNOWN`; None, the built-in, is Claude.
     fn harness_at(kind: Option<HarnessKind>) -> usize {
         harness::KNOWN
             .iter()
@@ -4980,20 +4488,13 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// What the next session runs under: the model and provider `ctrl+o` set, else the
-    /// `defaults` block's, which reach a session as they reach a job.
     fn session_policy(&self) -> config::Policy {
         self.session
             .clone()
             .unwrap_or_else(|| config::defaults(&self.jobs_path))
     }
 
-    /// The composer's `enter`: a session in the selected row's directory with the text as its
-    /// first instruction, under the harness `tab` picked. Claude starts in the background on a
-    /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
     fn start(&mut self) {
-        // The menu's `jobs` button and the `new job` row: the wizard, with the instruction as
-        // the task's first draft.
         if self.menu_is("jobs") || self.on_new_job() {
             self.new_job();
             return;
@@ -5009,8 +4510,7 @@ impl App {
         if kind == HarnessKind::Codex {
             let record = Some((dir.clone(), since));
             let retry = Some(prompt.clone());
-            // A new thread has no id yet; the key is unique to this launch until the thread is
-            // recorded on the first ctrl+z, when the viewer takes the thread's id as its key.
+            // Use a temporary launch key until the rollout supplies the thread id.
             let key = format!("codex:start:{}", since.timestamp_millis());
             self.prepare_viewer(what, key, record, retry, move || {
                 match harness::start(kind, &dir, prompt.trim(), &policy)? {
@@ -5022,8 +4522,6 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         self.status = format!("starting {what}");
-        // The row is there the moment enter is pressed; the registry fills it in when it lists
-        // the session.
         let id = format!("starting:{}", since.timestamp_millis());
         let session = placeholder(&id, &dir, &prompt);
         self.data.sessions.push(session.clone());
@@ -5062,15 +4560,11 @@ impl App {
         self.started.push((id, rx));
     }
 
-    /// Mark `key`'s row red and start the mark's clock.
     fn arm(&mut self, key: String) {
         self.armed = Some(key);
         self.armed_at = Instant::now();
     }
 
-    /// Each pass of the draw loop: a mark left alone for `confirm_secs` clears as if a key had
-    /// kept it, and a ctrl+c the second press did not follow stops showing after
-    /// `QUIT_CONFIRM`; each takes its hint off the line with it.
     fn expire(&mut self) {
         let mark = self.data.confirm_secs;
         if self.armed.is_some()
@@ -5093,14 +4587,11 @@ impl App {
         }
     }
 
-    /// A first ctrl+c is still waiting for its second press.
     fn quitting(&self) -> bool {
         self.quit_armed
             .is_some_and(|at| at.elapsed() < QUIT_CONFIRM)
     }
 
-    /// ctrl+x on a job with no run in flight: once arms, again removes the job from jobs.yaml
-    /// and reinstalls launchd. Any other key keeps it.
     fn delete_job(&mut self, name: String) {
         match self.armed.take() {
             Some(armed) if armed == name => {
@@ -5119,8 +4610,7 @@ impl App {
         }
     }
 
-    /// ctrl+x on a run that is not in flight: once arms, again hides it from the dashboard for
-    /// good. The ledger, `cones ls` and `cones attach` still have it.
+    /// Hide the row without removing its ledger record or resumable session.
     fn hide_run(&mut self, id: String) {
         match self.armed.take() {
             Some(armed) if armed == id => {
@@ -5137,7 +4627,6 @@ impl App {
         }
     }
 
-    /// ctrl+x on a pinned folder's row: once arms, again drops the folder from the dashboard.
     fn remove_folder(&mut self, dir: String) {
         match self.armed.take() {
             Some(armed) if armed == dir => {
@@ -5155,10 +4644,7 @@ impl App {
         }
     }
 
-    /// The menu's `folder` prompt took a directory: it gets a row at once and keeps it across
-    /// restarts until ctrl+x removes it. The cursor moves onto the row, so the composer starts
-    /// its next session there. A directory something already runs in has its group; the
-    /// cursor stays where it was.
+    /// Select a newly pinned empty folder; preserve selection if it already has session rows.
     fn pin_folder(&mut self, dir: PathBuf) -> Result<()> {
         if !self.data.folders.contains(&dir) {
             self.data.folders.push(dir.clone());
@@ -5169,8 +4655,6 @@ impl App {
         Ok(())
     }
 
-    /// ctrl+p: pin the selected row's folder, so it keeps a row after the last session there
-    /// leaves; on the menu row, the dashboard's own.
     fn pin_selected(&mut self) {
         let dir = self.target_dir();
         let name = fleet::tilde(&dir);
@@ -5184,8 +4668,7 @@ impl App {
         };
     }
 
-    /// Write `columns:` to jobs.yaml with the rest of the file as it stands: the columns
-    /// are the only thing `ctrl+t` sets.
+    /// Read current settings before writing so only `columns:` changes.
     fn save_columns(&mut self, cols: &[String]) {
         let path = self.jobs_path.clone();
         let wrote = config::write_config(
@@ -5210,13 +4693,10 @@ impl App {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
 
-    /// True on the jobs screen's `new job` row.
     fn on_new_job(&self) -> bool {
         matches!(self.selected().map(|r| &r.kind), Some(Kind::NewJob))
     }
 
-    /// The menu's `jobs` button: the jobs screen where the tables were, the cursor on its first
-    /// row; esc comes back to the dashboard.
     fn show_jobs(&mut self) {
         self.jobs_view = true;
         self.rebuild();
@@ -5228,15 +4708,12 @@ impl App {
         self.settle();
     }
 
-    /// enter on the `new job` row: the wizard on a new job, seeded with what the composer
-    /// holds, its directory defaulting to the selected row's.
     fn new_job(&mut self) {
         let (base, fallback) = (self.jobs_dir(), self.target_dir());
         let seed = self.take_prompt();
         self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None, &seed)));
     }
 
-    /// ctrl+e: the wizard on the selected job, filled in from the file as written.
     fn edit_job(&mut self) {
         let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
             self.status = "select a job to edit · the menu's jobs button lists them".into();
@@ -5260,9 +4737,6 @@ impl App {
         }
     }
 
-    /// What ctrl+x does to a session row. A Codex thread behind the daemon has no stop, so its
-    /// record is forgotten; a Claude background session is removed with `claude rm`, which drops
-    /// the job record `claude agents` shows; anything else is stopped with a signal.
     fn session_verb(&self, id: &str) -> &'static str {
         match self
             .data
@@ -5277,7 +4751,6 @@ impl App {
         }
     }
 
-    /// What ctrl+x does to the selected row, for the hint line; nothing on a row it cannot act on.
     fn stop_verb(&self) -> Option<&'static str> {
         let live = |name: &str| {
             self.data
@@ -5296,18 +4769,12 @@ impl App {
         }
     }
 
-    /// The model and provider the next session starts with, as words for the composer's
-    /// prefix and the status: the harness, its model when one is set, `bedrock` when on.
-    /// A field left to the system default says nothing.
-    // ponytail: bedrock false shows nothing either; it and unset both run on the harness's
-    // own endpoint unless the shell says otherwise.
     fn session_words(&self) -> Vec<String> {
         let kind = harness::KNOWN[self.harness];
         let p = self.session_policy();
         let model = match kind {
             HarnessKind::Claude => p.model,
             HarnessKind::Codex => p.codex_model,
-            // Not in `harness::KNOWN`, so `tab` never lands here.
             HarnessKind::Pi => None,
         };
         let mut words = vec![kind.to_string()];
@@ -5318,8 +4785,6 @@ impl App {
         words
     }
 
-    /// The composer: the harness `shift+tab` picked with the model and provider the next
-    /// session starts with, then the instruction or a short placeholder.
     fn composer(&self) -> Line<'static> {
         let kind = harness::KNOWN[self.harness].to_string();
         let words = self.session_words();
@@ -5340,7 +4805,6 @@ impl App {
         Line::from(spans)
     }
 
-    /// The bottom line: the last action's status until the next key, else the keys.
     fn hint_line(&self) -> Line<'static> {
         if !self.status.is_empty() {
             let style = if self.quitting() {
@@ -5359,7 +4823,6 @@ impl App {
         }
         let prefix = (!self.filter.text.is_empty())
             .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
-        // Beside the list a focused viewer has no strip; the keys that leave it are here.
         let mut line = if self.focus.is_some() {
             hints(&[("tab", "back"), ("ctrl+\\", "full screen")])
         } else {
@@ -5371,9 +4834,7 @@ impl App {
         line
     }
 
-    /// The keys for the mode, unfocused. The Normal line is one row with no wrap, so the
-    /// keys that act everywhere go, last first, until it fits the column it is drawn in
-    /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
+    /// Drop global hints from the end until they fit; keep the selected row's action and exit key.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if self.menu_is("jobs") || self.on_new_job() {
@@ -5410,10 +4871,6 @@ impl App {
                 hints(&keys)
             }
             Mode::Config(form) if form.open => hints(&[("enter", "keep"), ("esc", "back")]),
-            // The control is on the row, so the key that changes a value is on the hint line
-            // whichever field is selected, rather than behind a field opened first. The keys
-            // are the selected control's own: the words of a pick are walked, a number is
-            // stepped, free text has neither and is typed into.
             Mode::Config(form) => {
                 let f = form.field();
                 let mut keys = vec![("↑ ↓", "field")];
@@ -5454,7 +4911,6 @@ impl App {
             Mode::Normal if !self.text.is_empty() => {
                 hints(&[("enter", &start), ("shift+tab", &next)])
             }
-            // Only what acts on the selected row, then the keys that act everywhere.
             Mode::Normal => {
                 let mut keys = vec![];
                 if self.selected().is_some() {
@@ -5469,13 +4925,11 @@ impl App {
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                // tab reaches a button's screen on view in the pane too.
                 if self.shown().is_some() || self.panel_shown() {
                     keys.push(("tab", "pane"));
                 }
                 keys.push(("shift+tab", next.as_str()));
-                // Last of the keys that act everywhere, so a narrow list drops it first:
-                // arranging the columns is setup, the harness is picked every session.
+                // Drop setup hints before the harness picker when space is tight.
                 if !self.jobs_view {
                     keys.push(("ctrl+t", "columns"));
                 }
@@ -5491,7 +4945,6 @@ impl App {
         }
     }
 
-    /// The columns the hint line has: the list column beside a viewer, else the frame.
     fn hint_width(&self) -> u16 {
         if self.split_active() {
             self.split_areas(self.frame())[0].width
@@ -5500,8 +4953,6 @@ impl App {
         }
     }
 
-    /// ctrl+x once arms and marks the row, ctrl+x again stops; any other key disarms, so the
-    /// mark stays for as long as the user looks at it: the `claude agents` convention.
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
@@ -5511,7 +4962,6 @@ impl App {
                 return;
             }
             Some(Kind::Session(id, _) | Kind::Run(id, _)) => id,
-            // A job row with a run in flight stops that run; with none, ctrl+x deletes the job.
             Some(Kind::Job(name)) => {
                 let live =
                     self.data.runs.iter().rev().find(|r| {
@@ -5527,8 +4977,7 @@ impl App {
                 return;
             }
         };
-        // `codex resume` still has a forgotten thread; `claude --resume` still has a deleted
-        // background session's conversation.
+        // Forgetting a thread or removing a background job preserves its resumable conversation.
         let verb = self.session_verb(&id);
         if let Some(action) = self.stopping.iter().find(|a| a.id == id) {
             self.status = action.message();
@@ -5537,17 +4986,13 @@ impl App {
         }
         match self.armed.take() {
             Some(armed) if armed == id => {
-                // A viewer on the row goes first: a client of a session being removed has
-                // nothing left to show.
                 for key in [id.clone(), format!("run:{id}")] {
                     if let Some(i) = self.viewer_index(&key) {
                         self.close(i);
                     }
                 }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
-                // A live `--remote … resume` client on the row keeps the daemon holding the
-                // thread, so it gets the SIGTERM a plain Codex TUI gets; the thread stays
-                // resumable in the daemon.
+                // Terminate the attached client to release the daemon-held thread; it remains resumable.
                 let client = self
                     .data
                     .sessions
@@ -5661,17 +5106,7 @@ impl App {
         }
     }
 
-    /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
-    /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
-    /// until the next key. While a viewer has the keys every key but ctrl+z and ctrl+\ is its,
-    /// in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+\ toggles
-    /// the viewer beside the list. Two states only, the list or a viewer: a third, the viewer
-    /// inside over the split, and a ctrl+] that focused the pane in place or cycled viewers
-    /// were taken out on 2026-09-15 as too much to hold in mind. ctrl+\ means the same thing
-    /// in both states, the pane or the whole frame, so it is the one key both take; tab is
-    /// the other, the bounce from the list into the pane and back out of it, a viewer or a
-    /// button's screen alike. Only where a form has its own use for tab, the folder prompt's
-    /// completion or an open config field's picks, is ctrl+z or esc the way out.
+    /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
@@ -5679,8 +5114,7 @@ impl App {
                 self.unfocus();
                 return Ok(false);
             }
-            // tab bounces back to the list, as it bounces into the pane from there. shift+tab
-            // is still the client's, so a harness that cycles modes with it keeps that key.
+            // Plain tab returns to the list; shift+tab remains the client's mode switch.
             if code == KeyCode::Tab && mods.is_empty() {
                 self.unfocus();
                 return Ok(false);
@@ -5690,8 +5124,6 @@ impl App {
                 self.toggle_split();
                 return Ok(false);
             }
-            // shift+pgup/pgdn scroll the screen a page back, as the terminal itself would
-            // before a program saw them.
             if mods.contains(KeyModifiers::SHIFT)
                 && matches!(code, KeyCode::PageUp | KeyCode::PageDown)
             {
@@ -5710,18 +5142,10 @@ impl App {
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
             return Ok(false);
         }
-        // A button's screen that had the whole frame gives it back when it closes; a viewer's
-        // is cleared by unfocus. Not while a viewer is still opening for it.
         if self.full && !self.pane_focused() && self.opening.is_none() {
             self.full = false;
         }
-        // ctrl+z leaves a button's screen one step at a time, as esc does: the key it shares
-        // with a viewer. tab leaves it too, the bounce it came in on, so one key moves the
-        // keys between the list and the pane whatever the pane holds. A form mid-edit is the
-        // exception, as the column editor is: an open field, a path to complete or a wizard
-        // answer keeps tab for itself, and ctrl+z or esc leave from there. The pane goes on
-        // showing the screen it just gave the keys back, so the hint line says where the
-        // keys are and the status says it left.
+        // Forms keep tab for completion or editing; otherwise it returns to the list.
         let tab_out = code == KeyCode::Tab
             && mods.is_empty()
             && match &self.mode {
@@ -5739,9 +5163,6 @@ impl App {
             self.needs_clear = true;
             return Ok(false);
         }
-        // ctrl+\ is the pane's key from a button's screen too, the one meaning it has
-        // everywhere: the screen moves between the pane and the whole list, keys and all,
-        // and a form mid-edit keeps what is typed, since only the layout changes.
         if ctrl && matches!(code, KeyCode::Char('\\' | '4')) && self.panel_focused() {
             self.toggle_split();
             return Ok(false);
@@ -5761,8 +5182,6 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            // Every key that changes the arrangement redraws the table under it, so the
-            // set is picked against the rows and the width it has to fit.
             Mode::Columns(form) => match form.key(code) {
                 Arranged::Stay => {}
                 Arranged::Shown(cols) => {
@@ -5788,15 +5207,13 @@ impl App {
                     KeyCode::Esc | KeyCode::Enter => self.mode = Mode::Normal,
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Normal,
                     KeyCode::Up => self.mode = Mode::Guide(top.saturating_sub(1)),
-                    // ponytail: clamped to the entry count, not the wrapped line count.
+                    // Scroll is clamped to entry count, not wrapped line count.
                     KeyCode::Down => self.mode = Mode::Guide((top + 1).min(GUIDE.len() - 1)),
                     _ => {}
                 }
             }
             Mode::Folder(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                // ↑ ↓ recall the folders sessions have been seen in, newest first, as a
-                // shell's history does; the prompt's text is the one recalled.
                 KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
                     let recent: Vec<String> =
                         self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
@@ -5810,11 +5227,7 @@ impl App {
                     };
                     *input = Input::new(recent[next].clone());
                 }
-                // One tab grows the path as far as it is unambiguous; a second, changing
-                // nothing, lists what still matches, as bash and zsh do.
                 KeyCode::Tab => self.status = input.complete(&self.cwd).join("  "),
-                // The folder prompt: a directory, relative to the dashboard's own, checked
-                // before it is taken; it gets a row and the cursor, so a launch goes there.
                 KeyCode::Enter => {
                     let text = input.text.clone();
                     match launch_dir(&text, &self.cwd, &self.cwd) {
@@ -5860,15 +5273,11 @@ impl App {
             Mode::Job(form) => match form.key(code, mods) {
                 FormAction::Stay => {}
                 FormAction::Cancel => self.mode = Mode::Normal,
-                // `once`: a supervised run under the file's first job's policy, in the ledger
-                // like any other, instead of a bare session.
                 FormAction::RunOnce(prompt, dir) => {
                     self.mode = Mode::Normal;
                     let what = format!("started a run in {}", fleet::tilde(&dir));
                     self.spawn(&["run", "--prompt", &prompt], Some(&dir), &what);
                 }
-                // The file is checked as a whole before it is replaced; a bad answer comes back
-                // inline and the wizard stays where it was.
                 FormAction::Save(old, job) => {
                     match config::write_job(&self.jobs_path, old.as_deref(), Some(&job)) {
                         Ok(()) => {
@@ -5884,20 +5293,15 @@ impl App {
                     }
                 }
             },
-            // A closed field checks the whole block and replaces the file at once, and the
-            // editor stays open for the next one; a bad value comes back inline on its field.
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                // The session form keeps its policy for the composer; nothing is written.
                 ConfigAction::Save(policy, ..) if form.session => {
                     self.harness = Self::harness_at(policy.harness);
                     self.session = Some(*policy);
                     self.status = format!("next session: {}", self.session_words().join(" · "));
                 }
                 ConfigAction::Save(policy, columns, spark, pane, start, mark) => {
-                    // The columns row is arranged in place, so the table beside it redraws
-                    // under the key rather than at the next reload.
                     self.data.columns = if columns.is_empty() {
                         built_columns()
                     } else {
@@ -5927,10 +5331,7 @@ impl App {
                 }
             },
             Mode::Normal => {
-                // Any key but ctrl+x disarms an armed ctrl+x, so the mark stays until the user
-                // does something else, as in `claude agents`.
                 let armed = self.armed.take();
-                // On the menu row with nothing typed, ← → pick a button; typed text keeps them.
                 if self.text.is_empty()
                     && matches!(code, KeyCode::Left | KeyCode::Right)
                     && matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu))
@@ -5958,8 +5359,6 @@ impl App {
                         self.armed = armed;
                         self.stop();
                     }
-                    // esc backs out one thing at a time: the armed ctrl+x, the text, the jobs
-                    // screen, the dashboard.
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
@@ -5974,15 +5373,8 @@ impl App {
                     }
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
-                    // tab bounces into the pane's viewer and back; shift+tab, its sibling,
-                    // cycles the harness the next session starts under, which ctrl+o also
-                    // sets with the model and provider. A viewer's own shift+tab is its
-                    // client's, so the two never collide.
                     KeyCode::Tab => match self.shown() {
                         Some(i) => self.focus(i),
-                        // A button's screen in the pane takes the keys as a viewer does, so
-                        // tab reaches the config editor and the guide too. The jobs screen
-                        // already has them, so there tab is the bounce back to the list.
                         None if self.jobs_view => self.leave_jobs(),
                         None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
@@ -5990,17 +5382,12 @@ impl App {
                     KeyCode::BackTab => {
                         self.harness = (self.harness + 1) % harness::KNOWN.len();
                     }
-                    // shift+enter attaches over the whole frame, pane or no pane, and leaves
-                    // the layout as it was. Claude Code's terminal bindings send it as ESC CR,
-                    // which crossterm reports as alt+enter; a kitty-protocol terminal reports
-                    // the shift itself.
+                    // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
                     KeyCode::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
                             && self.text.trim().is_empty() =>
                     {
-                        // ponytail: set before enter so a viewer focused later (a Codex
-                        // client) gets the frame too; a refused attach leaves it set until
-                        // the next enter or unfocus, and it bites only while focused.
+                        // Set this before asynchronous viewer startup; it takes effect only while focused.
                         self.full = true;
                         self.enter()?;
                     }
@@ -6014,7 +5401,6 @@ impl App {
                         self.rebuild();
                     }
                     KeyCode::Char('p') if ctrl => self.pin_selected(),
-                    // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
@@ -6024,8 +5410,6 @@ impl App {
                         self.mode = Mode::Config(Box::new(ConfigForm::session(&policy)));
                     }
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
-                    // The columns are the sessions', so the jobs screen says so rather than
-                    // arranging a table that is not on screen.
                     KeyCode::Char('t') if ctrl => {
                         if self.jobs_view {
                             self.status = "the session columns; esc leaves the jobs screen".into();
@@ -6051,9 +5435,6 @@ impl App {
         let area = frame.area();
         self.size = (area.height, area.width);
         self.pane = self.pane(area);
-        // The split: the dashboard in its part, a rule, and the viewer on view in the pane.
-        // Focus changes the rule's color and where keys go, nothing else; the header has the
-        // counts, so there is no strip.
         if self.split_active() {
             let [list, rule, pane] = self.split_areas(area);
             self.draw_dashboard(frame, list);
@@ -6076,41 +5457,28 @@ impl App {
                 self.draw_panel(frame, name, pane);
                 return;
             }
-            // The viewer has the whole column, the last row with it: a row held back is a
-            // row of the frame nothing draws in, since the list has only its hint line to
-            // put under the composer.
             let inner = self.pane;
             match self.shown() {
                 Some(i) if self.viewers[i].viewer.first_paint().is_some() => {
                     self.draw_viewer(frame, i, inner)
                 }
-                // A viewer that has not painted yet is sized for when it does, and the pane
-                // stays blank until it does: a quarter second of nothing reads as a terminal
-                // opening, where a placeholder that is then replaced reads as a flicker.
                 Some(i) => self.viewers[i].viewer.resize(inner.height, inner.width),
                 None => {}
             }
-            // The keys that leave the viewer, read under the viewer they act on, as a
-            // button's screen has its own. Drawn over the viewer's last row rather than in
-            // a row kept clear for it, so the viewer is the same size focused or not; while
-            // the list has the keys the row is the harness's, where the hint line is the
-            // list's own.
+            // Overlay hints rather than reserving a row, keeping viewer size independent of focus.
             if self.focus.is_some() && pane.height > 1 {
                 let row = Rect {
                     y: pane.bottom() - 1,
                     height: 1,
                     ..pane
                 };
-                // Clear first: past the end of the keys the row is the viewer's, and a
-                // harness's status line is not the keys' background.
+                // Paragraph leaves cells beyond its spans intact; without Clear, the harness's
+                // status line remains visible past the end of the keys.
                 frame.render_widget(Clear, row);
                 frame.render_widget(Paragraph::new(self.hint_line()), row);
             }
             return;
         }
-        // A focused viewer has every row but the last: its emulated screen, cell for cell.
-        // The last row is the dashboard's strip, so the viewer's own status line sits right
-        // above it. Nothing else of the dashboard is drawn.
         if let Some(i) = self.focus {
             if area.height >= 2 {
                 let strip = Rect {
@@ -6127,9 +5495,7 @@ impl App {
         self.draw_dashboard(frame, area);
     }
 
-    /// Viewer `i`'s emulated screen in `pane`, sized to it, and while it has the keys and is
-    /// not scrolled back the terminal's own cursor where the screen puts it, off a wide
-    /// character's second half.
+    /// Draw the emulator cursor only when focused and at the live scroll position.
     fn draw_viewer(&mut self, frame: &mut Frame, i: usize, pane: Rect) {
         let focused = self.focus == Some(i);
         let open = &mut self.viewers[i];
@@ -6152,7 +5518,6 @@ impl App {
         }
     }
 
-    /// The prompt line of the mode with the keys, the composer in the normal one.
     fn mode_line(&self) -> Line<'static> {
         match &self.mode {
             Mode::Filter => {
@@ -6181,10 +5546,6 @@ impl App {
         }
     }
 
-    /// `line` ruled above and below, as Claude Code frames its input, grown with the text as
-    /// its input does: the paragraph and the rows it takes within `width`, rules included.
-    /// Red while a first ctrl+c waits for its second: the whole composer says it, not one
-    /// dim line.
     fn framed(&self, line: Line<'static>, width: u16) -> (Paragraph<'static>, u16) {
         let rules = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
@@ -6199,9 +5560,6 @@ impl App {
         (input, rows)
     }
 
-    /// Button `name`'s screen in `pane`, as a session's viewer would be: its body, and under
-    /// it the prompt line of the mode that has the keys, or the button's explanation while
-    /// it is only picked.
     fn draw_panel(&mut self, frame: &mut Frame, name: &str, pane: Rect) {
         let (_, verb, what) = MENU.iter().find(|(n, ..)| *n == name).unwrap_or(&MENU[0]);
         let line = if self.panel_focused() {
@@ -6213,9 +5571,7 @@ impl App {
             ])
         };
         let (prompt, rows) = self.framed(line, pane.width);
-        // The dashboard keeps its last row for the hint line, so the pane keeps one too: the
-        // two prompt boxes then sit on the same rows, rule against rule, and the keys of the
-        // screen in the pane are read under it rather than across the frame.
+        // Reserve matching hint rows so the pane and composer prompts align.
         let [body, foot, hint] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(rows),
@@ -6228,8 +5584,8 @@ impl App {
             (Mode::Config(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Guide(top), _) => frame.render_widget(guide(*top), body),
             (_, "help") => frame.render_widget(guide(0), body),
-            // ponytail: jobs.yaml is read again every frame the button is picked; cache the
-            // form in `rebuild` if that ever shows in a profile.
+            // Config previews reread jobs.yaml every frame. Cache the form in rebuild
+            // if profiling shows this cost.
             (_, "config") => frame.render_widget(self.config_form().paragraph(body), body),
             (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
             (_, "jobs") => {
@@ -6245,8 +5601,6 @@ impl App {
         }
     }
 
-    /// The `folder` button's body: the folders sessions have been seen in, newest first, the
-    /// one the prompt holds marked.
     fn recent_lines(&self) -> Vec<Line<'static>> {
         let held = match &self.mode {
             Mode::Folder(input) => input.text.as_str(),
@@ -6270,13 +5624,8 @@ impl App {
         lines
     }
 
-    /// The rows the composer keeps under its box, so its lower rule lands on the row the
-    /// harness draws its own on: the rows the harness keeps under its last rule, its status
-    /// lines. One row, the hint line, with nothing on view or with the pane under the list,
-    /// where the two boxes share no rows anyway.
-    // ponytail: the rule is read off the screen every frame rather than counted per harness,
-    // so a statusline of any height lines up; a frame where the harness draws no rule at all
-    // puts the composer back on the hint line, one row lower.
+    /// Align the composer's lower rule with the harness's, using the current emulated screen.
+    /// Without a visible rule, reserve only the hint row.
     fn foot_rows(&self) -> u16 {
         if self.data.pane.at == "bottom" {
             return 1;
@@ -6302,9 +5651,6 @@ impl App {
             .clamp(1, 6)
     }
 
-    /// The dashboard in `area`: header, list, composer and hint line. Beside a pane that has
-    /// a button's screen, the list and the composer stay in place: the screen's body and
-    /// prompt line are drawn in the pane.
     fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
         let in_pane =
             self.split_active() && self.panel().is_some() && !matches!(self.mode, Mode::Columns(_));
@@ -6313,8 +5659,7 @@ impl App {
         } else {
             self.mode_line()
         };
-        // While a viewer or a button's screen has the keys the terminal's cursor is in the
-        // pane, so the input's own block cursor is off: one cursor on the frame.
+        // Hide the composer cursor while the pane has focus.
         if self.focus.is_some() || (in_pane && self.panel_focused()) {
             for span in &mut line.spans {
                 span.style = span.style.remove_modifier(Modifier::REVERSED);
@@ -6337,8 +5682,6 @@ impl App {
             head,
         );
         if in_pane && self.jobs_view {
-            // The jobs screen has the cursor in the pane; the main rows sit beside it with
-            // the menu row reading as selected, `jobs` pressed.
             let all: Vec<usize> = (0..self.other.len()).collect();
             let lines = self.row_lines(&self.other, &all, None, 0, list.height as usize);
             frame.render_widget(Paragraph::new(lines), list);
@@ -6357,22 +5700,15 @@ impl App {
             self.draw_list(frame, list);
         }
         frame.render_widget(input, prompt);
-        // Whatever has the keys in the pane draws them under the pane, where they are read
-        // with it; the list's row stays empty rather than saying it twice. One hint line on
-        // the frame, on the side the keys are.
         if !(self.split_active() && self.pane_focused()) {
             frame.render_widget(Paragraph::new(self.hint_line()), foot);
         }
     }
 
-    /// True on the menu row with the button `name` picked.
     fn menu_is(&self, name: &str) -> bool {
         matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)) && MENU[self.menu].0 == name
     }
 
-    /// The menu row's cells: each button a key cap with a gap after it, and while the row is
-    /// selected the picked one pressed, with its explanation dim after the buttons. Unselected,
-    /// the row is the buttons alone.
     fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
         let mut cells = vec![];
         for (i, (name, ..)) in MENU.iter().enumerate() {
@@ -6408,9 +5744,7 @@ impl App {
         frame.render_widget(Paragraph::new(lines), area);
     }
 
-    /// `visible`'s rows into `rows` from `scroll`, `height` of them, `cursor` the selected
-    /// one. Without a cursor the menu row alone reads as selected: a list drawn that way sits
-    /// beside the jobs screen, whose button is the one pressed.
+    /// A missing cursor selects only the menu row, as used beside the jobs pane.
     fn row_lines(
         &self,
         rows: &[Row],
@@ -6446,7 +5780,6 @@ impl App {
                     &row.cells
                 };
                 for (c, (text, style)) in cells.iter().enumerate() {
-                    // The icon cell of a working row is the spinner's current frame.
                     let (text, style) = if c == 0 && row.working() {
                         (
                             text.replacen('▁', SPINNER[spinner_frame(self.tick)], 1),
@@ -6483,9 +5816,8 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     app.timing("startup_load", started);
     app.feedback = Some(("startup_to_draw", started));
     app.rebuild();
-    // Ctrl+Z is a dashboard key: it leaves the focused viewer running off-screen. It never
-    // suspends the dashboard, and a viewer never sees it. Viewers get their default signal
-    // handlers back on their own pty in pre_exec.
+    // Ctrl+Z changes dashboard focus instead of suspending it. Viewer children restore
+    // their default signal handlers in `pre_exec`.
     unsafe {
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
@@ -6495,8 +5827,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         (libc::tcgetattr(0, &mut t) == 0).then_some(t)
     });
     let mut terminal = ratatui::init();
-    // ratatui's hook leaves raw mode and the alternate screen; the modes the dashboard turns
-    // on itself (bracketed paste, mouse reports) come off here on a panic as on a quit.
+    // Ratatui restores raw mode; also disable the reporting modes cones enabled.
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         ratatui::restore();
@@ -6538,10 +5869,8 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             {
                 let drawing = Instant::now();
                 if app.needs_clear {
-                    // A belt over ratatui's diff: the frame a viewer left is not trusted.
-                    // Not `Terminal::clear`, which asks the terminal where its cursor is and
-                    // fails on one that does not answer; a plain clear and a forgotten
-                    // previous buffer give the same full repaint.
+                    // Avoid `Terminal::clear`: its cursor query fails on terminals that do not answer.
+                    // Clear the backend and forget the previous buffer instead.
                     terminal.backend_mut().clear()?;
                     terminal.swap_buffers();
                     app.needs_clear = false;
@@ -6560,9 +5889,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             if app.poll_opening() {
                 continue;
             }
-            // Commands and fresh data can land between animation frames. Check them promptly
-            // without repainting idle frames or making the spinner depend on key frequency. A
-            // focused viewer's output is polled tighter, so typing into it feels direct.
+            // Poll between animation frames for responsive input and reloads without idle repaints.
             let wait = Duration::from_millis(if app.focus.is_some() { 8 } else { 25 });
             if event::poll(wait)? {
                 let e = event::read()?;
@@ -6607,8 +5934,6 @@ fn debug_line(path: &Path, msg: impl std::fmt::Display) {
     }
 }
 
-/// The terminal facts a hand-off can corrupt: the tty's line discipline, who owns the
-/// foreground, and what ctrl-z and ctrl-c do to this process.
 fn term_state() -> String {
     unsafe {
         let disposition = |sig| {
@@ -6631,8 +5956,6 @@ fn term_state() -> String {
     }
 }
 
-/// The tty's line discipline and who owns its foreground; readable from the background, so
-/// the watcher can sample it while a child holds the terminal.
 fn tty_state() -> String {
     unsafe {
         let mut t: libc::termios = std::mem::zeroed();
@@ -6654,18 +5977,12 @@ fn tty_state() -> String {
 
 #[cfg(test)]
 mod tests {
-    /// `← →` step a number field on the step's own grid and never below zero, starting from
-    /// the built-in where the field is empty and from zero where the built-in is a word no
-    /// step could have left there. `backspace` puts the built-in back, the one value no ring
-    /// and no step reaches. A control too wide for the pane hangs under the column it started
-    /// in, and a row keeps that height whichever row is selected.
     #[test]
     fn arrows_step_a_number_field_on_its_own_grid() {
         let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
         let none = KeyModifiers::NONE;
         let value = |c: &ConfigForm| c.values[c.row].clone();
 
-        // budget_usd steps by 0.25 from its built-in, 2.00, and back to a bare 2.
         c.go(field_at("budget_usd"));
         c.key(KeyCode::Right, none);
         assert_eq!(value(&c), "2.25");
@@ -6685,8 +6002,6 @@ mod tests {
             "backspace is the way back to the built-in"
         );
 
-        // `none` is no number, so the first step is one step up from zero, and zero is the
-        // floor: a step down from it writes no negative cap.
         c.go(field_at("daily_budget_usd"));
         c.key(KeyCode::Right, none);
         assert_eq!(value(&c), "1");
@@ -6695,15 +6010,11 @@ mod tests {
         }
         assert_eq!(value(&c), "0");
 
-        // A pure pick walks its ring and comes back round to the built-in.
         c.go(field_at("overlap"));
         for want in ["skip", "allow", "replace", ""] {
             c.key(KeyCode::Right, none);
             assert_eq!(value(&c), want);
         }
-        // A typed value stands last among the words while it is the value, so a step off it
-        // is a step to the built-in rather than to the first word; stepping away drops it, as
-        // picking another word in a radio group drops what was typed.
         c.go(field_at("model"));
         c.values[c.row] = "claude-opus-5".to_owned();
         c.key(KeyCode::Right, none);
@@ -6711,8 +6022,6 @@ mod tests {
         c.key(KeyCode::Left, none);
         assert_eq!(value(&c), "haiku", "and the words alone from there");
 
-        // The columns row is arranged where it is read: space writes the line the arranger
-        // leaves, and backspace puts the built-in set back.
         c.go(field_at("columns"));
         assert!(
             matches!(c.key(KeyCode::Right, none), ConfigAction::Stay),
@@ -6747,7 +6056,6 @@ mod tests {
         );
     }
 
-    /// Every key the guide names is in the dashboard's docs, so the two never drift.
     #[test]
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
@@ -6794,10 +6102,8 @@ mod tests {
                 assert!(docs.contains(word), "{word} is not in docs/dashboard.md");
             }
         }
-        // ctrl+g draws the guide where the list is; esc brings the list back.
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
@@ -6907,9 +6213,6 @@ mod tests {
         f.key(KeyCode::Enter, KeyModifiers::NONE)
     }
 
-    /// The wizard's answers, the defaults editor's values, the filter and the folder prompt
-    /// take readline's keys as the composer does, with the cursor where the next key acts;
-    /// moving to another answer puts the cursor after it, and tab on a path does the same.
     #[test]
     fn every_prompt_edits_where_the_cursor_is() {
         let base = tempfile::tempdir().unwrap();
@@ -7095,8 +6398,6 @@ mod tests {
                 .map(|r| r.cells[2].0.trim().to_owned())
                 .unwrap()
         };
-        // With `state` among the columns, the slot before the title is the state; the footer
-        // still says own terminal. Without it, the words come back to the row.
         assert_eq!(marker(&data, "aaaa-interactive"), "working");
         assert_eq!(marker(&data, "bbbb-background"), "working");
         data.columns = vec!["model".into()];
@@ -7139,13 +6440,11 @@ mod tests {
                 .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
                 .unwrap()
         };
-        // The orange title marks the orchestrator; the state takes the slot before it.
         assert_eq!(row(&data, "aaaa-worker").cells[2].0.trim(), "working");
         assert_eq!(row(&data, "aaaa-worker").cells[3].1, plain());
         let marked = row(&data, "bbbb-orchestrator");
         assert_eq!(marked.cells[2].0.trim(), "working");
         assert_eq!(marked.cells[3].1, lit());
-        // Without a state column the slot names the orchestrator and the terminal.
         data.columns = vec!["model".into()];
         let marked = row(&data, "bbbb-orchestrator");
         assert_eq!(marked.cells[2].0.trim(), "orchestrator");
@@ -7201,7 +6500,6 @@ mod tests {
             "own terminal",
             "the verb follows the selected row"
         );
-        // A thread behind the daemon is the one Codex row that opens from here.
         let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
         data.sessions.push(Session {
             session_id: "dddd-daemon".into(),
@@ -7258,8 +6556,6 @@ mod tests {
         );
     }
 
-    /// The folder prompt completes as `cd` does: one match fills in with a trailing `/`,
-    /// several fill in the shared prefix and are listed, hidden folders need a `.` first.
     #[test]
     fn tab_completes_a_folder_as_the_shell_completes_cd() {
         let d = dir();
@@ -7338,7 +6634,6 @@ mod tests {
         assert_eq!(f.error, None, "the next key clears the error");
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(f.step, Step::Where);
-        // An empty directory means the placeholder, kept in ~ form.
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(f.step, Step::When);
         let canon = base.path().canonicalize().unwrap();
@@ -7371,7 +6666,6 @@ mod tests {
             (Step::Name, "triage-the-todos"),
             "the name is suggested from the task"
         );
-        // ↑ steps back, and forward again keeps the answers.
         f.key(KeyCode::Up, KeyModifiers::NONE);
         assert_eq!(f.step, Step::At);
         assert_eq!(enter(&mut f), FormAction::Stay);
@@ -7462,7 +6756,6 @@ mod tests {
         registry_kind(claude, id, cwd, status, started, "interactive");
     }
 
-    /// A background session as Claude's daemon lists it: kind `bg` with a job id.
     fn registry_bg(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
         registry_kind(claude, id, cwd, status, started, "bg");
     }
@@ -7481,8 +6774,6 @@ mod tests {
         .unwrap();
     }
 
-    /// A Codex thread the dashboard launched is listed from cones' own record, after the
-    /// process table and the registry are read; it still sorts by age among them.
     #[test]
     fn a_dashboard_launched_codex_thread_sorts_by_start_among_the_other_rows() {
         let d = tempfile::tempdir().unwrap();
@@ -7524,8 +6815,6 @@ mod tests {
         assert_eq!(ids, [A], "a hidden thread has no row");
     }
 
-    /// Folder groups sort by name with case set aside, and a pinned folder nothing runs in
-    /// sits among them, not after them; grouped by state it follows the session groups.
     #[test]
     fn folders_sort_by_name_with_pinned_ones_among_them() {
         let d = dir();
@@ -7571,7 +6860,6 @@ mod tests {
         );
     }
 
-    /// A dashboard before its first `refresh`, so a test sets filter and grouping first.
     fn app(dir: &Path) -> App {
         App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
     }
@@ -7584,9 +6872,6 @@ mod tests {
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-    /// A session the read lists for the first time takes the cursor: one opened in another
-    /// terminal, or the registry's row taking over a composer placeholder. Not while an
-    /// instruction is being typed, since `enter` would then start it somewhere else.
     #[test]
     fn a_session_that_just_appeared_takes_the_cursor() {
         let dir = tempfile::tempdir().unwrap();
@@ -7610,7 +6895,6 @@ mod tests {
             Some(B),
             "a row seen once is not new again"
         );
-        // A composer placeholder is selected at once and followed to the registry's row.
         let session = placeholder("starting:1", claude, "again");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
@@ -7629,7 +6913,6 @@ mod tests {
             Some(d),
             "the listed row took the cursor"
         );
-        // Moved off the placeholder before the registry lists it, the cursor stays put.
         let session = placeholder("starting:2", claude, "once more");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
@@ -7656,9 +6939,6 @@ mod tests {
         );
     }
 
-    /// `enter` in the composer puts a row up at once, titled with the instruction, and the
-    /// registry's row takes over when Claude lists the id `--bg` printed. A failed launch takes
-    /// the row away and hands the instruction back.
     #[test]
     fn a_started_session_has_a_row_at_once_until_claude_lists_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -7680,7 +6960,6 @@ mod tests {
             .find(|r| r.kind.key() == Some("starting:1"))
             .unwrap();
         assert!(row.text().contains("fix the tests") && row.working());
-        // Claude printed the id; the registry does not list it yet, so the row stays.
         app.pending[0].short = short_id("started claude in ~: backgrounded · aaaaaaaa (idle)");
         assert_eq!(app.pending[0].short.as_deref(), Some("aaaaaaaa"));
         app.refresh().unwrap();
@@ -7697,7 +6976,6 @@ mod tests {
             !has(&app, "starting:1") && has(&app, A),
             "the listed row took over"
         );
-        // A launch that fails: its row goes and the instruction is back in the composer.
         let session = placeholder("starting:2", claude, "again");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
@@ -7731,8 +7009,6 @@ mod tests {
         assert_eq!(Kind::Blank.key(), None);
     }
 
-    /// The terminal hand-off invalidates the previous read. The filter and grouping are
-    /// fields, and applying the new data finds the selected row again by id.
     #[test]
     fn coming_back_lands_on_the_same_row_with_filter_and_grouping_kept() {
         let dir = tempfile::tempdir().unwrap();
@@ -7743,7 +7019,6 @@ mod tests {
         let mut app = app(claude);
         app.by_state = true;
         app.filter = Input::new("two");
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(B), "oldest match first");
@@ -7768,7 +7043,6 @@ mod tests {
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(B));
         assert!(app.by_state && app.filter.text == "two");
-        // Without the filter, A is back too and C's absence still leaves a selection.
         app.filter = Input::default();
         app.refresh().unwrap();
         assert!(key(&app).is_some());
@@ -8036,7 +7310,6 @@ mod tests {
         .unwrap();
         let mut app =
             App::new(Path::new("cones-not-installed"), &jobs, d.path(), d.path()).unwrap();
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         app.show_jobs();
@@ -8076,7 +7349,6 @@ mod tests {
         let c = |app: &mut App| app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
         assert!(!c(&mut app), "one ctrl+c only arms");
         assert_eq!(app.status, QUIT_HINT);
-        // The composer's rules and the hint go red, so the arm is seen, not read.
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let red = |t: &Terminal<ratatui::backend::TestBackend>, sym: &str| {
@@ -8088,7 +7360,6 @@ mod tests {
         };
         assert!(red(&t, "─"), "the composer's rules are red");
         assert!(red(&t, "q"), "the hint is red");
-        // Past the window the arm and its hint leave on their own.
         app.quit_armed = Some(Instant::now() - QUIT_CONFIRM);
         app.expire();
         assert!(app.quit_armed.is_none() && app.status.is_empty());
@@ -8125,7 +7396,6 @@ mod tests {
         );
         app.refresh().unwrap();
         assert!(key(&app).is_some(), "armed only");
-        // The arm marks the row red; it stays until the next key or `confirm_secs` of none.
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let marked = t
@@ -8136,8 +7406,6 @@ mod tests {
             .any(|c| c.symbol() == "▌" && c.fg == Color::Red);
         assert!(marked, "the armed row is red");
         assert_eq!(app.armed.as_deref(), Some(A));
-        // Left alone past the mark's time the row is kept, and the hint says so; the next
-        // ctrl+x arms again rather than acting. With `confirm_secs: 0` the mark has no clock.
         app.armed_at = Instant::now() - Duration::from_secs(3);
         app.expire();
         assert_eq!((app.armed.as_deref(), app.status.as_str()), (None, "kept"));
@@ -8157,8 +7425,6 @@ mod tests {
         assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
     }
 
-    /// The keys macOS terminals send for option+delete, cmd+delete, cmd+left, cmd+right and
-    /// option+left, as `edit` documents them, edit the instruction where the cursor is.
     #[test]
     fn the_composer_edits_where_the_cursor_is() {
         let d = tempfile::tempdir().unwrap();
@@ -8225,7 +7491,6 @@ mod tests {
     fn the_composer_wraps_a_long_instruction_instead_of_cutting_it() {
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         app.text = "one two three four five six seven eight nine ten eleven twelve LAST".into();
@@ -8246,7 +7511,6 @@ mod tests {
     fn the_bottom_lines_name_the_harness_and_what_ctrl_x_does() {
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         let text = |l: Line| {
@@ -8282,10 +7546,6 @@ mod tests {
         );
     }
 
-    /// The menu sits above the tables: a fresh dashboard opens on the first table and `↑` from
-    /// there lands on the menu row, which launches into the dashboard's own directory. The
-    /// `folder` prompt adds a row for a directory nothing runs in and moves the cursor onto it,
-    /// so a session can start there; the menu's own target does not move.
     #[test]
     fn the_top_menu_is_reached_going_up_and_its_folder_prompt_adds_a_row() {
         let d = dir();
@@ -8330,7 +7590,6 @@ mod tests {
         );
         assert_eq!(app.target_dir(), inside, "so the composer starts there");
         assert_eq!(app.cwd, home, "the menu's own target did not move");
-        // The folder sorts by name among the groups, so the menu is one or more steps up.
         while key(&app).as_deref() != Some("menu") {
             app.step(-1);
         }
@@ -8342,7 +7601,6 @@ mod tests {
             "a reload keeps the menu row"
         );
         assert!(app.menu_is("folder"), "and the picked button");
-        // ↑ ↓ in the prompt recall the folders sessions have been seen in, newest first.
         registry(claude, B, "/src/two", "idle", 1_757_682_872_000);
         app.refresh().unwrap();
         assert_eq!(
@@ -8369,8 +7627,6 @@ mod tests {
         app.mode = Mode::Normal;
     }
 
-    /// Jobs are off the dashboard: the menu's `jobs` button opens a screen with the jobs as one
-    /// table, each with its directory, and a `new job` row that opens the wizard; esc returns.
     #[test]
     fn the_jobs_screen_lists_the_jobs_with_a_new_job_row() {
         let d = dir();
@@ -8389,7 +7645,6 @@ mod tests {
         registry(claude, B, "/src/other", "idle", 1_757_682_871_000);
         let mut app = App::new(Path::new("cones"), &jobs, claude, claude).unwrap();
         app.pin_folder(cwd.clone()).unwrap();
-        // The pane off: the jobs screen takes the list's place and keeps the menu row.
         app.split = false;
         app.refresh().unwrap();
         let keys: Vec<String> = app
@@ -8412,7 +7667,6 @@ mod tests {
             ],
             "the dashboard has no job row and the pinned folder has no placeholder"
         );
-        // The menu's jobs button: the jobs alone, the cursor on the first, a new job row last.
         app.show_jobs();
         let keys: Vec<String> = app
             .rows
@@ -8489,9 +7743,6 @@ mod tests {
         assert_eq!(headers, vec!["idle".to_owned()]);
     }
 
-    /// A folder the prompt picks has a row from then on, with nothing running there, across
-    /// reloads and restarts, until ctrl+x twice removes it; a session in the folder takes its
-    /// group over and the placeholder comes back when the session leaves.
     #[test]
     fn a_picked_folder_keeps_a_row_until_it_is_removed() {
         let d = dir();
@@ -8561,7 +7812,6 @@ mod tests {
             "and the row is back when it leaves"
         );
 
-        // ctrl+p on a session's row pins its folder, so the folder outlives the session.
         app.select_new(A);
         assert_eq!(key(&app).as_deref(), Some(A));
         app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
@@ -8631,7 +7881,6 @@ mod tests {
         assert_eq!(other[0][0].0, "x  ", "another table has its own widths");
     }
 
-    /// A shell on a pty that draws `text` at the top left and then waits, as a viewer.
     fn viewer_open(key: &str, what: &str, text: &str) -> Open {
         let mut c = Command::new("/bin/sh");
         c.args(["-c", &format!("printf '\\033[H{text}'; sleep 5")]);
@@ -8660,7 +7909,6 @@ mod tests {
     fn a_focused_viewer_takes_the_frame_and_ctrl_z_brings_the_composer_back() {
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
@@ -8696,7 +7944,6 @@ mod tests {
     fn a_focused_viewer_sits_on_a_pane_above_the_dashboards_strip() {
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
@@ -8716,8 +7963,6 @@ mod tests {
             strip.contains("· attach ·"),
             "with no title the viewer's what names it: {strip:?}"
         );
-        // The counts are on it, cut from their right where the keys begin: at 80 columns the
-        // split key now sits beside `tab back` whatever the width, so there is less middle.
         assert!(
             strip.contains("0 working"),
             "the fleet counts are on it: {strip:?}"
@@ -8745,7 +7990,6 @@ mod tests {
         app.viewers.push(viewer_open("run:r1", "attach", "ONE"));
         app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
         app.focus(0);
-        // The byte 0x1d, ctrl+] or ctrl+5 to crossterm, goes to the viewer like any other.
         assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
         assert!(!app.key(KeyCode::Char('5'), KeyModifiers::CONTROL).unwrap());
         assert_eq!(app.focus, Some(0), "no cycling");
@@ -8760,7 +8004,6 @@ mod tests {
         assert_eq!(app.focus, None, "from the list the key does nothing");
     }
 
-    /// A session in `state` with `title`, `secs` seconds ago.
     fn session(id: &str, state: &str, title: &str, secs: i64) -> Session {
         Session {
             session_id: id.into(),
@@ -8790,7 +8033,6 @@ mod tests {
         let d = dir();
         let mut app = app(d.path());
         let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
-        // The focused session itself is blocked and the most recent; it is never the alert.
         data.sessions
             .push(session(A, "blocked", "the one on screen", 1));
         data.sessions
@@ -8830,8 +8072,6 @@ mod tests {
         );
         assert_eq!(line.width(), 200, "padded to the width");
 
-        // Too narrow for the alert: it is dropped whole, and the middle is cut from its right.
-        // The split is offered at any width, so it is the last key to go.
         let text = app.strip(0, 60).to_string();
         assert!(!text.contains("needs"), "no partial note: {text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
@@ -8841,7 +8081,6 @@ mod tests {
         );
         assert_eq!(app.strip(0, 60).width(), 60);
 
-        // Narrower than both ends: `tab back` goes too.
         let text = app.strip(0, 24).to_string();
         assert!(text.trim_end().ends_with("tab back"), "{text}");
         assert!(app.strip(0, 24).width() <= 24);
@@ -8865,7 +8104,6 @@ mod tests {
         use ratatui::crossterm::event::MouseButton;
         let d = dir();
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
@@ -8917,7 +8155,6 @@ mod tests {
         );
     }
 
-    /// Pump viewer `i` until row 0 of its screen starts with `text`.
     fn wait_paint(app: &mut App, i: usize, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
@@ -8935,7 +8172,6 @@ mod tests {
         }
     }
 
-    /// The cells of row `y` from column `x.start` to `x.end`, as text.
     fn cells(
         t: &Terminal<ratatui::backend::TestBackend>,
         y: u16,
@@ -8946,12 +8182,6 @@ mod tests {
             .collect()
     }
 
-    /// A dashboard on a background session whose viewer is alive but not focused, drawn once
-    /// on a frame `width` columns wide and 30 rows tall.
-    /// shift+enter on a session row attaches over the whole frame, pane or no pane, and the
-    /// pane is back on ctrl+z; the ESC CR Claude Code's terminal bindings send for it,
-    /// alt+enter to crossterm, does the same. ctrl+\ inside that viewer puts it beside the
-    /// list. Pane off, shift+enter is enter.
     #[test]
     fn shift_enter_attaches_over_the_whole_frame() {
         let (_d, mut app, mut t) = split_setup(200);
@@ -8972,7 +8202,6 @@ mod tests {
         );
         assert!(app.split_active(), "ctrl+z brings the pane back");
         app.needs_clear = false;
-        // ctrl+\ inside a viewer shift+enter opened goes beside the list, whatever the layout.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
         assert!(app.split && app.split_active() && app.focus == Some(0));
@@ -8995,9 +8224,6 @@ mod tests {
         assert!(app.split, "and ctrl+\\ there turns the pane on");
     }
 
-    /// Beside the list the composer's lower rule lands on the row the harness draws its own
-    /// on: the composer keeps as many rows under its box as the harness keeps under its, so
-    /// the two input boxes read as one across the frame.
     #[test]
     fn the_composers_rule_lands_on_the_harnesss_own() {
         let d = dir();
@@ -9066,8 +8292,6 @@ mod tests {
              of the pane held back: {screen:#?}"
         );
 
-        // Focused, the keys are drawn over that row, so the row is theirs alone: the
-        // status line under them would read as part of the keys.
         app.focus = Some(0);
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200);
@@ -9102,7 +8326,6 @@ mod tests {
     #[test]
     fn a_wide_frame_shows_the_selected_rows_viewer_beside_the_list_and_focus_only_moves_the_keys() {
         let (_d, mut app, mut t) = split_setup(200);
-        // LIST = clamp(200 / 2, 60, 100).
         let list = 100u16;
         let screen = rows(&t, 200);
         let left: Vec<String> = (0..30).map(|y| cells(&t, y, 0..list)).collect();
@@ -9139,7 +8362,6 @@ mod tests {
             left[29]
         );
 
-        // tab bounces into the pane's viewer and back out; enter focuses it too.
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.focus, Some(0));
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
@@ -9153,8 +8375,6 @@ mod tests {
             "focusing beside the list does not resize the viewer"
         );
         t.draw(|f| app.draw(f)).unwrap();
-        // The keys that leave the viewer are under the viewer, not across the frame in the
-        // list's hint row, which goes empty while the pane has the keys.
         let hint = cells(&t, 29, list + 1..200);
         assert!(hint.contains("tab back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
@@ -9244,8 +8464,6 @@ mod tests {
             reversed(&t),
             "unfocused, the composer's block cursor is back"
         );
-        // Focused, ctrl+\ picks the full-frame layout: the viewer takes the frame over the
-        // strip, the strip offers the split back, and the layout stays after ctrl+z.
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
@@ -9274,7 +8492,6 @@ mod tests {
             !cells(&t, 0, 0..200).contains("VIEW"),
             "in the full-frame layout the list has the frame to itself"
         );
-        // enter takes the frame again; ctrl+\ brings the split back, with the focus kept.
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
@@ -9296,14 +8513,11 @@ mod tests {
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
-        // With the pane off the line has the whole frame and fits it.
         app.size = (30, 130);
         app.split = false;
         let wide = app.hint_line().to_string();
         assert!(wide.ends_with("ctrl+t columns · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
-        // 140 columns with the pane on: the list column is 70; a long filter in front leaves
-        // the keys no room.
         app.size = (30, 140);
         app.split = true;
         app.filter = Input::new("x".repeat(30));
@@ -9369,8 +8583,6 @@ mod tests {
             "the layout key is the viewer's, not the list's: {:?}",
             screen[29]
         );
-        // Up past the table lands on the menu, which opens no viewer: the pane has the picked
-        // button's screen instead, `folder` on a fresh dashboard.
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
@@ -9384,11 +8596,6 @@ mod tests {
         assert!(pane.contains("add folder › a row for a folder"), "{pane}");
     }
 
-    /// On a wide frame the picked menu button's screen is in the pane while the cursor is on
-    /// the row, as a session's viewer would be: enter gives it the keys there, with the list
-    /// and its composer still beside it; shift+enter gives it the whole frame; ctrl+z or esc
-    /// come back to the list, the pane showing the button again. The jobs screen takes the
-    /// cursor into the pane and leaves the menu row on the list with `jobs` pressed.
     #[test]
     fn a_menu_buttons_screen_is_in_the_pane_and_enter_gives_it_the_keys() {
         let d = dir();
@@ -9428,7 +8635,6 @@ mod tests {
         );
         assert!(pane(&t).contains("guide › the keys"), "{}", pane(&t));
         assert!(left(&t).contains(&A[..8]), "the list stays: {}", left(&t));
-        // enter: the guide has the keys in the pane, the list stays beside it.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
         assert!(app.split_active());
@@ -9446,7 +8652,6 @@ mod tests {
             "still picked: {}",
             pane(&t)
         );
-        // shift+enter: the whole frame, as it was before the pane; ctrl+z brings the pane back.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
         assert!(!app.split_active(), "shift+enter takes the frame");
@@ -9459,8 +8664,6 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal) && app.split_active());
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         assert!(app.split_active(), "full ends with the screen");
-        // jobs: the rows and the cursor move into the pane; the list keeps the menu with
-        // `jobs` pressed; esc puts the cursor back on the menu row.
         assert!(app.menu_is("folder"));
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         assert!(app.menu_is("jobs"));
@@ -9493,7 +8696,6 @@ mod tests {
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
         assert!(!app.jobs_view);
         assert!(app.menu_is("jobs"), "esc lands on the menu row");
-        // With the pane off the screen takes the list's place, at any width.
         app.split = false;
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -9503,11 +8705,6 @@ mod tests {
         assert!(rows(&t, 120).join("\n").contains("new job"));
     }
 
-    /// `tab` hands a button's screen in the pane the keys, as it hands them to a viewer
-    /// there: the rule turns orange, the screen's own keys are drawn under the pane where
-    /// they are read with it, the list's hint row goes empty rather than saying it twice,
-    /// and the two prompt boxes sit on the same rows. `tab` inside the screen belongs to its
-    /// form, so ctrl+z is the way back out.
     #[test]
     fn tab_gives_a_buttons_screen_in_the_pane_the_keys() {
         let d = dir();
@@ -9555,7 +8752,6 @@ mod tests {
             "and not in the list's row too: {:?}",
             cells(&t, 39, 0..80)
         );
-        // From under the header, whose own box the pane has no counterpart for.
         let rules = |x: std::ops::Range<u16>| {
             (3..40u16)
                 .filter(|&y| {
@@ -9578,7 +8774,6 @@ mod tests {
             "tab bounces back out of the editor as it bounced in"
         );
         assert_eq!(app.status, "back to the list", "and says so");
-        // An open field keeps tab for its picks; ctrl+z leaves from there as esc does.
         assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         let Mode::Config(form) = &app.mode else {
@@ -9594,8 +8789,6 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z comes back out");
     }
 
-    /// ctrl+\ means the pane wherever it is pressed: a button's screen with the keys moves
-    /// between the pane and the whole list without losing the field it has open.
     #[test]
     fn ctrl_backslash_moves_a_buttons_screen_off_the_pane_and_back() {
         let d = dir();
@@ -9626,17 +8819,6 @@ mod tests {
         }
     }
 
-    /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
-    /// explains itself, enter presses it, and `help` is the guide.
-    /// The menu's `config` button opens the config editor where the list is: the fields under
-    /// their groups, `cones`, `harnesses` and `runs`, one row per field with the whole of the
-    /// control it takes, the selected field explained under the list. `← →` change a value on
-    /// its row and write the `defaults` block and the `columns:` line there and then, and
-    /// `backspace` puts the built-in back; a bad value comes back on its field with nothing
-    /// written. `enter` opens the text of a typed value, the one control a row cannot draw.
-    /// `ctrl+o` opens the `SESSION` rows alone as the next session's settings, seeded from the
-    /// defaults; `-` reads `system default` there; each field kept takes without writing
-    /// the file, the composer's prefix shows them, and the session starts under them.
     #[test]
     fn ctrl_o_picks_the_next_session_s_model_and_provider() {
         let d = dir();
@@ -9648,7 +8830,6 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("next session"), "{s}");
-        // The rows read as their labels; the jobs.yaml key is on the prompt line under them.
         assert!(
             s.contains("run on Bedrock") && s.contains("AWS region"),
             "{s}"
@@ -9661,7 +8842,6 @@ mod tests {
             s.contains("[claude]"),
             "the harness row brackets tab's pick, not the built-in: {s}"
         );
-        // Down from the last shown row stays; the hidden rows are never visited.
         for _ in 0..7 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
@@ -9680,9 +8860,6 @@ mod tests {
             s.contains("bedrock › default passes nothing"),
             "the prompt line names the key and what the built-in does, not the words: {s}"
         );
-        // ← → change the value on the row with no field opened first, and each change is
-        // taken there and then: bedrock with nothing behind it does not take, so the cursor
-        // lands on the profile it needs, with the reason, under the key that moved it.
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         match &app.mode {
@@ -9729,7 +8906,6 @@ mod tests {
         go(&mut app, "model");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        // Each field kept takes on the spot, so esc only closes the form.
         assert_eq!(app.status, "next session: claude · opus · bedrock");
         let p = app.session_policy();
         assert_eq!(
@@ -9749,10 +8925,8 @@ mod tests {
         assert!(composer.contains("› opus · bedrock › "), "{composer}");
         let args = harness::session_args(HarnessKind::Claude, None, "hi", &app.session_policy());
         assert!(args.contains(&"--model".into()) && args.contains(&"opus".into()));
-        // Codex shows its own model, none set, and the provider still.
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert_eq!(app.session_words(), ["codex", "bedrock"]);
-        // The form's harness row carries the pick, back round to claude.
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         app.key(KeyCode::Char('o'), ctrl).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
@@ -9790,8 +8964,6 @@ mod tests {
             .join("\n");
         assert!(s.contains("time limit (min)"), "{s}");
         assert!(s.contains("chart scale"), "{s}");
-        // The words beside the rows sit in one column, and the explanation block keeps its
-        // height, whichever row is selected.
         let column = |s: &str, what: &str| {
             s.lines()
                 .find(|l| l.contains(what))
@@ -9840,12 +9012,10 @@ mod tests {
             "the key that changes a value is always up: {s}"
         );
         assert!(s.contains("esc done"), "{s}");
-        // Right walks the words with nothing opened first; backspace puts the built-in back.
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "lines"));
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
-        // bound offers its words and also takes a typed number, which replaces a pick.
         go(&mut app, "sparkline.bound");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
@@ -9897,7 +9067,6 @@ mod tests {
             bound.contains("fleet") && bound.contains("[20]"),
             "a value typed in stands last among the words, as one more choice: {bound}"
         );
-        // model takes a full id the same way.
         go(&mut app, "model");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "claude-opus-5".chars() {
@@ -9907,7 +9076,6 @@ mod tests {
         assert!(
             matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "claude-opus-5")
         );
-        // On a pure pick a letter jumps to its option and - to the built-in.
         go(&mut app, "write");
         app.key(KeyCode::Char('t'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "true"));
@@ -9962,12 +9130,9 @@ mod tests {
             "the fields sit under their groups and blocks: {s}"
         );
         go(&mut app, "timeout_min");
-        // Closed, typing does nothing.
         app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
 
-        // A word where a number goes: the error on its field, which stays open, the file
-        // untouched.
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "abc".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
@@ -9997,7 +9162,6 @@ mod tests {
         }
         app.key(KeyCode::Char('5'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        // The field that closes on a good value writes the block itself; the editor stays.
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
         assert!(app.status.starts_with("config saved"), "{}", app.status);
         assert_eq!(config::defaults(&app.jobs_path).timeout_min, Some(5.0));
@@ -10021,7 +9185,6 @@ mod tests {
         assert!(s.contains("← → change"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        // backspace drops the typed id back to the built-in, and the words walk from there.
         go(&mut app, "model");
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
@@ -10029,8 +9192,6 @@ mod tests {
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
 
-        // The columns are ctrl+t's, arranged on the table; the editor has no row for them
-        // and a field closing writes the block without touching the line.
         assert_eq!(config::file_columns(&app.jobs_path), None);
         let saved = config::defaults(&app.jobs_path);
         assert_eq!(
@@ -10043,7 +9204,6 @@ mod tests {
             "empty leaves the built-in out of the file"
         );
 
-        // esc closes the editor with everything already written, and reopening shows it.
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
         app.enter().unwrap();
@@ -10087,7 +9247,6 @@ mod tests {
             "{s}"
         );
         assert_eq!(app.enter_label(), "jobs");
-        // ← from the first button wraps to the last; typed text keeps ← → for the caret.
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         assert_eq!(MENU[app.menu].0, "help");
@@ -10098,7 +9257,6 @@ mod tests {
         app.text.clear();
         app.enter().unwrap();
         assert!(matches!(app.mode, Mode::Guide(0)));
-        // Off the menu row nothing explains itself.
         app.mode = Mode::Normal;
         app.step(1);
         let s = screen(&mut app, &mut t);
@@ -10114,7 +9272,6 @@ mod tests {
         app.focus(0);
         app.size = (30, 200);
         assert!(app.split, "on by default");
-        // Focused, ctrl+\ flips the layout and keeps the focus.
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
         assert!(!app.split);
         assert_eq!(app.focus, Some(0));
@@ -10123,7 +9280,6 @@ mod tests {
         assert!(app.split);
         assert_eq!(app.focus, Some(0));
         assert!(app.text.is_empty(), "nothing typed into the composer");
-        // From the list the key turns the pane off and on, and the list keeps the keys.
         app.unfocus();
         app.status.clear();
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
@@ -10132,7 +9288,6 @@ mod tests {
         assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
         assert!(app.split, "and on again");
         assert!(app.text.is_empty(), "nothing typed into the composer");
-        // A narrow frame toggles the same: there is no minimum width.
         app.focus(0);
         app.size = (30, 80);
         app.needs_clear = false;
@@ -10173,8 +9328,6 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(names(&app), ["state", "title", "model", "context"]);
-        // The strip is every column there is: the ones the table draws, in their order, then
-        // a separator and the ones it does not.
         app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Columns(_)));
         let line = text(app.mode_line());
@@ -10187,7 +9340,6 @@ mod tests {
             hint.contains("space hide") && hint.contains("[ ] move"),
             "{hint}"
         );
-        // ] moves a column along the row and the table follows at once, with no save.
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
         assert_eq!(names(&app), ["state", "title", "context", "model"]);
@@ -10196,8 +9348,6 @@ mod tests {
             ["state", "model", "context"],
             "the file is untouched until enter"
         );
-        // space takes the one under the cursor off the table; a reload mid-pick keeps the
-        // arrangement rather than snapping it back to the file.
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert_eq!(names(&app), ["state", "title", "context"]);
         app.refresh().unwrap();
@@ -10206,7 +9356,6 @@ mod tests {
             text(app.hint_line()).contains("space show"),
             "under the cursor is off now"
         );
-        // enter writes the columns line and leaves the rest of the file where it was.
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(app.status.starts_with("columns saved"), "{}", app.status);
@@ -10216,7 +9365,6 @@ mod tests {
                 && text_file.contains("confirm_secs: 3"),
             "{text_file}"
         );
-        // esc puts back the set it opened on.
         app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert_eq!(names(&app), ["title", "context"]);
@@ -10224,8 +9372,6 @@ mod tests {
         assert_eq!(names(&app), ["state", "title", "context"]);
         assert_eq!(app.status, "columns as they were");
         assert_eq!(config::columns(&jobs), ["state", "context"]);
-        // A button's screen in the pane keeps its own prompt line; the strip still takes
-        // the list's, over the table it arranges.
         app.size = (30, 200);
         app.split = true;
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
@@ -10240,7 +9386,6 @@ mod tests {
             "the strip is on the list side: {frame:#?}"
         );
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        // The jobs screen's table is not the sessions', so the key says so there.
         app.jobs_view = true;
         app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "no arranging from there");
@@ -10286,7 +9431,6 @@ mod tests {
             ["state", "title", "model"],
             "the same columns in the same places with the pane on; the width cuts the rest"
         );
-        // bottom: the list on top at half the height, a rule row, the pane under it.
         let [list, rule, pane] = app.split_areas(Rect::new(0, 0, 80, 30));
         assert_eq!((list.height, list.width), (15, 80));
         assert_eq!((rule.y, rule.height, rule.width), (15, 1, 80));
@@ -10300,7 +9444,6 @@ mod tests {
             (16..30).any(|y| cells(&t, y, 0..80).contains("VIEW")),
             "the viewer is under the rule"
         );
-        // right, at 80 columns: the list has 40, the pane 39. No minimum.
         app.data.pane.at = "right".into();
         let [list, rule, pane] = app.split_areas(Rect::new(0, 0, 80, 30));
         assert_eq!((list.width, rule.x, pane.x, pane.width), (40, 40, 41, 39));
@@ -10335,7 +9478,6 @@ mod tests {
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
         app.mouse(wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
-        // A wheel on the list is the dashboard's.
         app.mouse(MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: 10,
@@ -10343,8 +9485,6 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         });
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
-        // Focused, shift+pgup goes a page back, the pane shows the lines that had left, the
-        // cursor is off the frame, and a key comes back to the bottom.
         app.focus(0);
         assert!(!app.key(KeyCode::PageUp, KeyModifiers::SHIFT).unwrap());
         // A page is 29 rows but only eleven lines have left a 30-row pane.
@@ -10394,18 +9534,14 @@ mod tests {
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
         assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
-        // A second click is the viewer's, nothing more.
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
         assert!(app.split);
-        // In the full-frame layout the list is not on screen, so a click at its old place is
-        // the viewer's.
         app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 0..200).starts_with("VIEW"));
         app.mouse(click(10, 5));
         assert_eq!(app.focus, Some(0));
-        // Beside the list again, a click on a row selects it and takes the keys back.
         app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
         let n = app
@@ -10418,11 +9554,9 @@ mod tests {
         app.mouse(click(10, row));
         assert_eq!(app.focus, None);
         assert_eq!(key(&app).as_deref(), Some(A));
-        // A second click on the row is not enter.
         app.mouse(click(10, row));
         assert_eq!(app.focus, None);
         assert_eq!(key(&app).as_deref(), Some(A));
-        // A click on the hint line selects nothing.
         app.mouse(click(10, 29));
         assert_eq!(key(&app).as_deref(), Some(A));
         assert_eq!(app.focus, None);
@@ -10474,7 +9608,6 @@ mod tests {
             Some("Ship it"),
             "the row shows the new title on the next read"
         );
-        // Esc leaves the transcript alone.
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(&app.mode, Mode::Rename(i) if i.text == "Ship it"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -10485,7 +9618,6 @@ mod tests {
     #[test]
     fn the_pane_stays_blank_for_a_session_in_its_own_terminal() {
         let d = dir();
-        // An interactive Claude runs in its own terminal: nothing is coming to the pane.
         registry_kind(d.path(), A, "/src/one", "idle", 1, "interactive");
         let dir = d.path().join("projects").join("-src-one");
         fs::create_dir_all(&dir).unwrap();
@@ -10542,16 +9674,12 @@ mod tests {
         let blank = |t: &Terminal<ratatui::backend::TestBackend>| {
             (0..30).all(|y| cells(t, y, 101..200).trim().is_empty())
         };
-        // A Claude background session the resting cursor will open: nothing, not the
-        // transcript and not the hint, since the screen is on its way.
         t.draw(|f| app.draw(f)).unwrap();
         assert!(blank(&t));
-        // The speculative viewer spawned and has not painted: still nothing, sized to the pane.
         app.viewers.push(speculative_open(A));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(blank(&t));
         assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
-        // Once it paints, the screen is there.
         app.viewers.clear();
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
         wait_paint(&mut app, 0, "VIEW");
@@ -10571,7 +9699,6 @@ mod tests {
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
-        // A's viewer painted and was the one focused last.
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
@@ -10616,17 +9743,13 @@ mod tests {
             activity: Vec::new(),
         });
         app.apply(data);
-        // The new Codex row took the cursor; back on A for the viewer.
         app.step(-1);
         assert_eq!(key(&app).as_deref(), Some(A));
-        // A's viewer painted and was the one focused last.
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
-        // The cursor moves onto the Codex row, which has no viewer and no transcript: the pane
-        // shows nothing of A.
         app.step(1);
         assert!(matches!(&app.selected().unwrap().kind, Kind::Session(id, _) if id == "codex-77"));
         assert_eq!(app.shown(), None);
@@ -10650,7 +9773,6 @@ mod tests {
             .transcript_path = Some(transcript);
         t.draw(|f| app.draw(f)).unwrap();
         assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
-        // A real viewer can still take the pane once it has painted.
         app.viewers
             .push(viewer_open("codex-77", "codex", "CODEX LIVE"));
         wait_paint(&mut app, 1, "CODEX LIVE");
@@ -10750,7 +9872,6 @@ mod tests {
         }
     }
 
-    /// `silent_open` marked as opened ahead of `enter`.
     fn speculative_open(key: &str) -> Open {
         let mut open = silent_open(key);
         open.speculative = true;
@@ -10768,7 +9889,6 @@ mod tests {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 1);
         let mut app = app(d.path());
-        // The pane off: this is about the frame alone.
         app.split = false;
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
@@ -10829,7 +9949,6 @@ mod tests {
         assert_eq!(app.prespawn_target(), None, "its viewer is already alive");
         app.viewers.clear();
         assert!(app.prespawn_target().is_some(), "the policy is back to yes");
-        // A stop in flight on the row, and a removal the registry has not caught up with.
         let (_tx, rx) = mpsc::channel();
         app.stopping.push(PendingStop {
             id: A.into(),
@@ -10881,9 +10000,6 @@ mod tests {
         assert_eq!(app.prespawn_target(), None, "a run row is never a target");
     }
 
-    /// A client the user walked into Claude's own agent view is not the session's screen, so
-    /// leaving it drops the viewer instead of parking that list in the pane; a client still in
-    /// its session stays alive for `enter` to return to.
     #[test]
     fn a_viewer_left_in_the_agent_view_is_dropped_and_a_session_is_kept() {
         let d = dir();
@@ -10924,7 +10040,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(2));
         }
         app.viewers.push(speculative_open(A));
-        // The oldest by focus time is the first one, older than the speculative viewer.
         app.viewers[0].last_focused = Instant::now() - Duration::from_secs(60);
         let mut c = Command::new("/bin/sleep");
         c.arg("5");
@@ -10936,8 +10051,6 @@ mod tests {
         assert_eq!(app.focus, Some(3));
     }
 
-    /// A Codex client opened with `enter` has no quiet way back, so a fourth viewer closes the
-    /// oldest attach around it, and with no attach to close the cap is exceeded, not the client.
     #[test]
     fn a_codex_client_is_never_evicted_for_a_fourth_viewer() {
         let d = dir();
@@ -10970,7 +10083,6 @@ mod tests {
             vec!["codex-1", "codex-2", "codex-3", "five"],
             "{keys:?}"
         );
-        // Entering a speculative attach evicts the one attach, never a client.
         app.viewers.push(speculative_open(A));
         app.focus(4);
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
@@ -10978,8 +10090,6 @@ mod tests {
         assert_eq!(app.focus, Some(3));
     }
 
-    /// The speculative viewer did not count while hidden; once `enter` takes it, the limit
-    /// holds again, and the least recently focused viewer goes, not the one just entered.
     #[test]
     fn entering_a_speculative_viewer_with_three_live_ones_closes_the_oldest() {
         let d = dir();
@@ -11001,7 +10111,6 @@ mod tests {
         assert_eq!(app.live_viewers(), MAX_VIEWERS);
     }
 
-    /// The same with the speculative viewer last, so closing shifts its index.
     #[test]
     fn entering_a_speculative_viewer_keeps_the_focus_on_it_after_the_shift() {
         let d = dir();
@@ -11054,7 +10163,6 @@ mod tests {
         assert_eq!(app.viewers.len(), 2, "the session is still listed");
         fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
         app.refresh().unwrap();
-        // The loop's turn after the reload landed; the rest is fresh, so nothing spawns.
         app.prespawn_tick();
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
         assert_eq!(

@@ -1,9 +1,5 @@
-//! Codex in the fleet. Codex keeps no session registry, so a Codex row is assembled from two
-//! reports: the process table (pid and start time from `ps`, the working directory from `lsof`)
-//! and the rollout file Codex writes under `~/.codex/sessions` once a session has its first
-//! turn. A rollout is tied to a process only by the two facts it records, its cwd and its start
-//! time; a process without one shows `-` for title, last reply and state. cones runs no Codex
-//! job and holds no Codex budget: seeing a session is all this module does.
+//! Codex fleet discovery from processes, writer locks, the thread database and rollouts.
+//! This module observes native sessions; it does not execute supervised jobs.
 use crate::fleet::Session;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,10 +13,8 @@ use std::{
     sync::Mutex,
 };
 
-/// Codex's home: `$CODEX_HOME`, the override Codex honors, else `.codex` beside the Claude dir
-/// (`~/.codex` next to `~/.claude`). Holds `sessions/` and `session_index.jsonl`.
-// ponytail: deriving the home from the Claude dir keeps a test's temp dir hermetic; a layout
-// where the two do not sit together sets CODEX_HOME.
+/// Honor `CODEX_HOME`, otherwise use `.codex` beside the Claude directory.
+/// The sibling default keeps fixture homes isolated.
 pub fn home(claude: &Path) -> PathBuf {
     match std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
@@ -28,7 +22,6 @@ pub fn home(claude: &Path) -> PathBuf {
     }
 }
 
-/// A live `codex` process: what the process table states about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,
@@ -36,8 +29,7 @@ pub struct Process {
     pub started: DateTime<Utc>,
     /// Working directory as `lsof -d cwd` prints it; `None` when lsof could not read it.
     pub cwd: Option<PathBuf>,
-    /// The thread id a `resume <id>` argument names: a client of the daemon, or a plain TUI
-    /// resuming a thread. Its rollout is that thread's, whatever the cwd and start time say.
+    /// An explicit resume id takes precedence over cwd and start-time attribution.
     pub thread: Option<String>,
     /// `--remote` makes this process a viewer of an app-server thread, not its writer.
     pub remote: bool,
@@ -51,35 +43,26 @@ pub struct Meta {
     pub started: DateTime<Utc>,
 }
 
-/// What the tail of a rollout file records.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tail {
-    /// First line of the assistant's most recent message.
     pub last: Option<String>,
     /// Latest turn: `active` after `task_started`, `done` after `task_complete`,
     /// `stopped` after `turn_aborted`. A new turn returns to `active`.
     pub state: Option<&'static str>,
-    /// Timestamp of the last line.
     pub last_activity: Option<DateTime<Utc>>,
     /// `turn_context.model` on the last turn, verbatim.
     pub model: Option<String>,
-    /// `token_count.info.total_token_usage` on the last such event: input (cache-inclusive) and
-    /// output, and `last_token_usage.total_tokens` as the prompt the last request carried.
+    /// Latest `total_token_usage`: input includes cache hits; context uses `last_token_usage.total_tokens`.
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
     pub context_tokens: Option<u64>,
     /// `token_count.info.model_context_window` on that event.
     pub context_window: Option<u64>,
-    /// Every line with a timestamp: assistant messages are `response_item` messages with the
-    /// assistant role, tool calls the `function_call`, `custom_tool_call` and
-    /// `local_shell_call` items, output tokens `last_token_usage.output_tokens` on a
-    /// `token_count` event.
+    /// Timestamped rollout activity for sparklines; see docs/harness.md for event mappings.
     pub activity: Vec<crate::fleet::Activity>,
 }
 
-/// Every live Codex session, oldest first by process start. No Codex home means Codex is not
-/// installed here: the process table is not read, so a machine or a test without one sees no
-/// `codex` process, whatever else is running.
+/// Skip discovery when the Codex home is absent, including in isolated tests.
 pub fn sessions(codex: &Path) -> Vec<Session> {
     if !codex.is_dir() {
         return Vec::new();
@@ -125,9 +108,7 @@ pub fn sessions(codex: &Path) -> Vec<Session> {
     rows(codex, &procs)
 }
 
-/// Subcommands that run no session: servers, account and package management, one-shot tools.
-/// Everything else (`codex`, `codex exec`, `codex review`, `codex resume`, `codex fork`, a prompt
-/// or flags) is a session.
+/// Subcommands that do not create sessions.
 const NOT_SESSIONS: [&str; 24] = [
     "agents",
     "login",
@@ -155,10 +136,7 @@ const NOT_SESSIONS: [&str; 24] = [
     "features",
 ];
 
-/// Live Codex session processes in the output of `TZ=UTC ps -axww -o pid=,lstart=,command=`. A
-/// process counts when its program is named `codex` and its first argument is not a subcommand
-/// from `NOT_SESSIONS`; the word `codex` inside another command's text does not count. `cwd`
-/// is left for lsof.
+/// Parse `TZ=UTC ps -axww -o pid=,lstart=,command=`; `cwd` is filled from lsof.
 pub fn processes(ps: &str) -> Vec<Process> {
     ps.lines()
         .filter_map(|line| {
@@ -185,9 +163,7 @@ pub fn processes(ps: &str) -> Vec<Process> {
         .collect()
 }
 
-/// Inspect options before the prompt; mentioning `--remote` or `resume ID` in an
-/// instruction does not identify its viewer or thread. Value-taking options consume
-/// their next word.
+/// Stop parsing options at the prompt so its text cannot identify a client or thread.
 fn client_options<'a>(mut args: impl Iterator<Item = &'a str>) -> (bool, Option<String>) {
     let mut remote = false;
     let mut resume = false;
@@ -246,7 +222,6 @@ pub fn cwds(lsof: &str) -> HashMap<u32, PathBuf> {
     out
 }
 
-/// The `session_meta` line: session id, cwd and the session's own start time.
 pub fn meta(line: &str) -> Option<Meta> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v["type"] != "session_meta" {
@@ -271,8 +246,6 @@ pub fn meta(line: &str) -> Option<Meta> {
     })
 }
 
-/// Assistant texts in one rollout line: a `response_item` message with role `assistant`, each
-/// `output_text` block's text.
 pub fn assistant_texts(v: &Value) -> impl Iterator<Item = &str> {
     let p = &v["payload"];
     let message =
@@ -286,8 +259,7 @@ pub fn assistant_texts(v: &Value) -> impl Iterator<Item = &str> {
         .filter_map(|b| b["text"].as_str())
 }
 
-/// Last reply, turn state and last timestamp from rollout lines. Lines that are not JSON are
-/// skipped; Codex may be mid-write on the last one.
+/// Ignore malformed JSON, including a partially written last line.
 pub fn tail(lines: &str) -> Tail {
     let mut t = Tail::default();
     t.fold(lines);
@@ -295,8 +267,7 @@ pub fn tail(lines: &str) -> Tail {
 }
 
 impl Tail {
-    /// Read `lines` on top of what came before: a `task_started` from an earlier read still
-    /// counts, so a turn writing megabytes of tool output keeps its `active` state.
+    /// Fold new events into prior state so long tool output does not hide an earlier turn start.
     pub fn fold(&mut self, lines: &str) {
         let t = self;
         for line in lines.lines() {
@@ -376,19 +347,14 @@ pub fn titles(index: &str) -> HashMap<String, String> {
         .collect()
 }
 
-/// What Codex 0.154 keeps about every thread in the `threads` table of the newest
-/// `state_*.sqlite` under its home: `name` (the name Codex or the user gave) else `title` (the
-/// first prompt), the rollout path and the cwd. `session_index.jsonl` stopped being written with
-/// the move to sqlite, so it is read behind the database, for threads older than the move.
+/// Thread names, rollout paths and cwd from the latest `state_*.sqlite`.
+/// Prefer database names; fall back to `session_index.jsonl` for older threads.
 #[derive(Debug, Default)]
 pub struct Index {
     pub titles: HashMap<String, String>,
-    /// Rollout path and cwd per thread id, from the database only.
     pub threads: HashMap<String, (PathBuf, PathBuf)>,
 }
 
-// ponytail: shells out to /usr/bin/sqlite3 (13 ms for a hundred threads) instead of adding a
-// sqlite crate; the table is read in full every tick, cache by mtime if it ever shows.
 pub fn index(codex: &Path) -> Index {
     let mut out = Index {
         titles: fs::read_to_string(codex.join("session_index.jsonl"))
@@ -431,10 +397,7 @@ pub fn index(codex: &Path) -> Index {
     out
 }
 
-/// Which process holds each thread open: Codex flocks `thread-writer-locks/<thread id>.lock`
-/// for as long as a thread is loaded, and one `lsof` on those files names the holder. A lock
-/// file nobody holds (its process died) is not listed, so it does not count. Empty when the
-/// directory does not exist (Codex before 0.154).
+/// Map held thread writer locks to their process ids. Unheld lock files do not count.
 pub fn locks(codex: &Path, pids: &[u32]) -> HashMap<String, u32> {
     if pids.is_empty() {
         return HashMap::new();
@@ -522,7 +485,6 @@ pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
     out
 }
 
-/// The app-server daemon's pid from `app-server-daemon/app-server.pid`, when that process runs.
 pub fn daemon_pid(codex: &Path) -> Option<u32> {
     let text = fs::read_to_string(codex.join("app-server-daemon/app-server.pid")).ok()?;
     let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
@@ -535,8 +497,7 @@ pub fn daemon_pid(codex: &Path) -> Option<u32> {
         .then_some(pid)
 }
 
-/// The rollout file for a thread id: the database says, else the file named `...-<id>.jsonl`
-/// under `sessions/`.
+/// Prefer the database rollout path; fall back to `sessions/**/*-<id>.jsonl`.
 fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
     if let Some((path, _)) = index.threads.get(id)
         && path.is_file()
@@ -562,11 +523,8 @@ fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
     None
 }
 
-/// Which rollout each process wrote, by the two facts a rollout records: its cwd and its start.
-/// A rollout belongs to a process when that process is the only live Codex in the rollout's
-/// directory that started at or before it; the newest such rollout is the live thread, since
-/// `/new` opens another file. With two Codex processes in one directory the file could be
-/// either's, so neither gets it. Remote clients write no rollout themselves.
+/// Attribute only when one eligible process shares the rollout's cwd and predates it.
+/// Choose its newest rollout; ambiguous matches and remote clients get none.
 pub fn attribute<'a>(
     procs: &[Process],
     rollouts: &'a [(PathBuf, Meta)],
@@ -589,21 +547,17 @@ pub fn attribute<'a>(
     out
 }
 
-/// Fleet rows for live processes: the rollout each wrote, its title from `names`,
-/// last reply and state from its tail. A process showing a thread the daemon holds is
-/// `kind: daemon`, joinable from here; a plain TUI has no kind. Reads only under `codex`.
+/// Build fleet rows from live processes; only daemon-held threads are joinable.
 pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let Some(since) = procs.iter().map(|p| p.started).min() else {
         return Vec::new();
     };
     let index = index(codex);
     let daemon = daemon_pid(codex);
-    // Only these processes can hold a lock that matters here: the clients and the daemon.
     let pids: Vec<u32> = procs.iter().map(|p| p.pid).chain(daemon).collect();
     let locks = locks(codex, &pids);
     let held: HashMap<u32, String> = locks.iter().map(|(id, pid)| (*pid, id.clone())).collect();
-    // A writer lock already names the owner. Do not attribute its rollout to a different
-    // process just because that process started earlier in the same directory.
+    // Writer locks identify owners and take precedence over cwd/start-time attribution.
     let rollouts: Vec<_> = rollouts(codex, since)
         .into_iter()
         .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
@@ -611,13 +565,10 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let guessed = attribute(procs, &rollouts);
     let mut out: Vec<Session> = procs
         .iter()
-        // New remote clients have no thread id in their argv and hold no writer lock.
-        // The daemon's thread_rows supplies their sessions, including while the viewer
-        // remains open. A synthetic codex-PID row would count the same launch twice.
+        // Remote clients without thread ids are supplied by `thread_rows`; avoid duplicate rows.
         .filter(|p| !(p.remote && daemon.is_some() && p.thread.is_none()))
         .map(|p| {
-            // What the process states about its thread (a lock it holds, a `resume <id>`
-            // argument) beats the cwd-and-start guess.
+            // Explicit resume ids and held locks beat cwd/start-time attribution.
             let stated = p
                 .thread
                 .as_deref()
@@ -628,8 +579,6 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
             let t = rollout.map(|(path, _)| tail_of(path)).unwrap_or_default();
             let id =
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
-            // A client of a thread the daemon holds: Codex lets several clients share one
-            // thread, so the dashboard opens another, whichever terminal shows this one.
             let kind = (daemon.is_some() && locks.get(&id) == daemon.as_ref())
                 .then(|| "daemon".to_owned());
             Session {
@@ -642,9 +591,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 harness: "codex".into(),
                 kind,
                 cwd: p.cwd.clone().unwrap_or_default(),
-                // The latest turn's start, completion or cancellation from the rollout.
                 state: t.state.unwrap_or("-").into(),
-                // The rollout's last timestamp; the process start is not substituted for it.
                 last_activity: t.last_activity,
                 model: t.model,
                 started: Some(p.started),
@@ -667,11 +614,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     out
 }
 
-/// A Codex thread the dashboard launched behind the app-server daemon. The daemon's TUI is a
-/// client: leaving it keeps the thread working, and `codex --remote ... resume ID` opens it
-/// again. The process table shows nothing while no client is attached, and the app server has
-/// no thread list yet, so cones keeps its own list under the state dir; `x x` on the row
-/// forgets an entry.
+/// Saved daemon launch for discovery while no client is attached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
     pub id: String,
@@ -705,9 +648,8 @@ pub fn forget(state: &Path, id: &str) -> std::io::Result<()> {
     fs::write(threads_path(state), serde_json::to_string_pretty(&all)?)
 }
 
-/// The thread a launch in `dir` at `since` produced: the newest rollout in that directory
-/// started since then, if it has had a turn. The daemon drops a thread that disconnects before
-/// its first turn and `resume` on it exits at once, so such a launch is not recorded.
+/// Record the newest launch in `dir` only after its first turn; the daemon drops
+/// threads disconnected before that turn, so they cannot be resumed.
 pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread> {
     let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
     rollouts(codex, since)
@@ -724,13 +666,8 @@ pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread
         })
 }
 
-/// Fleet rows for threads the app-server daemon holds and no live client shows: `kind` is
-/// `daemon`, which `enter` resumes. A thread is the daemon's when its writer lock is held by
-/// the daemon's pid, whoever opened it (the dashboard's composer, the VS Code extension,
-/// another `--remote` client, the `h` picker). The record file cones wrote for its own launches
-/// is read too, for a Codex without lock files. State, last reply and tokens come from the
-/// rollout's tail, the title from `index`. A thread whose rollout is gone is not a row. `live`
-/// are the process-table rows, which carry the same id while a client is attached.
+/// List daemon-held threads and saved launches without live client rows.
+/// Omit threads whose rollout is missing.
 pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
     let index = index(codex);
     let daemon = daemon_pid(codex);
@@ -793,8 +730,7 @@ pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session>
         .collect()
 }
 
-/// Rollout files under `sessions/YYYY/MM/DD/` modified since `since`, with their first line. A
-/// live session's file is written after its process started, so an older file is never read.
+/// Read rollout headers only from files modified since the earliest process start.
 fn rollouts(codex: &Path, since: DateTime<Utc>) -> Vec<(PathBuf, Meta)> {
     let mut out = Vec::new();
     let mut stack = vec![codex.join("sessions")];
@@ -836,12 +772,8 @@ fn meta_of(path: &Path) -> Option<Meta> {
     Some(m)
 }
 
-/// The first prompt of a rollout, cached: Codex names a thread in `session_index.jsonl` only
-/// some time after the first turn (a daemon thread from VS Code had none an hour in), so a row
-/// without a name shows what was asked instead of `-`. The prompt is the first `UserMessage`
-/// item; the `role: user` messages before it carry AGENTS.md and skills, not the ask.
-// ponytail: scans the head line by line and stops at the first prompt; a rollout with no prompt
-// yet is not cached, so the next tick reads it again.
+/// Cache the first actual prompt. Earlier user-role messages contain instructions
+/// and skills; retry uncached files until a `UserMessage` arrives.
 fn prompt_of(path: &Path) -> Option<String> {
     static CACHE: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
@@ -857,7 +789,6 @@ fn prompt_of(path: &Path) -> Option<String> {
     Some(p)
 }
 
-/// The headline of a `UserMessage` item_completed event, if `line` is one.
 pub fn prompt(line: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(line).ok()?;
     let item = &v["payload"]["item"];
@@ -871,9 +802,8 @@ pub fn prompt(line: &str) -> Option<String> {
         .find_map(crate::fleet::headline)
 }
 
-/// The rollout's tail, folded from the bytes written since the last read; the dashboard
-/// reloads every second. The whole file is read once, so a turn state recorded before the
-/// last megabyte of tool output is not lost; the last partial line waits for its newline.
+/// Fold appended bytes after the first full read, retaining earlier state.
+/// Leave a partial final line for the next read.
 fn tail_of(path: &Path) -> Tail {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
     let len = fs::metadata(path).map_or(0, |m| m.len());

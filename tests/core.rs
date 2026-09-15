@@ -11,7 +11,6 @@ use std::{fs, io::Write};
 fn cron_preserves_day_or_weekday_semantics() {
     let rows = launchd::calendar_intervals("0 2 1 * 1").unwrap();
     assert_eq!(rows.len(), 1);
-    // The native launchd dictionary defines Day + Weekday as OR.
     assert_eq!(rows[0].get("Day"), Some(&1));
     assert_eq!(rows[0].get("Weekday"), Some(&1));
 }
@@ -225,7 +224,6 @@ fn budget_stop_preserves_reported_per_model_usage() {
 
 #[test]
 fn overlap_allow_is_valid_for_writers() {
-    // cones does not decide what jobs may do to a directory; two writers on one cwd both run.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
     fs::write(&path, config_text("    write: true\n    overlap: allow\n")).unwrap();
@@ -234,14 +232,11 @@ fn overlap_allow_is_valid_for_writers() {
     assert_eq!(job.overlap, config::Overlap::Allow);
 }
 
-/// One entry in Claude's own session registry, as `~/.claude/sessions/<pid>.json` holds it.
 fn registry(claude: &std::path::Path, name: &str, entry: serde_json::Value) {
     let dir = claude.join("sessions");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(format!("{name}.json")), entry.to_string()).unwrap();
 }
-/// A transcript in Claude's project store for `cwd`: one titled, stamped assistant message of
-/// `prompt` input tokens whose text is `text`, naming its model the way Claude writes it.
 fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt: u64, text: &str) {
     let project = claude.join("projects").join(
         cwd.to_string_lossy()
@@ -287,9 +282,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     let project = claude.join("projects/-tmp-re-po");
     fs::create_dir_all(&project).unwrap();
     let transcript = project.join(format!("{id}.jsonl"));
-    // Two streamed content blocks of one message, then a second message, each stamped and naming
-    // its model the way Claude writes them. The first stamped line is an attachment, as in a
-    // real transcript.
+    // One streamed message in two blocks, then another message; the first timestamp is an attachment.
     let usage = |mid: &str, i: u64, o: u64, ts: &str| {
         format!(
             r#"{{"type":"assistant","timestamp":"{ts}","message":{{"id":"{mid}","model":"claude-fable-5-1","usage":{{"input_tokens":{i},"cache_read_input_tokens":10,"output_tokens":{o}}}}}}}"#
@@ -336,8 +329,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         "210",
         "no window until the harness states one"
     );
-    // The window comes only from the statusLine payload, saved by the user's statusLine command
-    // as statusline/<session id>.json; the model name never stands in for it.
+    // Only a saved statusLine payload can supply the window size.
     let sidecar = claude.join("statusline");
     fs::create_dir_all(&sidecar).unwrap();
     fs::write(
@@ -359,9 +351,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         ),
         "start and last activity are the transcript's first and last timestamps, not the registry's"
     );
-    // A [1m] model in settings.json and a turn past 200k prove nothing about the window
-    // Claude reports; the cell shows the tokens alone, no denominator. The transcript must grow
-    // for the cached count to be redone.
+    // Model names and usage thresholds do not report a window. Grow the transcript to invalidate its cache.
     fs::write(claude.join("settings.json"), r#"{"model":"opus[1m]"}"#).unwrap();
     let mut t = fs::OpenOptions::new()
         .append(true)
@@ -388,8 +378,6 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     // Over the stated window shows as reported, never clamped or re-guessed.
     assert_eq!(cones::fleet::context(&big), "300k/200k");
     assert_eq!((big.tokens_in, big.tokens_out), (Some(300_330), Some(13)));
-    // An interactive session has no job of its own, so its state is the registry status: the
-    // four words Claude writes there, and anything else as Claude's own word.
     for (status, state) in [
         ("idle", "idle"),
         ("shell", "active"),
@@ -400,9 +388,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         registry(claude, id, entry(status));
         assert_eq!(get().state, state, "{status}");
     }
-    // A background job: Claude's detail line is the last column and its transcript path fills
-    // in when the project store has none. The job's updatedAt is not read; with no transcript
-    // file behind the path, start, activity, model and context are absent.
+    // Background jobs supply detail and a fallback transcript path, but timestamps still require a transcript.
     let other = "22222222-2222-4222-8222-222222222222";
     fs::create_dir_all(claude.join("jobs/aaaaaaaa")).unwrap();
     fs::write(
@@ -446,8 +432,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         (None, None, None, None, None),
         "the registry's startedAt and updatedAt never stand in for the transcript"
     );
-    // A busy registry is working whatever the job's state.json still says: a new prompt flips
-    // the registry at once and the job file only with the first progress note.
+    // Registry busy must override a stale finished-job state.
     for state in [
         r#"{"state":"done"}"#,
         r#"{"state":"failed"}"#,
@@ -458,8 +443,6 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         let b = cones::fleet::find(claude, other).unwrap().unwrap();
         assert_eq!(b.state, "active", "{state}");
     }
-    // Otherwise a finished job reads its own word, as in `claude agents`: done, failed or
-    // stopped beat an idle registry status.
     let mut idle = bg("aaaaaaaa");
     idle["status"] = "idle".into();
     registry(claude, other, idle.clone());
@@ -490,9 +473,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         (None, None, None),
         "an unsafe job id reads no file"
     );
-    // A dead pid, a pid whose start time is not the registry's (reused), an unsafe id, a daemon
-    // spare, junk and Claude's .key files are skipped. An entry with no timestamp is still a session: no
-    // registry timestamp is read for any column.
+    // Reject dead/reused pids, unsafe ids, spares and junk; registry timestamps are optional.
     registry(
         claude,
         "dead",
@@ -551,7 +532,6 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             .is_empty()
     );
 }
-/// The list text without its ANSI color codes.
 fn plain(s: &str) -> String {
     let mut out = String::new();
     let mut skip = false;
@@ -594,9 +574,6 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         [live],
         "the cones-owned session collapses into its run row and the dead pid is stale"
     );
-    // The JSON `cones ls --json` prints is the same record the table renders: model, start,
-    // last activity and context come from the transcript; the window is absent when no statusLine
-    // command saved one, and there is no update time field to disagree with the cells.
     let json = serde_json::to_value(&rows[0]).unwrap();
     assert_eq!(
         (
@@ -780,8 +757,6 @@ fn fleet_exchange_is_the_last_prompt_and_the_full_reply() {
         ]
     );
     assert!(cones::fleet::exchange(&dir.path().join("missing.jsonl")).is_empty());
-    // More of the transcript: the last n prompts with their replies, oldest first, a blank
-    // between them; a tool-only turn shows its prompt alone; one exchange is `exchange`.
     assert_eq!(
         cones::fleet::exchanges(&t, 2),
         [

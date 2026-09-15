@@ -1,11 +1,6 @@
-//! pi in the fleet. pi keeps no session registry, so a pi row is assembled from two reports:
-//! the process table (pid and start time from `ps`, the working directory from the kernel) and
-//! the session file pi writes under its agent directory once a session has its first turn. pi
-//! sets its process title, so a live `pi` states nothing else about itself: no subcommand, no
-//! session id, no flags. Its session is therefore the file written in that process's own
-//! directory since it started, and a directory running two pi processes shows `-` for both.
-//! pi has no background mode and no attach, so a pi row is seen, never joined; it has no dollar
-//! budget flag either, so cones runs no pi job and holds no pi budget.
+//! pi fleet discovery from processes and session files. pi overwrites argv, so
+//! files are matched by cwd and write time; multiple processes in one cwd are ambiguous.
+//! pi supports neither attach nor supervised cones jobs.
 use crate::fleet::{Activity, Session};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
@@ -17,10 +12,7 @@ use std::{
     sync::Mutex,
 };
 
-/// pi's agent directory: `$PI_CODING_AGENT_DIR`, the override pi honors, else `.pi/agent` beside
-/// the Claude dir (`~/.pi/agent` next to `~/.claude`). Holds `sessions/`.
-// ponytail: deriving the home from the Claude dir keeps a test's temp dir hermetic, as the Codex
-// home does; a layout where the two do not sit together sets PI_CODING_AGENT_DIR.
+/// Honor `PI_CODING_AGENT_DIR`, otherwise use `.pi/agent` beside the Claude directory.
 pub fn home(claude: &Path) -> PathBuf {
     match std::env::var_os("PI_CODING_AGENT_DIR").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
@@ -28,13 +20,11 @@ pub fn home(claude: &Path) -> PathBuf {
     }
 }
 
-/// A live `pi` process: everything the process table states about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,
     /// Start time as `ps -o lstart` prints it under UTC.
     pub started: DateTime<Utc>,
-    /// Working directory, which names the session directory pi writes into.
     pub cwd: Option<PathBuf>,
 }
 
@@ -46,33 +36,26 @@ pub struct Meta {
     pub started: DateTime<Utc>,
 }
 
-/// What one pass over a session file reads out of pi's own entries.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tail {
-    /// First line of the assistant's most recent text.
     pub last: Option<String>,
-    /// The latest turn, from the last message entry: `active` while the user's ask or a tool
-    /// result is the last word, else the assistant's own `stopReason`.
+    /// State from the latest message role and assistant `stopReason`.
     pub state: Option<&'static str>,
-    /// `model` on the last assistant message, verbatim.
     pub model: Option<String>,
     pub tokens_in: u64,
     pub tokens_out: u64,
-    /// The prompt pi's own status line counts on the last assistant message: `usage.input`,
-    /// `cacheRead` and `cacheWrite`, which pi keeps apart.
+    /// Latest prompt size: input plus cacheRead and cacheWrite.
     pub context_tokens: Option<u64>,
     /// `usage.cost.total` summed. pi writes 0 for a model it has no price for.
     pub cost_usd: f64,
     /// The name `--name` or `/name` set, from the last `session_info` entry.
     pub name: Option<String>,
-    /// The first line of the user's first ask, the title until a name is set.
     pub prompt: Option<String>,
     pub last_activity: Option<DateTime<Utc>>,
     pub activity: Vec<Activity>,
 }
 
-/// Every live pi session, oldest first by process start. No pi home means pi is not installed
-/// here: the process table is not read at all.
+/// Skip process discovery when the pi home is absent.
 pub fn sessions(pi: &Path) -> Vec<Session> {
     if !pi.is_dir() {
         return Vec::new();
@@ -118,10 +101,8 @@ pub fn sessions(pi: &Path) -> Vec<Session> {
     rows(pi, &procs)
 }
 
-/// Live pi processes in the output of `TZ=UTC ps -axww -o pid=,lstart=,command=`. pi overwrites
-/// its argv with its process title, `pi`, so the whole command is that one word: a session and a
-/// `pi update` look alike here, and only the program name tells pi from another program. The rpc
-/// server titles itself `pi-rpc` and is not a session. `cwd` is read afterwards.
+/// Parse pi's process title. It erases subcommands, so sessions and updates look alike;
+/// `pi-rpc` is excluded.
 pub fn processes(ps: &str) -> Vec<Process> {
     ps.lines()
         .filter_map(|line| {
@@ -144,9 +125,7 @@ pub fn processes(ps: &str) -> Vec<Process> {
         .collect()
 }
 
-/// The folder pi keeps a directory's sessions in: the path without its leading separator, every
-/// `/` and `:` as `-`, wrapped in `--`. Two directories can share one name (`/a/b:c` and
-/// `/a/b/c`), so the `cwd` in a file's own first line decides which one it belongs to.
+/// Folder names flatten `/` and `:` alike; verify cwd from the file header to resolve collisions.
 pub fn session_dir(pi: &Path, cwd: &Path) -> PathBuf {
     let name = cwd
         .to_string_lossy()
@@ -155,7 +134,6 @@ pub fn session_dir(pi: &Path, cwd: &Path) -> PathBuf {
     pi.join("sessions").join(format!("--{name}--"))
 }
 
-/// The `session` line: session id, the directory pi ran in, and the file's own start.
 pub fn meta(line: &str) -> Option<Meta> {
     let v: Value = serde_json::from_str(line).ok()?;
     if v["type"] != "session" {
@@ -179,8 +157,7 @@ pub fn meta(line: &str) -> Option<Meta> {
     })
 }
 
-/// Last reply, turn state, usage and title from a session file's entries. Lines that are not
-/// JSON are skipped; pi may be mid-write on the last one.
+/// Ignore malformed JSON, including a partially written last line.
 pub fn tail(lines: &str) -> Tail {
     let mut t = Tail::default();
     for line in lines.lines() {
@@ -216,7 +193,6 @@ pub fn tail(lines: &str) -> Tail {
                 .filter_map(|b| b["text"].as_str())
         };
         match m["role"].as_str() {
-            // The user's ask, or a tool's answer: the model has the turn either way.
             Some("user") => {
                 t.state = Some("active");
                 if t.prompt.is_none() {
@@ -225,8 +201,6 @@ pub fn tail(lines: &str) -> Tail {
             }
             Some("toolResult") => t.state = Some("active"),
             Some("assistant") => {
-                // pi appends an assistant message once the model has answered, and its stop
-                // reason is that turn's: a tool call means the turn goes on.
                 t.state = Some(match m["stopReason"].as_str() {
                     Some("toolUse") => "active",
                     Some("stop") => "idle",
@@ -242,7 +216,6 @@ pub fn tail(lines: &str) -> Tail {
                 }
                 let u = &m["usage"];
                 let n = |k: &str| u[k].as_u64().unwrap_or(0);
-                // pi counts the prompt in three parts, as its own window figure sums them.
                 let prompt = n("input") + n("cacheRead") + n("cacheWrite");
                 t.tokens_in += prompt;
                 t.tokens_out += n("output");
@@ -263,15 +236,11 @@ pub fn tail(lines: &str) -> Tail {
     t
 }
 
-/// Fleet rows for live pi processes: the session file each wrote, and what that file records.
-/// A process with no file of its own shows `-` everywhere but keeps a row, so `stop` can name
-/// it. Reads only under `pi`.
 pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
     let mut out: Vec<Session> = procs
         .iter()
         .map(|p| {
-            // A directory running two pi processes could hand either one the same file, so
-            // neither takes it, exactly as two Codex processes in one directory take none.
+            // Multiple pi processes in one cwd make attribution ambiguous.
             let alone = procs
                 .iter()
                 .filter(|o| o.cwd.is_some() && o.cwd == p.cwd)
@@ -290,7 +259,6 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
                     .as_ref()
                     .map_or_else(|| format!("pi-{}", p.pid), |(_, m)| m.session_id.clone()),
                 harness: "pi".into(),
-                // pi has no daemon: every session owns the terminal it was typed in.
                 kind: None,
                 cwd: p.cwd.clone().unwrap_or_default(),
                 state: t.state.unwrap_or("-").into(),
@@ -302,7 +270,6 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
                 tokens_in: (t.tokens_in > 0).then_some(t.tokens_in),
                 tokens_out: (t.tokens_out > 0).then_some(t.tokens_out),
                 context_tokens: t.context_tokens,
-                // pi prices a turn itself, and writes 0 for a model it has no price for.
                 context_window: None,
                 cost_usd: (t.cost_usd > 0.0).then_some(t.cost_usd),
                 last: t.last,
@@ -315,10 +282,8 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
     out
 }
 
-/// The session file a process wrote: in its own directory, written since it started, the most
-/// recently written one when it has opened several. `--continue` appends to a file older than
-/// the process, so the file's own start is not the match; what it records is its directory,
-/// which is checked against the process's, since two directories can share one folder name.
+/// Choose the latest file written since process start and verify its header cwd.
+/// `--continue` reopens old files, so their creation time cannot identify the process.
 fn session_file(pi: &Path, cwd: &Path, p: &Process) -> Option<(PathBuf, Meta)> {
     let mut best: Option<(PathBuf, Meta, std::time::SystemTime)> = None;
     for entry in fs::read_dir(session_dir(pi, cwd))
@@ -365,10 +330,7 @@ fn meta_of(path: &Path) -> Option<Meta> {
     Some(m)
 }
 
-/// The file's entries, cached by length: totals are summed over the whole file, so a file that
-/// has not grown since the last refresh is not read again.
-// ponytail: rereads the whole file when it grows, where codex.rs folds each rollout's tail
-// incrementally; do the same here if a long pi session slows the refresh.
+/// Cache by length; recount the whole file when it changes.
 fn tail_of(path: &Path) -> Tail {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
     let len = fs::metadata(path).map_or(0, |m| m.len());
@@ -495,7 +457,6 @@ mod tests {
         assert_eq!(one[0].cost_usd, Some(0.002));
         assert!(one[0].own_terminal(), "pi has no way to join a session");
 
-        // A second pi in the same directory: the file could be either's, so neither takes it.
         let two = [
             p.clone(),
             Process {
@@ -507,7 +468,6 @@ mod tests {
         assert_eq!(both[0].session_id, "pi-7");
         assert_eq!(both[1].state, "-");
 
-        // A pi that started after the file was last written wrote none of it.
         let later = Process {
             started: Utc::now() + chrono::Duration::hours(1),
             ..p
