@@ -2099,7 +2099,8 @@ fn field_at(name: &str) -> usize {
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// The `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`
+    /// A field closed on a new value, so the block is written and the editor stays where it
+    /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`
     /// and `pane:` blocks, None when every field is left to the built-in, and the
     /// `mark_secs:` line.
     Save(
@@ -2118,10 +2119,12 @@ pub enum ConfigAction {
 /// fields and `enter` opens the selected one: its value is pressed and the prompt line is
 /// where it is edited, the options with the current one bracketed where the field is picked,
 /// the value with a cursor where it is typed; `← →` pick, typing edits, `enter` keeps the
-/// value and returns to the list, `esc` puts the old one back. On the list `ctrl+s` saves the
-/// block and `esc` cancels. The selected field's fuller explanation sits under the list. An
-/// empty answer leaves the field out of the file, so the built-in applies and shows dim in
-/// its place. Pure: the file is read and written by the dashboard.
+/// value, saves the block and returns to the list, `esc` puts the old one back. There is
+/// nothing to press to keep the block: every field that closes on a value it did not open
+/// with writes it, and `esc` on the list only closes the editor. The selected field's fuller
+/// explanation sits under the list. An empty answer leaves the field out of the file, so the
+/// built-in applies and shows dim in its place. Pure: the file is read and written by the
+/// dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigForm {
     pub row: usize,
@@ -2378,21 +2381,6 @@ impl ConfigForm {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
                 KeyCode::Enter => self.enter(),
-                KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
-                    return match self.config() {
-                        Ok((p, c, s, pn, m)) => ConfigAction::Save(Box::new(p), c, s, pn, m),
-                        Err(e) => {
-                            // The error lands on the field it names, open to be fixed.
-                            self.go(FIELDS
-                                .iter()
-                                .position(|f| e.starts_with(&format!("{}:", f.name)))
-                                .unwrap_or(self.row));
-                            self.enter();
-                            self.error = Some(e);
-                            ConfigAction::Stay
-                        }
-                    };
-                }
                 KeyCode::Up => {
                     if let Some(r) = (0..self.row).rev().find(|&i| self.shown(i)) {
                         self.go(r);
@@ -2412,14 +2400,33 @@ impl ConfigForm {
                 self.values[self.row] = std::mem::take(&mut self.before);
                 self.open = false;
             }
-            // The value is kept when the check passes for this field; another field's
-            // complaint waits for ctrl+s.
-            KeyCode::Enter => match self.config() {
-                Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
-                    self.error = Some(e);
+            // A field that closes on a value it did not open with saves the block there and
+            // then. Its own complaint keeps it open to be fixed; another field's closes it
+            // and stands, since it is what the file would have got.
+            KeyCode::Enter => {
+                let changed = self.values[self.row] != self.before;
+                match self.config() {
+                    Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
+                        self.error = Some(e);
+                    }
+                    Err(e) => {
+                        // Another field's complaint: the cursor goes to the field it names,
+                        // since that is what stopped the block from being written.
+                        self.open = false;
+                        self.go(FIELDS
+                            .iter()
+                            .position(|f| e.starts_with(&format!("{}:", f.name)))
+                            .unwrap_or(self.row));
+                        self.error = Some(e);
+                    }
+                    Ok((p, c, s, pn, m)) => {
+                        self.open = false;
+                        if changed {
+                            return ConfigAction::Save(Box::new(p), c, s, pn, m);
+                        }
+                    }
                 }
-                _ => self.open = false,
-            },
+            }
             KeyCode::Left | KeyCode::Right | KeyCode::Tab
                 if self.field().picked(&self.values[self.row]) =>
             {
@@ -4994,12 +5001,7 @@ impl App {
                 keys.extend([("enter", "keep"), ("esc", "back")]);
                 hints(&keys)
             }
-            Mode::Config(form) => hints(&[
-                ("↑ ↓", "field"),
-                ("enter", "edit"),
-                ("ctrl+s", if form.group.is_some() { "keep" } else { "save" }),
-                ("esc", "cancel"),
-            ]),
+            Mode::Config(_) => hints(&[("↑ ↓", "field"), ("enter", "edit"), ("esc", "done")]),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
                 ("enter", "add"),
@@ -5397,8 +5399,8 @@ impl App {
                     }
                 }
             },
-            // ctrl+s checks the whole block and replaces the file at once; a bad value comes
-            // back inline on its field and the editor stays.
+            // A closed field checks the whole block and replaces the file at once, and the
+            // editor stays open for the next one; a bad value comes back inline on its field.
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
@@ -5406,7 +5408,6 @@ impl App {
                 ConfigAction::Save(policy, ..) if form.group.is_some() => {
                     self.harness = Self::harness_at(policy.harness);
                     self.session = Some(*policy);
-                    self.mode = Mode::Normal;
                     self.status = format!("next session: {}", self.session_words().join(" · "));
                 }
                 ConfigAction::Save(policy, columns, spark, pane, mark) => {
@@ -5419,7 +5420,6 @@ impl App {
                         mark,
                     ) {
                         Ok(()) => {
-                            self.mode = Mode::Normal;
                             self.status =
                                 format!("config saved to {}", fleet::tilde(&self.jobs_path));
                             self.invalidate();
@@ -8803,7 +8803,7 @@ mod tests {
         );
         let under = cells(&t, 39, 81..160);
         assert!(
-            under.contains("esc cancel"),
+            under.contains("esc done"),
             "the editor's keys are under the pane: {under:?}"
         );
         assert!(
@@ -8842,11 +8842,10 @@ mod tests {
     /// The menu's `config` button opens the config editor where the list is: the fields under
     /// their groups, `runs`, `tools` and `cones`, one row per field with its value and a few
     /// words, the selected field explained under the list. Enter opens a field: typing edits,
-    /// ← → pick, enter keeps the value; ctrl+s checks the lot and writes only the `defaults`
-    /// block and the `columns:` line; a bad value comes back on its field and nothing is
-    /// written.
+    /// ← → pick, enter keeps the value and writes the `defaults` block and the `columns:`
+    /// line there and then; a bad value comes back on its field and nothing is written.
     /// `ctrl+o` opens the `runs` group alone as the next session's settings, seeded from the
-    /// defaults; `-` reads `system default` there; `ctrl+s` keeps the picks without writing
+    /// defaults; `-` reads `system default` there; each field kept takes without writing
     /// the file, the composer's prefix shows them, and the session starts under them.
     #[test]
     fn ctrl_o_picks_the_next_session_s_model_and_provider() {
@@ -8887,9 +8886,10 @@ mod tests {
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('s'), ctrl).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
+        // Each field kept takes on the spot, so esc only closes the form.
         assert_eq!(app.status, "next session: claude · opus · bedrock");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
         assert!(!d.path().join("none.yaml").exists(), "nothing is written");
         let composer: String = app
             .composer()
@@ -8911,7 +8911,7 @@ mod tests {
         app.key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('s'), ctrl).unwrap();
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.harness, 1, "codex");
         assert_eq!(app.session_words(), ["codex", "bedrock"]);
     }
@@ -8984,7 +8984,7 @@ mod tests {
             "closed, the prompt line shows the value: {s}"
         );
         assert!(s.contains("enter edit"), "{s}");
-        assert!(s.contains("ctrl+s save"), "{s}");
+        assert!(s.contains("esc done"), "{s}");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
@@ -9103,7 +9103,7 @@ mod tests {
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("2.00"), "built-ins show dim: {s}");
         assert!(
-            s.matches("system default").count() >= 4,
+            s.matches("system default").count() >= 3,
             "harness-owned fields read system default when empty: {s}"
         );
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
@@ -9162,13 +9162,20 @@ mod tests {
             }
             _ => panic!("stays open"),
         }
-        assert!(!app.jobs_path.exists());
+        assert_eq!(
+            config::defaults(&app.jobs_path).timeout_min,
+            None,
+            "a field held open by its own error writes nothing"
+        );
         for _ in 0..3 {
             app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Char('5'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // The field that closes on a good value writes the block itself; the editor stays.
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
+        assert!(app.status.starts_with("config saved"), "{}", app.status);
+        assert_eq!(config::defaults(&app.jobs_path).timeout_min, Some(5.0));
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "0.25".chars() {
@@ -9190,6 +9197,7 @@ mod tests {
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         go(&mut app, "model");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for _ in 0..3 {
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
@@ -9210,16 +9218,13 @@ mod tests {
             ),
             _ => panic!("stays open"),
         }
-        assert!(!app.jobs_path.exists());
+        assert_ne!(config::columns(&app.jobs_path), ["speed"]);
         app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for c in "state, age".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
-        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
-        assert!(app.status.starts_with("config saved"), "{}", app.status);
         assert_eq!(config::columns(&app.jobs_path), ["state", "age"]);
         let saved = config::defaults(&app.jobs_path);
         assert_eq!(
@@ -9232,7 +9237,9 @@ mod tests {
             "empty leaves the built-in out of the file"
         );
 
-        // Reopening shows what was saved; esc leaves the file alone.
+        // esc closes the editor with everything already written, and reopening shows it.
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
         app.enter().unwrap();
         match &app.mode {
             Mode::Config(f) => assert_eq!(
