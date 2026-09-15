@@ -1646,18 +1646,26 @@ struct App {
     prespawned: Option<String>,
     /// Where the list rows were drawn last, so a click finds its row.
     list_area: Rect,
-    /// The transcript tail on view in the pane: path, the file length it was read at, lines.
+    /// The transcript's last exchanges on view in the pane: path, the file length it was read
+    /// at, lines.
     preview: Option<(PathBuf, u64, Vec<String>)>,
 }
 
 /// How long the cursor rests on a Claude session row before its viewer opens ahead of `enter`.
 const REST: Duration = Duration::from_millis(400);
 
-/// The rest beside the list, where the pane is waiting for the screen.
-const REST_SPLIT: Duration = Duration::from_millis(150);
+/// The rest beside the list, where the pane is waiting for the screen. Spawn to first text is
+/// 215 ms at the median and 475 ms at the 90th percentile (`viewer_first_paint` in the debug
+/// log, 217 attaches over two days), so 150 ms of rest was 40 percent of what the eye waited.
+/// 50 ms lets a held arrow key through and opens on every row a hand steps across.
+const REST_SPLIT: Duration = Duration::from_millis(50);
 
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
+
+/// Exchanges the pane shows of a transcript while its viewer has not painted: enough to fill
+/// the pane from the bottom, read from the file's last 4 MiB.
+const PREVIEW_EXCHANGES: usize = 3;
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used
 /// `claude attach` of a listed session, the one kind a resting cursor reopens unseen in a
@@ -4083,13 +4091,23 @@ impl App {
     /// transcript, dim, so a row shows something the moment the cursor lands on it; else one
     /// line saying what `enter` would open here.
     fn draw_preview(&mut self, frame: &mut Frame, pane: Rect) {
-        let lines = self.preview_lines(pane.height as usize);
+        let lines = self.preview_lines();
         if !lines.is_empty() {
+            // Wrapped and anchored to the bottom, as the client's own screen will be, so the
+            // latest text is where the eye finds it once the viewer paints.
             let text: Vec<Line> = lines
                 .iter()
-                .map(|l| Line::styled(format!("· {l}"), dim()))
+                .map(|l| Line::styled(l.clone(), dim()))
                 .collect();
-            frame.render_widget(Paragraph::new(text), pane);
+            let text = Paragraph::new(text).wrap(Wrap { trim: false });
+            let count = text.line_count(pane.width) as u16;
+            let area = Rect {
+                y: pane.y + pane.height.saturating_sub(count),
+                height: count.min(pane.height),
+                ..pane
+            };
+            let text = text.scroll((count.saturating_sub(pane.height), 0));
+            frame.render_widget(text, area);
             return;
         }
         if let Some(hint) = self.pane_hint() {
@@ -4103,9 +4121,10 @@ impl App {
         }
     }
 
-    /// The last `n` assistant headlines of the selected session's transcript, read again
-    /// only when the file grew or the row changed.
-    fn preview_lines(&mut self, n: usize) -> Vec<String> {
+    /// The last exchanges of the selected session's transcript, prompts quoted with `> ` and
+    /// replies under them, the shape `claude attach` will paint; read again only when the
+    /// file grew or the row changed.
+    fn preview_lines(&mut self) -> Vec<String> {
         let Some(path) = self.selected_transcript() else {
             return vec![];
         };
@@ -4116,7 +4135,11 @@ impl App {
         {
             return lines.clone();
         }
-        let lines = fleet::tail(&path, n).1;
+        let mut lines = fleet::exchanges(&path, PREVIEW_EXCHANGES);
+        // A transcript that opens with a reply renders a blank where its prompt would be.
+        while lines.first().is_some_and(|l| l.is_empty()) {
+            lines.remove(0);
+        }
         self.preview = Some((path, len, lines.clone()));
         lines
     }
@@ -6782,13 +6805,18 @@ mod tests {
         let dir = d.path().join("projects").join("-src-one");
         fs::create_dir_all(&dir).unwrap();
         let transcript = dir.join(format!("{A}.jsonl"));
-        let line = |text: &str| {
-            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
+        let line = |role: &str, text: &str| {
+            serde_json::json!({"type": role, "message": {"content": [{"type": "text", "text": text}]}})
                 .to_string()
         };
         fs::write(
             &transcript,
-            format!("{}\n{}\n", line("first reply"), line("second reply")),
+            format!(
+                "{}\n{}\n{}\n",
+                line("user", "fix it"),
+                line("assistant", "first reply"),
+                line("assistant", "second reply")
+            ),
         )
         .unwrap();
         let mut app = app(d.path());
@@ -6796,24 +6824,39 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
+        // The exchange as the client will draw it: prompt quoted, replies under it, the
+        // latest on the pane's last row and nothing at its top.
+        let pane = app.pane(Rect::new(0, 0, 200, 30));
+        let last = pane.y + pane.height - 1;
+        let row = |t: &Terminal<ratatui::backend::TestBackend>, y: u16| cells(t, y, 101..200);
         assert!(
-            cells(&t, 0, 101..200).starts_with("· first reply"),
+            row(&t, last).starts_with("second reply"),
             "{}",
-            cells(&t, 0, 101..200)
+            row(&t, last)
         );
-        assert!(cells(&t, 1, 101..200).starts_with("· second reply"));
+        assert!(row(&t, last - 2).starts_with("first reply"));
+        assert!(
+            row(&t, last - 4).starts_with("> fix it"),
+            "{}",
+            row(&t, last - 4)
+        );
+        assert!(row(&t, 0).trim().is_empty());
         // A speculative viewer that has not painted keeps the tail on view, sized to the pane.
         app.viewers.push(speculative_open(A));
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(cells(&t, 0, 101..200).starts_with("· first reply"));
+        assert!(row(&t, last).starts_with("second reply"));
         assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
-        // The transcript grew: the tail follows.
-        fs::write(&transcript, format!("{}\n", line("third reply"))).unwrap();
+        // The transcript changed: the tail follows.
+        fs::write(
+            &transcript,
+            format!("{}\n", line("assistant", "third reply")),
+        )
+        .unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            cells(&t, 0, 101..200).starts_with("· third reply"),
+            row(&t, last).starts_with("third reply"),
             "{}",
-            cells(&t, 0, 101..200)
+            row(&t, last)
         );
         // Once it paints, the screen replaces the tail.
         app.viewers.clear();
@@ -6845,11 +6888,15 @@ mod tests {
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
         t.draw(|f| app.draw(f)).unwrap();
+        // At the bottom of the pane, where the client will draw its latest text.
+        let pane = app.pane(Rect::new(0, 0, 200, 30));
+        let last = pane.y + pane.height - 1;
         assert!(
-            cells(&t, 0, 101..200).starts_with("· two's reply"),
+            cells(&t, last, 101..200).starts_with("two's reply"),
             "{}",
-            cells(&t, 0, 101..200)
+            cells(&t, last, 101..200)
         );
+        assert!(!cells(&t, 0, 101..200).starts_with("two's reply"));
     }
 
     #[test]
