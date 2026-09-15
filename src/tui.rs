@@ -2896,6 +2896,11 @@ const REST_SPLIT: Duration = Duration::from_millis(50);
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
+/// The window title Claude's client sets in its own agent view, the screen `↑` opens from an
+/// attached session's composer. A client parked there shows Claude's session list, not the
+/// session the row names.
+const AGENT_VIEW_TITLE: &str = "claude agents";
+
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used
 /// `claude attach` of a listed session, the one kind a resting cursor reopens unseen in a
 /// quarter second. A Codex client, a harness's agents view or a resumed run has no such way
@@ -3963,6 +3968,13 @@ impl App {
             open.viewer.title()
         );
         self.debug(|| line);
+        // A client left in Claude's own agent view paints that list under the row's name, and
+        // `enter` there attaches whatever row its cursor sits on, so the viewer is dropped:
+        // the next rest on the row attaches the session again.
+        if self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE) {
+            self.close(i);
+            self.status = "left the agent view · enter attaches the session again".into();
+        }
     }
 
     /// Feed every viewer: read what it wrote, answer its queries, hand it its input, and
@@ -9944,6 +9956,39 @@ mod tests {
         );
         rested(&mut app, &format!("run:{A}"), OLD);
         assert_eq!(app.prespawn_target(), None, "a run row is never a target");
+    }
+
+    /// A client the user walked into Claude's own agent view is not the session's screen, so
+    /// leaving it drops the viewer instead of parking that list in the pane; a client still in
+    /// its session stays alive for `enter` to return to.
+    #[test]
+    fn a_viewer_left_in_the_agent_view_is_dropped_and_a_session_is_kept() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let titled = |app: &mut App, title: &str| {
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", &format!("printf '\\x1b]2;{title}\\x07'; sleep 5")]);
+            let mut open = silent_open(A);
+            open.viewer = Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap();
+            app.viewers.push(open);
+            let i = app.viewers.len() - 1;
+            app.focus = Some(i);
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while app.viewers[i].viewer.title().is_none() {
+                app.pump();
+                assert!(Instant::now() < deadline, "the viewer set no title");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        titled(&mut app, AGENT_VIEW_TITLE);
+        app.unfocus();
+        assert!(app.viewers.is_empty(), "the agent view outlived leaving it");
+        assert!(app.status.contains("agent view"), "{}", app.status);
+        titled(&mut app, "◑ a session");
+        app.unfocus();
+        assert_eq!(app.viewers.len(), 1, "a session's client stays alive");
+        assert!(app.status.contains("enter returns to it"), "{}", app.status);
     }
 
     #[test]
