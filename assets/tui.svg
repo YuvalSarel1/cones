@@ -17,8 +17,8 @@
 <rect x="66.58" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
 <rect x="75.01" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▇ </text>
-<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">4</text>
+<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▃ </text>
+<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">5</text>
 <text x="159.3" y="50" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> working  </text>
 <text x="243.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">▇ </text>
 <text x="260.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">0</text>
@@ -43,54 +43,58 @@
 <rect x="66.58" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="75.01" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="70" xml:space="preserve" textLength="910.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘</text>
-<rect x="32.9" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
-<text x="32.9" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> jobs </text>
-<rect x="91.9" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
-<text x="91.9" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> agents </text>
+<rect x="32.9" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
+<text x="32.9" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> folder </text>
+<rect x="108.7" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
+<text x="108.7" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> jobs </text>
 <rect x="167.7" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
-<text x="167.7" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> folder </text>
-<rect x="243.6" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
-<text x="243.6" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> config </text>
-<rect x="319.5" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
-<text x="319.5" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> help </text>
-<text x="16.0" y="150" xml:space="preserve" textLength="969.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                               context    last 16m          model             activity</text>
+<text x="167.7" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> config </text>
+<rect x="243.6" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
+<text x="243.6" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> help </text>
+<text x="16.0" y="150" xml:space="preserve" textLength="986.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                               context    last 16m          model               activity</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
 <text x="16.0" y="190" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">▌ </text>
-<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▇  </text>
+<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▃  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">✻ claude  </text>
 <text x="142.4" y="190" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">working  </text>
 <text x="218.3" y="190" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">orchestrator sweep setup            </text>
-<text x="521.8" y="190" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">62k/1.0M   </text>
-<text x="614.5" y="190" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▁▁▁▁▁▆▁▂▃▃▂▁▄▁▁▂  </text>
-<text x="766.3" y="190" xml:space="preserve" textLength="168.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">claude-fable-5-1  1s</text>
-<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
-<text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="210" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  ui animation config bounce          </text>
-<text x="521.8" y="210" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">123k/1.0M  </text>
-<text x="614.5" y="210" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▇▂▅▄▄▂▁▂▂▁▂  </text>
-<text x="766.3" y="210" xml:space="preserve" textLength="168.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  1s</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
-<text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  restructure tabs navigation         </text>
-<text x="521.8" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">112k/1.0M  </text>
-<text x="614.5" y="230" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▆▅▄▂▂▄▃▃▃  </text>
-<text x="766.3" y="230" xml:space="preserve" textLength="168.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  5s</text>
-<text x="32.9" y="250" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
-<text x="58.1" y="250" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="250" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  session rename capability           </text>
-<text x="521.8" y="250" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">52k/1.0M   </text>
-<text x="614.5" y="250" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▁▁▁▁▂▆▁▁▅  </text>
-<text x="766.3" y="250" xml:space="preserve" textLength="168.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">claude-fable-5-1  0s</text>
-<text x="16.0" y="290" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
-<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
-<text x="58.1" y="310" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="310" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done     </text>
-<text x="218.3" y="310" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">exposure channel permissions scope  </text>
-<text x="521.8" y="310" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">258k/1.0M  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  claude-fable-5-1  1h</text>
+<text x="521.8" y="190" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">124k/1.0M  </text>
+<text x="614.5" y="190" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▃▄▃▂▃▂▁▂▅▃▃▄▄▃▅▃  </text>
+<text x="766.3" y="190" xml:space="preserve" textLength="185.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">claude-fable-5-1    3s</text>
+<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
+<text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">&gt;_ codex  </text>
+<text x="142.4" y="210" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  Simplify verbose wording            </text>
+<text x="521.8" y="210" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">61k/828k   </text>
+<text x="614.5" y="210" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▁▁▁▅▂▅▆▆▃  </text>
+<text x="766.3" y="210" xml:space="preserve" textLength="185.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">openai.gpt-6-astra  1s</text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
+<text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">&gt;_ codex  </text>
+<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  Reorder menu, remove agents         </text>
+<text x="521.8" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">82k/828k   </text>
+<text x="614.5" y="230" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▁▁▁▁▇▇▇▇▄  </text>
+<text x="766.3" y="230" xml:space="preserve" textLength="185.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">openai.gpt-6-astra  0s</text>
+<text x="32.9" y="250" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
+<text x="58.1" y="250" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">&gt;_ codex  </text>
+<text x="142.4" y="250" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  Fix scrolling in Codex              </text>
+<text x="521.8" y="250" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">63k/828k   </text>
+<text x="614.5" y="250" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▁▁▁▁▅▇▅▅▅  </text>
+<text x="766.3" y="250" xml:space="preserve" textLength="185.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">openai.gpt-6-astra  1s</text>
+<text x="32.9" y="270" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
+<text x="58.1" y="270" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">&gt;_ codex  </text>
+<text x="142.4" y="270" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  Shorten the content                 </text>
+<text x="521.8" y="270" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">52k/828k   </text>
+<text x="614.5" y="270" xml:space="preserve" textLength="151.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁▁▁▁▁▁▁▁▁▁▁▁▁▁▇▆  </text>
+<text x="766.3" y="270" xml:space="preserve" textLength="185.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">openai.gpt-6-astra  3s</text>
+<text x="16.0" y="310" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
+<text x="32.9" y="330" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
+<text x="58.1" y="330" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
+<text x="142.4" y="330" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done     </text>
+<text x="218.3" y="330" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">exposure channel permissions scope  </text>
+<text x="521.8" y="330" xml:space="preserve" textLength="429.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">258k/1.0M  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁  claude-fable-5-1    2h</text>
 <text x="16.0" y="630" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
 <text x="16.0" y="650" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">✻ claude › </text>
-<text x="108.7" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">a</text>
-<text x="117.2" y="650" xml:space="preserve" textLength="733.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">n instruction for ~/personal/cones · enter starts claude there · ctrl+v pastes an image</text>
+<text x="108.7" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">T</text>
+<text x="117.2" y="650" xml:space="preserve" textLength="160.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">ype an instruction…</text>
 <text x="16.0" y="670" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text>
 <text x="16.0" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
 <text x="58.1" y="690" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> attach · </text>
