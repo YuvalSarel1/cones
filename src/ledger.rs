@@ -284,6 +284,36 @@ impl Ledger {
         }
         Ok(())
     }
+    /// Folders a session has been seen in, one path per line in `recent`, newest first; the
+    /// `folder` prompt recalls them with ↑ ↓. `seen` adds the ones not yet listed at the front
+    /// and the file is rewritten only when that changed.
+    // ponytail: ordered by first sighting and capped at 20; by last activity if recall ever
+    // needs it, which means a timestamp per line.
+    pub fn recent(&self, seen: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        let mut recent: Vec<PathBuf> = std::fs::read_to_string(self.state.join("recent"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect();
+        let mut new: Vec<PathBuf> = Vec::new();
+        for p in seen {
+            if !recent.contains(p) && !new.contains(p) {
+                new.push(p.clone());
+            }
+        }
+        if !new.is_empty() {
+            new.append(&mut recent);
+            new.truncate(20);
+            recent = new;
+            let mut f = private_file(&self.state.join("recent"))?;
+            f.set_len(0)?;
+            for p in &recent {
+                writeln!(f, "{}", p.display())?;
+            }
+        }
+        Ok(recent)
+    }
     pub fn reserved_spend(&self, job: &str) -> Result<f64> {
         let cutoff = Utc::now() - chrono::Duration::hours(24);
         Ok(self

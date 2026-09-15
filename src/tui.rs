@@ -142,6 +142,8 @@ pub struct Data {
     pub columns: Vec<String>,
     /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
     pub folders: Vec<PathBuf>,
+    /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
+    pub recent: Vec<PathBuf>,
 }
 
 impl Data {
@@ -151,12 +153,14 @@ impl Data {
         let mut runs = ledger.runs()?;
         runs.retain(|r| !hidden.contains(&r.started.run_id));
         let sessions = fleet_rows(claude, state, &runs)?;
+        let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
         Ok(Self {
             jobs: config::read_jobs(jobs_path).unwrap_or_default(),
             runs,
             sessions,
             columns: config::columns(jobs_path),
             folders: ledger.folders()?,
+            recent: ledger.recent(&seen)?,
         })
     }
 
@@ -3411,8 +3415,9 @@ impl App {
             Mode::Harness(_) => Line::default(),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
-                ("enter", "work there"),
+                ("enter", "add"),
                 ("tab", "complete"),
+                ("↑ ↓", "recent"),
                 ("esc", "cancel"),
             ]),
             Mode::Normal if !self.text.is_empty() => hints(&[
@@ -3716,6 +3721,21 @@ impl App {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Backspace => {
                     text.pop();
+                }
+                // ↑ ↓ recall the folders sessions have been seen in, newest first, as a
+                // shell's history does; the prompt's text is the one recalled.
+                KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
+                    let recent: Vec<String> =
+                        self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
+                    let at = recent.iter().position(|r| r == text);
+                    let n = recent.len();
+                    let next = match (code, at) {
+                        (KeyCode::Up, None) => 0,
+                        (KeyCode::Up, Some(i)) => (i + 1) % n,
+                        (_, None) => n - 1,
+                        (_, Some(i)) => (i + n - 1) % n,
+                    };
+                    *text = recent[next].clone();
                 }
                 KeyCode::Char(c) if !ctrl => text.push(c),
                 // One tab grows the path as far as it is unambiguous; a second, changing
@@ -5564,6 +5584,31 @@ mod tests {
             "a reload keeps the menu row"
         );
         assert!(app.menu_is("folder"), "and the picked button");
+        // ↑ ↓ in the prompt recall the folders sessions have been seen in, newest first.
+        registry(claude, B, "/src/two", "idle", 1_757_682_872_000);
+        app.refresh().unwrap();
+        assert_eq!(
+            fs::read_to_string(claude.join("recent")).unwrap(),
+            "/src/two\n/src/one\n",
+            "a folder seen for the first time goes to the front"
+        );
+        app.mode = Mode::Folder(String::new());
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Folder(t) if t == "/src/two"),
+            "{:?}",
+            app.status
+        );
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Folder(t) if t == "/src/one"));
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Folder(t) if t == "/src/two"),
+            "wraps"
+        );
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Folder(t) if t == "/src/one"));
+        app.mode = Mode::Normal;
     }
 
     /// A folder the prompt picks has a row from then on, with nothing running there, across

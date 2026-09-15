@@ -113,6 +113,7 @@ State lives in `~/.cones` (`--state-dir` to isolate). Directories are created `0
 | `runs.jsonl` | The ledger: one `started` and one terminal record per run. Appends hold an exclusive lock; a partial last line from a killed writer is repaired on the next append. |
 | `hidden` | One run id per line: runs `ctrl+x` hid in the dashboard. The ledger is untouched; delete a line to show the run again. |
 | `folders` | One path per line: folders the dashboard's menu picked, each a row of its own while nothing runs there. `ctrl+x` twice on the row removes its line. |
+| `recent` | One path per line, newest first, at most 20: every folder the dashboard has seen a session in. The menu's `folder` prompt recalls them with `↑` `↓`. |
 | `output/<run_id>/events.jsonl`, `output/<run_id>/stderr.log` | Claude's stream-json events (64 MiB cap, 1 MiB per line) and stderr (1 MiB cap). |
 | `transcripts/<run_id>/<session_id>.jsonl` | The archived transcript when `archive_transcript: true`. |
 | `logs/<job>.out.log`, `logs/<job>.err.log` | launchd's stdout and stderr for the scheduled `cones run`. |
