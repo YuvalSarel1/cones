@@ -339,9 +339,15 @@ impl Data {
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
         // The state column sits before the title, where the eye lands after the icon, when
-        // `columns:` lists it; the other columns follow the title in their order.
-        let has_state = self.columns.iter().any(|c| c == "state");
-        let cols: Vec<&String> = self.columns.iter().filter(|c| *c != "state").collect();
+        // `columns:` lists it; the other columns follow the title in their order. The jobs
+        // screen has the columns a job can fill, whatever `columns:` says for sessions.
+        let job_columns = ["model".to_owned(), "activity".to_owned(), "last".to_owned()];
+        let has_state = jobs_view || self.columns.iter().any(|c| c == "state");
+        let cols: Vec<&String> = if jobs_view {
+            job_columns.iter().collect()
+        } else {
+            self.columns.iter().filter(|c| *c != "state").collect()
+        };
         let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
         let cells = flat
             .iter()
@@ -7167,6 +7173,16 @@ mod tests {
         assert!(
             text.contains(&fleet::tilde(&cwd)),
             "the jobs screen shows each job's directory: {text}"
+        );
+        let names = app
+            .rows
+            .iter()
+            .find(|r| r.kind == Kind::Columns)
+            .map(Row::text)
+            .unwrap_or_default();
+        assert!(
+            names.contains("model") && names.contains("dir") && !names.contains("context"),
+            "the jobs screen has a job's columns, not a session's: {names}"
         );
         let hint: String = app
             .hint_line()

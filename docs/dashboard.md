@@ -24,7 +24,7 @@ A file watcher was not chosen. The files are in three trees, transcripts grow co
 | --- | --- |
 | Menu | `jobs`, `agents`, `folder`, `config`, `help`: one row of buttons above the tables, described under [the menu](#the-menu) |
 | Sessions | icon, harness with its own mark (`✻ claude`, `>_ codex`, `π pi`), the state word when `columns:` lists `state` (else `orchestrator` on the folder's coordinator and `own terminal` on a session that cannot be joined from here, blank otherwise), title or short id, then the rest of the `columns:` list from jobs.yaml, described under [columns](#columns) |
-| Jobs (the `jobs` button) | in place of the tables above: `◆` or `◇` for enabled or not, colored by its last run, the harness, its last run's status or `off` with the schedule beside it (`ok · 0 9 * * *`; `job · <schedule>` without a state column), the name, then under the columns its model, how long since the last run fired, and its directory; the columns that are a session's alone stay blank. A `new job` row closes the table |
+| Jobs (the `jobs` button) | in place of the tables above: `◆` or `◇` for enabled or not, colored by its last run, the harness, its last run's status or `off` with the schedule beside it (`ok · 0 9 * * *`; `job · <schedule>` without a state column), the name, then its model, how long since the last run fired, and its directory, whatever `columns:` lists for sessions. A `new job` row closes the table |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason |
 | Viewer | the selected or focused session's live screen, on a terminal at least 140 columns wide |
 
