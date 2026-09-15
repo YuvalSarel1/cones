@@ -60,7 +60,8 @@ SHIPPED = ["launchd schedule, no daemon between ticks", "dollar budget, timeout,
            "a fleet strip under a viewer; ctrl+] cycles live viewers",
            "a session's viewer opens while the cursor rests on its row; enter is instant",
            "the selected session shows live beside the list, at any terminal size",
-           "the pane: on or off, right or bottom, from jobs.yaml; one column set, cut at the width"]
+           "the pane: on or off, right or bottom, from jobs.yaml; one column set, cut at the width",
+           "ctrl+t arranges the columns on the table itself, live under the keys"]
 FOOT = ("cones owns the clock, supervision, budgets and the ledger. The harness owns execution and permissions. "
         "Unenforceable guarantees are validation errors, never a second permission engine. "
         "Seeing a harness's sessions never waits on enforcing its budgets.")
