@@ -78,11 +78,12 @@ const ORANGE: Color = Color::Indexed(208);
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// A working row's icon: a bar that fills and empties, the same family as the sparkline and
 /// the resting `▁`, holding two extra frames full and two empty so the turn reads as a breath
-/// rather than a flicker. One animation for every harness; until 2026-09-15 each harness spun
+/// rather than a flicker. Full is `▇`, never `█`: the full block touches the row above and the
+/// bar reads as part of it. One animation for every harness; until 2026-09-15 each harness spun
 /// its own mark, and Claude's star spent a third of its cycle as a dot, so a working row read
 /// as less than an idle one.
-const SPINNER: [&str; 18] = [
-    "▁", "▁", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "█", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+const SPINNER: [&str; 16] = [
+    "▁", "▁", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "▇", "▇", "▆", "▅", "▄", "▃", "▂",
 ];
 /// Milliseconds per spinner frame; the draw loop ticks every 100.
 const FRAME_MS: usize = 160;
@@ -1191,7 +1192,7 @@ fn expand(text: &str, mut f: impl FnMut(usize) -> String) -> String {
 fn icon(state: &str) -> &str {
     match state {
         "active" | "started" => "▁",
-        "blocked" => "█",
+        "blocked" => "▇",
         "idle" | "exited" | "stopped" => "▁",
         "ok" | "done" => "✓",
         "skipped" | "-" => "–",

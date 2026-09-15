@@ -163,16 +163,17 @@ pub fn sparklines(
         .collect()
 }
 
-/// One bar per value, the lowest for nothing and the highest at or over `bound`.
+/// One bar per value, the lowest for nothing and the highest at or over `bound`. The highest
+/// is `▇`, not `█`: the full block touches the row above and the chart bleeds into it.
 pub fn bars(values: &[f64], bound: f64) -> String {
-    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    const BARS: [char; 7] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇'];
     values
         .iter()
         .map(|v| {
             if *v <= 0.0 || bound <= 0.0 {
                 BARS[0]
             } else {
-                BARS[((v / bound).min(1.0) * 7.999) as usize]
+                BARS[((v / bound).min(1.0) * 6.999) as usize]
             }
         })
         .collect()
@@ -971,11 +972,11 @@ mod tests {
             [0, 0, 0, 1, 0, 0]
         );
 
-        assert_eq!(bars(&[0.0, 1.0, 2.0, 4.0, 8.0], 8.0), "▁▁▂▄█");
+        assert_eq!(bars(&[0.0, 1.0, 2.0, 4.0, 8.0], 8.0), "▁▁▂▄▇");
         assert_eq!(
             bars(&[3.0, 30.0], 10.0),
-            "▃█",
-            "over a fixed bound draws full"
+            "▃▇",
+            "over a fixed bound draws full, and full stops short of the row above"
         );
 
         let session = |id: &str| -> Session {
@@ -994,22 +995,22 @@ mod tests {
         };
         assert_eq!(
             rows("fleet"),
-            ("▁▁▁▁▁▁".into(), "▁▁▁▁█▁".into()),
+            ("▁▁▁▁▁▁".into(), "▁▁▁▁▇▁".into()),
             "one scale: a's few lines are a sliver of b's 30"
         );
         assert_eq!(
             rows("row"),
-            ("█▁▁▁▃▁".into(), "▁▁▁▁█▁".into()),
+            ("▇▁▁▁▃▁".into(), "▁▁▁▁▇▁".into()),
             "each row to its own peak"
         );
         assert_eq!(
             rows("4"),
-            ("▆▁▁▁▂▁".into(), "▁▁▁▁█▁".into()),
+            ("▆▁▁▁▂▁".into(), "▁▁▁▁▇▁".into()),
             "a fixed count fills a bar"
         );
         assert_eq!(
             rows("log").0,
-            "▄▁▁▁▂▁",
+            "▃▁▁▁▂▁",
             "log lifts the quiet row above the sliver fleet gave it"
         );
     }

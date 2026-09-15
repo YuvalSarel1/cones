@@ -38,8 +38,8 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `done` | `✓` | done | green |
 | `failed` | `✗` | failed | red |
 | `stopped` | `▁` | stopped | dim |
-| `active` | `▁▂▃▄▅▆▇█` and back, one frame per 160 ms, resting three frames full and three empty | working | plain |
-| `blocked` | `█`, still | needs input | yellow |
+| `active` | `▁▂▃▄▅▆▇` and back, one frame per 160 ms, resting three frames full and three empty | working | plain |
+| `blocked` | `▇`, still | needs input | yellow |
 | `idle` | `▁` | idle | dim |
 | `-` | `–` | `-` | dim |
 | anything else | `✗` | the word itself | red |
