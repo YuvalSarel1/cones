@@ -5951,6 +5951,38 @@ impl App {
         lines
     }
 
+    /// The rows the composer keeps under its box, so its lower rule lands on the row the
+    /// harness draws its own on: the last rule on the viewer's screen, the rows the harness
+    /// keeps under it, and the pane's own key row. One row, the hint line, with nothing on
+    /// view or with the pane under the list, where the two boxes share no rows anyway.
+    // ponytail: the rule is read off the screen every frame rather than counted per harness,
+    // so a statusline of any height lines up; a frame where the harness draws no rule at all
+    // puts the composer back on the hint line, one row lower.
+    fn foot_rows(&self) -> u16 {
+        if self.data.pane.at == "bottom" {
+            return 1;
+        }
+        let Some(i) = self.shown() else { return 1 };
+        let screen = self.viewers[i].viewer.screen();
+        let (rows, cols) = screen.size();
+        let ruled = |y: u16| {
+            (0..cols)
+                .filter(|&x| {
+                    screen
+                        .cell(y, x)
+                        .is_some_and(|c| c.contents() == "\u{2500}")
+                })
+                .count() as u16
+                * 2
+                > cols
+        };
+        (0..rows)
+            .rev()
+            .find(|&y| ruled(y))
+            .map_or(1, |y| rows - y)
+            .clamp(1, 6)
+    }
+
     /// The dashboard in `area`: header, list, composer and hint line. Beside a pane that has
     /// a button's screen, the list and the composer stay in place: the screen's body and
     /// prompt line are drawn in the pane.
@@ -5974,7 +6006,7 @@ impl App {
             Constraint::Length(3),
             Constraint::Min(5),
             Constraint::Length(rows),
-            Constraint::Length(1),
+            Constraint::Length(self.foot_rows()),
         ])
         .areas(area);
         frame.render_widget(
@@ -8556,6 +8588,71 @@ mod tests {
         );
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
         assert!(app.split, "and ctrl+\\ there turns the pane on");
+    }
+
+    /// Beside the list the composer's lower rule lands on the row the harness draws its own
+    /// on: the composer keeps as many rows under its box as the harness keeps under its, so
+    /// the two input boxes read as one across the frame.
+    #[test]
+    fn the_composers_rule_lands_on_the_harnesss_own() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let rule = "\u{2500}".repeat(60);
+        // The bottom of a Claude screen: an input box with two rows under it, painted only
+        // once the first draw has sized the viewer to the pane, 29 rows of 30.
+        let mut c = Command::new("/bin/sh");
+        c.args([
+            "-c",
+            &format!(
+                "printf 'VIEW'; read x; \
+                 printf '\\033[25;1H{rule}\\033[26;1H> \\033[27;1H{rule}\\033[28;1Hstatus\\033[29;1Hmode'; \
+                 sleep 5"
+            ),
+        ]);
+        app.viewers.push(Open {
+            key: A.into(),
+            what: "attach".into(),
+            viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
+            record: None,
+            recorded: false,
+            first_paint_logged: false,
+            last_focused: Instant::now(),
+            speculative: false,
+        });
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 99));
+        app.viewers[0].viewer.write(b"\n");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.foot_rows() == 1 {
+            app.pump();
+            assert!(Instant::now() < deadline, "the viewer never drew its box");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            app.foot_rows(),
+            3,
+            "two rows under the harness's rule, and the key row"
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 200);
+        assert_eq!(
+            cells(&t, 26, 0..1),
+            "\u{2500}",
+            "the composer's lower rule is on the harness's row: {screen:#?}"
+        );
+        assert_eq!(
+            cells(&t, 26, 101..105),
+            "\u{2500}\u{2500}\u{2500}\u{2500}",
+            "which is the row the harness ruled: {screen:#?}"
+        );
+        assert!(
+            cells(&t, 27, 0..100).starts_with("enter"),
+            "the hint line is right under it: {screen:#?}"
+        );
     }
 
     fn split_setup(
