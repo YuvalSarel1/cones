@@ -1218,6 +1218,10 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
     // Codex threads the dashboard launched behind the daemon show nothing in the process
     // table while no client is attached; cones lists them from its own record.
     out.extend(codex::thread_rows(&codex::home(claude), state, &out));
+    // A thread ctrl+x forgot stays gone, even while another client has the daemon holding it
+    // again; its id is a line in `hidden`, like a hidden run.
+    let hidden = Ledger::new(state)?.hidden()?;
+    out.retain(|s| !hidden.contains(&s.session_id));
     fleet::sort(&mut out);
     Ok(out)
 }
@@ -3667,6 +3671,7 @@ impl App {
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
+                        Ledger::new(&state)?.hide(&target)?;
                         Ok(true)
                     } else {
                         Ledger::new(&state).and_then(|l| runner::stop(&l, &claude, &target))
@@ -3747,7 +3752,10 @@ impl App {
                     if action.verb == "delete" {
                         format!("deleted {} · claude --resume still has it", action.label)
                     } else {
-                        format!("forgot {} · codex resume still has it", action.label)
+                        format!(
+                            "forgot {} · hidden for good · codex resume still has it",
+                            action.label
+                        )
                     }
                 }
                 Ok(true) => "stop requested".into(),
@@ -5078,6 +5086,14 @@ mod tests {
             .map(|s| s.session_id)
             .collect();
         assert_eq!(ids, ["dddd", A], "the older thread comes first");
+        // Forgotten and hidden: the row stays away even if the daemon holds the thread again.
+        Ledger::new(&state).unwrap().hide("dddd").unwrap();
+        let ids: Vec<String> = fleet_rows(&claude, &state, &[])
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(ids, [A], "a hidden thread has no row");
     }
 
     /// Folder groups sort by name with case set aside, and a pinned folder nothing runs in
