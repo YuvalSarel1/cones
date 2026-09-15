@@ -123,6 +123,8 @@ impl Kind {
 enum Entry<'a> {
     Job(&'a ResolvedJob),
     Session(&'a Session),
+    /// A pinned folder nothing runs in: its group's one row.
+    Folder(&'a Path),
 }
 
 pub struct Row {
@@ -250,15 +252,26 @@ impl Data {
                 cells: vec![(title.to_owned(), bold())],
             });
         };
+        // A group's key sorts it and names it: folders by name with case set aside, shown in
+        // `~` form; grouped by state a rank digit leads, needs input first.
+        let folder = |dir: &Path| {
+            let name = if dir.as_os_str().is_empty() {
+                "no directory".to_owned()
+            } else {
+                fleet::tilde(dir)
+            };
+            (name.to_lowercase(), name)
+        };
+        let ranked = |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned());
         // Jobs sit in their folder's group with the sessions, first, in jobs.yaml order, so a
         // folder with a job has a group whether or not anything runs there; grouped by state
-        // they are one group of their own, last.
-        let mut groups: BTreeMap<String, Vec<Entry>> = BTreeMap::new();
+        // they are one group of their own, after the sessions.
+        let mut groups: BTreeMap<(String, String), Vec<Entry>> = BTreeMap::new();
         for j in &self.jobs {
             let key = if by_state {
-                "5jobs".to_owned()
+                ranked(5, "jobs")
             } else {
-                fleet::tilde(&j.cwd)
+                folder(&j.cwd)
             };
             groups.entry(key).or_default().push(Entry::Job(j));
         }
@@ -268,27 +281,43 @@ impl Data {
             .filter(|s| !deleting.contains(s.session_id.as_str()))
         {
             let key = if by_state {
-                // A rank digit orders the groups (needs input first); it is stripped for display.
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
                     "active" => 2,
                     "idle" => 3,
                     _ => 4,
                 };
-                format!("{rank}{}", label(&s.state))
+                ranked(rank, label(&s.state))
             } else {
-                fleet::tilde(&s.cwd)
+                folder(&s.cwd)
             };
             groups.entry(key).or_default().push(Entry::Session(s));
         }
+        // A pinned folder sorts among the live folders by name; grouped by state it follows the
+        // jobs. The same key as the sessions use, so it joins its group rather than doubling it.
+        for dir in &self.folders {
+            let (sort, name) = folder(dir);
+            let key = if by_state {
+                (format!("6{sort}"), name)
+            } else {
+                (sort, name)
+            };
+            let group = groups.entry(key).or_default();
+            if group.is_empty() && !self.has_rows_in(dir) {
+                group.push(Entry::Folder(dir));
+            }
+        }
         // One table across all groups, so columns line up between directories.
-        let flat: Vec<(&String, &Entry)> = groups
+        let flat: Vec<(&(String, String), &Entry)> = groups
             .iter()
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
+        let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
         let cells = flat
             .iter()
+            .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
             .map(|(_, e)| match e {
+                Entry::Folder(_) => vec![],
                 Entry::Session(s) => {
                     let mut row = vec![
                         (icon(&s.state).into(), color(&s.state)),
@@ -351,51 +380,53 @@ impl Data {
             c => c,
         }));
         let (names, cells) = columns(&names, cells, widths);
-        if !flat.is_empty() {
+        if table {
             out.push(Row {
                 kind: Kind::Blank,
                 cells: vec![],
             });
             out.push(names);
         }
-        let mut current: Option<&String> = None;
-        for ((key, e), cells) in flat.iter().zip(cells) {
+        let mut cells = cells.into_iter();
+        let mut current: Option<&(String, String)> = None;
+        for (key, e) in flat.iter().copied() {
             if current != Some(key) {
-                if current.is_none() {
+                if current.is_none() && table {
                     out.push(Row {
                         kind: Kind::Header,
-                        cells: vec![((if by_state { &key[1..] } else { key }).to_owned(), bold())],
+                        cells: vec![(key.1.clone(), bold())],
                     });
                 } else {
-                    header(&mut out, if by_state { &key[1..] } else { key });
+                    header(&mut out, &key.1);
                 }
                 current = Some(key);
             }
-            let kind = match e {
-                Entry::Session(s) => Kind::Session(s.session_id.clone(), s.state.clone()),
-                Entry::Job(j) => Kind::Job(j.name.clone()),
+            let row = match e {
+                Entry::Session(s) => Row {
+                    kind: Kind::Session(s.session_id.clone(), s.state.clone()),
+                    cells: cells.next().unwrap_or_default(),
+                },
+                Entry::Job(j) => Row {
+                    kind: Kind::Job(j.name.clone()),
+                    cells: cells.next().unwrap_or_default(),
+                },
+                Entry::Folder(dir) => {
+                    let mut cells = vec![];
+                    if let Some(g) = self.git.get(*dir) {
+                        cells.push((format!("{g} · "), plain()));
+                    }
+                    cells.push((
+                        "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
+                            .to_owned(),
+                        dim(),
+                    ));
+                    Row {
+                        kind: Kind::Folder(fleet::tilde(dir)),
+                        cells,
+                    }
+                }
             };
-            out.push(Row { kind, cells });
-        }
-        // ponytail: pinned folders trail the session groups instead of sorting among them.
-        for dir in &self.folders {
-            if self.has_rows_in(dir) {
-                continue;
-            }
-            header(&mut out, &fleet::tilde(dir));
-            let mut cells = vec![];
-            if let Some(g) = self.git.get(dir) {
-                cells.push((format!("{g} · "), plain()));
-            }
-            cells.push((
-                "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
-                    .to_owned(),
-                dim(),
-            ));
-            out.push(Row {
-                kind: Kind::Folder(fleet::tilde(dir)),
-                cells,
-            });
+            out.push(row);
         }
         if !self.runs.is_empty() {
             header(&mut out, "runs");
@@ -5049,6 +5080,53 @@ mod tests {
         assert_eq!(ids, ["dddd", A], "the older thread comes first");
     }
 
+    /// Folder groups sort by name with case set aside, and a pinned folder nothing runs in
+    /// sits among them, not after them; grouped by state it follows the session groups.
+    #[test]
+    fn folders_sort_by_name_with_pinned_ones_among_them() {
+        let d = dir();
+        let claude = d.path();
+        let (alpha, beta, gamma) = (
+            claude.join("alpha"),
+            claude.join("Beta"),
+            claude.join("gamma"),
+        );
+        for p in [&alpha, &beta, &gamma] {
+            fs::create_dir(p).unwrap();
+        }
+        registry(claude, A, beta.to_str().unwrap(), "idle", 1_757_682_871_000);
+        registry(
+            claude,
+            B,
+            gamma.to_str().unwrap(),
+            "blocked",
+            1_757_682_872_000,
+        );
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        app.pin_folder(alpha.clone()).unwrap();
+        let headers = |app: &App| {
+            app.rows
+                .iter()
+                .filter(|r| r.kind == Kind::Header)
+                .map(Row::text)
+                .collect::<Vec<_>>()
+        };
+        let names = [&alpha, &beta, &gamma].map(|p| fleet::tilde(p));
+        assert_eq!(
+            headers(&app),
+            names,
+            "alpha before Beta, the pinned one in place"
+        );
+        app.by_state = true;
+        app.rebuild();
+        assert_eq!(
+            headers(&app),
+            ["needs input", "idle", names[0].as_str()],
+            "by state the pinned folder trails"
+        );
+    }
+
     /// A dashboard before its first `refresh`, so a test sets filter and grouping first.
     fn app(dir: &Path) -> App {
         App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
@@ -5743,9 +5821,10 @@ mod tests {
         );
         assert_eq!(app.target_dir(), inside, "so the composer starts there");
         assert_eq!(app.cwd, home, "the menu's own target did not move");
-        app.step(-1);
-        app.step(-1);
-        assert_eq!(key(&app).as_deref(), Some("menu"));
+        // The folder sorts by name among the groups, so the menu is one or more steps up.
+        while key(&app).as_deref() != Some("menu") {
+            app.step(-1);
+        }
         assert_eq!(app.target_dir(), home);
         app.refresh().unwrap();
         assert_eq!(
