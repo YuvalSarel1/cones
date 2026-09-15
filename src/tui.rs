@@ -690,14 +690,13 @@ fn ansi(text: &str, style: Style) -> String {
 
 /// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
 /// while it is picked.
-const MENU: [(&str, &str, &str); 5] = [
-    ("jobs", "jobs", "the jobs: start, edit, add one"),
-    ("agents", "agents", "a harness's own agents view"),
+const MENU: [(&str, &str, &str); 4] = [
     (
         "folder",
         "add folder",
         "a row for a folder nothing runs in, to start work there",
     ),
+    ("jobs", "jobs", "the jobs: start, edit, add one"),
     (
         "config",
         "defaults",
@@ -721,9 +720,9 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
 }
 
 /// The top menu: one row of buttons above the tables, reached with `↑` past the first table;
-/// `←` `→` pick one and `enter` presses it. `jobs` opens the jobs screen,
-/// `agents` opens a harness's agents view, `folder` adds a row for a directory nothing runs
-/// in, so work can start there, `help` opens the guide.
+/// `←` `→` pick one and `enter` presses it. `folder` adds a row for a directory nothing runs
+/// in, so work can start there, `jobs` opens the jobs screen, `config` edits the defaults,
+/// `help` opens the guide.
 fn menu_rows() -> Vec<Row> {
     // A blank row keeps the menu off the cone. The row's cells come from `App::menu_cells`
     // at draw time, since the picked button and its explanation change without a rebuild.
@@ -2404,7 +2403,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: jobs, agents, add folder, defaults, help; on the jobs screen's last row, the wizard on a new job",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: add folder, jobs, defaults, help; on the jobs screen's last row, the wizard on a new job",
     ),
     (
         "ctrl+x twice",
@@ -4151,9 +4150,8 @@ impl App {
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
             Kind::Menu => match MENU[self.menu].0 {
-                "jobs" => self.show_jobs(),
-                "agents" => self.mode = Mode::Harness(0),
                 "folder" => self.mode = Mode::Folder(Input::default()),
+                "jobs" => self.show_jobs(),
                 "config" => {
                     self.mode = Mode::Config(Box::new(ConfigForm::new(
                         &config::defaults(&self.jobs_path),
@@ -7019,16 +7017,16 @@ mod tests {
         assert!(text(app.composer()).starts_with("✻ claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter jobs · ← → pick · tab codex · ctrl+p pin"),
-            "an empty dashboard opens on the menu row, jobs picked: {hint}"
+            hint.starts_with("enter add folder · ← → pick · tab codex · ctrl+p pin"),
+            "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
-        assert!(text(app.hint_line()).starts_with("enter new job with it"));
-        app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
+        app.menu = 1;
+        assert!(text(app.hint_line()).starts_with("enter new job with it"));
         app.status = "back from attach".into();
         assert_eq!(
             text(app.hint_line()),
@@ -7055,7 +7053,7 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A), "opens on the first table");
         app.step(-1);
         assert_eq!(key(&app).as_deref(), Some("menu"));
-        assert!(app.menu_is("jobs"), "jobs is picked until ← → move it");
+        assert!(app.menu_is("folder"), "folder is picked until ← → move it");
         let home = app.cwd.clone();
         assert_eq!(
             app.target_dir(),
@@ -7064,9 +7062,6 @@ mod tests {
         );
         let inside = claude.join("inside");
         fs::create_dir(&inside).unwrap();
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        assert!(app.menu_is("folder"));
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             matches!(app.mode, Mode::Folder(_)),
@@ -8052,7 +8047,7 @@ mod tests {
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
-        for _ in 0..3 {
+        for _ in 0..2 {
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
         assert!(app.menu_is("config"));
@@ -8250,22 +8245,19 @@ mod tests {
             rows(t, 160).join("\n")
         };
         let s = screen(&mut app, &mut t);
+        assert!(s.contains(" folder   jobs   config   help "), "{s}");
         assert!(
-            s.contains(" jobs   agents   folder   config   help "),
-            "{s}"
-        );
-        assert!(
-            s.contains("start, edit, add one") && !s.contains("agents view"),
+            s.contains("a row for a folder") && !s.contains("start, edit, add one"),
             "{s}"
         );
         assert!(s.contains("← → pick"), "{s}");
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         let s = screen(&mut app, &mut t);
         assert!(
-            s.contains("agents view") && !s.contains("start, edit, add one"),
+            s.contains("start, edit, add one") && !s.contains("a row for a folder"),
             "{s}"
         );
-        assert_eq!(app.enter_label(), "agents");
+        assert_eq!(app.enter_label(), "jobs");
         // ← from the first button wraps to the last; typed text keeps ← → for the caret.
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();

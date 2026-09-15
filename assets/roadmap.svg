@@ -40,8 +40,8 @@
 <text x="328" y="384" font-size="13.5" fill="#e6edf3" >stolen tty</text>
 <text x="316" y="404" font-size="13.5" fill="#e6edf3" >• dashboard: grouping, filter, a</text>
 <text x="328" y="424" font-size="13.5" fill="#e6edf3" >harness&#x27;s own agents view</text>
-<text x="316" y="444" font-size="13.5" fill="#e6edf3" >• menu: jobs, agents, folder,</text>
-<text x="328" y="464" font-size="13.5" fill="#e6edf3" >config, help</text>
+<text x="316" y="444" font-size="13.5" fill="#e6edf3" >• menu: folder, jobs, config,</text>
+<text x="328" y="464" font-size="13.5" fill="#e6edf3" >help</text>
 <text x="316" y="484" font-size="13.5" fill="#e6edf3" >• composer: an instruction</text>
 <text x="328" y="504" font-size="13.5" fill="#e6edf3" >starts a session in the</text>
 <text x="328" y="524" font-size="13.5" fill="#e6edf3" >selected folder, any harness</text>
