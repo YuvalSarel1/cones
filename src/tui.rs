@@ -2641,7 +2641,11 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: add folder, jobs, defaults, help; on the jobs screen's last row, the wizard on a new job",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, give the picked button's screen the keys in the pane: add folder, jobs, defaults, help; on the jobs screen's last row, the wizard on a new job",
+    ),
+    (
+        "shift+enter",
+        "the same over the whole frame; ctrl+z or esc come back to the pane",
     ),
     (
         "ctrl+x twice",
@@ -2696,7 +2700,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "ctrl+z",
-        "back to the list; the viewer stays alive and enter on its row gives it the keys again",
+        "back to the list from a viewer or a button's screen; the viewer stays alive and enter on its row gives it the keys again",
     ),
     (
         "ctrl+\\",
@@ -2724,6 +2728,10 @@ struct App {
     menu: usize,
     data: Data,
     rows: Vec<Row>,
+    /// The rows the list is not showing: the jobs rows while the main screen is up, for the
+    /// pane's preview of the `jobs` button; the main rows, menu included, while the jobs
+    /// screen is in the pane, for the list beside it.
+    other: Vec<Row>,
     /// Indexes into `rows` that pass the filter; the cursor indexes this list.
     visible: Vec<usize>,
     cursor: usize,
@@ -2966,6 +2974,7 @@ impl App {
             scroll: 0,
             by_state: false,
             jobs_view: false,
+            other: vec![],
             widths: Widths::new(),
             filter: Input::default(),
             mode: Mode::Normal,
@@ -3230,10 +3239,20 @@ impl App {
             .filter(|a| matches!(a.verb, "delete" | "forget"))
             .map(|a| a.id.as_str())
             .collect();
-        self.rows = menu_rows();
+        // The jobs screen in the pane has no menu row of its own: the menu stays on the list
+        // beside it, with `jobs` pressed.
+        let in_pane = self.jobs_view && self.split_active(self.size.1);
+        self.rows = if in_pane { vec![] } else { menu_rows() };
         self.rows.extend(self.data.rows_excluding(
             self.by_state,
             self.jobs_view,
+            &deleting,
+            &mut self.widths,
+        ));
+        self.other = if self.jobs_view { menu_rows() } else { vec![] };
+        self.other.extend(self.data.rows_excluding(
+            self.by_state,
+            !self.jobs_view,
             &deleting,
             &mut self.widths,
         ));
@@ -3401,7 +3420,7 @@ impl App {
 
     /// Whether a frame `width` columns wide draws the viewer beside the list.
     fn split_active(&self, width: u16) -> bool {
-        self.split && !(self.full && self.focus.is_some()) && width >= SPLIT_MIN
+        self.split && !(self.full && self.pane_focused()) && width >= SPLIT_MIN
     }
 
     /// How long the cursor rests on a row before its viewer opens: shorter beside the list.
@@ -3449,6 +3468,9 @@ impl App {
         if self.focus.is_some() {
             return self.focus;
         }
+        if self.panel().is_some() {
+            return None;
+        }
         if !self.split_active(self.size.1) {
             return None;
         }
@@ -3493,6 +3515,64 @@ impl App {
             .map(|(i, _)| i)
     }
 
+    /// The menu button whose screen the pane shows, by `MENU` name: the one with the keys
+    /// (the jobs screen and its wizard, the config editor, the folder prompt, the guide), else
+    /// the picked one while the cursor is on the menu row. A focused viewer has the pane.
+    fn panel(&self) -> Option<&'static str> {
+        if self.focus.is_some() {
+            return None;
+        }
+        let open = match self.mode {
+            Mode::Guide(_) => Some("help"),
+            Mode::Config(_) => Some("config"),
+            Mode::Job(_) => Some("jobs"),
+            Mode::Folder(_) => Some("folder"),
+            _ => self.jobs_view.then_some("jobs"),
+        };
+        open.or_else(|| {
+            matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)).then(|| MENU[self.menu].0)
+        })
+    }
+
+    /// A menu button's screen has the keys.
+    fn panel_focused(&self) -> bool {
+        self.jobs_view
+            || matches!(
+                self.mode,
+                Mode::Guide(_) | Mode::Config(_) | Mode::Job(_) | Mode::Folder(_)
+            )
+    }
+
+    /// Something in the pane has the keys, a viewer or a button's screen; with `full` set it
+    /// has the whole frame.
+    fn pane_focused(&self) -> bool {
+        self.focus.is_some() || self.panel_focused()
+    }
+
+    /// The config editor on jobs.yaml as it is now.
+    fn config_form(&self) -> Box<ConfigForm> {
+        Box::new(ConfigForm::new(
+            &config::defaults(&self.jobs_path),
+            config::file_columns(&self.jobs_path).as_deref(),
+            config::file_sparkline(&self.jobs_path).as_ref(),
+            config::file_mark_secs(&self.jobs_path),
+        ))
+    }
+
+    /// esc or ctrl+z on the jobs screen: the list, with the cursor back on the menu row it
+    /// was opened from, so the pane keeps the jobs on view.
+    fn leave_jobs(&mut self) {
+        self.jobs_view = false;
+        self.rebuild();
+        if let Some(i) = self
+            .visible
+            .iter()
+            .position(|&i| self.rows[i].kind == Kind::Menu)
+        {
+            self.cursor = i;
+        }
+    }
+
     /// ctrl+\: from the list, the pane on or off; inside a viewer, the viewer beside the
     /// list or over the whole frame. A viewer shift+enter gave the whole frame goes beside
     /// the list first, whatever the layout was. Only a frame at least `SPLIT_MIN` wide draws
@@ -3503,7 +3583,7 @@ impl App {
             self.status = format!("split needs {SPLIT_MIN} columns");
             return;
         }
-        let once = std::mem::take(&mut self.full) && self.focus.is_some();
+        let once = std::mem::take(&mut self.full) && self.pane_focused();
         self.split = once || !self.split;
         self.needs_clear = true;
         self.debug(|| format!("split {}", self.split));
@@ -4115,12 +4195,24 @@ impl App {
         let on_pane =
             (p.left()..p.right()).contains(&ev.column) && (p.top()..p.bottom()).contains(&ev.row);
         if on_pane {
-            if self.focus.is_none()
-                && let Some(i) = self.shown()
-            {
-                self.focus(i);
+            match self.panel() {
+                None => {
+                    if self.focus.is_none()
+                        && let Some(i) = self.shown()
+                    {
+                        self.focus(i);
+                    }
+                    return self.focus.is_some();
+                }
+                // A click on a picked button's screen presses the button, as enter does.
+                Some(_) if !self.panel_focused() => {
+                    self.full = false;
+                    let _ = self.enter();
+                    return false;
+                }
+                // The jobs screen's rows are the list here: the row under the pointer below.
+                Some(_) => {}
             }
-            return self.focus.is_some();
         }
         if self.focus.is_some() {
             self.unfocus();
@@ -4341,14 +4433,7 @@ impl App {
             Kind::Menu => match MENU[self.menu].0 {
                 "folder" => self.mode = Mode::Folder(Input::default()),
                 "jobs" => self.show_jobs(),
-                "config" => {
-                    self.mode = Mode::Config(Box::new(ConfigForm::new(
-                        &config::defaults(&self.jobs_path),
-                        config::file_columns(&self.jobs_path).as_deref(),
-                        config::file_sparkline(&self.jobs_path).as_ref(),
-                        config::file_mark_secs(&self.jobs_path),
-                    )));
-                }
+                "config" => self.mode = Mode::Config(self.config_form()),
                 _ => self.mode = Mode::Guide(0),
             },
             Kind::Folder(dir) => {
@@ -5067,6 +5152,22 @@ impl App {
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
             return Ok(false);
         }
+        // A button's screen that had the whole frame gives it back when it closes; a viewer's
+        // is cleared by unfocus. Not while a viewer is still opening for it.
+        if self.full && !self.pane_focused() && self.opening.is_none() {
+            self.full = false;
+        }
+        // ctrl+z leaves a button's screen one step at a time, as esc does: the key it shares
+        // with a viewer.
+        if ctrl && code == KeyCode::Char('z') && self.panel_focused() {
+            if matches!(self.mode, Mode::Normal) {
+                self.leave_jobs();
+            } else {
+                self.mode = Mode::Normal;
+            }
+            self.needs_clear = true;
+            return Ok(false);
+        }
         match &mut self.mode {
             Mode::Filter => {
                 match code {
@@ -5258,8 +5359,7 @@ impl App {
                             self.text.clear();
                             self.images.clear();
                         } else if self.jobs_view {
-                            self.jobs_view = false;
-                            self.rebuild();
+                            self.leave_jobs();
                         } else {
                             return Ok(true);
                         }
@@ -5335,6 +5435,10 @@ impl App {
                     cell.set_style(style);
                 }
             }
+            if let Some(name) = self.panel() {
+                self.draw_panel(frame, name, pane);
+                return;
+            }
             match self.shown() {
                 Some(i) if self.viewers[i].viewer.first_paint().is_some() => {
                     self.draw_viewer(frame, i, pane)
@@ -5391,9 +5495,9 @@ impl App {
         }
     }
 
-    /// The dashboard in `area`: header, list, composer and hint line.
-    fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
-        let mut line = match &self.mode {
+    /// The prompt line of the mode with the keys, the composer in the normal one.
+    fn mode_line(&self) -> Line<'static> {
+        match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
                 spans.extend(self.filter.spans("text a row must contain"));
@@ -5416,29 +5520,108 @@ impl App {
                 Span::styled("the keys and what they do", dim()),
             ]),
             Mode::Normal => self.composer(),
-        };
-        // While a viewer has the keys the terminal's cursor is in the pane, so the input's
-        // own block cursor is off: one cursor on the frame.
-        if self.focus.is_some() {
-            for span in &mut line.spans {
-                span.style = span.style.remove_modifier(Modifier::REVERSED);
-            }
         }
-        // Ruled above and below, as Claude Code frames its input; grows with the text, as its input does.
-        // Red while a first ctrl+c waits for its second: the whole composer says it, not
-        // one dim line.
-        let frame_lines = Block::default()
+    }
+
+    /// `line` ruled above and below, as Claude Code frames its input, grown with the text as
+    /// its input does: the paragraph and the rows it takes within `width`, rules included.
+    /// Red while a first ctrl+c waits for its second: the whole composer says it, not one
+    /// dim line.
+    fn framed(&self, line: Line<'static>, width: u16) -> (Paragraph<'static>, u16) {
+        let rules = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(if self.quitting() {
                 Style::default().fg(Color::Red)
             } else {
                 dim()
             });
-        let input = Paragraph::new(line)
-            .wrap(Wrap { trim: false })
-            .block(frame_lines);
+        let input = Paragraph::new(line).wrap(Wrap { trim: false }).block(rules);
         // line_count already counts the two rules, so this is the whole framed box.
-        let rows = input.line_count(area.width).clamp(3, 10) as u16;
+        let rows = input.line_count(width).clamp(3, 10) as u16;
+        (input, rows)
+    }
+
+    /// Button `name`'s screen in `pane`, as a session's viewer would be: its body, and under
+    /// it the prompt line of the mode that has the keys, or the button's explanation while
+    /// it is only picked.
+    fn draw_panel(&mut self, frame: &mut Frame, name: &str, pane: Rect) {
+        let (_, verb, what) = MENU.iter().find(|(n, ..)| *n == name).unwrap_or(&MENU[0]);
+        let line = if self.panel_focused() {
+            self.mode_line()
+        } else {
+            Line::from(vec![
+                Span::styled(format!("{verb} › "), Style::default().fg(ORANGE)),
+                Span::styled(*what, dim()),
+            ])
+        };
+        let (prompt, rows) = self.framed(line, pane.width);
+        let [body, foot] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(rows)]).areas(pane);
+        let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
+        match (&self.mode, name) {
+            (Mode::Job(form), _) => frame.render_widget(wrapped(form.lines()), body),
+            (Mode::Config(form), _) => frame.render_widget(wrapped(form.lines(body.width)), body),
+            (Mode::Guide(top), _) => frame.render_widget(guide(*top), body),
+            (_, "help") => frame.render_widget(guide(0), body),
+            // ponytail: jobs.yaml is read again every frame the button is picked; cache the
+            // form in `rebuild` if that ever shows in a profile.
+            (_, "config") => {
+                frame.render_widget(wrapped(self.config_form().lines(body.width)), body)
+            }
+            (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
+            (_, "jobs") => {
+                let all: Vec<usize> = (0..self.other.len()).collect();
+                let lines = self.row_lines(&self.other, &all, None, 0, body.height as usize);
+                frame.render_widget(Paragraph::new(lines), body);
+            }
+            _ => frame.render_widget(Paragraph::new(self.recent_lines()), body),
+        }
+        frame.render_widget(prompt, foot);
+    }
+
+    /// The `folder` button's body: the folders sessions have been seen in, newest first, the
+    /// one the prompt holds marked.
+    fn recent_lines(&self) -> Vec<Line<'static>> {
+        let held = match &self.mode {
+            Mode::Folder(input) => input.text.as_str(),
+            _ => "",
+        };
+        let mut lines = vec![
+            Line::default(),
+            Line::from(Span::styled("recent folders", Style::default().fg(ORANGE))),
+        ];
+        lines.extend(self.data.recent.iter().map(|p| {
+            let name = fleet::tilde(p);
+            if name == held {
+                Line::from(vec![
+                    Span::styled("▌ ", Style::default().fg(ORANGE)),
+                    Span::styled(name, bold()),
+                ])
+            } else {
+                Line::from(vec![Span::raw("  "), Span::styled(name, dim())])
+            }
+        }));
+        lines
+    }
+
+    /// The dashboard in `area`: header, list, composer and hint line. Beside a pane that has
+    /// a button's screen, the list and the composer stay in place: the screen's body and
+    /// prompt line are drawn in the pane.
+    fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
+        let in_pane = self.split_active(self.size.1) && self.panel().is_some();
+        let mut line = if in_pane {
+            self.composer()
+        } else {
+            self.mode_line()
+        };
+        // While a viewer or a button's screen has the keys the terminal's cursor is in the
+        // pane, so the input's own block cursor is off: one cursor on the frame.
+        if self.focus.is_some() || (in_pane && self.panel_focused()) {
+            for span in &mut line.spans {
+                span.style = span.style.remove_modifier(Modifier::REVERSED);
+            }
+        }
+        let (input, rows) = self.framed(line, area.width);
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
@@ -5454,7 +5637,15 @@ impl App {
             )),
             head,
         );
-        if let Mode::Guide(top) = self.mode {
+        if in_pane && self.jobs_view {
+            // The jobs screen has the cursor in the pane; the main rows sit beside it with
+            // the menu row reading as selected, `jobs` pressed.
+            let all: Vec<usize> = (0..self.other.len()).collect();
+            let lines = self.row_lines(&self.other, &all, None, 0, list.height as usize);
+            frame.render_widget(Paragraph::new(lines), list);
+        } else if in_pane {
+            self.draw_list(frame, list);
+        } else if let Mode::Guide(top) = self.mode {
             frame.render_widget(guide(top), list);
         } else if let Mode::Job(form) = &self.mode {
             frame.render_widget(
@@ -5506,15 +5697,35 @@ impl App {
         } else if height > 0 && self.cursor >= self.scroll + height {
             self.scroll = self.cursor + 1 - height;
         }
-        let lines: Vec<Line> = self
-            .visible
+        let lines = self.row_lines(
+            &self.rows,
+            &self.visible,
+            Some(self.cursor),
+            self.scroll,
+            height,
+        );
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    /// `visible`'s rows into `rows` from `scroll`, `height` of them, `cursor` the selected
+    /// one. Without a cursor the menu row alone reads as selected: a list drawn that way sits
+    /// beside the jobs screen, whose button is the one pressed.
+    fn row_lines(
+        &self,
+        rows: &[Row],
+        visible: &[usize],
+        cursor: Option<usize>,
+        scroll: usize,
+        height: usize,
+    ) -> Vec<Line<'static>> {
+        visible
             .iter()
             .enumerate()
-            .skip(self.scroll)
+            .skip(scroll)
             .take(height)
             .map(|(n, &i)| {
-                let row = &self.rows[i];
-                let selected = n == self.cursor;
+                let row = &rows[i];
+                let selected = cursor.map_or(row.kind == Kind::Menu, |c| c == n);
                 let armed = self
                     .armed
                     .as_deref()
@@ -5551,8 +5762,7 @@ impl App {
                 let line = Line::from(spans);
                 if selected { line.style(bold()) } else { line }
             })
-            .collect();
-        frame.render_widget(Paragraph::new(lines), area);
+            .collect()
     }
 }
 
@@ -8233,12 +8443,137 @@ mod tests {
             "the layout key is the viewer's, not the list's: {:?}",
             screen[29]
         );
-        // Up past the table lands on the menu, which opens no viewer.
+        // Up past the table lands on the menu, which opens no viewer: the pane has the picked
+        // button's screen instead, `folder` on a fresh dashboard.
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
         t.draw(|f| app.draw(f)).unwrap();
-        assert!((0..30).all(|y| cells(&t, y, 81..160).trim().is_empty()));
+        let pane = rows(&t, 160)
+            .iter()
+            .map(|r| r.chars().skip(81).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(pane.contains("recent folders"), "{pane}");
+        assert!(pane.contains("add folder › a row for a folder"), "{pane}");
+    }
+
+    /// On a wide frame the picked menu button's screen is in the pane while the cursor is on
+    /// the row, as a session's viewer would be: enter gives it the keys there, with the list
+    /// and its composer still beside it; shift+enter gives it the whole frame; ctrl+z or esc
+    /// come back to the list, the pane showing the button again. The jobs screen takes the
+    /// cursor into the pane and leaves the menu row on the list with `jobs` pressed.
+    #[test]
+    fn a_menu_buttons_screen_is_in_the_pane_and_enter_gives_it_the_keys() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let pane = |t: &Terminal<ratatui::backend::TestBackend>| {
+            (0..40)
+                .map(|y| cells(t, y, 81..160))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let left = |t: &Terminal<ratatui::backend::TestBackend>| {
+            (0..40)
+                .map(|y| cells(t, y, 0..80))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(
+            pane(&t).trim().is_empty(),
+            "a session row with no viewer: blank"
+        );
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        for _ in 0..3 {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        }
+        assert!(app.menu_is("help"));
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            pane(&t).contains("move between rows"),
+            "hover: {}",
+            pane(&t)
+        );
+        assert!(pane(&t).contains("guide › the keys"), "{}", pane(&t));
+        assert!(left(&t).contains(&A[..8]), "the list stays: {}", left(&t));
+        // enter: the guide has the keys in the pane, the list stays beside it.
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(app.split_active(160));
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(pane(&t).contains("move between rows"), "{}", pane(&t));
+        assert!(left(&t).contains(&A[..8]), "{}", left(&t));
+        assert!(left(&t).contains("Type an instruction…"), "{}", left(&t));
+        assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Guide(1)));
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(matches!(app.mode, Mode::Normal), "ctrl+z leaves the guide");
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            pane(&t).contains("move between rows"),
+            "still picked: {}",
+            pane(&t)
+        );
+        // shift+enter: the whole frame, as it was before the pane; ctrl+z brings the pane back.
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
+        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(!app.split_active(160), "shift+enter takes the frame");
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(!left(&t).contains(&A[..8]), "{}", left(&t));
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(matches!(app.mode, Mode::Normal) && app.split_active(160));
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
+        assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Normal) && app.split_active(160));
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        assert!(app.split_active(160), "full ends with the screen");
+        // jobs: the rows and the cursor move into the pane; the list keeps the menu with
+        // `jobs` pressed; esc puts the cursor back on the menu row.
+        assert!(app.menu_is("folder"));
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        assert!(app.menu_is("jobs"));
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(pane(&t).contains("new job"), "hover: {}", pane(&t));
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        assert!(app.jobs_view);
+        assert!(app.on_new_job());
+        assert!(
+            !app.rows.iter().any(|r| r.kind == Kind::Menu),
+            "the jobs screen in the pane has no menu row"
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            pane(&t).contains("▌ "),
+            "the cursor is in the pane: {}",
+            pane(&t)
+        );
+        assert!(left(&t).contains(&A[..8]), "{}", left(&t));
+        assert!(
+            left(&t).contains("jobs   config   help   the jobs: start"),
+            "{}",
+            left(&t)
+        );
+        assert!(
+            (0..40).any(|y| cells(&t, y, 81..160).contains("new job")),
+            "{}",
+            pane(&t)
+        );
+        assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
+        assert!(!app.jobs_view);
+        assert!(app.menu_is("jobs"), "esc lands on the menu row");
+        // Narrow, the screen takes the list's place as it always has.
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(app.rows.iter().any(|r| r.kind == Kind::Menu));
+        assert!(rows(&t, 120).join("\n").contains("new job"));
     }
 
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
@@ -8322,7 +8657,11 @@ mod tests {
         assert!(matches!(app.mode, Mode::Config(_)));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 60)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("timeout_min"), "{s}");
         assert!(s.contains("sparkline.bound"), "{s}");
         assert!(s.contains("time limit (min)"), "{s}");
@@ -8331,7 +8670,7 @@ mod tests {
         let column = |s: &str, what: &str| {
             s.lines()
                 .find(|l| l.contains(what))
-                .and_then(|l| l.find(what))
+                .and_then(|l| l.find(what).map(|b| l[..b].chars().count()))
                 .unwrap_or_else(|| panic!("{what}: {s}"))
         };
         let height = |s: &str| {
@@ -8356,7 +8695,11 @@ mod tests {
         };
         go(&mut app, "sparkline.metric");
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(column(&s, "count per bar"), col, "no bounce: {s}");
         assert_eq!(height(&s), tall, "no bounce: {s}");
         assert!(
@@ -8367,7 +8710,11 @@ mod tests {
         assert!(s.contains("ctrl+s save"), "{s}");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             s.contains("sparkline.metric › [-] lines"),
             "open, the options sit on the prompt line: {s}"
@@ -8385,7 +8732,11 @@ mod tests {
         go(&mut app, "sparkline.bound");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("sparkline.bound › [-] fleet  row  log"), "{s}");
         assert!(s.contains("or a number"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
@@ -8395,7 +8746,11 @@ mod tests {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("sparkline.bound › 20"), "typed, no picks: {s}");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "20"));
@@ -8422,7 +8777,11 @@ mod tests {
         go(&mut app, "columns");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("columns › [state] model  age "), "{s}");
         assert!(s.contains("space toggle"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
@@ -8433,21 +8792,33 @@ mod tests {
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "age, state"));
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("columns › [state] model  age "), "{s}");
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "age"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("Codex without sandbox"), "{s}");
         assert!(s.contains("Codex model id"), "{s}");
         assert!(s.contains("Claude alias or model id"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             s.contains("AWS_ variables"),
             "the selected field is explained: {s}"
@@ -8478,7 +8849,11 @@ mod tests {
         );
         go(&mut app, "columns");
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             s.contains("columns › state, context, sparkline, model, activity, last"),
             "and read whole on the prompt line: {s}"
@@ -8525,7 +8900,11 @@ mod tests {
         go(&mut app, "write");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("write › [-] false  true"), "picks on write: {s}");
         assert!(s.contains("← → pick"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
