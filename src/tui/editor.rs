@@ -9,9 +9,6 @@ use super::*;
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// The `columns` row: the arranger on the table, which the dashboard opens where the
-    /// table is rather than the editor drawing a second one over it.
-    Columns,
     /// A field closed on a new value, so the block is written and the editor stays where it
     /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`,
     /// `pane:` and `start:` blocks, None when every field of one is left to the built-in, and
@@ -56,9 +53,9 @@ pub struct ConfigForm {
     /// Only the `SESSION` rows are shown and visited, under one title and no group heads:
     /// the form `ctrl+o` opens, seeded from the policy the next session would run under.
     pub session: bool,
-    /// The file's `columns:` line, carried through a save rather than edited here: the
-    /// columns are arranged on the table itself, with `ctrl+t`.
-    columns: Option<Vec<String>>,
+    /// The `columns` row's control: the arrangement it walks and rearranges. The set it
+    /// draws is the row's own value, so a column moved there is written like any other value.
+    pub(super) arrange: ColumnForm,
 }
 
 impl ConfigForm {
@@ -118,6 +115,7 @@ impl ConfigForm {
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
                 "sparkline.metric" => spark(|s| s.metric.clone()),
                 "confirm_secs" => num(confirm_secs),
+                "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
                 _ => spark(|s| s.bound.clone()),
             })
             .collect();
@@ -129,7 +127,7 @@ impl ConfigForm {
             before: String::new(),
             cursor: usize::MAX,
             session: false,
-            columns: columns.map(<[String]>::to_vec),
+            arrange: ColumnForm::new(columns.unwrap_or(&built_columns())),
         }
     }
 
@@ -182,7 +180,13 @@ impl ConfigForm {
             _ => None,
         };
         let text = |name: &str| Some(v(name).to_owned()).filter(|t| !t.is_empty());
-        let columns = self.columns.clone().unwrap_or_default();
+        // The row holds the list as the file's line reads it; empty is no line at all, so
+        // the built-in set applies.
+        let columns: Vec<String> = v("columns")
+            .split(',')
+            .map(|c| c.trim().to_owned())
+            .filter(|c| !c.is_empty())
+            .collect();
         let policy = config::Policy {
             timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
             budget_usd: num("budget_usd", "dollars, as in 2.00")?,
@@ -367,6 +371,18 @@ impl ConfigForm {
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
+                // The columns row is the arranger itself: the list on it is walked and
+                // rearranged where it is read, as every other row's control is, and the line
+                // is written under the key that moved a column.
+                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ' | '[' | ']')
+                    if matches!(self.field().input, Answer::Columns) =>
+                {
+                    self.before = self.values[self.row].clone();
+                    if let Arranged::Shown(cols) = self.arrange.key(code) {
+                        self.values[self.row] = cols.join(", ");
+                        return self.commit();
+                    }
+                }
                 // The control is on the row, so `← →` change the value where it is read and
                 // the block is written under the key that moved it. There is nothing to open
                 // but the text of a typed value, the one control a row cannot draw whole.
@@ -377,16 +393,13 @@ impl ConfigForm {
                     }
                 }
                 // Back to the built-in, the one value no ring and no step reaches.
-                KeyCode::Backspace
-                    if !self.values[self.row].is_empty()
-                        && !matches!(self.field().input, Answer::Columns) =>
-                {
+                KeyCode::Backspace if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
+                    if matches!(self.field().input, Answer::Columns) {
+                        self.arrange = ColumnForm::new(&built_columns());
+                    }
                     return self.commit();
-                }
-                KeyCode::Enter if matches!(self.field().input, Answer::Columns) => {
-                    return ConfigAction::Columns;
                 }
                 KeyCode::Enter if self.field().typed() => self.enter(),
                 KeyCode::Up => {
@@ -582,21 +595,28 @@ impl ConfigForm {
         const BOX_W: usize = 18;
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
-            let default: Vec<String> = config::DEFAULT_COLUMNS
-                .iter()
-                .map(|c| (*c).into())
-                .collect();
-            let (list, style) = match &self.columns {
-                Some(c) if !c.is_empty() => (c.clone(), bold()),
-                _ => (default, dim()),
-            };
-            // One span per column, so a list longer than the pane breaks between names and
-            // hangs under the column it started in, as a row of words does.
-            let mut spans: Vec<Span<'static>> = list
-                .into_iter()
-                .map(|c| Span::styled(format!("{c}  "), style))
-                .collect();
-            spans.push(Span::styled("›", dim()));
+            // Every column there is: the ones the table draws first in their order, then a
+            // separator and the ones it does not, dim. One span per column, so a list longer
+            // than the pane breaks between names and hangs under the column it started in.
+            // The one under the cursor is pressed while the row is selected, and a row left
+            // to the built-in set reads dim whole.
+            let built = value.is_empty();
+            let mut spans = vec![];
+            for (n, c) in self.arrange.order.iter().enumerate() {
+                if n == self.arrange.shown {
+                    spans.push(Span::styled("·  ", dim()));
+                }
+                spans.push(Span::styled(
+                    format!("{c}  "),
+                    if n == self.arrange.at && i == self.row {
+                        pressed()
+                    } else if n < self.arrange.shown && !built {
+                        bold()
+                    } else {
+                        dim()
+                    },
+                ));
+            }
             return spans;
         }
         if let Some(opts) = f.picks() {
@@ -688,7 +708,9 @@ impl ConfigForm {
             "enter keeps it · esc reverts".to_owned()
         } else {
             match f.input {
-                Answer::Columns => "enter arranges them on the table · ctrl+t does too".to_owned(),
+                Answer::Columns => {
+                    "space shows or hides · [ ] move it · bksp the built-in set".to_owned()
+                }
                 Answer::Pick(_) => default,
                 Answer::PickOrType(_, what) => format!("enter types {what} · {default}"),
                 _ => format!("enter types it · {default}"),
@@ -800,16 +822,26 @@ mod tests {
         c.key(KeyCode::Left, none);
         assert_eq!(value(&c), "haiku", "and the words alone from there");
 
-        // The columns row reads the list and hands over to the arranger rather than editing
-        // it here: there is no table under the editor to pick a set against.
+        // The columns row is arranged where it is read: space writes the line the arranger
+        // leaves, and backspace puts the built-in set back.
         c.go(field_at("columns"));
         assert!(
-            matches!(c.key(KeyCode::Enter, none), ConfigAction::Columns),
-            "enter on the columns row asks for the arranger"
+            matches!(c.key(KeyCode::Right, none), ConfigAction::Stay),
+            "moving the cursor along the row writes nothing"
         );
+        let shown = match c.key(KeyCode::Char(' '), none) {
+            ConfigAction::Save(_, cols, ..) => cols,
+            other => panic!("space on the columns row writes the line, got {other:?}"),
+        };
+        assert_eq!(
+            shown.len(),
+            config::DEFAULT_COLUMNS.len() - 1,
+            "the column under the cursor left the set"
+        );
+        assert_eq!(value(&c), shown.join(", "), "and the row reads the line");
         assert!(
-            matches!(c.key(KeyCode::Backspace, none), ConfigAction::Stay),
-            "and the row has no value of its own to reset"
+            matches!(c.key(KeyCode::Backspace, none), ConfigAction::Save(_, c, ..) if c.is_empty()),
+            "backspace leaves the line out, so the built-in set applies"
         );
 
         let span = |t: &str| Span::raw(t.to_owned());

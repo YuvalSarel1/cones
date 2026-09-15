@@ -1870,8 +1870,8 @@ enum Answer {
     Number(f64),
     Pick(&'static [&'static str]),
     PickOrType(&'static [&'static str], &'static str),
-    /// The `columns:` line. The row reads the list and `enter` hands over to the arranger on
-    /// the table the columns belong to, which is `ctrl+t`'s and needs the table on screen.
+    /// The `columns:` line. The row is the arranger itself: every column there is, the ones
+    /// the table draws first, and `← →` `space` `[ ]` change the set where it is read.
     Columns,
 }
 
@@ -1970,7 +1970,7 @@ const FIELDS: [Field; 23] = [
         sub: "",
         name: "columns",
         short: "session columns",
-        long: "The columns the table draws after the harness and title, in their order. Enter arranges them on the table itself, where the set is picked against the rows it applies to and the width it has to fit; ctrl+t from the dashboard opens the same arranger.",
+        long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
         builtin: "state, context, sparkline, model, activity, last",
         input: Answer::Columns,
     },
@@ -2194,6 +2194,14 @@ fn field_at(name: &str) -> usize {
         .unwrap_or_else(|| panic!("no config field {name}"))
 }
 
+/// The columns the table draws when jobs.yaml names none.
+fn built_columns() -> Vec<String> {
+    config::DEFAULT_COLUMNS
+        .iter()
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
 /// What a key did to an arrangement: moved the cursor and nothing else, changed which
 /// columns the table draws, kept them, or left them as they were found.
 enum Arranged {
@@ -2208,6 +2216,7 @@ enum Arranged {
 /// `at` is the one under the cursor. The table redraws under each key, so a set is picked
 /// against the rows it applies to and against the width it has to fit; `before` is what
 /// `esc` puts back.
+#[derive(Debug, Clone, PartialEq)]
 struct ColumnForm {
     order: Vec<String>,
     shown: usize,
@@ -4654,14 +4663,17 @@ impl App {
             Mode::Config(form) => {
                 let f = form.field();
                 let mut keys = vec![("↑ ↓", "field")];
-                if f.picks().is_some() {
+                if matches!(f.input, Answer::Columns) {
+                    let a = &form.arrange;
+                    keys.push(("← →", "column"));
+                    keys.push(("space", if a.at < a.shown { "hide" } else { "show" }));
+                    keys.push(("[ ]", "move"));
+                } else if f.picks().is_some() {
                     keys.push(("← →", "change"));
                 } else if f.step().is_some() {
                     keys.push(("← →", "step"));
                 }
-                if matches!(f.input, Answer::Columns) {
-                    keys.push(("enter", "arrange"));
-                } else if f.typed() {
+                if f.typed() {
                     keys.push(("enter", "type"));
                 }
                 if !form.values[form.row].is_empty() {
@@ -5123,11 +5135,6 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                // The arranger works on the table, so the editor gives the screen back for
-                // it; enter or esc there returns to the dashboard, not to this list.
-                ConfigAction::Columns => {
-                    self.mode = Mode::Columns(Box::new(ColumnForm::new(&self.data.columns)));
-                }
                 // The session form keeps its policy for the composer; nothing is written.
                 ConfigAction::Save(policy, ..) if form.session => {
                     self.harness = Self::harness_at(policy.harness);
@@ -5135,6 +5142,14 @@ impl App {
                     self.status = format!("next session: {}", self.session_words().join(" · "));
                 }
                 ConfigAction::Save(policy, columns, spark, pane, start, mark) => {
+                    // The columns row is arranged in place, so the table beside it redraws
+                    // under the key rather than at the next reload.
+                    self.data.columns = if columns.is_empty() {
+                        built_columns()
+                    } else {
+                        columns.clone()
+                    };
+                    self.rebuild();
                     match config::write_config(
                         &self.jobs_path,
                         &policy,
