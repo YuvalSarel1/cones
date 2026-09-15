@@ -4999,18 +4999,19 @@ impl App {
                 }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
                 // Terminate the attached client to release the daemon-held thread; it remains resumable.
+                // No registry lists a Codex client, so signal its pid rather than looking it up.
                 let client = self
                     .data
                     .sessions
                     .iter()
                     .find(|s| s.session_id == id)
-                    .is_some_and(|s| s.pid.is_some());
+                    .and_then(|s| s.pid);
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
                         Ledger::new(&state)?.hide(&target)?;
-                        if client {
-                            fleet::stop(&claude, &target)?;
+                        if let Some(pid) = client {
+                            fleet::terminate(pid, "codex")?;
                         }
                         Ok(true)
                     } else {

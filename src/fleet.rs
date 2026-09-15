@@ -773,6 +773,11 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
         return Ok(true);
     }
     let pid = session.pid.context("session has no harness pid")?;
+    terminate(pid, &session.harness)
+}
+
+/// SIGTERM a harness client by pid, for sessions no registry lists.
+pub fn terminate(pid: u32, harness: &str) -> Result<bool> {
     ensure!(pid > 1, "invalid harness pid");
     let output = std::process::Command::new("/bin/ps")
         .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
@@ -782,15 +787,12 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
         return Ok(false);
     };
     ensure!(
-        Path::new(program)
-            .file_name()
-            .is_some_and(|f| f == session.harness.as_str()),
-        "pid {pid} is not a {} process; refusing to signal a reused pid",
-        session.harness
+        Path::new(program).file_name().is_some_and(|f| f == harness),
+        "pid {pid} is not a {harness} process; refusing to signal a reused pid"
     );
     ensure!(
         unsafe { libc::kill(pid as i32, libc::SIGTERM) } == 0,
-        "unable to signal session {session_id}"
+        "unable to signal pid {pid}"
     );
     Ok(true)
 }
@@ -1185,6 +1187,23 @@ mod tests {
         assert!(
             rename(&codex, "x").is_err(),
             "codex threads are named in codex"
+        );
+    }
+
+    #[test]
+    fn terminate_signals_a_matching_client_and_refuses_a_reused_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("codex");
+        fs::copy("/bin/sleep", &fake).unwrap();
+        let mut child = std::process::Command::new(&fake).arg("30").spawn().unwrap();
+        assert!(terminate(child.id(), "codex").unwrap());
+        assert!(!child.wait().unwrap().success(), "SIGTERM ends the client");
+        assert!(
+            terminate(std::process::id(), "codex")
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to signal a reused pid"),
+            "a pid running something else is left alone"
         );
     }
 }
