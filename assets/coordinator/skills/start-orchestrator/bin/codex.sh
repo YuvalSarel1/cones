@@ -8,8 +8,8 @@
 # Delivery needs a live client on the thread (TUI or `codex --remote ... resume`); a queued message
 # to an idle thread waits in ~/.codex/queue_1.sqlite until one attaches. Gating is advisory: Codex
 # has no pre-commit hook the orchestrator can hold.
-# ponytail: thread resolution = `resume <uuid>` on the command line, else newest thread in Codex's
-# state db for the process cwd; a cwd with two fresh Codex threads picks the newest.
+# ponytail: thread resolution = `resume <uuid>` on the command line, else the thread whose title
+# (first prompt) matches the prompt in argv, else newest thread in Codex's state db for the cwd.
 set -e
 cmd="$1"; pid="$2"; shift 2 || true
 DB=$(ls -t ~/.codex/state_*.sqlite | head -1)
@@ -18,7 +18,11 @@ thread() {
   id=$(ps -o command= -p "$pid" | sed -n 's/.* resume \([0-9a-f-]\{36\}\).*/\1/p')
   if [ -z "$id" ]; then
     cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
-    id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 order by updated_at desc limit 1")
+    # A thread's title is its first prompt, and a client started with a prompt carries it in argv
+    # after `-C <cwd>`; three fresh threads in one cwd resolve by that prefix, newest as fallback.
+    prompt=$(ps -o command= -p "$pid" | sed -n 's/.* -C [^ ]* //p' | cut -c1-40 | sed "s/'/''/g")
+    [ -n "$prompt" ] && id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 and substr(title,1,40)='$prompt' order by created_at desc limit 1")
+    [ -n "$id" ] || id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 order by updated_at desc limit 1")
   fi
   [ -n "$id" ] || { echo "no codex thread for pid $pid" >&2; exit 1; }
   printf '%s\t%s\n' "$id" "$(sqlite3 "$DB" "select rollout_path from threads where id='$id'")"
