@@ -1870,6 +1870,16 @@ impl Field {
         !matches!(self.input, Answer::Pick(_))
     }
 
+    /// How option `o` reads on the prompt line: `-` of a field the harness owns is
+    /// `system default`.
+    fn label<'a>(&self, o: &'a str) -> &'a str {
+        if o == "-" && self.builtin == SYSTEM {
+            SYSTEM
+        } else {
+            o
+        }
+    }
+
     /// Whether `value` is shown as picks: empty or every comma-separated item is an option.
     /// A trailing comma is a list being typed, so space keeps typing.
     fn picked(&self, value: &str) -> bool {
@@ -1893,19 +1903,46 @@ fn items(value: &str) -> Vec<&str> {
 
 const BOOL: &[&str] = &["-", "false", "true"];
 
-/// The groups the editor shows, each with a line on what it holds. `jobs`, `claude` and
-/// `codex` are the `defaults` block, `cones` the dashboard's own `columns:` line, `notify`
-/// and the `sparkline:` block.
-const GROUPS: [(&str, &str); 4] = [
-    ("jobs", "defaults"),
-    ("claude", "defaults"),
-    ("codex", "defaults"),
+/// The built-in of a field cones leaves to the harness when it is empty: nothing is passed,
+/// and the harness's own configuration decides. The `-` pick of such a field reads this.
+const SYSTEM: &str = "system default";
+
+/// The groups the editor shows, each with a line on what it holds. `runs` and `jobs` are the
+/// `defaults` block: `runs` reaches every job and every session the composer starts, `jobs`
+/// only supervised runs. `cones` is the dashboard's own `columns:` line, `notify` and the
+/// `sparkline:` block. The `runs` group is also the session form `ctrl+o` opens.
+const GROUPS: [(&str, &str); 3] = [
+    ("runs", "every job and session"),
+    ("jobs", "supervised runs only"),
     ("cones", "display and alerts"),
 ];
 
-/// The fields under their groups. A field under `claude` or `codex` reaches only that
-/// harness's jobs.
+/// The fields under their groups. A field named for a harness reaches only that harness.
 const FIELDS: [Field; 18] = [
+    Field {
+        group: "runs",
+        name: "bedrock",
+        short: "run on Amazon Bedrock",
+        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. A Bedrock job also gets the shell's AWS_ variables.",
+        builtin: SYSTEM,
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "runs",
+        name: "model",
+        short: "Claude alias or model id",
+        long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. system default passes nothing and Claude's own settings decide.",
+        builtin: SYSTEM,
+        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
+    },
+    Field {
+        group: "runs",
+        name: "codex_model",
+        short: "Codex model id",
+        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
     Field {
         group: "jobs",
         name: "timeout_min",
@@ -1918,7 +1955,7 @@ const FIELDS: [Field; 18] = [
         group: "jobs",
         name: "budget_usd",
         short: "cost per run (USD)",
-        long: "Maximum cost per run in USD. Claude stops when the budget is reached.",
+        long: "Maximum cost per run in USD, passed to Claude as --max-budget-usd, which stops the run when it is reached. Codex jobs are still unavailable.",
         builtin: "2.00",
         input: Answer::Typed,
     },
@@ -1948,22 +1985,6 @@ const FIELDS: [Field; 18] = [
     },
     Field {
         group: "jobs",
-        name: "bedrock",
-        short: "run on Amazon Bedrock",
-        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; - leaves it to the harness's own configuration. A Bedrock job also gets the shell's AWS_ variables.",
-        builtin: "harness's",
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "claude",
-        name: "model",
-        short: "alias or model id",
-        long: "The alias or model id passed to Claude as --model. - leaves the choice to Claude.",
-        builtin: "default",
-        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
-    },
-    Field {
-        group: "claude",
         name: "tools",
         short: "allowed tools",
         long: "Space adds or removes a tool; type for Bash(pattern). write: false removes Edit, Write and Bash.",
@@ -1971,25 +1992,17 @@ const FIELDS: [Field; 18] = [
         input: Answer::Many(&["Read", "Grep", "Glob", "Edit", "Write", "Bash"]),
     },
     Field {
-        group: "claude",
+        group: "jobs",
         name: "max_turns",
-        short: "turns per run",
-        long: "Maximum assistant turns per run. Empty leaves the limit to Claude.",
-        builtin: "none",
+        short: "Claude turns per run",
+        long: "Maximum assistant turns per Claude run. Empty passes nothing and Claude's own limit stands.",
+        builtin: SYSTEM,
         input: Answer::Typed,
     },
     Field {
-        group: "codex",
-        name: "codex_model",
-        short: "empty uses default",
-        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Codex jobs are still unavailable.",
-        builtin: "default",
-        input: Answer::Typed,
-    },
-    Field {
-        group: "codex",
+        group: "jobs",
         name: "codex_full_access",
-        short: "disable sandbox",
+        short: "Codex without sandbox",
         long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
         builtin: "false",
         input: Answer::Pick(BOOL),
@@ -2101,9 +2114,25 @@ pub struct ConfigForm {
     cursor: usize,
     /// The option under the cursor while a `Many` field shows its picks.
     pick: usize,
+    /// Only this group's rows are shown and visited: the `runs` group as the session form
+    /// `ctrl+o` opens, seeded from the policy the next session would run under. None is the
+    /// whole editor.
+    pub group: Option<&'static str>,
 }
 
 impl ConfigForm {
+    /// The `runs` group alone, as the settings of the next session the composer starts.
+    pub fn session(policy: &config::Policy) -> Self {
+        let mut form = Self::new(policy, None, None, None);
+        form.group = Some("runs");
+        form
+    }
+
+    /// Whether row `i` is on screen.
+    fn shown(&self, i: usize) -> bool {
+        self.group.is_none_or(|g| FIELDS[i].group == g)
+    }
+
     pub fn new(
         d: &config::Policy,
         columns: Option<&[String]>,
@@ -2152,6 +2181,7 @@ impl ConfigForm {
             before: String::new(),
             cursor: usize::MAX,
             pick: 0,
+            group: None,
         }
     }
 
@@ -2314,8 +2344,16 @@ impl ConfigForm {
                         }
                     };
                 }
-                KeyCode::Up => self.go(self.row.saturating_sub(1)),
-                KeyCode::Down => self.go((self.row + 1).min(FIELDS.len() - 1)),
+                KeyCode::Up => {
+                    if let Some(r) = (0..self.row).rev().find(|&i| self.shown(i)) {
+                        self.go(r);
+                    }
+                }
+                KeyCode::Down => {
+                    if let Some(r) = (self.row + 1..FIELDS.len()).find(|&i| self.shown(i)) {
+                        self.go(r);
+                    }
+                }
                 _ => {}
             }
             return ConfigAction::Stay;
@@ -2375,8 +2413,9 @@ impl ConfigForm {
             }
             // A letter jumps to the option that starts with it.
             KeyCode::Char(c) if !self.field().typed() => {
-                let opts = self.field().picks().unwrap_or_default();
-                if let Some(o) = opts.iter().find(|o| o.starts_with(c)) {
+                let f = self.field();
+                let opts = f.picks().unwrap_or_default();
+                if let Some(o) = opts.iter().find(|o| f.label(o).starts_with(c)) {
                     self.values[self.row] = if *o == "-" {
                         String::new()
                     } else {
@@ -2406,11 +2445,15 @@ impl ConfigForm {
     /// explanation, wrapped to `columns` with the rows' indent and padded to the tallest one so
     /// the block keeps its height.
     fn lines(&self, columns: u16) -> Vec<Line<'static>> {
+        let title = match self.group {
+            Some(_) => ("next session", "model and provider, from the defaults"),
+            None => ("config", "jobs.yaml"),
+        };
         let mut lines = vec![
             Line::default(),
             Line::from(vec![
-                Span::styled("config", Style::default().fg(ORANGE)),
-                Span::styled("  jobs.yaml", dim()),
+                Span::styled(title.0, Style::default().fg(ORANGE)),
+                Span::styled(format!("  {}", title.1), dim()),
             ]),
         ];
         let name_w = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
@@ -2433,10 +2476,14 @@ impl ConfigForm {
             (text, style)
         };
         let value_w = (0..FIELDS.len())
+            .filter(|&i| self.shown(i))
             .map(|i| shown(i).0.chars().count())
             .max()
             .unwrap_or(0);
         for (i, f) in FIELDS.iter().enumerate() {
+            if !self.shown(i) {
+                continue;
+            }
             if i == 0 || FIELDS[i - 1].group != f.group {
                 let (name, what) = GROUPS
                     .iter()
@@ -2485,7 +2532,9 @@ impl ConfigForm {
         let room = (columns as usize).saturating_sub(head.len()).max(20);
         let tall = FIELDS
             .iter()
-            .map(|f| wrap(f.long, room).len())
+            .enumerate()
+            .filter(|(i, _)| self.shown(*i))
+            .map(|(_, f)| wrap(f.long, room).len())
             .max()
             .unwrap_or(1);
         let mut rest = wrap(f.long, room).into_iter();
@@ -2537,20 +2586,25 @@ impl ConfigForm {
             }
             Answer::Pick(opts) | Answer::PickOrType(opts, _) if f.picked(value) => {
                 let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
-                picks(&mut spans, opts, at);
-                match f.input {
-                    Answer::PickOrType(_, what) => {
-                        format!("  - is the built-in, {}, or {what}", f.builtin)
-                    }
-                    _ => format!("  - is the built-in, {}", f.builtin),
+                let labels: Vec<&str> = opts.iter().map(|o| f.label(o)).collect();
+                picks(&mut spans, &labels, at);
+                let typed = match f.input {
+                    Answer::PickOrType(_, what) => format!(", or {what}"),
+                    _ => String::new(),
+                };
+                if f.builtin == SYSTEM {
+                    format!("  system default passes nothing{typed}")
+                } else {
+                    format!("  - is the built-in, {}{typed}", f.builtin)
                 }
             }
             _ => {
                 spans.extend(typed(value, self.cursor, f.builtin));
-                if value.is_empty() {
-                    "  the built-in; type to set it".to_owned()
-                } else {
-                    format!("  empty is the built-in, {}", f.builtin)
+                match (value.is_empty(), f.builtin == SYSTEM) {
+                    (true, true) => "  passes nothing to the harness; type to set it".to_owned(),
+                    (true, false) => "  the built-in; type to set it".to_owned(),
+                    (false, true) => "  empty is the system default".to_owned(),
+                    (false, false) => format!("  empty is the built-in, {}", f.builtin),
                 }
             }
         };
@@ -2636,6 +2690,10 @@ const GUIDE: &[(&str, &str)] = &[
         "the harness the next session starts under, claude or codex",
     ),
     (
+        "ctrl+o",
+        "the model and provider the next sessions start with, seeded from the defaults; the composer's prefix shows them",
+    ),
+    (
         "ctrl+v",
         "paste the clipboard's image; its path is typed into the instruction",
     ),
@@ -2698,6 +2756,9 @@ struct App {
     images: Vec<PathBuf>,
     /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
     harness: usize,
+    /// The model and provider the next sessions start with, once `ctrl+o` has set them; else
+    /// the `defaults` block's. They stay until set again.
+    session: Option<config::Policy>,
     /// A `claude --bg` in flight on its own thread, keyed by its placeholder row's id; its one
     /// line lands in the status.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
@@ -2925,6 +2986,7 @@ impl App {
             caret: 0,
             images: Vec::new(),
             harness: 0,
+            session: None,
             started: Vec::new(),
             pending: Vec::new(),
             opening: None,
@@ -4340,6 +4402,14 @@ impl App {
             .unwrap_or_else(|| self.cwd.clone())
     }
 
+    /// What the next session runs under: the model and provider `ctrl+o` set, else the
+    /// `defaults` block's, which reach a session as they reach a job.
+    fn session_policy(&self) -> config::Policy {
+        self.session
+            .clone()
+            .unwrap_or_else(|| config::defaults(&self.jobs_path))
+    }
+
     /// The composer's `enter`: a session in the selected row's directory with the text as its
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
@@ -4352,8 +4422,7 @@ impl App {
         }
         let dir = self.target_dir();
         let kind = harness::KNOWN[self.harness];
-        // The defaults block's model and provider reach a session as they reach a job.
-        let policy = config::defaults(&self.jobs_path);
+        let policy = self.session_policy();
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         // Rollout timestamps are the thread's own clock; a little slack covers it.
@@ -4627,13 +4696,41 @@ impl App {
         }
     }
 
-    /// The composer: the harness `tab` picked, then the instruction or a short placeholder.
+    /// The model and provider the next session starts with, as words for the composer's
+    /// prefix and the status: the harness, its model when one is set, `bedrock` when on.
+    /// A field left to the system default says nothing.
+    // ponytail: bedrock false shows nothing either; it and unset both run on the harness's
+    // own endpoint unless the shell says otherwise.
+    fn session_words(&self) -> Vec<String> {
+        let kind = harness::KNOWN[self.harness];
+        let p = self.session_policy();
+        let model = match kind {
+            HarnessKind::Claude => p.model,
+            HarnessKind::Codex => p.codex_model,
+        };
+        let mut words = vec![kind.to_string()];
+        words.extend(model);
+        if p.bedrock == Some(true) {
+            words.push("bedrock".into());
+        }
+        words
+    }
+
+    /// The composer: the harness `tab` picked with the model and provider the next session
+    /// starts with, then the instruction or a short placeholder.
     fn composer(&self) -> Line<'static> {
         let kind = harness::KNOWN[self.harness].to_string();
+        let words = self.session_words();
         let mut spans = vec![Span::styled(
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
         )];
+        if words.len() > 1 {
+            spans.push(Span::styled(
+                format!("{} › ", words[1..].join(" · ")),
+                dim(),
+            ));
+        }
         let label = |n: usize| format!("[Image #{}]", n + 1);
         let shown = expand(&self.text, label);
         let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
@@ -4721,10 +4818,10 @@ impl App {
                 keys.extend([("enter", "keep"), ("esc", "back")]);
                 hints(&keys)
             }
-            Mode::Config(_) => hints(&[
+            Mode::Config(form) => hints(&[
                 ("↑ ↓", "field"),
                 ("enter", "edit"),
-                ("ctrl+s", "save"),
+                ("ctrl+s", if form.group.is_some() { "keep" } else { "save" }),
                 ("esc", "cancel"),
             ]),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
@@ -4738,6 +4835,7 @@ impl App {
             Mode::Normal if !self.text.is_empty() => hints(&[
                 ("enter", &start),
                 ("tab", &next),
+                ("ctrl+o", "model"),
                 ("ctrl+v", "paste image"),
                 ("esc", "clear"),
             ]),
@@ -5103,6 +5201,12 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
+                // The session form keeps its policy for the composer; nothing is written.
+                ConfigAction::Save(policy, ..) if form.group.is_some() => {
+                    self.session = Some(*policy);
+                    self.mode = Mode::Normal;
+                    self.status = format!("next session: {}", self.session_words().join(" · "));
+                }
                 ConfigAction::Save(policy, columns, spark, mark) => {
                     match config::write_config(
                         &self.jobs_path,
@@ -5203,6 +5307,10 @@ impl App {
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
+                    KeyCode::Char('o') if ctrl => {
+                        self.mode =
+                            Mode::Config(Box::new(ConfigForm::session(&self.session_policy())));
+                    }
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
@@ -5855,6 +5963,7 @@ mod tests {
         );
 
         let mut c = ConfigForm::new(&config::Policy::default(), None, None, None);
+        c.go(field_at("timeout_min"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
             c.key(KeyCode::Char(ch), KeyModifiers::NONE);
@@ -5862,7 +5971,8 @@ mod tests {
         c.key(KeyCode::Left, KeyModifiers::NONE);
         c.key(KeyCode::Char('0'), KeyModifiers::NONE);
         assert_eq!(
-            c.values[0], "105",
+            c.values[field_at("timeout_min")],
+            "105",
             "the defaults editor types where the cursor is"
         );
         c.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -5874,10 +5984,11 @@ mod tests {
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('7'), KeyModifiers::NONE);
         assert_eq!(
-            c.values[0], "1057",
+            c.values[field_at("timeout_min")],
+            "1057",
             "another row puts the cursor after its value"
         );
-        assert_eq!(c.values[1], "2");
+        assert_eq!(c.values[field_at("budget_usd")], "2");
 
         let mut i = Input::new("ab");
         assert!(i.key(KeyCode::Left, KeyModifiers::NONE));
@@ -8150,6 +8261,61 @@ mod tests {
     /// ← → pick, enter keeps the value; ctrl+s checks the lot and writes only the `defaults`
     /// block and the `columns:` line; a bad value comes back on its field and nothing is
     /// written.
+    /// `ctrl+o` opens the `runs` group alone as the next session's settings, seeded from the
+    /// defaults; `-` reads `system default` there; `ctrl+s` keeps the picks without writing
+    /// the file, the composer's prefix shows them, and the session starts under them.
+    #[test]
+    fn ctrl_o_picks_the_next_session_s_model_and_provider() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let ctrl = KeyModifiers::CONTROL;
+        app.key(KeyCode::Char('o'), ctrl).unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("next session"), "{s}");
+        assert!(s.contains("bedrock") && s.contains("codex_model"), "{s}");
+        assert!(!s.contains("timeout_min") && !s.contains("notify"), "{s}");
+        // Down from the last shown row stays; the hidden rows are never visited.
+        for _ in 0..5 {
+            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        }
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("codex_model")));
+        for _ in 0..5 {
+            app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        }
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("bedrock › [system default] false  true "), "{s}");
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('s'), ctrl).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "next session: claude · opus · bedrock");
+        assert!(!d.path().join("none.yaml").exists(), "nothing is written");
+        let composer: String = app
+            .composer()
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(composer.contains("› opus · bedrock › "), "{composer}");
+        let args = harness::session_args(HarnessKind::Claude, None, "hi", &app.session_policy());
+        assert!(args.contains(&"--model".into()) && args.contains(&"opus".into()));
+        // Codex shows its own model, none set, and the provider still.
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.session_words(), ["codex", "bedrock"]);
+    }
+
     #[test]
     fn the_config_button_edits_the_defaults_block() {
         let d = dir();
@@ -8299,27 +8465,32 @@ mod tests {
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
-        assert!(s.contains("disable sandbox"), "{s}");
-        assert!(s.contains("empty uses default"), "{s}");
-        assert!(s.contains("alias or model id"), "{s}");
+        assert!(s.contains("Codex without sandbox"), "{s}");
+        assert!(s.contains("Codex model id"), "{s}");
+        assert!(s.contains("Claude alias or model id"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(
-            s.contains("records a timeout"),
+            s.contains("AWS_ variables"),
             "the selected field is explained: {s}"
         );
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
+        assert!(
+            s.matches("system default").count() >= 4,
+            "harness-owned fields read system default when empty: {s}"
+        );
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\njobs  defaults") < at("timeout_min")
-                && at("overlap") < at("bedrock")
-                && at("bedrock") < at("\nclaude  defaults")
-                && at("\nclaude  defaults") < at("model")
-                && at("max_turns") < at("\ncodex  defaults")
-                && at("\ncodex  defaults") < at("codex_model")
+            at("\nruns  every job and session") < at("bedrock")
+                && at("bedrock") < at("model")
+                && at("model") < at("codex_model")
+                && at("codex_model") < at("\njobs  supervised runs only")
+                && at("\njobs  supervised runs only") < at("timeout_min")
+                && at("overlap") < at("tools")
+                && at("max_turns") < at("codex_full_access")
                 && at("codex_full_access") < at("\ncones  display and alerts")
                 && at("\ncones  display and alerts") < at("notify")
                 && at("notify") < at("columns"),
