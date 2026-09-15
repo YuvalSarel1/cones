@@ -17,11 +17,11 @@
 <rect x="66.58" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
 <rect x="75.01" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▁ </text>
-<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">4</text>
+<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▅ </text>
+<text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">3</text>
 <text x="159.3" y="50" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> working  </text>
 <text x="243.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇ </text>
-<text x="260.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#d29922" font-weight="700">2</text>
+<text x="260.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#d29922" font-weight="700">1</text>
 <text x="268.9" y="50" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#d29922"> need input</text>
 <text x="378.5" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">▁ </text>
 <text x="395.3" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">0</text>
@@ -54,43 +54,35 @@
 <text x="302.6" y="110" xml:space="preserve" textLength="219.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700"> the jobs: start, edit, ad</text>
 <text x="521.8" y="110" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="150" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state        title                           │</text>
+<text x="16.0" y="150" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state        title                          c│</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
 <text x="521.8" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
+<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="190" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      </text>
-<text x="252.0" y="190" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">orchestrator sweep setup        </text>
-<text x="521.8" y="190" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
+<text x="142.4" y="190" xml:space="preserve" textLength="370.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      the harness table in the docs  </text>
+<text x="513.4" y="190" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">1│</text>
+<text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
 <text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="210" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      columns horizontal scroll alignm</text>
-<text x="521.8" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
+<text x="142.4" y="210" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">needs input  </text>
+<text x="252.0" y="210" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sparkline bounds               </text>
+<text x="513.4" y="210" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">8│</text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
 <text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      bedrock integration debugging   </text>
-<text x="521.8" y="230" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="250" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
-<text x="58.1" y="250" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="250" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">needs input  </text>
-<text x="252.0" y="250" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">line matching validation        </text>
+<text x="142.4" y="230" xml:space="preserve" textLength="370.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      the ledger&#x27;s write path        </text>
+<text x="513.4" y="230" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">5│</text>
 <text x="521.8" y="250" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="270" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
-<text x="58.1" y="270" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="270" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      session status clarification    </text>
+<text x="16.0" y="270" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
 <text x="521.8" y="270" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="310" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
-<text x="521.8" y="310" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="330" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
-<text x="58.1" y="330" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="330" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
-<text x="252.0" y="330" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">exposure channel permissions sco</text>
+<text x="32.9" y="290" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
+<text x="58.1" y="290" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
+<text x="142.4" y="290" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done         </text>
+<text x="252.0" y="290" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">the invoice export endpoint    </text>
+<text x="513.4" y="290" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">4│</text>
+<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
+<text x="58.1" y="310" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
+<text x="142.4" y="310" xml:space="preserve" textLength="370.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working      the flaky checkout test        </text>
+<text x="513.4" y="310" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">6│</text>
 <text x="521.8" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="350" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
-<text x="58.1" y="350" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="350" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">needs input  </text>
-<text x="252.0" y="350" xml:space="preserve" textLength="269.8" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">agent work quality evaluation   </text>
 <text x="521.8" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="390" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>

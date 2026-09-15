@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Render assets/tui.svg, a screenshot of a live `cones tui`, from a tmux pane.
+"""Render assets/tui.svg, a screenshot of `cones tui` on a fixed cast of sessions, from a tmux pane.
 Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in] [jobs file]."""
-import html, re, shlex, subprocess, sys, time, uuid
+import html, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, uuid
+from datetime import datetime, timedelta, timezone
 
 COLS, ROWS = 120, 34
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
@@ -11,16 +12,67 @@ BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the cone's tones and the menu button fill
 
+# The rows the asset shows. A capture of the machine's own registry painted whatever happened
+# to be running into the README, so the cast is written here instead: a folder with work in
+# flight and one waiting on a human, another folder with a run that finished. `bars` is lines
+# per minute over the sparkline's window, `context` the tokens the row reports.
+HOME = os.path.expanduser("~")
+CAST = [
+    (".", "busy", "the ledger's write path", "claude-opus-5", 56_000, [1, 2, 5, 7, 6, 3, 2, 4], "Reading the ledger writer to see where the lock is taken"),
+    (".", "waiting", "sparkline bounds", "claude-opus-5", 86_000, [2, 3, 2, 1, 1, 2, 1, 1], "Two ways to scale the bars; which one do you want?"),
+    (".", "busy", "the harness table in the docs", "claude-sonnet-5", 120_000, [4, 3, 6, 5, 2, 3, 5, 4], "Every state a harness reports now has a row"),
+    ("work", "busy", "the flaky checkout test", "claude-opus-5", 67_000, [1, 1, 2, 3, 3, 2, 1, 2], "The failure needs the clock frozen, not another retry"),
+    ("work", "done", "the invoice export endpoint", "claude-sonnet-5", 41_000, [2, 4, 3, 1, 1, 1, 1, 1], "Shipped behind the export flag; the tests cover both currencies"),
+]
+
 def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output=True, **k)
 
+def cast(claude):
+    """Claude's own layout under `claude`: a registry entry, a transcript and a statusLine
+    payload per row. The pid is this script's, alive for the capture, so cones reads the rows
+    as live; `interactive` is the kind a session in its own terminal has, which the dashboard
+    never opens a viewer for, so capturing launches no client."""
+    now = datetime.now(timezone.utc)
+    for i, (folder, status, title, model, context, bars, last) in enumerate(CAST):
+        # "." is the folder the dashboard itself opens in, where its own work sits.
+        sid = f"{uuid.uuid4()}"
+        cwd = os.path.abspath(CWD) if folder == "." else os.path.join(HOME, folder)
+        os.makedirs(os.path.join(claude, "sessions"), exist_ok=True)
+        os.makedirs(os.path.join(claude, "statusline"), exist_ok=True)
+        project = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
+        os.makedirs(project, exist_ok=True)
+        started = int((now - timedelta(minutes=len(bars) + i + 4)).timestamp() * 1000)
+        json.dump({"pid": os.getpid(), "sessionId": sid, "cwd": cwd, "kind": "interactive",
+                   "status": status, "startedAt": started, "updatedAt": started},
+                  open(os.path.join(claude, "sessions", f"{sid}.json"), "w"))
+        json.dump({"context_window": {"context_window_size": 1_000_000}},
+                  open(os.path.join(claude, "statusline", f"{sid}.json"), "w"))
+        # One line per count in each bucket, oldest bucket first, so the sparkline has a
+        # shape; the last line is the reply the `last` column shows.
+        lines = [json.dumps({"type": "ai-title", "aiTitle": title})]
+        # Each row's timeline sits a minute further back than the one before, so no two
+        # agents report in lockstep and the rows keep one order between captures.
+        for back, count in enumerate(reversed(bars)):
+            at = (now - timedelta(minutes=back + i, seconds=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for n in range(count):
+                text = last if (back, n) == (0, count - 1) else f"working on {title}"
+                lines.append(json.dumps({"type": "assistant", "timestamp": at, "message": {
+                    "id": f"m{i}-{back}-{n}", "model": model,
+                    "usage": {"input_tokens": 12, "cache_read_input_tokens": context, "output_tokens": 40},
+                    "content": [{"type": "text", "text": text}]}}))
+        open(os.path.join(project, f"{sid}.jsonl"), "w").write("\n".join(reversed(lines)) + "\n")
+
+claude = tempfile.mkdtemp(prefix="conescast-")
+cast(claude)
 session = f"conescap-{uuid.uuid4().hex[:8]}"
-# Start on the example job, so capturing the dashboard does not open a live session's viewer.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} tui", check=True)
+# CLAUDE_CONFIG_DIR is the override Claude Code itself honors, so the dashboard reads the cast
+# above and nothing of this machine's own work. Start on the example job, so no job row's run
+# is live either.
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} tui", check=True)
 try:
     time.sleep(5)
-    # The cursor starts on the first session row, whose live viewer would paint another
-    # agent's transcript into the pane; `up` lands on the menu row, where the pane shows the
-    # picked button's screen instead. Nothing of a live session goes into a committed asset.
+    # `up` lands on the menu row, where the pane shows the picked button's screen rather than
+    # a session's viewer, and `right` picks the button the asset shows.
     tmux("send-keys", "-t", session, "Up", check=True)
     time.sleep(1)
     tmux("send-keys", "-t", session, "Right", check=True)
@@ -28,6 +80,7 @@ try:
     lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
 finally:
     tmux("kill-session", "-t", session)
+    shutil.rmtree(claude, ignore_errors=True)
 
 CW, LH, PAD, FS = 8.43, 20, 16, 14
 W, H = int(COLS * CW + 2 * PAD), ROWS * LH + 2 * PAD
