@@ -3431,6 +3431,10 @@ impl App {
             }
         }
         self.cursor = i as usize;
+        // Leaving the menu row forgets the picked button, so coming back lands on the first.
+        if !self.on_menu() {
+            self.menu = 0;
+        }
         self.settle();
     }
 
@@ -4785,6 +4789,9 @@ impl App {
     }
 
     fn composer(&self) -> Line<'static> {
+        if self.on_button() {
+            return Line::default();
+        }
         let kind = harness::KNOWN[self.harness].to_string();
         let words = self.session_words();
         let mut spans = vec![Span::styled(
@@ -5340,15 +5347,14 @@ impl App {
             },
             Mode::Normal => {
                 let armed = self.armed.take();
-                if self.text.is_empty()
-                    && matches!(code, KeyCode::Left | KeyCode::Right)
-                    && matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu))
-                {
+                if self.on_button() && matches!(code, KeyCode::Left | KeyCode::Right) {
                     let n = MENU.len();
                     self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
                     return Ok(false);
                 }
-                if let Some(at) = edit(&mut self.text, self.caret, code, mods) {
+                if !self.on_button()
+                    && let Some(at) = edit(&mut self.text, self.caret, code, mods)
+                {
                     self.caret = at;
                     return Ok(false);
                 }
@@ -5713,7 +5719,16 @@ impl App {
     }
 
     fn menu_is(&self, name: &str) -> bool {
-        matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)) && MENU[self.menu].0 == name
+        self.on_menu() && MENU[self.menu].0 == name
+    }
+
+    fn on_menu(&self) -> bool {
+        matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu))
+    }
+
+    /// The list is sitting on a button, which takes no instruction.
+    fn on_button(&self) -> bool {
+        self.on_menu() && self.text.is_empty()
     }
 
     fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
@@ -7528,7 +7543,11 @@ mod tests {
                 .map(|s| s.content.to_string())
                 .collect::<String>()
         };
-        assert_eq!(text(app.composer()), "✻ claude › Type an instruction…");
+        assert_eq!(
+            text(app.composer()),
+            "",
+            "a button takes no instruction, so the menu row has no prompt"
+        );
         let hint = text(app.hint_line());
         assert!(
             hint.starts_with(
@@ -7537,9 +7556,9 @@ mod tests {
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("shift+tab claude"));
         app.text = "fix the tests".into();
+        assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter new job with it"));
@@ -7917,6 +7936,7 @@ mod tests {
     #[test]
     fn a_focused_viewer_takes_the_frame_and_ctrl_z_brings_the_composer_back() {
         let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
         app.split = false;
         app.refresh().unwrap();
@@ -8683,7 +8703,11 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         assert!(pane(&t).contains("move between rows"), "{}", pane(&t));
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
-        assert!(left(&t).contains("Type an instruction…"), "{}", left(&t));
+        assert!(
+            !left(&t).contains("Type an instruction…"),
+            "the list is on a button, which takes no instruction: {}",
+            left(&t)
+        );
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Guide(1)));
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
@@ -8958,6 +8982,7 @@ mod tests {
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(!d.path().join("none.yaml").exists(), "nothing is written");
+        app.text = "hi".into();
         let composer: String = app
             .composer()
             .spans
