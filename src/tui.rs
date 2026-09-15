@@ -2857,7 +2857,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer or a button's screen and back out to the list; a form that uses tab itself, the folder prompt or an open field, is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
+        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; a form that uses tab itself, the folder prompt or an open field, is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
     ),
     (
         "ctrl+z",
@@ -5120,6 +5120,15 @@ impl App {
             }
             // Plain tab returns to the list; shift+tab remains the client's mode switch.
             if code == KeyCode::Tab && mods.is_empty() {
+                self.unfocus();
+                return Ok(false);
+            }
+            // Left at an empty composer has nowhere to go in the client, so it returns
+            // to the list the way tab does.
+            if code == KeyCode::Left
+                && mods.is_empty()
+                && viewer::at_empty_prompt(open.viewer.screen())
+            {
                 self.unfocus();
                 return Ok(false);
             }

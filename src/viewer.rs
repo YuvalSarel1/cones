@@ -628,6 +628,22 @@ fn modifier_param(mods: KeyModifiers) -> u8 {
         + 4 * u8::from(mods.contains(KeyModifiers::CONTROL))
 }
 
+/// True when the caret sits at an empty prompt: nothing to its left on that row
+/// but box art, a prompt marker and blanks. A client with text typed, or drawing
+/// a full-screen view, fails the test and keeps the key.
+pub fn at_empty_prompt(screen: &vt100::Screen) -> bool {
+    if screen.hide_cursor() {
+        return false;
+    }
+    let (row, col) = screen.cursor_position();
+    let left = screen.contents_between(row, 0, row, col);
+    let mut marks = left.chars().filter(|c| !c.is_whitespace()).peekable();
+    // ponytail: a marker has to be there, so a full-screen client parking the caret
+    // on blank space keeps its key. Add a client's marker here when one is missing.
+    marks.peek().is_some()
+        && marks.all(|c| "|>$#\u{2502}\u{250a}\u{2503}\u{2590}\u{203a}\u{276f}".contains(c))
+}
+
 /// Classic xterm encoding. DECCKM selects SS3 arrows/Home/End; control digits follow
 /// xterm's table, matching crossterm's decoding of bytes 0x1c to 0x1f.
 pub fn encode_key(code: KeyCode, mods: KeyModifiers, app_cursor: bool) -> Vec<u8> {
@@ -1118,6 +1134,22 @@ mod tests {
                 assert_eq!(text(p.screen(), 3), "PROMPT");
             }
         }
+    }
+
+    #[test]
+    fn empty_prompt_is_the_caret_behind_box_art_and_a_marker_only() {
+        let at = |bytes: &[u8]| {
+            let mut p = vt100::Parser::new(3, 20, 0);
+            p.process(bytes);
+            at_empty_prompt(p.screen())
+        };
+        assert!(at("\u{2502} > ".as_bytes()));
+        assert!(at(b"$ "));
+        assert!(!at("\u{2502} > hi".as_bytes()));
+        assert!(!at(b"\x1b[?25l$ "));
+        assert!(!at(b"> hi\x1b[H"));
+        // A full-screen client parks the caret mid-screen, not behind a marker.
+        assert!(!at(b"\x1b[2J\x1b[Hlines here\x1b[2;4H"));
     }
 
     #[test]
