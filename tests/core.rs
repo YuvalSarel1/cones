@@ -456,13 +456,27 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         (None, None, None, None, None),
         "the registry's startedAt and updatedAt never stand in for the transcript"
     );
-    // A finished job reads its own word, as in `claude agents`: done, failed or stopped beat
-    // the registry status; a blocked tempo is needs input.
+    // A busy registry is working whatever the job's state.json still says: a new prompt flips
+    // the registry at once and the job file only with the first progress note.
+    for state in [
+        r#"{"state":"done"}"#,
+        r#"{"state":"failed"}"#,
+        r#"{"state":"stopped"}"#,
+        r#"{"state":"working","tempo":"blocked"}"#,
+    ] {
+        fs::write(claude.join("jobs/aaaaaaaa/state.json"), state).unwrap();
+        let b = cones::fleet::find(claude, other).unwrap().unwrap();
+        assert_eq!(b.state, "active", "{state}");
+    }
+    // Otherwise a finished job reads its own word, as in `claude agents`: done, failed or
+    // stopped beat an idle registry status.
+    let mut idle = bg("aaaaaaaa");
+    idle["status"] = "idle".into();
+    registry(claude, other, idle.clone());
     for (state, expect) in [
         (r#"{"state":"done"}"#, "done"),
         (r#"{"state":"failed"}"#, "failed"),
         (r#"{"state":"stopped"}"#, "stopped"),
-        (r#"{"state":"working","tempo":"blocked"}"#, "active"),
     ] {
         fs::write(claude.join("jobs/aaaaaaaa/state.json"), state).unwrap();
         let b = cones::fleet::find(claude, other).unwrap().unwrap();
@@ -473,8 +487,6 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         r#"{"state":"working","tempo":"blocked"}"#,
     )
     .unwrap();
-    let mut idle = bg("aaaaaaaa");
-    idle["status"] = "idle".into();
     registry(claude, other, idle);
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
     assert_eq!(

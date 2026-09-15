@@ -242,12 +242,14 @@ fn session(
         // The folder `claude agents` files the row under: a background job's launch directory
         // from its own state, since EnterWorktree rewrites the registry cwd to the worktree.
         cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
-        // The same order `claude agents` reads a row's word in: a finished job's own state first,
-        // then the registry status, then a job whose tempo is blocked. A status this version does
-        // not know renders as Claude's own word, never as a guess.
+        // A new prompt flips the registry to busy at once; Claude rewrites a finished job's
+        // state.json only with its first progress note, tens of seconds later, so busy is read
+        // before the job's own done. Then the job state, the registry status, and a job whose
+        // tempo is blocked. A status this version does not know renders as Claude's own word,
+        // never as a guess.
         state: match (job["state"].as_str(), v["status"].as_str().unwrap_or("-")) {
-            (Some(done @ ("done" | "failed" | "stopped")), _) => done,
             (_, "busy" | "shell") => "active",
+            (Some(done @ ("done" | "failed" | "stopped")), _) => done,
             (_, "blocked" | "waiting" | "needs_user" | "needs_trust") => "blocked",
             _ if job["tempo"].as_str() == Some("blocked") => "blocked",
             (_, other) => other,
@@ -886,5 +888,31 @@ mod tests {
         });
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), id);
         task.join().unwrap();
+    }
+
+    #[test]
+    fn a_busy_registry_beats_a_finished_jobs_stale_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let job = dir.path().join("jobs/aaaaaaaa");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let path = registry.join("entry.json");
+        let mut entry = serde_json::json!({
+            "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
+            "kind": "bg", "jobId": "aaaaaaaa", "status": "idle"
+        });
+        fs::write(&path, entry.to_string()).unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({"state": "done", "tempo": "idle"}).to_string(),
+        )
+        .unwrap();
+        let state = |dir| sessions(dir).unwrap().remove(0).state;
+        assert_eq!(state(dir.path()), "done");
+        entry["status"] = "busy".into();
+        fs::write(&path, entry.to_string()).unwrap();
+        assert_eq!(state(dir.path()), "active");
     }
 }
