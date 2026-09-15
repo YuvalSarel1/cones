@@ -158,26 +158,29 @@ The job is a Claude job under the file's defaults, which the menu's `config` but
 
 ## The defaults editor
 
-`enter` on the menu's `config` row opens it where the list is: the `defaults` block of jobs.yaml, described in [jobs.md](jobs.md), the dashboard's `columns:` line, described under [columns](#columns), and its `sparkline:` block, described under [sparkline](#sparkline), one row per field under four group headers. `jobs` holds what every job runs under: `timeout_min`, `budget_usd`, `daily_budget_usd`, `write` and `overlap`. `claude` holds what reaches Claude jobs only: `model`, `tools` and `max_turns`. `codex` holds what reaches Codex jobs only: `codex_model` and `codex_full_access`; both are kept in the file for when Codex jobs run. `cones` holds what the dashboard shows and when it speaks up: `notify`, `columns` and the four `sparkline.` fields. Every row is name, value and a few words, in three columns that hold still whichever row is selected; a value wider than the column, the columns list mostly, is cut with an ellipsis and read whole on the prompt line. The selected row's name is lit and its value pressed, and the prompt line is where the value is edited: on `write`, `overlap`, `codex_full_access`, `notify` and `sparkline.metric` the options with the current one bracketed, `← →` moving the bracket; on the rest the value under a cursor, typed in place. The selected field's fuller explanation sits under the list, padded to the tallest so the block keeps its height. `↑` `↓` move between fields, `enter` saves, `esc` cancels. An empty value, or `-` on a pick, leaves the field out of the file, so the built-in applies and shows dim in its place; one `sparkline.` field set writes the whole block, the built-ins filling the rest.
+Open `config` from the menu to edit job defaults and dashboard settings in jobs.yaml. The `jobs`, `claude` and `codex` groups contain [policy defaults](jobs.md); each job can override them. `cones` contains notifications, [columns](#columns) and [sparklines](#sparkline). Codex settings are saved, but Codex jobs are currently unavailable.
+
+Each row shows a field, value and short hint, with the selected field explained below. Long values are truncated in the row and shown fully on the prompt line. The columns and help block keep their positions as selection changes.
+
+`↑` `↓` select a field. Edit its value on the prompt line, or use `←` `→` to choose an option. `enter` saves; `esc` cancels. Empty values, or `-` in a picker, use the dimmed built-in defaults. Setting any sparkline field saves the full block, with built-ins filling the rest.
 
 | Field | Row | Under the list |
 | --- | --- | --- |
-| `timeout_min` | minutes before cones kills a run | SIGTERM to the process group, two seconds, SIGKILL; the run is `timeout` |
-| `budget_usd` | dollars one run may spend | Claude's own `--max-budget-usd`; Claude stops itself and reports why |
-| `daily_budget_usd` | dollars a job may spend a day | a rolling 24-hour sum per job; a tick over it is `skipped` / `budget` |
-| `write` | may a job change files | `false` strips Edit, Write and Bash from a Claude job and runs Codex read-only; `true` keeps them, sandboxes Bash and gives Codex its workspace |
-| `overlap` | a tick while the last run goes on | `skip`, `allow` or `replace` |
-| `model` | the model a Claude job runs on | `--model` for every Claude job without its own; empty leaves it to Claude |
-| `tools` | the tools a Claude job may call | the allowlist, comma-separated; Codex has none |
-| `max_turns` | turns before Claude must stop | `--max-turns`; empty leaves it to Claude |
-| `codex_model` | the model a Codex job runs on | `--model` for every Codex job without its own; empty leaves it to Codex |
-| `codex_full_access` | may a Codex job leave the sandbox | `true` is every path and the network; `false` keeps it to its workspace |
-| `notify` | a notification when a run fails | macOS notification on `failed`, `timeout` or a budget skip; `CONES_NOTIFIER` replaces it |
-| `columns` | the session columns | the `columns:` line, comma-separated |
-| `sparkline.bars` | how many bars the sparkline draws | 1 to 64 buckets; with the bucket, the window |
-| `sparkline.bucket` | how long one bar covers | `30s`, `1m`, `5m`, at most `24h` |
-| `sparkline.metric` | what a bar counts | `lines`, `messages`, `tools` or `tokens` |
-| `sparkline.bound` | what a full bar means | `fleet`, `row`, `log` or a number |
+| `timeout_min` | time limit (min) | Up to 10080 minutes; overdue runs stop with a `timeout` result |
+| `budget_usd` | cost per run (USD) | Claude stops when the budget is reached |
+| `daily_budget_usd` | cost per 24h (USD) | Rolling cap per job; active runs reserve `budget_usd`, runs over the cap are skipped |
+| `write` | allow file changes | `false` disables Edit, Write and Bash for Claude and makes Codex read-only; `true` permits writes and sandboxes allowed Bash commands |
+| `overlap` | when already running | `skip`, `allow` or `replace` |
+| `model` | e.g. sonnet, opus | Empty uses Claude's default |
+| `tools` | allowed tools | Comma-separated; `write: false` removes Edit, Write and Bash |
+| `max_turns` | turns per run | Maximum assistant turns; empty leaves the limit to Claude |
+| `codex_model` | empty uses default | Empty uses Codex's default; Codex jobs are currently unavailable |
+| `codex_full_access` | disable sandbox | `true` allows all paths and the network; Codex jobs are currently unavailable |
+| `notify` | failure alerts | Failures, timeouts and runs skipped for budget |
+| `columns` | session columns | Comma-separated; `state` precedes the title, the rest follow in the given order |
+| `sparkline.bars` | bar count | 1 to 64 bars, oldest first; 16 bars at `1m` show 16 minutes |
+| `sparkline.bucket` | time per bar | `30s`, `1m`, `5m`, at most `24h` |
+| `sparkline.metric` | count per bar | Transcript lines, assistant replies, tool calls or output tokens |
+| `sparkline.bound` | chart scale | `fleet`, `row`, `log` or a fixed count for a full bar |
 
 Saving checks the block the way a Claude job would resolve it, whether or not the file has jobs, so a `daily_budget_usd` under `budget_usd` or an unknown tool comes back inline on its field with the file untouched; a value that is not a number does too, and so does a column name not in the table above or a sparkline bucket cones cannot parse. Only the `defaults:` block, the `columns:` line and the `sparkline:` block are rewritten, in place, or after `version:` when the file has none, and a missing jobs file is created around them with `jobs: []`. Nothing is reinstalled: the policy is compiled when a run starts, not into the plist.
-

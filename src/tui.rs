@@ -697,11 +697,7 @@ const MENU: [(&str, &str, &str); 4] = [
         "a row for a folder nothing runs in, to start work there",
     ),
     ("jobs", "jobs", "the jobs: start, edit, add one"),
-    (
-        "config",
-        "defaults",
-        "the defaults every job runs under and the dashboard's columns",
-    ),
+    ("config", "defaults", "job defaults and dashboard settings"),
     ("help", "guide", "the keys and what they do"),
 ];
 
@@ -1860,10 +1856,10 @@ const BOOL: &[&str] = &["-", "false", "true"];
 /// `codex` are the `defaults` block, `cones` the dashboard's own `columns:` line, `notify`
 /// and the `sparkline:` block.
 const GROUPS: [(&str, &str); 4] = [
-    ("jobs", "what every job runs under unless it sets its own"),
-    ("claude", "how a Claude job runs, unless it sets its own"),
-    ("codex", "how a Codex job runs, unless it sets its own"),
-    ("cones", "what the dashboard shows and when it speaks up"),
+    ("jobs", "defaults"),
+    ("claude", "defaults"),
+    ("codex", "defaults"),
+    ("cones", "display and alerts"),
 ];
 
 /// The fields under their groups. A field under `claude` or `codex` reaches only that
@@ -1872,128 +1868,128 @@ const FIELDS: [Field; 16] = [
     Field {
         group: "jobs",
         name: "timeout_min",
-        short: "minutes before cones kills a run",
-        long: "How long one run may take, on the clock, from its start. When it passes, cones sends SIGTERM to the harness and everything it spawned, waits two seconds, then SIGKILL, and the ledger records the run as timeout. Positive, at most 10080 (one week).",
+        short: "time limit (min)",
+        long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
         builtin: "30",
         picks: None,
     },
     Field {
         group: "jobs",
         name: "budget_usd",
-        short: "dollars one run may spend",
-        long: "The most one run may spend, passed to Claude as --max-budget-usd. Claude stops itself at the number and reports why, so the run ends early with a budget result rather than a kill.",
+        short: "cost per run (USD)",
+        long: "Maximum cost per run in USD. Claude stops when the budget is reached.",
         builtin: "2.00",
         picks: None,
     },
     Field {
         group: "jobs",
         name: "daily_budget_usd",
-        short: "dollars a job may spend a day",
-        long: "A rolling 24-hour cap per job. Before a run starts, cones adds up what the job's runs cost in the last day, counting a run still going at its budget_usd; a tick that would push the sum over the cap is recorded as skipped / budget and nothing starts. At least budget_usd. Empty is no cap.",
+        short: "cost per 24h (USD)",
+        long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
         builtin: "none",
         picks: None,
     },
     Field {
         group: "jobs",
         name: "write",
-        short: "may a job change files",
-        long: "false strips Edit, Write and Bash from a Claude job's tool list even when tools names them, and runs a Codex job read-only, so the job can only read. true keeps them, turns Claude's sandbox on whenever Bash is allowed, and gives Codex its workspace to write.",
+        short: "allow file changes",
+        long: "false disables Claude's Edit, Write and Bash tools and makes Codex read-only. true permits writes and sandboxes allowed Bash commands.",
         builtin: "false",
         picks: Some(BOOL),
     },
     Field {
         group: "jobs",
         name: "overlap",
-        short: "a tick while the last run goes on",
-        long: "skip records the tick as skipped / overlap and starts nothing. allow starts a second run beside the first. replace sends the old run SIGUSR1, waits up to 10 seconds for it to stop, then starts the new one.",
+        short: "when already running",
+        long: "When a job is already running: skip the next run, allow both, or replace the active run.",
         builtin: "skip",
         picks: Some(&["-", "skip", "allow", "replace"]),
     },
     Field {
         group: "claude",
         name: "model",
-        short: "the model a Claude job runs on",
-        long: "Passed to Claude as --model, as in sonnet or opus, for every Claude job that names none in its own model: line. Empty leaves the choice to Claude.",
-        builtin: "Claude's own",
+        short: "e.g. sonnet, opus",
+        long: "Empty uses Claude's default model.",
+        builtin: "default",
         picks: None,
     },
     Field {
         group: "claude",
         name: "tools",
-        short: "the tools a Claude job may call",
-        long: "The allowlist passed to Claude, separated by commas: any of Read, Grep, Glob, Edit, Write, Bash, or a Bash(pattern) rule. write: false removes Edit, Write and Bash from it whatever is listed here. A Codex job has no per-tool allowlist and does not read this.",
+        short: "allowed tools",
+        long: "Comma-separated: Read, Grep, Glob, Edit, Write, Bash or Bash(pattern). write: false removes Edit, Write and Bash.",
         builtin: "Read, Grep, Glob",
         picks: None,
     },
     Field {
         group: "claude",
         name: "max_turns",
-        short: "turns before Claude must stop",
-        long: "The most assistant turns one run takes, passed as --max-turns. Empty leaves it to Claude. A small number keeps a read-only check from wandering.",
+        short: "turns per run",
+        long: "Maximum assistant turns per run. Empty leaves the limit to Claude.",
         builtin: "none",
         picks: None,
     },
     Field {
         group: "codex",
         name: "codex_model",
-        short: "the model a Codex job runs on",
-        long: "Passed to Codex as --model for every Codex job that names none in its own model: line. Empty leaves the choice to Codex. Kept in the file for when Codex jobs run; none does yet, since Codex has no dollar budget cones can enforce.",
-        builtin: "Codex's own",
+        short: "empty uses default",
+        long: "Empty uses Codex's default model. Codex jobs are currently unavailable because their dollar budget cannot be enforced.",
+        builtin: "default",
         picks: None,
     },
     Field {
         group: "codex",
         name: "codex_full_access",
-        short: "may a Codex job leave the sandbox",
-        long: "true runs a Codex job with full access: every path and the network, no sandbox. false keeps it to its workspace, read-only or writable by write. A Claude job does not read this. Kept in the file for when Codex jobs run; none does yet.",
+        short: "disable sandbox",
+        long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
         builtin: "false",
         picks: Some(BOOL),
     },
     Field {
         group: "cones",
         name: "notify",
-        short: "a notification when a run fails",
-        long: "true shows a macOS notification when a run ends failed or timeout, or is skipped on budget. CONES_NOTIFIER in the environment names a command that takes the title and message instead.",
+        short: "failure alerts",
+        long: "Notify on failures, timeouts and runs skipped for budget.",
         builtin: "false",
         picks: Some(BOOL),
     },
     Field {
         group: "cones",
         name: "columns",
-        short: "the session columns",
-        long: "The columns of a session row, separated by commas, in the order given: any of state, model, age, activity, context, tokens, last, sparkline. state sits before the title; the rest follow it. Written to jobs.yaml as its columns: line; see dashboard.md for what each cell reads.",
+        short: "session columns",
+        long: "Comma-separated: state, model, age, activity, context, tokens, last, sparkline. state appears before the title; the rest follow in the order given.",
         builtin: "state, context, sparkline, model, activity, last",
         picks: None,
     },
     Field {
         group: "cones",
         name: "sparkline.bars",
-        short: "how many bars the sparkline draws",
-        long: "The sparkline column is one bar per time bucket, oldest on the left, newest on the right. This is the number of buckets, 1 to 64; with the bucket length it is the window the column covers, named in its header as last 16m.",
+        short: "bar count",
+        long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
         builtin: "16",
         picks: None,
     },
     Field {
         group: "cones",
         name: "sparkline.bucket",
-        short: "how long one bar covers",
-        long: "The length of one bucket: a count of s, m or h, as in 30s, 1m or 5m, at most 24h. Sixteen bars of 1m show the last sixteen minutes; twelve of 5m the last hour.",
+        short: "time per bar",
+        long: "Time per bar, such as 30s, 1m or 5m. Maximum 24h.",
         builtin: "1m",
         picks: None,
     },
     Field {
         group: "cones",
         name: "sparkline.metric",
-        short: "what a bar counts",
-        long: "What is counted in each bucket, from the lines the harness wrote to the transcript in it. lines is every line, tool results and progress included. messages is assistant replies. tools is tool calls. tokens is output tokens, the closest to work produced.",
+        short: "count per bar",
+        long: "lines: all transcript lines. messages: assistant replies. tools: tool calls. tokens: output tokens.",
         builtin: "lines",
         picks: Some(&["-", "lines", "messages", "tools", "tokens"]),
     },
     Field {
         group: "cones",
         name: "sparkline.bound",
-        short: "what a full bar means",
-        long: "fleet scales every row to the busiest bucket on screen, so rows compare. row scales each row to its own busiest bucket, so it shows shape only. log is fleet on a log scale, so quiet rows still show. A number is the count that fills a bar, the same tomorrow; a bucket over it draws full.",
+        short: "chart scale",
+        long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number sets the count for a full bar.",
         builtin: "fleet",
         picks: None,
     },
@@ -2248,10 +2244,7 @@ impl ConfigForm {
             Line::default(),
             Line::from(vec![
                 Span::styled("config", Style::default().fg(ORANGE)),
-                Span::styled(
-                    "  jobs.yaml: the defaults every job runs under and the dashboard",
-                    dim(),
-                ),
+                Span::styled("  jobs.yaml", dim()),
             ]),
         ];
         let name_w = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
@@ -8052,7 +8045,7 @@ mod tests {
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("timeout_min"), "{s}");
         assert!(s.contains("sparkline.bound"), "{s}");
-        assert!(s.contains("minutes before cones kills a run"), "{s}");
+        assert!(s.contains("time limit (min)"), "{s}");
         // The words beside the rows sit in one column, and the explanation block keeps its
         // height, whichever row is selected.
         let column = |s: &str, what: &str| {
@@ -8066,9 +8059,9 @@ mod tests {
             it.next();
             it.take_while(|l| !l.contains("›")).count()
         };
-        let (col, tall) = (column(&s, "minutes before"), height(&s));
-        assert_eq!(column(&s, "what a bar counts"), col, "{s}");
-        assert_eq!(column(&s, "the tools a Claude job"), col, "{s}");
+        let (col, tall) = (column(&s, "time limit (min)"), height(&s));
+        assert_eq!(column(&s, "count per bar"), col, "{s}");
+        assert_eq!(column(&s, "allowed tools"), col, "{s}");
         let go = |app: &mut App, name: &str| {
             while let Mode::Config(f) = &app.mode
                 && f.row != field_at(name)
@@ -8084,44 +8077,41 @@ mod tests {
         go(&mut app, "sparkline.metric");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
-        assert_eq!(column(&s, "what a bar counts"), col, "no bounce: {s}");
+        assert_eq!(column(&s, "count per bar"), col, "no bounce: {s}");
         assert_eq!(height(&s), tall, "no bounce: {s}");
         assert!(
             s.contains("sparkline.metric › [-] lines"),
             "the options sit on the prompt line: {s}"
         );
         assert!(
-            !s.contains("[-] lines  messages  tools  tokens   what a bar counts"),
+            !s.contains("[-] lines  messages  tools  tokens   count per bar"),
             "not in the row: {s}"
         );
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
-        assert!(s.contains("may a Codex job leave the sandbox"), "{s}");
-        assert!(s.contains("the model a Codex job runs on"), "{s}");
-        assert!(s.contains("the model a Claude job runs on"), "{s}");
+        assert!(s.contains("disable sandbox"), "{s}");
+        assert!(s.contains("empty uses default"), "{s}");
+        assert!(s.contains("e.g. sonnet, opus"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(
-            s.contains("SIGTERM"),
+            s.contains("records a timeout"),
             "the selected field is explained: {s}"
         );
-        assert!(
-            !s.contains("Claude stops itself"),
-            "only the selected one: {s}"
-        );
+        assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\njobs  what") < at("timeout_min")
-                && at("write") < at("\nclaude  how")
-                && at("\nclaude  how") < at("model")
-                && at("max_turns") < at("\ncodex  how")
-                && at("\ncodex  how") < at("codex_model")
-                && at("codex_full_access") < at("\ncones  what")
-                && at("\ncones  what") < at("notify")
+            at("\njobs  defaults") < at("timeout_min")
+                && at("write") < at("\nclaude  defaults")
+                && at("\nclaude  defaults") < at("model")
+                && at("max_turns") < at("\ncodex  defaults")
+                && at("\ncodex  defaults") < at("codex_model")
+                && at("codex_full_access") < at("\ncones  display and alerts")
+                && at("\ncones  display and alerts") < at("notify")
                 && at("notify") < at("columns"),
             "the fields sit under their groups: {s}"
         );
