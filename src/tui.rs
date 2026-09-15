@@ -2534,8 +2534,8 @@ struct App {
     focus: Option<usize>,
     /// The real terminal's default colors, probed once at start, for viewers that ask.
     colors: viewer::Colors,
-    /// Whether the real terminal reports the mouse to the dashboard right now; on only while
-    /// the focused viewer asks for mouse reports.
+    /// Whether the real terminal reports the mouse to the dashboard right now: for split
+    /// clicks and viewer scrolling, including clients that leave the wheel to the terminal.
     mouse_capture: bool,
     /// Clear the terminal before the next frame: set when a viewer leaves the frame.
     needs_clear: bool,
@@ -3780,15 +3780,10 @@ impl App {
         Line::from(spans)
     }
 
-    /// Whether the real terminal should report the mouse: only while the focused viewer asks.
+    /// Split clicks and every focused viewer need mouse reports. A client that reads no
+    /// mouse leaves the wheel to our emulator, including in the full-frame layout.
     fn wants_mouse(&self) -> bool {
-        self.split_active(self.size.1)
-            || self
-                .focus
-                .and_then(|i| self.viewers.get(i))
-                .is_some_and(|o| {
-                    o.viewer.screen().mouse_protocol_mode() != viewer::MouseProtocolMode::None
-                })
+        self.split_active(self.size.1) || self.focus.is_some()
     }
 
     /// Pasted text: wrapped for a focused viewer that asked for bracketed paste, raw
@@ -8347,7 +8342,27 @@ mod tests {
         );
         assert!(!app.key(KeyCode::Char('a'), KeyModifiers::NONE).unwrap());
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        // Full-frame and narrow viewers need wheel reports too, even when the client
+        // leaves scrolling to the terminal.
+        app.toggle_split();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(app.wants_mouse(), "a full-frame viewer needs wheel reports");
+        app.mouse(wheel(MouseEventKind::ScrollUp, KeyModifiers::NONE));
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
+        app.mouse(wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        t.resize(Rect::new(0, 0, 80, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(app.wants_mouse(), "a narrow viewer needs wheel reports");
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
         app.unfocus();
+        assert!(!app.wants_mouse(), "the list alone releases the mouse");
     }
 
     #[test]

@@ -23,6 +23,10 @@ uuid = { version = "1", features = ["v4"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 vt100 = "0.16"
 
+[patch.crates-io]
+# Preserve history scrolled above Codex's fixed prompt. See docs/dashboard.md.
+vt100 = { path = "vendor/vt100" }
+
 [dev-dependencies]
 tempfile = "3"
 

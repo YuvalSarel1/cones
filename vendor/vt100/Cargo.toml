@@ -1,0 +1,20 @@
+[package]
+name = "vt100"
+version = "0.16.2"
+authors = ["Jesse Luehrs <doy@tozt.net>"]
+edition = "2021"
+rust-version = "1.70"
+
+description = "Library for parsing terminal data"
+homepage = "https://github.com/doy/vt100-rust"
+repository = "https://github.com/doy/vt100-rust"
+readme = false
+keywords = ["terminal", "vt100"]
+categories = ["command-line-interface", "encoding"]
+license = "MIT"
+include = ["src/**/*", "LICENSE"]
+
+[dependencies]
+itoa = "1.0.15"
+unicode-width = "0.2.1"
+vte = "0.15.0"

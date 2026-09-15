@@ -1151,6 +1151,38 @@ mod tests {
     }
 
     #[test]
+    fn history_above_a_fixed_prompt_stays_in_scrollback() {
+        for (alternate, top, expected) in [(false, 1, 2), (true, 1, 0), (false, 2, 0)] {
+            let mut p = vt100::Parser::new(4, 20, 10);
+            if alternate {
+                p.process(b"\x1b[?1049h");
+            }
+            p.process(b"\x1b[31mline1\x1b[m\r\nline2\r\nline3\r\nPROMPT");
+            // Codex writes history in a region starting at the top, leaving its prompt
+            // below the region. Only lines leaving the normal screen's top are history.
+            p.process(format!("\x1b[{top};3r\x1b[3;1H\r\nline4\r\nline5\x1b[r").as_bytes());
+            assert_eq!(text(p.screen(), 3), "PROMPT");
+            p.screen_mut().set_scrollback(10);
+            assert_eq!(
+                p.screen().scrollback(),
+                expected,
+                "alternate={alternate}, top={top}"
+            );
+            if expected > 0 {
+                assert_eq!(text(p.screen(), 0), "line1");
+                assert_eq!(text(p.screen(), 1), "line2");
+                assert_eq!(
+                    p.screen().cell(0, 0).unwrap().fgcolor(),
+                    vt100::Color::Idx(1)
+                );
+                p.screen_mut().set_scrollback(0);
+                assert_eq!(text(p.screen(), 0), "line3");
+                assert_eq!(text(p.screen(), 3), "PROMPT");
+            }
+        }
+    }
+
+    #[test]
     fn first_paint_ignores_setup_sequences_and_finds_the_first_text() {
         assert!(!has_text(b"\x1b[?1049h\x1b[2J\x1b[H\x1b]10;?\x07\x1b[?25l"));
         assert!(!has_text(b"\x1bP>|q\x1b\\\x1b(B"));
