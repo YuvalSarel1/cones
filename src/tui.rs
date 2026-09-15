@@ -4881,6 +4881,8 @@ impl App {
         let model = match kind {
             HarnessKind::Claude => p.model,
             HarnessKind::Codex => p.codex_model,
+            // Not in `harness::KNOWN`, so `tab` never lands here.
+            HarnessKind::Pi => None,
         };
         let mut words = vec![kind.to_string()];
         words.extend(model);

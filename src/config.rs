@@ -12,6 +12,7 @@ use std::{
 pub enum HarnessKind {
     Claude,
     Codex,
+    Pi,
 }
 
 impl std::fmt::Display for HarnessKind {
@@ -19,6 +20,7 @@ impl std::fmt::Display for HarnessKind {
         f.write_str(match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Pi => "pi",
         })
     }
 }
@@ -765,7 +767,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     let claude = kind == HarnessKind::Claude;
     let full = j
         .codex_full_access
-        .or(d.codex_full_access.filter(|_| !claude))
+        .or(d.codex_full_access.filter(|_| kind == HarnessKind::Codex))
         .unwrap_or(false);
     ensure!(
         !full || !claude,
@@ -812,12 +814,11 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: prompt must be nonempty and contain no NUL",
         j.name
     );
-    let model = j.model.or_else(|| {
-        if claude {
-            d.model.clone()
-        } else {
-            d.codex_model.clone()
-        }
+    let model = j.model.or_else(|| match kind {
+        HarnessKind::Claude => d.model.clone(),
+        HarnessKind::Codex => d.codex_model.clone(),
+        // No pi default: pi jobs are refused before one could reach it.
+        HarnessKind::Pi => None,
     });
     ensure!(
         model

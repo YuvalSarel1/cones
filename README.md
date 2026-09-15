@@ -4,7 +4,7 @@
 
 **A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.
 
-Supports Claude Code and Codex sessions. Scheduled jobs currently use Claude Code.
+Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude Code.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS">
@@ -24,7 +24,7 @@ Supports Claude Code and Codex sessions. Scheduled jobs currently use Claude Cod
 
 ## Install
 
-Requires macOS, Rust and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later.
+Requires macOS, Rust and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later. pi sessions need nothing: any pi running in a terminal is a row.
 
 ```sh
 cargo install --git https://github.com/YuvalSarel1/cones

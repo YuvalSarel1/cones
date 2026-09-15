@@ -40,10 +40,10 @@ jobs:
 | --- | --- | --- |
 | `name` | required | 1-80 ASCII letters, digits, `-` or `_`; unique in the file. Becomes the launchd label `local.cones.<name>` and Claude's session `--name`. |
 | `schedule` | required | Five-field local-time cron: minute, hour, day, month, weekday (0 or 7 is Sunday). Lists, ranges and steps work. At most 4096 launchd intervals. |
-| `harness` | `defaults.harness`, else `claude` | `claude`. `codex` parses and is refused at validation (see [Codex](#codex-parsed-refused-at-validation) below). |
+| `harness` | `defaults.harness`, else `claude` | `claude`. `codex` and `pi` parse and are refused at validation (see [Codex and pi](#codex-and-pi) below). |
 | `cwd` | required | Working directory. `~/` expands, a relative path resolves against the jobs file's directory, and it must exist. |
 | `prompt` | required | The task. Nonempty; passed after `--` on the command line. |
-| `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, else the harness's own | Passed as `--model`. |
+| `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, the harness's own otherwise; a pi job takes no default | Passed as `--model`. |
 | `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and `cones install` removes that job's LaunchAgent. |
 | `archive_transcript` | `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
 | `env` | `[]` | Names of shell variables to pass through. Values are read at install or run time and baked into the plist; nothing else from your shell reaches the job. |
@@ -63,7 +63,7 @@ jobs:
 
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - An `env` name that could change execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
-- `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a Codex job, a `claude` binary missing from the launchd PATH.
+- `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a job that is not Claude's, `codex_full_access` on a job that is not Codex's, a `claude` binary missing from the launchd PATH.
 
 ## What the harness is told
 
@@ -162,6 +162,8 @@ Per launchd.plist(5), ticks missed while the Mac sleeps coalesce into one launch
 
 Status: this has not been observed through a real lid-close or reboot yet. The check is `cones ls --json` showing one `schedule` record fired after a slept-through tick and none after a reboot past one.
 
-## Codex
+## Codex and pi
 
 `harness: codex` is parsed: Codex jobs choose `write: false` (read-only) or `write: true` (workspace-write), and may set `codex_full_access`. Status: no Codex adapter exists in v0.1.0. `cones validate` and `cones install` stop with `codex execution is not available in v0.1; its dollar budget cannot yet be enforced`, `cones doctor` reports the job as FAIL, and `cones run` of such a job records a `failed` run with reason `validation: ...`. The blocker is a native dollar budget for Codex; see the roadmap in the [README](../README.md).
+
+`harness: pi` is parsed and refused the same way, with the same message and the same blocker: pi has no budget flag and no turn cap, so a `budget_usd` cones could not hand it would be a promise, and a policy the harness cannot enforce natively is a validation error. A pi job takes no `tools` list, no `max_turns` and no `codex_full_access`. pi sessions started in a terminal are still rows in `cones ls` and the dashboard; what pi reports about them is in [harness.md](harness.md).

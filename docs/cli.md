@@ -28,7 +28,7 @@ cones attach SESSION_UUID        # the session in this terminal, Ctrl+Z comes ba
 cones stop SESSION_UUID          # ends the session
 ```
 
-Every Claude Code and Codex session on the Mac is a row, whoever started it; which rows `attach` and `stop` act on, and how, is the kinds table in [harness.md](harness.md#kinds).
+Every Claude Code, Codex and pi session on the Mac is a row, whoever started it; which rows `attach` and `stop` act on, and how, is the kinds table in [harness.md](harness.md#kinds). A pi session is seen and stopped, never joined: pi has no way to leave a session running.
 
 ## Run a prompt without a job
 

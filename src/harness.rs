@@ -36,7 +36,9 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     }
 }
 
-/// Every harness cones knows, in the order the dashboard's `n` prompt offers them.
+/// The harnesses the dashboard can start, in the order `tab` offers them. pi is missing on
+/// purpose: the composer only opens a harness whose session outlives its viewer, and pi has no
+/// mode that does. pi sessions started in a terminal are still rows, read by [`crate::pi`].
 pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
 
 /// A session started natively in `dir` with `prompt` as its first instruction, as typing the
@@ -91,6 +93,8 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
                 .current_dir(dir);
             Start::Foreground(c)
         }
+        // Refused above by leave_and_return: pi has no mode whose session outlives the viewer.
+        HarnessKind::Pi => bail!("pi sessions are seen here, not started"),
     })
 }
 
@@ -124,6 +128,8 @@ pub fn session_args(
                 args.extend(["-c".into(), format!("model_provider={provider}").into()]);
             }
         }
+        // pi is never started from the dashboard, so it compiles no session arguments.
+        HarnessKind::Pi => {}
     }
     args.push(prompt.into());
     args
@@ -173,6 +179,11 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
                 "codex {ver}: threads behind the app-server daemon (experimental in Codex)"
             ))
         }
+        // pi has no background mode, no daemon and no attach: a session opened here would
+        // hold the viewer's terminal, and leaving it would stop the agent.
+        HarnessKind::Pi => bail!(
+            "pi runs in its own terminal: it has no background mode or attach, so a session opened here could not be left running"
+        ),
     }
 }
 

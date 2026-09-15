@@ -180,9 +180,9 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 }
 
 impl Session {
-    /// A harness that runs in someone else's terminal cannot be joined from here: a Codex TUI,
-    /// or an interactive Claude, which `claude attach` does not know (it takes background jobs
-    /// only). Background Claude and Codex daemon threads open fine.
+    /// A harness that runs in someone else's terminal cannot be joined from here: a pi, a Codex
+    /// TUI, or an interactive Claude, which `claude attach` does not know (it takes background
+    /// jobs only). Background Claude and Codex daemon threads open fine.
     pub fn own_terminal(&self) -> bool {
         match (self.harness.as_str(), self.kind.as_deref()) {
             ("claude", Some("interactive")) => true,
@@ -755,11 +755,12 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
-/// Every live session of every harness, oldest first by start time: Claude's registry plus
-/// Codex's process table and rollouts.
+/// Every live session of every harness, oldest first by start time: Claude's registry, Codex's
+/// process table and rollouts, pi's process table and session files.
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
     let mut out = sessions(claude)?;
     out.extend(crate::codex::sessions(&crate::codex::home(claude)));
+    out.extend(crate::pi::sessions(&crate::pi::home(claude)));
     sort(&mut out);
     Ok(out)
 }
@@ -809,6 +810,7 @@ fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
     }
     Ok(crate::codex::sessions(&crate::codex::home(claude))
         .into_iter()
+        .chain(crate::pi::sessions(&crate::pi::home(claude)))
         .find(|s| s.session_id == session_id))
 }
 

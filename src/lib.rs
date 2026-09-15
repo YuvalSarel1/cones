@@ -5,6 +5,7 @@ pub mod harness;
 pub mod launchd;
 pub mod ledger;
 pub mod output;
+pub mod pi;
 #[cfg(target_os = "macos")]
 mod process_info;
 pub mod runner;
