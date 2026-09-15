@@ -3,8 +3,9 @@
 //! `enter` starts a session in the selected row's directory under the harness `tab` picked.
 //! Jobs have a screen of their own behind the menu's `jobs` button, where they are started,
 //! added (the `new job` row), edited (`ctrl+e`) and deleted (`ctrl+x`); `esc` comes back.
-//! `ctrl+x` marks the row red and a second press acts; any other key keeps it. On a finished
-//! run it hides the row here for good; the ledger keeps it.
+//! `ctrl+x` marks the row red and a second press acts; any other key keeps it, and so does
+//! `mark_secs` seconds of no key (jobs.yaml, 2 by default). On a finished run it hides the row
+//! here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
@@ -76,6 +77,8 @@ fn reset_terminal_protocols() {
 const ORANGE: Color = Color::Indexed(208);
 /// A second ctrl+c within this window quits the dashboard, as in Claude Code.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
+/// What a first ctrl+c says, while the composer's rules go red with it.
+const QUIT_HINT: &str = "ctrl+c again quits · any other key stays";
 /// A working row's icon: a bar that fills and empties, the same family as the sparkline and
 /// the resting `▁`, holding two extra frames full and two empty so the turn reads as a breath
 /// rather than a flicker. Full is `▇`, never `█`: the full block touches the row above and the
@@ -166,6 +169,8 @@ pub struct Data {
     pub columns: Vec<String>,
     /// The `sparkline` column's window, metric and bound, from jobs.yaml.
     pub spark: config::Sparkline,
+    /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
+    pub mark_secs: f64,
     /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
     pub folders: Vec<PathBuf>,
     /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
@@ -196,6 +201,7 @@ impl Data {
             sessions,
             columns: config::columns(jobs_path),
             spark: config::sparkline(jobs_path),
+            mark_secs: config::mark_secs(jobs_path),
             folders,
             recent: ledger.recent(&seen)?,
             git,
@@ -1864,7 +1870,7 @@ const GROUPS: [(&str, &str); 4] = [
 
 /// The fields under their groups. A field under `claude` or `codex` reaches only that
 /// harness's jobs.
-const FIELDS: [Field; 16] = [
+const FIELDS: [Field; 17] = [
     Field {
         group: "jobs",
         name: "timeout_min",
@@ -1994,6 +2000,14 @@ const FIELDS: [Field; 16] = [
         builtin: "fleet",
         picks: None,
     },
+    Field {
+        group: "cones",
+        name: "mark_secs",
+        short: "ctrl+x mark (s)",
+        long: "Seconds the red ctrl+x mark stays when no other key is pressed, up to 600. 0 keeps it until the next key.",
+        builtin: "2",
+        picks: None,
+    },
 ];
 
 /// Where `name` sits in `FIELDS`.
@@ -2009,9 +2023,14 @@ fn field_at(name: &str) -> usize {
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// The `defaults` block, the `columns:` list, empty for the built-in, and the `sparkline:`
-    /// block, None when every field is left to the built-in.
-    Save(Box<config::Policy>, Vec<String>, Option<config::Sparkline>),
+    /// The `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`
+    /// block, None when every field is left to the built-in, and the `mark_secs:` line.
+    Save(
+        Box<config::Policy>,
+        Vec<String>,
+        Option<config::Sparkline>,
+        Option<f64>,
+    ),
 }
 
 /// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
@@ -2045,6 +2064,7 @@ impl ConfigForm {
         d: &config::Policy,
         columns: Option<&[String]>,
         spark: Option<&config::Sparkline>,
+        mark_secs: Option<f64>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -2075,6 +2095,7 @@ impl ConfigForm {
                 "sparkline.bars" => spark(|s| s.bars.to_string()),
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
                 "sparkline.metric" => spark(|s| s.metric.clone()),
+                "mark_secs" => num(mark_secs),
                 _ => spark(|s| s.bound.clone()),
             })
             .collect();
@@ -2107,7 +2128,18 @@ impl ConfigForm {
 
     /// The values as a policy and the columns list; the error is the one line shown inline on
     /// the field it names.
-    fn config(&self) -> Result<(config::Policy, Vec<String>, Option<config::Sparkline>), String> {
+    #[allow(clippy::type_complexity)]
+    fn config(
+        &self,
+    ) -> Result<
+        (
+            config::Policy,
+            Vec<String>,
+            Option<config::Sparkline>,
+            Option<f64>,
+        ),
+        String,
+    > {
         let v = |name: &str| self.values[field_at(name)].trim();
         let num = |name: &str, what: &str| -> Result<Option<f64>, String> {
             match v(name) {
@@ -2200,7 +2232,17 @@ impl ConfigForm {
             })?;
             Some(s)
         };
-        Ok((policy, columns, spark))
+        let mark = num("mark_secs", "seconds, as in 2")?;
+        if let Some(m) = mark {
+            config::check_mark_secs(m).map_err(|e| {
+                let e = format!("{e:#}");
+                format!(
+                    "mark_secs: {}",
+                    e.trim_start_matches(&format!("mark_secs {m}: "))
+                )
+            })?;
+        }
+        Ok((policy, columns, spark, mark))
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
@@ -2211,7 +2253,7 @@ impl ConfigForm {
                 KeyCode::Enter => self.enter(),
                 KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
                     return match self.config() {
-                        Ok((p, c, s)) => ConfigAction::Save(Box::new(p), c, s),
+                        Ok((p, c, s, m)) => ConfigAction::Save(Box::new(p), c, s, m),
                         Err(e) => {
                             // The error lands on the field it names, open to be fixed.
                             self.go(FIELDS
@@ -2571,8 +2613,10 @@ struct App {
     removed_sessions: HashSet<String>,
     /// Only transitions and slow frames are timed, so idle drawing does not fill the log.
     feedback: Option<(&'static str, Instant)>,
-    /// The row key ctrl+x armed; stays until ctrl+x confirms or any other key clears it.
+    /// The row key ctrl+x armed; stays until ctrl+x confirms, any other key clears it, or
+    /// `mark_secs` pass since `armed_at` with no key.
     armed: Option<String>,
+    armed_at: Instant,
     /// When ctrl+c was last pressed; a second press within `QUIT_CONFIRM` quits. A single
     /// ctrl+c aimed at a viewer that has just closed must not take the dashboard with it.
     quit_armed: Option<Instant>,
@@ -2787,6 +2831,7 @@ impl App {
             removed_sessions: HashSet::new(),
             feedback: None,
             armed: None,
+            armed_at: Instant::now(),
             quit_armed: None,
             log: None,
             viewers: Vec::new(),
@@ -4147,6 +4192,7 @@ impl App {
                         &config::defaults(&self.jobs_path),
                         config::file_columns(&self.jobs_path).as_deref(),
                         config::file_sparkline(&self.jobs_path).as_ref(),
+                        config::file_mark_secs(&self.jobs_path),
                     )));
                 }
                 _ => self.mode = Mode::Guide(0),
@@ -4262,6 +4308,43 @@ impl App {
         self.started.push((id, rx));
     }
 
+    /// Mark `key`'s row red and start the mark's clock.
+    fn arm(&mut self, key: String) {
+        self.armed = Some(key);
+        self.armed_at = Instant::now();
+    }
+
+    /// Each pass of the draw loop: a mark left alone for `mark_secs` clears as if a key had
+    /// kept it, and a ctrl+c the second press did not follow stops showing after
+    /// `QUIT_CONFIRM`; each takes its hint off the line with it.
+    fn expire(&mut self) {
+        let mark = self.data.mark_secs;
+        if self.armed.is_some()
+            && mark > 0.0
+            && self.armed_at.elapsed() >= Duration::from_secs_f64(mark)
+        {
+            self.armed = None;
+            if self.status.starts_with("ctrl+x again") {
+                self.status = "kept".into();
+            }
+        }
+        if self
+            .quit_armed
+            .is_some_and(|at| at.elapsed() >= QUIT_CONFIRM)
+        {
+            self.quit_armed = None;
+            if self.status == QUIT_HINT {
+                self.status.clear();
+            }
+        }
+    }
+
+    /// A first ctrl+c is still waiting for its second press.
+    fn quitting(&self) -> bool {
+        self.quit_armed
+            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM)
+    }
+
     /// ctrl+x on a job with no run in flight: once arms, again removes the job from jobs.yaml
     /// and reinstalls launchd. Any other key keeps it.
     fn delete_job(&mut self, name: String) {
@@ -4277,7 +4360,7 @@ impl App {
             }
             _ => {
                 self.status = format!("ctrl+x again to delete job {name} · any other key keeps it");
-                self.armed = Some(name);
+                self.arm(name);
             }
         }
     }
@@ -4295,7 +4378,7 @@ impl App {
             }
             _ => {
                 self.status = "ctrl+x again to hide this run · any other key keeps it".into();
-                self.armed = Some(id);
+                self.arm(id);
             }
         }
     }
@@ -4313,7 +4396,7 @@ impl App {
             }
             _ => {
                 self.status = "ctrl+x again to remove this folder · any other key keeps it".into();
-                self.armed = Some(dir);
+                self.arm(dir);
             }
         }
     }
@@ -4454,7 +4537,12 @@ impl App {
     /// The bottom line: the last action's status until the next key, else the keys.
     fn hint_line(&self) -> Line<'static> {
         if !self.status.is_empty() {
-            return Line::styled(self.status.clone(), dim());
+            let style = if self.quitting() {
+                Style::default().fg(Color::Red)
+            } else {
+                dim()
+            };
+            return Line::styled(self.status.clone(), style);
         }
         if let Some(action) = self
             .stopping
@@ -4655,7 +4743,7 @@ impl App {
                 });
             }
             _ => {
-                self.armed = Some(id);
+                self.arm(id);
                 self.status = if verb == "forget" {
                     "ctrl+x again to forget this thread · any other key keeps it".into()
                 } else {
@@ -4945,12 +5033,13 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                ConfigAction::Save(policy, columns, spark) => {
+                ConfigAction::Save(policy, columns, spark, mark) => {
                     match config::write_config(
                         &self.jobs_path,
                         &policy,
                         Some(&columns),
                         spark.as_ref(),
+                        mark,
                     ) {
                         Ok(()) => {
                             self.mode = Mode::Normal;
@@ -4992,7 +5081,7 @@ impl App {
                         {
                             return Ok(true);
                         }
-                        self.status = "ctrl+c again quits".into();
+                        self.status = QUIT_HINT.into();
                     }
                     KeyCode::Char('x') if ctrl => {
                         self.armed = armed;
@@ -5181,9 +5270,15 @@ impl App {
             }
         }
         // Ruled above and below, as Claude Code frames its input; grows with the text, as its input does.
+        // Red while a first ctrl+c waits for its second: the whole composer says it, not
+        // one dim line.
         let frame_lines = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(dim());
+            .border_style(if self.quitting() {
+                Style::default().fg(Color::Red)
+            } else {
+                dim()
+            });
         let input = Paragraph::new(line)
             .wrap(Wrap { trim: false })
             .block(frame_lines);
@@ -5359,6 +5454,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             app.poll();
             let dirty = app.pump();
             app.prespawn_tick();
+            app.expire();
             let wants_mouse = app.wants_mouse();
             if wants_mouse != app.mouse_capture {
                 if wants_mouse {
@@ -5497,7 +5593,7 @@ mod tests {
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
-        let c = ConfigForm::new(&config::Policy::default(), None, None);
+        let c = ConfigForm::new(&config::Policy::default(), None, None, None);
         let lines = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
@@ -5699,7 +5795,7 @@ mod tests {
             "the cursor is after the answer stepped back to"
         );
 
-        let mut c = ConfigForm::new(&config::Policy::default(), None, None);
+        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None);
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
             c.key(KeyCode::Char(ch), KeyModifiers::NONE);
@@ -6805,7 +6901,26 @@ mod tests {
         let mut app = app(d.path());
         let c = |app: &mut App| app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
         assert!(!c(&mut app), "one ctrl+c only arms");
-        assert_eq!(app.status, "ctrl+c again quits");
+        assert_eq!(app.status, QUIT_HINT);
+        // The composer's rules and the hint go red, so the arm is seen, not read.
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let red = |t: &Terminal<ratatui::backend::TestBackend>, sym: &str| {
+            t.backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|c| c.symbol() == sym && c.fg == Color::Red)
+        };
+        assert!(red(&t, "─"), "the composer's rules are red");
+        assert!(red(&t, "q"), "the hint is red");
+        // Past the window the arm and its hint leave on their own.
+        app.quit_armed = Some(Instant::now() - QUIT_CONFIRM);
+        app.expire();
+        assert!(app.quit_armed.is_none() && app.status.is_empty());
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(!red(&t, "─"), "the rules are dim again");
+        assert!(!c(&mut app), "one ctrl+c only arms");
         assert!(c(&mut app), "the second quits");
         app.quit_armed = Some(Instant::now() - QUIT_CONFIRM);
         assert!(!c(&mut app), "a stale arm is a first press again");
@@ -6836,7 +6951,7 @@ mod tests {
         );
         app.refresh().unwrap();
         assert!(key(&app).is_some(), "armed only");
-        // The arm marks the row red and has no timer: it stays until the next key.
+        // The arm marks the row red; it stays until the next key or `mark_secs` of none.
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let marked = t
@@ -6847,6 +6962,17 @@ mod tests {
             .any(|c| c.symbol() == "▌" && c.fg == Color::Red);
         assert!(marked, "the armed row is red");
         assert_eq!(app.armed.as_deref(), Some(A));
+        // Left alone past the mark's time the row is kept, and the hint says so; the next
+        // ctrl+x arms again rather than acting. With `mark_secs: 0` the mark has no clock.
+        app.armed_at = Instant::now() - Duration::from_secs(3);
+        app.expire();
+        assert_eq!((app.armed.as_deref(), app.status.as_str()), (None, "kept"));
+        app.stop();
+        assert_eq!(app.armed.as_deref(), Some(A), "armed again, not hidden");
+        app.data.mark_secs = 0.0;
+        app.armed_at = Instant::now() - Duration::from_secs(3600);
+        app.expire();
+        assert_eq!(app.armed.as_deref(), Some(A), "no clock at 0");
         app.stop();
         assert!(app.status.starts_with("run hidden"), "{}", app.status);
         app.refresh().unwrap();

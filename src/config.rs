@@ -135,6 +135,21 @@ pub struct JobsFile {
     /// The `sparkline` column's window, metric and scale.
     #[serde(default)]
     pub sparkline: Option<Sparkline>,
+    /// Seconds the dashboard's red `ctrl+x` mark stays with no key pressed; 0 keeps it until
+    /// the next key. The built-in is `MARK_SECS`.
+    #[serde(default)]
+    pub mark_secs: Option<f64>,
+}
+
+pub const MARK_SECS: f64 = 2.0;
+
+/// `mark_secs` as jobs.yaml accepts it: a finite count of seconds from 0 to 600.
+pub fn check_mark_secs(secs: f64) -> Result<()> {
+    ensure!(
+        secs.is_finite() && (0.0..=600.0).contains(&secs),
+        "mark_secs {secs}: seconds from 0 to 600, 0 keeps the mark until the next key"
+    );
+    Ok(())
 }
 
 pub const COLUMNS: [&str; 8] = [
@@ -285,6 +300,9 @@ fn parse(path: &Path) -> Result<JobsFile> {
     if let Some(sp) = &doc.sparkline {
         sp.check()?;
     }
+    if let Some(secs) = doc.mark_secs {
+        check_mark_secs(secs)?;
+    }
     Ok(doc)
 }
 
@@ -300,6 +318,16 @@ pub fn sparkline(path: &Path) -> Sparkline {
 /// `sparkline:` as written, `None` when the file has none: what the config editor edits.
 pub fn file_sparkline(path: &Path) -> Option<Sparkline> {
     parse(path).ok().and_then(|d| d.sparkline)
+}
+
+/// How long the dashboard's `ctrl+x` mark stays: `mark_secs:` from jobs.yaml, or the built-in.
+pub fn mark_secs(path: &Path) -> f64 {
+    file_mark_secs(path).unwrap_or(MARK_SECS)
+}
+
+/// `mark_secs:` as written, `None` when the file has none: what the config editor edits.
+pub fn file_mark_secs(path: &Path) -> Option<f64> {
+    parse(path).ok().and_then(|d| d.mark_secs)
 }
 
 /// The dashboard's session columns: `columns:` from jobs.yaml, or the default when the file is
@@ -475,9 +503,10 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     Some((s, e))
 }
 
-/// Rewrite the `defaults:` block, the `columns:` line and the `sparkline:` block of jobs.yaml
-/// with `d`, `columns` and `sparkline`: in place when the file has them, after `version:` when
-/// it does not, and a missing file is created around them with `jobs: []`. Only those change.
+/// Rewrite the `defaults:` block, the `columns:` line, the `sparkline:` block and the
+/// `mark_secs:` line of jobs.yaml with `d`, `columns`, `sparkline` and `mark_secs`: in place
+/// when the file has them, after `version:` when it does not, and a missing file is created
+/// around them with `jobs: []`. Only those change.
 /// The policy is checked as a Claude job would resolve it, so a default no job could run under
 /// is refused with the file untouched, whether or not the file has jobs; an unknown column or a
 /// sparkline value cones cannot draw is refused the same way.
@@ -486,6 +515,7 @@ pub fn write_config(
     d: &Policy,
     columns: Option<&[String]>,
     sparkline: Option<&Sparkline>,
+    mark_secs: Option<f64>,
 ) -> Result<()> {
     let base = path
         .parent()
@@ -506,9 +536,13 @@ jobs: []
         .map(|c| vec![format!("columns: [{}]", c.join(", "))])
         .unwrap_or_default();
     let spark = sparkline.map(Sparkline::lines).unwrap_or_default();
-    // Last first, so each block's place is still where it was read: the sparkline block
-    // follows the columns line, which follows the defaults block.
+    let mark = mark_secs
+        .map(|s| vec![format!("mark_secs: {s}")])
+        .unwrap_or_default();
+    // Last first, so each block's place is still where it was read: the mark line follows
+    // the sparkline block, which follows the columns line, which follows the defaults block.
     for (key, block) in [
+        ("mark_secs:", mark),
         ("sparkline:", spark),
         ("columns:", cols),
         ("defaults:", block),
@@ -518,6 +552,10 @@ jobs: []
             Some((s, e)) => s..e,
             None => {
                 let at = match key {
+                    "mark_secs:" => top_level(&lines, "sparkline:")
+                        .or_else(|| top_level(&lines, "columns:"))
+                        .or_else(|| top_level(&lines, "defaults:"))
+                        .map(|(_, e)| e),
                     "sparkline:" => top_level(&lines, "columns:")
                         .or_else(|| top_level(&lines, "defaults:"))
                         .map(|(_, e)| e),
@@ -857,7 +895,7 @@ mod tests {
             codex_model: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
-        write_config(&p, &d, Some(&cols), None).unwrap();
+        write_config(&p, &d, Some(&cols), None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  tools: [Read, Edit]\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
@@ -876,7 +914,7 @@ mod tests {
         assert_eq!(read_jobs(&p).unwrap()[0].tools, ["Read", "Edit"]);
 
         // Nothing set removes the block and the line; a file without them gets them after version.
-        write_config(&p, &Policy::default(), None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
@@ -884,20 +922,20 @@ mod tests {
             notify: Some(true),
             ..Default::default()
         };
-        write_config(&p, &d, Some(&[]), None).unwrap();
+        write_config(&p, &d, Some(&[]), None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
-        write_config(&p, &Policy::default(), Some(&cols), None).unwrap();
+        write_config(&p, &Policy::default(), Some(&cols), None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
-        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None)
+        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown column"), "{err}");
@@ -905,7 +943,7 @@ mod tests {
 
         // A missing file is created; a default no job could run under is refused, jobs or not.
         let missing = p.with_file_name("new.yaml");
-        write_config(&missing, &d, None, None).unwrap();
+        write_config(&missing, &d, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 1\ndefaults:\n  notify: true\njobs: []\n"
@@ -915,7 +953,7 @@ mod tests {
             daily_budget_usd: Some(1.0),
             ..Default::default()
         };
-        let err = write_config(&missing, &bad, None, None)
+        let err = write_config(&missing, &bad, None, None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("daily_budget_usd must cover"), "{err}");
@@ -948,6 +986,7 @@ mod tests {
             &Policy::default(),
             Some(&["state".to_owned()]),
             Some(&sp),
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -993,15 +1032,32 @@ mod tests {
                 "sparkline bound",
             ),
         ] {
-            let err = write_config(&p, &Policy::default(), None, Some(&bad))
+            let err = write_config(&p, &Policy::default(), None, Some(&bad), None)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(msg), "{err}");
             assert_eq!(sparkline(&p), sp, "untouched after {msg}");
         }
         // Nothing set removes the block.
-        write_config(&p, &Policy::default(), None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("sparkline"));
+        // The mark line follows the sparkline block, is read back, checked, and removed the
+        // same way.
+        assert_eq!(mark_secs(&p), MARK_SECS, "built-in without a line");
+        write_config(&p, &Policy::default(), None, Some(&sp), Some(3.5)).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("  bound: 20\nmark_secs: 3.5\njobs:"),
+            "the line follows the block: {text}"
+        );
+        assert_eq!((mark_secs(&p), file_mark_secs(&p)), (3.5, Some(3.5)));
+        let err = write_config(&p, &Policy::default(), None, None, Some(-1.0))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mark_secs -1"), "{err}");
+        assert_eq!(mark_secs(&p), 3.5, "untouched after a refused value");
+        write_config(&p, &Policy::default(), None, None, None).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("mark_secs"));
         // A block may name only what changes.
         let (_d, p) = file("version: 1\nsparkline:\n  metric: tokens\njobs: []\n");
         assert_eq!(
@@ -1032,7 +1088,7 @@ mod tests {
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();
         let d = defaults(&p);
-        write_config(&p, &d, None, None).unwrap();
+        write_config(&p, &d, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
             text,

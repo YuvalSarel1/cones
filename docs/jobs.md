@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list and `sparkline` block, described in [dashboard.md](dashboard.md#columns). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `model`, `overlap`, `notify`, `codex_model` and `codex_full_access`; each job may override them. A default that belongs to one harness reaches only its jobs: `tools`, `max_turns` and `model` reach Claude jobs, `codex_model` and `codex_full_access` reach Codex jobs, where a job's own `model:` covers both. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
+`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list, `sparkline` block and `mark_secs` line, described in [dashboard.md](dashboard.md#columns) and [its keys](dashboard.md#keys). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `model`, `overlap`, `notify`, `codex_model` and `codex_full_access`; each job may override them. A default that belongs to one harness reaches only its jobs: `tools`, `max_turns` and `model` reach Claude jobs, `codex_model` and `codex_full_access` reach Codex jobs, where a job's own `model:` covers both. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
 
 ```yaml
 version: 1
@@ -17,6 +17,7 @@ sparkline:            # the sparkline column's window, metric and scale, see das
   bucket: 1m
   metric: lines
   bound: fleet
+mark_secs: 2          # seconds the ctrl+x mark stays with no key, 0 keeps it until one
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd
