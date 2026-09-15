@@ -1585,8 +1585,9 @@ struct Open {
     /// For a speculative viewer, which was never focused, this is when it was spawned.
     last_focused: Instant,
     /// Opened while the cursor rested on its row, before `enter` asked for it. Not counted
-    /// against `MAX_VIEWERS`; the oldest goes when the viewers outgrow `MAX_VIEWERS` plus one,
-    /// so a few rows the cursor was on lately show at once; the first focus clears it.
+    /// against `MAX_VIEWERS`; speculative viewers have their own pool of `MAX_VIEWERS`, the
+    /// oldest going first, so rows the cursor was on lately show at once whatever the number
+    /// of live viewers; the first focus clears it.
     speculative: bool,
 }
 
@@ -2325,10 +2326,12 @@ impl App {
         self.debug(|| line);
     }
 
-    /// Speculative viewers pool beside the live ones, up to `MAX_VIEWERS` plus one in all, so
-    /// a row the cursor was on lately shows at once; past that the oldest speculative goes.
+    /// Speculative viewers pool beside the live ones, up to `MAX_VIEWERS` of their own, so a
+    /// row the cursor was on lately shows at once; past that the oldest speculative goes. The
+    /// pool is not the live count's leftover: with three live viewers a single slot made every
+    /// step between two rows a fresh `claude attach`, half a second to its first text.
     fn pool_speculative(&mut self) {
-        while self.viewers.len() > MAX_VIEWERS + 1 {
+        while self.viewers.len() - self.live_viewers() > MAX_VIEWERS {
             let oldest = self
                 .viewers
                 .iter()
@@ -6228,22 +6231,22 @@ mod tests {
     }
 
     #[test]
-    fn speculative_viewers_pool_up_to_the_limit_plus_one_and_the_oldest_goes() {
+    fn speculative_viewers_pool_up_to_the_limit_of_their_own_and_the_oldest_goes() {
         let d = dir();
         let mut app = app(d.path());
-        for k in ["s1", "s2", "s3", "s4", "s5"] {
+        // Three live viewers take nothing from the speculative pool.
+        for k in ["l1", "l2", "l3"] {
+            app.viewers.push(silent_open(k));
+            app.viewers.last_mut().unwrap().last_focused = Instant::now() - Duration::from_secs(60);
+        }
+        for k in ["s1", "s2", "s3", "s4"] {
             app.viewers.push(speculative_open(k));
             app.viewers.last_mut().unwrap().last_focused = Instant::now();
             app.pool_speculative();
         }
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
-        assert_eq!(keys, vec!["s2", "s3", "s4", "s5"]);
-        // Live viewers are never the ones to go.
-        app.viewers.push(silent_open("live"));
-        app.viewers.last_mut().unwrap().last_focused = Instant::now() - Duration::from_secs(60);
-        app.pool_speculative();
-        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
-        assert_eq!(keys, vec!["s3", "s4", "s5", "live"]);
+        // Live viewers are never the ones to go; the oldest speculative did.
+        assert_eq!(keys, vec!["l1", "l2", "l3", "s2", "s3", "s4"]);
     }
 
     #[test]
