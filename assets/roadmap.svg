@@ -78,8 +78,8 @@
 <text x="594" y="544" font-size="13.5" fill="#e6edf3" >live beside the list, at any</text>
 <text x="594" y="564" font-size="13.5" fill="#e6edf3" >terminal size</text>
 <text x="582" y="584" font-size="13.5" fill="#e6edf3" >• the pane: on or off, right or</text>
-<text x="594" y="604" font-size="13.5" fill="#e6edf3" >bottom, its own columns, all</text>
-<text x="594" y="624" font-size="13.5" fill="#e6edf3" >from jobs.yaml</text>
+<text x="594" y="604" font-size="13.5" fill="#e6edf3" >bottom, from jobs.yaml; one</text>
+<text x="594" y="624" font-size="13.5" fill="#e6edf3" >column set, cut at the width</text>
 <rect x="36" y="692" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="730" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="750" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>

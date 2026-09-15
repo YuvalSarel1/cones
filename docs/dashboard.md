@@ -64,24 +64,22 @@ Under the composer, the hint line names only the keys that act on the selected r
 | `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
 | `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
 
-`columns:` is the set while the pane is off. With the pane on the list has half the frame, so it has its own set, `pane.columns`, `state, context` by default; the config editor's `cones` group edits both, and `ctrl+\` swaps between them as it toggles the pane.
+One set holds whatever the list is given. A column keeps its place when the pane opens, when the frame narrows and when a cell changes length; the columns that fall past the right edge are cut there, and come back when the room does. So the same column is always in the same place on screen, and the pane costs the columns on the right rather than moving the ones on the left.
 
 ### Pane
 
-The `pane:` block sets the layout the dashboard opens with, which side the pane sits on and the columns beside it. Every field has a built-in, so the block may name only what changes, and the config editor's `cones` group edits the same three fields.
+The `pane:` block sets the layout the dashboard opens with and which side the pane sits on. Both fields have a built-in, so the block may name only what changes, and the config editor's `cones` group edits the same two fields.
 
 ```yaml
 pane:
   on: true                    # open with the pane; ctrl+\ toggles it either way
   at: right                   # right | bottom
-  columns: [state, context]   # the session columns while the pane is on
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `on` | `true` opens with the viewer pane beside the list, `false` with the list alone. `ctrl+\` toggles it from either. |
 | `at` | `right`: the list on the left at half the width, up to 100 columns, the pane beside it, full height. `bottom`: the list on top at half the height, the pane under it, full width. |
-| `columns` | The session columns while the pane is on, from the table above; `columns:` applies while it is off. |
 
 `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Cost is not a column: the harnesses write tokens to the transcript and no price, so live sessions have no dollars to show. Run rows take theirs from the ledger.
 
@@ -207,7 +205,6 @@ How a field takes its value depends on what it holds. A number or free text is t
 | `columns` | session columns | `space` adds or removes a column; `state` precedes the title, the rest follow in the order added |
 | `pane.on` | open with the pane | `true` opens with the viewer pane beside the list, `false` with the list alone; `ctrl+\` toggles it either way |
 | `pane.at` | where the pane sits | `right`, the list on the left at half the width; `bottom`, the list on top at half the height |
-| `pane.columns` | columns beside the pane | The session columns while the pane is on; `columns` applies while it is off |
 | `sparkline.bars` | bar count | 1 to 64 bars, oldest first; 16 bars at `1m` show 16 minutes |
 | `sparkline.bucket` | time per bar | `30s`, `1m`, `5m`, `15m`, `1h` or a typed duration, at most `24h` |
 | `sparkline.metric` | count per bar | Transcript lines, assistant replies, tool calls or output tokens |

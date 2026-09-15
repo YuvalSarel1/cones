@@ -144,8 +144,7 @@ pub struct JobsFile {
     /// The `sparkline` column's window, metric and scale.
     #[serde(default)]
     pub sparkline: Option<Sparkline>,
-    /// The viewer pane: whether the dashboard opens with it, where it sits, and the session
-    /// columns beside it.
+    /// The viewer pane: whether the dashboard opens with it and where it sits.
     #[serde(default)]
     pub pane: Option<Pane>,
     /// Seconds the dashboard's red `ctrl+x` mark stays with no key pressed; 0 keeps it until
@@ -216,9 +215,8 @@ pub const METRICS: [&str; 4] = ["lines", "messages", "tools", "tokens"];
 pub const BOUNDS: [&str; 3] = ["fleet", "row", "log"];
 
 /// The viewer pane beside the list. `on` is the layout the dashboard opens with, `ctrl+\`
-/// toggles it from there; `at` is `right` or `bottom`; `columns` is the session column set
-/// while the pane is on, `columns:` at the top level being the set without it. Every field
-/// has a built-in, so `pane:` may name only what changes.
+/// toggles it from there; `at` is `right` or `bottom`. Both fields have a built-in, so
+/// `pane:` may name only what changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Pane {
@@ -226,26 +224,19 @@ pub struct Pane {
     pub on: bool,
     #[serde(default = "right")]
     pub at: String,
-    #[serde(default = "pane_columns")]
-    pub columns: Vec<String>,
 }
 
 fn right() -> String {
     "right".into()
 }
-fn pane_columns() -> Vec<String> {
-    PANE_COLUMNS.iter().map(|c| (*c).to_owned()).collect()
-}
 
 pub const SIDES: [&str; 2] = ["right", "bottom"];
-pub const PANE_COLUMNS: [&str; 2] = ["state", "context"];
 
 impl Default for Pane {
     fn default() -> Self {
         Self {
             on: yes(),
             at: right(),
-            columns: pane_columns(),
         }
     }
 }
@@ -258,9 +249,6 @@ impl Pane {
             self.at,
             SIDES.join(", ")
         );
-        if let Some(bad) = self.columns.iter().find(|c| !COLUMNS.contains(&c.as_str())) {
-            bail!("pane columns {bad:?}: any of {}", COLUMNS.join(", "));
-        }
         Ok(())
     }
 
@@ -270,7 +258,6 @@ impl Pane {
             "pane:".to_owned(),
             format!("  on: {}", self.on),
             format!("  at: {}", self.at),
-            format!("  columns: [{}]", self.columns.join(", ")),
         ]
     }
 }
@@ -1169,7 +1156,6 @@ mod tests {
         let pn = Pane {
             on: false,
             at: "bottom".into(),
-            columns: vec!["state".into(), "age".into()],
         };
         let sp = Sparkline::default();
         write_config(
@@ -1183,34 +1169,19 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains(
-                "  bound: fleet\npane:\n  on: false\n  at: bottom\n  columns: [state, age]\nmark_secs: 2\n"
-            ),
+            text.contains("  bound: fleet\npane:\n  on: false\n  at: bottom\nmark_secs: 2\n"),
             "the block sits between sparkline and mark_secs: {text}"
         );
         assert_eq!((pane(&p), file_pane(&p)), (pn.clone(), Some(pn.clone())));
-        for (bad, msg) in [
-            (
-                Pane {
-                    at: "left".into(),
-                    ..Default::default()
-                },
-                "pane at \"left\"",
-            ),
-            (
-                Pane {
-                    columns: vec!["speed".into()],
-                    ..Default::default()
-                },
-                "pane columns \"speed\"",
-            ),
-        ] {
-            let err = write_config(&p, &Policy::default(), None, None, Some(&bad), None)
-                .unwrap_err()
-                .to_string();
-            assert!(err.contains(msg), "{err}");
-            assert_eq!(pane(&p), pn, "untouched after {msg}");
-        }
+        let bad = Pane {
+            at: "left".into(),
+            ..Default::default()
+        };
+        let err = write_config(&p, &Policy::default(), None, None, Some(&bad), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("pane at \"left\""), "{err}");
+        assert_eq!(pane(&p), pn, "untouched after a side that is not a side");
         write_config(&p, &Policy::default(), None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("pane"));
         // A block may name only what changes.

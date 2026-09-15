@@ -165,10 +165,9 @@ pub struct Data {
     pub jobs: Vec<ResolvedJob>,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
-    /// Session column names after the harness and title, from jobs.yaml: `columns:` while
-    /// the pane is off, `pane.columns` while it is on.
+    /// Session column names after the harness and title, from jobs.yaml's `columns:`.
     pub columns: Vec<String>,
-    /// The viewer pane's layout and its column set, from jobs.yaml.
+    /// The viewer pane's layout, from jobs.yaml.
     pub pane: config::Pane,
     /// The `sparkline` column's window, metric and bound, from jobs.yaml.
     pub spark: config::Sparkline,
@@ -265,18 +264,16 @@ impl Data {
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
     /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, false, false, &HashSet::new(), &mut Widths::new())
+        self.rows_excluding(by_state, false, &HashSet::new(), &mut Widths::new())
     }
 
     /// A confirmed delete leaves the list immediately while the harness command finishes.
     /// The source data stays intact so a failed command can restore its row. `jobs_view` is
     /// the jobs screen: the jobs alone, grouped as one, and no session, folder or run.
-    /// `pane_on` picks the `pane.columns` set over `columns:`.
     fn rows_excluding(
         &self,
         by_state: bool,
         jobs_view: bool,
-        pane_on: bool,
         deleting: &HashSet<&str>,
         widths: &mut Widths,
     ) -> Vec<Row> {
@@ -354,11 +351,9 @@ impl Data {
         // the column set lists it; the other columns follow the title in their order. The
         // jobs screen has the columns a job can fill, whatever the set says for sessions.
         let job_columns = ["model".to_owned(), "activity".to_owned(), "last".to_owned()];
-        let set = if pane_on {
-            &self.pane.columns
-        } else {
-            &self.columns
-        };
+        // One set whatever the width, so a column never moves: the pane opening or a narrow
+        // terminal cuts the columns off the right edge, the rest stay where they were.
+        let set = &self.columns;
         let has_state = jobs_view || set.iter().any(|c| c == "state");
         let cols: Vec<&String> = if jobs_view {
             job_columns.iter().collect()
@@ -1928,7 +1923,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// The fields under their groups. A field named for a harness reaches only that harness.
-const FIELDS: [Field; 21] = [
+const FIELDS: [Field; 20] = [
     Field {
         group: "runs",
         name: "harness",
@@ -2048,14 +2043,6 @@ const FIELDS: [Field; 21] = [
         long: "right: the list on the left at half the width, the pane beside it. bottom: the list on top at half the height, the pane under it.",
         builtin: "right",
         input: Answer::Pick(&["-", "right", "bottom"]),
-    },
-    Field {
-        group: "cones",
-        name: "pane.columns",
-        short: "columns beside the pane",
-        long: "The session columns while the pane is on; columns applies while it is off. Space adds or removes a column.",
-        builtin: "state, context",
-        input: Answer::Many(&config::COLUMNS),
     },
     Field {
         group: "cones",
@@ -2206,7 +2193,6 @@ impl ConfigForm {
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
                 "pane.on" => pane(|p| p.on.to_string()),
                 "pane.at" => pane(|p| p.at.clone()),
-                "pane.columns" => pane(|p| p.columns.join(", ")),
                 "sparkline.bars" => spark(|s| s.bars.to_string()),
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
                 "sparkline.metric" => spark(|s| s.metric.clone()),
@@ -2356,7 +2342,7 @@ impl ConfigForm {
             Some(s)
         };
         // The pane block, the same way.
-        let pane = if ["on", "at", "columns"]
+        let pane = if ["on", "at"]
             .iter()
             .all(|f| v(&format!("pane.{f}")).is_empty())
         {
@@ -2366,22 +2352,10 @@ impl ConfigForm {
             let p = config::Pane {
                 on: flag("pane.on").unwrap_or(built.on),
                 at: text("pane.at").unwrap_or(built.at),
-                columns: match list("pane.columns") {
-                    c if c.is_empty() => built.columns,
-                    c => c,
-                },
             };
             p.check().map_err(|e| {
                 let e = format!("{e:#}");
-                let field = if e.starts_with("pane columns") {
-                    "columns"
-                } else {
-                    "at"
-                };
-                format!(
-                    "pane.{field}: {}",
-                    e.trim_start_matches(&format!("pane {field} "))
-                )
+                format!("pane.at: {}", e.trim_start_matches("pane at "))
             })?;
             Some(p)
         };
@@ -3335,7 +3309,6 @@ impl App {
         self.rows.extend(self.data.rows_excluding(
             self.by_state,
             self.jobs_view,
-            self.split,
             &deleting,
             &mut self.widths,
         ));
@@ -3343,7 +3316,6 @@ impl App {
         self.other.extend(self.data.rows_excluding(
             self.by_state,
             !self.jobs_view,
-            self.split,
             &deleting,
             &mut self.widths,
         ));
@@ -9233,13 +9205,13 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_block_sets_the_opening_layout_its_side_and_the_columns_beside_it() {
+    fn the_pane_block_sets_the_opening_layout_and_its_side() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 1);
         let jobs = d.path().join("none.yaml");
         std::fs::write(
             &jobs,
-            "version: 1\ncolumns: [state, model]\npane:\n  on: false\n  at: bottom\n  columns: [state, tokens]\njobs: []\n",
+            "version: 1\ncolumns: [state, model]\npane:\n  on: false\n  at: bottom\njobs: []\n",
         )
         .unwrap();
         let mut app = app(d.path());
@@ -9264,8 +9236,8 @@ mod tests {
         assert!(app.split);
         assert_eq!(
             names(&app),
-            ["state", "title", "tokens in/out"],
-            "the pane's own column set while it is on"
+            ["state", "title", "model"],
+            "the same columns in the same places with the pane on; the width cuts the rest"
         );
         // bottom: the list on top at half the height, a rule row, the pane under it.
         let [list, rule, pane] = app.split_areas(Rect::new(0, 0, 80, 30));
