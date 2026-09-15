@@ -194,7 +194,6 @@ impl Session {
 fn claude() -> String {
     "claude".into()
 }
-pub const STATES: [&str; 6] = ["active", "idle", "blocked", "done", "failed", "stopped"];
 
 /// Claude's config directory: `$CLAUDE_CONFIG_DIR`, the same override Claude Code honors, or
 /// `~/.claude`. Holds `sessions/`, `projects/` and `jobs/`.
