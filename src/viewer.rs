@@ -1,22 +1,11 @@
 //! A viewer is a terminal the dashboard emulates and draws: `claude attach`, a Codex `--remote`
-//! client, `claude agents`, `cones logs`. It runs on a pty the dashboard owns; its bytes go to a
-//! vt100 parser and the dashboard renders the parser's screen as part of its own frame, so
-//! nothing the viewer writes ever reaches the real terminal. Leaving it is a focus change: the
-//! viewer stays alive and keeps parsing off-screen, and returning shows its current screen in
-//! one frame. The viewer's lifetime is the dashboard's; the agent it shows stays in its daemon.
-//!
-//! The pty is sized to the viewer's pane from the moment it is spawned and resized with it, so
-//! focusing never resizes it; the viewer runs there as its own session with the shell's terminal
-//! modes, and its shutdown finishes on the pty where nothing can see it. Nothing it writes reaches
-//! the real terminal, so no mode a viewer turns on (mouse reports, focus events, bracketed paste,
-//! kitty keys) is left behind. The dashboard answers a viewer's terminal queries itself: cursor
-//! position, device attributes, and the default foreground and background colors, probed from the
-//! real terminal once at start so a viewer picks the same light or dark theme it would in a shell.
-//! It does not implement the kitty keyboard protocol, so keys reach a viewer in the classic xterm
-//! encoding and chords that encoding cannot express (shift+enter) arrive as their plain key.
-//! Pasted text arrives as one paste, bracketed when the viewer asked for that, and mouse reports
-//! are forwarded relative to the pane for as long as the viewer asks for them. A viewer that stops
-//! itself (SIGTSTP) is closed rather than parked: a stopped agent does no work.
+//! client, `claude agents`, `cones logs`. It runs on a pty the dashboard owns, sized to its pane
+//! from spawn and resized with it; its bytes go to a vt100 parser and the dashboard renders the
+//! parser's screen as part of its own frame, so nothing the viewer writes reaches the real
+//! terminal. `Replies` is the terminal the viewer talks to: it answers queries, keeps the window
+//! title and holds the frame during a synchronized update. What the viewer sees and why (which
+//! queries are answered, the kitty keyboard left silent, synchronized frames) is
+//! `docs/dashboard.md`, Viewers.
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},
