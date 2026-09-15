@@ -144,22 +144,25 @@ pub struct JobsFile {
     /// The `sparkline` column's window, metric and scale.
     #[serde(default)]
     pub sparkline: Option<Sparkline>,
-    /// The viewer pane: whether the dashboard opens with it and where it sits.
+    /// Which side the viewer pane sits on.
     #[serde(default)]
     pub pane: Option<Pane>,
-    /// Seconds the dashboard's red `ctrl+x` mark stays with no key pressed; 0 keeps it until
-    /// the next key. The built-in is `MARK_SECS`.
+    /// What a new cones terminal comes up with: the composer's harness and the pane.
     #[serde(default)]
-    pub mark_secs: Option<f64>,
+    pub start: Option<Start>,
+    /// Seconds an armed `ctrl+x` waits for its second press with no key pressed; 0 keeps the
+    /// mark until the next key. The built-in is `CONFIRM_SECS`.
+    #[serde(default)]
+    pub confirm_secs: Option<f64>,
 }
 
-pub const MARK_SECS: f64 = 2.0;
+pub const CONFIRM_SECS: f64 = 2.0;
 
-/// `mark_secs` as jobs.yaml accepts it: a finite count of seconds from 0 to 600.
-pub fn check_mark_secs(secs: f64) -> Result<()> {
+/// `confirm_secs` as jobs.yaml accepts it: a finite count of seconds from 0 to 600.
+pub fn check_confirm_secs(secs: f64) -> Result<()> {
     ensure!(
         secs.is_finite() && (0.0..=600.0).contains(&secs),
-        "mark_secs {secs}: seconds from 0 to 600, 0 keeps the mark until the next key"
+        "confirm_secs {secs}: seconds from 0 to 600, 0 keeps the mark until the next key"
     );
     Ok(())
 }
@@ -214,14 +217,11 @@ fn fleet() -> String {
 pub const METRICS: [&str; 4] = ["lines", "messages", "tools", "tokens"];
 pub const BOUNDS: [&str; 3] = ["fleet", "row", "log"];
 
-/// The viewer pane beside the list. `on` is the layout the dashboard opens with, `ctrl+\`
-/// toggles it from there; `at` is `right` or `bottom`. Both fields have a built-in, so
-/// `pane:` may name only what changes.
+/// Which side the viewer pane sits on, `right` or `bottom`. Whether the dashboard opens with
+/// the pane is `start.pane`. The field has a built-in, so `pane:` may name only what changes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Pane {
-    #[serde(default = "yes")]
-    pub on: bool,
     #[serde(default = "right")]
     pub at: String,
 }
@@ -232,12 +232,46 @@ fn right() -> String {
 
 pub const SIDES: [&str; 2] = ["right", "bottom"];
 
-impl Default for Pane {
+/// What a new cones terminal comes up with: the harness the composer is on, which `ctrl+o`
+/// changes from there, and whether the viewer pane is open, which `ctrl+\` toggles. Neither
+/// is written back, so the block is the first state and nothing more. Both fields have a
+/// built-in, so `start:` may name only what changes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Start {
+    #[serde(default = "claude")]
+    pub harness: HarnessKind,
+    #[serde(default = "yes")]
+    pub pane: bool,
+}
+
+fn claude() -> HarnessKind {
+    HarnessKind::Claude
+}
+
+impl Default for Start {
     fn default() -> Self {
         Self {
-            on: yes(),
-            at: right(),
+            harness: claude(),
+            pane: yes(),
         }
+    }
+}
+
+impl Start {
+    /// The block as jobs.yaml lines.
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            "start:".to_owned(),
+            format!("  harness: {}", self.harness),
+            format!("  pane: {}", self.pane),
+        ]
+    }
+}
+
+impl Default for Pane {
+    fn default() -> Self {
+        Self { at: right() }
     }
 }
 
@@ -254,11 +288,7 @@ impl Pane {
 
     /// The block as jobs.yaml lines.
     pub fn lines(&self) -> Vec<String> {
-        vec![
-            "pane:".to_owned(),
-            format!("  on: {}", self.on),
-            format!("  at: {}", self.at),
-        ]
+        vec!["pane:".to_owned(), format!("  at: {}", self.at)]
     }
 }
 
@@ -363,8 +393,8 @@ fn parse(path: &Path) -> Result<JobsFile> {
     if let Some(p) = &doc.pane {
         p.check()?;
     }
-    if let Some(secs) = doc.mark_secs {
-        check_mark_secs(secs)?;
+    if let Some(secs) = doc.confirm_secs {
+        check_confirm_secs(secs)?;
     }
     Ok(doc)
 }
@@ -394,14 +424,25 @@ pub fn file_pane(path: &Path) -> Option<Pane> {
     parse(path).ok().and_then(|d| d.pane)
 }
 
-/// How long the dashboard's `ctrl+x` mark stays: `mark_secs:` from jobs.yaml, or the built-in.
-pub fn mark_secs(path: &Path) -> f64 {
-    file_mark_secs(path).unwrap_or(MARK_SECS)
+/// How long an armed `ctrl+x` stays armed: `confirm_secs:` from jobs.yaml, or the built-in.
+pub fn confirm_secs(path: &Path) -> f64 {
+    file_confirm_secs(path).unwrap_or(CONFIRM_SECS)
 }
 
-/// `mark_secs:` as written, `None` when the file has none: what the config editor edits.
-pub fn file_mark_secs(path: &Path) -> Option<f64> {
-    parse(path).ok().and_then(|d| d.mark_secs)
+/// What a new terminal comes up with: `start:` from jobs.yaml, or the built-in when the file
+/// is missing, invalid or silent on it.
+pub fn start(path: &Path) -> Start {
+    file_start(path).unwrap_or_default()
+}
+
+/// `start:` as written, `None` when the file has none: what the config editor edits.
+pub fn file_start(path: &Path) -> Option<Start> {
+    parse(path).ok().and_then(|d| d.start)
+}
+
+/// `confirm_secs:` as written, `None` when the file has none: what the config editor edits.
+pub fn file_confirm_secs(path: &Path) -> Option<f64> {
+    parse(path).ok().and_then(|d| d.confirm_secs)
 }
 
 /// The dashboard's session columns: `columns:` from jobs.yaml, or the default when the file is
@@ -575,8 +616,8 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     Some((s, e))
 }
 
-/// Rewrite the `defaults:` block, the `columns:` line, the `sparkline:` and `pane:` blocks and
-/// the `mark_secs:` line of jobs.yaml with `d`, `columns`, `sparkline`, `pane` and `mark_secs`:
+/// Rewrite the `defaults:` block, the `columns:` line, the `sparkline:`, `pane:` and `start:`
+/// blocks and the `confirm_secs:` line of jobs.yaml with what is passed:
 /// in place when the file has them, after `version:` when it does not, and a missing file is
 /// created around them with `jobs: []`. Only those change.
 /// The policy is checked as a Claude job would resolve it, so a default no job could run under
@@ -588,7 +629,8 @@ pub fn write_config(
     columns: Option<&[String]>,
     sparkline: Option<&Sparkline>,
     pane: Option<&Pane>,
-    mark_secs: Option<f64>,
+    start: Option<&Start>,
+    confirm_secs: Option<f64>,
 ) -> Result<()> {
     let base = path
         .parent()
@@ -610,14 +652,23 @@ jobs: []
         .unwrap_or_default();
     let spark = sparkline.map(Sparkline::lines).unwrap_or_default();
     let pane = pane.map(Pane::lines).unwrap_or_default();
-    let mark = mark_secs
-        .map(|s| vec![format!("mark_secs: {s}")])
+    let start = start.map(Start::lines).unwrap_or_default();
+    let mark = confirm_secs
+        .map(|s| vec![format!("confirm_secs: {s}")])
         .unwrap_or_default();
     // Last first, so each block's place is still where it was read: a block missing from
     // the file goes after the nearest one before it in this order.
-    let order = ["defaults:", "columns:", "sparkline:", "pane:", "mark_secs:"];
+    let order = [
+        "defaults:",
+        "columns:",
+        "sparkline:",
+        "pane:",
+        "start:",
+        "confirm_secs:",
+    ];
     for (key, block) in [
-        ("mark_secs:", mark),
+        ("confirm_secs:", mark),
+        ("start:", start),
         ("pane:", pane),
         ("sparkline:", spark),
         ("columns:", cols),
@@ -956,7 +1007,7 @@ mod tests {
             bedrock: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
-        write_config(&p, &d, Some(&cols), None, None, None).unwrap();
+        write_config(&p, &d, Some(&cols), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
@@ -975,7 +1026,7 @@ mod tests {
         assert!(read_jobs(&p).unwrap()[0].write);
 
         // Nothing set removes the block and the line; a file without them gets them after version.
-        write_config(&p, &Policy::default(), None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
@@ -983,20 +1034,20 @@ mod tests {
             notify: Some(true),
             ..Default::default()
         };
-        write_config(&p, &d, Some(&[]), None, None, None).unwrap();
+        write_config(&p, &d, Some(&[]), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
-        write_config(&p, &Policy::default(), Some(&cols), None, None, None).unwrap();
+        write_config(&p, &Policy::default(), Some(&cols), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
-        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None, None, None)
+        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None, None, None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown column"), "{err}");
@@ -1004,7 +1055,7 @@ mod tests {
 
         // A missing file is created; a default no job could run under is refused, jobs or not.
         let missing = p.with_file_name("new.yaml");
-        write_config(&missing, &d, None, None, None, None).unwrap();
+        write_config(&missing, &d, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 1\ndefaults:\n  notify: true\njobs: []\n"
@@ -1014,7 +1065,7 @@ mod tests {
             daily_budget_usd: Some(1.0),
             ..Default::default()
         };
-        let err = write_config(&missing, &bad, None, None, None, None)
+        let err = write_config(&missing, &bad, None, None, None, None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("daily_budget_usd must cover"), "{err}");
@@ -1047,6 +1098,7 @@ mod tests {
             &Policy::default(),
             Some(&["state".to_owned()]),
             Some(&sp),
+            None,
             None,
             None,
         )
@@ -1094,32 +1146,41 @@ mod tests {
                 "sparkline bound",
             ),
         ] {
-            let err = write_config(&p, &Policy::default(), None, Some(&bad), None, None)
+            let err = write_config(&p, &Policy::default(), None, Some(&bad), None, None, None)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(msg), "{err}");
             assert_eq!(sparkline(&p), sp, "untouched after {msg}");
         }
         // Nothing set removes the block.
-        write_config(&p, &Policy::default(), None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("sparkline"));
         // The mark line follows the sparkline block, is read back, checked, and removed the
         // same way.
-        assert_eq!(mark_secs(&p), MARK_SECS, "built-in without a line");
-        write_config(&p, &Policy::default(), None, Some(&sp), None, Some(3.5)).unwrap();
+        assert_eq!(confirm_secs(&p), CONFIRM_SECS, "built-in without a line");
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            Some(&sp),
+            None,
+            None,
+            Some(3.5),
+        )
+        .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("  bound: 20\nmark_secs: 3.5\njobs:"),
+            text.contains("  bound: 20\nconfirm_secs: 3.5\njobs:"),
             "the line follows the block: {text}"
         );
-        assert_eq!((mark_secs(&p), file_mark_secs(&p)), (3.5, Some(3.5)));
-        let err = write_config(&p, &Policy::default(), None, None, None, Some(-1.0))
+        assert_eq!((confirm_secs(&p), file_confirm_secs(&p)), (3.5, Some(3.5)));
+        let err = write_config(&p, &Policy::default(), None, None, None, None, Some(-1.0))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("mark_secs -1"), "{err}");
-        assert_eq!(mark_secs(&p), 3.5, "untouched after a refused value");
-        write_config(&p, &Policy::default(), None, None, None, None).unwrap();
-        assert!(!fs::read_to_string(&p).unwrap().contains("mark_secs"));
+        assert!(err.contains("confirm_secs -1"), "{err}");
+        assert_eq!(confirm_secs(&p), 3.5, "untouched after a refused value");
+        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("confirm_secs"));
         // A block may name only what changes.
         let (_d, p) = file("version: 1\nsparkline:\n  metric: tokens\njobs: []\n");
         assert_eq!(
@@ -1149,12 +1210,47 @@ mod tests {
     }
 
     #[test]
+    fn the_start_block_is_read_and_written() {
+        let (_d, p) = file(FILE);
+        assert_eq!(start(&p), Start::default(), "built-in without a block");
+        assert_eq!(file_start(&p), None);
+        let st = Start {
+            harness: HarnessKind::Codex,
+            pane: false,
+        };
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            Some(&st),
+            Some(2.0),
+        )
+        .unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("start:\n  harness: codex\n  pane: false\nconfirm_secs: 2\n"),
+            "the block sits between pane and confirm_secs: {text}"
+        );
+        assert_eq!((start(&p), file_start(&p)), (st, Some(st)));
+        // A block that names one field takes the built-in for the other.
+        let (_d, p) = file("version: 1\nstart:\n  pane: false\njobs: []\n");
+        assert_eq!(
+            start(&p),
+            Start {
+                harness: HarnessKind::Claude,
+                pane: false,
+            },
+        );
+    }
+
+    #[test]
     fn the_pane_block_is_read_checked_and_written() {
         let (_d, p) = file(FILE);
         assert_eq!(pane(&p), Pane::default(), "built-in without a block");
         assert_eq!(file_pane(&p), None);
         let pn = Pane {
-            on: false,
             at: "bottom".into(),
         };
         let sp = Sparkline::default();
@@ -1164,33 +1260,30 @@ mod tests {
             None,
             Some(&sp),
             Some(&pn),
+            None,
             Some(2.0),
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("  bound: fleet\npane:\n  on: false\n  at: bottom\nmark_secs: 2\n"),
-            "the block sits between sparkline and mark_secs: {text}"
+            text.contains("  bound: fleet\npane:\n  at: bottom\nconfirm_secs: 2\n"),
+            "the block sits between sparkline and confirm_secs: {text}"
         );
         assert_eq!((pane(&p), file_pane(&p)), (pn.clone(), Some(pn.clone())));
-        let bad = Pane {
-            at: "left".into(),
-            ..Default::default()
-        };
-        let err = write_config(&p, &Policy::default(), None, None, Some(&bad), None)
+        let bad = Pane { at: "left".into() };
+        let err = write_config(&p, &Policy::default(), None, None, Some(&bad), None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("pane at \"left\""), "{err}");
         assert_eq!(pane(&p), pn, "untouched after a side that is not a side");
-        write_config(&p, &Policy::default(), None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("pane"));
         // A block may name only what changes.
         let (_d, p) = file("version: 1\npane:\n  at: bottom\njobs: []\n");
         assert_eq!(
             pane(&p),
             Pane {
-                at: "bottom".into(),
-                ..Default::default()
+                at: "bottom".into()
             }
         );
     }
@@ -1213,7 +1306,7 @@ mod tests {
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();
         let d = defaults(&p);
-        write_config(&p, &d, None, None, None, None).unwrap();
+        write_config(&p, &d, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
             text,

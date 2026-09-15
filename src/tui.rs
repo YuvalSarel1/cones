@@ -4,7 +4,7 @@
 //! Jobs have a screen of their own behind the menu's `jobs` button, where they are started,
 //! added (the `new job` row), edited (`ctrl+e`) and deleted (`ctrl+x`); `esc` comes back.
 //! `ctrl+x` marks the row red and a second press acts; any other key keeps it, and so does
-//! `mark_secs` seconds of no key (jobs.yaml, 2 by default). On a finished run it hides the row
+//! `confirm_secs` seconds of no key (jobs.yaml, 2 by default). On a finished run it hides the row
 //! here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
@@ -169,10 +169,13 @@ pub struct Data {
     pub columns: Vec<String>,
     /// The viewer pane's layout, from jobs.yaml.
     pub pane: config::Pane,
+    /// What a new cones terminal comes up with, from jobs.yaml: the composer's harness and
+    /// whether the pane is open. Read at startup and never again.
+    pub start: config::Start,
     /// The `sparkline` column's window, metric and bound, from jobs.yaml.
     pub spark: config::Sparkline,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
-    pub mark_secs: f64,
+    pub confirm_secs: f64,
     /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
     pub folders: Vec<PathBuf>,
     /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
@@ -203,8 +206,9 @@ impl Data {
             sessions,
             columns: config::columns(jobs_path),
             pane: config::pane(jobs_path),
+            start: config::start(jobs_path),
             spark: config::sparkline(jobs_path),
-            mark_secs: config::mark_secs(jobs_path),
+            confirm_secs: config::confirm_secs(jobs_path),
             folders,
             recent: ledger.recent(&seen)?,
             git,
@@ -1839,11 +1843,15 @@ impl JobForm {
     }
 }
 
-/// A field the config editor shows: the group it sits under, its name, the words beside it on
-/// its row, the fuller explanation under the list while it is selected, what an empty answer
-/// means (the built-in), and how its value is entered.
+/// A field the config editor shows: the group it sits under, the block inside that group when
+/// it has one, its name, the words beside it on its row, the fuller explanation under the list
+/// while it is selected, what an empty answer means (the built-in), and how its value is
+/// entered.
 struct Field {
     group: &'static str,
+    /// The dim sub-head above the row, shared by the rows around it; empty sits under the
+    /// group's own head.
+    sub: &'static str,
     name: &'static str,
     short: &'static str,
     long: &'static str,
@@ -1912,116 +1920,26 @@ const BOOL: &[&str] = &["-", "false", "true"];
 /// and the harness's own configuration decides. The `-` pick of such a field reads this.
 const SYSTEM: &str = "system default";
 
-/// The groups the editor shows, each with a line on what it holds. `runs` and `jobs` are the
-/// `defaults` block: `runs` reaches every job and every session the composer starts, `jobs`
-/// only supervised runs. `cones` is the dashboard's own `columns:` line, `notify`, the
-/// `pane:` and `sparkline:` blocks and the `mark_secs:` line. The `runs` group is also the session form `ctrl+o` opens.
+/// The groups the editor shows, each with a line on what it holds, in the order a reader
+/// meets them: `cones` is every key outside the `defaults:` block, the `columns:` and
+/// `confirm_secs:` lines and the `start:`, `pane:` and `sparkline:` blocks; `harnesses` and
+/// `runs` are the `defaults:` block itself, how claude and codex are run and what a
+/// supervised run may do. A group's rows come first and its blocks after, each block under a
+/// dim sub-head named for the block in the file, `start`, `pane`, `sparkline`, or for the
+/// harness whose fields it holds.
 const GROUPS: [(&str, &str); 3] = [
-    ("runs", "every job and session"),
-    ("jobs", "supervised runs only"),
-    ("cones", "display and alerts"),
+    ("cones", "the dashboard itself"),
+    ("harnesses", "how claude and codex are run"),
+    ("runs", "every supervised run"),
 ];
 
-/// The fields under their groups. A field named for a harness reaches only that harness.
-const FIELDS: [Field; 20] = [
-    Field {
-        group: "runs",
-        name: "harness",
-        short: "claude or codex",
-        long: "The harness a job runs under when it names none, and the one the composer starts on; tab still cycles it per session. Codex jobs are still unavailable.",
-        builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex"]),
-    },
-    Field {
-        group: "runs",
-        name: "bedrock",
-        short: "run on Amazon Bedrock",
-        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. A Bedrock job also gets the shell's AWS_ variables.",
-        builtin: SYSTEM,
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "runs",
-        name: "model",
-        short: "Claude alias or model id",
-        long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. system default passes nothing and Claude's own settings decide.",
-        builtin: SYSTEM,
-        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
-    },
-    Field {
-        group: "runs",
-        name: "codex_model",
-        short: "Codex model id",
-        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
-        builtin: SYSTEM,
-        input: Answer::Typed,
-    },
-    Field {
-        group: "jobs",
-        name: "timeout_min",
-        short: "time limit (min)",
-        long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
-        builtin: "30",
-        input: Answer::Typed,
-    },
-    Field {
-        group: "jobs",
-        name: "budget_usd",
-        short: "cost per run (USD)",
-        long: "Maximum cost per run in USD, passed to Claude as --max-budget-usd, which stops the run when it is reached. Codex jobs are still unavailable.",
-        builtin: "2.00",
-        input: Answer::Typed,
-    },
-    Field {
-        group: "jobs",
-        name: "daily_budget_usd",
-        short: "cost per 24h (USD)",
-        long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
-        builtin: "none",
-        input: Answer::Typed,
-    },
-    Field {
-        group: "jobs",
-        name: "write",
-        short: "allow file changes",
-        long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
-        builtin: "false",
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "jobs",
-        name: "overlap",
-        short: "when already running",
-        long: "When a job is already running: skip the next run, allow both, or replace the active run.",
-        builtin: "skip",
-        input: Answer::Pick(&["-", "skip", "allow", "replace"]),
-    },
-    Field {
-        group: "jobs",
-        name: "max_turns",
-        short: "Claude turns per run",
-        long: "Maximum assistant turns per Claude run. Empty passes nothing and Claude's own limit stands.",
-        builtin: SYSTEM,
-        input: Answer::Typed,
-    },
-    Field {
-        group: "jobs",
-        name: "codex_full_access",
-        short: "Codex without sandbox",
-        long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
-        builtin: "false",
-        input: Answer::Pick(BOOL),
-    },
+/// The fields under their groups and blocks. A field named for a harness reaches only that
+/// harness. `start.harness` is what the composer comes up on, `runs.harness` what a job that
+/// names none runs under: one row each, so neither has to mean both.
+const FIELDS: [Field; 21] = [
     Field {
         group: "cones",
-        name: "notify",
-        short: "failure alerts",
-        long: "Notify on failures, timeouts and runs skipped for budget.",
-        builtin: "false",
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "cones",
+        sub: "",
         name: "columns",
         short: "session columns",
         long: "Space adds or removes a column. state appears before the title; the rest follow in the order they were added.",
@@ -2030,22 +1948,43 @@ const FIELDS: [Field; 20] = [
     },
     Field {
         group: "cones",
-        name: "pane.on",
+        sub: "",
+        name: "confirm_secs",
+        short: "ctrl+x stays armed (s)",
+        long: "Seconds an armed ctrl+x waits for its second press with no key pressed, up to 600. 0 keeps the mark until the next key.",
+        builtin: "2",
+        input: Answer::Typed,
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.harness",
+        short: "the composer comes up on",
+        long: "The harness the composer is on in a new cones terminal; shift+tab and ctrl+o change it from there and cones writes nothing back. Codex sessions start, Codex jobs are still unavailable.",
+        builtin: "claude",
+        input: Answer::Pick(&["-", "claude", "codex"]),
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.pane",
         short: "open with the pane",
-        long: "true opens the dashboard with the viewer pane beside the list, false with the list alone; ctrl+\\ toggles it either way.",
+        long: "Whether a new cones terminal opens with the viewer pane beside the list; ctrl+\\ toggles it from there and cones writes nothing back.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
+        sub: "pane",
         name: "pane.at",
         short: "where the pane sits",
-        long: "right: the list on the left at half the width, the pane beside it. bottom: the list on top at half the height, the pane under it.",
+        long: "right puts the pane beside the list, bottom under it.",
         builtin: "right",
         input: Answer::Pick(&["-", "right", "bottom"]),
     },
     Field {
         group: "cones",
+        sub: "sparkline",
         name: "sparkline.bars",
         short: "bar count",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
@@ -2054,6 +1993,7 @@ const FIELDS: [Field; 20] = [
     },
     Field {
         group: "cones",
+        sub: "sparkline",
         name: "sparkline.bucket",
         short: "time per bar",
         long: "Time per bar, such as 30s, 1m or 5m. Maximum 24h.",
@@ -2062,6 +2002,7 @@ const FIELDS: [Field; 20] = [
     },
     Field {
         group: "cones",
+        sub: "sparkline",
         name: "sparkline.metric",
         short: "count per bar",
         long: "lines: all transcript lines. messages: assistant replies. tools: tool calls. tokens: output tokens.",
@@ -2070,6 +2011,7 @@ const FIELDS: [Field; 20] = [
     },
     Field {
         group: "cones",
+        sub: "sparkline",
         name: "sparkline.bound",
         short: "chart scale",
         long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number sets the count for a full bar.",
@@ -2077,14 +2019,119 @@ const FIELDS: [Field; 20] = [
         input: Answer::PickOrType(&["-", "fleet", "row", "log"], "a number"),
     },
     Field {
-        group: "cones",
-        name: "mark_secs",
-        short: "ctrl+x mark (s)",
-        long: "Seconds the red ctrl+x mark stays when no other key is pressed, up to 600. 0 keeps it until the next key.",
-        builtin: "2",
+        group: "harnesses",
+        sub: "",
+        name: "bedrock",
+        short: "run on Amazon Bedrock",
+        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. A Bedrock job also gets the shell's AWS_ variables.",
+        builtin: SYSTEM,
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
+        name: "model",
+        short: "alias or model id",
+        long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. system default passes nothing and Claude's own settings decide.",
+        builtin: SYSTEM,
+        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
+        name: "max_turns",
+        short: "turns per run",
+        long: "Maximum assistant turns per Claude run. Empty passes nothing and Claude's own limit stands.",
+        builtin: SYSTEM,
         input: Answer::Typed,
     },
+    Field {
+        group: "harnesses",
+        sub: "codex",
+        name: "codex_model",
+        short: "model id",
+        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "codex",
+        name: "codex_full_access",
+        short: "no sandbox",
+        long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
+        builtin: "false",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "harness",
+        short: "for a job that names none",
+        long: "The harness a job runs under when it names no harness of its own. What the composer comes up on is start.harness. Codex jobs are still unavailable.",
+        builtin: "claude",
+        input: Answer::Pick(&["-", "claude", "codex"]),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "timeout_min",
+        short: "time limit (min)",
+        long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
+        builtin: "30",
+        input: Answer::Typed,
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "budget_usd",
+        short: "cost per run (USD)",
+        long: "Maximum cost per run in USD, passed to Claude as --max-budget-usd, which stops the run when it is reached. Codex jobs are still unavailable.",
+        builtin: "2.00",
+        input: Answer::Typed,
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "daily_budget_usd",
+        short: "cost per 24h (USD)",
+        long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
+        builtin: "none",
+        input: Answer::Typed,
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "write",
+        short: "allow file changes",
+        long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
+        builtin: "false",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "overlap",
+        short: "when already running",
+        long: "When a job is already running: skip the next run, allow both, or replace the active run.",
+        builtin: "skip",
+        input: Answer::Pick(&["-", "skip", "allow", "replace"]),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "notify",
+        short: "failure alerts",
+        long: "Notify on failures, timeouts and runs skipped for budget.",
+        builtin: "false",
+        input: Answer::Pick(BOOL),
+    },
 ];
+
+/// The rows the session form shows: what the next session the composer starts runs on, the
+/// same `defaults` fields the editor shows, seeded from the policy that session would take.
+/// Nothing on this form is written to the file.
+const SESSION: [&str; 4] = ["harness", "model", "codex_model", "bedrock"];
 
 /// Where `name` sits in `FIELDS`.
 fn field_at(name: &str) -> usize {
@@ -2100,14 +2147,15 @@ pub enum ConfigAction {
     Stay,
     Cancel,
     /// A field closed on a new value, so the block is written and the editor stays where it
-    /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`
-    /// and `pane:` blocks, None when every field is left to the built-in, and the
-    /// `mark_secs:` line.
+    /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`,
+    /// `pane:` and `start:` blocks, None when every field of one is left to the built-in, and
+    /// the `confirm_secs:` line.
     Save(
         Box<config::Policy>,
         Vec<String>,
         Option<config::Sparkline>,
         Option<config::Pane>,
+        Option<config::Start>,
         Option<f64>,
     ),
 }
@@ -2140,23 +2188,22 @@ pub struct ConfigForm {
     cursor: usize,
     /// The option under the cursor while a `Many` field shows its picks.
     pick: usize,
-    /// Only this group's rows are shown and visited: the `runs` group as the session form
-    /// `ctrl+o` opens, seeded from the policy the next session would run under. None is the
-    /// whole editor.
-    pub group: Option<&'static str>,
+    /// Only the `SESSION` rows are shown and visited, under one title and no group heads:
+    /// the form `ctrl+o` opens, seeded from the policy the next session would run under.
+    pub session: bool,
 }
 
 impl ConfigForm {
-    /// The `runs` group alone, as the settings of the next session the composer starts.
+    /// The `SESSION` rows alone, as the settings of the next session the composer starts.
     pub fn session(policy: &config::Policy) -> Self {
-        let mut form = Self::new(policy, None, None, None, None);
-        form.group = Some("runs");
+        let mut form = Self::new(policy, None, None, None, None, None);
+        form.session = true;
         form
     }
 
     /// Whether row `i` is on screen.
     fn shown(&self, i: usize) -> bool {
-        self.group.is_none_or(|g| FIELDS[i].group == g)
+        !self.session || SESSION.contains(&FIELDS[i].name)
     }
 
     pub fn new(
@@ -2164,7 +2211,8 @@ impl ConfigForm {
         columns: Option<&[String]>,
         spark: Option<&config::Sparkline>,
         pane: Option<&config::Pane>,
-        mark_secs: Option<f64>,
+        start: Option<&config::Start>,
+        confirm_secs: Option<f64>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -2194,12 +2242,13 @@ impl ConfigForm {
                 "notify" => flag(d.notify),
                 "bedrock" => flag(d.bedrock),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
-                "pane.on" => pane(|p| p.on.to_string()),
+                "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
+                "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
                 "sparkline.bars" => spark(|s| s.bars.to_string()),
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
                 "sparkline.metric" => spark(|s| s.metric.clone()),
-                "mark_secs" => num(mark_secs),
+                "confirm_secs" => num(confirm_secs),
                 _ => spark(|s| s.bound.clone()),
             })
             .collect();
@@ -2211,7 +2260,7 @@ impl ConfigForm {
             before: String::new(),
             cursor: usize::MAX,
             pick: 0,
-            group: None,
+            session: false,
         }
     }
 
@@ -2244,6 +2293,7 @@ impl ConfigForm {
             Vec<String>,
             Option<config::Sparkline>,
             Option<config::Pane>,
+            Option<config::Start>,
             Option<f64>,
         ),
         String,
@@ -2345,15 +2395,11 @@ impl ConfigForm {
             Some(s)
         };
         // The pane block, the same way.
-        let pane = if ["on", "at"]
-            .iter()
-            .all(|f| v(&format!("pane.{f}")).is_empty())
-        {
+        let pane = if ["at"].iter().all(|f| v(&format!("pane.{f}")).is_empty()) {
             None
         } else {
             let built = config::Pane::default();
             let p = config::Pane {
-                on: flag("pane.on").unwrap_or(built.on),
                 at: text("pane.at").unwrap_or(built.at),
             };
             p.check().map_err(|e| {
@@ -2362,17 +2408,34 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        let mark = num("mark_secs", "seconds, as in 2")?;
+        // The start block, the same way: no field typed leaves it out of the file.
+        let start = if ["harness", "pane"]
+            .iter()
+            .all(|f| v(&format!("start.{f}")).is_empty())
+        {
+            None
+        } else {
+            let built = config::Start::default();
+            Some(config::Start {
+                harness: match v("start.harness") {
+                    "codex" => HarnessKind::Codex,
+                    "claude" => HarnessKind::Claude,
+                    _ => built.harness,
+                },
+                pane: flag("start.pane").unwrap_or(built.pane),
+            })
+        };
+        let mark = num("confirm_secs", "seconds, as in 2")?;
         if let Some(m) = mark {
-            config::check_mark_secs(m).map_err(|e| {
+            config::check_confirm_secs(m).map_err(|e| {
                 let e = format!("{e:#}");
                 format!(
-                    "mark_secs: {}",
-                    e.trim_start_matches(&format!("mark_secs {m}: "))
+                    "confirm_secs: {}",
+                    e.trim_start_matches(&format!("confirm_secs {m}: "))
                 )
             })?;
         }
-        Ok((policy, columns, spark, pane, mark))
+        Ok((policy, columns, spark, pane, start, mark))
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
@@ -2419,10 +2482,10 @@ impl ConfigForm {
                             .unwrap_or(self.row));
                         self.error = Some(e);
                     }
-                    Ok((p, c, s, pn, m)) => {
+                    Ok((p, c, s, pn, st, m)) => {
                         self.open = false;
                         if changed {
-                            return ConfigAction::Save(Box::new(p), c, s, pn, m);
+                            return ConfigAction::Save(Box::new(p), c, s, pn, st, m);
                         }
                     }
                 }
@@ -2501,9 +2564,13 @@ impl ConfigForm {
     /// explanation, wrapped to `columns` with the rows' indent and padded to the tallest one so
     /// the block keeps its height.
     fn lines(&self, columns: u16) -> Vec<Line<'static>> {
-        let title = match self.group {
-            Some(_) => ("next session", "model and provider, from the defaults"),
-            None => ("config", "jobs.yaml"),
+        let title = if self.session {
+            (
+                "next session",
+                "harness, model and provider, from the defaults",
+            )
+        } else {
+            ("config", "jobs.yaml")
         };
         let mut lines = vec![
             Line::default(),
@@ -2536,11 +2603,15 @@ impl ConfigForm {
             .map(|i| shown(i).0.chars().count())
             .max()
             .unwrap_or(0);
+        let mut head: Option<(&str, &str)> = None;
         for (i, f) in FIELDS.iter().enumerate() {
             if !self.shown(i) {
                 continue;
             }
-            if i == 0 || FIELDS[i - 1].group != f.group {
+            // A group's head above its first row, a dim sub-head where a block inside it
+            // starts. The session form is one short list under its own title, so it shows
+            // neither.
+            if !self.session && head.map(|(g, _)| g) != Some(f.group) {
                 let (name, what) = GROUPS
                     .iter()
                     .find(|(g, _)| *g == f.group)
@@ -2552,12 +2623,16 @@ impl ConfigForm {
                     Span::styled(format!("  {what}"), dim()),
                 ]));
             }
+            if !self.session && !f.sub.is_empty() && head.map(|(_, b)| b) != Some(f.sub) {
+                lines.push(Line::from(Span::styled(format!("  {}", f.sub), dim())));
+            }
+            head = Some((f.group, f.sub));
             let selected = i == self.row;
             let (value, style) = shown(i);
             let gap = value_w - value.chars().count() + 2;
             let mut spans = vec![
                 Span::styled(
-                    format!("  {:<name_w$}  ", f.name),
+                    format!("    {:<name_w$}  ", f.name),
                     if selected { lit() } else { bold() },
                 ),
                 Span::styled(
@@ -2584,8 +2659,8 @@ impl ConfigForm {
         // The explanation wrapped here, not by the widget, so every line of it keeps the
         // rows' indent rather than the second one falling back to the margin.
         let f = self.field();
-        let head = format!("  {:<name_w$}  ", f.name);
-        let room = (columns as usize).saturating_sub(head.len()).max(20);
+        let explain = format!("    {:<name_w$}  ", f.name);
+        let room = (columns as usize).saturating_sub(explain.len()).max(20);
         let tall = FIELDS
             .iter()
             .enumerate()
@@ -2595,12 +2670,12 @@ impl ConfigForm {
             .unwrap_or(1);
         let mut rest = wrap(f.long, room).into_iter();
         lines.push(Line::from(vec![
-            Span::styled(head, bold()),
+            Span::styled(explain, bold()),
             Span::raw(rest.next().unwrap_or_default()),
         ]));
         let mut n = 1;
         for l in rest {
-            lines.push(Line::from(format!("  {l}")));
+            lines.push(Line::from(format!("    {l}")));
             n += 1;
         }
         lines.extend((n..tall).map(|_| Line::default()));
@@ -2849,7 +2924,7 @@ struct App {
     /// Only transitions and slow frames are timed, so idle drawing does not fill the log.
     feedback: Option<(&'static str, Instant)>,
     /// The row key ctrl+x armed; stays until ctrl+x confirms, any other key clears it, or
-    /// `mark_secs` pass since `armed_at` with no key.
+    /// `confirm_secs` pass since `armed_at` with no key.
     armed: Option<String>,
     armed_at: Instant,
     /// When ctrl+c was last pressed; a second press within `QUIT_CONFIRM` quits. A single
@@ -2874,7 +2949,7 @@ struct App {
     /// The pane viewers are drawn in and sized to, from the last frame: the column beside the
     /// list on a wide frame, else the frame less the strip row under it.
     pane: Rect,
-    /// Whether the viewer is drawn beside the list, at any width; `pane.on` from jobs.yaml
+    /// Whether the viewer is drawn beside the list, at any width; `start.pane` from jobs.yaml
     /// to begin with, then ctrl+\ toggles it, from the list or inside a viewer, and off it
     /// the viewer takes the whole frame. A layout, not a state: it stays until toggled again.
     split: bool,
@@ -3035,6 +3110,8 @@ impl PendingStop {
 impl App {
     fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
         let data = Data::load(jobs_path, state, claude)?;
+        // What a new terminal comes up with, before `data` moves into the dashboard.
+        let start = data.start;
         Ok(Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
@@ -3042,7 +3119,7 @@ impl App {
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
             menu: 0,
-            split: data.pane.on,
+            split: start.pane,
             data,
             rows: vec![],
             visible: vec![],
@@ -3058,7 +3135,7 @@ impl App {
             text: String::new(),
             caret: 0,
             images: Vec::new(),
-            harness: Self::harness_at(config::defaults(jobs_path).harness),
+            harness: Self::harness_at(Some(start.harness)),
             session: None,
             started: Vec::new(),
             pending: Vec::new(),
@@ -3647,7 +3724,8 @@ impl App {
             config::file_columns(&self.jobs_path).as_deref(),
             config::file_sparkline(&self.jobs_path).as_ref(),
             config::file_pane(&self.jobs_path).as_ref(),
-            config::file_mark_secs(&self.jobs_path),
+            config::file_start(&self.jobs_path).as_ref(),
+            config::file_confirm_secs(&self.jobs_path),
         ))
     }
 
@@ -4672,11 +4750,11 @@ impl App {
         self.armed_at = Instant::now();
     }
 
-    /// Each pass of the draw loop: a mark left alone for `mark_secs` clears as if a key had
+    /// Each pass of the draw loop: a mark left alone for `confirm_secs` clears as if a key had
     /// kept it, and a ctrl+c the second press did not follow stops showing after
     /// `QUIT_CONFIRM`; each takes its hint off the line with it.
     fn expire(&mut self) {
-        let mark = self.data.mark_secs;
+        let mark = self.data.confirm_secs;
         if self.armed.is_some()
             && mark > 0.0
             && self.armed_at.elapsed() >= Duration::from_secs_f64(mark)
@@ -5406,18 +5484,19 @@ impl App {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
                 // The session form keeps its policy for the composer; nothing is written.
-                ConfigAction::Save(policy, ..) if form.group.is_some() => {
+                ConfigAction::Save(policy, ..) if form.session => {
                     self.harness = Self::harness_at(policy.harness);
                     self.session = Some(*policy);
                     self.status = format!("next session: {}", self.session_words().join(" · "));
                 }
-                ConfigAction::Save(policy, columns, spark, pane, mark) => {
+                ConfigAction::Save(policy, columns, spark, pane, start, mark) => {
                     match config::write_config(
                         &self.jobs_path,
                         &policy,
                         Some(&columns),
                         spark.as_ref(),
                         pane.as_ref(),
+                        start.as_ref(),
                         mark,
                     ) {
                         Ok(()) => {
@@ -6121,20 +6200,24 @@ mod tests {
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
-        let c = ConfigForm::new(&config::Policy::default(), None, None, None, None);
+        let c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
         let lines = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
-            shown.iter().any(|l| l.starts_with("jobs  ")),
+            shown.iter().any(|l| l.starts_with("runs  ")),
             "group headers sit on the margin"
         );
         assert!(
-            shown.iter().any(|l| l.starts_with("  timeout_min")),
-            "rows are indented by two"
+            shown.iter().any(|l| l.as_str() == "  sparkline"),
+            "a block's sub-head is indented by two"
+        );
+        assert!(
+            shown.iter().any(|l| l.starts_with("    timeout_min")),
+            "rows are indented by four, under their sub-head"
         );
         let mut tail: Vec<&String> = shown
             .iter()
-            .skip_while(|l| !l.starts_with("  timeout_min  "))
+            .skip_while(|l| !l.starts_with("    timeout_min  "))
             .skip(1)
             .collect();
         while tail.last().is_some_and(|l| l.is_empty()) {
@@ -6146,7 +6229,7 @@ mod tests {
             tail.iter()
                 .rev()
                 .take(long)
-                .all(|l| l.starts_with("  ") && l.chars().count() <= 48),
+                .all(|l| l.starts_with("    ") && l.chars().count() <= 48),
             "every wrapped line keeps the indent and fits"
         );
     }
@@ -6325,7 +6408,7 @@ mod tests {
             "the cursor is after the answer stepped back to"
         );
 
-        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None);
+        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
         c.go(field_at("timeout_min"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
@@ -7490,7 +7573,7 @@ mod tests {
         );
         app.refresh().unwrap();
         assert!(key(&app).is_some(), "armed only");
-        // The arm marks the row red; it stays until the next key or `mark_secs` of none.
+        // The arm marks the row red; it stays until the next key or `confirm_secs` of none.
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let marked = t
@@ -7502,13 +7585,13 @@ mod tests {
         assert!(marked, "the armed row is red");
         assert_eq!(app.armed.as_deref(), Some(A));
         // Left alone past the mark's time the row is kept, and the hint says so; the next
-        // ctrl+x arms again rather than acting. With `mark_secs: 0` the mark has no clock.
+        // ctrl+x arms again rather than acting. With `confirm_secs: 0` the mark has no clock.
         app.armed_at = Instant::now() - Duration::from_secs(3);
         app.expire();
         assert_eq!((app.armed.as_deref(), app.status.as_str()), (None, "kept"));
         app.stop();
         assert_eq!(app.armed.as_deref(), Some(A), "armed again, not hidden");
-        app.data.mark_secs = 0.0;
+        app.data.confirm_secs = 0.0;
         app.armed_at = Instant::now() - Duration::from_secs(3600);
         app.expire();
         assert_eq!(app.armed.as_deref(), Some(A), "no clock at 0");
@@ -8866,11 +8949,11 @@ mod tests {
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
     /// explains itself, enter presses it, and `help` is the guide.
     /// The menu's `config` button opens the config editor where the list is: the fields under
-    /// their groups, `runs`, `tools` and `cones`, one row per field with its value and a few
+    /// their groups, `cones`, `harnesses` and `runs`, one row per field with its value and a
     /// words, the selected field explained under the list. Enter opens a field: typing edits,
     /// ← → pick, enter keeps the value and writes the `defaults` block and the `columns:`
     /// line there and then; a bad value comes back on its field and nothing is written.
-    /// `ctrl+o` opens the `runs` group alone as the next session's settings, seeded from the
+    /// `ctrl+o` opens the `SESSION` rows alone as the next session's settings, seeded from the
     /// defaults; `-` reads `system default` there; each field kept takes without writing
     /// the file, the composer's prefix shows them, and the session starts under them.
     #[test]
@@ -8894,12 +8977,11 @@ mod tests {
         for _ in 0..5 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("codex_model")));
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")));
         for _ in 0..5 {
             app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")));
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
@@ -8933,8 +9015,10 @@ mod tests {
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         app.key(KeyCode::Char('o'), ctrl).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
+        while !matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")) {
+            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -8983,7 +9067,7 @@ mod tests {
         };
         let (col, tall) = (column(&s, "time limit (min)"), height(&s));
         assert_eq!(column(&s, "count per bar"), col, "{s}");
-        assert_eq!(column(&s, "Claude turns per run"), col, "{s}");
+        assert_eq!(column(&s, "turns per run"), col, "{s}");
         let go = |app: &mut App, name: &str| {
             while let Mode::Config(f) = &app.mode
                 && f.row != field_at(name)
@@ -9111,9 +9195,8 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("Codex without sandbox"), "{s}");
-        assert!(s.contains("Codex model id"), "{s}");
-        assert!(s.contains("Claude alias or model id"), "{s}");
+        assert!(s.contains("no sandbox"), "{s}");
+        assert!(s.contains("alias or model id"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -9123,8 +9206,8 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            s.contains("when it names none"),
-            "the selected field, harness, is explained: {s}"
+            s.contains("Space adds or removes a column"),
+            "the selected field, the first one, is explained: {s}"
         );
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("2.00"), "built-ins show dim: {s}");
@@ -9134,18 +9217,25 @@ mod tests {
         );
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\nruns  every job and session") < at("  harness")
-                && at("  harness") < at("bedrock")
-                && at("bedrock") < at("model")
-                && at("model") < at("codex_model")
-                && at("codex_model") < at("\njobs  supervised runs only")
-                && at("\njobs  supervised runs only") < at("timeout_min")
-                && at("overlap") < at("max_turns")
-                && at("max_turns") < at("codex_full_access")
-                && at("codex_full_access") < at("\ncones  display and alerts")
-                && at("\ncones  display and alerts") < at("notify")
-                && at("notify") < at("columns"),
-            "the fields sit under their groups: {s}"
+            at("\ncones  the dashboard itself") < at("    columns")
+                && at("    columns") < at("    confirm_secs")
+                && at("    confirm_secs") < at("\n  start")
+                && at("\n  start") < at("    start.harness")
+                && at("    start.harness") < at("\n  pane")
+                && at("\n  pane") < at("    pane.at")
+                && at("    pane.at") < at("\n  sparkline")
+                && at("\n  sparkline") < at("    sparkline.bars")
+                && at("    sparkline.bars") < at("\nharnesses  how claude and codex are run")
+                && at("\nharnesses  how claude and codex are run") < at("    bedrock")
+                && at("    bedrock") < at("\n  claude")
+                && at("\n  claude") < at("    model ")
+                && at("    model ") < at("\n  codex ")
+                && at("\n  codex ") < at("    codex_model")
+                && at("    codex_model") < at("\nruns  every supervised run")
+                && at("\nruns  every supervised run") < at("    harness ")
+                && at("    harness ") < at("    timeout_min")
+                && at("    timeout_min") < at("    notify"),
+            "the fields sit under their groups and blocks: {s}"
         );
         assert!(
             s.contains("state, context, spark…"),
@@ -9368,12 +9458,12 @@ mod tests {
         let jobs = d.path().join("none.yaml");
         std::fs::write(
             &jobs,
-            "version: 1\ncolumns: [state, model]\npane:\n  on: false\n  at: bottom\njobs: []\n",
+            "version: 1\ncolumns: [state, model]\nstart:\n  pane: false\npane:\n  at: bottom\njobs: []\n",
         )
         .unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        assert!(!app.split, "pane.on: false opens with the list alone");
+        assert!(!app.split, "start.pane: false opens with the list alone");
         let names = |app: &App| {
             app.rows
                 .iter()

@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list, `sparkline` block and `mark_secs` line, described in [dashboard.md](dashboard.md#columns) and [its keys](dashboard.md#keys). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `max_turns`, `model`, `overlap`, `notify`, `bedrock`, `harness`, `codex_model` and `codex_full_access`; each job may override them. The same `harness`, `model`, `codex_model` and `bedrock` reach a session the dashboard's composer starts, so the block is where a new agent's harness, model and provider are chosen too. A default that belongs to one harness reaches only its jobs: `max_turns` and `model` reach Claude jobs, `codex_model` and `codex_full_access` reach Codex jobs, where a job's own `model:` covers both. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
+`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list, `sparkline`, `pane` and `start` blocks and `confirm_secs` line, described in [dashboard.md](dashboard.md#columns) and [its keys](dashboard.md#keys). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `max_turns`, `model`, `overlap`, `notify`, `bedrock`, `harness`, `codex_model` and `codex_full_access`; each job may override them. The same `model`, `codex_model` and `bedrock` reach a session the dashboard's composer starts, so the block is where a new agent's model and provider are chosen too; the harness that composer comes up on is `start.harness`, a dashboard setting. A default that belongs to one harness reaches only its jobs: `max_turns` and `model` reach Claude jobs, `codex_model` and `codex_full_access` reach Codex jobs, where a job's own `model:` covers both. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
 
 ```yaml
 version: 1
@@ -12,15 +12,17 @@ defaults:
   daily_budget_usd: 10.00
   write: false
 columns: [state, context, sparkline, model, activity, last]   # dashboard session columns, see dashboard.md
-pane:                 # the viewer pane's layout, see dashboard.md
-  on: true
+pane:                 # which side the viewer pane sits on, see dashboard.md
   at: right
+start:                # what a new cones terminal comes up with, see dashboard.md
+  harness: claude
+  pane: true
 sparkline:            # the sparkline column's window, metric and scale, see dashboard.md
   bars: 16
   bucket: 1m
   metric: lines
   bound: fleet
-mark_secs: 2          # seconds the ctrl+x mark stays with no key, 0 keeps it until one
+confirm_secs: 2       # seconds an armed ctrl+x waits for its second press, 0 until a key
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd
