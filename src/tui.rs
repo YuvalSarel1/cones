@@ -632,13 +632,18 @@ fn ansi(text: &str, style: Style) -> String {
 
 /// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
 /// while it is picked.
-const MENU: [(&str, &str, &str); 4] = [
+const MENU: [(&str, &str, &str); 5] = [
     ("runs", "new run", "a task once or on a schedule"),
     ("agents", "agents", "a harness's own agents view"),
     (
         "folder",
         "add folder",
         "a row for a folder nothing runs in, to start work there",
+    ),
+    (
+        "config",
+        "defaults",
+        "the policy every job runs under: budget, timeout, tools",
     ),
     ("help", "guide", "the keys and what they do"),
 ];
@@ -1727,10 +1732,316 @@ impl JobForm {
     }
 }
 
+/// A field of the `defaults` block the config editor shows: its name, the words beside it on
+/// its row, the fuller explanation under the list while it is selected, what an empty answer
+/// means (the built-in), and the options when it is picked rather than typed.
+struct Field {
+    name: &'static str,
+    short: &'static str,
+    long: &'static str,
+    builtin: &'static str,
+    picks: Option<&'static [&'static str]>,
+}
+
+const BOOL: &[&str] = &["-", "false", "true"];
+
+/// The fields in the order jobs.md lists them. `codex_full_access` is left out: no Codex job
+/// runs yet and on a Claude job it is a validation error.
+const FIELDS: [Field; 8] = [
+    Field {
+        name: "timeout_min",
+        short: "minutes before cones kills a run",
+        long: "How long one run may take, on the clock, from its start. When it passes, cones sends SIGTERM to the harness and everything it spawned, waits two seconds, then SIGKILL, and the ledger records the run as timeout. Positive, at most 10080 (one week).",
+        builtin: "30",
+        picks: None,
+    },
+    Field {
+        name: "budget_usd",
+        short: "dollars one run may spend",
+        long: "The most one run may spend, passed to Claude as --max-budget-usd. Claude stops itself at the number and reports why, so the run ends early with a budget result rather than a kill.",
+        builtin: "2.00",
+        picks: None,
+    },
+    Field {
+        name: "daily_budget_usd",
+        short: "dollars a job may spend a day",
+        long: "A rolling 24-hour cap per job. Before a run starts, cones adds up what the job's runs cost in the last day, counting a run still going at its budget_usd; a tick that would push the sum over the cap is recorded as skipped / budget and nothing starts. At least budget_usd. Empty is no cap.",
+        builtin: "none",
+        picks: None,
+    },
+    Field {
+        name: "write",
+        short: "may a job change files",
+        long: "false strips Edit, Write and Bash from the tool list even when tools names them, so the job can only read. true keeps them and turns Claude's sandbox on whenever Bash is allowed.",
+        builtin: "false",
+        picks: Some(BOOL),
+    },
+    Field {
+        name: "tools",
+        short: "the tools a job may call",
+        long: "The allowlist passed to Claude, separated by commas: any of Read, Grep, Glob, Edit, Write, Bash, or a Bash(pattern) rule. write: false removes Edit, Write and Bash from it whatever is listed here.",
+        builtin: "Read, Grep, Glob",
+        picks: None,
+    },
+    Field {
+        name: "max_turns",
+        short: "turns before Claude must stop",
+        long: "The most assistant turns one run takes, passed as --max-turns. Empty leaves it to Claude. A small number keeps a read-only check from wandering.",
+        builtin: "none",
+        picks: None,
+    },
+    Field {
+        name: "overlap",
+        short: "a tick while the last run goes on",
+        long: "skip records the tick as skipped / overlap and starts nothing. allow starts a second run beside the first. replace sends the old run SIGUSR1, waits up to 10 seconds for it to stop, then starts the new one.",
+        builtin: "skip",
+        picks: Some(&["-", "skip", "allow", "replace"]),
+    },
+    Field {
+        name: "notify",
+        short: "notification when a run goes wrong",
+        long: "true shows a macOS notification when a run ends failed or timeout, or is skipped on budget. CONES_NOTIFIER in the environment names a command that takes the title and message instead.",
+        builtin: "false",
+        picks: Some(BOOL),
+    },
+];
+
+/// What a key in the config editor asks the dashboard to do.
+#[derive(Debug, PartialEq)]
+pub enum ConfigAction {
+    Stay,
+    Cancel,
+    Save(Box<config::Policy>),
+}
+
+/// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
+/// policy every job runs under unless it sets the field itself, one row per field where the
+/// list is. `↑` `↓` move between fields, typing edits the selected one, `← →` pick where the
+/// field has options, `enter` saves the block, `esc` cancels. Each row carries a few words on
+/// what the field does; the selected field's fuller explanation sits under the list. An empty
+/// answer leaves the field out of the file, so the built-in applies. Pure: the file is read
+/// and written by the dashboard.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigForm {
+    pub row: usize,
+    /// Each field as typed; a picked field holds its option's word, empty for the built-in.
+    pub values: Vec<String>,
+    pub error: Option<String>,
+}
+
+impl ConfigForm {
+    pub fn new(d: &config::Policy) -> Self {
+        let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
+        let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
+        Self {
+            row: 0,
+            values: vec![
+                num(d.timeout_min),
+                num(d.budget_usd),
+                num(d.daily_budget_usd),
+                flag(d.write),
+                d.tools.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
+                d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
+                d.overlap
+                    .map(|o| match o {
+                        config::Overlap::Skip => "skip",
+                        config::Overlap::Allow => "allow",
+                        config::Overlap::Replace => "replace",
+                    })
+                    .unwrap_or_default()
+                    .to_owned(),
+                flag(d.notify),
+            ],
+            error: None,
+        }
+    }
+
+    fn field(&self) -> &'static Field {
+        &FIELDS[self.row]
+    }
+
+    /// The values as a policy; the error is the one line shown inline on the field.
+    fn policy(&self) -> Result<config::Policy, String> {
+        let v = |i: usize| self.values[i].trim();
+        let num = |i: usize, what: &str| -> Result<Option<f64>, String> {
+            match v(i) {
+                "" => Ok(None),
+                t => t
+                    .parse::<f64>()
+                    .map(Some)
+                    .map_err(|_| format!("{}: {what}, not {t:?}", FIELDS[i].name)),
+            }
+        };
+        let flag = |i: usize| match v(i) {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+        let tools: Vec<String> = v(4)
+            .split(',')
+            .map(|t| t.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect();
+        Ok(config::Policy {
+            timeout_min: num(0, "a number of minutes, as in 30")?,
+            budget_usd: num(1, "dollars, as in 2.00")?,
+            daily_budget_usd: num(2, "dollars, as in 10.00")?,
+            write: flag(3),
+            tools: (!tools.is_empty()).then_some(tools),
+            max_turns: match v(5) {
+                "" => None,
+                t => Some(
+                    t.parse::<u32>()
+                        .map_err(|_| format!("max_turns: a whole number, as in 5, not {t:?}"))?,
+                ),
+            },
+            codex_full_access: None,
+            overlap: match v(6) {
+                "skip" => Some(config::Overlap::Skip),
+                "allow" => Some(config::Overlap::Allow),
+                "replace" => Some(config::Overlap::Replace),
+                _ => None,
+            },
+            notify: flag(7),
+        })
+    }
+
+    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> ConfigAction {
+        if code == KeyCode::Esc {
+            return ConfigAction::Cancel;
+        }
+        self.error = None;
+        match code {
+            KeyCode::Enter => {
+                return match self.policy() {
+                    Ok(p) => ConfigAction::Save(Box::new(p)),
+                    Err(e) => {
+                        // The error lands on the field it names.
+                        self.row = FIELDS
+                            .iter()
+                            .position(|f| e.starts_with(f.name))
+                            .unwrap_or(self.row);
+                        self.error = Some(e);
+                        ConfigAction::Stay
+                    }
+                };
+            }
+            KeyCode::Up => self.row = self.row.saturating_sub(1),
+            KeyCode::Down => self.row = (self.row + 1).min(FIELDS.len() - 1),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                if let Some(opts) = self.field().picks {
+                    let n = opts.len();
+                    let at = opts
+                        .iter()
+                        .position(|o| *o == self.values[self.row])
+                        .unwrap_or(0);
+                    let at = (at + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
+                    self.values[self.row] = if at == 0 {
+                        String::new()
+                    } else {
+                        opts[at].to_owned()
+                    };
+                }
+            }
+            KeyCode::Backspace => {
+                if self.field().picks.is_none() {
+                    self.values[self.row].pop();
+                }
+            }
+            KeyCode::Char(c) if !ctrl && self.field().picks.is_none() => {
+                self.values[self.row].push(c);
+            }
+            _ => {}
+        }
+        ConfigAction::Stay
+    }
+
+    /// The editor where the list is: a title, one row per field with its value (the built-in
+    /// dim when empty) and a few words on it, then the selected field's fuller explanation.
+    fn lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::default(),
+            Line::from(vec![
+                Span::styled("defaults", Style::default().fg(ORANGE)),
+                Span::styled(
+                    "  the policy every job runs under unless it sets the field itself",
+                    dim(),
+                ),
+            ]),
+            Line::default(),
+        ];
+        let width = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
+        for (i, f) in FIELDS.iter().enumerate() {
+            let selected = i == self.row;
+            let value = &self.values[i];
+            let mut spans = vec![Span::styled(
+                format!("  {:<width$}  ", f.name),
+                if selected { lit() } else { bold() },
+            )];
+            let shown = match (f.picks, selected) {
+                (Some(opts), true) => {
+                    let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
+                    picks(&mut spans, opts, at);
+                    opts.iter().map(|o| o.len() + 2).sum::<usize>()
+                }
+                (_, true) => {
+                    spans.extend(typed(value, value.len(), f.builtin));
+                    value.len().max(f.builtin.len()) + 1
+                }
+                (_, false) if value.is_empty() => {
+                    spans.push(Span::styled(f.builtin.to_owned(), dim()));
+                    f.builtin.len()
+                }
+                _ => {
+                    spans.push(Span::raw(value.clone()));
+                    value.len()
+                }
+            };
+            spans.push(Span::styled(
+                format!(
+                    "{}{}",
+                    " ".repeat(18usize.saturating_sub(shown).max(2)),
+                    f.short
+                ),
+                dim(),
+            ));
+            if selected && let Some(e) = &self.error {
+                spans.push(Span::styled(
+                    format!("  {e}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {}  ", self.field().name), bold()),
+            Span::raw(self.field().long.to_owned()),
+        ]));
+        lines
+    }
+
+    /// The prompt line: the selected field and what an answer looks like.
+    fn line(&self) -> Line<'static> {
+        let f = self.field();
+        let help = if f.picks.is_some() {
+            format!("← → pick; - keeps the built-in, {}", f.builtin)
+        } else {
+            format!("type a value; empty keeps the built-in, {}", f.builtin)
+        };
+        Line::from(vec![
+            Span::styled(format!("{} › ", f.name), Style::default().fg(ORANGE)),
+            Span::styled(help, dim()),
+        ])
+    }
+}
+
 enum Mode {
     Normal,
     Filter,
     Job(Box<JobForm>),
+    /// The menu's `config` button: the editor of jobs.yaml's `defaults` block.
+    Config(Box<ConfigForm>),
     /// The `ctrl+o` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
     Harness(usize),
     /// The menu's `folder` prompt: the path typed so far.
@@ -1749,7 +2060,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new run, agents, add folder, help",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new run, agents, add folder, defaults, help",
     ),
     (
         "ctrl+x twice",
@@ -3477,6 +3788,11 @@ impl App {
                 "runs" => self.new_job(),
                 "agents" => self.mode = Mode::Harness(0),
                 "folder" => self.mode = Mode::Folder(String::new()),
+                "config" => {
+                    self.mode = Mode::Config(Box::new(ConfigForm::new(&config::defaults(
+                        &self.jobs_path,
+                    ))));
+                }
                 _ => self.mode = Mode::Guide(0),
             },
             Kind::Folder(dir) => {
@@ -3829,6 +4145,14 @@ impl App {
                     keys.push(("↑", "back"));
                 }
                 keys.push(("esc", "cancel"));
+                hints(&keys)
+            }
+            Mode::Config(form) => {
+                let mut keys = vec![("↑ ↓", "field")];
+                if form.field().picks.is_some() {
+                    keys.push(("← →", "pick"));
+                }
+                keys.extend([("enter", "save"), ("esc", "cancel")]);
                 hints(&keys)
             }
             Mode::Harness(_) => Line::default(),
@@ -4242,6 +4566,27 @@ impl App {
                     }
                 }
             },
+            // The whole block is checked and the file replaced at once; a bad value comes back
+            // inline on its field and the editor stays.
+            Mode::Config(form) => match form.key(code, ctrl) {
+                ConfigAction::Stay => {}
+                ConfigAction::Cancel => self.mode = Mode::Normal,
+                ConfigAction::Save(policy) => {
+                    match config::write_defaults(&self.jobs_path, &policy) {
+                        Ok(()) => {
+                            self.mode = Mode::Normal;
+                            self.status =
+                                format!("defaults saved to {}", fleet::tilde(&self.jobs_path));
+                            self.invalidate();
+                        }
+                        Err(e) => {
+                            if let Mode::Config(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                        }
+                    }
+                }
+            },
             Mode::Normal => {
                 // Any key but ctrl+x disarms an armed ctrl+x, so the mark stays until the user
                 // does something else, as in `claude agents`.
@@ -4478,6 +4823,7 @@ impl App {
                 Line::from(spans)
             }
             Mode::Job(f) => f.line(),
+            Mode::Config(f) => f.line(),
             Mode::Harness(i) => {
                 let mut spans = vec![Span::styled("open › ", Style::default().fg(ORANGE))];
                 choices(
@@ -4533,6 +4879,11 @@ impl App {
         if let Mode::Guide(top) = self.mode {
             frame.render_widget(guide(top), list);
         } else if let Mode::Job(form) = &self.mode {
+            frame.render_widget(
+                Paragraph::new(form.lines()).wrap(Wrap { trim: false }),
+                list,
+            );
+        } else if let Mode::Config(form) = &self.mode {
             frame.render_widget(
                 Paragraph::new(form.lines()).wrap(Wrap { trim: false }),
                 list,
@@ -7094,6 +7445,97 @@ mod tests {
 
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
     /// explains itself, enter presses it, and `help` is the guide.
+    /// The menu's `config` button opens the defaults editor where the list is: one row per
+    /// field with its value and a few words, the selected field explained under the list.
+    /// Typing edits, ← → pick, enter checks the block and writes only it; a bad value comes
+    /// back on its field and nothing is written.
+    #[test]
+    fn the_config_button_edits_the_defaults_block() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        for _ in 0..3 {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        }
+        assert!(app.menu_is("config"));
+        assert_eq!(app.enter_label(), "defaults");
+        app.enter().unwrap();
+        assert!(matches!(app.mode, Mode::Config(_)));
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("timeout_min"), "{s}");
+        assert!(s.contains("minutes before cones kills a run"), "{s}");
+        assert!(
+            s.contains("SIGTERM"),
+            "the selected field is explained: {s}"
+        );
+        assert!(
+            !s.contains("Claude stops itself"),
+            "only the selected one: {s}"
+        );
+        assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
+
+        // A word where a number goes: the error on its field, the file untouched.
+        for c in "abc".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Config(f) => assert!(
+                f.error
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("timeout_min: a number"),
+                "{:?}",
+                f.error
+            ),
+            _ => panic!("stays open"),
+        }
+        assert!(!app.jobs_path.exists());
+        for _ in 0..3 {
+            app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Char('5'), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        for c in "0.25".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("[-] false  true"), "picks on write: {s}");
+        assert!(s.contains("← → pick"), "{s}");
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
+        assert!(app.status.starts_with("defaults saved"), "{}", app.status);
+        let saved = config::defaults(&app.jobs_path);
+        assert_eq!(
+            (saved.timeout_min, saved.budget_usd, saved.write),
+            (Some(5.0), Some(0.25), Some(true))
+        );
+        assert_eq!(
+            saved.tools, None,
+            "empty leaves the built-in out of the file"
+        );
+
+        // Reopening shows what was saved; esc leaves the file alone.
+        app.enter().unwrap();
+        match &app.mode {
+            Mode::Config(f) => assert_eq!(f.values[..4], ["5", "0.25", "", "true"]),
+            _ => panic!(),
+        }
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
     #[test]
     fn the_menu_row_picks_a_button_with_left_and_right() {
         let d = dir();
@@ -7109,7 +7551,10 @@ mod tests {
             rows(t, 160).join("\n")
         };
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(" runs   agents   folder   help "), "{s}");
+        assert!(
+            s.contains(" runs   agents   folder   config   help "),
+            "{s}"
+        );
         assert!(
             s.contains("on a schedule") && !s.contains("agents view"),
             "{s}"

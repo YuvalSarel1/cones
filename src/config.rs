@@ -32,7 +32,7 @@ pub enum Overlap {
     Replace,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub timeout_min: Option<f64>,
@@ -247,6 +247,102 @@ pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()
             if blocks.len() == 1 {
                 out[jobs_at] = "jobs: []".into();
             }
+        }
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, out.join("\n") + "\n")?;
+    let checked = read_jobs(&tmp).map(drop);
+    if checked.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    checked?;
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// The file's `defaults` block as written, or nothing set when the file is missing or does
+/// not parse, so the dashboard's config editor opens on what is there.
+pub fn defaults(path: &Path) -> Policy {
+    parse(path).map(|d| d.defaults).unwrap_or_default()
+}
+
+/// The `defaults:` block as jobs.yaml lines, one per set field, in the order jobs.md lists them.
+fn defaults_lines(d: &Policy) -> Vec<String> {
+    let mut out = vec!["defaults:".to_owned()];
+    let mut put = |k: &str, v: Option<String>| {
+        if let Some(v) = v {
+            out.push(format!("  {k}: {v}"));
+        }
+    };
+    put("timeout_min", d.timeout_min.map(|v| v.to_string()));
+    put("budget_usd", d.budget_usd.map(|v| v.to_string()));
+    put(
+        "daily_budget_usd",
+        d.daily_budget_usd.map(|v| v.to_string()),
+    );
+    put("write", d.write.map(|v| v.to_string()));
+    put(
+        "tools",
+        d.tools.as_ref().map(|t| format!("[{}]", t.join(", "))),
+    );
+    put("max_turns", d.max_turns.map(|v| v.to_string()));
+    put(
+        "codex_full_access",
+        d.codex_full_access.map(|v| v.to_string()),
+    );
+    put(
+        "overlap",
+        d.overlap.map(|v| {
+            serde_yaml::to_string(&v)
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        }),
+    );
+    put("notify", d.notify.map(|v| v.to_string()));
+    out
+}
+
+/// Rewrite the `defaults:` block of jobs.yaml with `d`: in place when the file has one, after
+/// `version:` when it does not, and a missing file is created around it with `jobs: []`. Only
+/// that block changes. The policy is checked as a Claude job would resolve it, so a default no
+/// job could run under is refused with the file untouched, whether or not the file has jobs.
+pub fn write_defaults(path: &Path, d: &Policy) -> Result<()> {
+    let base = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_owned);
+    resolve(Job::new("defaults", "0 9 * * *", &base, "check"), d, &base)?;
+    let text = fs::read_to_string(path).unwrap_or_else(|_| {
+        "version: 1
+jobs: []
+"
+        .to_owned()
+    });
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let block = defaults_lines(d);
+    let block = if block.len() == 1 { vec![] } else { block };
+    match lines.iter().position(|l| l.starts_with("defaults:")) {
+        Some(s) => {
+            // To the next top-level key, leaving the blank lines before it where they are.
+            let mut e = lines
+                .iter()
+                .enumerate()
+                .skip(s + 1)
+                .find(|(_, l)| !l.starts_with([' ', '\t', '#']) && !l.trim().is_empty())
+                .map_or(lines.len(), |(i, _)| i);
+            while e > s + 1 && lines[e - 1].trim().is_empty() {
+                e -= 1;
+            }
+            out.splice(s..e, block);
+        }
+        None => {
+            let at = lines
+                .iter()
+                .position(|l| l.starts_with("version:"))
+                .map_or(0, |i| i + 1);
+            out.splice(at..at, block);
         }
     }
     let tmp = path.with_extension("tmp");
@@ -537,5 +633,70 @@ mod tests {
         assert_eq!(raw_jobs(&p).unwrap().len(), 1);
         write_job(&p, Some("one"), None).unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
+    }
+
+    #[test]
+    fn write_defaults_replaces_the_block_creates_it_and_checks_it() {
+        let (_d, p) = file(FILE);
+        let d = Policy {
+            timeout_min: Some(5.0),
+            budget_usd: Some(0.25),
+            daily_budget_usd: Some(2.0),
+            write: Some(true),
+            tools: Some(vec!["Read".into(), "Edit".into()]),
+            max_turns: Some(3),
+            overlap: Some(Overlap::Replace),
+            notify: Some(true),
+            codex_full_access: None,
+        };
+        write_defaults(&p, &d).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  tools: [Read, Edit]\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  # two runs at night\n"),
+            "the rest is untouched"
+        );
+        assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
+        assert_eq!(read_jobs(&p).unwrap()[0].tools, ["Read", "Edit"]);
+
+        // Nothing set removes the block; a file without one gets it after version.
+        write_defaults(&p, &Policy::default()).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
+        let d = Policy {
+            notify: Some(true),
+            ..Default::default()
+        };
+        write_defaults(&p, &d).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
+            "{text}"
+        );
+
+        // A missing file is created; a default no job could run under is refused, jobs or not.
+        let missing = p.with_file_name("new.yaml");
+        write_defaults(&missing, &d).unwrap();
+        assert_eq!(
+            fs::read_to_string(&missing).unwrap(),
+            "version: 1\ndefaults:\n  notify: true\njobs: []\n"
+        );
+        let bad = Policy {
+            budget_usd: Some(3.0),
+            daily_budget_usd: Some(1.0),
+            ..Default::default()
+        };
+        let err = write_defaults(&missing, &bad).unwrap_err().to_string();
+        assert!(err.contains("daily_budget_usd must cover"), "{err}");
+        assert!(
+            fs::read_to_string(&missing)
+                .unwrap()
+                .contains("notify: true"),
+            "untouched"
+        );
+        assert!(!missing.with_extension("tmp").exists());
     }
 }
