@@ -61,7 +61,14 @@ so a stopped-but-alive session does not block a restart.
   queue db until one attaches, so a stalled `last` means the agent is not there yet, not a
   refusal. Codex has no idle notice and no pre-commit hook: greet it with the same rules and treat
   its commits as advisory-gated. Its file edits still show in `git status`; attribute them like
-  any other writer.
+  any other writer. A thread the app-server daemon holds keeps running turns and writing the
+  tree after its last client exits, with no row on the roster, so an unowned path with no live
+  pid behind it is checked against `~/.codex/sessions` rollouts whose cwd is `$WB` before it is
+  called orphaned; and any `codex --remote … resume <thread>` an agent's test harness runs
+  attaches the daemon to that thread and makes a real row, not a ghost.
+- A worktree an agent made under its own `$CLAUDE_JOB_DIR/tmp` vanishes with the job while the
+  branch stays; when such an agent exits before landing, `git worktree prune`, check the branch
+  out in a fresh worktree of your own, rebase, run the checks and fast-forward from there.
 - Answers from agents that cannot SendMessage come through the folder's inbox,
   `~/.claude/orchestrator/<sha1 of the absolute cwd>/inbox.jsonl`: one JSON line per message,
   `{"from":"codex:<thread>","text":"..."}`, appended by the agent with a shell one-liner.
