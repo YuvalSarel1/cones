@@ -1580,7 +1580,13 @@ const REST_SPLIT: Duration = Duration::from_millis(150);
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
-/// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
+/// The viewers a dashboard keeps alive at once; opening another closes the least recently used
+/// `claude attach` of a listed session, the one kind a resting cursor reopens unseen in a
+/// quarter second. A Codex client, a harness's agents view or a resumed run has no such way
+/// back: closed, its row falls to the dim transcript preview until `enter` starts it over, so
+/// those stay until `ctrl+x` or the dashboard quits.
+// ponytail: only attaches count against the cap, so many Codex clients exceed it; a cap of
+// their own if the memory shows.
 const MAX_VIEWERS: usize = 3;
 
 /// The viewers opened by a resting cursor kept alive beside them, the oldest closing first.
@@ -2264,7 +2270,9 @@ impl App {
             let spawned = self.viewers[i].last_focused;
             self.timing("viewer_prespawn_hit", spawned);
             while self.live_viewers() > MAX_VIEWERS {
-                let oldest = self.least_recently_focused(Some(i)).unwrap();
+                let Some(oldest) = self.least_recently_focused(Some(i)) else {
+                    break;
+                };
                 self.close(oldest);
                 if oldest < i {
                     i -= 1;
@@ -2310,7 +2318,9 @@ impl App {
                 // The least recently focused makes room only once the new one is running. A
                 // speculative viewer was never asked for, so it neither counts nor goes.
                 while self.live_viewers() >= MAX_VIEWERS {
-                    let oldest = self.least_recently_focused(None).unwrap();
+                    let Some(oldest) = self.least_recently_focused(None) else {
+                        break;
+                    };
                     self.close(oldest);
                 }
                 self.viewers.push(Open {
@@ -2336,13 +2346,19 @@ impl App {
         self.viewers.iter().filter(|o| !o.speculative).count()
     }
 
-    /// The viewer eviction takes: the least recently focused one the user has been in,
-    /// other than `keep`.
+    /// The viewer eviction takes: the least recently focused `claude attach` of a listed
+    /// session the user has been in, other than `keep`. Nothing else is evicted, since nothing
+    /// reopens it quietly, see `MAX_VIEWERS`.
     fn least_recently_focused(&self, keep: Option<usize>) -> Option<usize> {
         self.viewers
             .iter()
             .enumerate()
-            .filter(|(i, o)| !o.speculative && Some(*i) != keep)
+            .filter(|(i, o)| {
+                !o.speculative
+                    && Some(*i) != keep
+                    && o.what == "attach"
+                    && !o.key.starts_with("run:")
+            })
             .min_by_key(|(_, o)| o.last_focused)
             .map(|(i, _)| i)
     }
@@ -6899,6 +6915,48 @@ mod tests {
         assert_eq!(keys, vec!["two", "three", A, "four"], "{keys:?}");
         assert!(app.viewers[2].speculative, "the speculative one survived");
         assert_eq!(app.live_viewers(), MAX_VIEWERS);
+        assert_eq!(app.focus, Some(3));
+    }
+
+    /// A Codex client opened with `enter` has no quiet way back, so a fourth viewer closes the
+    /// oldest attach around it, and with no attach to close the cap is exceeded, not the client.
+    #[test]
+    fn a_codex_client_is_never_evicted_for_a_fourth_viewer() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut codex = silent_open("codex-1");
+        codex.what = "codex".into();
+        codex.last_focused = Instant::now() - Duration::from_secs(60);
+        app.viewers.push(codex);
+        for k in ["one", "two"] {
+            app.viewers.push(silent_open(k));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let mut c = Command::new("/bin/sleep");
+        c.arg("5");
+        app.open((12, 80), c, "attach", "four".into(), None);
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, vec!["codex-1", "two", "four"], "{keys:?}");
+        // Two more Codex clients take the attaches' places, then an attach with no attach left
+        // to close opens as a fourth live viewer.
+        for k in ["codex-2", "codex-3", "five"] {
+            let mut c = Command::new("/bin/sleep");
+            c.arg("5");
+            let what = if k == "five" { "attach" } else { "codex" };
+            app.open((12, 80), c, what, k.into(), None);
+        }
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["codex-1", "codex-2", "codex-3", "five"],
+            "{keys:?}"
+        );
+        // Entering a speculative attach evicts the one attach, never a client.
+        app.viewers.push(speculative_open(A));
+        app.focus(4);
+        let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
+        assert_eq!(keys, vec!["codex-1", "codex-2", "codex-3", A], "{keys:?}");
         assert_eq!(app.focus, Some(3));
     }
 
