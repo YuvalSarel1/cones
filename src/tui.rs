@@ -3529,18 +3529,19 @@ impl App {
     }
 
     /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list
-    /// when the split is on, else the frame less the strip row under it, never fewer than one
-    /// row. Spawn, focus and draw all size the viewer by this, so focusing never resizes it.
+    /// when the split is on, else the whole frame, each less the row under it that carries
+    /// the viewer's keys, the strip on a full frame and the hint line beside the list; never
+    /// fewer than one row. Spawn, focus and draw all size the viewer by this, so focusing
+    /// never resizes it, and the row is kept whether the viewer has the keys or not, so
+    /// taking them and giving them back never resizes it either.
     fn pane(&self, frame: Rect) -> Rect {
-        if self.split_active() {
-            return self.split_areas(frame)[2];
-        }
-        let height = if frame.height >= 2 {
-            frame.height - 1
+        let area = if self.split_active() {
+            self.split_areas(frame)[2]
         } else {
-            1
+            frame
         };
-        Rect { height, ..frame }
+        let height = area.height.saturating_sub(1).max(1);
+        Rect { height, ..area }
     }
 
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
@@ -5572,15 +5573,29 @@ impl App {
                 self.draw_panel(frame, name, pane);
                 return;
             }
+            // The viewer has the pane less its last row, kept for the keys whether the
+            // viewer has them or not, so neither taking them nor a redraw resizes it.
+            let inner = self.pane;
             match self.shown() {
                 Some(i) if self.viewers[i].viewer.first_paint().is_some() => {
-                    self.draw_viewer(frame, i, pane)
+                    self.draw_viewer(frame, i, inner)
                 }
                 // A viewer that has not painted yet is sized for when it does, and the pane
                 // stays blank until it does: a quarter second of nothing reads as a terminal
                 // opening, where a placeholder that is then replaced reads as a flicker.
-                Some(i) => self.viewers[i].viewer.resize(pane.height, pane.width),
+                Some(i) => self.viewers[i].viewer.resize(inner.height, inner.width),
                 None => {}
+            }
+            // The row under the viewer: the keys that leave it, read under the viewer they
+            // act on, as a button's screen has its own. Clear while the list has the keys,
+            // where the hint line is its.
+            if self.focus.is_some() && pane.height > 1 {
+                let row = Rect {
+                    y: pane.bottom() - 1,
+                    height: 1,
+                    ..pane
+                };
+                frame.render_widget(Paragraph::new(self.hint_line()), row);
             }
             return;
         }
@@ -5804,9 +5819,10 @@ impl App {
             self.draw_list(frame, list);
         }
         frame.render_widget(input, prompt);
-        // A button's screen in the pane draws its own keys under the pane, where they are
-        // read with it; the list's row stays empty rather than saying it twice.
-        if !(in_pane && self.panel_focused()) {
+        // Whatever has the keys in the pane draws them under the pane, where they are read
+        // with it; the list's row stays empty rather than saying it twice. One hint line on
+        // the frame, on the side the keys are.
+        if !(self.split_active() && self.pane_focused()) {
             frame.render_widget(Paragraph::new(self.hint_line()), foot);
         }
     }
@@ -8386,14 +8402,16 @@ mod tests {
         );
         assert!(
             !screen.iter().any(|r| r.contains("tab back")),
-            "no strip beside the list: {screen:#?}"
+            "unfocused, the row under the pane is clear: {screen:#?}"
         );
+        // A row of the pane is the viewer's keys, kept clear until it has them, so taking
+        // them never resizes it.
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
-            (30, 200 - list - 1),
+            (29, 200 - list - 1),
             "the viewer is sized to the pane"
         );
-        assert_eq!(app.pane, Rect::new(list + 1, 0, 200 - list - 1, 30));
+        assert_eq!(app.pane, Rect::new(list + 1, 0, 200 - list - 1, 29));
         let rule = t.backend().buffer().cell((list, 0)).unwrap().clone();
         assert_eq!(rule.symbol(), "│");
         assert_ne!(rule.fg, ORANGE, "the rule is dim while nothing is focused");
@@ -8413,14 +8431,21 @@ mod tests {
         assert_eq!(app.focus, Some(0));
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
-            (30, 200 - list - 1),
+            (29, 200 - list - 1),
             "focusing beside the list does not resize the viewer"
         );
         t.draw(|f| app.draw(f)).unwrap();
-        let hint = cells(&t, 29, 0..list);
+        // The keys that leave the viewer are under the viewer, not across the frame in the
+        // list's hint row, which goes empty while the pane has the keys.
+        let hint = cells(&t, 29, list + 1..200);
         assert!(hint.contains("tab back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
         assert!(!hint.contains("ctrl+]"), "{hint:?}");
+        assert!(
+            cells(&t, 29, 0..list).trim().is_empty(),
+            "one hint line on the frame: {:?}",
+            cells(&t, 29, 0..list)
+        );
         assert!(cells(&t, 0, list + 1..200).starts_with("VIEW"));
         assert_eq!(
             t.backend().buffer().cell((list, 5)).unwrap().fg,
@@ -8468,7 +8493,8 @@ mod tests {
         assert_eq!(
             app.pane_mouse(ev(MouseEventKind::Up(MouseButton::Left), 10, 40))
                 .map(|e| (e.column, e.row)),
-            Some((list + 1, 29))
+            Some((list + 1, 28)),
+            "a release off the frame lands on the viewer's last row, the keys' row below it"
         );
         let inside = app.pane_mouse(ev(down, list + 1, 0)).unwrap();
         assert_eq!(
@@ -8542,7 +8568,7 @@ mod tests {
             cells(&t, 0, list + 1..200).starts_with("VIEW"),
             "beside the list again"
         );
-        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200 - list - 1));
     }
 
     #[test]
@@ -9431,8 +9457,8 @@ mod tests {
         // cursor is off the frame, and a key comes back to the bottom.
         app.focus(0);
         assert!(!app.key(KeyCode::PageUp, KeyModifiers::SHIFT).unwrap());
-        // A page is 29 rows but only eleven lines have left a 30-row pane.
-        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 11);
+        // A page is 28 rows but only twelve lines have left a 29-row pane.
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 12);
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
             cells(&t, 0, list + 1..list + 6) == "line1",
@@ -9477,7 +9503,7 @@ mod tests {
         };
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
-        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200 - list - 1));
         // A second click is the viewer's, nothing more.
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
@@ -9634,7 +9660,7 @@ mod tests {
         app.viewers.push(speculative_open(A));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(blank(&t));
-        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 99));
         // Once it paints, the screen is there.
         app.viewers.clear();
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
