@@ -1,7 +1,8 @@
 //! `cones tui` is the native dashboard: jobs, every live harness session grouped by directory
 //! or by state, and runs, with a composer at the bottom like `claude agents`: type an
 //! instruction, `enter` starts a session in the selected row's directory under the harness
-//! `tab` picked. Jobs are added, edited and deleted here too (`ctrl+n`, `ctrl+e`, `ctrl+x`);
+//! `tab` picked. Jobs are added, edited and deleted here too (the `runs` button, `ctrl+e`,
+//! `ctrl+x`);
 //! `ctrl+x` marks the row red and a second press acts; any other key keeps it. On a finished
 //! run it hides the row here for good; the ledger keeps it.
 //! ratatui draws; cones supplies rows. `cones __list` prints the same rows as tab-separated text.
@@ -632,11 +633,7 @@ fn ansi(text: &str, style: Style) -> String {
 /// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
 /// while it is picked.
 const MENU: [(&str, &str, &str); 4] = [
-    (
-        "runs",
-        "new job",
-        "an instruction runs once, under a job's policy",
-    ),
+    ("runs", "new run", "a task once or on a schedule"),
     ("agents", "agents", "a harness's own agents view"),
     (
         "folder",
@@ -1310,27 +1307,43 @@ pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
     }
 }
 
-/// Where the job wizard is: each step is one question on the prompt line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Where the wizard is: one question at a time, every answer so far kept on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Step {
+    What,
+    Where,
+    When,
+    At,
     Name,
-    Dir,
-    Schedule,
-    Prompt,
 }
 
-/// What a key in the job wizard asks the dashboard to do.
+/// What a key in the wizard asks the dashboard to do.
 #[derive(Debug, PartialEq)]
 pub enum FormAction {
     Stay,
     Cancel,
+    /// Run the task once, supervised, in the directory: `cones run --prompt` there.
+    RunOnce(String, PathBuf),
     /// Write the job, replacing the one with this name when editing.
     Save(Option<String>, Box<config::Job>),
 }
 
+/// The `when` options: `once` runs now, the rest schedule a job; `cron` takes five fields.
+const WHEN: [&str; 6] = ["once", "hourly", "daily", "weekdays", "weekly", "cron"];
+const DAYS: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
 /// A row of options with the picked one lit and bracketed, then the keys that move and the
 /// verb `enter` performs.
 fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, enter: &str) {
+    picks(spans, options, picked);
+    spans.push(Span::styled(
+        format!("  ←→ pick · enter {enter} · esc cancel"),
+        dim(),
+    ));
+}
+
+/// A row of options with the picked one lit and bracketed.
+fn picks(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize) {
     let lit = lit();
     for (i, o) in options.iter().enumerate() {
         spans.push(Span::styled(
@@ -1342,25 +1355,104 @@ fn choices(spans: &mut Vec<Span<'static>>, options: &[&str], picked: usize, ente
             if i == picked { lit } else { dim() },
         ));
     }
-    spans.push(Span::styled(
-        format!("  ←→ pick · enter {enter} · esc cancel"),
-        dim(),
-    ));
 }
 
-/// The job wizard (`ctrl+n` adds, `ctrl+e` on a job row edits): a name, a directory, a
-/// five-field cron schedule and the prompt. `enter` answers a question, `esc` cancels,
-/// backspace on an empty answer steps back. Editing keeps every field the wizard does not ask
-/// about (model, budget, tools). Pure: filesystem facts come in through `base`, `fallback` and
-/// `launch_dir`; the file is written by the dashboard on `Save`.
+/// The `when` pick and the `at` answer a schedule comes from, so an edit opens on the same
+/// options that made it: `0 9 * * *` is daily at 09:00. Anything else is `cron` as written.
+fn from_cron(schedule: &str) -> (usize, String) {
+    let cron = (5, schedule.to_owned());
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    if fields == ["0", "*", "*", "*", "*"] {
+        return (1, String::new());
+    }
+    let &[m, h, "*", "*", d] = fields.as_slice() else {
+        return cron;
+    };
+    let (Ok(m), Ok(h)) = (m.parse::<u8>(), h.parse::<u8>()) else {
+        return cron;
+    };
+    let time = format!("{h:02}:{m:02}");
+    match d {
+        "*" => (2, time),
+        "1-5" => (3, time),
+        d => match d.parse::<usize>() {
+            Ok(d) if d < 7 => (4, format!("{} {time}", DAYS[d])),
+            _ => cron,
+        },
+    }
+}
+
+/// The five-field schedule for a `when` pick and its `at` answer; the error is the one line
+/// the wizard shows inline. `cron` is checked the way `cones install` checks it.
+fn to_cron(when: usize, at: &str) -> Result<String, String> {
+    let at = at.trim();
+    let time = |t: &str| -> Result<(u8, u8), String> {
+        let bad = || format!("a local time as HH:MM, not {t:?}");
+        let (h, m) = t.split_once(':').ok_or_else(bad)?;
+        match (h.trim().parse::<u8>(), m.trim().parse::<u8>()) {
+            (Ok(h), Ok(m)) if h < 24 && m < 60 => Ok((h, m)),
+            _ => Err(bad()),
+        }
+    };
+    Ok(match WHEN[when] {
+        "hourly" => "0 * * * *".into(),
+        "daily" => {
+            let (h, m) = time(at)?;
+            format!("{m} {h} * * *")
+        }
+        "weekdays" => {
+            let (h, m) = time(at)?;
+            format!("{m} {h} * * 1-5")
+        }
+        "weekly" => {
+            let (day, t) = at
+                .split_once(' ')
+                .ok_or_else(|| format!("a day and a time, as in mon 09:00, not {at:?}"))?;
+            let d = DAYS
+                .iter()
+                .position(|d| day.eq_ignore_ascii_case(d))
+                .ok_or_else(|| format!("a day, sun to sat, not {day:?}"))?;
+            let (h, m) = time(t.trim())?;
+            format!("{m} {h} * * {d}")
+        }
+        _ => {
+            launchd::calendar_intervals(at).map_err(|e| format!("{e:#}"))?;
+            at.to_owned()
+        }
+    })
+}
+
+/// A job name from the task's first words: `Read the TODOs!` becomes `read-the-todos`.
+fn slug(prompt: &str) -> String {
+    let mut s = String::new();
+    for c in prompt.trim().chars().take(60) {
+        if c.is_ascii_alphanumeric() {
+            s.push(c.to_ascii_lowercase());
+        } else if !s.is_empty() && !s.ends_with('-') {
+            s.push('-');
+        }
+    }
+    s.trim_end_matches('-').to_owned()
+}
+
+/// The wizard the menu's `runs` button opens (`ctrl+e` on a job row edits): the task, where
+/// it runs, how often, at what time, and the job's name, one question at a time where the
+/// list is, with every answer so far above the current one. `enter` answers, `← →` pick an
+/// option, `↑` or backspace on an empty answer steps back, `esc` cancels. `once` runs the
+/// task now instead of writing a job. Editing keeps every field the wizard does not ask
+/// about (model, budget, tools). Pure: filesystem facts come in through `base`, `fallback`
+/// and `launch_dir`; the file is written by the dashboard on `Save`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobForm {
     pub step: Step,
-    pub name: String,
-    pub dir: String,
-    pub schedule: String,
     pub prompt: String,
+    pub dir: String,
+    /// An index into `WHEN`.
+    pub when: usize,
+    pub at: String,
+    pub name: String,
     pub error: Option<String>,
+    schedule: String,
     /// The job being edited, as written in the file; `None` adds one.
     original: Option<config::Job>,
     base: PathBuf,
@@ -1369,36 +1461,59 @@ pub struct JobForm {
 
 impl JobForm {
     /// `base` is where a relative directory is taken from, the jobs file's; `fallback` is what
-    /// an empty directory means and is shown as the placeholder.
-    pub fn new(base: &Path, fallback: &Path, original: Option<config::Job>) -> Self {
-        let (name, dir, schedule, prompt) = match &original {
+    /// an empty directory means and is shown as the placeholder; `seed` is what the composer
+    /// held, the task's first draft.
+    pub fn new(base: &Path, fallback: &Path, original: Option<config::Job>, seed: &str) -> Self {
+        let (name, dir, prompt, (when, at)) = match &original {
             Some(j) => (
                 j.name.clone(),
                 j.cwd.display().to_string(),
-                j.schedule.clone(),
                 j.prompt.clone(),
+                from_cron(&j.schedule),
             ),
             None => Default::default(),
         };
         Self {
-            step: Step::Name,
-            name,
+            step: Step::What,
+            prompt: if original.is_some() {
+                prompt
+            } else {
+                seed.to_owned()
+            },
             dir,
-            schedule,
-            prompt,
+            when,
+            at,
+            name,
             error: None,
+            schedule: String::new(),
             original,
             base: base.to_owned(),
             fallback: fallback.to_owned(),
         }
     }
 
-    fn field(&mut self) -> &mut String {
+    /// The answer being typed; `when` is picked, not typed.
+    fn field(&mut self) -> Option<&mut String> {
         match self.step {
-            Step::Name => &mut self.name,
-            Step::Dir => &mut self.dir,
-            Step::Schedule => &mut self.schedule,
-            Step::Prompt => &mut self.prompt,
+            Step::What => Some(&mut self.prompt),
+            Step::Where => Some(&mut self.dir),
+            Step::When => None,
+            Step::At => Some(&mut self.at),
+            Step::Name => Some(&mut self.name),
+        }
+    }
+
+    /// Whether the pick needs a time: hourly and once do not.
+    fn asks_at(&self) -> bool {
+        self.when >= 2
+    }
+
+    /// What an empty `at` means, and its placeholder.
+    fn at_placeholder(&self) -> &'static str {
+        match WHEN[self.when] {
+            "weekly" => "mon 09:00",
+            "cron" => "0 9 * * 1-5",
+            _ => "09:00",
         }
     }
 
@@ -1409,26 +1524,85 @@ impl JobForm {
         self.error = None;
         match code {
             KeyCode::Enter => return self.next(),
-            KeyCode::Backspace if self.field().is_empty() => {
-                self.step = match self.step {
-                    Step::Name | Step::Dir => Step::Name,
-                    Step::Schedule => Step::Dir,
-                    Step::Prompt => Step::Schedule,
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.step == Step::When => {
+                let n = WHEN.len();
+                self.when = (self.when + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
+                self.at.clear();
+            }
+            KeyCode::Up => self.back(),
+            KeyCode::Backspace => match self.field() {
+                Some(f) if !f.is_empty() => {
+                    f.pop();
+                }
+                _ => self.back(),
+            },
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(f) = self.field() {
+                    f.push(c);
                 }
             }
-            KeyCode::Backspace => {
-                self.field().pop();
-            }
-            KeyCode::Char(c) if !ctrl => self.field().push(c),
             _ => {}
         }
         FormAction::Stay
+    }
+
+    fn back(&mut self) {
+        self.step = match self.step {
+            Step::What | Step::Where => Step::What,
+            Step::When => Step::Where,
+            Step::At => Step::When,
+            Step::Name if self.asks_at() => Step::At,
+            Step::Name => Step::When,
+        };
     }
 
     /// Check the answer; move on, or at the last question hand the job over. The checks are the
     /// file's own, so what passes here passes `cones install`.
     fn next(&mut self) -> FormAction {
         match self.step {
+            Step::What => {
+                if self.prompt.trim().is_empty() {
+                    self.error = Some("the task cannot be empty".into());
+                } else {
+                    self.step = Step::Where;
+                }
+            }
+            Step::Where => match launch_dir(&self.dir, &self.base, &self.fallback) {
+                Ok(dir) => {
+                    self.dir = fleet::tilde(&dir);
+                    self.step = Step::When;
+                }
+                Err(e) => self.error = Some(e),
+            },
+            Step::When => {
+                if WHEN[self.when] == "once" {
+                    return match launch_dir(&self.dir, &self.base, &self.fallback) {
+                        Ok(dir) => FormAction::RunOnce(self.prompt.trim().to_owned(), dir),
+                        Err(e) => {
+                            self.error = Some(e);
+                            FormAction::Stay
+                        }
+                    };
+                }
+                if self.asks_at() {
+                    self.step = Step::At;
+                } else {
+                    self.schedule = to_cron(self.when, "").unwrap_or_default();
+                    self.step = Step::Name;
+                }
+            }
+            Step::At => {
+                if self.at.trim().is_empty() {
+                    self.at = self.at_placeholder().to_owned();
+                }
+                match to_cron(self.when, &self.at) {
+                    Ok(s) => {
+                        self.schedule = s;
+                        self.step = Step::Name;
+                    }
+                    Err(e) => self.error = Some(e),
+                }
+            }
             Step::Name => {
                 let ok = !self.name.is_empty()
                     && self.name.len() <= 80
@@ -1436,26 +1610,8 @@ impl JobForm {
                         .name
                         .bytes()
                         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-                if ok {
-                    self.step = Step::Dir;
-                } else {
+                if !ok {
                     self.error = Some("1-80 letters, digits, - or _".into());
-                }
-            }
-            Step::Dir => match launch_dir(&self.dir, &self.base, &self.fallback) {
-                Ok(dir) => {
-                    self.dir = fleet::tilde(&dir);
-                    self.step = Step::Schedule;
-                }
-                Err(e) => self.error = Some(e),
-            },
-            Step::Schedule => match launchd::calendar_intervals(&self.schedule) {
-                Ok(_) => self.step = Step::Prompt,
-                Err(e) => self.error = Some(format!("{e:#}")),
-            },
-            Step::Prompt => {
-                if self.prompt.trim().is_empty() {
-                    self.error = Some("the prompt is the task; it cannot be empty".into());
                     return FormAction::Stay;
                 }
                 let mut job = self.original.clone().unwrap_or_else(|| {
@@ -1471,36 +1627,103 @@ impl JobForm {
                 );
             }
         }
+        // The name is suggested from the task the first time it is asked.
+        if self.step == Step::Name && self.name.is_empty() {
+            self.name = slug(&self.prompt);
+        }
         FormAction::Stay
     }
 
-    /// The prompt line: what is asked, the answer so far or a placeholder, the inline error.
-    fn line(&self) -> Line<'static> {
-        let ask = Style::default().fg(ORANGE);
+    /// The wizard where the list is: a title, then every question the pick calls for, the
+    /// answered ones with their answers, the current one with the cursor or the options, the
+    /// ones to come dim with what an empty answer would mean.
+    fn lines(&self) -> Vec<Line<'static>> {
         let title = match &self.original {
             Some(j) => format!("edit {}", j.name),
-            None => "new job".to_owned(),
+            None => "new run".to_owned(),
         };
+        let mut lines = vec![
+            Line::default(),
+            Line::from(Span::styled(title, Style::default().fg(ORANGE))),
+            Line::default(),
+        ];
         let fallback = fleet::tilde(&self.fallback);
-        let (what, value, hint) = match self.step {
-            Step::Name => ("name", &self.name, "letters, digits, - or _"),
-            Step::Dir => ("dir", &self.dir, fallback.as_str()),
-            Step::Schedule => (
-                "schedule",
-                &self.schedule,
-                "minute hour day month weekday, as in 0 9 * * 1-5",
-            ),
-            Step::Prompt => ("prompt", &self.prompt, "the task"),
-        };
-        let mut spans = vec![Span::styled(format!("{title} · {what} › "), ask)];
-        spans.extend(typed(value, value.len(), hint));
-        if let Some(e) = &self.error {
-            spans.push(Span::styled(
-                format!("  {e}"),
-                Style::default().fg(Color::Red),
-            ));
+        let once = WHEN[self.when] == "once";
+        for step in [Step::What, Step::Where, Step::When, Step::At, Step::Name] {
+            if (step == Step::At && !self.asks_at()) || (step > Step::When && once) {
+                continue;
+            }
+            let (label, value, placeholder): (&str, &str, &str) = match step {
+                Step::What => ("what", &self.prompt, "the task"),
+                Step::Where => ("where", &self.dir, &fallback),
+                Step::When => ("when", WHEN[self.when], ""),
+                Step::At => ("at", &self.at, self.at_placeholder()),
+                Step::Name => ("name", &self.name, "from the task"),
+            };
+            let style = match step.cmp(&self.step) {
+                std::cmp::Ordering::Equal => lit(),
+                std::cmp::Ordering::Less => bold(),
+                std::cmp::Ordering::Greater => dim(),
+            };
+            let mut spans = vec![Span::styled(format!("  {label:<6} "), style)];
+            if step == Step::When {
+                if step == self.step {
+                    picks(&mut spans, &WHEN, self.when);
+                } else {
+                    spans.push(Span::styled(
+                        value.to_owned(),
+                        style.remove_modifier(Modifier::BOLD),
+                    ));
+                }
+            } else if step == self.step {
+                spans.extend(typed(value, value.len(), placeholder));
+            } else if step < self.step || !value.is_empty() {
+                spans.push(Span::raw(value.to_owned()));
+            } else {
+                spans.push(Span::styled(placeholder.to_owned(), dim()));
+            }
+            if step == self.step
+                && let Some(e) = &self.error
+            {
+                spans.push(Span::styled(
+                    format!("  {e}"),
+                    Style::default().fg(Color::Red),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
-        Line::from(spans)
+        lines
+    }
+
+    /// The prompt line: the current question and what an answer looks like.
+    fn line(&self) -> Line<'static> {
+        let (what, help) = match self.step {
+            Step::What => ("what", "the task, as you would type it to the harness"),
+            Step::Where => (
+                "where",
+                "a folder; empty takes the one shown, tab completes",
+            ),
+            Step::When => (
+                "when",
+                "once runs it now, supervised and in the ledger; the rest schedule a job",
+            ),
+            Step::At => (
+                "at",
+                match WHEN[self.when] {
+                    "weekly" => "a day and a local time, as in mon 09:00",
+                    "cron" => "minute hour day month weekday, as in 0 9 * * 1-5",
+                    _ => "a local time, as in 09:00",
+                },
+            ),
+            Step::Name => (
+                "name",
+                "the job's name in jobs.yaml and launchd: letters, digits, - or _",
+            ),
+        };
+        Line::from(vec![
+            Span::styled(format!("{what} › "), Style::default().fg(ORANGE)),
+            Span::styled(help.to_owned(), dim()),
+        ])
     }
 }
 
@@ -1526,14 +1749,13 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new job, agents, add folder, help",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new run, agents, add folder, help",
     ),
     (
         "ctrl+x twice",
         "stop the run or session; delete a job with no run in flight; hide a finished run; forget a Codex daemon thread; remove a pinned folder",
     ),
     ("ctrl+e", "edit the selected job in the wizard"),
-    ("ctrl+n", "add a job"),
     (
         "ctrl+p",
         "pin the selected row's folder: it keeps a row after the last session there leaves",
@@ -3268,13 +3490,9 @@ impl App {
     /// first instruction, under the harness `tab` picked. Claude starts in the background on a
     /// thread and its row appears when Claude lists it; Codex opens here and Ctrl+Z leaves it.
     fn start(&mut self) {
-        // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
-        // ledger like any other, instead of a bare session.
+        // The menu's `runs` row: the wizard, with the instruction as the task's first draft.
         if self.menu_is("runs") {
-            let prompt = self.take_prompt();
-            let dir = self.cwd.clone();
-            let what = format!("started a run in {}", fleet::tilde(&dir));
-            self.spawn(&["run", "--prompt", prompt.trim()], Some(&dir), &what);
+            self.new_job();
             return;
         }
         let dir = self.target_dir();
@@ -3428,24 +3646,29 @@ impl App {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
 
-    /// ctrl+n, and enter on the menu's `runs` row: the wizard on a new job, its directory
-    /// defaulting to the selected row's.
+    /// enter on the menu's `runs` row: the wizard on a new run, seeded with what the composer
+    /// holds, its directory defaulting to the selected row's.
     fn new_job(&mut self) {
         let (base, fallback) = (self.jobs_dir(), self.target_dir());
-        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None)));
+        let seed = self.take_prompt();
+        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None, &seed)));
     }
 
     /// ctrl+e: the wizard on the selected job, filled in from the file as written.
     fn edit_job(&mut self) {
         let Some(Kind::Job(name)) = self.selected().map(|r| r.kind.clone()) else {
-            self.status = "select a job to edit · ctrl+n adds one".into();
+            self.status = "select a job to edit · the runs button adds one".into();
             return;
         };
         match config::raw_jobs(&self.jobs_path) {
             Ok(jobs) => match jobs.into_iter().find(|j| j.name == name) {
                 Some(j) => {
-                    self.mode =
-                        Mode::Job(Box::new(JobForm::new(&self.jobs_dir(), &self.cwd, Some(j))));
+                    self.mode = Mode::Job(Box::new(JobForm::new(
+                        &self.jobs_dir(),
+                        &self.cwd,
+                        Some(j),
+                        "",
+                    )));
                 }
                 None => {
                     self.status = format!("{name} is not in {}", fleet::tilde(&self.jobs_path));
@@ -3544,7 +3767,7 @@ impl App {
     fn mode_hints(&self, taken: usize) -> Line<'static> {
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if self.menu_is("runs") {
-            format!("run once in {}", fleet::tilde(&self.cwd))
+            "new run with it".to_owned()
         } else {
             format!(
                 "start {} in {}",
@@ -3554,17 +3777,28 @@ impl App {
         };
         match &self.mode {
             Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
-            Mode::Job(form) if form.step == Step::Dir => hints(&[
-                ("enter", "next"),
-                ("tab", "complete"),
-                ("backspace", "on an empty answer goes back"),
-                ("esc", "cancel"),
-            ]),
-            Mode::Job(_) => hints(&[
-                ("enter", "next"),
-                ("backspace", "on an empty answer goes back"),
-                ("esc", "cancel"),
-            ]),
+            Mode::Job(form) => {
+                let mut keys = vec![];
+                if form.step == Step::When {
+                    keys.push(("← →", "pick"));
+                }
+                keys.push((
+                    "enter",
+                    match (form.step, WHEN[form.when]) {
+                        (Step::Name, _) => "save",
+                        (Step::When, "once") => "run now",
+                        _ => "next",
+                    },
+                ));
+                if form.step == Step::Where {
+                    keys.push(("tab", "complete"));
+                }
+                if form.step != Step::What {
+                    keys.push(("↑", "back"));
+                }
+                keys.push(("esc", "cancel"));
+                hints(&keys)
+            }
             Mode::Harness(_) => Line::default(),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Folder(_) => hints(&[
@@ -3596,7 +3830,6 @@ impl App {
                 }
                 keys.extend([
                     ("tab", next.as_str()),
-                    ("ctrl+n", "new job"),
                     ("ctrl+p", "pin"),
                     ("ctrl+s", "regroup"),
                     ("ctrl+o", "agents"),
@@ -3929,7 +4162,7 @@ impl App {
             },
             // The wizard's directory completes as the folder prompt does, from the jobs
             // file's directory, where a relative answer is taken from.
-            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Dir => {
+            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Where => {
                 let (grown, names) = complete_dir(&form.dir, &form.base);
                 if grown == form.dir {
                     self.status = names.join("  ");
@@ -3941,6 +4174,13 @@ impl App {
             Mode::Job(form) => match form.key(code, ctrl) {
                 FormAction::Stay => {}
                 FormAction::Cancel => self.mode = Mode::Normal,
+                // `once`: a supervised run under the file's first job's policy, in the ledger
+                // like any other, instead of a bare session.
+                FormAction::RunOnce(prompt, dir) => {
+                    self.mode = Mode::Normal;
+                    let what = format!("started a run in {}", fleet::tilde(&dir));
+                    self.spawn(&["run", "--prompt", &prompt], Some(&dir), &what);
+                }
                 // The file is checked as a whole before it is replaced; a bad answer comes back
                 // inline and the wizard stays where it was.
                 FormAction::Save(old, job) => {
@@ -4027,7 +4267,6 @@ impl App {
                         self.by_state = !self.by_state;
                         self.rebuild();
                     }
-                    KeyCode::Char('n') if ctrl => self.new_job(),
                     KeyCode::Char('p') if ctrl => self.pin_selected(),
                     // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
@@ -4250,6 +4489,11 @@ impl App {
         );
         if let Mode::Guide(top) = self.mode {
             frame.render_widget(guide(top), list);
+        } else if let Mode::Job(form) = &self.mode {
+            frame.render_widget(
+                Paragraph::new(form.lines()).wrap(Wrap { trim: false }),
+                list,
+            );
         } else {
             self.draw_list(frame, list);
         }
@@ -4949,49 +5193,69 @@ mod tests {
     }
 
     #[test]
-    fn the_job_wizard_checks_each_answer_and_hands_over_a_claude_job() {
+    fn the_wizard_runs_once_or_schedules_a_claude_job() {
         let base = dir();
-        let mut f = JobForm::new(base.path(), base.path(), None);
+        let mut f = JobForm::new(base.path(), base.path(), None, "");
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(
             (f.step, f.error.is_some()),
-            (Step::Name, true),
-            "an empty name stays"
+            (Step::What, true),
+            "an empty task stays"
         );
-        typed(&mut f, "bad name");
+        typed(&mut f, "triage the TODOs");
         assert_eq!(f.error, None, "the next key clears the error");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Name);
-        for _ in 0..8 {
-            f.key(KeyCode::Backspace, false);
-        }
-        typed(&mut f, "nightly");
-        assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Dir);
-        assert!(f.line().to_string().contains("new job · dir › "));
+        assert_eq!(f.step, Step::Where);
         // An empty directory means the placeholder, kept in ~ form.
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Schedule);
-        assert_eq!(f.dir, fleet::tilde(&base.path().canonicalize().unwrap()));
-        typed(&mut f, "not cron");
+        assert_eq!(f.step, Step::When);
+        let canon = base.path().canonicalize().unwrap();
+        assert_eq!(f.dir, fleet::tilde(&canon));
+        assert_eq!(
+            enter(&mut f),
+            FormAction::RunOnce("triage the TODOs".into(), canon.clone()),
+            "once runs now; no name is asked"
+        );
+        let shown = f.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        assert!(shown[1].starts_with("new run"), "{shown:?}");
+        assert!(shown[3].contains("what   triage the TODOs"), "{shown:?}");
+        assert!(shown[5].contains("[once] hourly"), "{shown:?}");
+        assert_eq!(shown.len(), 6, "once asks nothing more: {shown:?}");
+        for _ in 0..3 {
+            f.key(KeyCode::Right, false);
+        }
+        assert_eq!(WHEN[f.when], "weekdays");
+        assert_eq!(f.lines().len(), 8, "weekdays asks a time and a name");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Schedule);
+        assert_eq!(f.step, Step::At);
+        typed(&mut f, "25:00");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert!(f.error.is_some(), "a bad time stays");
+        f.at.clear();
+        typed(&mut f, "8:30");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(
+            (f.step, f.name.as_str()),
+            (Step::Name, "triage-the-todos"),
+            "the name is suggested from the task"
+        );
+        // ↑ steps back, and forward again keeps the answers.
+        f.key(KeyCode::Up, false);
+        assert_eq!(f.step, Step::At);
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.step, Step::Name);
+        for _ in 0..16 {
+            f.key(KeyCode::Backspace, false);
+        }
+        typed(&mut f, "bad name");
+        assert_eq!(enter(&mut f), FormAction::Stay);
         assert!(f.error.is_some());
-        f.schedule.clear();
-        typed(&mut f, "0 2 * * *");
-        assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Prompt);
-        assert_eq!(enter(&mut f), FormAction::Stay, "the task cannot be empty");
-        // Backspace on an empty answer steps back, and forward again keeps the answers.
-        f.key(KeyCode::Backspace, false);
-        assert_eq!(f.step, Step::Schedule);
-        assert_eq!(enter(&mut f), FormAction::Stay);
-        typed(&mut f, "triage the TODOs");
+        f.name = "nightly".into();
         match enter(&mut f) {
             FormAction::Save(None, job) => {
                 assert_eq!(job.name, "nightly");
                 assert_eq!(job.harness, HarnessKind::Claude);
-                assert_eq!(job.schedule, "0 2 * * *");
+                assert_eq!(job.schedule, "30 8 * * 1-5");
                 assert_eq!(job.cwd, PathBuf::from(&f.dir));
                 assert_eq!(job.prompt, "triage the TODOs");
                 assert_eq!(job.model, None);
@@ -5001,23 +5265,55 @@ mod tests {
     }
 
     #[test]
+    fn schedules_round_trip_between_the_picks_and_cron() {
+        assert_eq!(to_cron(1, ""), Ok("0 * * * *".into()));
+        assert_eq!(to_cron(2, "09:00"), Ok("0 9 * * *".into()));
+        assert_eq!(to_cron(4, "Mon 7:15"), Ok("15 7 * * 1".into()));
+        assert!(to_cron(4, "someday 7:15").is_err());
+        assert!(to_cron(3, "9").is_err());
+        assert_eq!(to_cron(5, "0 2 * * *"), Ok("0 2 * * *".into()));
+        assert!(to_cron(5, "not cron").is_err());
+        for cron in [
+            "0 * * * *",
+            "0 9 * * *",
+            "30 8 * * 1-5",
+            "15 7 * * 1",
+            "*/5 * * * *",
+        ] {
+            let (when, at) = from_cron(cron);
+            assert_eq!(to_cron(when, &at), Ok(cron.to_owned()), "{cron}");
+        }
+        assert_eq!(from_cron("15 7 * * 1"), (4, "mon 07:15".into()));
+        assert_eq!(from_cron("*/5 * * * *").0, 5);
+        assert_eq!(
+            slug("  Read the TODOs!! and draft TRIAGE.md"),
+            "read-the-todos-and-draft-triage-md"
+        );
+    }
+
+    #[test]
     fn editing_keeps_the_fields_the_wizard_does_not_ask_about() {
         let base = dir();
         let mut j = config::Job::new("one", "0 9 * * *", Path::new("."), "first");
         j.model = Some("sonnet".into());
         j.budget_usd = Some(0.5);
-        let mut f = JobForm::new(base.path(), base.path(), Some(j));
-        assert_eq!((f.name.as_str(), f.dir.as_str()), ("one", "."));
-        assert!(f.line().to_string().starts_with("edit one · name › one"));
-        for _ in 0..3 {
+        let mut f = JobForm::new(base.path(), base.path(), Some(j), "ignored seed");
+        assert_eq!(
+            (f.name.as_str(), f.dir.as_str(), WHEN[f.when], f.at.as_str()),
+            ("one", ".", "daily", "09:00"),
+            "the schedule opens on the picks that made it"
+        );
+        assert!(f.lines()[1].to_string().starts_with("edit one"));
+        typed(&mut f, ", revised");
+        for _ in 0..4 {
             assert_eq!(enter(&mut f), FormAction::Stay);
         }
-        assert_eq!(f.step, Step::Prompt);
-        typed(&mut f, ", revised");
+        assert_eq!(f.step, Step::Name);
         match enter(&mut f) {
             FormAction::Save(Some(old), job) => {
                 assert_eq!(old, "one");
                 assert_eq!(job.prompt, "first, revised");
+                assert_eq!(job.schedule, "0 9 * * *");
                 assert_eq!(job.model.as_deref(), Some("sonnet"));
                 assert_eq!(job.budget_usd, Some(0.5));
                 assert_eq!(
@@ -5764,14 +6060,14 @@ mod tests {
         assert!(text(app.composer()).starts_with("claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter new job · ← → pick · tab codex · ctrl+n new job"),
+            hint.starts_with("enter new run · ← → pick · tab codex · ctrl+p pin"),
             "an empty dashboard opens on the menu row, runs picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
-        assert!(text(app.hint_line()).starts_with("enter run once in "));
+        assert!(text(app.hint_line()).starts_with("enter new run with it"));
         app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.status = "back from attach".into();
@@ -6722,11 +7018,17 @@ mod tests {
         };
         let s = screen(&mut app, &mut t);
         assert!(s.contains(" runs   agents   folder   help "), "{s}");
-        assert!(s.contains("runs once") && !s.contains("agents view"), "{s}");
+        assert!(
+            s.contains("on a schedule") && !s.contains("agents view"),
+            "{s}"
+        );
         assert!(s.contains("← → pick"), "{s}");
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         let s = screen(&mut app, &mut t);
-        assert!(s.contains("agents view") && !s.contains("runs once"), "{s}");
+        assert!(
+            s.contains("agents view") && !s.contains("on a schedule"),
+            "{s}"
+        );
         assert_eq!(app.enter_label(), "agents");
         // ← from the first button wraps to the last; typed text keeps ← → for the caret.
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
@@ -6894,9 +7196,10 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_shows_the_transcript_tail_until_the_viewer_paints() {
+    fn the_pane_shows_the_transcript_tail_of_a_session_no_viewer_will_open_on() {
         let d = dir();
-        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        // An interactive Claude runs in its own terminal: nothing is coming to the pane.
+        registry_kind(d.path(), A, "/src/one", "idle", 1, "interactive");
         let dir = d.path().join("projects").join("-src-one");
         fs::create_dir_all(&dir).unwrap();
         let transcript = dir.join(format!("{A}.jsonl"));
@@ -6936,11 +7239,6 @@ mod tests {
             row(&t, last - 4)
         );
         assert!(row(&t, 0).trim().is_empty());
-        // A speculative viewer that has not painted keeps the tail on view, sized to the pane.
-        app.viewers.push(speculative_open(A));
-        t.draw(|f| app.draw(f)).unwrap();
-        assert!(row(&t, last).starts_with("second reply"));
-        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
         // The transcript changed: the tail follows.
         fs::write(
             &transcript,
@@ -6979,7 +7277,8 @@ mod tests {
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
-        // The cursor moves onto B, another folder's session with a transcript: its tail, not A.
+        // The cursor moves onto B, another folder's session in its own terminal with a
+        // transcript: its tail, not A.
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
         t.draw(|f| app.draw(f)).unwrap();
