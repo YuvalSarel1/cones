@@ -10,6 +10,9 @@
 //! Run statuses and session states go through the same match arms (`active`, `idle`, `blocked`,
 //! `exited` are session states); a run status must not reuse those words or its rows sort and
 //! draw as sessions.
+//! Two fifths of this file is its own tests and most of the rest is `App`, whose 50 fields are
+//! shared wide enough that `self.status` alone is written at 73 sites across 27 methods, so
+//! moving code out relocates that coupling rather than reducing it.
 use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
