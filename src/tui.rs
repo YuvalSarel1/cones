@@ -3205,6 +3205,7 @@ impl App {
                             if self.text.is_empty() {
                                 self.fill(prompt);
                             }
+                            self.status = message;
                         }
                         None => {
                             if let Some(p) =
@@ -3212,9 +3213,10 @@ impl App {
                             {
                                 p.short = short_id(&message);
                             }
+                            // The new row is the report; only a failure needs words.
+                            self.status.clear();
                         }
                     }
-                    self.status = message;
                     launched = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => self.started.push((id, rx)),
@@ -3917,7 +3919,7 @@ impl App {
         self.feedback = Some(("return_to_draw", Instant::now()));
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
-        self.status = format!("left {} · enter returns to it", open.what);
+        self.status.clear();
         let record = (!open.recorded).then(|| open.record.clone()).flatten();
         if let Some((dir, since)) = record {
             self.viewers[i].recorded = true;
@@ -3929,8 +3931,8 @@ impl App {
         self.invalidate();
         let open = &self.viewers[i];
         let line = format!(
-            "dashboard back: {}; viewer pid {} title {:?}",
-            self.status,
+            "dashboard back from {}; viewer pid {} title {:?}",
+            open.what,
             open.viewer.pid(),
             open.viewer.title()
         );
@@ -3938,7 +3940,6 @@ impl App {
         // Drop viewers left in Claude's agent list so the row cannot show or attach another session.
         if self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE) {
             self.close(i);
-            self.status = "left the agent view · enter attaches the session again".into();
         }
     }
 
@@ -7944,7 +7945,11 @@ mod tests {
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert_eq!(app.focus, None);
-        assert!(app.status.starts_with("left attach"), "{}", app.status);
+        assert!(
+            app.status.is_empty(),
+            "leaving a viewer says nothing: {}",
+            app.status
+        );
         assert_eq!(app.viewers.len(), 1, "the viewer is alive off-screen");
         assert!(app.needs_clear);
         t.draw(|f| app.draw(f)).unwrap();
@@ -8501,8 +8506,8 @@ mod tests {
             "the selected row's viewer stays on view after ctrl+z"
         );
         assert!(
-            cells(&t, 29, 0..list).starts_with("left attach"),
-            "the status has the hint line: {:?}",
+            cells(&t, 29, 0..list).starts_with("enter "),
+            "the key hints come back: {:?}",
             cells(&t, 29, 0..list)
         );
         assert!(
@@ -10068,11 +10073,11 @@ mod tests {
         titled(&mut app, AGENT_VIEW_TITLE);
         app.unfocus();
         assert!(app.viewers.is_empty(), "the agent view outlived leaving it");
-        assert!(app.status.contains("agent view"), "{}", app.status);
+        assert!(app.status.is_empty(), "{}", app.status);
         titled(&mut app, "◑ a session");
         app.unfocus();
         assert_eq!(app.viewers.len(), 1, "a session's client stays alive");
-        assert!(app.status.contains("enter returns to it"), "{}", app.status);
+        assert!(app.status.is_empty(), "{}", app.status);
     }
 
     #[test]
