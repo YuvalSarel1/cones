@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render assets/tui.svg, a screenshot of a live `cones tui`, from a tmux pane.
 Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in]."""
-import html, re, subprocess, sys, time
+import html, re, shlex, subprocess, sys, time, uuid
 
 COLS, ROWS = 120, 34
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
@@ -12,13 +12,14 @@ C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the c
 
 def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output=True, **k)
 
-tmux("kill-session", "-t", "conescap")
-# The example job is the first row, so the selected row's details pane shows its policy and
-# prompt rather than the tail of a live session's transcript.
-tmux("new-session", "-d", "-s", "conescap", "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"{BIN} --jobs jobs.example.yaml tui", check=True)
-time.sleep(5)
-lines = tmux("capture-pane", "-p", "-e", "-t", "conescap", check=True).stdout.rstrip("\n").split("\n")
-tmux("kill-session", "-t", "conescap")
+session = f"conescap-{uuid.uuid4().hex[:8]}"
+# Start on the example job, so capturing the dashboard does not open a live session's viewer.
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR {shlex.quote(BIN)} --jobs jobs.example.yaml tui", check=True)
+try:
+    time.sleep(5)
+    lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
+finally:
+    tmux("kill-session", "-t", session)
 
 CW, LH, PAD, FS = 8.43, 20, 16, 14
 W, H = int(COLS * CW + 2 * PAD), ROWS * LH + 2 * PAD
@@ -50,10 +51,20 @@ for row, line in enumerate(lines):
                     fg = "#%02x%02x%02x" % tuple(p[i + 2:i + 5]); i += 4
                 i += 1
         elif tok.strip():
+            blocks = all(c in " ▀▄█" for c in tok)
             if bg:  # a filled cell, the menu's buttons
-                out.append(f'<rect x="{PAD + col * CW:.1f}" y="{y - FS - 3}" width="{len(tok) * CW:.1f}" height="{LH}" rx="3" fill="{bg}"/>')
-            style = f' fill="{DIM if dim else fg}"' + (' font-weight="700"' if bold else "")
-            out.append(f'<text x="{PAD + col * CW:.1f}" y="{y}" xml:space="preserve" textLength="{len(tok) * CW:.1f}" lengthAdjust="spacingAndGlyphs"{style}>{html.escape(tok)}</text>')
+                out.append(f'<rect x="{PAD + col * CW:.1f}" y="{y - FS - 3}" width="{len(tok) * CW:.1f}" height="{LH}" rx="{0 if blocks else 3}" fill="{bg}"/>')
+            if blocks:
+                # Block glyphs fill terminal cells; font leading must not add seams to the sprite.
+                for offset, char in enumerate(tok):
+                    if char == " ":
+                        continue
+                    top = y - FS - 3 + (LH / 2 if char == "▄" else 0)
+                    height = LH if char == "█" else LH / 2
+                    out.append(f'<rect x="{PAD + (col + offset) * CW:.2f}" y="{top}" width="{CW}" height="{height}" fill="{DIM if dim else fg}"/>')
+            else:
+                style = f' fill="{DIM if dim else fg}"' + (' font-weight="700"' if bold else "")
+                out.append(f'<text x="{PAD + col * CW:.1f}" y="{y}" xml:space="preserve" textLength="{len(tok) * CW:.1f}" lengthAdjust="spacingAndGlyphs"{style}>{html.escape(tok)}</text>')
             col += len(tok)
         else:
             col += len(tok)

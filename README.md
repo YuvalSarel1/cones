@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/cones.svg" alt="cones: a little structure for coding agents" width="520">
+  <img src="assets/cones.svg" alt="cones: Traffic control for agents." width="520">
 </p>
 
 **A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.

@@ -75,9 +75,6 @@ fn reset_terminal_protocols() {
 const ORANGE: Color = Color::Indexed(208);
 /// A second ctrl+c within this window quits the dashboard, as in Claude Code.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
-/// The header cone's lit and shadow sides, one hue either side of ORANGE.
-const LIT: Color = Color::Indexed(214);
-const SHADE: Color = Color::Indexed(202);
 const SPINNER: [&str; 4] = ["▲", "◭", "▲", "◮"];
 /// Claude Code's own working animation: its star grows then shrinks.
 const CLAUDE_SPINNER: [&str; 12] = ["·", "✢", "✳", "✶", "✻", "✽", "✽", "✻", "✶", "✳", "✢", "·"];
@@ -505,11 +502,14 @@ impl Data {
 
 /// Tab-separated rows for scripts and tests: hidden key (`job`, `hdr`, session or run UUID),
 /// hidden aux (job name, session state or run status), then the display text with ANSI color.
-/// Three header lines carry the pixel cone, the summary and the keys.
+/// Three header lines carry Little feet and the bordered summary.
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    for line in header_lines(data.summary()) {
+    let summary = data.summary();
+    let width = summary.width() + 16;
+    let folder = std::env::current_dir().map_or_else(|_| String::new(), |p| fleet::tilde(&p));
+    for line in header_lines(summary, &folder, width) {
         out += "hdr\t-\t";
         for span in line.spans {
             out += &ansi(&span.content, span.style);
@@ -553,6 +553,12 @@ fn ansi(text: &str, style: Style) -> String {
         Some(Color::Red) => codes.push("31".into()),
         Some(Color::White) => codes.push("97".into()),
         Some(Color::Indexed(n)) => codes.push(format!("38;5;{n}")),
+        Some(Color::Rgb(r, g, b)) => codes.push(format!("38;2;{r};{g};{b}")),
+        _ => {}
+    }
+    match style.bg {
+        Some(Color::Indexed(n)) => codes.push(format!("48;5;{n}")),
+        Some(Color::Rgb(r, g, b)) => codes.push(format!("48;2;{r};{g};{b}")),
         _ => {}
     }
     if codes.is_empty() {
@@ -611,26 +617,79 @@ fn menu_rows() -> Vec<Row> {
     ]
 }
 
-/// The header cone: one orange hue in three tones, lit on the left, shadowed on the right, so
-/// it reads as a solid rather than a flat triangle. Static and foreground-only: a blinking beacon
-/// and background-filled bands were tried and rejected as too busy for a dashboard header.
+/// Little feet, shared with the README artwork. Each terminal cell holds two vertical pixels.
 fn cone() -> [Vec<Span<'static>>; 3] {
-    let tone = |s: &'static str, c: Color| Span::styled(s, Style::default().fg(c));
-    [
-        vec![tone("  ▲  ", ORANGE)],
-        vec![tone(" ▟", LIT), tone("█", ORANGE), tone("▙ ", SHADE)],
-        vec![tone("▟█", LIT), tone("█", ORANGE), tone("█▙", SHADE)],
-    ]
+    let mut rows = include_str!("../assets/little-feet.txt").lines();
+    let color = |pixel| match pixel {
+        b'o' => Some(ORANGE),
+        b'w' => Some(Color::Rgb(241, 234, 223)),
+        _ => None,
+    };
+    std::array::from_fn(|_| {
+        let top = rows.next().unwrap();
+        let bottom = rows.next().unwrap();
+        top.bytes()
+            .zip(bottom.bytes())
+            .map(|(top, bottom)| match (color(top), color(bottom)) {
+                (None, None) => Span::raw(" "),
+                (Some(top), Some(bottom)) if top == bottom => {
+                    Span::styled("█", Style::default().fg(top))
+                }
+                (Some(top), None) => Span::styled("▀", Style::default().fg(top)),
+                (None, Some(bottom)) => Span::styled("▄", Style::default().fg(bottom)),
+                (Some(top), Some(bottom)) => Span::styled("▀", Style::default().fg(top).bg(bottom)),
+            })
+            .collect()
+    })
 }
 
-/// The three header lines: the cone, with the fleet summary beside its bands. The keys are on
-/// the bottom line, under the composer, as in `claude agents`. Two callers: `draw` and the
-/// `--tsv` path in `list`.
-fn header_lines(summary: Line<'static>) -> Vec<Line<'static>> {
-    let [top, mut middle, base] = cone();
-    middle.push(Span::raw("  "));
-    middle.extend(summary.spans);
-    vec![Line::from(top), Line::from(middle), Line::from(base)]
+/// The mascot beside a three-row frame. Keep the right border visible when counts are clipped.
+fn header_lines(summary: Line<'static>, folder: &str, width: usize) -> Vec<Line<'static>> {
+    let mascot = cone();
+    if width < 24 {
+        return mascot
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut spans)| {
+                if i == 1 {
+                    spans.push(Span::raw("  "));
+                    spans.extend(summary.spans.clone());
+                }
+                Line::from(fit(spans, width))
+            })
+            .collect();
+    }
+    let inner = width - 14;
+    let folder = fit(
+        vec![Span::styled(format!(" {folder} "), dim())],
+        inner.saturating_sub(11),
+    );
+    let folder_width: usize = folder.iter().map(Span::width).sum();
+    let mut top = vec![
+        Span::styled("── ", dim()),
+        Span::styled("cones ", lit()),
+        Span::styled("─".repeat(inner - 9 - folder_width), dim()),
+    ];
+    top.extend(folder);
+    let summary = fit(summary.spans, inner - 2);
+    let used: usize = summary.iter().map(Span::width).sum();
+    let mut middle = vec![Span::raw(" ")];
+    middle.extend(summary);
+    middle.push(Span::raw(" ".repeat(inner - used - 1)));
+    let bottom = vec![Span::styled("─".repeat(inner), dim())];
+    mascot
+        .into_iter()
+        .zip([("┌", top, "┐"), ("│", middle, "│"), ("└", bottom, "┘")])
+        .map(|(mascot, (left, contents, right))| {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(mascot);
+            spans.push(Span::raw("    "));
+            spans.push(Span::styled(left, dim()));
+            spans.extend(contents);
+            spans.push(Span::styled(right, dim()));
+            Line::from(spans)
+        })
+        .collect()
 }
 
 /// Key hints: each key lit and its verb dim, so the eye finds the key first.
@@ -3987,7 +4046,14 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(area);
-        frame.render_widget(Paragraph::new(header_lines(self.data.summary())), head);
+        frame.render_widget(
+            Paragraph::new(header_lines(
+                self.data.summary(),
+                &fleet::tilde(&self.cwd),
+                head.width as usize,
+            )),
+            head,
+        );
         if let Mode::Guide(top) = self.mode {
             frame.render_widget(guide(top), list);
         } else {
@@ -4301,6 +4367,29 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn header_keeps_its_border_at_narrow_widths_and_with_wide_folder_names() {
+        for width in [0, 1, 7, 23, 24, 40, 60, 80, 120] {
+            let lines = header_lines(
+                Line::raw("123 working  4 need input  5 idle  6 done  ·  7 jobs  8 runs"),
+                "~/个人/projects/a-long-folder",
+                width,
+            );
+            assert_eq!(lines.len(), 3);
+            assert!(lines.iter().all(|line| line.width() <= width));
+            if width >= 24 {
+                assert!(lines.iter().all(|line| line.width() == width));
+                for (line, border) in lines.iter().zip(['┐', '│', '┘']) {
+                    assert!(line.to_string().ends_with(border));
+                }
+            }
+            if width == 120 {
+                let summary = lines[1].to_string();
+                assert!(summary.contains("123 working") && summary.contains("8 runs"));
+            }
+        }
+    }
     use ratatui::Terminal;
     use std::fs;
 
