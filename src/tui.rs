@@ -3606,6 +3606,12 @@ impl App {
         })
     }
 
+    /// A menu button's screen is on view in the pane without the keys, only picked, so tab
+    /// can hand them to it as it hands them to a viewer there.
+    fn panel_shown(&self) -> bool {
+        self.split_active() && !self.panel_focused() && self.panel().is_some()
+    }
+
     /// A menu button's screen has the keys.
     fn panel_focused(&self) -> bool {
         self.jobs_view
@@ -4499,18 +4505,24 @@ impl App {
                 c.args(["attach", &id]);
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
-            Kind::Menu => match MENU[self.menu].0 {
-                "folder" => self.mode = Mode::Folder(Input::default()),
-                "jobs" => self.show_jobs(),
-                "config" => self.mode = Mode::Config(self.config_form()),
-                _ => self.mode = Mode::Guide(0),
-            },
+            Kind::Menu => self.open_menu(),
             Kind::Folder(dir) => {
                 self.status = format!("type an instruction · enter starts a session in {dir}");
             }
             _ => {}
         }
         Ok(())
+    }
+
+    /// The picked menu button's screen, with the keys: what `enter` on the menu row opens,
+    /// and what tab gives the pane while the button's screen is only on view there.
+    fn open_menu(&mut self) {
+        match MENU[self.menu].0 {
+            "folder" => self.mode = Mode::Folder(Input::default()),
+            "jobs" => self.show_jobs(),
+            "config" => self.mode = Mode::Config(self.config_form()),
+            _ => self.mode = Mode::Guide(0),
+        }
     }
 
     /// `cones install`, so launchd matches the file the wizard or ctrl+x just changed.
@@ -5002,7 +5014,8 @@ impl App {
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                if self.shown().is_some() {
+                // tab reaches a button's screen on view in the pane too.
+                if self.shown().is_some() || self.panel_shown() {
                     keys.push(("tab", "pane"));
                 }
                 keys.extend([
@@ -5198,7 +5211,9 @@ impl App {
     /// inside over the split, and a ctrl+] that focused the pane in place or cycled viewers
     /// were taken out on 2026-09-15 as too much to hold in mind. ctrl+\ means the same thing
     /// in both states, the pane or the whole frame, so it is the one key both take; tab is
-    /// the other, the bounce from the list into the pane's viewer and back out of it.
+    /// the other, the bounce from the list into the pane and back out of it: into a viewer,
+    /// which tab leaves again, or into a button's screen, whose own forms take tab, so ctrl+z
+    /// and esc are the way out of that one.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
@@ -5459,6 +5474,11 @@ impl App {
                     // client's, so the two never collide.
                     KeyCode::Tab => match self.shown() {
                         Some(i) => self.focus(i),
+                        // A button's screen in the pane takes the keys as a viewer does, so
+                        // tab reaches the config editor and the guide too. The jobs screen
+                        // already has them, so there tab is the bounce back to the list.
+                        None if self.jobs_view => self.leave_jobs(),
+                        None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
                     },
                     KeyCode::BackTab => {
@@ -5521,7 +5541,7 @@ impl App {
         if self.split_active() {
             let [list, rule, pane] = self.split_areas(area);
             self.draw_dashboard(frame, list);
-            let style = if self.focus.is_some() {
+            let style = if self.pane_focused() {
                 Style::default().fg(ORANGE)
             } else {
                 dim()
@@ -5656,8 +5676,15 @@ impl App {
             ])
         };
         let (prompt, rows) = self.framed(line, pane.width);
-        let [body, foot] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(rows)]).areas(pane);
+        // The dashboard keeps its last row for the hint line, so the pane keeps one too: the
+        // two prompt boxes then sit on the same rows, rule against rule, and the keys of the
+        // screen in the pane are read under it rather than across the frame.
+        let [body, foot, hint] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(rows),
+            Constraint::Length(1),
+        ])
+        .areas(pane);
         let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
         match (&self.mode, name) {
             (Mode::Job(form), _) => frame.render_widget(wrapped(form.lines()), body),
@@ -5678,6 +5705,9 @@ impl App {
             _ => frame.render_widget(Paragraph::new(self.recent_lines()), body),
         }
         frame.render_widget(prompt, foot);
+        if self.panel_focused() {
+            frame.render_widget(Paragraph::new(self.hint_line()), hint);
+        }
     }
 
     /// The `folder` button's body: the folders sessions have been seen in, newest first, the
@@ -5762,7 +5792,11 @@ impl App {
             self.draw_list(frame, list);
         }
         frame.render_widget(input, prompt);
-        frame.render_widget(Paragraph::new(self.hint_line()), foot);
+        // A button's screen in the pane draws its own keys under the pane, where they are
+        // read with it; the list's row stays empty rather than saying it twice.
+        if !(in_pane && self.panel_focused()) {
+            frame.render_widget(Paragraph::new(self.hint_line()), foot);
+        }
     }
 
     /// True on the menu row with the button `name` picked.
@@ -8711,6 +8745,84 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         assert!(app.rows.iter().any(|r| r.kind == Kind::Menu));
         assert!(rows(&t, 120).join("\n").contains("new job"));
+    }
+
+    /// `tab` hands a button's screen in the pane the keys, as it hands them to a viewer
+    /// there: the rule turns orange, the screen's own keys are drawn under the pane where
+    /// they are read with it, the list's hint row goes empty rather than saying it twice,
+    /// and the two prompt boxes sit on the same rows. `tab` inside the screen belongs to its
+    /// form, so ctrl+z is the way back out.
+    #[test]
+    fn tab_gives_a_buttons_screen_in_the_pane_the_keys() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        for _ in 0..2 {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        }
+        assert!(app.menu_is("config") && app.panel_shown());
+        t.draw(|f| app.draw(f)).unwrap();
+        let hint = cells(&t, 39, 0..80);
+        assert!(
+            hint.contains("tab pane"),
+            "the list offers the pane: {hint:?}"
+        );
+        assert_ne!(
+            t.backend().buffer().cell((80, 0)).unwrap().fg,
+            ORANGE,
+            "picked only: the rule is dim"
+        );
+        assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
+        assert!(
+            matches!(app.mode, Mode::Config(_)),
+            "tab opens the editor in the pane"
+        );
+        assert!(app.panel_focused() && app.split_active() && !app.panel_shown());
+        t.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(
+            t.backend().buffer().cell((80, 0)).unwrap().fg,
+            ORANGE,
+            "the rule says the pane has the keys"
+        );
+        let under = cells(&t, 39, 81..160);
+        assert!(
+            under.contains("esc cancel"),
+            "the editor's keys are under the pane: {under:?}"
+        );
+        assert!(
+            cells(&t, 39, 0..80).trim().is_empty(),
+            "and not in the list's row too: {:?}",
+            cells(&t, 39, 0..80)
+        );
+        // From under the header, whose own box the pane has no counterpart for.
+        let rules = |x: std::ops::Range<u16>| {
+            (3..40u16)
+                .filter(|&y| {
+                    cells(&t, y, x.clone())
+                        .chars()
+                        .filter(|&c| c == '─')
+                        .count()
+                        > 40
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rules(0..80),
+            rules(81..160),
+            "the prompt boxes sit on the same rows"
+        );
+        assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
+        assert!(
+            matches!(app.mode, Mode::Config(_)),
+            "tab in the editor is the form's own"
+        );
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(matches!(app.mode, Mode::Normal), "ctrl+z comes back out");
     }
 
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
