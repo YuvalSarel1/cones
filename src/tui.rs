@@ -1361,6 +1361,8 @@ const REST_SPLIT: Duration = Duration::from_millis(150);
 
 /// Two clicks this close on the same side of the rule are `enter`.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
+const WHEEL_LINES: i32 = 3;
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
 const MAX_VIEWERS: usize = 3;
@@ -2525,7 +2527,10 @@ impl App {
     /// A mouse event goes to the focused viewer, relative to its pane. Outside the pane, the
     /// strip row or the list, is the dashboard's: a press, move or wheel there goes nowhere,
     /// and a drag or release that crosses out is clamped to the pane's nearest edge so the
-    /// viewer sees the button let go.
+    /// viewer sees the button let go. The wheel reaches the pane's viewer focused or not, and
+    /// does what a terminal's does: scrolls the emulated screen back when the viewer reads no
+    /// mouse (Codex, like a shell, leaves the wheel to the terminal) or shift is held, else
+    /// goes to the viewer.
     fn mouse(&mut self, ev: MouseEvent) {
         if self.split_active(self.size.1) && !self.click(ev) {
             return;
@@ -2534,12 +2539,26 @@ impl App {
             return;
         };
         let pane = self.pane;
-        if let Some(open) = self.focused() {
-            let mode = open.viewer.screen().mouse_protocol_mode();
-            let bytes = viewer::encode_mouse(ev, (pane.x, pane.y), mode);
-            if !bytes.is_empty() {
-                open.viewer.write(&bytes);
-            }
+        let wheel = match ev.kind {
+            MouseEventKind::ScrollUp => Some(WHEEL_LINES),
+            MouseEventKind::ScrollDown => Some(-WHEEL_LINES),
+            _ => None,
+        };
+        let Some(i) = self.focus.or_else(|| wheel.and(self.shown())) else {
+            return;
+        };
+        let open = &mut self.viewers[i];
+        let mode = open.viewer.screen().mouse_protocol_mode();
+        if let Some(lines) = wheel
+            && (mode == viewer::MouseProtocolMode::None
+                || ev.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            open.viewer.scroll(lines);
+            return;
+        }
+        let bytes = viewer::encode_mouse(ev, (pane.x, pane.y), mode);
+        if !bytes.is_empty() {
+            open.viewer.write(&bytes);
         }
     }
 
@@ -3347,6 +3366,16 @@ impl App {
                 self.toggle_split();
                 return Ok(false);
             }
+            // shift+pgup/pgdn scroll the screen a page back, as the terminal itself would
+            // before a program saw them.
+            if mods.contains(KeyModifiers::SHIFT)
+                && matches!(code, KeyCode::PageUp | KeyCode::PageDown)
+            {
+                let page = i32::from(open.viewer.screen().size().0.saturating_sub(1));
+                open.viewer
+                    .scroll(if code == KeyCode::PageUp { page } else { -page });
+                return Ok(false);
+            }
             let bytes = viewer::encode_key(code, mods, open.viewer.screen().application_cursor());
             if !bytes.is_empty() {
                 open.viewer.write(&bytes);
@@ -3599,15 +3628,16 @@ impl App {
         self.draw_dashboard(frame, area);
     }
 
-    /// Viewer `i`'s emulated screen in `pane`, sized to it, and while it has the keys the
-    /// terminal's own cursor where the screen puts it, off a wide character's second half.
+    /// Viewer `i`'s emulated screen in `pane`, sized to it, and while it has the keys and is
+    /// not scrolled back the terminal's own cursor where the screen puts it, off a wide
+    /// character's second half.
     fn draw_viewer(&mut self, frame: &mut Frame, i: usize, pane: Rect) {
         let focused = self.focus == Some(i);
         let open = &mut self.viewers[i];
         open.viewer.resize(pane.height, pane.width);
         let screen = open.viewer.screen();
         viewer::render(screen, pane, frame.buffer_mut());
-        if focused && !screen.hide_cursor() {
+        if focused && !screen.hide_cursor() && screen.scrollback() == 0 {
             let (row, mut col) = screen.cursor_position();
             col = col.min(pane.width.saturating_sub(1));
             if col > 0
@@ -5792,6 +5822,60 @@ mod tests {
         assert!(app.split, "a narrow frame keeps its state");
         assert_eq!(app.status, "split needs 140 columns");
         assert!(!app.needs_clear, "nothing changed, nothing to repaint");
+    }
+
+    #[test]
+    fn the_wheel_over_the_pane_scrolls_its_viewer_back_without_focusing_it() {
+        let (_d, mut app, mut t) = split_setup(200);
+        let list = 100u16;
+        // A viewer that reads no mouse and has left forty lines above its screen.
+        let mut c = Command::new("/bin/sh");
+        c.args([
+            "-c",
+            "i=0; while [ $i -lt 40 ]; do i=$((i+1)); echo line$i; done; printf 'END'; sleep 5",
+        ]);
+        app.viewers[0].viewer = Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.viewers[0].viewer.screen().contents().contains("END") {
+            app.pump();
+            assert!(Instant::now() < deadline, "the viewer never drew END");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let wheel = |kind, modifiers| MouseEvent {
+            kind,
+            column: list + 5,
+            row: 3,
+            modifiers,
+        };
+        app.mouse(wheel(MouseEventKind::ScrollUp, KeyModifiers::NONE));
+        assert_eq!(app.focus, None, "the wheel does not focus the pane");
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
+        app.mouse(wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        // A wheel on the list is the dashboard's.
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        // Focused, shift+pgup goes a page back, the pane shows the lines that had left, the
+        // cursor is off the frame, and a key comes back to the bottom.
+        app.focus(0);
+        assert!(!app.key(KeyCode::PageUp, KeyModifiers::SHIFT).unwrap());
+        // A page is 29 rows but only eleven lines have left a 30-row pane.
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 11);
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            cells(&t, 0, list + 1..list + 6) == "line1",
+            "the pane shows the lines that had left: {:?}",
+            cells(&t, 0, list + 1..200)
+        );
+        assert!(!app.key(KeyCode::Char('a'), KeyModifiers::NONE).unwrap());
+        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        app.unfocus();
     }
 
     #[test]

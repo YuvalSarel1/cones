@@ -41,6 +41,8 @@ const STDERR_TAIL: usize = 16 * 1024;
 const INPUT_CAP: usize = 8 * 1024 * 1024;
 /// Chunks read from the pty in one pump, so a flood of output cannot hold the dashboard's loop.
 const CHUNKS_PER_PUMP: usize = 64;
+/// Lines kept after they leave the top of the screen, for the wheel to scroll back through.
+const SCROLLBACK: usize = 1000;
 /// How long a synchronized update (`CSI ?2026h`) holds the frame before it is drawn as is,
 /// so a viewer that never ends one does not look hung.
 const SYNC_MAX: Duration = Duration::from_millis(150);
@@ -316,7 +318,7 @@ impl Viewer {
             parser: vt100::Parser::new_with_callbacks(
                 size.ws_row,
                 size.ws_col,
-                0,
+                SCROLLBACK,
                 Replies::new(colors),
             ),
             partial: Vec::new(),
@@ -446,6 +448,8 @@ impl Viewer {
     /// Keys, mouse reports and pastes for the viewer. A viewer that has 8 MiB of input it has
     /// not read is not reading; it is killed and its exit message says why.
     pub fn write(&mut self, bytes: &[u8]) {
+        // Input brings the screen back to the bottom, as a terminal's scrollKey does.
+        self.parser.screen_mut().set_scrollback(0);
         self.pending_input.extend_from_slice(bytes);
         self.flush();
         if self.pending_input.len() > INPUT_CAP {
@@ -454,6 +458,16 @@ impl Viewer {
                 .extend_from_slice(b"\nviewer input queue exceeded 8 MiB\n");
             self.kill();
         }
+    }
+
+    /// Show the screen `lines` further back into what has left its top (negative: toward
+    /// the bottom), clamped to what is kept: the wheel of a terminal whose program reads no
+    /// mouse. True when the view moved.
+    pub fn scroll(&mut self, lines: i32) -> bool {
+        let before = self.parser.screen().scrollback();
+        let after = (before as i64 + i64::from(lines)).clamp(0, SCROLLBACK as i64);
+        self.parser.screen_mut().set_scrollback(after as usize);
+        self.parser.screen().scrollback() != before
     }
 
     /// Size the screen and the pty to the pane; the tty driver raises SIGWINCH in the viewer.
@@ -1069,6 +1083,33 @@ mod tests {
         assert_eq!(text(p.callbacks().shown(p.screen()), 0), "one");
         p.callbacks_mut().frozen.as_mut().unwrap().0 = Instant::now() - SYNC_MAX;
         assert_eq!(text(p.callbacks().shown(p.screen()), 0), "two");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_back_through_what_left_the_top_and_input_comes_back_down() {
+        let mut c = Command::new("/bin/sh");
+        c.args([
+            "-c",
+            "for i in 1 2 3 4 5 6 7 8; do echo line$i; done; sleep 1",
+        ]);
+        let mut v = Viewer::spawn(c, 4, 20, None, Colors::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while text(v.screen(), 2) != "line8" {
+            v.pump().unwrap();
+            assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(v.scroll(2));
+        assert_eq!(text(v.screen(), 0), "line4");
+        assert!(v.scroll(100), "clamped to the five lines kept");
+        assert_eq!(text(v.screen(), 0), "line1");
+        assert!(!v.scroll(1), "nothing further back");
+        assert!(v.scroll(-1));
+        assert_eq!(text(v.screen(), 0), "line2");
+        v.write(b"x");
+        assert_eq!(v.screen().scrollback(), 0);
+        assert_eq!(text(v.screen(), 2), "line8");
+        assert!(!v.scroll(-1), "already at the bottom");
     }
 
     #[test]
