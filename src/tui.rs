@@ -1513,6 +1513,13 @@ const WHEEL_LINES: i32 = 3;
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used.
 const MAX_VIEWERS: usize = 3;
 
+/// The viewers opened by a resting cursor kept alive beside them, the oldest closing first.
+/// Each is a `claude attach` process: 160 MB resident, idle CPU under a third of a percent,
+/// so two peeked plus three live is 800 MB at worst. One slot made every step between two rows
+/// a fresh attach, a quarter to half a second of blank pane; two covers that bounce. Not yet a
+/// setting; it will be one alongside `MAX_VIEWERS`.
+const SPECULATIVE_VIEWERS: usize = 2;
+
 /// The frame width from which the selected or focused viewer is drawn beside the list.
 const SPLIT_MIN: u16 = 140;
 
@@ -1591,9 +1598,9 @@ struct Open {
     /// For a speculative viewer, which was never focused, this is when it was spawned.
     last_focused: Instant,
     /// Opened while the cursor rested on its row, before `enter` asked for it. Not counted
-    /// against `MAX_VIEWERS`; speculative viewers have their own pool of `MAX_VIEWERS`, the
-    /// oldest going first, so rows the cursor was on lately show at once whatever the number
-    /// of live viewers; the first focus clears it.
+    /// against `MAX_VIEWERS`; speculative viewers have their own pool of `SPECULATIVE_VIEWERS`,
+    /// the oldest going first, so rows the cursor was on lately show at once whatever the
+    /// number of live viewers; the first focus clears it.
     speculative: bool,
 }
 
@@ -2367,12 +2374,12 @@ impl App {
         self.debug(|| line);
     }
 
-    /// Speculative viewers pool beside the live ones, up to `MAX_VIEWERS` of their own, so a
-    /// row the cursor was on lately shows at once; past that the oldest speculative goes. The
-    /// pool is not the live count's leftover: with three live viewers a single slot made every
-    /// step between two rows a fresh `claude attach`, half a second to its first text.
+    /// Speculative viewers pool beside the live ones, up to `SPECULATIVE_VIEWERS` of their
+    /// own, so a row the cursor was on lately shows at once; past that the oldest speculative
+    /// goes. The pool is not the live count's leftover: with three live viewers a single slot
+    /// made every step between two rows a fresh `claude attach`, half a second to its first text.
     fn pool_speculative(&mut self) {
-        while self.viewers.len() - self.live_viewers() > MAX_VIEWERS {
+        while self.viewers.len() - self.live_viewers() > SPECULATIVE_VIEWERS {
             let oldest = self
                 .viewers
                 .iter()
@@ -6468,14 +6475,15 @@ mod tests {
             app.viewers.push(silent_open(k));
             app.viewers.last_mut().unwrap().last_focused = Instant::now() - Duration::from_secs(60);
         }
-        for k in ["s1", "s2", "s3", "s4"] {
+        for k in ["s1", "s2", "s3"] {
             app.viewers.push(speculative_open(k));
             app.viewers.last_mut().unwrap().last_focused = Instant::now();
             app.pool_speculative();
         }
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
         // Live viewers are never the ones to go; the oldest speculative did.
-        assert_eq!(keys, vec!["l1", "l2", "l3", "s2", "s3", "s4"]);
+        assert_eq!(keys, vec!["l1", "l2", "l3", "s2", "s3"]);
+        assert_eq!(app.viewers.len() - app.live_viewers(), SPECULATIVE_VIEWERS);
     }
 
     #[test]
