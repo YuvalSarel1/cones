@@ -741,22 +741,98 @@ fn lit() -> Style {
     Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
 
-/// What is typed with a block cursor after it, or the placeholder with the cursor on its first
-/// letter: how Claude Code draws its own input.
-fn typed(value: &str, placeholder: &str) -> Vec<Span<'static>> {
-    let cursor = Modifier::REVERSED;
+/// What is typed with a block cursor on the character at `cursor`, a byte offset, or after
+/// the text when it is at the end; or the placeholder with the cursor on its first letter: how
+/// Claude Code draws its own input.
+fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
+    let block = Modifier::REVERSED;
     if !value.is_empty() {
+        let (before, rest) = value.split_at(snap(value, cursor));
+        let mut rest = rest.chars();
+        let under = rest.next().map_or(" ".to_owned(), |c| c.to_string());
         return vec![
-            Span::raw(value.to_owned()),
-            Span::styled(" ", Style::default().add_modifier(cursor)),
+            Span::raw(before.to_owned()),
+            Span::styled(under, Style::default().add_modifier(block)),
+            Span::raw(rest.as_str().to_owned()),
         ];
     }
+    let cursor = block;
     let mut rest = placeholder.chars();
     let first = rest.next().map_or(" ".to_owned(), |c| c.to_string());
     vec![
         Span::styled(first, dim().add_modifier(cursor)),
         Span::styled(rest.as_str().to_owned(), dim()),
     ]
+}
+
+/// `at`, a byte offset into `text` that may be stale, brought back inside it and onto a
+/// character boundary.
+fn snap(text: &str, at: usize) -> usize {
+    let mut at = at.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+fn word_left(text: &str, at: usize) -> usize {
+    let t = text[..at].trim_end();
+    t.rfind(char::is_whitespace).map_or(0, |i| i + 1)
+}
+
+fn word_right(text: &str, at: usize) -> usize {
+    let t = &text[at..];
+    let from = t.len() - t.trim_start().len();
+    at + t[from..]
+        .find(char::is_whitespace)
+        .map_or(t.len(), |i| from + i)
+}
+
+/// Readline's editing of one line, for the composer. macOS terminals send the shortcuts their
+/// users press in the encodings below: VS Code, iTerm2 with natural text editing and Ghostty
+/// turn cmd+left and cmd+right into ctrl+a and ctrl+e, cmd+delete into ctrl+u, option+delete
+/// into ctrl+w or alt+backspace and option+left/right into alt+b/alt+f or alt+arrows; cmd
+/// itself never reaches a terminal program. Returns the cursor after the key, `None` when
+/// the key is not an edit.
+fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> Option<usize> {
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT);
+    let at = snap(text, cursor);
+    // ponytail: a word is a run of non-spaces, for every word key alike.
+    let prev = text[..at]
+        .chars()
+        .next_back()
+        .map_or(at, |c| at - c.len_utf8());
+    let next = text[at..].chars().next().map_or(at, |c| at + c.len_utf8());
+    let (wl, wr) = (word_left(text, at), word_right(text, at));
+    let cut = |text: &mut String, from: usize, to: usize| {
+        text.replace_range(from..to, "");
+        from
+    };
+    Some(match code {
+        KeyCode::Left if ctrl || alt => wl,
+        KeyCode::Right if ctrl || alt => wr,
+        KeyCode::Char('b') if alt && !ctrl => wl,
+        KeyCode::Char('f') if alt && !ctrl => wr,
+        KeyCode::Left => prev,
+        KeyCode::Right => next,
+        KeyCode::Home => 0,
+        KeyCode::Char('a') if ctrl => 0,
+        KeyCode::End => text.len(),
+        KeyCode::Char('e') if ctrl && !text.is_empty() => text.len(),
+        KeyCode::Backspace if alt => cut(text, wl, at),
+        KeyCode::Char('w') if ctrl => cut(text, wl, at),
+        KeyCode::Backspace => cut(text, prev, at),
+        KeyCode::Delete => cut(text, at, next),
+        KeyCode::Char('d') if alt && !ctrl => cut(text, at, wr),
+        KeyCode::Char('u') if ctrl => cut(text, 0, at),
+        KeyCode::Char('k') if ctrl => cut(text, at, text.len()),
+        KeyCode::Char(c) if !ctrl => {
+            text.insert(at, c);
+            at + c.len_utf8()
+        }
+        _ => return None,
+    })
 }
 
 /// `ctrl+v` in the composer, as in Claude Code: the clipboard's image lands as a PNG under the
@@ -1163,7 +1239,7 @@ impl JobForm {
             Step::Prompt => ("prompt", &self.prompt, "the task"),
         };
         let mut spans = vec![Span::styled(format!("{title} · {what} › "), ask)];
-        spans.extend(typed(value, hint));
+        spans.extend(typed(value, value.len(), hint));
         if let Some(e) = &self.error {
             spans.push(Span::styled(
                 format!("  {e}"),
@@ -1204,8 +1280,10 @@ struct App {
     filter: String,
     mode: Mode,
     status: String,
-    /// The composer: the instruction a session in the selected row's directory starts with.
+    /// The composer: the instruction a session in the selected row's directory starts with,
+    /// and where in it the next key lands, a byte offset `snap` keeps honest.
     text: String,
+    caret: usize,
     /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
     harness: usize,
     /// A `claude --bg` in flight on its own thread, keyed by its placeholder row's id; its one
@@ -1394,6 +1472,7 @@ impl App {
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
+            caret: 0,
             harness: 0,
             started: Vec::new(),
             pending: Vec::new(),
@@ -1505,7 +1584,7 @@ impl App {
                         Some(prompt) => {
                             self.pending.retain(|p| p.session.session_id != id);
                             if self.text.is_empty() {
-                                self.text = prompt;
+                                self.fill(prompt);
                             }
                         }
                         None => {
@@ -2348,8 +2427,16 @@ impl App {
                 open.viewer.write(text.as_bytes());
             }
         } else if matches!(self.mode, Mode::Normal) {
-            self.text.push_str(text);
+            let at = snap(&self.text, self.caret);
+            self.text.insert_str(at, text);
+            self.caret = at + text.len();
         }
+    }
+
+    /// An instruction back in the composer whole, cursor after it.
+    fn fill(&mut self, text: String) {
+        self.text = text;
+        self.caret = self.text.len();
     }
 
     /// A mouse event goes to the focused viewer, relative to its pane. Outside the pane, the
@@ -2439,7 +2526,7 @@ impl App {
                 if self.text.is_empty()
                     && let Some(prompt) = opening.prompt
                 {
-                    self.text = prompt;
+                    self.fill(prompt);
                 }
             }
         }
@@ -2454,7 +2541,7 @@ impl App {
         if self.text.is_empty()
             && let Some(prompt) = opening.prompt
         {
-            self.text = prompt;
+            self.fill(prompt);
         }
         self.status = "opening cancelled".into();
         true
@@ -2831,8 +2918,9 @@ impl App {
         )];
         spans.extend(typed(
             &self.text,
+            self.caret,
             &format!(
-                "an instruction for {} · enter starts {kind} there",
+                "an instruction for {} · enter starts {kind} there · ctrl+v pastes an image",
                 fleet::tilde(&self.target_dir())
             ),
         ));
@@ -3260,6 +3348,10 @@ impl App {
                 // Any key but ctrl+x disarms an armed ctrl+x, so the mark stays until the user
                 // does something else, as in `claude agents`.
                 let armed = self.armed.take();
+                if let Some(at) = edit(&mut self.text, self.caret, code, mods) {
+                    self.caret = at;
+                    return Ok(false);
+                }
                 match code {
                     KeyCode::Char('c') if ctrl => return Ok(true),
                     KeyCode::Char('x') if ctrl => {
@@ -3281,9 +3373,6 @@ impl App {
                     KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
                     KeyCode::Enter if self.text.trim().is_empty() => self.enter()?,
                     KeyCode::Enter => self.start(),
-                    KeyCode::Backspace => {
-                        self.text.pop();
-                    }
                     KeyCode::Char('s') if ctrl => {
                         self.by_state = !self.by_state;
                         self.rebuild();
@@ -3297,11 +3386,13 @@ impl App {
                         self.status = "refresh requested".into();
                     }
                     KeyCode::Char('v') if ctrl => match paste_image() {
-                        Ok(path) => attach(&mut self.text, &path),
+                        Ok(path) => {
+                            attach(&mut self.text, &path);
+                            self.caret = self.text.len();
+                        }
                         Err(e) => self.status = e,
                     },
                     KeyCode::Char(']' | '5') if ctrl => self.cycle_viewer(),
-                    KeyCode::Char(c) if !ctrl => self.text.push(c),
                     _ => {}
                 }
             }
@@ -3395,7 +3486,11 @@ impl App {
         let mut line = match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
-                spans.extend(typed(&self.filter, "text a row must contain"));
+                spans.extend(typed(
+                    &self.filter,
+                    self.filter.len(),
+                    "text a row must contain",
+                ));
                 Line::from(spans)
             }
             Mode::Job(f) => f.line(),
@@ -3411,7 +3506,7 @@ impl App {
             }
             Mode::Folder(text) => {
                 let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
-                spans.extend(typed(text, &fleet::tilde(&self.cwd)));
+                spans.extend(typed(text, text.len(), &fleet::tilde(&self.cwd)));
                 Line::from(spans)
             }
             Mode::Normal => self.composer(),
@@ -4586,6 +4681,61 @@ mod tests {
             "gone from the dashboard"
         );
         assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
+    }
+
+    /// The keys macOS terminals send for option+delete, cmd+delete, cmd+left, cmd+right and
+    /// option+left, as `edit` documents them, edit the instruction where the cursor is.
+    #[test]
+    fn the_composer_edits_where_the_cursor_is() {
+        let d = tempfile::tempdir().unwrap();
+        let mut app = app(d.path());
+        let k = |app: &mut App, code, mods| {
+            assert!(!app.key(code, mods).unwrap());
+        };
+        for c in "fix the tests".chars() {
+            k(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        k(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(app.text, "fix the ", "option+delete takes a word");
+        k(&mut app, KeyCode::Left, KeyModifiers::ALT);
+        k(&mut app, KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(app.text, "the ", "and so does alt+backspace, from mid-text");
+        k(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for c in "please ".chars() {
+            k(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(app.text, "please the ", "cmd+left, then typing lands there");
+        k(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+        k(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(
+            app.text, "please the",
+            "cmd+right is end of line, not edit job"
+        );
+        k(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+        app.paste("whole ");
+        assert_eq!(app.text, "please whole the", "a paste lands at the cursor");
+        let under = app
+            .composer()
+            .spans
+            .into_iter()
+            .find(|s| s.style.add_modifier.contains(Modifier::REVERSED))
+            .unwrap();
+        assert_eq!(
+            under.content, "t",
+            "the block cursor sits on the next character"
+        );
+        k(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            app.text, "the",
+            "cmd+delete takes everything before the cursor"
+        );
+        k(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert!(app.text.is_empty());
+        assert_eq!(
+            snap("héllo", 2),
+            1,
+            "a stale offset lands on a character boundary"
+        );
     }
 
     #[test]
