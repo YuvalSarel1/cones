@@ -1398,7 +1398,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "ctrl+\\",
-        "inside a viewer on a wide terminal, its layout: beside the list or over the whole frame",
+        "on a wide terminal, the pane on or off; inside a viewer, beside the list or over the whole frame",
     ),
     ("wheel", "scrolls the pane's viewer back, focused or not"),
     ("", "Leaving"),
@@ -1486,9 +1486,12 @@ struct App {
     /// list on a wide frame, else the frame less the strip row under it.
     pane: Rect,
     /// Whether a frame at least `SPLIT_MIN` wide draws the viewer beside the list; ctrl+\
-    /// inside a viewer toggles it, and off it the viewer takes the whole frame as on a
-    /// narrow terminal. A layout, not a state: it stays until toggled again.
+    /// toggles it, from the list or inside a viewer, and off it the viewer takes the whole
+    /// frame as on a narrow terminal. A layout, not a state: it stays until toggled again.
     split: bool,
+    /// The focused viewer has the whole frame whatever `split` says: shift+enter opened it
+    /// so, once. Cleared when the viewer is left, or when ctrl+\ inside it asks for the split.
+    full: bool,
     /// The selected row's viewer key and when the cursor arrived on it; after `REST` a Claude
     /// session row's viewer opens out of sight.
     rest: Option<(String, Instant)>,
@@ -1675,6 +1678,7 @@ impl App {
             size: (24, 80),
             pane: Rect::new(0, 0, 80, 23),
             split: true,
+            full: false,
             rest: None,
             prespawned: None,
             list_area: Rect::default(),
@@ -2065,7 +2069,7 @@ impl App {
 
     /// Whether a frame `width` columns wide draws the viewer beside the list.
     fn split_active(&self, width: u16) -> bool {
-        self.split && width >= SPLIT_MIN
+        self.split && !(self.full && self.focus.is_some()) && width >= SPLIT_MIN
     }
 
     /// How long the cursor rests on a row before its viewer opens: shorter beside the list.
@@ -2169,16 +2173,18 @@ impl App {
         }
     }
 
-    /// ctrl+\ inside a viewer: the viewer beside the list or over the whole frame. Only a
-    /// frame at least `SPLIT_MIN` wide draws the difference, so a narrower one says so and
-    /// keeps its state, rather than flip something that would surface later when the
-    /// terminal widens.
+    /// ctrl+\: from the list, the pane on or off; inside a viewer, the viewer beside the
+    /// list or over the whole frame. A viewer shift+enter gave the whole frame goes beside
+    /// the list first, whatever the layout was. Only a frame at least `SPLIT_MIN` wide draws
+    /// the difference, so a narrower one says so and keeps its state, rather than flip
+    /// something that would surface later when the terminal widens.
     fn toggle_split(&mut self) {
         if self.size.1 < SPLIT_MIN {
             self.status = format!("split needs {SPLIT_MIN} columns");
             return;
         }
-        self.split = !self.split;
+        let once = std::mem::take(&mut self.full) && self.focus.is_some();
+        self.split = once || !self.split;
         self.needs_clear = true;
         self.debug(|| format!("split {}", self.split));
     }
@@ -2443,6 +2449,7 @@ impl App {
         // Beside the list nothing leaves the frame, so ratatui's diff is enough; a viewer
         // that had the whole frame is not trusted to have left it clean.
         self.needs_clear = !self.split_active(self.size.1);
+        self.full = false;
         let i = self.focus.take().unwrap();
         self.feedback = Some(("return_to_draw", Instant::now()));
         let open = &mut self.viewers[i];
@@ -3539,9 +3546,10 @@ impl App {
     /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
     /// until the next key. While a viewer has the keys every key but ctrl+z and ctrl+\ is its,
     /// in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+\ toggles
-    /// the viewer beside the list. Two states only, the list or a viewer, since 2026-09-15:
-    /// a third, the viewer inside over the split, and keys that changed meaning by state
-    /// (ctrl+] to focus the pane in place, ctrl+\ to hide it) were too much to hold in mind.
+    /// the viewer beside the list. Two states only, the list or a viewer: a third, the viewer
+    /// inside over the split, and a ctrl+] that focused the pane in place or cycled viewers
+    /// were taken out on 2026-09-15 as too much to hold in mind. ctrl+\ means the same thing
+    /// in both states, the pane or the whole frame, so it is the one key both take.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
@@ -3750,25 +3758,32 @@ impl App {
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
                     KeyCode::Tab => self.harness = (self.harness + 1) % harness::KNOWN.len(),
-                    // shift+enter attaches over the whole frame. Claude Code's terminal bindings
-                    // send it as ESC CR, which crossterm reports as alt+enter; a kitty-protocol
-                    // terminal reports the shift itself.
+                    // shift+enter attaches over the whole frame, pane or no pane, and leaves
+                    // the layout as it was. Claude Code's terminal bindings send it as ESC CR,
+                    // which crossterm reports as alt+enter; a kitty-protocol terminal reports
+                    // the shift itself.
                     KeyCode::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
                             && self.text.trim().is_empty() =>
                     {
-                        if self.split && self.size.1 >= SPLIT_MIN {
-                            self.toggle_split();
-                        }
+                        // ponytail: set before enter so a viewer focused later (a Codex
+                        // client) gets the frame too; a refused attach leaves it set until
+                        // the next enter or unfocus, and it bites only while focused.
+                        self.full = true;
                         self.enter()?;
                     }
-                    KeyCode::Enter if self.text.trim().is_empty() => self.enter()?,
+                    KeyCode::Enter if self.text.trim().is_empty() => {
+                        self.full = false;
+                        self.enter()?;
+                    }
                     KeyCode::Enter => self.start(),
                     KeyCode::Char('s') if ctrl => {
                         self.by_state = !self.by_state;
                         self.rebuild();
                     }
                     KeyCode::Char('n') if ctrl => self.new_job(),
+                    // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
+                    KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('o') if ctrl => self.mode = Mode::Harness(0),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
@@ -5837,27 +5852,51 @@ mod tests {
 
     /// A dashboard on a background session whose viewer is alive but not focused, drawn once
     /// on a frame `width` columns wide and 30 rows tall.
-    /// shift+enter on a session row, beside the list, attaches over the whole frame, as
-    /// enter then ctrl+\ would; the ESC CR Claude Code's terminal bindings send for it,
-    /// alt+enter to crossterm, does the same. Full-frame already, it is enter.
+    /// shift+enter on a session row attaches over the whole frame, pane or no pane, and the
+    /// pane is back on ctrl+z; the ESC CR Claude Code's terminal bindings send for it,
+    /// alt+enter to crossterm, does the same. ctrl+\ inside that viewer puts it beside the
+    /// list. Pane off, shift+enter is enter.
     #[test]
     fn shift_enter_attaches_over_the_whole_frame() {
         let (_d, mut app, mut t) = split_setup(200);
         for mods in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
-            app.split = true;
             app.unfocus();
+            assert!(app.split);
             assert!(!app.key(KeyCode::Enter, mods).unwrap());
-            assert!(!app.split, "{mods:?} picks the full frame");
+            assert!(app.split, "{mods:?} leaves the layout alone");
+            assert!(!app.split_active(200), "{mods:?} takes the whole frame");
             assert_eq!(app.focus, Some(0));
             t.draw(|f| app.draw(f)).unwrap();
             assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
         }
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(
+            app.needs_clear,
+            "a viewer that had the frame is cleared away"
+        );
+        assert!(app.split_active(200), "ctrl+z brings the pane back");
+        app.needs_clear = false;
+        // ctrl+\ inside a viewer shift+enter opened goes beside the list, whatever the layout.
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split && app.split_active(200) && app.focus == Some(0));
         app.unfocus();
+        app.split = false;
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(
+            app.split,
+            "pane off, ctrl+\\ after shift+enter asks for the split"
+        );
+        app.unfocus();
+        app.split = false;
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(
             !app.split && app.focus == Some(0),
-            "full-frame already, it attaches"
+            "pane off already, it attaches"
         );
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split, "and ctrl+\\ there turns the pane on");
     }
 
     fn split_setup(
@@ -6185,12 +6224,15 @@ mod tests {
         assert!(app.split);
         assert_eq!(app.focus, Some(0));
         assert!(app.text.is_empty(), "nothing typed into the composer");
-        // From the list the key is not the dashboard's and changes nothing.
+        // From the list the key turns the pane off and on, and the list keeps the keys.
         app.unfocus();
         app.status.clear();
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split, "the layout is the viewer's key");
-        assert!(!app.hint_line().to_string().contains("ctrl+\\"));
+        assert!(!app.split, "the pane is off");
+        assert_eq!(app.focus, None);
+        assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
+        assert!(app.split, "and on again");
+        assert!(app.text.is_empty(), "nothing typed into the composer");
         // A narrow frame keeps its state and says why.
         app.focus(0);
         app.size = (30, 80);
