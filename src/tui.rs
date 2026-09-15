@@ -1425,6 +1425,10 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     ("ctrl+e", "edit the selected job in the wizard"),
     ("ctrl+n", "add a job"),
+    (
+        "ctrl+p",
+        "pin the selected row's folder: it keeps a row after the last session there leaves",
+    ),
     ("ctrl+s", "regroup sessions by state or by directory"),
     (
         "ctrl+f",
@@ -3288,6 +3292,21 @@ impl App {
         Ok(())
     }
 
+    /// ctrl+p: pin the selected row's folder, so it keeps a row after the last session there
+    /// leaves; on the menu row, the dashboard's own.
+    fn pin_selected(&mut self) {
+        let dir = self.target_dir();
+        let name = fleet::tilde(&dir);
+        if self.data.folders.contains(&dir) {
+            self.status = format!("{name} is pinned already");
+            return;
+        }
+        self.status = match self.pin_folder(dir) {
+            Ok(()) => format!("{name} pinned · its row stays after the last session there leaves"),
+            Err(e) => format!("folder not saved: {e:#}"),
+        };
+    }
+
     fn save_folders(&self) -> Result<()> {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
@@ -3461,6 +3480,7 @@ impl App {
                 keys.extend([
                     ("tab", next.as_str()),
                     ("ctrl+n", "new job"),
+                    ("ctrl+p", "pin"),
                     ("ctrl+s", "regroup"),
                     ("ctrl+o", "agents"),
                     ("ctrl+g", "guide"),
@@ -3887,6 +3907,7 @@ impl App {
                         self.rebuild();
                     }
                     KeyCode::Char('n') if ctrl => self.new_job(),
+                    KeyCode::Char('p') if ctrl => self.pin_selected(),
                     // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
@@ -5715,6 +5736,37 @@ mod tests {
             "and the row is back when it leaves"
         );
 
+        // ctrl+p on a session's row pins its folder, so the folder outlives the session.
+        app.select_new(A);
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.status.contains("pinned"), "{}", app.status);
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(A),
+            "the cursor stays on the session"
+        );
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Folder("/src/one".into())),
+            "no placeholder while the session runs"
+        );
+        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.status.contains("already"), "{}", app.status);
+        fs::remove_file(claude.join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Folder("/src/one".into())),
+            "the folder keeps a row after the session leaves"
+        );
+        assert_eq!(
+            fs::read_to_string(claude.join("folders")).unwrap(),
+            format!("{}\n/src/one\n", picked.display())
+        );
+
         app.cursor = folder_row(&app).unwrap();
         app.stop();
         assert!(app.status.starts_with("ctrl+x again"), "{}", app.status);
@@ -5723,7 +5775,11 @@ mod tests {
         assert!(folder_row(&app).is_none(), "gone at once");
         app.refresh().unwrap();
         assert!(folder_row(&app).is_none(), "and after a reload");
-        assert_eq!(fs::read_to_string(claude.join("folders")).unwrap(), "");
+        assert_eq!(
+            fs::read_to_string(claude.join("folders")).unwrap(),
+            "/src/one\n",
+            "the folder ctrl+p pinned stays"
+        );
     }
 
     #[test]
