@@ -4447,7 +4447,7 @@ impl App {
         }
     }
 
-    /// The composer: the harness `tab` picked, then the instruction, or where it would run.
+    /// The composer: the harness `tab` picked, then the instruction or a short placeholder.
     fn composer(&self) -> Line<'static> {
         let kind = harness::KNOWN[self.harness].to_string();
         let mut spans = vec![Span::styled(
@@ -4457,14 +4457,7 @@ impl App {
         let label = |n: usize| format!("[Image #{}]", n + 1);
         let shown = expand(&self.text, label);
         let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
-        spans.extend(typed(
-            &shown,
-            caret,
-            &format!(
-                "an instruction for {} · enter starts {kind} there · ctrl+v pastes an image",
-                fleet::tilde(&self.target_dir())
-            ),
-        ));
+        spans.extend(typed(&shown, caret, "Type an instruction…"));
         Line::from(spans)
     }
 
@@ -7014,7 +7007,7 @@ mod tests {
                 .map(|s| s.content.to_string())
                 .collect::<String>()
         };
-        assert!(text(app.composer()).starts_with("✻ claude › an instruction for "));
+        assert_eq!(text(app.composer()), "✻ claude › Type an instruction…");
         let hint = text(app.hint_line());
         assert!(
             hint.starts_with("enter add folder · ← → pick · tab codex · ctrl+p pin"),
@@ -7432,7 +7425,7 @@ mod tests {
         let screen = rows(&t, 80);
         assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
         assert!(
-            !screen.iter().any(|r| r.contains("an instruction for")),
+            !screen.iter().any(|r| r.contains("Type an instruction…")),
             "the composer is not drawn under a viewer: {screen:#?}"
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
@@ -7443,7 +7436,7 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 80);
         assert!(
-            screen.iter().any(|r| r.contains("an instruction for")),
+            screen.iter().any(|r| r.contains("Type an instruction…")),
             "{screen:#?}"
         );
         assert!(!screen[0].starts_with("VIEW"), "{screen:#?}");
@@ -7768,7 +7761,7 @@ mod tests {
         let screen = rows(&t, 200);
         let left: Vec<String> = (0..30).map(|y| cells(&t, y, 0..list)).collect();
         assert!(
-            left.iter().any(|r| r.contains("an instruction for")),
+            left.iter().any(|r| r.contains("Type an instruction…")),
             "the composer is in the list column: {left:#?}"
         );
         assert!(
@@ -8707,7 +8700,7 @@ mod tests {
             !screen.iter().any(|r| r.contains("VIEW")),
             "unfocused on a narrow frame the list is alone: {screen:#?}"
         );
-        assert!(screen.iter().any(|r| r.contains("an instruction for")));
+        assert!(screen.iter().any(|r| r.contains("Type an instruction…")));
         assert_eq!(app.pane, Rect::new(0, 0, 120, 29));
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
@@ -8719,7 +8712,7 @@ mod tests {
             "the strip: {:?}",
             screen[29]
         );
-        assert!(!screen.iter().any(|r| r.contains("an instruction for")));
+        assert!(!screen.iter().any(|r| r.contains("Type an instruction…")));
         assert_eq!(app.viewers[0].viewer.screen().size(), (29, 120));
     }
 

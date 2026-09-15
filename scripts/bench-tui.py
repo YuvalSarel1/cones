@@ -235,7 +235,7 @@ def measure(args):
                 (registry / "alpha.tmp").replace(registry / "alpha.json")
                 returned = time.monotonic()
                 keys("C-z")
-                frame = wait(lambda s: "an instruction for" in s)
+                frame = wait(lambda s: "Type an instruction…" in s)
                 sample("detach_to_frame", returned, frame)
                 (job / "state.json").unlink()
                 if transcript:
