@@ -1032,6 +1032,51 @@ fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> 
     })
 }
 
+/// A line being typed and the cursor in it, a byte offset. Every prompt the dashboard reads
+/// from the keyboard is one, so `edit`'s keys and `tab` on a path work the same in all of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Input {
+    pub text: String,
+    pub at: usize,
+}
+
+impl Input {
+    /// `text` with the cursor after it.
+    pub fn new(text: impl Into<String>) -> Self {
+        let text = text.into();
+        Self {
+            at: text.len(),
+            text,
+        }
+    }
+
+    /// An edit key applied where the cursor is; false for any other key.
+    fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        match edit(&mut self.text, self.at, code, mods) {
+            Some(at) => {
+                self.at = at;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `tab` on a path: the text grown as `complete_dir` grows it, the cursor after it; or,
+    /// when nothing grew, the names that still match, for the hint line.
+    fn complete(&mut self, base: &Path) -> Vec<String> {
+        let (grown, names) = complete_dir(&self.text, base);
+        if grown == self.text {
+            return names;
+        }
+        *self = Self::new(grown);
+        Vec::new()
+    }
+
+    fn spans(&self, placeholder: &str) -> Vec<Span<'static>> {
+        typed(&self.text, self.at, placeholder)
+    }
+}
+
 /// `ctrl+v` in the composer, as in Claude Code: the clipboard's image lands as a PNG under the
 /// temp dir and its path is typed into the instruction, where the harness reads it as a file.
 /// A terminal paste of text arrives as keys; only an image needs the clipboard itself.
@@ -1457,6 +1502,8 @@ pub struct JobForm {
     pub at: String,
     pub name: String,
     pub error: Option<String>,
+    /// The cursor in the answer being typed, a byte offset; past the end means after it.
+    cursor: usize,
     schedule: String,
     /// The job being edited, as written in the file; `None` adds one.
     original: Option<config::Job>,
@@ -1490,11 +1537,28 @@ impl JobForm {
             at,
             name,
             error: None,
+            cursor: usize::MAX,
             schedule: String::new(),
             original,
             base: base.to_owned(),
             fallback: fallback.to_owned(),
         }
+    }
+
+    /// Move to `step`, the cursor after its answer.
+    fn go(&mut self, step: Step) {
+        self.step = step;
+        self.cursor = usize::MAX;
+    }
+
+    /// `tab` on `where`: the directory completed as the folder prompt's is, from the jobs
+    /// file's directory, where a relative answer is taken from.
+    pub fn complete(&mut self) -> Vec<String> {
+        let mut input = Input::new(std::mem::take(&mut self.dir));
+        let names = input.complete(&self.base);
+        self.dir = input.text;
+        self.cursor = usize::MAX;
+        names
     }
 
     /// The answer being typed; `when` is picked, not typed.
@@ -1522,11 +1586,12 @@ impl JobForm {
         }
     }
 
-    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> FormAction {
+    pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> FormAction {
         if code == KeyCode::Esc {
             return FormAction::Cancel;
         }
         self.error = None;
+        let cursor = self.cursor;
         match code {
             KeyCode::Enter => return self.next(),
             KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.step == Step::When => {
@@ -1535,30 +1600,26 @@ impl JobForm {
                 self.at.clear();
             }
             KeyCode::Up => self.back(),
-            KeyCode::Backspace => match self.field() {
-                Some(f) if !f.is_empty() => {
-                    f.pop();
-                }
-                _ => self.back(),
-            },
-            KeyCode::Char(c) if !ctrl => {
-                if let Some(f) = self.field() {
-                    f.push(c);
+            KeyCode::Backspace if self.field().is_none_or(|f| f.is_empty()) => self.back(),
+            _ => {
+                if let Some(f) = self.field()
+                    && let Some(at) = edit(f, cursor, code, mods)
+                {
+                    self.cursor = at;
                 }
             }
-            _ => {}
         }
         FormAction::Stay
     }
 
     fn back(&mut self) {
-        self.step = match self.step {
+        self.go(match self.step {
             Step::What | Step::Where => Step::What,
             Step::When => Step::Where,
             Step::At => Step::When,
             Step::Name if self.asks_at() => Step::At,
             Step::Name => Step::When,
-        };
+        });
     }
 
     /// Check the answer; move on, or at the last question hand the job over. The checks are the
@@ -1569,13 +1630,13 @@ impl JobForm {
                 if self.prompt.trim().is_empty() {
                     self.error = Some("the task cannot be empty".into());
                 } else {
-                    self.step = Step::Where;
+                    self.go(Step::Where);
                 }
             }
             Step::Where => match launch_dir(&self.dir, &self.base, &self.fallback) {
                 Ok(dir) => {
                     self.dir = fleet::tilde(&dir);
-                    self.step = Step::When;
+                    self.go(Step::When);
                 }
                 Err(e) => self.error = Some(e),
             },
@@ -1590,10 +1651,10 @@ impl JobForm {
                     };
                 }
                 if self.asks_at() {
-                    self.step = Step::At;
+                    self.go(Step::At);
                 } else {
                     self.schedule = to_cron(self.when, "").unwrap_or_default();
-                    self.step = Step::Name;
+                    self.go(Step::Name);
                 }
             }
             Step::At => {
@@ -1603,7 +1664,7 @@ impl JobForm {
                 match to_cron(self.when, &self.at) {
                     Ok(s) => {
                         self.schedule = s;
-                        self.step = Step::Name;
+                        self.go(Step::Name);
                     }
                     Err(e) => self.error = Some(e),
                 }
@@ -1681,7 +1742,7 @@ impl JobForm {
                     ));
                 }
             } else if step == self.step {
-                spans.extend(typed(value, value.len(), placeholder));
+                spans.extend(typed(value, self.cursor, placeholder));
             } else if step < self.step || !value.is_empty() {
                 spans.push(Span::raw(value.to_owned()));
             } else {
@@ -1827,6 +1888,8 @@ pub struct ConfigForm {
     /// Each field as typed; a picked field holds its option's word, empty for the built-in.
     pub values: Vec<String>,
     pub error: Option<String>,
+    /// The cursor in the selected value, a byte offset; past the end means after it.
+    cursor: usize,
 }
 
 impl ConfigForm {
@@ -1853,7 +1916,14 @@ impl ConfigForm {
                 flag(d.notify),
             ],
             error: None,
+            cursor: usize::MAX,
         }
+    }
+
+    /// Select `row`, the cursor after its value.
+    fn go(&mut self, row: usize) {
+        self.row = row;
+        self.cursor = usize::MAX;
     }
 
     fn field(&self) -> &'static Field {
@@ -1906,7 +1976,7 @@ impl ConfigForm {
         })
     }
 
-    pub fn key(&mut self, code: KeyCode, ctrl: bool) -> ConfigAction {
+    pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         if code == KeyCode::Esc {
             return ConfigAction::Cancel;
         }
@@ -1917,39 +1987,35 @@ impl ConfigForm {
                     Ok(p) => ConfigAction::Save(Box::new(p)),
                     Err(e) => {
                         // The error lands on the field it names.
-                        self.row = FIELDS
+                        self.go(FIELDS
                             .iter()
                             .position(|f| e.starts_with(f.name))
-                            .unwrap_or(self.row);
+                            .unwrap_or(self.row));
                         self.error = Some(e);
                         ConfigAction::Stay
                     }
                 };
             }
-            KeyCode::Up => self.row = self.row.saturating_sub(1),
-            KeyCode::Down => self.row = (self.row + 1).min(FIELDS.len() - 1),
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
-                if let Some(opts) = self.field().picks {
-                    let n = opts.len();
-                    let at = opts
-                        .iter()
-                        .position(|o| *o == self.values[self.row])
-                        .unwrap_or(0);
-                    let at = (at + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
-                    self.values[self.row] = if at == 0 {
-                        String::new()
-                    } else {
-                        opts[at].to_owned()
-                    };
-                }
+            KeyCode::Up => self.go(self.row.saturating_sub(1)),
+            KeyCode::Down => self.go((self.row + 1).min(FIELDS.len() - 1)),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.field().picks.is_some() => {
+                let opts = self.field().picks.unwrap_or_default();
+                let n = opts.len();
+                let at = opts
+                    .iter()
+                    .position(|o| *o == self.values[self.row])
+                    .unwrap_or(0);
+                let at = (at + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
+                self.values[self.row] = if at == 0 {
+                    String::new()
+                } else {
+                    opts[at].to_owned()
+                };
             }
-            KeyCode::Backspace => {
-                if self.field().picks.is_none() {
-                    self.values[self.row].pop();
+            _ if self.field().picks.is_none() => {
+                if let Some(at) = edit(&mut self.values[self.row], self.cursor, code, mods) {
+                    self.cursor = at;
                 }
-            }
-            KeyCode::Char(c) if !ctrl && self.field().picks.is_none() => {
-                self.values[self.row].push(c);
             }
             _ => {}
         }
@@ -1985,7 +2051,7 @@ impl ConfigForm {
                     opts.iter().map(|o| o.len() + 2).sum::<usize>()
                 }
                 (_, true) => {
-                    spans.extend(typed(value, value.len(), f.builtin));
+                    spans.extend(typed(value, self.cursor, f.builtin));
                     value.len().max(f.builtin.len()) + 1
                 }
                 (_, false) if value.is_empty() => {
@@ -2045,7 +2111,7 @@ enum Mode {
     /// The `ctrl+o` prompt: which harness's own agents view to open; an index into `harness::KNOWN`.
     Harness(usize),
     /// The menu's `folder` prompt: the path typed so far.
-    Folder(String),
+    Folder(Input),
     /// The usage guide, `ctrl+g`, drawn where the list is; the wrapped line at its top.
     Guide(usize),
 }
@@ -2099,7 +2165,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "← →",
-        "move a character in the instruction; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
+        "move a character in the instruction, and in every prompt that takes text; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
     ),
     (
         "backspace",
@@ -2143,7 +2209,7 @@ struct App {
     by_state: bool,
     /// Column widths so far, so a value changing length never shifts the table.
     widths: Widths,
-    filter: String,
+    filter: Input,
     mode: Mode,
     status: String,
     /// The composer: the instruction a session in the selected row's directory starts with,
@@ -2377,7 +2443,7 @@ impl App {
             scroll: 0,
             by_state: false,
             widths: Widths::new(),
-            filter: String::new(),
+            filter: Input::default(),
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
@@ -2669,7 +2735,7 @@ impl App {
     /// row, so every unselectable kind except Header is dropped from the match set while a needle
     /// is set; a new unselectable kind needs the same treatment or it hides the title above it.
     fn apply_filter(&mut self) {
-        let needle = self.filter.to_lowercase();
+        let needle = self.filter.text.to_lowercase();
         let rows = &self.rows;
         let matched: Vec<usize> = (0..rows.len())
             .filter(|&i| {
@@ -3787,7 +3853,7 @@ impl App {
             Kind::Menu => match MENU[self.menu].0 {
                 "runs" => self.new_job(),
                 "agents" => self.mode = Mode::Harness(0),
-                "folder" => self.mode = Mode::Folder(String::new()),
+                "folder" => self.mode = Mode::Folder(Input::default()),
                 "config" => {
                     self.mode = Mode::Config(Box::new(ConfigForm::new(&config::defaults(
                         &self.jobs_path,
@@ -4095,8 +4161,8 @@ impl App {
         {
             return Line::styled(action.message(), dim());
         }
-        let prefix = (!self.filter.is_empty())
-            .then(|| Span::styled(format!("filter: {}  ", self.filter), dim()));
+        let prefix = (!self.filter.text.is_empty())
+            .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
         // Beside the list a focused viewer has no strip; the keys that leave it are here.
         let mut line = if self.focus.is_some() {
             hints(&[("ctrl+z", "back"), ("ctrl+\\", "full screen")])
@@ -4417,15 +4483,13 @@ impl App {
             Mode::Filter => {
                 match code {
                     KeyCode::Esc => {
-                        self.filter.clear();
+                        self.filter = Input::default();
                         self.mode = Mode::Normal;
                     }
                     KeyCode::Enter => self.mode = Mode::Normal,
-                    KeyCode::Backspace => {
-                        self.filter.pop();
+                    _ => {
+                        self.filter.key(code, mods);
                     }
-                    KeyCode::Char(c) if !ctrl => self.filter.push(c),
-                    _ => {}
                 }
                 self.apply_filter();
                 self.settle();
@@ -4476,17 +4540,14 @@ impl App {
                     _ => {}
                 }
             }
-            Mode::Folder(text) => match code {
+            Mode::Folder(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Backspace => {
-                    text.pop();
-                }
                 // ↑ ↓ recall the folders sessions have been seen in, newest first, as a
                 // shell's history does; the prompt's text is the one recalled.
                 KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
                     let recent: Vec<String> =
                         self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
-                    let at = recent.iter().position(|r| r == text);
+                    let at = recent.iter().position(|r| *r == input.text);
                     let n = recent.len();
                     let next = match (code, at) {
                         (KeyCode::Up, None) => 0,
@@ -4494,24 +4555,15 @@ impl App {
                         (_, None) => n - 1,
                         (_, Some(i)) => (i + n - 1) % n,
                     };
-                    *text = recent[next].clone();
+                    *input = Input::new(recent[next].clone());
                 }
-                KeyCode::Char(c) if !ctrl => text.push(c),
                 // One tab grows the path as far as it is unambiguous; a second, changing
                 // nothing, lists what still matches, as bash and zsh do.
-                KeyCode::Tab => {
-                    let (grown, names) = complete_dir(text, &self.cwd);
-                    if grown == *text {
-                        self.status = names.join("  ");
-                    } else {
-                        *text = grown;
-                        self.status.clear();
-                    }
-                }
+                KeyCode::Tab => self.status = input.complete(&self.cwd).join("  "),
                 // The folder prompt: a directory, relative to the dashboard's own, checked
                 // before it is taken; it gets a row and the cursor, so a launch goes there.
                 KeyCode::Enter => {
-                    let text = text.clone();
+                    let text = input.text.clone();
                     match launch_dir(&text, &self.cwd, &self.cwd) {
                         Ok(dir) => {
                             self.mode = Mode::Normal;
@@ -4526,20 +4578,14 @@ impl App {
                         Err(e) => self.status = e,
                     }
                 }
-                _ => {}
-            },
-            // The wizard's directory completes as the folder prompt does, from the jobs
-            // file's directory, where a relative answer is taken from.
-            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Where => {
-                let (grown, names) = complete_dir(&form.dir, &form.base);
-                if grown == form.dir {
-                    self.status = names.join("  ");
-                } else {
-                    form.dir = grown;
-                    self.status.clear();
+                _ => {
+                    input.key(code, mods);
                 }
+            },
+            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Where => {
+                self.status = form.complete().join("  ");
             }
-            Mode::Job(form) => match form.key(code, ctrl) {
+            Mode::Job(form) => match form.key(code, mods) {
                 FormAction::Stay => {}
                 FormAction::Cancel => self.mode = Mode::Normal,
                 // `once`: a supervised run under the file's first job's policy, in the ledger
@@ -4568,7 +4614,7 @@ impl App {
             },
             // The whole block is checked and the file replaced at once; a bad value comes back
             // inline on its field and the editor stays.
-            Mode::Config(form) => match form.key(code, ctrl) {
+            Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
                 ConfigAction::Save(policy) => {
@@ -4815,11 +4861,7 @@ impl App {
         let mut line = match &self.mode {
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
-                spans.extend(typed(
-                    &self.filter,
-                    self.filter.len(),
-                    "text a row must contain",
-                ));
+                spans.extend(self.filter.spans("text a row must contain"));
                 Line::from(spans)
             }
             Mode::Job(f) => f.line(),
@@ -4834,9 +4876,9 @@ impl App {
                 );
                 Line::from(spans)
             }
-            Mode::Folder(text) => {
+            Mode::Folder(input) => {
                 let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
-                spans.extend(typed(text, text.len(), &fleet::tilde(&self.cwd)));
+                spans.extend(input.spans(&fleet::tilde(&self.cwd)));
                 Line::from(spans)
             }
             Mode::Guide(_) => Line::from(vec![
@@ -5273,12 +5315,104 @@ mod tests {
 
     fn typed(f: &mut JobForm, text: &str) {
         for c in text.chars() {
-            assert_eq!(f.key(KeyCode::Char(c), false), FormAction::Stay);
+            assert_eq!(
+                f.key(KeyCode::Char(c), KeyModifiers::NONE),
+                FormAction::Stay
+            );
         }
     }
 
     fn enter(f: &mut JobForm) -> FormAction {
-        f.key(KeyCode::Enter, false)
+        f.key(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    /// The wizard's answers, the defaults editor's values, the filter and the folder prompt
+    /// take readline's keys as the composer does, with the cursor where the next key acts;
+    /// moving to another answer puts the cursor after it, and tab on a path does the same.
+    #[test]
+    fn every_prompt_edits_where_the_cursor_is() {
+        let base = tempfile::tempdir().unwrap();
+        std::fs::create_dir(base.path().join("src")).unwrap();
+        let mut f = JobForm::new(base.path(), base.path(), None, "fix the tests");
+        f.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        f.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        typed(&mut f, "please ");
+        assert_eq!(
+            f.prompt, "please fix the ",
+            "ctrl+w, then cmd+left and typing"
+        );
+        f.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            f.prompt, "fix the ",
+            "cmd+delete takes everything before the cursor"
+        );
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        typed(&mut f, "sr");
+        f.key(KeyCode::Left, KeyModifiers::NONE);
+        f.key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(
+            f.dir, "r",
+            "backspace mid-answer takes the character before the cursor"
+        );
+        f.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(f.dir, "r");
+        f.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        typed(&mut f, "s");
+        assert!(f.complete().is_empty());
+        assert_eq!(
+            f.dir, "src/",
+            "tab completes and leaves the cursor after the path"
+        );
+        typed(&mut f, "x");
+        assert_eq!(f.dir, "src/x");
+        f.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        f.key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(
+            f.step,
+            Step::What,
+            "backspace on an empty answer still steps back"
+        );
+        assert_eq!(f.prompt, "fix the ");
+        typed(&mut f, "x");
+        assert_eq!(
+            f.prompt, "fix the x",
+            "the cursor is after the answer stepped back to"
+        );
+
+        let mut c = ConfigForm::new(&config::Policy::default());
+        for ch in "15".chars() {
+            c.key(KeyCode::Char(ch), KeyModifiers::NONE);
+        }
+        c.key(KeyCode::Left, KeyModifiers::NONE);
+        c.key(KeyCode::Char('0'), KeyModifiers::NONE);
+        assert_eq!(
+            c.values[0], "105",
+            "the defaults editor types where the cursor is"
+        );
+        c.key(KeyCode::Down, KeyModifiers::NONE);
+        c.key(KeyCode::Char('2'), KeyModifiers::NONE);
+        c.key(KeyCode::Up, KeyModifiers::NONE);
+        c.key(KeyCode::Char('7'), KeyModifiers::NONE);
+        assert_eq!(
+            c.values[0], "1057",
+            "another row puts the cursor after its value"
+        );
+        assert_eq!(c.values[1], "2");
+
+        let mut i = Input::new("ab");
+        assert!(i.key(KeyCode::Left, KeyModifiers::NONE));
+        assert!(i.key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(
+            !i.key(KeyCode::Enter, KeyModifiers::NONE),
+            "enter is not an edit"
+        );
+        assert_eq!(
+            i,
+            Input {
+                text: "axb".into(),
+                at: 2
+            }
+        );
     }
 
     #[test]
@@ -5330,7 +5464,7 @@ mod tests {
             coordinator: false,
         });
         app.apply(data);
-        app.filter = "209aa1a4".into();
+        app.filter = Input::new("209aa1a4");
         app.apply_filter();
         app.settle();
         assert_eq!(app.enter_label(), "own terminal");
@@ -5452,12 +5586,12 @@ mod tests {
             coordinator: false,
         });
         app.apply(data);
-        app.filter = "codex-77".into();
+        app.filter = Input::new("codex-77");
         app.apply_filter();
         app.settle();
         assert!(matches!(&app.selected().unwrap().kind, Kind::Session(id, _) if id == "codex-77"));
         assert_eq!(app.enter_label(), "own terminal");
-        app.filter.clear();
+        app.filter = Input::default();
         app.apply_filter();
         assert_ne!(
             app.enter_label(),
@@ -5487,7 +5621,7 @@ mod tests {
             coordinator: false,
         });
         app.apply(data);
-        app.filter = "dddd-dae".into();
+        app.filter = Input::new("dddd-dae");
         app.apply_filter();
         app.settle();
         assert_eq!(app.enter_label(), "attach");
@@ -5616,7 +5750,7 @@ mod tests {
         assert!(shown[5].contains("[once] hourly"), "{shown:?}");
         assert_eq!(shown.len(), 6, "once asks nothing more: {shown:?}");
         for _ in 0..3 {
-            f.key(KeyCode::Right, false);
+            f.key(KeyCode::Right, KeyModifiers::NONE);
         }
         assert_eq!(WHEN[f.when], "weekdays");
         assert_eq!(f.lines().len(), 8, "weekdays asks a time and a name");
@@ -5634,12 +5768,12 @@ mod tests {
             "the name is suggested from the task"
         );
         // ↑ steps back, and forward again keeps the answers.
-        f.key(KeyCode::Up, false);
+        f.key(KeyCode::Up, KeyModifiers::NONE);
         assert_eq!(f.step, Step::At);
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(f.step, Step::Name);
         for _ in 0..16 {
-            f.key(KeyCode::Backspace, false);
+            f.key(KeyCode::Backspace, KeyModifiers::NONE);
         }
         typed(&mut f, "bad name");
         assert_eq!(enter(&mut f), FormAction::Stay);
@@ -5717,7 +5851,7 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert_eq!(f.key(KeyCode::Esc, false), FormAction::Cancel);
+        assert_eq!(f.key(KeyCode::Esc, KeyModifiers::NONE), FormAction::Cancel);
     }
 
     fn registry(claude: &Path, id: &str, cwd: &str, status: &str, started: i64) {
@@ -6004,7 +6138,7 @@ mod tests {
         registry(claude, C, "/src/two", "idle", 1_757_682_873_000);
         let mut app = app(claude);
         app.by_state = true;
-        app.filter = "two".into();
+        app.filter = Input::new("two");
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(B), "oldest match first");
         app.step(1);
@@ -6021,15 +6155,15 @@ mod tests {
             "the row shows what the session became"
         );
         assert!(app.by_state, "grouping kept");
-        assert_eq!(app.filter, "two", "filter kept");
+        assert_eq!(app.filter.text, "two", "filter kept");
         assert!(matches!(app.mode, Mode::Normal));
         // The session ended while open: the cursor falls on a remaining row, not on nothing.
         fs::remove_file(claude.join("sessions").join(format!("{C}.json"))).unwrap();
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(B));
-        assert!(app.by_state && app.filter == "two");
+        assert!(app.by_state && app.filter.text == "two");
         // Without the filter, A is back too and C's absence still leaves a selection.
-        app.filter.clear();
+        app.filter = Input::default();
         app.refresh().unwrap();
         assert!(key(&app).is_some());
     }
@@ -6541,7 +6675,7 @@ mod tests {
             "a missing directory is refused"
         );
         assert!(app.status.contains("not a directory"), "{}", app.status);
-        app.mode = Mode::Folder(inside.display().to_string());
+        app.mode = Mode::Folder(Input::new(inside.display().to_string()));
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let inside = inside.canonicalize().unwrap();
         assert!(matches!(app.mode, Mode::Normal));
@@ -6572,22 +6706,22 @@ mod tests {
             "/src/two\n/src/one\n",
             "a folder seen for the first time goes to the front"
         );
-        app.mode = Mode::Folder(String::new());
+        app.mode = Mode::Folder(Input::default());
         app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Folder(t) if t == "/src/two"),
+            matches!(&app.mode, Mode::Folder(t) if t.text == "/src/two"),
             "{:?}",
             app.status
         );
         app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Folder(t) if t == "/src/one"));
+        assert!(matches!(&app.mode, Mode::Folder(t) if t.text == "/src/one"));
         app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Folder(t) if t == "/src/two"),
+            matches!(&app.mode, Mode::Folder(t) if t.text == "/src/two"),
             "wraps"
         );
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Folder(t) if t == "/src/one"));
+        assert!(matches!(&app.mode, Mode::Folder(t) if t.text == "/src/one"));
         app.mode = Mode::Normal;
     }
 
@@ -7240,7 +7374,7 @@ mod tests {
             !reversed(&t),
             "the composer draws no block cursor while the viewer has the terminal's"
         );
-        app.filter = "one".into();
+        app.filter = Input::new("one");
         assert!(
             app.hint_line()
                 .to_string()
@@ -7248,7 +7382,7 @@ mod tests {
             "a kept filter stays on the focused hint line: {}",
             app.hint_line()
         );
-        app.filter.clear();
+        app.filter = Input::default();
         // The mouse is the pane's: a press on the list goes nowhere, a release there lands on
         // the pane's left edge, and the pane's origin is taken off what the viewer sees.
         let ev = |kind, column, row| MouseEvent {
@@ -7377,7 +7511,7 @@ mod tests {
             keys(&fitted).iter().all(|k| keys(&wide).contains(k)),
             "only whole keys go: {fitted}"
         );
-        app.filter = "one".into();
+        app.filter = Input::new("one");
         let filtered = app.hint_line();
         assert!(filtered.width() <= 70, "{filtered}");
         assert!(
