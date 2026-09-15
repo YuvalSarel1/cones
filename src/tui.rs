@@ -5925,10 +5925,14 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         }
     })();
     app.debug(|| format!("dashboard loop ended: {result:?}"));
-    // Viewers die with the dashboard: their process groups, never the agents behind them.
-    app.viewers.clear();
+    // Hand the terminal back before reaping. Viewers draw on their own ptys, so a slow
+    // reap has nothing left to say to this screen, and quitting feels immediate.
     ratatui::restore();
     hand_back_tty();
+    // Viewers die with the dashboard: their process groups, never the agents behind them.
+    let reaping = Instant::now();
+    app.viewers.clear();
+    app.timing("reap", reaping);
     result.context("dashboard")?;
     Ok(0)
 }
