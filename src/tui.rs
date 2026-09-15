@@ -1916,7 +1916,8 @@ impl App {
 
     /// The viewer the pane shows. Beside the list: the focused one; else the selected row's,
     /// live or speculative, so a Claude row's pre-spawned screen is on view as soon as it
-    /// paints; else the one focused last. On a narrow frame only a focused viewer is drawn.
+    /// paints; else, unless the row is a session with a transcript to preview, the one
+    /// focused last. On a narrow frame only a focused viewer is drawn.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -1924,10 +1925,26 @@ impl App {
         if !self.split_active(self.size.1) {
             return None;
         }
-        self.selected()
+        let own = self
+            .selected()
             .and_then(|r| Self::viewer_key(&r.kind))
-            .and_then(|k| self.viewer_index(&k))
-            .or_else(|| self.most_recently_focused())
+            .and_then(|k| self.viewer_index(&k));
+        if own.is_some() || self.selected_transcript().is_some() {
+            return own;
+        }
+        self.most_recently_focused()
+    }
+
+    /// The selected session's transcript, when the row is a session that has one.
+    fn selected_transcript(&self) -> Option<PathBuf> {
+        let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
+            return None;
+        };
+        self.data
+            .sessions
+            .iter()
+            .find(|s| &s.session_id == id)
+            .and_then(|s| s.transcript_path.clone())
     }
 
     /// The viewer the user was in last; a speculative viewer was never in front.
@@ -3633,16 +3650,7 @@ impl App {
     /// The last `n` assistant headlines of the selected session's transcript, read again
     /// only when the file grew or the row changed.
     fn preview_lines(&mut self, n: usize) -> Vec<String> {
-        let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
-            return vec![];
-        };
-        let Some(path) = self
-            .data
-            .sessions
-            .iter()
-            .find(|s| &s.session_id == id)
-            .and_then(|s| s.transcript_path.clone())
-        else {
+        let Some(path) = self.selected_transcript() else {
             return vec![];
         };
         let len = std::fs::metadata(&path).map_or(0, |m| m.len());
@@ -5889,6 +5897,35 @@ mod tests {
         wait_paint(&mut app, 0, "VIEW");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+    }
+
+    #[test]
+    fn a_session_row_with_a_transcript_previews_it_over_the_viewer_focused_last() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 2);
+        registry_bg(d.path(), B, "/src/two", "idle", 1);
+        let dir = d.path().join("projects").join("-src-two");
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "two's reply"}]}});
+        fs::write(dir.join(format!("{B}.jsonl")), format!("{line}\n")).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        // A's viewer painted and was the one focused last.
+        app.viewers.push(viewer_open(A, "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+        // The cursor moves onto B, another folder's session with a transcript: its tail, not A.
+        app.step(1);
+        assert_eq!(key(&app).as_deref(), Some(B));
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            cells(&t, 0, 101..200).starts_with("· two's reply"),
+            "{}",
+            cells(&t, 0, 101..200)
+        );
     }
 
     #[test]
