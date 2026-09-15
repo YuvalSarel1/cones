@@ -2,54 +2,92 @@
   <img src="assets/cones.svg" alt="cones: a little structure for coding agents" width="520">
 </p>
 
-**A dashboard for your coding agents.** See what is running, move between sessions, and start, stop or schedule work.
+**A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.
 
-The goal is one place to work across harnesses. **Today: Claude Code on macOS, with Codex sessions seen beside it.**
+Supports Claude Code and Codex sessions. Scheduled jobs currently use Claude Code.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS">
-  <img src="https://img.shields.io/badge/current_support-Claude_Code-d97757" alt="Current support: Claude Code">
-  <img src="https://img.shields.io/badge/rust-2024_edition-b7410e?logo=rust&logoColor=white" alt="Rust 2024 edition">
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-3b82f6" alt="MIT or Apache-2.0"></a>
 </p>
 
+[Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
+
 <p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: jobs, live Claude Code sessions grouped by directory, and recent runs" width="100%"></a></p>
 
-## What you can do today
+## What you can do
 
-- **See what is running.** Every Claude Code session on the Mac, including ones cones did not start: directory, state, recent activity, token usage and last reply, as Claude reports them.
-- **Move between agents.** Preview a session, attach to it, then return to the dashboard. Follow live output from headless runs.
-- **Control when work happens.** Start tasks, stop sessions and schedule jobs with launchd. Set budgets, timeouts, tool permissions and overlap rules for the jobs cones runs.
-- **Bring in a coordinator.** Start the bundled orchestrator in a folder to help agents coordinate changes and share findings. It runs as an ordinary, visible agent.
+* **See what is running.** Find sessions grouped by folder, including ones cones did not start. See their state, recent activity and token usage as each harness reports them.
+* **Move between sessions.** Preview output, open supported sessions and return to the dashboard while they keep working.
+* **Schedule recurring work.** Run Claude Code jobs with budgets, timeouts and tool permissions, then review their output and cost.
+* **Coordinate agents.** Start the bundled coordinator in a folder to help agents share findings and coordinate changes. It appears alongside the other sessions.
 
-## Get started
+## Install
 
-Requires macOS, Rust and Claude Code 2.1 or later, logged in.
+Requires macOS, Rust and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later.
+
+From a checkout of this repository:
 
 ```sh
-cargo install --git https://github.com/YuvalSarel1/cones
+cargo install --path .
+```
+
+## Quick start
+
+Open the dashboard. Existing sessions appear automatically; no jobs file is needed.
+
+```sh
 cones tui
 ```
 
-`Enter` opens a session or follows a running job's output. `Ctrl+Z` comes back from an opened session, which keeps running; `Enter` on its row returns to it at once; a strip under an opened session keeps the fleet's counts in view. A harness that cannot be left and re-entered is not opened from here, and the dashboard says why. Type an instruction at the bottom and `Enter` starts a session with it in the selected row's directory, under the harness `Tab` picks; `Ctrl+X` twice stops a session or deletes a job. On a wide terminal the selected session shows live beside the list.
+To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Tab` switches between Claude Code and Codex.
+
+| Key | Action |
+| --- | --- |
+| `↑` `↓` | Select a row. |
+| `Enter` | With no instruction typed, open a session, start a job or follow a run's output. |
+| `Ctrl+Z` | Return from an opened session while it keeps working. |
+| `Esc` | Clear the instruction, or quit the dashboard when it is empty. |
+
+Sessions marked `own terminal` stay in their original terminal. See the [dashboard guide](docs/dashboard.md) for stopping sessions, previews and other controls.
+
+### Run a task from the shell
 
 ```sh
 cones run --prompt "Read this repo and summarize its TODOs."
+```
+
+This runs a supervised Claude Code task in the current directory. With no jobs file, its default policy allows reading only. With a valid jobs file, it uses the first job's policy.
+
+### Schedule a task
+
+Adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, setting `cwd` and `prompt` for your project. Check the configuration, run the example job once, then install its schedule:
+
+```sh
+cones validate
+cones doctor
+cones run readme-check
+cones install
+```
+
+Schedules run through macOS launchd. The [jobs guide](docs/jobs.md) covers budgets, permissions and what happens when a previous run is still going.
+
+### Start a coordinator
+
+In a folder where agents are working:
+
+```sh
 cones coordinator start
 ```
 
-One-off tasks use the first job's policy, or read-only defaults without a jobs file. To schedule work, adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, then run `cones validate`, `cones run <job-name>` and `cones install`. `cones doctor` says what would break a scheduled run.
+It runs as a visible Claude Code session in that folder. Job policies apply to supervised runs; dashboard sessions and the coordinator use their harness's own permissions.
 
-## How cones fits
+## Documentation
 
-cones reads the session state and transcripts the harness writes; a metric the harness does not report stays absent. Harnesses own execution and permissions. cones adds scheduling, supervision, budgets and run records, with launchd doing the scheduling and no cones daemon between runs.
-
-Job policies cover the headless runs cones launches. Sessions started elsewhere, and the coordinator, keep their native permissions. Keeping agents out of each other's changes is the coordinator's business, not cones logic; two jobs that write one directory both run.
+[Dashboard controls](docs/dashboard.md) · [Job configuration](docs/jobs.md) · [Coordinator](docs/coordinator.md) · [Harness support](docs/harness.md) · [CLI reference](docs/cli.md)
 
 ## Roadmap
 
-Now: the v0.1.0 tag and the public release. Next: `overlap: continue`, lifecycle hooks for jobs cones launches, jump to an own-terminal session's pane, next fire time in `ls`, run diffs, sleep and wake proof. [Source](assets/roadmap.py).
-
 <p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
 
-[The dashboard](docs/dashboard.md) · [Scheduled jobs](docs/jobs.md) · [The coordinator](docs/coordinator.md) · [What cones needs from a harness](docs/harness.md) · [Commands](docs/cli.md)
+[Roadmap source](assets/roadmap.py).
