@@ -423,6 +423,9 @@ fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
         ]
     );
 }
+// A harness this test can stop has to be a binary the test built. macOS kills a copy of a
+// signed platform binary (/bin/sleep and friends) before `ps` can read its command, so
+// `fleet::stop` refuses the pid and the test fails for the platform's reason, not the code's.
 #[test]
 fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     let f = Fixture::new("success", 1.0);

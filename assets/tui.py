@@ -5,6 +5,9 @@ import html, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, uuid
 from datetime import datetime, timedelta, timezone
 
 COLS, ROWS = 120, 34
+# A relative binary path resolves against CWD below, the dashboard's folder, not the shell's:
+# from a worktree that captures the main checkout's stale binary. Pass BIN absolute, and pass
+# the main repo as the folder, or its path lands in the header of a committed asset.
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
 CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, where the menu row launches
 JOBS = sys.argv[3] if len(sys.argv) > 3 else "jobs.example.yaml"  # the example job, so no live session's viewer opens
