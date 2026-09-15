@@ -1838,9 +1838,43 @@ impl App {
         });
         data.sessions
             .extend(self.pending.iter().map(|p| p.session.clone()));
+        // A session this read lists for the first time is the one just opened, from the
+        // composer, another terminal or the registry taking a placeholder's row over.
+        let arrived = data
+            .sessions
+            .iter()
+            .filter(|s| {
+                !self
+                    .data
+                    .sessions
+                    .iter()
+                    .any(|o| o.session_id == s.session_id)
+            })
+            .max_by_key(|s| s.started)
+            .map(|s| s.session_id.clone());
         self.data = data;
         self.rebuild();
+        if let Some(id) = arrived {
+            self.select_new(&id);
+        }
         self.refreshed = Instant::now();
+    }
+
+    /// Move the cursor to a session that just appeared, so the row that was opened is the one
+    /// under the cursor. Not while a viewer has the keys, nor while an instruction is being
+    /// typed for the selected row's directory: neither should have its target changed underneath.
+    fn select_new(&mut self, id: &str) {
+        if self.focus.is_some() || !self.text.is_empty() {
+            return;
+        }
+        if let Some(i) = self
+            .visible
+            .iter()
+            .position(|&i| self.rows[i].kind.key() == Some(id))
+        {
+            self.cursor = i;
+            self.settle();
+        }
     }
 
     /// Grouping and acknowledged removals only need the data already on screen.
@@ -3058,6 +3092,7 @@ impl App {
             at: Instant::now(),
         });
         self.rebuild();
+        self.select_new(&id);
         std::thread::spawn(move || {
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
@@ -4723,6 +4758,53 @@ mod tests {
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
+    /// A session the read lists for the first time takes the cursor: one opened in another
+    /// terminal, or the registry's row taking over a composer placeholder. Not while an
+    /// instruction is being typed, since `enter` would then start it somewhere else.
+    #[test]
+    fn a_session_that_just_appeared_takes_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path();
+        let cwd = claude.to_str().unwrap();
+        registry(claude, A, cwd, "idle", 1_757_682_871_000);
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        registry(claude, B, cwd, "idle", 1_757_682_872_000);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(B), "the new row is selected");
+        app.text = "fix it".into();
+        registry(claude, C, cwd, "idle", 1_757_682_873_000);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(B), "typing holds the cursor");
+        app.text.clear();
+        app.refresh().unwrap();
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(B),
+            "a row seen once is not new again"
+        );
+        // A composer placeholder is selected at once and followed to the registry's row.
+        let session = placeholder("starting:1", claude, "again");
+        app.data.sessions.push(session.clone());
+        app.pending.push(Pending {
+            session,
+            short: Some("dddddddd".into()),
+            at: Instant::now(),
+        });
+        app.rebuild();
+        app.select_new("starting:1");
+        assert_eq!(key(&app).as_deref(), Some("starting:1"));
+        let d = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        registry(claude, d, cwd, "idle", 1_757_682_874_000);
+        app.refresh().unwrap();
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(d),
+            "the listed row took the cursor"
+        );
+    }
+
     /// `enter` in the composer puts a row up at once, titled with the instruction, and the
     /// registry's row takes over when Claude lists the id `--bg` printed. A failed launch takes
     /// the row away and hands the instruction back.
@@ -6327,7 +6409,8 @@ mod tests {
             coordinator: false,
         });
         app.apply(data);
-        app.settle();
+        // The new Codex row took the cursor; back on A for the viewer.
+        app.step(-1);
         assert_eq!(key(&app).as_deref(), Some(A));
         // A's viewer painted and was the one focused last.
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
