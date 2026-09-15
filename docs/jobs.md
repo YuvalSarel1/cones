@@ -15,7 +15,7 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
-columns: [state, context, sparkline, model, activity, last]   # dashboard session columns, see dashboard.md
+columns: [state, context, sparkline, model, age, last]   # dashboard session columns, see dashboard.md
 pane:                 # which side the viewer pane sits on, see dashboard.md
   at: right
 start:                # what a new cones terminal comes up with, see dashboard.md

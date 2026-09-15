@@ -44,12 +44,11 @@ The pane shows live viewers only. Use `cones logs` for recorded output; the dash
 | `context` | Reported prompt/window tokens, such as `98k/200k`; prompt alone when the window is unavailable | yes |
 | `sparkline` | Activity by time bucket; header names the window, such as `last 16m` | yes |
 | `model` | Reported model id, verbatim | yes |
-| `activity` | Time since the last reported transcript timestamp | yes |
+| `age` | Time since the reported session start | yes |
 | `last` | Latest reply or status text; directory when grouped by state | yes |
-| `age` | Time since the reported session start | no |
 | `tokens` | Session input/output totals, such as `49.2M/201k` | no |
 
-Both `age` and `activity` increase while a session is idle. Claude's start comes from its transcript; Codex process rows and pi rows use process start, while detached Codex thread rows use rollout metadata or their saved launch record. Cost appears on run rows, not as a configurable session column.
+`age` counts from the session start and never resets. Claude's start comes from its transcript; Codex process rows and pi rows use process start, while detached Codex thread rows use rollout metadata or their saved launch record. Cost appears on run rows, not as a configurable session column.
 
 `ctrl+t` arranges columns against the live table. The strip lists visible columns first, then a separator and hidden ones. `← →` select a column, `space` shows or hides it, and `[` `]` reorder visible columns. `enter` saves `columns:`; `esc` restores the original set. The jobs screen uses its own fixed columns.
 

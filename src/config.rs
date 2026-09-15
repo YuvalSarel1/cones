@@ -165,18 +165,16 @@ pub fn check_confirm_secs(secs: f64) -> Result<()> {
     Ok(())
 }
 
-pub const COLUMNS: [&str; 8] = [
+pub const COLUMNS: [&str; 7] = [
     "state",
     "model",
     "age",
-    "activity",
     "context",
     "tokens",
     "last",
     "sparkline",
 ];
-pub const DEFAULT_COLUMNS: [&str; 6] =
-    ["state", "context", "sparkline", "model", "activity", "last"];
+pub const DEFAULT_COLUMNS: [&str; 6] = ["state", "context", "sparkline", "model", "age", "last"];
 
 /// Sparkline settings; omitted fields use built-ins. See docs/dashboard.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

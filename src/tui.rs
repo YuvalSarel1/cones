@@ -303,7 +303,7 @@ impl Data {
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
-        let job_columns = ["model".to_owned(), "activity".to_owned(), "last".to_owned()];
+        let job_columns = ["model".to_owned(), "age".to_owned(), "last".to_owned()];
         // Keep the same columns at every width; narrow panes clip the right edge.
         let set = &self.columns;
         let has_state = jobs_view || set.iter().any(|c| c == "state");
@@ -847,7 +847,7 @@ fn job_cell(
         "state" if !j.enabled => ("off".into(), dim()),
         "state" => (status.to_owned(), color(status)),
         "model" => (j.model.clone().unwrap_or_else(|| "-".into()), dim()),
-        "age" | "activity" => (
+        "age" => (
             last.and_then(|r| r.started.fired_at)
                 .map_or_else(|| "-".into(), fleet::age),
             dim(),
@@ -869,7 +869,6 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
         }
         "model" => (s.model.clone().unwrap_or_else(|| "-".into()), dim()),
         "age" => (since(s.started), dim()),
-        "activity" => (since(s.last_activity), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
         "last" if by_state => (fleet::tilde(&s.cwd), dim()),
@@ -1779,7 +1778,7 @@ const FIELDS: [Field; 23] = [
         name: "columns",
         short: "session columns",
         long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
-        builtin: "state, context, sparkline, model, activity, last",
+        builtin: "state, context, sparkline, model, age, last",
         input: Answer::Columns,
     },
     Field {

@@ -618,7 +618,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let names = lines.iter().find(|l| l.contains("context")).unwrap();
     assert!(
         names.starts_with("hdr\t-\t")
-            && ["title", "model", "activity", "last"]
+            && ["title", "model", "age", "last"]
                 .iter()
                 .all(|n| names.contains(n)),
         "an unselectable row names the session columns: {names}"
