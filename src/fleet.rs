@@ -25,7 +25,9 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub cwd: PathBuf,
-    /// `active`, `idle` or `blocked` (waiting on a permission, trust or user prompt).
+    /// `active`, `blocked` (waiting on a permission, trust or user prompt), `done`, `failed` or
+    /// `stopped` for a finished background job, and `idle` for a session between turns that has
+    /// no job of its own. See [`state`].
     pub state: String,
     /// The `timestamp` of the first transcript line that carries one. Rows sort by this so they
     /// hold still while the session works.
@@ -344,19 +346,7 @@ fn session(
         // The folder `claude agents` files the row under: a background job's launch directory
         // from its own state, since EnterWorktree rewrites the registry cwd to the worktree.
         cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
-        // A new prompt flips the registry to busy at once; Claude rewrites a finished job's
-        // state.json only with its first progress note, tens of seconds later, so busy is read
-        // before the job's own done. Then the job state, the registry status, and a job whose
-        // tempo is blocked. A status this version does not know renders as Claude's own word,
-        // never as a guess.
-        state: match (job["state"].as_str(), v["status"].as_str().unwrap_or("-")) {
-            (_, "busy" | "shell") => "active",
-            (Some(done @ ("done" | "failed" | "stopped")), _) => done,
-            (_, "blocked" | "waiting" | "needs_user" | "needs_trust") => "blocked",
-            _ if job["tempo"].as_str() == Some("blocked") => "blocked",
-            (_, other) => other,
-        }
-        .into(),
+        state: state(&job, v["status"].as_str().unwrap_or("-")),
         // Start, last activity, model and context are the transcript's own words; the registry
         // `startedAt` and `updatedAt` and the file's mtime are not read for them.
         started: d.report.started,
@@ -394,6 +384,47 @@ fn session(
         activity: d.report.activity,
     })
 }
+
+/// The word `claude agents --json` gives a row, read out of Claude Code 2.1.272 and mirrored
+/// here, from its two sources in its own order: a background job's state.json and the registry
+/// `status`. Busy first, since a new prompt flips the registry at once while Claude rewrites a
+/// finished job's state.json only with its first progress note, tens of seconds later. Then a
+/// job that has stopped taking turns: a state of done, failed or stopped, a tempo no longer
+/// active, and, for one that finished well, no routine or self-wake to bring it back. Then a
+/// blocked one. Every other job is working: Claude's own listing never calls a live background
+/// job idle, so neither does this. `shell` sits with busy because Claude's own listing puts it
+/// there: a job row reaches working either way, through the busy arm or the fallback, and on a
+/// row with no job Claude prints the status through a normalizer that keeps only `idle` and
+/// `waiting` and calls everything else busy. That last row is the one place the registry status
+/// is the answer, and where idle comes from; a status this version does not know renders as
+/// Claude's own word rather than the busy that normalizer would assume.
+///
+/// Pinned to another program's internals, so a row that disagrees with `claude agents` is a
+/// drift from 2.1.272 to check, not a mystery.
+fn state(job: &Value, status: &str) -> String {
+    let job_state = job["state"].as_str();
+    let tempo = job["tempo"].as_str();
+    let waking = !job["routine"].is_null()
+        || job["selfWake"].as_bool() == Some(true)
+        || job["inFlight"]["kinds"]
+            .as_array()
+            .is_some_and(|k| k.iter().any(|k| k.as_str() == Some("session_cron")));
+    let finished = tempo != Some("active")
+        && match job_state {
+            Some("done") => !waking,
+            Some("failed" | "stopped") => true,
+            _ => false,
+        };
+    match job_state {
+        _ if status == "busy" || status == "shell" => "active",
+        Some(done) if finished => done,
+        _ if status == "waiting" || tempo == Some("blocked") => "blocked",
+        Some(_) => "active",
+        None => status,
+    }
+    .into()
+}
+
 /// `context_window.context_window_size` from the statusLine payload the user's statusLine command
 /// saved as `<claude dir>/statusline/<session id>.json`; None when it saved nothing.
 fn statusline_window(claude: &Path, id: &str) -> Option<u64> {
@@ -1175,6 +1206,52 @@ mod tests {
         entry["status"] = "busy".into();
         fs::write(&path, entry.to_string()).unwrap();
         assert_eq!(state(dir.path()), "active");
+    }
+
+    /// `claude agents --json` derives a job row's state the same way, so the words match it.
+    #[test]
+    fn a_job_still_taking_turns_is_working_however_the_registry_rests() {
+        let word = |job: Value, status| super::state(&job, status);
+        let job = |state, tempo| serde_json::json!({"state": state, "tempo": tempo});
+        assert_eq!(word(job("working", "idle"), "idle"), "active");
+        assert_eq!(
+            word(job("blocked", "active"), "idle"),
+            "active",
+            "a job's own blocked is not needs input; the tempo and the registry say that"
+        );
+        assert_eq!(word(job("blocked", "blocked"), "idle"), "blocked");
+        assert_eq!(word(job("working", "active"), "waiting"), "blocked");
+        assert_eq!(word(job("done", "idle"), "idle"), "done");
+        assert_eq!(word(job("failed", "idle"), "idle"), "failed");
+        assert_eq!(
+            word(job("done", "active"), "idle"),
+            "active",
+            "a tempo still active means the turn goes on, whatever the state says"
+        );
+        let mut waking = job("done", "idle");
+        waking["selfWake"] = true.into();
+        assert_eq!(
+            word(waking, "idle"),
+            "active",
+            "a job that wakes itself has another turn coming, so it is not done"
+        );
+        let mut routine = job("done", "idle");
+        routine["routine"] = serde_json::json!({"id": "nightly"});
+        assert_eq!(word(routine, "idle"), "active");
+        let mut stopped = job("stopped", "idle");
+        stopped["selfWake"] = true.into();
+        assert_eq!(
+            word(stopped, "idle"),
+            "stopped",
+            "the wake only spares a job that finished well"
+        );
+        assert_eq!(
+            word(Value::Null, "idle"),
+            "idle",
+            "a session with no job of its own is the registry's word"
+        );
+        assert_eq!(word(Value::Null, "waiting"), "blocked");
+        assert_eq!(word(Value::Null, "surprising"), "surprising");
     }
 
     #[test]

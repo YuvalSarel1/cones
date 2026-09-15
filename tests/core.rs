@@ -388,13 +388,14 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     // Over the stated window shows as reported, never clamped or re-guessed.
     assert_eq!(cones::fleet::context(&big), "300k/200k");
     assert_eq!((big.tokens_in, big.tokens_out), (Some(300_330), Some(13)));
+    // An interactive session has no job of its own, so its state is the registry status: the
+    // four words Claude writes there, and anything else as Claude's own word.
     for (status, state) in [
         ("idle", "idle"),
         ("shell", "active"),
-        ("blocked", "blocked"),
+        ("busy", "active"),
         ("waiting", "blocked"),
-        ("needs_user", "blocked"),
-        ("needs_trust", "blocked"),
+        ("parked", "parked"),
     ] {
         registry(claude, id, entry(status));
         assert_eq!(get().state, state, "{status}");
