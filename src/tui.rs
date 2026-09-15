@@ -653,9 +653,9 @@ fn guide(top: usize) -> Paragraph<'static> {
     let mut lines = vec![];
     for (key, what) in GUIDE {
         if key.is_empty() {
-            if !lines.is_empty() {
-                lines.push(Line::default());
-            }
+            // A blank line above every heading; the first keeps the guide off the cone, as the
+            // list's blank row does.
+            lines.push(Line::default());
             lines.push(Line::from(Span::styled(
                 (*what).to_owned(),
                 Style::default().fg(ORANGE),
@@ -904,13 +904,43 @@ fn paste_image() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Splice an attachment's path into the instruction, spaced from what is typed either side.
-fn attach(text: &mut String, path: &Path) {
-    if !text.is_empty() && !text.ends_with(' ') {
-        text.push(' ');
+/// A pasted image sits in the instruction as one private-use character, `IMAGE` plus its index
+/// into `App::images`, as Claude Code's `[Image #n]`: drawn as that label, deleted as one
+/// character by any edit key, and expanded to the PNG's path at launch.
+const IMAGE: u32 = 0xE000;
+
+fn image_marker(n: usize) -> char {
+    char::from_u32(IMAGE + n as u32).expect("private-use range")
+}
+
+fn image_index(c: char) -> Option<usize> {
+    (IMAGE..IMAGE + 0x100)
+        .contains(&(c as u32))
+        .then(|| (c as u32 - IMAGE) as usize)
+}
+
+/// Splice image `n`'s marker into the instruction at `at`, spaced from what is typed either
+/// side; returns the cursor after it.
+fn attach(text: &mut String, at: usize, n: usize) -> usize {
+    let at = snap(text, at);
+    let mut piece = String::new();
+    if !text[..at].is_empty() && !text[..at].ends_with(' ') {
+        piece.push(' ');
     }
-    text.push_str(&path.display().to_string());
-    text.push(' ');
+    piece.push(image_marker(n));
+    if !text[at..].starts_with(' ') {
+        piece.push(' ');
+    }
+    text.insert_str(at, &piece);
+    at + piece.len()
+}
+
+/// The instruction with each image marker replaced by `f` of its index: the label on screen,
+/// the path at launch.
+fn expand(text: &str, mut f: impl FnMut(usize) -> String) -> String {
+    text.chars()
+        .map(|c| image_index(c).map_or_else(|| c.to_string(), &mut f))
+        .collect()
 }
 
 /// One glyph per state, cone-shaped where it can be: a solid cone is busy, a hollow one is
@@ -1400,6 +1430,8 @@ struct App {
     /// and where in it the next key lands, a byte offset `snap` keeps honest.
     text: String,
     caret: usize,
+    /// The PNGs pasted into the instruction, in the order their markers were typed.
+    images: Vec<PathBuf>,
     /// The harness the next session starts under; `tab` cycles it. An index into `harness::KNOWN`.
     harness: usize,
     /// A `claude --bg` in flight on its own thread, keyed by its placeholder row's id; its one
@@ -1604,6 +1636,7 @@ impl App {
             status: String::new(),
             text: String::new(),
             caret: 0,
+            images: Vec::new(),
             harness: 0,
             started: Vec::new(),
             pending: Vec::new(),
@@ -2583,13 +2616,7 @@ impl App {
             if let Some(open) = self.focused() {
                 open.viewer.write(b"\x16");
             } else if matches!(self.mode, Mode::Normal) {
-                match paste_image() {
-                    Ok(path) => {
-                        attach(&mut self.text, &path);
-                        self.caret = self.text.len();
-                    }
-                    Err(e) => self.status = e,
-                }
+                self.attach_image();
             }
             return;
         }
@@ -2607,6 +2634,30 @@ impl App {
             self.text.insert_str(at, text);
             self.caret = at + text.len();
         }
+    }
+
+    /// `ctrl+v`: the clipboard's image as one `[Image #n]` at the cursor, or why not.
+    fn attach_image(&mut self) {
+        match paste_image() {
+            Ok(path) => {
+                self.caret = attach(&mut self.text, self.caret, self.images.len());
+                self.images.push(path);
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// The instruction out of the composer with each `[Image #n]` as its PNG's path, where
+    /// the harness reads it as a file; the composer is left empty.
+    fn take_prompt(&mut self) -> String {
+        let text = std::mem::take(&mut self.text);
+        let images = std::mem::take(&mut self.images);
+        self.caret = 0;
+        expand(&text, |n| {
+            images
+                .get(n)
+                .map_or_else(String::new, |p| p.display().to_string())
+        })
     }
 
     /// An instruction back in the composer whole, cursor after it.
@@ -2936,7 +2987,7 @@ impl App {
         // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
         // ledger like any other, instead of a bare session.
         if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
-            let prompt = std::mem::take(&mut self.text);
+            let prompt = self.take_prompt();
             let dir = self.cwd.clone();
             let what = format!("started a run in {}", fleet::tilde(&dir));
             self.spawn(&["run", "--prompt", prompt.trim()], Some(&dir), &what);
@@ -2944,7 +2995,7 @@ impl App {
         }
         let dir = self.target_dir();
         let kind = harness::KNOWN[self.harness];
-        let prompt = std::mem::take(&mut self.text);
+        let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         // Rollout timestamps are the thread's own clock; a little slack covers it.
         let since = chrono::Utc::now() - chrono::Duration::seconds(5);
@@ -3143,9 +3194,12 @@ impl App {
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
         )];
+        let label = |n: usize| format!("[Image #{}]", n + 1);
+        let shown = expand(&self.text, label);
+        let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
         spans.extend(typed(
-            &self.text,
-            self.caret,
+            &shown,
+            caret,
             &format!(
                 "an instruction for {} · enter starts {kind} there · ctrl+v pastes an image",
                 fleet::tilde(&self.target_dir())
@@ -3603,6 +3657,7 @@ impl App {
                             self.status = "kept".into();
                         } else if !self.text.is_empty() {
                             self.text.clear();
+                            self.images.clear();
                         } else {
                             return Ok(true);
                         }
@@ -3625,13 +3680,7 @@ impl App {
                         self.invalidate();
                         self.status = "refresh requested".into();
                     }
-                    KeyCode::Char('v') if ctrl => match paste_image() {
-                        Ok(path) => {
-                            attach(&mut self.text, &path);
-                            self.caret = self.text.len();
-                        }
-                        Err(e) => self.status = e,
-                    },
+                    KeyCode::Char('v') if ctrl => self.attach_image(),
                     _ => {}
                 }
             }
@@ -4113,17 +4162,45 @@ mod tests {
     }
 
     #[test]
-    fn attach_spaces_the_path_from_the_text() {
-        let png = Path::new("/tmp/cones/pasted-1.png");
-        let mut text = String::new();
-        attach(&mut text, png);
-        assert_eq!(text, "/tmp/cones/pasted-1.png ");
+    fn an_image_is_one_character_a_label_on_screen_and_a_path_at_launch() {
+        let (a, b) = (image_marker(0), image_marker(1));
         let mut text = "look at".to_owned();
-        attach(&mut text, png);
-        assert_eq!(text, "look at /tmp/cones/pasted-1.png ");
-        let mut text = "look at ".to_owned();
-        attach(&mut text, png);
-        assert_eq!(text, "look at /tmp/cones/pasted-1.png ");
+        let end = text.len();
+        let at = attach(&mut text, end, 0);
+        assert_eq!(
+            text,
+            format!("look at {a} "),
+            "spaced from the text before it"
+        );
+        assert_eq!(at, text.len(), "the cursor lands after it");
+        let at = attach(&mut text, 0, 1);
+        assert_eq!(
+            text,
+            format!("{b} look at {a} "),
+            "at the cursor, spaced from what follows"
+        );
+        assert_eq!(at, b.len_utf8() + 1);
+        let label = |n: usize| format!("[Image #{}]", n + 1);
+        assert_eq!(expand(&text, label), "[Image #2] look at [Image #1] ");
+        let end = text.len();
+        let at = edit(&mut text, end, KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        let at = edit(&mut text, at, KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            text,
+            format!("{b} look at "),
+            "backspace takes the whole image"
+        );
+        assert_eq!(at, text.len());
+        let d = dir();
+        let mut app = app(d.path());
+        app.text = format!("see {a}");
+        app.images.push(PathBuf::from("/tmp/cones/pasted-1.png"));
+        app.caret = app.text.len();
+        let line = app.composer();
+        let shown: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(shown.contains("see [Image #1]"), "{shown}");
+        assert_eq!(app.take_prompt(), "see /tmp/cones/pasted-1.png");
+        assert!(app.text.is_empty() && app.images.is_empty() && app.caret == 0);
     }
 
     fn typed(f: &mut JobForm, text: &str) {
@@ -5073,10 +5150,10 @@ mod tests {
         assert!(app.text.is_empty());
         app.paste("");
         assert!(
-            app.text.contains("/cones/pasted-") || app.status == "no image on the clipboard",
+            app.text.starts_with(image_marker(0)) || app.status == "no image on the clipboard",
             "an empty paste is an image paste: the clipboard's PNG, or the status says there is none"
         );
-        if let Some(png) = app.text.split_whitespace().next() {
+        for png in app.images.drain(..) {
             let _ = std::fs::remove_file(png);
         }
         app.text.clear();
