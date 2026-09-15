@@ -26,7 +26,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -5479,18 +5479,6 @@ impl App {
                 Some(i) => self.viewers[i].viewer.resize(inner.height, inner.width),
                 None => {}
             }
-            // Overlay hints rather than reserving a row, keeping viewer size independent of focus.
-            if self.focus.is_some() && pane.height > 1 {
-                let row = Rect {
-                    y: pane.bottom() - 1,
-                    height: 1,
-                    ..pane
-                };
-                // Paragraph leaves cells beyond its spans intact; without Clear, the harness's
-                // status line remains visible past the end of the keys.
-                frame.render_widget(Clear, row);
-                frame.render_widget(Paragraph::new(self.hint_line()), row);
-            }
             return;
         }
         if let Some(i) = self.focus {
@@ -5713,7 +5701,9 @@ impl App {
             self.draw_list(frame, list);
         }
         frame.render_widget(input, prompt);
-        if !(self.split_active() && self.pane_focused()) {
+        // A focused viewer's keys go in the list's own hint row: the pane's last row is the
+        // harness's status line, and drawing over it hid the permission mode it ends with.
+        if !(self.split_active() && self.panel_focused()) {
             frame.render_widget(Paragraph::new(self.hint_line()), foot);
         }
     }
@@ -8334,12 +8324,13 @@ mod tests {
         app.focus = Some(0);
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200);
-        let row = cells(&t, 29, 101..200);
-        assert!(row.starts_with("tab back"), "{screen:#?}");
         assert!(
-            !row.contains("mode") && !row.contains("cycle"),
-            "the keys clear the harness's status line off their row, past their own \
-             end too: {screen:#?}"
+            cells(&t, 28, 0..100).starts_with("tab back"),
+            "focused, the keys are in the list's hint row: {screen:#?}"
+        );
+        assert!(
+            cells(&t, 29, 101..200).contains("mode") && cells(&t, 29, 160..200).contains("cycle"),
+            "so the harness keeps the status row its permission mode is on: {screen:#?}"
         );
 
         for focus in [None, Some(0)] {
@@ -8411,8 +8402,8 @@ mod tests {
             !screen.iter().any(|r| r.contains("tab back")),
             "unfocused, the row under the pane is clear: {screen:#?}"
         );
-        // The viewer has the whole column; the row of its keys is drawn over its last row
-        // once it has them, so taking them never resizes it.
+        // The viewer has the whole column, keys or no keys: its keys go in the list's hint row,
+        // so taking them never resizes it.
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
             (30, 200 - list - 1),
@@ -8441,14 +8432,14 @@ mod tests {
             "focusing beside the list does not resize the viewer"
         );
         t.draw(|f| app.draw(f)).unwrap();
-        let hint = cells(&t, 29, list + 1..200);
+        let hint = cells(&t, 29, 0..list);
         assert!(hint.contains("tab back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
         assert!(!hint.contains("ctrl+]"), "{hint:?}");
         assert!(
-            cells(&t, 29, 0..list).trim().is_empty(),
-            "one hint line on the frame: {:?}",
-            cells(&t, 29, 0..list)
+            cells(&t, 29, list + 1..200).trim().is_empty(),
+            "the keys are in the list's hint row, not over the pane's last row: {:?}",
+            cells(&t, 29, list + 1..200)
         );
         assert!(cells(&t, 0, list + 1..200).starts_with("VIEW"));
         assert_eq!(
