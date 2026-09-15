@@ -116,6 +116,32 @@ Codex is observed, not run. Its Observe and Control rows were checked against Co
 
 While the local app-server daemon runs, a `--remote` viewer with no explicit thread id gets no separate process row. Its session appears through the daemon's writer lock or a saved launch record, so two launches in the same folder produce two rows and closing a viewer leaves its thread visible. Multiple clients explicitly resuming the same id share one row. Remote viewers never receive a rollout by cwd and start time.
 
+## Checking against the live harness
+
+Tests spend no model tokens, so they prove that cones builds the right flags and environment, not that the harness honors them. When a change touches what reaches the harness (a flag, an environment variable, the provider), run the matrix below once, with the owner's go, since it costs money: eight Claude runs came to about 0.23 USD on 2026-09-15.
+
+Write a jobs file in a scratch directory, one job per model alias and provider:
+
+```yaml
+version: 1
+jobs:
+  - name: sonnet-bedrock          # repeat for fable, opus, haiku, and for bedrock: false
+    schedule: "0 9 * * *"
+    harness: claude
+    cwd: .
+    prompt: "Reply with the single word ok and nothing else."
+    model: sonnet
+    bedrock: true
+    timeout_min: 3
+    budget_usd: 0.50
+```
+
+Export the AWS profile and region Bedrock needs, since `bedrock: true` imports every `AWS_` variable, then run each job with `cones run --jobs jobs.yaml --state-dir state <name>`. The proof is in `state/output/<run id>/events.jsonl`: the `init` event's `model` is the id Claude actually started on, a `us.anthropic.` id means Bedrock and a bare `claude-` id means the direct API, and the `result` event carries `total_cost_usd`. `state/runs.jsonl` records the exact arguments and the environment names each run got, so `--model` and `CLAUDE_CODE_USE_BEDROCK` can be read there. On 2026-09-15 every alias answered `ok` on both providers; on Bedrock the `sonnet` alias resolved to Sonnet 4.5 where the direct API gave Sonnet 5, which is Claude Code's mapping, not cones's.
+
+Codex has no job path yet, so its provider switch is checked with the same flags the composer passes: `codex exec --skip-git-repo-check -C . -c model_provider=amazon-bedrock "<prompt>"`, and `model_provider=openai` for the direct API, which needs an OpenAI login on the machine.
+
+Do not probe Claude's flags with `claude --bg <flags> --help`: `--bg` wins and a real idle background session starts. Remove one with `claude rm <id>`.
+
 ## Adding a kind or a harness
 
 A new kind (a Claude worktree agent, a Codex `exec` run, another harness) needs an answer in every column of the kinds table before it is a row, and a new harness needs every Observe and Control row `reported` or `-`. Each answer names a reported fact or is `-`. If the harness offers no way to join and leave the agent, the row is shown with `own terminal` and `enter` explains; if the harness offers no safe stop, `ctrl+x` says so. A best-effort join that sometimes works is not an option: it is the failure the Kinds section opened with.
