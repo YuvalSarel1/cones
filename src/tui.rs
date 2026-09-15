@@ -1920,8 +1920,8 @@ const REST_SPLIT: Duration = Duration::from_millis(50);
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
-/// Exchanges the pane shows of a transcript while its viewer has not painted: enough to fill
-/// the pane from the bottom, read from the file's last 4 MiB.
+/// Exchanges the pane shows of a transcript no viewer will open on: enough to fill the pane
+/// from the bottom, read from the file's last 4 MiB.
 const PREVIEW_EXCHANGES: usize = 3;
 
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used
@@ -2756,13 +2756,34 @@ impl App {
             return None;
         }
         let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
-        if s.harness != "claude"
-            || s.own_terminal()
-            || matches!(s.state.as_str(), "failed" | "stopped")
-        {
+        if !Self::joinable(s) {
             return None;
         }
         Some((id.clone(), s.cwd.clone()))
+    }
+
+    /// Whether `claude attach` has a worker to join in `s`: a Claude session not in its own
+    /// terminal and not failed or stopped. A background job whose prompt is done still has one.
+    fn joinable(s: &Session) -> bool {
+        s.harness == "claude"
+            && !s.own_terminal()
+            && !matches!(s.state.as_str(), "failed" | "stopped")
+    }
+
+    /// Whether the selected row is a session a resting cursor opens a viewer on, so the pane
+    /// is a screen in the making rather than a place to draw the transcript.
+    fn viewer_coming(&self) -> bool {
+        let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
+            return false;
+        };
+        !id.starts_with("starting:")
+            && !self.stopping.iter().any(|a| &a.id == id)
+            && !self.removed_sessions.contains(id)
+            && self
+                .data
+                .sessions
+                .iter()
+                .any(|s| &s.session_id == id && Self::joinable(s))
     }
 
     /// Open `claude attach` on `id` out of sight, so `enter` on its row finds it drawn. The
@@ -4312,11 +4333,11 @@ impl App {
                 Some(i) if self.viewers[i].viewer.first_paint().is_some() => {
                     self.draw_viewer(frame, i, pane)
                 }
-                // A viewer that has not painted yet is sized for when it does.
-                Some(i) => {
-                    self.viewers[i].viewer.resize(pane.height, pane.width);
-                    self.draw_preview(frame, pane);
-                }
+                // A viewer that has not painted yet is sized for when it does, and the pane
+                // stays blank until it does: a quarter second of nothing reads as a terminal
+                // opening, where a placeholder that is then replaced reads as a flicker.
+                Some(i) => self.viewers[i].viewer.resize(pane.height, pane.width),
+                None if self.viewer_coming() => {}
                 None => self.draw_preview(frame, pane),
             }
             return;
@@ -4365,9 +4386,9 @@ impl App {
         }
     }
 
-    /// The pane until a live screen is there: the selected session's last replies from its
-    /// transcript, dim, so a row shows something the moment the cursor lands on it; else one
-    /// line saying what `enter` would open here.
+    /// The pane on a row no viewer is coming to: the selected session's last exchanges from
+    /// its transcript, dim, since that is all there is of a session that runs in its own
+    /// terminal or has no worker to join; else one line saying what `enter` would open here.
     fn draw_preview(&mut self, frame: &mut Frame, pane: Rect) {
         let lines = self.preview_lines();
         if !lines.is_empty() {
@@ -4400,8 +4421,7 @@ impl App {
     }
 
     /// The last exchanges of the selected session's transcript, prompts quoted with `> ` and
-    /// replies under them, the shape `claude attach` will paint; read again only when the
-    /// file grew or the row changed.
+    /// replies under them; read again only when the file grew or the row changed.
     fn preview_lines(&mut self) -> Vec<String> {
         let Some(path) = self.selected_transcript() else {
             return vec![];
@@ -6971,9 +6991,33 @@ mod tests {
     #[test]
     fn an_empty_pane_says_what_enter_does_and_says_nothing_on_a_row_that_cannot_open() {
         let d = dir();
-        registry_bg(d.path(), A, "/src/one", "idle", 1);
         let mut app = app(d.path());
         app.refresh().unwrap();
+        // A Codex thread the daemon holds: `enter` joins it, but no resting cursor does, so
+        // the pane has nothing coming and says what `enter` would do.
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: "dddd-daemon".into(),
+            harness: "codex".into(),
+            kind: Some("daemon".into()),
+            cwd: PathBuf::from("/x"),
+            state: "idle".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: None,
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+            coordinator: false,
+        });
+        app.apply(data);
+        assert_eq!(key(&app).as_deref(), Some("dddd-daemon"));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 160);
@@ -7251,7 +7295,40 @@ mod tests {
             "{}",
             row(&t, last)
         );
-        // Once it paints, the screen replaces the tail.
+    }
+
+    #[test]
+    fn the_pane_is_blank_until_a_coming_viewer_paints() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let dir = d.path().join("projects").join("-src-one");
+        fs::create_dir_all(&dir).unwrap();
+        let line = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "a reply"}]}});
+        fs::write(
+            dir.join(format!("{A}.jsonl")),
+            format!(
+                "{line}
+"
+            ),
+        )
+        .unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        let blank = |t: &Terminal<ratatui::backend::TestBackend>| {
+            (0..30).all(|y| cells(t, y, 101..200).trim().is_empty())
+        };
+        // A Claude background session the resting cursor will open: nothing, not the
+        // transcript and not the hint, since the screen is on its way.
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(blank(&t));
+        // The speculative viewer spawned and has not painted: still nothing, sized to the pane.
+        app.viewers.push(speculative_open(A));
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(blank(&t));
+        assert_eq!(app.viewers[0].viewer.screen().size(), (30, 99));
+        // Once it paints, the screen is there.
         app.viewers.clear();
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
         wait_paint(&mut app, 0, "VIEW");
@@ -7263,7 +7340,7 @@ mod tests {
     fn a_session_row_with_a_transcript_previews_it_over_the_viewer_focused_last() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 2);
-        registry_bg(d.path(), B, "/src/two", "idle", 1);
+        registry_kind(d.path(), B, "/src/two", "idle", 1, "interactive");
         let dir = d.path().join("projects").join("-src-two");
         fs::create_dir_all(&dir).unwrap();
         let line = serde_json::json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "two's reply"}]}});
