@@ -4764,10 +4764,6 @@ impl App {
                 }
                 keys.extend([
                     ("tab", next.as_str()),
-                    ("ctrl+p", "pin"),
-                    ("ctrl+s", "regroup"),
-                    ("ctrl+o", "agents"),
-                    ("ctrl+g", "guide"),
                     ("esc", if self.jobs_view { "back" } else { "quit" }),
                 ]);
                 let room = (self.hint_width() as usize).saturating_sub(taken);
@@ -7195,7 +7191,7 @@ mod tests {
         assert_eq!(text(app.composer()), "✻ claude › Type an instruction…");
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter add folder · ← → pick · tab codex · ctrl+p pin"),
+            hint.starts_with("enter add folder · ← → pick · tab codex · esc quit"),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
@@ -8123,14 +8119,13 @@ mod tests {
         // 130 columns is under SPLIT_MIN, so the line has the whole frame and fits it.
         app.size = (30, 130);
         let wide = app.hint_line().to_string();
-        assert!(
-            wide.ends_with("ctrl+o agents · ctrl+g guide · esc quit"),
-            "{wide}"
-        );
+        assert!(wide.ends_with("tab codex · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
-        // 140 columns: the list column is 70, which the whole line does not fit.
+        // 140 columns: the list column is 70; a long filter in front leaves the keys no room.
         app.size = (30, 140);
+        app.filter = Input::new("x".repeat(30));
         let fitted = app.hint_line();
+        let fitted = Line::from(fitted.spans[1..].to_vec());
         assert!(fitted.width() <= 70, "{fitted}");
         let fitted = fitted.to_string();
         assert!(
