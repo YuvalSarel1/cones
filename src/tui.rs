@@ -95,8 +95,9 @@ pub enum Kind {
     Session(String, String),
     /// Run id and status.
     Run(String, String),
-    /// A top-menu row: `runs`, `agents` or `folder`. From `App::rebuild`, never from `Data::rows`.
-    Menu(&'static str),
+    /// The top menu row, its buttons in `MENU`, the picked one in `App::menu`. From
+    /// `App::rebuild`, never from `Data::rows`.
+    Menu,
     /// A pinned folder nothing runs in, in `~` form: its group's one row until a session
     /// starts there or ctrl+x removes the folder.
     Folder(String),
@@ -114,7 +115,7 @@ impl Kind {
         match self {
             Kind::Job(name) => Some(name),
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
-            Kind::Menu(name) => Some(name),
+            Kind::Menu => Some("menu"),
             Kind::Folder(dir) => Some(dir),
             _ => None,
         }
@@ -520,7 +521,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::Header | Kind::Columns | Kind::Blank => ("hdr".to_owned(), "-".to_owned()),
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
-            Kind::Menu(m) => ("menu".to_owned(), (*m).to_owned()),
+            Kind::Menu => ("menu".to_owned(), "-".to_owned()),
             Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
         };
         out += &format!("{key}\t{aux}\t");
@@ -561,50 +562,49 @@ fn ansi(text: &str, style: Style) -> String {
     }
 }
 
-/// What `enter` does to the selected row: start a job, follow a headless run, attach a session.
-fn enter_verb(kind: Option<&Kind>) -> &'static str {
+/// The top menu's buttons: name, what `enter` does on it, and the explanation shown beside it
+/// while it is picked. `folder`'s explanation is led by the folder itself, in `App::menu_cells`.
+const MENU: [(&str, &str, &str); 4] = [
+    (
+        "runs",
+        "new job",
+        "an instruction runs once, under a job's policy",
+    ),
+    ("agents", "agents", "a harness's own agents view"),
+    ("folder", "pick folder", "the folder the menu works in"),
+    ("help", "guide", "the keys and what they do"),
+];
+
+/// What `enter` does to the selected row: start a job, follow a headless run, attach a session;
+/// on the menu row, press button `menu`.
+fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
     match kind {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
-        Some(Kind::Menu("runs")) => "new job",
-        Some(Kind::Menu("agents")) => "agents",
-        Some(Kind::Menu(_)) => "pick folder",
+        Some(Kind::Menu) => MENU[menu].1,
         Some(Kind::Folder(_)) => "start here",
         _ => "open",
     }
 }
 
-/// The top menu: three rows above the tables, reached with `↑` past the first table. `runs`
-/// makes the composer a supervised one-off run, `agents` opens a harness's agents view, `folder`
-/// picks the directory the menu works in, whether or not a session runs there.
-fn menu_rows(folder: &Path) -> Vec<Row> {
-    let dir = fleet::tilde(folder);
-    let items = [
-        (
-            "runs",
-            "enter opens the job wizard · an instruction runs once under a job's policy".to_owned(),
-        ),
-        (
-            "agents",
-            "enter opens a harness's own agents view".to_owned(),
-        ),
-        ("folder", format!("{dir} · enter picks another")),
-    ];
-    // A blank row keeps the menu off the cone; each name is a filled button, the picked one
-    // orange (`draw_list`), so the menu reads as controls rather than as a fourth table.
-    std::iter::once(Row {
-        kind: Kind::Blank,
-        cells: vec![],
-    })
-    .chain(items.into_iter().map(|(name, text)| Row {
-        kind: Kind::Menu(name),
-        cells: vec![
-            (format!(" {name:<7}"), button()),
-            (format!("  {text}"), dim()),
-        ],
-    }))
-    .collect()
+/// The top menu: one row of buttons above the tables, reached with `↑` past the first table;
+/// `←` `→` pick one and `enter` presses it. `runs` makes the composer a supervised one-off run,
+/// `agents` opens a harness's agents view, `folder` picks the directory the menu works in,
+/// whether or not a session runs there, `help` opens the guide.
+fn menu_rows() -> Vec<Row> {
+    // A blank row keeps the menu off the cone. The row's cells come from `App::menu_cells`
+    // at draw time, since the picked button and its explanation change without a rebuild.
+    vec![
+        Row {
+            kind: Kind::Blank,
+            cells: vec![],
+        },
+        Row {
+            kind: Kind::Menu,
+            cells: vec![],
+        },
+    ]
 }
 
 /// The header cone: one orange hue in three tones, lit on the left, shadowed on the right, so
@@ -778,6 +778,10 @@ fn dim() -> Style {
 /// A menu button at rest: white on a dark fill, as a terminal draws a key cap.
 fn button() -> Style {
     Style::default().bg(Color::Indexed(237)).fg(Color::White)
+}
+/// The picked menu button, lit in the cone's orange.
+fn pressed() -> Style {
+    Style::default().bg(ORANGE).fg(Color::Black)
 }
 /// cones' own orange, bold: the header cone and the folder's orchestrator.
 fn lit() -> Style {
@@ -1341,11 +1345,11 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Rows"),
     (
         "↑ ↓",
-        "move between rows; ↑ past the first table lands on the menu",
+        "move between rows; ↑ past the first table lands on the menu, where ← → pick a button",
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on a menu row: new job, agents, pick folder",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, press the picked button: new job, agents, pick folder, help",
     ),
     (
         "ctrl+x twice",
@@ -1411,9 +1415,11 @@ struct App {
     jobs_path: PathBuf,
     state: PathBuf,
     claude: PathBuf,
-    /// The menu's folder: the dashboard's own working directory until the `folder` row picks
-    /// another. Where a launch goes from a menu row or with nothing selected.
+    /// The menu's folder: the dashboard's own working directory until the `folder` button picks
+    /// another. Where a launch goes from the menu row or with nothing selected.
     cwd: PathBuf,
+    /// The menu row's picked button, an index into `MENU`; `←` `→` move it.
+    menu: usize,
     data: Data,
     rows: Vec<Row>,
     /// Indexes into `rows` that pass the filter; the cursor indexes this list.
@@ -1625,6 +1631,7 @@ impl App {
             state: state.to_owned(),
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
+            menu: 0,
             data: Data::load(jobs_path, state, claude)?,
             rows: vec![],
             visible: vec![],
@@ -1848,7 +1855,7 @@ impl App {
             .filter(|a| matches!(a.verb, "delete" | "forget"))
             .map(|a| a.id.as_str())
             .collect();
-        self.rows = menu_rows(&self.cwd);
+        self.rows = menu_rows();
         self.rows.extend(
             self.data
                 .rows_excluding(self.by_state, &deleting, &mut self.widths),
@@ -1865,7 +1872,7 @@ impl App {
             // A fresh dashboard opens on the first table; the menu is where `↑` ends.
             let below = |i: &usize| {
                 let k = &self.rows[*i].kind;
-                k.selectable() && !matches!(k, Kind::Menu(_))
+                k.selectable() && *k != Kind::Menu
             };
             self.cursor = self.visible.iter().position(below).unwrap_or(0);
         }
@@ -2752,6 +2759,18 @@ impl App {
             let n = self.scroll + (ev.row - l.y) as usize;
             if n < self.visible.len() && self.rows[self.visible[n]].kind.selectable() {
                 self.cursor = n;
+                if self.rows[self.visible[n]].kind == Kind::Menu {
+                    // The button under the pointer, walking the row as `menu_cells` lays it
+                    // out: the "▌ " mark, then each button and a gap.
+                    let mut x = l.x + 2;
+                    for (i, (name, ..)) in MENU.iter().enumerate() {
+                        let w = name.chars().count() as u16 + 2;
+                        if (x..x + w).contains(&ev.column) {
+                            self.menu = i;
+                        }
+                        x += w + 1;
+                    }
+                }
             }
         }
         false
@@ -2874,7 +2893,7 @@ impl App {
         {
             return "own terminal";
         }
-        enter_verb(row.map(|r| &r.kind))
+        enter_verb(row.map(|r| &r.kind), self.menu)
     }
 
     fn enter(&mut self) -> Result<()> {
@@ -2889,7 +2908,13 @@ impl App {
             self.status = action.message();
             return Ok(());
         }
-        self.debug(|| format!("enter on {:?}: {}", kind.key(), enter_verb(Some(&kind))));
+        self.debug(|| {
+            format!(
+                "enter on {:?}: {}",
+                kind.key(),
+                enter_verb(Some(&kind), self.menu)
+            )
+        });
         // A row whose viewer is alive returns to its current screen; nothing is started.
         if let Some(i) = Self::viewer_key(&kind).and_then(|k| self.viewer_index(&k)) {
             self.focus(i);
@@ -2941,9 +2966,12 @@ impl App {
                 c.args(["attach", &id]);
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
-            Kind::Menu("runs") => self.new_job(),
-            Kind::Menu("agents") => self.mode = Mode::Harness(0),
-            Kind::Menu(_) => self.mode = Mode::Folder(String::new()),
+            Kind::Menu => match MENU[self.menu].0 {
+                "runs" => self.new_job(),
+                "agents" => self.mode = Mode::Harness(0),
+                "folder" => self.mode = Mode::Folder(String::new()),
+                _ => self.mode = Mode::Guide(0),
+            },
             Kind::Folder(dir) => {
                 self.status = format!("type an instruction · enter starts a session in {dir}");
             }
@@ -2989,7 +3017,7 @@ impl App {
     fn start(&mut self) {
         // The menu's `runs` row: a supervised one-off run under the first job's policy, in the
         // ledger like any other, instead of a bare session.
-        if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
+        if self.menu_is("runs") {
             let prompt = self.take_prompt();
             let dir = self.cwd.clone();
             let what = format!("started a run in {}", fleet::tilde(&dir));
@@ -3242,7 +3270,7 @@ impl App {
     /// less `taken` columns; the first key, the selected row's, and `esc quit` stay.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
         let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
-        let start = if matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu("runs"))) {
+        let start = if self.menu_is("runs") {
             format!("run once in {}", fleet::tilde(&self.cwd))
         } else {
             format!(
@@ -3282,6 +3310,9 @@ impl App {
                 let mut keys = vec![];
                 if self.selected().is_some() {
                     keys.push(("enter", self.enter_label()));
+                }
+                if self.menu_is(MENU[self.menu].0) {
+                    keys.push(("← →", "pick"));
                 }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
@@ -3635,6 +3666,15 @@ impl App {
                 // Any key but ctrl+x disarms an armed ctrl+x, so the mark stays until the user
                 // does something else, as in `claude agents`.
                 let armed = self.armed.take();
+                // On the menu row with nothing typed, ← → pick a button; typed text keeps them.
+                if self.text.is_empty()
+                    && matches!(code, KeyCode::Left | KeyCode::Right)
+                    && matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu))
+                {
+                    let n = MENU.len();
+                    self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
+                    return Ok(false);
+                }
                 if let Some(at) = edit(&mut self.text, self.caret, code, mods) {
                     self.caret = at;
                     return Ok(false);
@@ -3879,6 +3919,37 @@ impl App {
         frame.render_widget(Paragraph::new(self.hint_line()), foot);
     }
 
+    /// True on the menu row with the button `name` picked.
+    fn menu_is(&self, name: &str) -> bool {
+        matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)) && MENU[self.menu].0 == name
+    }
+
+    /// The menu row's cells: each button a key cap with a gap after it, and while the row is
+    /// selected the picked one pressed, with its explanation dim after the buttons. Unselected,
+    /// the row is the buttons alone.
+    fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
+        let mut cells = vec![];
+        for (i, (name, ..)) in MENU.iter().enumerate() {
+            let style = if selected && i == self.menu {
+                pressed()
+            } else {
+                button()
+            };
+            cells.push((format!(" {name} "), style));
+            cells.push((" ".to_owned(), Style::default()));
+        }
+        if selected {
+            let (name, _, what) = MENU[self.menu];
+            let what = if name == "folder" {
+                format!("{} · {what}", fleet::tilde(&self.cwd))
+            } else {
+                what.to_owned()
+            };
+            cells.push((format!(" {what}"), dim()));
+        }
+        cells
+    }
+
     fn draw_list(&mut self, frame: &mut Frame, area: Rect) {
         self.list_area = area;
         let height = area.height as usize;
@@ -3908,7 +3979,14 @@ impl App {
                     ));
                 }
                 let (frames, brand) = spinner(row);
-                for (c, (text, style)) in row.cells.iter().enumerate() {
+                let menu;
+                let cells = if row.kind == Kind::Menu {
+                    menu = self.menu_cells(selected);
+                    &menu
+                } else {
+                    &row.cells
+                };
+                for (c, (text, style)) in cells.iter().enumerate() {
                     let (text, style) = if c == 0 && row.working() {
                         (
                             text.replacen('▲', frames[self.tick % frames.len()], 1),
@@ -3916,12 +3994,6 @@ impl App {
                         )
                     } else {
                         (text.clone(), *style)
-                    };
-                    // The picked menu button lights up in the cone's orange.
-                    let style = if selected && c == 0 && matches!(row.kind, Kind::Menu(_)) {
-                        style.bg(ORANGE).fg(Color::Black)
-                    } else {
-                        style
                     };
                     spans.push(Span::styled(
                         text,
@@ -4708,7 +4780,7 @@ mod tests {
         assert_eq!(Kind::Session(A.into(), "active".into()).key(), Some(A));
         assert_eq!(Kind::Run("run-1".into(), "ok".into()).key(), Some("run-1"));
         assert_eq!(Kind::Job("nightly".into()).key(), Some("nightly"));
-        assert_eq!(Kind::Menu("folder").key(), Some("folder"));
+        assert_eq!(Kind::Menu.key(), Some("menu"));
         assert_eq!(Kind::Header.key(), None);
         assert_eq!(Kind::Columns.key(), None);
         assert_eq!(Kind::Blank.key(), None);
@@ -5200,15 +5272,15 @@ mod tests {
         assert!(text(app.composer()).starts_with("claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter new job · tab codex · ctrl+n new job"),
-            "an empty dashboard opens on the menu's runs row: {hint}"
+            hint.starts_with("enter new job · ← → pick · tab codex · ctrl+n new job"),
+            "an empty dashboard opens on the menu row, runs picked: {hint}"
         );
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         assert!(text(app.composer()).starts_with(">_ codex › "));
         assert!(text(app.hint_line()).contains("tab claude"));
         app.text = "fix the tests".into();
         assert!(text(app.hint_line()).starts_with("enter run once in "));
-        app.step(1);
+        app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter start codex in "));
         app.status = "back from attach".into();
         assert_eq!(
@@ -5223,8 +5295,8 @@ mod tests {
     }
 
     /// The menu sits above the tables: a fresh dashboard opens on the first table and `↑` from
-    /// there lands on `folder`. Picking a folder moves every menu row's target, so a session
-    /// or a run can start in a directory nothing runs in yet.
+    /// there lands on the menu row. Picking a folder moves the row's target, so a session or a
+    /// run can start in a directory nothing runs in yet.
     #[test]
     fn the_top_menu_is_reached_going_up_and_its_folder_moves_the_target() {
         let d = dir();
@@ -5234,14 +5306,12 @@ mod tests {
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A), "opens on the first table");
         app.step(-1);
-        assert_eq!(key(&app).as_deref(), Some("folder"));
-        app.step(-1);
-        app.step(-1);
-        assert_eq!(key(&app).as_deref(), Some("runs"));
+        assert_eq!(key(&app).as_deref(), Some("menu"));
+        assert!(app.menu_is("runs"), "runs is picked until ← → move it");
         assert_eq!(
             app.target_dir(),
             app.cwd,
-            "a menu row launches into the menu's folder"
+            "the menu row launches into the menu's folder"
         );
         let inside = claude.join("inside");
         fs::create_dir(&inside).unwrap();
@@ -5250,22 +5320,24 @@ mod tests {
         app.rebuild();
         assert_eq!(
             key(&app).as_deref(),
-            Some("runs"),
+            Some("menu"),
             "the cursor stays on its row"
         );
-        app.step(2);
-        assert_eq!(key(&app).as_deref(), Some("folder"));
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert!(app.menu_is("folder"));
         assert!(
-            app.selected().unwrap().text().contains("inside"),
-            "the folder row names the folder"
+            app.menu_cells(true).last().unwrap().0.contains("inside"),
+            "the picked folder button names the folder"
         );
         assert_eq!(app.target_dir(), inside.canonicalize().unwrap());
         app.refresh().unwrap();
         assert_eq!(
             key(&app).as_deref(),
-            Some("folder"),
+            Some("menu"),
             "a reload keeps the menu row"
         );
+        assert!(app.menu_is("folder"), "and the picked button");
     }
 
     /// A folder the prompt picks has a row from then on, with nothing running there, across
@@ -5916,7 +5988,7 @@ mod tests {
             screen[29]
         );
         // Up past the table lands on the menu, which opens no viewer.
-        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu(_))) {
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
         t.draw(|f| app.draw(f)).unwrap();
@@ -5927,6 +5999,48 @@ mod tests {
                 .any(|r| r.contains("enter opens the selected session here")),
             "{screen:#?}"
         );
+    }
+
+    /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
+    /// explains itself, enter presses it, and `help` is the guide.
+    #[test]
+    fn the_menu_row_picks_a_button_with_left_and_right() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        let screen = |app: &mut App, t: &mut Terminal<ratatui::backend::TestBackend>| {
+            t.draw(|f| app.draw(f)).unwrap();
+            rows(t, 160).join("\n")
+        };
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains(" runs   agents   folder   help "), "{s}");
+        assert!(s.contains("runs once") && !s.contains("agents view"), "{s}");
+        assert!(s.contains("← → pick"), "{s}");
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        let s = screen(&mut app, &mut t);
+        assert!(s.contains("agents view") && !s.contains("runs once"), "{s}");
+        assert_eq!(app.enter_label(), "agents");
+        // ← from the first button wraps to the last; typed text keeps ← → for the caret.
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert_eq!(MENU[app.menu].0, "help");
+        app.text = "x".into();
+        app.caret = 1;
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert_eq!((MENU[app.menu].0, app.caret), ("help", 0));
+        app.text.clear();
+        app.enter().unwrap();
+        assert!(matches!(app.mode, Mode::Guide(0)));
+        // Off the menu row nothing explains itself.
+        app.mode = Mode::Normal;
+        app.step(1);
+        let s = screen(&mut app, &mut t);
+        assert!(!s.contains("keys and what they do"), "{s}");
     }
 
     #[test]
@@ -6213,10 +6327,7 @@ mod tests {
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(app.focus.is_none());
         // The cursor is on a menu row, which has no viewer of its own.
-        assert!(matches!(
-            app.selected().map(|r| &r.kind),
-            Some(Kind::Menu(_))
-        ));
+        assert!(matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)));
         assert_eq!(
             app.shown(),
             Some(0),
