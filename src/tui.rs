@@ -2260,9 +2260,18 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
-        // A started session's row is handed over once the registry lists it.
+        // A started session's row is handed over once the registry lists it. The cursor goes
+        // along only if it is still on the placeholder: moved off in the meantime, it stays.
+        let on = self
+            .selected()
+            .and_then(|r| r.kind.key().map(str::to_owned));
+        let mut follow = true;
         self.pending.retain(|p| {
-            !data.sessions.iter().any(|s| p.matches(s)) && p.at.elapsed() < PENDING_TTL
+            let listed = data.sessions.iter().any(|s| p.matches(s));
+            if listed && on.as_deref() != Some(p.session.session_id.as_str()) {
+                follow = false;
+            }
+            !listed && p.at.elapsed() < PENDING_TTL
         });
         data.sessions
             .extend(self.pending.iter().map(|p| p.session.clone()));
@@ -2282,7 +2291,9 @@ impl App {
             .map(|s| s.session_id.clone());
         self.data = data;
         self.rebuild();
-        if let Some(id) = arrived {
+        if let Some(id) = arrived
+            && follow
+        {
             self.select_new(&id);
         }
         self.refreshed = Instant::now();
@@ -5516,6 +5527,31 @@ mod tests {
             key(&app).as_deref(),
             Some(d),
             "the listed row took the cursor"
+        );
+        // Moved off the placeholder before the registry lists it, the cursor stays put.
+        let session = placeholder("starting:2", claude, "once more");
+        app.data.sessions.push(session.clone());
+        app.pending.push(Pending {
+            session,
+            short: Some("eeeeeeee".into()),
+            at: Instant::now(),
+        });
+        app.rebuild();
+        app.select_new("starting:2");
+        app.select_new(B);
+        assert_eq!(key(&app).as_deref(), Some(B));
+        registry(
+            claude,
+            "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            cwd,
+            "idle",
+            1_757_682_875_000,
+        );
+        app.refresh().unwrap();
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(B),
+            "the handover does not pull the cursor back"
         );
     }
 
