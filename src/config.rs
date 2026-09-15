@@ -44,6 +44,10 @@ pub struct Policy {
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
     pub notify: Option<bool>,
+    /// The model a Claude job runs on unless it names its own; `codex_model` the same for a
+    /// Codex job. A job's `model:` is one field, so the default is per harness.
+    pub model: Option<String>,
+    pub codex_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -436,6 +440,8 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         d.tools.as_ref().map(|t| format!("[{}]", t.join(", "))),
     );
     put("max_turns", d.max_turns.map(|v| v.to_string()));
+    put("model", d.model.clone());
+    put("codex_model", d.codex_model.clone());
     put(
         "codex_full_access",
         d.codex_full_access.map(|v| v.to_string()),
@@ -632,20 +638,27 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
 }
 
 fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
-    let tools = j.tools.or_else(|| d.tools.clone());
-    if j.harness == HarnessKind::Codex && tools.is_some() {
+    // A default that belongs to one harness (tools, max_turns and model to Claude,
+    // codex_full_access and codex_model to Codex) applies only to that harness's jobs; on a
+    // job it is checked as written.
+    let claude = j.harness == HarnessKind::Claude;
+    let tools = j.tools.or_else(|| d.tools.clone().filter(|_| claude));
+    if !claude && tools.is_some() {
         bail!(
             "job {}: Codex has no per-tool allowlist; remove tools and choose write: false (read-only) or write: true (workspace-write)",
             j.name
         );
     }
-    let full = j.codex_full_access.or(d.codex_full_access).unwrap_or(false);
+    let full = j
+        .codex_full_access
+        .or(d.codex_full_access.filter(|_| !claude))
+        .unwrap_or(false);
     ensure!(
-        !full || j.harness == HarnessKind::Codex,
+        !full || !claude,
         "job {}: codex_full_access applies only to Codex",
         j.name
     );
-    let max_turns = j.max_turns.or(d.max_turns);
+    let max_turns = j.max_turns.or(d.max_turns.filter(|_| claude));
     ensure!(
         max_turns != Some(0),
         "job {}: max_turns must be positive",
@@ -685,8 +698,15 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: prompt must be nonempty and contain no NUL",
         j.name
     );
+    let model = j.model.or_else(|| {
+        if claude {
+            d.model.clone()
+        } else {
+            d.codex_model.clone()
+        }
+    });
     ensure!(
-        j.model
+        model
             .as_ref()
             .is_none_or(|s| !s.is_empty() && !s.contains('\0')),
         "job {}: model must be nonempty and contain no NUL",
@@ -737,7 +757,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         harness: j.harness,
         cwd: fs::canonicalize(cwd)?,
         prompt: j.prompt,
-        model: j.model,
+        model,
         enabled: j.enabled,
         archive_transcript: j.archive_transcript,
         env: j.env,
@@ -833,6 +853,8 @@ mod tests {
             overlap: Some(Overlap::Replace),
             notify: Some(true),
             codex_full_access: None,
+            model: None,
+            codex_model: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(&p, &d, Some(&cols), None).unwrap();
@@ -988,6 +1010,33 @@ mod tests {
                 metric: "tokens".into(),
                 ..Default::default()
             }
+        );
+    }
+
+    #[test]
+    fn a_harness_default_applies_only_to_that_harness_and_a_job_keeps_its_own_model() {
+        let (_d, p) = file(
+            "version: 1\ndefaults:\n  tools: [Read, Edit]\n  max_turns: 3\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
+        );
+        let jobs = read_jobs(&p).unwrap();
+        let (c, x, own) = (&jobs[0], &jobs[1], &jobs[2]);
+        assert_eq!(c.tools, ["Read", "Edit"]);
+        assert_eq!((c.max_turns, c.codex_full_access), (Some(3), false));
+        assert_eq!(c.model.as_deref(), Some("sonnet"));
+        assert!(
+            x.tools.is_empty(),
+            "Claude's tools do not reach a Codex job"
+        );
+        assert_eq!((x.max_turns, x.codex_full_access), (None, true));
+        assert_eq!(x.model.as_deref(), Some("o3"));
+        assert_eq!(own.model.as_deref(), Some("opus"));
+        let text = fs::read_to_string(&p).unwrap();
+        let d = defaults(&p);
+        write_config(&p, &d, None, None).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            text,
+            "the block round-trips"
         );
     }
 }

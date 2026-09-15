@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list and `sparkline` block, described in [dashboard.md](dashboard.md#columns). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `overlap`, `notify` and `codex_full_access`; each job may override them. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
+`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list and `sparkline` block, described in [dashboard.md](dashboard.md#columns). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `model`, `overlap`, `notify`, `codex_model` and `codex_full_access`; each job may override them. A default that belongs to one harness reaches only its jobs: `tools`, `max_turns` and `model` reach Claude jobs, `codex_model` and `codex_full_access` reach Codex jobs, where a job's own `model:` covers both. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
 
 ```yaml
 version: 1
@@ -39,7 +39,7 @@ jobs:
 | `harness` | required | `claude`. `codex` parses and is refused at validation (see [Codex](#codex-parsed-refused-at-validation) below). |
 | `cwd` | required | Working directory. `~/` expands, a relative path resolves against the jobs file's directory, and it must exist. |
 | `prompt` | required | The task. Nonempty; passed after `--` on the command line. |
-| `model` | Claude's default | Passed as `--model`. |
+| `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, else the harness's own | Passed as `--model`. |
 | `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and `cones install` removes that job's LaunchAgent. |
 | `archive_transcript` | `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
 | `env` | `[]` | Names of shell variables to pass through. Values are read at install or run time and baked into the plist; nothing else from your shell reaches the job. |
@@ -51,7 +51,7 @@ jobs:
 | `max_turns` | none | Passed as `--max-turns`. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
-| `codex_full_access` | `false` | Codex only. Rejected on a Claude job. |
+| `codex_full_access` | `false` | Codex only. Rejected on a Claude job; as a default it reaches Codex jobs alone. |
 
 ## Validation
 

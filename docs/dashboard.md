@@ -152,18 +152,21 @@ The job is a Claude job under the file's defaults, which the menu's `config` but
 
 ## The defaults editor
 
-`enter` on the menu's `config` row opens it where the list is: the `defaults` block of jobs.yaml, described in [jobs.md](jobs.md), the dashboard's `columns:` line, described under [columns](#columns), and its `sparkline:` block, described under [sparkline](#sparkline), one row per field under three group headers. `runs` holds what one run may take and spend: `timeout_min`, `budget_usd`, `daily_budget_usd`, `max_turns` and `overlap`. `tools` holds what a job may call and change: `write` and `tools`. `cones` holds what the dashboard shows and when it speaks up: `notify`, `columns` and the four `sparkline.` fields. Each row is the field, its value and a few words on what it does; the selected field's fuller explanation sits under the list, and the prompt line says what an answer looks like. `↑` `↓` move between fields, typing edits the selected one, `← →` pick on `write`, `overlap`, `notify` and `sparkline.metric`, `enter` saves, `esc` cancels. An empty value, or `-` on a pick, leaves the field out of the file, so the built-in applies and shows dim in its place; one `sparkline.` field set writes the whole block, the built-ins filling the rest. `codex_full_access` is not offered: no Codex job runs yet, and on a Claude job it is a validation error.
+`enter` on the menu's `config` row opens it where the list is: the `defaults` block of jobs.yaml, described in [jobs.md](jobs.md), the dashboard's `columns:` line, described under [columns](#columns), and its `sparkline:` block, described under [sparkline](#sparkline), one row per field under four group headers. `runs` holds what one run may take and spend, for every job: `timeout_min`, `budget_usd`, `daily_budget_usd`, `write` and `overlap`. `claude` holds what reaches Claude jobs only: `model`, `tools` and `max_turns`. `codex` holds what reaches Codex jobs only: `codex_model` and `codex_full_access`; both are kept in the file for when Codex jobs run. `cones` holds what the dashboard shows and when it speaks up: `notify`, `columns` and the four `sparkline.` fields. Every row is name, value and a few words, in three columns that hold still whichever row is selected; a value wider than the column, the columns list mostly, is cut with an ellipsis and read whole on the prompt line. The selected row's name is lit and its value pressed, and the prompt line is where the value is edited: on `write`, `overlap`, `codex_full_access`, `notify` and `sparkline.metric` the options with the current one bracketed, `← →` moving the bracket; on the rest the value under a cursor, typed in place. The selected field's fuller explanation sits under the list, padded to the tallest so the block keeps its height. `↑` `↓` move between fields, `enter` saves, `esc` cancels. An empty value, or `-` on a pick, leaves the field out of the file, so the built-in applies and shows dim in its place; one `sparkline.` field set writes the whole block, the built-ins filling the rest.
 
 | Field | Row | Under the list |
 | --- | --- | --- |
 | `timeout_min` | minutes before cones kills a run | SIGTERM to the process group, two seconds, SIGKILL; the run is `timeout` |
 | `budget_usd` | dollars one run may spend | Claude's own `--max-budget-usd`; Claude stops itself and reports why |
 | `daily_budget_usd` | dollars a job may spend a day | a rolling 24-hour sum per job; a tick over it is `skipped` / `budget` |
-| `write` | may a job change files | `false` strips Edit, Write and Bash; `true` keeps them and sandboxes Bash |
-| `tools` | the tools a job may call | the allowlist, comma-separated |
-| `max_turns` | turns before Claude must stop | `--max-turns`; empty leaves it to Claude |
+| `write` | may a job change files | `false` strips Edit, Write and Bash from a Claude job and runs Codex read-only; `true` keeps them, sandboxes Bash and gives Codex its workspace |
 | `overlap` | a tick while the last run goes on | `skip`, `allow` or `replace` |
-| `notify` | notification when a run goes wrong | macOS notification on `failed`, `timeout` or a budget skip; `CONES_NOTIFIER` replaces it |
+| `model` | the model a Claude job runs on | `--model` for every Claude job without its own; empty leaves it to Claude |
+| `tools` | the tools a Claude job may call | the allowlist, comma-separated; Codex has none |
+| `max_turns` | turns before Claude must stop | `--max-turns`; empty leaves it to Claude |
+| `codex_model` | the model a Codex job runs on | `--model` for every Codex job without its own; empty leaves it to Codex |
+| `codex_full_access` | may a Codex job leave the sandbox | `true` is every path and the network; `false` keeps it to its workspace |
+| `notify` | a notification when a run fails | macOS notification on `failed`, `timeout` or a budget skip; `CONES_NOTIFIER` replaces it |
 | `columns` | the session columns | the `columns:` line, comma-separated |
 | `sparkline.bars` | how many bars the sparkline draws | 1 to 64 buckets; with the bucket, the window |
 | `sparkline.bucket` | how long one bar covers | `30s`, `1m`, `5m`, at most `24h` |

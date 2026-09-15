@@ -1834,20 +1834,22 @@ struct Field {
 
 const BOOL: &[&str] = &["-", "false", "true"];
 
-/// The groups the editor shows, each with a line on what it holds. `runs` and `tools` are
-/// the `defaults` block, `cones` is the dashboard's own `columns:` line and `notify`.
-const GROUPS: [(&str, &str); 3] = [
+/// The groups the editor shows, each with a line on what it holds. `runs`, `claude` and
+/// `codex` are the `defaults` block, `cones` the dashboard's own `columns:` line, `notify`
+/// and the `sparkline:` block.
+const GROUPS: [(&str, &str); 4] = [
     (
         "runs",
         "what one run may take and spend, for every job unless it sets its own",
     ),
-    ("tools", "what a job may call and change"),
+    ("claude", "how a Claude job runs, unless it sets its own"),
+    ("codex", "how a Codex job runs, unless it sets its own"),
     ("cones", "what the dashboard shows and when it speaks up"),
 ];
 
-/// The fields under their groups. `codex_full_access` is left out: no Codex job runs yet and
-/// on a Claude job it is a validation error.
-const FIELDS: [Field; 13] = [
+/// The fields under their groups. A field under `claude` or `codex` reaches only that
+/// harness's jobs.
+const FIELDS: [Field; 16] = [
     Field {
         group: "runs",
         name: "timeout_min",
@@ -1874,11 +1876,11 @@ const FIELDS: [Field; 13] = [
     },
     Field {
         group: "runs",
-        name: "max_turns",
-        short: "turns before Claude must stop",
-        long: "The most assistant turns one run takes, passed as --max-turns. Empty leaves it to Claude. A small number keeps a read-only check from wandering.",
-        builtin: "none",
-        picks: None,
+        name: "write",
+        short: "may a job change files",
+        long: "false strips Edit, Write and Bash from a Claude job's tool list even when tools names them, and runs a Codex job read-only, so the job can only read. true keeps them, turns Claude's sandbox on whenever Bash is allowed, and gives Codex its workspace to write.",
+        builtin: "false",
+        picks: Some(BOOL),
     },
     Field {
         group: "runs",
@@ -1889,25 +1891,49 @@ const FIELDS: [Field; 13] = [
         picks: Some(&["-", "skip", "allow", "replace"]),
     },
     Field {
-        group: "tools",
-        name: "write",
-        short: "may a job change files",
-        long: "false strips Edit, Write and Bash from the tool list even when tools names them, so the job can only read. true keeps them and turns Claude's sandbox on whenever Bash is allowed.",
-        builtin: "false",
-        picks: Some(BOOL),
+        group: "claude",
+        name: "model",
+        short: "the model a Claude job runs on",
+        long: "Passed to Claude as --model, as in sonnet or opus, for every Claude job that names none in its own model: line. Empty leaves the choice to Claude.",
+        builtin: "Claude's own",
+        picks: None,
     },
     Field {
-        group: "tools",
+        group: "claude",
         name: "tools",
-        short: "the tools a job may call",
-        long: "The allowlist passed to Claude, separated by commas: any of Read, Grep, Glob, Edit, Write, Bash, or a Bash(pattern) rule. write: false removes Edit, Write and Bash from it whatever is listed here.",
+        short: "the tools a Claude job may call",
+        long: "The allowlist passed to Claude, separated by commas: any of Read, Grep, Glob, Edit, Write, Bash, or a Bash(pattern) rule. write: false removes Edit, Write and Bash from it whatever is listed here. A Codex job has no per-tool allowlist and does not read this.",
         builtin: "Read, Grep, Glob",
         picks: None,
     },
     Field {
+        group: "claude",
+        name: "max_turns",
+        short: "turns before Claude must stop",
+        long: "The most assistant turns one run takes, passed as --max-turns. Empty leaves it to Claude. A small number keeps a read-only check from wandering.",
+        builtin: "none",
+        picks: None,
+    },
+    Field {
+        group: "codex",
+        name: "codex_model",
+        short: "the model a Codex job runs on",
+        long: "Passed to Codex as --model for every Codex job that names none in its own model: line. Empty leaves the choice to Codex. Kept in the file for when Codex jobs run; none does yet, since Codex has no dollar budget cones can enforce.",
+        builtin: "Codex's own",
+        picks: None,
+    },
+    Field {
+        group: "codex",
+        name: "codex_full_access",
+        short: "may a Codex job leave the sandbox",
+        long: "true runs a Codex job with full access: every path and the network, no sandbox. false keeps it to its workspace, read-only or writable by write. A Claude job does not read this. Kept in the file for when Codex jobs run; none does yet.",
+        builtin: "false",
+        picks: Some(BOOL),
+    },
+    Field {
         group: "cones",
         name: "notify",
-        short: "notification when a run goes wrong",
+        short: "a notification when a run fails",
         long: "true shows a macOS notification when a run ends failed or timeout, or is skipped on budget. CONES_NOTIFIER in the environment names a command that takes the title and message instead.",
         builtin: "false",
         picks: Some(BOOL),
@@ -1954,6 +1980,14 @@ const FIELDS: [Field; 13] = [
     },
 ];
 
+/// Where `name` sits in `FIELDS`.
+fn field_at(name: &str) -> usize {
+    FIELDS
+        .iter()
+        .position(|f| f.name == name)
+        .unwrap_or_else(|| panic!("no config field {name}"))
+}
+
 /// What a key in the config editor asks the dashboard to do.
 #[derive(Debug, PartialEq)]
 pub enum ConfigAction {
@@ -1966,15 +2000,19 @@ pub enum ConfigAction {
 
 /// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
 /// policy every job runs under unless it sets the field itself, and the dashboard's `columns:`
-/// line, one row per field under its group where the list is. `↑` `↓` move between fields, typing edits the selected one, `← →` pick where the
-/// field has options, `enter` saves the block, `esc` cancels. Each row carries a few words on
-/// what the field does; the selected field's fuller explanation sits under the list. An empty
-/// answer leaves the field out of the file, so the built-in applies. Pure: the file is read
-/// and written by the dashboard.
+/// line and `sparkline:` block, one row per field under its group where the list is. Every
+/// row is name, value, a few words, in three columns that stay put; the selected row's value
+/// is pressed, and the prompt line is where it is edited: the options with the current one
+/// bracketed where the field is picked, the value with a cursor where it is typed. `↑` `↓`
+/// move between fields, typing edits the selected one, `← →` pick, `enter` saves the block,
+/// `esc` cancels. The selected field's fuller explanation sits under the list. An empty
+/// answer leaves the field out of the file, so the built-in applies and shows dim in its
+/// place. Pure: the file is read and written by the dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigForm {
     pub row: usize,
-    /// Each field as typed; a picked field holds its option's word, empty for the built-in.
+    /// Each field as typed, in `FIELDS` order; a picked field holds its option's word, empty
+    /// for the built-in.
     pub values: Vec<String>,
     pub error: Option<String>,
     /// The cursor in the selected value, a byte offset; past the end means after it.
@@ -1990,14 +2028,15 @@ impl ConfigForm {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
         let spark = |f: fn(&config::Sparkline) -> String| spark.map(f).unwrap_or_default();
-        Self {
-            row: 0,
-            values: vec![
-                num(d.timeout_min),
-                num(d.budget_usd),
-                num(d.daily_budget_usd),
-                d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
-                d.overlap
+        let values = FIELDS
+            .iter()
+            .map(|f| match f.name {
+                "timeout_min" => num(d.timeout_min),
+                "budget_usd" => num(d.budget_usd),
+                "daily_budget_usd" => num(d.daily_budget_usd),
+                "write" => flag(d.write),
+                "overlap" => d
+                    .overlap
                     .map(|o| match o {
                         config::Overlap::Skip => "skip",
                         config::Overlap::Allow => "allow",
@@ -2005,15 +2044,22 @@ impl ConfigForm {
                     })
                     .unwrap_or_default()
                     .to_owned(),
-                flag(d.write),
-                d.tools.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
-                flag(d.notify),
-                columns.map(|c| c.join(", ")).unwrap_or_default(),
-                spark(|s| s.bars.to_string()),
-                spark(|s| s.bucket.clone()),
-                spark(|s| s.metric.clone()),
-                spark(|s| s.bound.clone()),
-            ],
+                "model" => d.model.clone().unwrap_or_default(),
+                "tools" => d.tools.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
+                "max_turns" => d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
+                "codex_model" => d.codex_model.clone().unwrap_or_default(),
+                "codex_full_access" => flag(d.codex_full_access),
+                "notify" => flag(d.notify),
+                "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
+                "sparkline.bars" => spark(|s| s.bars.to_string()),
+                "sparkline.bucket" => spark(|s| s.bucket.clone()),
+                "sparkline.metric" => spark(|s| s.metric.clone()),
+                _ => spark(|s| s.bound.clone()),
+            })
+            .collect();
+        Self {
+            row: 0,
+            values,
             error: None,
             cursor: usize::MAX,
         }
@@ -2032,29 +2078,31 @@ impl ConfigForm {
     /// The values as a policy and the columns list; the error is the one line shown inline on
     /// the field it names.
     fn config(&self) -> Result<(config::Policy, Vec<String>, Option<config::Sparkline>), String> {
-        let v = |i: usize| self.values[i].trim();
-        let num = |i: usize, what: &str| -> Result<Option<f64>, String> {
-            match v(i) {
+        let v = |name: &str| self.values[field_at(name)].trim();
+        let num = |name: &str, what: &str| -> Result<Option<f64>, String> {
+            match v(name) {
                 "" => Ok(None),
                 t => t
                     .parse::<f64>()
                     .map(Some)
-                    .map_err(|_| format!("{}: {what}, not {t:?}", FIELDS[i].name)),
+                    .map_err(|_| format!("{name}: {what}, not {t:?}")),
             }
         };
-        let flag = |i: usize| match v(i) {
+        let flag = |name: &str| match v(name) {
             "true" => Some(true),
             "false" => Some(false),
             _ => None,
         };
-        let list = |i: usize| -> Vec<String> {
-            v(i).split(',')
+        let text = |name: &str| Some(v(name).to_owned()).filter(|t| !t.is_empty());
+        let list = |name: &str| -> Vec<String> {
+            v(name)
+                .split(',')
                 .map(|t| t.trim().to_owned())
                 .filter(|t| !t.is_empty())
                 .collect()
         };
-        let tools = list(6);
-        let columns = list(8);
+        let tools = list("tools");
+        let columns = list("columns");
         if let Some(bad) = columns
             .iter()
             .find(|c| !config::COLUMNS.contains(&c.as_str()))
@@ -2065,52 +2113,48 @@ impl ConfigForm {
             ));
         }
         let policy = config::Policy {
-            timeout_min: num(0, "a number of minutes, as in 30")?,
-            budget_usd: num(1, "dollars, as in 2.00")?,
-            daily_budget_usd: num(2, "dollars, as in 10.00")?,
-            write: flag(5),
+            timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
+            budget_usd: num("budget_usd", "dollars, as in 2.00")?,
+            daily_budget_usd: num("daily_budget_usd", "dollars, as in 10.00")?,
+            write: flag("write"),
             tools: (!tools.is_empty()).then_some(tools),
-            max_turns: match v(3) {
+            max_turns: match v("max_turns") {
                 "" => None,
                 t => Some(
                     t.parse::<u32>()
                         .map_err(|_| format!("max_turns: a whole number, as in 5, not {t:?}"))?,
                 ),
             },
-            codex_full_access: None,
-            overlap: match v(4) {
+            codex_full_access: flag("codex_full_access"),
+            overlap: match v("overlap") {
                 "skip" => Some(config::Overlap::Skip),
                 "allow" => Some(config::Overlap::Allow),
                 "replace" => Some(config::Overlap::Replace),
                 _ => None,
             },
-            notify: flag(7),
+            notify: flag("notify"),
+            model: text("model"),
+            codex_model: text("codex_model"),
         };
         // The sparkline block: every field empty leaves it out; otherwise the built-in fills
         // what is not typed, and the block is checked the way jobs.yaml is read.
-        let spark = if (9..13).all(|i| v(i).is_empty()) {
+        let spark = if ["bars", "bucket", "metric", "bound"]
+            .iter()
+            .all(|f| v(&format!("sparkline.{f}")).is_empty())
+        {
             None
         } else {
             let built = config::Sparkline::default();
             let s = config::Sparkline {
-                bars: match v(9) {
+                bars: match v("sparkline.bars") {
                     "" => built.bars,
                     t => t.parse().map_err(|_| {
                         format!("sparkline.bars: a whole number, as in 16, not {t:?}")
                     })?,
                 },
-                bucket: match v(10) {
-                    "" => built.bucket,
-                    t => t.to_owned(),
-                },
-                metric: match v(11) {
-                    "" => built.metric,
-                    t => t.to_owned(),
-                },
-                bound: match v(12) {
-                    "" => built.bound,
-                    t => t.to_owned(),
-                },
+                bucket: text("sparkline.bucket").unwrap_or(built.bucket),
+                metric: text("sparkline.metric").unwrap_or(built.metric),
+                bound: text("sparkline.bound").unwrap_or(built.bound),
             };
             // Name the field the message is about, so the error lands on it.
             s.check().map_err(|e| {
@@ -2142,7 +2186,7 @@ impl ConfigForm {
                         // The error lands on the field it names.
                         self.go(FIELDS
                             .iter()
-                            .position(|f| e.starts_with(f.name))
+                            .position(|f| e.starts_with(&format!("{}:", f.name)))
                             .unwrap_or(self.row));
                         self.error = Some(e);
                         ConfigAction::Stay
@@ -2176,8 +2220,10 @@ impl ConfigForm {
     }
 
     /// The editor where the list is: a title, the fields under their group headers, each row
-    /// a field with its value (the built-in dim when empty) and a few words on it, then the
-    /// selected field's fuller explanation, wrapped to `columns` with the rows' indent.
+    /// name, value and a few words in three columns that hold still whichever row is selected,
+    /// the selected row's name lit and its value pressed, then the selected field's fuller
+    /// explanation, wrapped to `columns` with the rows' indent and padded to the tallest one so
+    /// the block keeps its height.
     fn lines(&self, columns: u16) -> Vec<Line<'static>> {
         let mut lines = vec![
             Line::default(),
@@ -2189,7 +2235,29 @@ impl ConfigForm {
                 ),
             ]),
         ];
-        let width = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
+        let name_w = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
+        // The value column is as wide as the widest value on screen, so the words beside the
+        // rows sit in one column; a value past VALUE_W, the columns list mostly, is cut with an
+        // ellipsis and read whole on the prompt line while its row is selected.
+        const VALUE_W: usize = 22;
+        let shown = |i: usize| {
+            let (f, v) = (&FIELDS[i], &self.values[i]);
+            let (text, style) = if v.is_empty() {
+                (f.builtin, dim())
+            } else {
+                (v.as_str(), Style::default())
+            };
+            let text = if text.chars().count() > VALUE_W {
+                format!("{}…", text.chars().take(VALUE_W - 1).collect::<String>())
+            } else {
+                text.to_owned()
+            };
+            (text, style)
+        };
+        let value_w = (0..FIELDS.len())
+            .map(|i| shown(i).0.chars().count())
+            .max()
+            .unwrap_or(0);
         for (i, f) in FIELDS.iter().enumerate() {
             if i == 0 || FIELDS[i - 1].group != f.group {
                 let (name, what) = GROUPS
@@ -2204,38 +2272,16 @@ impl ConfigForm {
                 ]));
             }
             let selected = i == self.row;
-            let value = &self.values[i];
-            let mut spans = vec![Span::styled(
-                format!("  {:<width$}  ", f.name),
-                if selected { lit() } else { bold() },
-            )];
-            let shown = match (f.picks, selected) {
-                (Some(opts), true) => {
-                    let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
-                    picks(&mut spans, opts, at);
-                    opts.iter().map(|o| o.len() + 2).sum::<usize>()
-                }
-                (_, true) => {
-                    spans.extend(typed(value, self.cursor, f.builtin));
-                    value.len().max(f.builtin.len()) + 1
-                }
-                (_, false) if value.is_empty() => {
-                    spans.push(Span::styled(f.builtin.to_owned(), dim()));
-                    f.builtin.len()
-                }
-                _ => {
-                    spans.push(Span::raw(value.clone()));
-                    value.len()
-                }
-            };
-            spans.push(Span::styled(
-                format!(
-                    "{}{}",
-                    " ".repeat(18usize.saturating_sub(shown).max(2)),
-                    f.short
+            let (value, style) = shown(i);
+            let gap = value_w - value.chars().count() + 2;
+            let mut spans = vec![
+                Span::styled(
+                    format!("  {:<name_w$}  ", f.name),
+                    if selected { lit() } else { bold() },
                 ),
-                dim(),
-            ));
+                Span::styled(value, if selected { pressed() } else { style }),
+                Span::styled(format!("{}{}", " ".repeat(gap), f.short), dim()),
+            ];
             if selected && let Some(e) = &self.error {
                 spans.push(Span::styled(
                     format!("  {e}"),
@@ -2248,27 +2294,51 @@ impl ConfigForm {
         // The explanation wrapped here, not by the widget, so every line of it keeps the
         // rows' indent rather than the second one falling back to the margin.
         let f = self.field();
-        let mut first = vec![Span::styled(format!("  {}  ", f.name), bold())];
-        let room = (columns as usize).saturating_sub(first[0].width()).max(20);
+        let head = format!("  {:<name_w$}  ", f.name);
+        let room = (columns as usize).saturating_sub(head.len()).max(20);
+        let tall = FIELDS
+            .iter()
+            .map(|f| wrap(f.long, room).len())
+            .max()
+            .unwrap_or(1);
         let mut rest = wrap(f.long, room).into_iter();
-        first.push(Span::raw(rest.next().unwrap_or_default()));
-        lines.push(Line::from(first));
-        lines.extend(rest.map(|l| Line::from(format!("  {l}"))));
+        lines.push(Line::from(vec![
+            Span::styled(head, bold()),
+            Span::raw(rest.next().unwrap_or_default()),
+        ]));
+        let mut n = 1;
+        for l in rest {
+            lines.push(Line::from(format!("  {l}")));
+            n += 1;
+        }
+        lines.extend((n..tall).map(|_| Line::default()));
         lines
     }
 
-    /// The prompt line: the selected field and what an answer looks like.
+    /// The prompt line, where the selected field is edited: its options with the current one
+    /// bracketed when it is picked, or its value under the cursor when it is typed, and what
+    /// leaving it empty means.
     fn line(&self) -> Line<'static> {
         let f = self.field();
-        let help = if f.picks.is_some() {
-            format!("← → pick; - keeps the built-in, {}", f.builtin)
+        let value = &self.values[self.row];
+        let mut spans = vec![Span::styled(
+            format!("{} › ", f.name),
+            Style::default().fg(ORANGE),
+        )];
+        let help = if let Some(opts) = f.picks {
+            let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
+            picks(&mut spans, opts, at);
+            format!("  - is the built-in, {}", f.builtin)
         } else {
-            format!("type a value; empty keeps the built-in, {}", f.builtin)
+            spans.extend(typed(value, self.cursor, f.builtin));
+            if value.is_empty() {
+                "  the built-in; type to set it".to_owned()
+            } else {
+                format!("  empty is the built-in, {}", f.builtin)
+            }
         };
-        Line::from(vec![
-            Span::styled(format!("{} › ", f.name), Style::default().fg(ORANGE)),
-            Span::styled(help, dim()),
-        ])
+        spans.push(Span::styled(help, dim()));
+        Line::from(spans)
     }
 }
 
@@ -5399,7 +5469,7 @@ mod tests {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
         let c = ConfigForm::new(&config::Policy::default(), None, None);
-        let lines = c.lines(40);
+        let lines = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
             shown.iter().any(|l| l.starts_with("runs  ")),
@@ -5409,18 +5479,21 @@ mod tests {
             shown.iter().any(|l| l.starts_with("  timeout_min")),
             "rows are indented by two"
         );
-        let tail: Vec<&String> = shown
+        let mut tail: Vec<&String> = shown
             .iter()
             .skip_while(|l| !l.starts_with("  timeout_min  "))
             .skip(1)
             .collect();
+        while tail.last().is_some_and(|l| l.is_empty()) {
+            tail.pop();
+        }
         let long = tail.iter().rev().take_while(|l| !l.is_empty()).count();
         assert!(long > 1, "the explanation wraps at the width given");
         assert!(
             tail.iter()
                 .rev()
                 .take(long)
-                .all(|l| l.starts_with("  ") && l.chars().count() <= 40),
+                .all(|l| l.starts_with("  ") && l.chars().count() <= 48),
             "every wrapped line keeps the indent and fits"
         );
     }
@@ -7838,12 +7911,63 @@ mod tests {
         assert_eq!(app.enter_label(), "defaults");
         app.enter().unwrap();
         assert!(matches!(app.mode, Mode::Config(_)));
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 60)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("timeout_min"), "{s}");
         assert!(s.contains("sparkline.bound"), "{s}");
         assert!(s.contains("minutes before cones kills a run"), "{s}");
+        // The words beside the rows sit in one column, and the explanation block keeps its
+        // height, whichever row is selected.
+        let column = |s: &str, what: &str| {
+            s.lines()
+                .find(|l| l.contains(what))
+                .and_then(|l| l.find(what))
+                .unwrap_or_else(|| panic!("{what}: {s}"))
+        };
+        let height = |s: &str| {
+            let mut it = s.lines().skip_while(|l| !l.contains("sparkline.bound"));
+            it.next();
+            it.take_while(|l| !l.contains("›")).count()
+        };
+        let (col, tall) = (column(&s, "minutes before"), height(&s));
+        assert_eq!(column(&s, "what a bar counts"), col, "{s}");
+        assert_eq!(column(&s, "the tools a Claude job"), col, "{s}");
+        let go = |app: &mut App, name: &str| {
+            while let Mode::Config(f) = &app.mode
+                && f.row != field_at(name)
+            {
+                let code = if f.row < field_at(name) {
+                    KeyCode::Down
+                } else {
+                    KeyCode::Up
+                };
+                app.key(code, KeyModifiers::NONE).unwrap();
+            }
+        };
+        go(&mut app, "sparkline.metric");
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert_eq!(column(&s, "what a bar counts"), col, "no bounce: {s}");
+        assert_eq!(height(&s), tall, "no bounce: {s}");
+        assert!(
+            s.contains("sparkline.metric › [-] lines"),
+            "the options sit on the prompt line: {s}"
+        );
+        assert!(
+            !s.contains("[-] lines  messages  tools  tokens   what a bar counts"),
+            "not in the row: {s}"
+        );
+        go(&mut app, "codex_full_access");
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(s.contains("may a Codex job leave the sandbox"), "{s}");
+        assert!(s.contains("the model a Codex job runs on"), "{s}");
+        assert!(s.contains("the model a Claude job runs on"), "{s}");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.enter().unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
         assert!(
             s.contains("SIGTERM"),
             "the selected field is explained: {s}"
@@ -7856,17 +7980,27 @@ mod tests {
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
             at("\nruns  what") < at("timeout_min")
-                && at("overlap") < at("\ntools  what")
-                && at("\ntools  what") < at("write")
-                && at("write") < at("\ncones  what")
+                && at("write") < at("\nclaude  how")
+                && at("\nclaude  how") < at("model")
+                && at("max_turns") < at("\ncodex  how")
+                && at("\ncodex  how") < at("codex_model")
+                && at("codex_full_access") < at("\ncones  what")
                 && at("\ncones  what") < at("notify")
                 && at("notify") < at("columns"),
             "the fields sit under their groups: {s}"
         );
         assert!(
-            s.contains("state, context, sparkline, model, activity, last"),
-            "the dashboard's columns are a field: {s}"
+            s.contains("state, context, spark…"),
+            "a wide value is cut in its row: {s}"
         );
+        go(&mut app, "columns");
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(
+            s.contains("columns › state, context, sparkline, model, activity, last"),
+            "and read whole on the prompt line: {s}"
+        );
+        go(&mut app, "timeout_min");
 
         // A word where a number goes: the error on its field, the file untouched.
         for c in "abc".chars() {
@@ -7893,20 +8027,20 @@ mod tests {
         for c in "0.25".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
-        for _ in 0..4 {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
+        go(&mut app, "write");
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
-        assert!(s.contains("[-] false  true"), "picks on write: {s}");
+        assert!(s.contains("write › [-] false  true"), "picks on write: {s}");
         assert!(s.contains("← → pick"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        go(&mut app, "model");
+        for c in "sonnet".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
 
         // The columns line is checked the same way and written beside the block.
-        for _ in 0..3 {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
+        go(&mut app, "columns");
         for c in "speed".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
@@ -7933,6 +8067,7 @@ mod tests {
             (saved.timeout_min, saved.budget_usd, saved.write),
             (Some(5.0), Some(0.25), Some(true))
         );
+        assert_eq!(saved.model.as_deref(), Some("sonnet"));
         assert_eq!(
             saved.tools, None,
             "empty leaves the built-in out of the file"
@@ -7942,8 +8077,9 @@ mod tests {
         app.enter().unwrap();
         match &app.mode {
             Mode::Config(f) => assert_eq!(
-                [&f.values[0], &f.values[1], &f.values[5], &f.values[8]],
-                ["5", "0.25", "true", "state, age"]
+                ["timeout_min", "budget_usd", "write", "model", "columns"]
+                    .map(|n| f.values[field_at(n)].as_str()),
+                ["5", "0.25", "true", "sonnet", "state, age"]
             ),
             _ => panic!(),
         }
