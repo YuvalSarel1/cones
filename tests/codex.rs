@@ -91,6 +91,7 @@ fn a_rollout_belongs_to_the_only_process_in_its_directory() {
         started: at(started),
         cwd: Some(PathBuf::from(cwd)),
         thread: None,
+        remote: false,
     };
     let rollout = |name: &str, started, cwd: &str| {
         (
@@ -151,12 +152,14 @@ fn rows_read_the_rollout_and_the_session_index() {
             started: at("2026-09-12T09:16:50Z"),
             cwd: Some("/Users/me/work/pocs/workbench".into()),
             thread: None,
+            remote: false,
         },
         Process {
             pid: 701,
             started: at("2026-09-12T09:10:00Z"),
             cwd: Some("/Users/me/elsewhere".into()),
             thread: None,
+            remote: false,
         },
     ];
     let list = rows(codex, &procs);

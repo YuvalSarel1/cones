@@ -39,6 +39,8 @@ pub struct Process {
     /// The thread id a `resume <id>` argument names: a client of the daemon, or a plain TUI
     /// resuming a thread. Its rollout is that thread's, whatever the cwd and start time say.
     pub thread: Option<String>,
+    /// `--remote` makes this process a viewer of an app-server thread, not its writer.
+    pub remote: bool,
 }
 
 /// The `session_meta` line Codex writes first in every rollout file.
@@ -163,12 +165,7 @@ pub fn processes(ps: &str) -> Vec<Process> {
             if program != "codex" || words.next().is_some_and(|a| NOT_SESSIONS.contains(&a)) {
                 return None;
             }
-            let mut words = command.split_whitespace();
-            let thread = words
-                .find(|w| *w == "resume")
-                .and_then(|_| words.next())
-                .filter(|w| w.len() == 36 && w.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()))
-                .map(str::to_owned);
+            let (remote, thread) = client_options(command.split_whitespace().skip(1));
             Some(Process {
                 pid: pid.parse().ok()?,
                 started: NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
@@ -176,9 +173,56 @@ pub fn processes(ps: &str) -> Vec<Process> {
                     .and_utc(),
                 cwd: None,
                 thread,
+                remote,
             })
         })
         .collect()
+}
+
+/// Inspect options before the prompt; mentioning `--remote` or `resume ID` in an
+/// instruction does not identify its viewer or thread. Value-taking options consume
+/// their next word.
+fn client_options<'a>(mut args: impl Iterator<Item = &'a str>) -> (bool, Option<String>) {
+    let mut remote = false;
+    let mut resume = false;
+    while let Some(arg) = args.next() {
+        match arg {
+            "--remote" => remote = args.next().is_some(),
+            _ if arg.starts_with("--remote=") => remote = arg.len() > "--remote=".len(),
+            "-c"
+            | "--config"
+            | "--enable"
+            | "--disable"
+            | "--remote-auth-token-env"
+            | "-i"
+            | "--image"
+            | "-m"
+            | "--model"
+            | "--local-provider"
+            | "-p"
+            | "--profile"
+            | "-s"
+            | "--sandbox"
+            | "-C"
+            | "--cd"
+            | "--add-dir"
+            | "-a"
+            | "--ask-for-approval" => {
+                args.next();
+            }
+            "--" => break,
+            "resume" if !resume => resume = true,
+            _ if arg.starts_with('-') => {}
+            _ => {
+                let thread = (resume
+                    && arg.len() == 36
+                    && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()))
+                .then(|| arg.to_owned());
+                return (remote, thread);
+            }
+        }
+    }
+    (remote, None)
 }
 
 /// Working directory per pid from `lsof -a -p <pids> -d cwd -Fn`: a `p<pid>` line, then
@@ -497,16 +541,16 @@ fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
 /// A rollout belongs to a process when that process is the only live Codex in the rollout's
 /// directory that started at or before it; the newest such rollout is the live thread, since
 /// `/new` opens another file. With two Codex processes in one directory the file could be
-/// either's, so neither gets it.
+/// either's, so neither gets it. Remote clients write no rollout themselves.
 pub fn attribute<'a>(
     procs: &[Process],
     rollouts: &'a [(PathBuf, Meta)],
 ) -> HashMap<u32, &'a (PathBuf, Meta)> {
     let mut out: HashMap<u32, &(PathBuf, Meta)> = HashMap::new();
     for r in rollouts {
-        let mut owners = procs
-            .iter()
-            .filter(|p| p.cwd.as_deref() == Some(r.1.cwd.as_path()) && p.started <= r.1.started);
+        let mut owners = procs.iter().filter(|p| {
+            !p.remote && p.cwd.as_deref() == Some(r.1.cwd.as_path()) && p.started <= r.1.started
+        });
         let (Some(owner), None) = (owners.next(), owners.next()) else {
             continue;
         };
@@ -527,16 +571,25 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let Some(since) = procs.iter().map(|p| p.started).min() else {
         return Vec::new();
     };
-    let rollouts = rollouts(codex, since);
-    let guessed = attribute(procs, &rollouts);
     let index = index(codex);
     let daemon = daemon_pid(codex);
     // Only these processes can hold a lock that matters here: the clients and the daemon.
     let pids: Vec<u32> = procs.iter().map(|p| p.pid).chain(daemon).collect();
     let locks = locks(codex, &pids);
     let held: HashMap<u32, String> = locks.iter().map(|(id, pid)| (*pid, id.clone())).collect();
+    // A writer lock already names the owner. Do not attribute its rollout to a different
+    // process just because that process started earlier in the same directory.
+    let rollouts: Vec<_> = rollouts(codex, since)
+        .into_iter()
+        .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
+        .collect();
+    let guessed = attribute(procs, &rollouts);
     let mut out: Vec<Session> = procs
         .iter()
+        // New remote clients have no thread id in their argv and hold no writer lock.
+        // The daemon's thread_rows supplies their sessions, including while the viewer
+        // remains open. A synthetic codex-PID row would count the same launch twice.
+        .filter(|p| !(p.remote && daemon.is_some() && p.thread.is_none()))
         .map(|p| {
             // What the process states about its thread (a lock it holds, a `resume <id>`
             // argument) beats the cwd-and-start guess.
@@ -583,6 +636,8 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         })
         .collect();
     out.sort_by_key(|s| s.started);
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|s| seen.insert(s.session_id.clone()));
     out
 }
 
@@ -833,6 +888,8 @@ mod tests {
             Some("01a09fed-867a-7a42-b7b9-22fbcbd280d7")
         );
         assert_eq!(procs[1].thread, None, "a bare resume picks later");
+        assert!(procs[0].remote);
+        assert!(!procs[1].remote);
         let held = parse_locks(
             "p22416\nf12\nn/Users/u/.codex/thread-writer-locks/01a09fed-867a-7a42-b7b9-22fbcbd280d7.lock\n",
         );
@@ -840,6 +897,31 @@ mod tests {
             held.get("01a09fed-867a-7a42-b7b9-22fbcbd280d7").copied(),
             Some(22416)
         );
+    }
+
+    #[test]
+    fn remote_options_are_read_before_the_prompt() {
+        for args in [
+            "--remote unix:///s.sock -C /repo fix this",
+            "--remote=unix:///s.sock fix this",
+            "-C /repo --remote unix:///s.sock fix this",
+            "--model example --remote=unix:///s.sock resume --all",
+            "resume --remote unix:///s.sock --last",
+        ] {
+            assert!(client_options(args.split_whitespace()).0, "{args}");
+        }
+        for args in [
+            "explain --remote unix:///s.sock",
+            "-C /repo explain --remote unix:///s.sock",
+            "-- explain --remote unix:///s.sock",
+            "--config --remote",
+            "--remote",
+            "--remote=",
+        ] {
+            assert!(!client_options(args.split_whitespace()).0, "{args}");
+        }
+        let prompt = "--remote unix:///s.sock explain resume 01a0a430-b8d1-7682-a7ed-51904a118c65";
+        assert_eq!(client_options(prompt.split_whitespace()), (true, None));
     }
 
     fn rollout(home: &Path, name: &str, id: &str, cwd: &Path, at: &str, turn: bool) -> PathBuf {
@@ -899,6 +981,91 @@ mod tests {
             Some("active"),
             "a shorter file is read anew"
         );
+    }
+
+    #[test]
+    fn remote_viewers_and_their_daemon_threads_each_produce_one_session() {
+        use fs2::FileExt;
+
+        const A: &str = "01a0a430-b8d1-7682-a7ed-51904a118c65";
+        const B: &str = "01a0a431-2ee0-76d2-88ae-71ce9826d86c";
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("codex");
+        let state = d.path().join("state");
+        let work = d.path().join("repo");
+        fs::create_dir_all(home.join("app-server-daemon")).unwrap();
+        fs::create_dir_all(home.join("thread-writer-locks")).unwrap();
+        fs::write(
+            home.join("app-server-daemon/app-server.pid"),
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
+        let mut procs = processes(
+            "7 Sun Sep 13 10:00:00 2026 codex --remote unix:///s.sock -C /repo first prompt\n\
+             8 Sun Sep 13 10:01:00 2026 codex --remote unix:///s.sock -C /repo second prompt\n",
+        );
+        for p in &mut procs {
+            p.cwd = Some(work.clone());
+        }
+        let fleet = |procs: &[Process]| {
+            let mut live = rows(&home, procs);
+            live.extend(thread_rows(&home, &state, &live));
+            live.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+            live
+        };
+        assert!(
+            fleet(&procs).is_empty(),
+            "a client waiting for its thread is not a separate session"
+        );
+        let held: Vec<_> = [(A, "2026-09-13T10:00:01Z"), (B, "2026-09-13T10:01:01Z")]
+            .into_iter()
+            .map(|(id, at)| {
+                rollout(&home, &format!("rollout-{id}"), id, &work, at, true);
+                let file =
+                    fs::File::create(home.join("thread-writer-locks").join(format!("{id}.lock")))
+                        .unwrap();
+                file.lock_exclusive().unwrap();
+                file
+            })
+            .collect();
+        let live = fleet(&procs);
+        assert_eq!(
+            live.iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [A, B],
+            "two launches in the same folder stay two sessions, without codex-PID rows"
+        );
+        assert!(live.iter().all(|s| s.kind.as_deref() == Some("daemon")));
+        assert_eq!(
+            live.iter().map(|s| s.started).collect::<Vec<_>>(),
+            fleet(&[]).iter().map(|s| s.started).collect::<Vec<_>>(),
+            "closing the viewer leaves the thread's row and start time unchanged"
+        );
+        for p in &mut procs {
+            p.thread = Some(A.into());
+        }
+        assert_eq!(
+            fleet(&procs)
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [A, B],
+            "two resume clients on one thread still give it just one row"
+        );
+        let standalone = Process {
+            pid: 9,
+            remote: false,
+            thread: None,
+            ..procs[0].clone()
+        };
+        let bare = rows(&home, &[standalone]);
+        assert_eq!(
+            bare[0].session_id, "codex-9",
+            "a standalone TUI cannot claim a rollout whose writer is the daemon"
+        );
+        drop(held);
+        assert!(fleet(&[]).is_empty(), "the daemon released both threads");
     }
 
     #[test]
