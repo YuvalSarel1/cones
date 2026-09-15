@@ -2559,9 +2559,6 @@ struct App {
     prespawned: Option<String>,
     /// Where the list rows were drawn last, so a click finds its row.
     list_area: Rect,
-    /// The transcript's last exchanges on view in the pane: path, the file length it was read
-    /// at, lines.
-    preview: Option<(PathBuf, u64, Vec<String>)>,
 }
 
 /// How long the cursor rests on a Claude session row before its viewer opens ahead of `enter`.
@@ -2576,14 +2573,10 @@ const REST_SPLIT: Duration = Duration::from_millis(50);
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
-/// Exchanges the pane shows of a transcript no viewer will open on: enough to fill the pane
-/// from the bottom, read from the file's last 4 MiB.
-const PREVIEW_EXCHANGES: usize = 3;
-
 /// The viewers a dashboard keeps alive at once; opening another closes the least recently used
 /// `claude attach` of a listed session, the one kind a resting cursor reopens unseen in a
 /// quarter second. A Codex client, a harness's agents view or a resumed run has no such way
-/// back: closed, its row falls to the dim transcript preview until `enter` starts it over, so
+/// back: closed, its pane stays blank until `enter` starts it over, so
 /// those stay until `ctrl+x` or the dashboard quits.
 // ponytail: only attaches count against the cap, so many Codex clients exceed it; a cap of
 // their own if the memory shows.
@@ -2757,7 +2750,6 @@ impl App {
             rest: None,
             prespawned: None,
             list_area: Rect::default(),
-            preview: None,
         })
     }
 
@@ -3218,12 +3210,6 @@ impl App {
         self.most_recently_focused()
     }
 
-    /// The selected session's transcript, when the row is a session that has one.
-    fn selected_transcript(&self) -> Option<PathBuf> {
-        self.selected_session()
-            .and_then(|s| s.transcript_path.clone())
-    }
-
     fn selected_session(&self) -> Option<&fleet::Session> {
         let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
             return None;
@@ -3255,25 +3241,6 @@ impl App {
             .filter(|(_, o)| !o.speculative && !o.key.starts_with("agents:"))
             .max_by_key(|(_, o)| o.last_focused)
             .map(|(i, _)| i)
-    }
-
-    /// What an empty pane says `enter` on the selected row would put there: a run, or a
-    /// session that is listed and can be joined from here; nothing for any other row.
-    fn pane_hint(&self) -> Option<&'static str> {
-        match self.selected().map(|r| &r.kind) {
-            Some(Kind::Run(..)) => Some("enter opens the selected run here"),
-            Some(Kind::Session(id, _))
-                if !id.starts_with("starting:")
-                    && !self
-                        .data
-                        .sessions
-                        .iter()
-                        .any(|s| &s.session_id == id && s.own_terminal()) =>
-            {
-                Some("enter opens the selected session here")
-            }
-            _ => None,
-        }
     }
 
     /// ctrl+\: from the list, the pane on or off; inside a viewer, the viewer beside the
@@ -3454,22 +3421,6 @@ impl App {
         s.harness == "claude"
             && !s.own_terminal()
             && !matches!(s.state.as_str(), "failed" | "stopped")
-    }
-
-    /// Whether the selected row is a session a resting cursor opens a viewer on, so the pane
-    /// is a screen in the making rather than a place to draw the transcript.
-    fn viewer_coming(&self) -> bool {
-        let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
-            return false;
-        };
-        !id.starts_with("starting:")
-            && !self.stopping.iter().any(|a| &a.id == id)
-            && !self.removed_sessions.contains(id)
-            && self
-                .data
-                .sessions
-                .iter()
-                .any(|s| &s.session_id == id && Self::joinable(s))
     }
 
     /// Open `claude attach` on `id` out of sight, so `enter` on its row finds it drawn. The
@@ -5081,8 +5032,7 @@ impl App {
                 // stays blank until it does: a quarter second of nothing reads as a terminal
                 // opening, where a placeholder that is then replaced reads as a flicker.
                 Some(i) => self.viewers[i].viewer.resize(pane.height, pane.width),
-                None if self.viewer_coming() => {}
-                None => self.draw_preview(frame, pane),
+                None => {}
             }
             return;
         }
@@ -5128,62 +5078,6 @@ impl App {
                 frame.set_cursor_position((pane.x + col, pane.y + row));
             }
         }
-    }
-
-    /// The pane on a row no viewer is coming to: the selected session's last exchanges from
-    /// its transcript, dim, since that is all there is of a session that runs in its own
-    /// terminal or has no worker to join; else one line saying what `enter` would open here.
-    fn draw_preview(&mut self, frame: &mut Frame, pane: Rect) {
-        let lines = self.preview_lines();
-        if !lines.is_empty() {
-            // Wrapped and anchored to the bottom, as the client's own screen will be, so the
-            // latest text is where the eye finds it once the viewer paints.
-            let text: Vec<Line> = lines
-                .iter()
-                .map(|l| Line::styled(l.clone(), dim()))
-                .collect();
-            let text = Paragraph::new(text).wrap(Wrap { trim: false });
-            let count = text.line_count(pane.width) as u16;
-            let area = Rect {
-                y: pane.y + pane.height.saturating_sub(count),
-                height: count.min(pane.height),
-                ..pane
-            };
-            let text = text.scroll((count.saturating_sub(pane.height), 0));
-            frame.render_widget(text, area);
-            return;
-        }
-        if let Some(hint) = self.pane_hint() {
-            let row = Rect {
-                y: pane.y + pane.height / 2,
-                height: 1,
-                ..pane
-            };
-            let hint = Paragraph::new(Line::styled(hint, dim())).centered();
-            frame.render_widget(hint, row);
-        }
-    }
-
-    /// The last exchanges of the selected session's transcript, prompts quoted with `> ` and
-    /// replies under them; read again only when the file grew or the row changed.
-    fn preview_lines(&mut self) -> Vec<String> {
-        let Some(path) = self.selected_transcript() else {
-            return vec![];
-        };
-        let len = std::fs::metadata(&path).map_or(0, |m| m.len());
-        if let Some((p, l, lines)) = &self.preview
-            && *p == path
-            && *l == len
-        {
-            return lines.clone();
-        }
-        let mut lines = fleet::exchanges(&path, PREVIEW_EXCHANGES);
-        // A transcript that opens with a reply renders a blank where its prompt would be.
-        while lines.first().is_some_and(|l| l.is_empty()) {
-            lines.remove(0);
-        }
-        self.preview = Some((path, len, lines.clone()));
-        lines
     }
 
     /// The dashboard in `area`: header, list, composer and hint line.
@@ -7956,12 +7850,11 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_pane_says_what_enter_does_and_says_nothing_on_a_row_that_cannot_open() {
+    fn an_empty_pane_stays_blank_even_when_enter_can_open_a_viewer() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        // A Codex thread the daemon holds: `enter` joins it, but no resting cursor does, so
-        // the pane has nothing coming and says what `enter` would do.
+        // Enter can join this Codex thread, but the empty pane must not show a hint.
         let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
         data.sessions.push(Session {
             session_id: "dddd-daemon".into(),
@@ -7989,10 +7882,7 @@ mod tests {
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 160);
-        assert!(
-            screen[15].contains("enter opens the selected session here"),
-            "{screen:#?}"
-        );
+        assert!((0..30).all(|y| cells(&t, y, 81..160).trim().is_empty()));
         assert!(
             !screen[29].contains("ctrl+\\"),
             "the layout key is the viewer's, not the list's: {:?}",
@@ -8003,13 +7893,7 @@ mod tests {
             app.step(-1);
         }
         t.draw(|f| app.draw(f)).unwrap();
-        let screen = rows(&t, 160);
-        assert!(
-            !screen
-                .iter()
-                .any(|r| r.contains("enter opens the selected session here")),
-            "{screen:#?}"
-        );
+        assert!((0..30).all(|y| cells(&t, y, 81..160).trim().is_empty()));
     }
 
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
@@ -8468,7 +8352,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pane_shows_the_transcript_tail_of_a_session_no_viewer_will_open_on() {
+    fn the_pane_stays_blank_for_a_session_in_its_own_terminal() {
         let d = dir();
         // An interactive Claude runs in its own terminal: nothing is coming to the pane.
         registry_kind(d.path(), A, "/src/one", "idle", 1, "interactive");
@@ -8494,35 +8378,15 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        // The exchange as the client will draw it: prompt quoted, replies under it, the
-        // latest on the pane's last row and nothing at its top.
-        let pane = app.pane(Rect::new(0, 0, 200, 30));
-        let last = pane.y + pane.height - 1;
-        let row = |t: &Terminal<ratatui::backend::TestBackend>, y: u16| cells(t, y, 101..200);
-        assert!(
-            row(&t, last).starts_with("second reply"),
-            "{}",
-            row(&t, last)
-        );
-        assert!(row(&t, last - 2).starts_with("first reply"));
-        assert!(
-            row(&t, last - 4).starts_with("> fix it"),
-            "{}",
-            row(&t, last - 4)
-        );
-        assert!(row(&t, 0).trim().is_empty());
-        // The transcript changed: the tail follows.
+        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
+        // Growing the transcript must not turn the pane into a transcript reader.
         fs::write(
             &transcript,
             format!("{}\n", line("assistant", "third reply")),
         )
         .unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(
-            row(&t, last).starts_with("third reply"),
-            "{}",
-            row(&t, last)
-        );
+        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
     }
 
     #[test]
@@ -8565,7 +8429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_session_row_with_a_transcript_previews_it_over_the_viewer_focused_last() {
+    fn a_session_without_a_viewer_clears_the_previous_live_screen() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 2);
         registry_kind(d.path(), B, "/src/two", "idle", 1, "interactive");
@@ -8582,24 +8446,18 @@ mod tests {
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
-        // The cursor moves onto B, another folder's session in its own terminal with a
-        // transcript: its tail, not A.
+        // B has a transcript, but no live viewer. The previous screen must clear.
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
         t.draw(|f| app.draw(f)).unwrap();
-        // At the bottom of the pane, where the client will draw its latest text.
-        let pane = app.pane(Rect::new(0, 0, 200, 30));
-        let last = pane.y + pane.height - 1;
-        assert!(
-            cells(&t, last, 101..200).starts_with("two's reply"),
-            "{}",
-            cells(&t, last, 101..200)
-        );
-        assert!(!cells(&t, 0, 101..200).starts_with("two's reply"));
+        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
+        app.step(-1);
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
     }
 
     #[test]
-    fn a_codex_row_without_a_viewer_never_shows_another_sessions_screen() {
+    fn a_codex_pane_stays_blank_with_or_without_a_transcript_until_its_viewer_paints() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 2);
         let mut app = app(d.path());
@@ -8642,8 +8500,31 @@ mod tests {
         assert!(matches!(&app.selected().unwrap().kind, Kind::Session(id, _) if id == "codex-77"));
         assert_eq!(app.shown(), None);
         t.draw(|f| app.draw(f)).unwrap();
-        let screen = rows(&t, 200).join("\n");
-        assert!(!screen.contains("VIEW"), "{screen}");
+        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
+        let transcript = d.path().join("codex-rollout.jsonl");
+        let line = serde_json::json!({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "a Codex transcript reply"}]
+            }
+        });
+        fs::write(&transcript, format!("{line}\n")).unwrap();
+        app.data
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == "codex-77")
+            .unwrap()
+            .transcript_path = Some(transcript);
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
+        // A real viewer can still take the pane once it has painted.
+        app.viewers
+            .push(viewer_open("codex-77", "codex", "CODEX LIVE"));
+        wait_paint(&mut app, 1, "CODEX LIVE");
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("CODEX LIVE"));
     }
 
     #[test]
