@@ -28,8 +28,13 @@ pub use vt100::MouseProtocolMode;
 const STDERR_TAIL: usize = 16 * 1024;
 /// Input the viewer has not read yet; beyond this it is not reading at all.
 const INPUT_CAP: usize = 8 * 1024 * 1024;
-/// Chunks read from the pty in one pump, so a flood of output cannot hold the dashboard's loop.
-const CHUNKS_PER_PUMP: usize = 64;
+/// How long one pump keeps reading a pty that has more, so a flood of output cannot hold the
+/// dashboard's loop. macOS hands a pty master one KiB per read and the writer refills it in
+/// microseconds, so a pump that stopped at the first empty read would take a 100 KiB burst
+/// (a Codex client redrawing its transcript after a width change) one KiB per loop turn,
+/// drawing a partial page each time; a pump waits `PUMP_WAIT` for the next KiB instead.
+const PUMP_MAX: Duration = Duration::from_millis(50);
+const PUMP_WAIT: Duration = Duration::from_millis(1);
 /// Lines kept after they leave the top of the screen, for the wheel to scroll back through.
 const SCROLLBACK: usize = 1000;
 /// How long a synchronized update (`CSI ?2026h`) holds the frame before it is drawn as is,
@@ -361,10 +366,8 @@ impl Viewer {
         }
         let mut dirty = false;
         let mut bytes = [0u8; 8192];
-        for _ in 0..CHUNKS_PER_PUMP {
-            if !self.master_open {
-                break;
-            }
+        let started = Instant::now();
+        while self.master_open {
             match self.master.read(&mut bytes) {
                 Ok(0) => self.master_open = false,
                 Ok(n) => {
@@ -372,7 +375,13 @@ impl Viewer {
                     dirty = true;
                 }
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => self.master_open = false,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if started.elapsed() >= PUMP_MAX
+                        || !readable(self.master.as_raw_fd(), PUMP_WAIT)
+                    {
+                        break;
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e),
             }
@@ -543,6 +552,16 @@ impl Drop for Viewer {
 /// How many bytes at the end of `bytes` begin a UTF-8 sequence that is not complete yet:
 /// 0 when the chunk ends on a code point boundary. Malformed bytes count as complete, so
 /// nothing is held back for good.
+/// True when `fd` has something to read within `timeout`.
+fn readable(fd: i32, timeout: Duration) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    unsafe { libc::poll(&mut poll, 1, timeout.as_millis() as libc::c_int) > 0 }
+}
+
 fn utf8_tail(bytes: &[u8]) -> usize {
     for back in 1..=3.min(bytes.len()) {
         let b = bytes[bytes.len() - back];
@@ -1063,6 +1082,36 @@ mod tests {
         }
         assert_eq!(text(v.screen(), 0), "two");
         assert_eq!(v.screen().cursor_position(), (0, 3));
+    }
+
+    /// A burst larger than the KiB a pty hands out per read lands in a few pumps, not one KiB
+    /// per loop turn with a partial page drawn between each: 120 KiB written a line at a time,
+    /// as a Codex client redrawing its transcript does, took 113 pumps before, 3 now.
+    #[test]
+    fn a_burst_lands_in_a_few_pumps_not_a_kib_per_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("burst");
+        let lines: String = (1..=20000).map(|n| format!("L{n}\n")).collect();
+        std::fs::write(&file, lines).unwrap();
+        let mut c = Command::new("/bin/sh");
+        c.args([
+            "-c",
+            &format!(
+                "sleep 0.2; while read l; do echo \"$l\"; done < {}",
+                file.display()
+            ),
+        ]);
+        let mut v = Viewer::spawn(c, 12, 20, None, Colors::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut dirty_pumps = 0;
+        while text(v.screen(), 10) != "L20000" {
+            if v.pump().unwrap() {
+                dirty_pumps += 1;
+            }
+            assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(dirty_pumps <= 8, "{dirty_pumps} pumps for a 120 KiB burst");
     }
 
     #[test]
