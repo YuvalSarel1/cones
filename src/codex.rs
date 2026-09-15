@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     fs,
-    io::BufRead,
+    io::{BufRead, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
@@ -240,43 +240,53 @@ pub fn assistant_texts(v: &Value) -> impl Iterator<Item = &str> {
 /// skipped; Codex may be mid-write on the last one.
 pub fn tail(lines: &str) -> Tail {
     let mut t = Tail::default();
-    for line in lines.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if let Some(ts) = v["timestamp"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        {
-            t.last_activity = Some(ts.into());
-        }
-        if let Some(first) = assistant_texts(&v).find_map(crate::fleet::headline) {
-            t.last = Some(first);
-        }
-        if v["type"] == "turn_context"
-            && let Some(model) = v["payload"]["model"].as_str()
-        {
-            t.model = Some(model.to_owned());
-        }
-        if v["type"] == "event_msg" {
-            match v["payload"]["type"].as_str() {
-                Some("task_started") => t.state = Some("active"),
-                Some("task_complete" | "turn_aborted") => t.state = Some("idle"),
-                Some("token_count") => {
-                    let info = &v["payload"]["info"];
-                    let total = &info["total_token_usage"];
-                    t.tokens_in = total["input_tokens"].as_u64().or(t.tokens_in);
-                    t.tokens_out = total["output_tokens"].as_u64().or(t.tokens_out);
-                    t.context_tokens = info["last_token_usage"]["total_tokens"]
-                        .as_u64()
-                        .or(t.context_tokens);
-                    t.context_window = info["model_context_window"].as_u64().or(t.context_window);
+    t.fold(lines);
+    t
+}
+
+impl Tail {
+    /// Read `lines` on top of what came before: a `task_started` from an earlier read still
+    /// counts, so a turn writing megabytes of tool output keeps its `active` state.
+    pub fn fold(&mut self, lines: &str) {
+        let t = self;
+        for line in lines.lines() {
+            let Ok(v) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if let Some(ts) = v["timestamp"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            {
+                t.last_activity = Some(ts.into());
+            }
+            if let Some(first) = assistant_texts(&v).find_map(crate::fleet::headline) {
+                t.last = Some(first);
+            }
+            if v["type"] == "turn_context"
+                && let Some(model) = v["payload"]["model"].as_str()
+            {
+                t.model = Some(model.to_owned());
+            }
+            if v["type"] == "event_msg" {
+                match v["payload"]["type"].as_str() {
+                    Some("task_started") => t.state = Some("active"),
+                    Some("task_complete" | "turn_aborted") => t.state = Some("idle"),
+                    Some("token_count") => {
+                        let info = &v["payload"]["info"];
+                        let total = &info["total_token_usage"];
+                        t.tokens_in = total["input_tokens"].as_u64().or(t.tokens_in);
+                        t.tokens_out = total["output_tokens"].as_u64().or(t.tokens_out);
+                        t.context_tokens = info["last_token_usage"]["total_tokens"]
+                            .as_u64()
+                            .or(t.context_tokens);
+                        t.context_window =
+                            info["model_context_window"].as_u64().or(t.context_window);
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
-    t
 }
 
 /// Thread names from `session_index.jsonl`, one `{"id","thread_name","updated_at"}` per line;
@@ -779,23 +789,34 @@ pub fn prompt(line: &str) -> Option<String> {
         .find_map(crate::fleet::headline)
 }
 
-/// The rollout's tail, recomputed only when the file grew; the dashboard reloads every second.
+/// The rollout's tail, folded from the bytes written since the last read; the dashboard
+/// reloads every second. The whole file is read once, so a turn state recorded before the
+/// last megabyte of tool output is not lost; the last partial line waits for its newline.
 fn tail_of(path: &Path) -> Tail {
     static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
     let len = fs::metadata(path).map_or(0, |m| m.len());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some((seen, t)) = cache.get(path)
-        && *seen == len
-    {
+    let (seen, t) = cache.entry(path.to_owned()).or_default();
+    if *seen > len {
+        // Truncated or replaced: start over.
+        (*seen, *t) = (0, Tail::default());
+    }
+    if *seen == len {
         return t.clone();
     }
-    // ponytail: the last MiB; a reply older than that is not what the row is for.
-    let t = crate::output::tail(path, 1 << 20)
-        .map(|text| tail(&text))
-        .unwrap_or_default();
-    cache.insert(path.to_owned(), (len, t.clone()));
-    t
+    let Ok(mut file) = fs::File::open(path) else {
+        return t.clone();
+    };
+    let mut data = Vec::new();
+    if file.seek(SeekFrom::Start(*seen)).is_ok()
+        && file.take(len - *seen).read_to_end(&mut data).is_ok()
+        && let Some(end) = data.iter().rposition(|b| *b == b'\n')
+    {
+        t.fold(&String::from_utf8_lossy(&data[..=end]));
+        *seen += end as u64 + 1;
+    }
+    t.clone()
 }
 
 #[cfg(test)]
@@ -841,6 +862,43 @@ mod tests {
         let path = dir.join(format!("{name}.jsonl"));
         fs::write(&path, text).unwrap();
         path
+    }
+
+    #[test]
+    fn a_turn_state_survives_a_megabyte_of_tool_output_and_a_half_written_line() {
+        use std::io::Write;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("rollout.jsonl");
+        let started = r#"{"timestamp":"2026-09-15T08:31:22.334Z","type":"event_msg","payload":{"type":"task_started"}}"#;
+        let noise = format!(
+            r#"{{"timestamp":"2026-09-15T08:31:23.000Z","type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"CommandExecution","output":"{}"}}}}}}"#,
+            "x".repeat(4096)
+        );
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(f, "{started}").unwrap();
+        for _ in 0..300 {
+            writeln!(f, "{noise}").unwrap();
+        }
+        f.flush().unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > 1 << 20);
+        assert_eq!(tail_of(&path).state, Some("active"));
+        let done = r#"{"timestamp":"2026-09-15T08:40:00.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#;
+        write!(f, "{}", &done[..40]).unwrap();
+        f.flush().unwrap();
+        assert_eq!(
+            tail_of(&path).state,
+            Some("active"),
+            "a half-written line waits"
+        );
+        writeln!(f, "{}", &done[40..]).unwrap();
+        f.flush().unwrap();
+        assert_eq!(tail_of(&path).state, Some("idle"));
+        fs::write(&path, format!("{started}\n")).unwrap();
+        assert_eq!(
+            tail_of(&path).state,
+            Some("active"),
+            "a shorter file is read anew"
+        );
     }
 
     #[test]
