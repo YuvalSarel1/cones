@@ -126,13 +126,7 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
                 s
             }),
     );
-    out.sort_by(|a, b| {
-        (a.started.is_none(), a.started, &a.session_id).cmp(&(
-            b.started.is_none(),
-            b.started,
-            &b.session_id,
-        ))
-    });
+    sort(&mut out);
     Ok(out)
 }
 
@@ -611,6 +605,13 @@ pub fn alive(pid: u32) -> bool {
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
     let mut out = sessions(claude)?;
     out.extend(crate::codex::sessions(&crate::codex::home(claude)));
+    sort(&mut out);
+    Ok(out)
+}
+
+/// Fleet order: oldest start first, unknown starts last, the id breaking ties. Every list of
+/// rows goes through here, so rows joined from another source fall into place by age.
+pub fn sort(out: &mut [Session]) {
     out.sort_by(|a, b| {
         (a.started.is_none(), a.started, &a.session_id).cmp(&(
             b.started.is_none(),
@@ -618,7 +619,6 @@ pub fn all(claude: &Path) -> Result<Vec<Session>> {
             &b.session_id,
         ))
     });
-    Ok(out)
 }
 
 /// What the fleet view shows, so `logs`, `attach` and `stop` act on every visible row.

@@ -1137,6 +1137,7 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
     // Codex threads the dashboard launched behind the daemon show nothing in the process
     // table while no client is attached; cones lists them from its own record.
     out.extend(codex::thread_rows(&codex::home(claude), state, &out));
+    fleet::sort(&mut out);
     Ok(out)
 }
 
@@ -4893,6 +4894,41 @@ mod tests {
             entry.to_string(),
         )
         .unwrap();
+    }
+
+    /// A Codex thread the dashboard launched is listed from cones' own record, after the
+    /// process table and the registry are read; it still sorts by age among them.
+    #[test]
+    fn a_dashboard_launched_codex_thread_sorts_by_start_among_the_other_rows() {
+        let d = tempfile::tempdir().unwrap();
+        let (claude, state) = (d.path().join(".claude"), d.path().join("state"));
+        let cwd = d.path().to_str().unwrap();
+        registry(&claude, A, cwd, "idle", 1_789_000_000_000);
+        let rollout = d.path().join("rollout.jsonl");
+        fs::write(
+            &rollout,
+            format!(
+                r#"{{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{{"id":"dddd","timestamp":"2026-09-01T00:00:00Z","cwd":{}}}}}"#,
+                serde_json::to_string(cwd).unwrap()
+            ) + "\n",
+        )
+        .unwrap();
+        codex::remember(
+            &state,
+            codex::Thread {
+                id: "dddd".into(),
+                cwd: d.path().to_path_buf(),
+                started: "2026-09-01T00:00:00Z".parse().unwrap(),
+                rollout,
+            },
+        )
+        .unwrap();
+        let ids: Vec<String> = fleet_rows(&claude, &state, &[])
+            .unwrap()
+            .into_iter()
+            .map(|s| s.session_id)
+            .collect();
+        assert_eq!(ids, ["dddd", A], "the older thread comes first");
     }
 
     /// A dashboard before its first `refresh`, so a test sets filter and grouping first.
