@@ -2,3 +2,4 @@
 /jobs.yaml
 /repomix-output.*
 .DS_Store
+/.claude/
