@@ -1334,7 +1334,8 @@ struct App {
     /// list on a wide frame, else the frame less the strip row under it.
     pane: Rect,
     /// Whether a frame at least `SPLIT_MIN` wide draws the viewer beside the list; ctrl+\
-    /// toggles it, and off it the viewer takes the whole frame as on a narrow terminal.
+    /// inside a viewer toggles it, and off it the viewer takes the whole frame as on a
+    /// narrow terminal. A layout, not a state: it stays until toggled again.
     split: bool,
     /// The selected row's viewer key and when the cursor arrived on it; after `REST` a Claude
     /// session row's viewer opens out of sight.
@@ -1342,13 +1343,8 @@ struct App {
     /// The key the resting cursor already opened once, so a refused attach is not started
     /// again while the cursor stays there; cleared when the cursor moves.
     prespawned: Option<String>,
-    /// A viewer entered with `enter` has the whole frame until ctrl+z or ctrl+\ steps out;
-    /// ctrl+] and a click focus the pane where it is.
-    inside: bool,
     /// Where the list rows were drawn last, so a click finds its row.
     list_area: Rect,
-    /// The last left click: when, and whether on the pane. A second one soon after enters.
-    last_click: Option<(Instant, bool)>,
     /// The transcript tail on view in the pane: path, the file length it was read at, lines.
     preview: Option<(PathBuf, u64, Vec<String>)>,
 }
@@ -1359,8 +1355,6 @@ const REST: Duration = Duration::from_millis(400);
 /// The rest beside the list, where the pane is waiting for the screen.
 const REST_SPLIT: Duration = Duration::from_millis(150);
 
-/// Two clicks this close on the same side of the rule are `enter`.
-const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Lines one notch of the wheel scrolls an emulated screen, as most terminals scroll.
 const WHEEL_LINES: i32 = 3;
 
@@ -1521,9 +1515,7 @@ impl App {
             split: true,
             rest: None,
             prespawned: None,
-            inside: false,
             list_area: Rect::default(),
-            last_click: None,
             preview: None,
         })
     }
@@ -1877,7 +1869,7 @@ impl App {
 
     /// Whether a frame `width` columns wide draws the viewer beside the list.
     fn split_active(&self, width: u16) -> bool {
-        self.split && !(self.inside && self.focus.is_some()) && width >= SPLIT_MIN
+        self.split && width >= SPLIT_MIN
     }
 
     /// How long the cursor rests on a row before its viewer opens: shorter beside the list.
@@ -1978,23 +1970,18 @@ impl App {
         }
     }
 
-    /// ctrl+\: the viewer beside the list or over the whole frame. Only a frame at least
-    /// `SPLIT_MIN` wide draws the difference, so a narrower one says so and keeps its state,
-    /// rather than flip something that would surface later when the terminal widens.
+    /// ctrl+\ inside a viewer: the viewer beside the list or over the whole frame. Only a
+    /// frame at least `SPLIT_MIN` wide draws the difference, so a narrower one says so and
+    /// keeps its state, rather than flip something that would surface later when the
+    /// terminal widens.
     fn toggle_split(&mut self) {
         if self.size.1 < SPLIT_MIN {
             self.status = format!("split needs {SPLIT_MIN} columns");
             return;
         }
-        // Inside a viewer entered from the split, ctrl+\ steps out beside the list and back
-        // in; the pane itself is switched off and on from the list.
-        if self.split && self.focus.is_some() {
-            self.inside = !self.inside;
-        } else {
-            self.split = !self.split;
-        }
+        self.split = !self.split;
         self.needs_clear = true;
-        self.debug(|| format!("split {} inside {}", self.split, self.inside));
+        self.debug(|| format!("split {}", self.split));
     }
 
     /// Give a viewer the pane and the keys. A viewer opened ahead of `enter` becomes an
@@ -2233,7 +2220,6 @@ impl App {
         match self.focus {
             Some(f) if f == i => {
                 self.focus = None;
-                self.inside = false;
                 self.needs_clear = had_frame;
             }
             Some(f) if f > i => self.focus = Some(f - 1),
@@ -2257,7 +2243,6 @@ impl App {
         // that had the whole frame is not trusted to have left it clean.
         self.needs_clear = !self.split_active(self.size.1);
         let i = self.focus.take().unwrap();
-        self.inside = false;
         self.feedback = Some(("return_to_draw", Instant::now()));
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
@@ -2372,37 +2357,12 @@ impl App {
         self.viewers.get_mut(i)
     }
 
-    /// ctrl+]: the next live viewer by index while one is focused, wrapping; from the
-    /// dashboard, the most recently focused one. A speculative viewer is not on the round.
-    fn cycle_viewer(&mut self) {
-        match self.focus {
-            Some(i) => {
-                let n = self.viewers.len();
-                let next = (1..n)
-                    .map(|d| (i + d) % n)
-                    .find(|&j| !self.viewers[j].speculative);
-                if let Some(j) = next {
-                    self.focus(j);
-                }
-            }
-            // From the list: the pane's viewer, where it is; else the one the user was in last.
-            None => match self.shown().or_else(|| self.most_recently_focused()) {
-                Some(i) => {
-                    self.inside = false;
-                    self.focus(i);
-                }
-                None => self.status = "no viewer open".into(),
-            },
-        }
-    }
-
     /// The dashboard's one row under a focused viewer, as tmux keeps a status bar under a
     /// pane: the cone, the viewer's name, the fleet counts the header shows, the session
     /// elsewhere that needs input, and the keys that leave. The counts stay live because the
     /// reload loop runs while a viewer is focused. The ends get the width first; the middle
     /// is cut from its right, and the needs-input note is shown whole or not at all. On a
-    /// width too narrow for both ends, `ctrl+\ split` goes first, then `ctrl+] next`, then
-    /// `ctrl+z back`.
+    /// width too narrow for both ends, `ctrl+\ split` goes first, then `ctrl+z back`.
     fn strip(&self, i: usize, width: u16) -> Line<'static> {
         let open = &self.viewers[i];
         let width = width as usize;
@@ -2453,9 +2413,6 @@ impl App {
                 )
             });
         let mut keys = vec![Span::styled("ctrl+z back", dim())];
-        if self.live_viewers() > 1 {
-            keys.push(Span::styled(" · ctrl+] next", dim()));
-        }
         // Full screen on a wide frame is a choice; the way back to the split is here.
         if width >= SPLIT_MIN as usize {
             keys.push(Span::styled(" · ctrl+\\ split", dim()));
@@ -2581,9 +2538,9 @@ impl App {
         Some(ev)
     }
 
-    /// A left click beside the list: on the pane it focuses the pane where it is, on a list
-    /// row it selects the row and takes the keys back. A second click within `DOUBLE_CLICK`
-    /// on the same side is `enter`. True when the event is still the viewer's.
+    /// A left click beside the list: on the pane it focuses the pane's viewer, on a list
+    /// row it selects the row and takes the keys back. True when the event is still the
+    /// viewer's.
     fn click(&mut self, ev: MouseEvent) -> bool {
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return true;
@@ -2591,23 +2548,11 @@ impl App {
         let p = self.pane;
         let on_pane =
             (p.left()..p.right()).contains(&ev.column) && (p.top()..p.bottom()).contains(&ev.row);
-        let double = self
-            .last_click
-            .take()
-            .is_some_and(|(at, side)| side == on_pane && at.elapsed() < DOUBLE_CLICK);
-        if !double {
-            self.last_click = Some((Instant::now(), on_pane));
-        }
         if on_pane {
             if self.focus.is_none()
                 && let Some(i) = self.shown()
             {
-                self.inside = false;
                 self.focus(i);
-            }
-            if double && self.focus.is_some() {
-                self.inside = true;
-                self.needs_clear = true;
             }
             return self.focus.is_some();
         }
@@ -2619,9 +2564,6 @@ impl App {
             let n = self.scroll + (ev.row - l.y) as usize;
             if n < self.visible.len() && self.rows[self.visible[n]].kind.selectable() {
                 self.cursor = n;
-                if double {
-                    let _ = self.enter();
-                }
             }
         }
         false
@@ -2760,8 +2702,6 @@ impl App {
             return Ok(());
         }
         self.debug(|| format!("enter on {:?}: {}", kind.key(), enter_verb(Some(&kind))));
-        // enter goes inside: the viewer takes the frame, as it does on a narrow terminal.
-        self.inside = true;
         // A row whose viewer is alive returns to its current screen; nothing is started.
         if let Some(i) = Self::viewer_key(&kind).and_then(|k| self.viewer_index(&k)) {
             self.focus(i);
@@ -3096,12 +3036,7 @@ impl App {
             .then(|| Span::styled(format!("filter: {}  ", self.filter), dim()));
         // Beside the list a focused viewer has no strip; the keys that leave it are here.
         let mut line = if self.focus.is_some() {
-            let mut keys = vec![("ctrl+z", "back")];
-            if self.live_viewers() > 1 {
-                keys.push(("ctrl+]", "next"));
-            }
-            keys.push(("ctrl+\\", "full screen"));
-            hints(&keys)
+            hints(&[("ctrl+z", "back"), ("ctrl+\\", "full screen")])
         } else {
             self.mode_hints(prefix.as_ref().map_or(0, Span::width))
         };
@@ -3155,15 +3090,6 @@ impl App {
                 let mut keys = vec![];
                 if self.selected().is_some() {
                     keys.push(("enter", self.enter_label()));
-                }
-                if self.split_active(self.size.1) && self.shown().is_some() {
-                    keys.push(("ctrl+]", "focus pane"));
-                } else if self.live_viewers() > 0 {
-                    keys.push(("ctrl+]", "viewer"));
-                }
-                if self.size.1 >= SPLIT_MIN {
-                    let what = if self.split { "hide pane" } else { "show pane" };
-                    keys.push(("ctrl+\\", what));
                 }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
@@ -3345,20 +3271,16 @@ impl App {
 
     /// Returns true when the dashboard should exit. Plain keys type into the composer, so every
     /// action is on ctrl or an arrow, as in `claude agents`. The status of the last action shows
-    /// until the next key. While a viewer has the keys every key but ctrl+z, ctrl+] and ctrl+\
-    /// is its, in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+]
-    /// moves to the next live viewer, ctrl+\ toggles the viewer beside the list.
+    /// until the next key. While a viewer has the keys every key but ctrl+z and ctrl+\ is its,
+    /// in the classic encoding; ctrl+z leaves it running and comes back here, ctrl+\ toggles
+    /// the viewer beside the list. Two states only, the list or a viewer, since 2026-09-15:
+    /// a third, the viewer inside over the split, and keys that changed meaning by state
+    /// (ctrl+] to focus the pane in place, ctrl+\ to hide it) were too much to hold in mind.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
             if ctrl && code == KeyCode::Char('z') {
                 self.unfocus();
-                return Ok(false);
-            }
-            // The terminal sends ctrl+] as the byte 0x1d, which crossterm reports as ctrl+5;
-            // a kitty-protocol terminal would name the bracket.
-            if ctrl && matches!(code, KeyCode::Char(']' | '5')) {
-                self.cycle_viewer();
                 return Ok(false);
             }
             // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
@@ -3384,10 +3306,6 @@ impl App {
         }
         self.status.clear();
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
-            return Ok(false);
-        }
-        if ctrl && matches!(code, KeyCode::Char('\\' | '4')) {
-            self.toggle_split();
             return Ok(false);
         }
         match &mut self.mode {
@@ -3566,7 +3484,6 @@ impl App {
                         }
                         Err(e) => self.status = e,
                     },
-                    KeyCode::Char(']' | '5') if ctrl => self.cycle_viewer(),
                     _ => {}
                 }
             }
@@ -5257,50 +5174,26 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_bracket_cycles_live_viewers_and_the_strip_offers_it() {
+    fn ctrl_bracket_is_the_viewers_key_and_the_dashboard_never_offers_it() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "ONE"));
         app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
         app.focus(0);
+        // The byte 0x1d, ctrl+] or ctrl+5 to crossterm, goes to the viewer like any other.
         assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
-        assert_eq!(app.focus, Some(1));
-        // crossterm reports the byte 0x1d a terminal sends for ctrl+] as ctrl+5.
         assert!(!app.key(KeyCode::Char('5'), KeyModifiers::CONTROL).unwrap());
-        assert_eq!(app.focus, Some(0), "wraps");
-        assert_eq!(app.viewers.len(), 2, "cycling closes nothing");
+        assert_eq!(app.focus, Some(0), "no cycling");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 80);
-        assert!(
-            screen[11].trim_end().ends_with("ctrl+z back · ctrl+] next"),
-            "{:?}",
-            screen[11]
-        );
-    }
-
-    #[test]
-    fn ctrl_bracket_from_the_dashboard_returns_to_the_last_viewer_or_says_none_is_open() {
-        let d = dir();
-        let mut app = app(d.path());
-        app.refresh().unwrap();
-        assert!(!app.hint_line().to_string().contains("ctrl+]"));
-        assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
-        assert_eq!(app.focus, None);
-        assert_eq!(app.status, "no viewer open");
-        app.viewers.push(viewer_open("run:r1", "attach", "ONE"));
-        app.viewers.push(viewer_open("run:r2", "logs", "TWO"));
-        app.focus(0);
+        assert!(!screen[11].contains("ctrl+]"), "{:?}", screen[11]);
         app.unfocus();
         app.status.clear();
-        assert!(
-            app.hint_line().to_string().contains("ctrl+] viewer"),
-            "{}",
-            app.hint_line()
-        );
+        assert!(!app.hint_line().to_string().contains("ctrl+]"));
         assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
-        assert_eq!(app.focus, Some(0), "the most recently focused viewer");
+        assert_eq!(app.focus, None, "from the list the key does nothing");
     }
 
     /// A session in `state` with `title`, `secs` seconds ago.
@@ -5367,8 +5260,7 @@ mod tests {
             .expect("the alert is its own span");
         assert_eq!(alert.style.fg, Some(Color::Yellow));
         assert!(
-            text.trim_end()
-                .ends_with("ctrl+z back · ctrl+] next · ctrl+\\ split"),
+            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "a frame wide enough for the split offers it: {text}"
         );
         assert_eq!(line.width(), 200, "padded to the width");
@@ -5379,16 +5271,12 @@ mod tests {
         assert!(!text.contains("needs"), "no partial note: {text}");
         assert!(!text.contains("split"), "{text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
-        assert!(
-            text.trim_end().ends_with("ctrl+z back · ctrl+] next"),
-            "{text}"
-        );
+        assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
         assert_eq!(app.strip(0, 60).width(), 60);
 
-        // Narrower than both ends: `ctrl+] next` goes first, then `ctrl+z back`.
+        // Narrower than both ends: `ctrl+z back` goes too.
         let text = app.strip(0, 24).to_string();
         assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
-        assert!(!text.contains("next"), "{text}");
         assert!(app.strip(0, 24).width() <= 24);
         let text = app.strip(0, 10).to_string();
         assert_eq!(text, "▲ cones   ", "{text}");
@@ -5543,28 +5431,24 @@ mod tests {
         assert_eq!(rule.symbol(), "│");
         assert_ne!(rule.fg, ORANGE, "the rule is dim while nothing is focused");
         assert!(
-            left[29].contains("ctrl+] focus pane") && left[29].contains("ctrl+\\ hide pane"),
-            "unfocused, the hint line offers the pane's keys: {:?}",
+            !left[29].contains("ctrl+]") && !left[29].contains("ctrl+\\"),
+            "unfocused, the hint line has no pane keys: {:?}",
             left[29]
         );
 
-        // ctrl+] focuses the pane where it is.
-        app.cycle_viewer();
+        // enter focuses the pane's viewer where it is.
+        app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
-        assert!(!app.inside);
         assert_eq!(
             app.viewers[0].viewer.screen().size(),
             (30, 200 - list - 1),
-            "focusing in place does not resize the viewer"
+            "focusing beside the list does not resize the viewer"
         );
         t.draw(|f| app.draw(f)).unwrap();
         let hint = cells(&t, 29, 0..list);
         assert!(hint.contains("ctrl+z back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
-        assert!(
-            !hint.contains("ctrl+] next"),
-            "one viewer has no next: {hint:?}"
-        );
+        assert!(!hint.contains("ctrl+]"), "{hint:?}");
         assert!(cells(&t, 0, list + 1..200).starts_with("VIEW"));
         assert_eq!(
             t.backend().buffer().cell((list, 5)).unwrap().fg,
@@ -5644,11 +5528,13 @@ mod tests {
             reversed(&t),
             "unfocused, the composer's block cursor is back"
         );
-        // enter goes inside: the viewer takes the frame over the strip; ctrl+\ steps back
-        // out beside the list with the focus kept, and the pane stays switched on.
+        // Focused, ctrl+\ picks the full-frame layout: the viewer takes the frame over the
+        // strip, the strip offers the split back, and the layout stays after ctrl+z.
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
-        assert!(app.inside);
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
+        assert!(!app.split);
+        assert_eq!(app.focus, Some(0));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
             cells(&t, 0, 0..200).starts_with("VIEW"),
@@ -5660,8 +5546,24 @@ mod tests {
             strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "{strip:?}"
         );
+        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+        assert!(
+            app.needs_clear,
+            "a viewer that had the frame is cleared away"
+        );
+        assert!(!app.split, "the layout is kept across ctrl+z");
+        app.needs_clear = false;
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            !cells(&t, 0, 0..200).contains("VIEW"),
+            "in the full-frame layout the list has the frame to itself"
+        );
+        // enter takes the frame again; ctrl+\ brings the split back, with the focus kept.
+        app.enter().unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split && !app.inside);
+        assert!(app.split);
         assert_eq!(app.focus, Some(0));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
@@ -5669,29 +5571,6 @@ mod tests {
             "beside the list again"
         );
         assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
-        app.enter().unwrap();
-        assert!(app.inside);
-        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
-        assert!(
-            app.needs_clear,
-            "a viewer that had the frame is cleared away"
-        );
-        assert!(!app.inside, "ctrl+z leaves inside behind");
-        app.needs_clear = false;
-        // Full screen on the same wide frame: the strip offers the split back.
-        app.toggle_split();
-        app.enter().unwrap();
-        t.draw(|f| app.draw(f)).unwrap();
-        let strip = cells(&t, 29, 0..200);
-        assert!(
-            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
-            "{strip:?}"
-        );
-        assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
-        assert!(
-            app.needs_clear,
-            "a viewer that had the frame is cleared away"
-        );
     }
 
     #[test]
@@ -5717,15 +5596,8 @@ mod tests {
         );
         assert!(fitted.ends_with(" · esc quit"), "quit stays: {fitted}");
         assert!(
-            keys(&fitted)
-                .iter()
-                .filter(|k| !k.starts_with("ctrl+\\"))
-                .all(|k| keys(&wide).contains(k)),
+            keys(&fitted).iter().all(|k| keys(&wide).contains(k)),
             "only whole keys go: {fitted}"
-        );
-        assert!(
-            fitted.contains("ctrl+\\ hide pane"),
-            "the pane's toggle is offered from the first wide column: {fitted}"
         );
         app.filter = "one".into();
         let filtered = app.hint_line();
@@ -5751,8 +5623,8 @@ mod tests {
             "{screen:#?}"
         );
         assert!(
-            screen[29].contains("ctrl+\\ hide pane"),
-            "the pane's toggle is offered before any viewer is alive: {:?}",
+            !screen[29].contains("ctrl+\\"),
+            "the layout key is the viewer's, not the list's: {:?}",
             screen[29]
         );
         // Up past the table lands on the menu, which opens no viewer.
@@ -5778,45 +5650,24 @@ mod tests {
         app.focus(0);
         app.size = (30, 200);
         assert!(app.split, "on by default");
-        // Focused with the pane on, ctrl+\ steps inside and out; the pane stays on.
+        // Focused, ctrl+\ flips the layout and keeps the focus.
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split && app.inside);
+        assert!(!app.split);
         assert_eq!(app.focus, Some(0));
         // crossterm reports the byte 0x1c a terminal sends for ctrl+\ as ctrl+4.
         assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split && !app.inside);
+        assert!(app.split);
         assert_eq!(app.focus, Some(0));
+        assert!(app.text.is_empty(), "nothing typed into the composer");
+        // From the list the key is not the dashboard's and changes nothing.
         app.unfocus();
         app.status.clear();
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(!app.split);
-        assert_eq!(app.focus, None);
-        assert!(app.text.is_empty(), "nothing typed into the composer");
-        app.size = (30, 200);
-        assert!(
-            app.hint_line().to_string().contains("ctrl+\\ show pane"),
-            "{}",
-            app.hint_line()
-        );
-        assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split);
-        assert!(
-            app.hint_line().to_string().contains("ctrl+\\ hide pane"),
-            "{}",
-            app.hint_line()
-        );
-        // Focused with the pane off, ctrl+\ switches the pane on.
-        app.split = false;
+        assert!(app.split, "the layout is the viewer's key");
+        assert!(!app.hint_line().to_string().contains("ctrl+\\"));
+        // A narrow frame keeps its state and says why.
         app.focus(0);
-        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split && !app.inside);
-        app.unfocus();
         app.size = (30, 80);
-        assert!(
-            !app.hint_line().to_string().contains("ctrl+\\"),
-            "a narrow frame has no split to offer: {}",
-            app.hint_line()
-        );
         app.needs_clear = false;
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
         assert!(app.split, "a narrow frame keeps its state");
@@ -5879,7 +5730,7 @@ mod tests {
     }
 
     #[test]
-    fn a_click_focuses_the_pane_in_place_and_a_click_on_a_row_takes_the_keys_back() {
+    fn a_click_focuses_the_pane_and_a_click_on_a_row_takes_the_keys_back() {
         let (_d, mut app, mut t) = split_setup(200);
         let list = 100u16;
         assert!(app.wants_mouse(), "beside the list the mouse is read");
@@ -5891,18 +5742,19 @@ mod tests {
         };
         app.mouse(click(list + 5, 3));
         assert_eq!(app.focus, Some(0));
-        assert!(!app.inside, "a click focuses the pane where it is");
         assert_eq!(app.viewers[0].viewer.screen().size(), (30, 200 - list - 1));
-        // A second click soon after goes inside.
+        // A second click is the viewer's, nothing more.
         app.mouse(click(list + 5, 3));
-        assert!(app.inside);
+        assert_eq!(app.focus, Some(0));
+        assert!(app.split);
+        // In the full-frame layout the list is not on screen, so a click at its old place is
+        // the viewer's.
+        app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 0..200).starts_with("VIEW"));
-        // Inside, the list is not on screen, so a click at its old place is the viewer's.
-        app.last_click = None;
         app.mouse(click(10, 5));
         assert_eq!(app.focus, Some(0));
-        // Out beside the list, a click on a row selects it and takes the keys back.
+        // Beside the list again, a click on a row selects it and takes the keys back.
         app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
         let n = app
@@ -5915,13 +5767,11 @@ mod tests {
         app.mouse(click(10, row));
         assert_eq!(app.focus, None);
         assert_eq!(key(&app).as_deref(), Some(A));
-        // A double click on the row is enter.
+        // A second click on the row is not enter.
         app.mouse(click(10, row));
-        assert_eq!(app.focus, Some(0));
-        assert!(app.inside);
-        app.unfocus();
+        assert_eq!(app.focus, None);
+        assert_eq!(key(&app).as_deref(), Some(A));
         // A click on the hint line selects nothing.
-        app.last_click = None;
         app.mouse(click(10, 29));
         assert_eq!(key(&app).as_deref(), Some(A));
         assert_eq!(app.focus, None);
