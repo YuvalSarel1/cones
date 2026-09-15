@@ -16,6 +16,7 @@ use ratatui::{
     Frame,
     backend::Backend,
     crossterm::{
+        SynchronizedUpdate,
         event::{
             self, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyCode,
             KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -5624,7 +5625,7 @@ impl App {
         lines
     }
 
-    /// Align the composer's lower rule with the harness's, using the current emulated screen.
+    /// Align the composer's lower rule with the harness's live input, even while viewing history.
     /// Without a visible rule, reserve only the hint row.
     fn foot_rows(&self) -> u16 {
         if self.data.pane.at == "bottom" {
@@ -5637,7 +5638,7 @@ impl App {
             (0..cols)
                 .filter(|&x| {
                     screen
-                        .cell(y, x)
+                        .cell_unscrolled(y, x)
                         .is_some_and(|c| c.contents() == "\u{2500}")
                 })
                 .count() as u16
@@ -5868,14 +5869,17 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 || app.refreshed != drawn_refresh
             {
                 let drawing = Instant::now();
-                if app.needs_clear {
-                    // Avoid `Terminal::clear`: its cursor query fails on terminals that do not answer.
-                    // Clear the backend and forget the previous buffer instead.
-                    terminal.backend_mut().clear()?;
-                    terminal.swap_buffers();
-                    app.needs_clear = false;
-                }
-                terminal.draw(|f| app.draw(f))?;
+                std::io::stdout().sync_update(|_| -> std::io::Result<()> {
+                    if app.needs_clear {
+                        // Avoid `Terminal::clear`: its cursor query fails on terminals that do not answer.
+                        // Clear the backend and forget the previous buffer instead.
+                        terminal.backend_mut().clear()?;
+                        terminal.swap_buffers();
+                        app.needs_clear = false;
+                    }
+                    terminal.draw(|f| app.draw(f))?;
+                    Ok(())
+                })??;
                 if let Some((phase, started)) = app.feedback.take() {
                     app.timing("draw", drawing);
                     app.timing(phase, started);
@@ -8239,6 +8243,8 @@ mod tests {
             "-c",
             &format!(
                 "printf 'VIEW'; read x; \
+                 i=0; while [ $i -lt 80 ]; do i=$((i+1)); echo history$i; done; \
+                 printf '\\033[H\\033[2J'; \
                  printf '\\033[26;1H{rule}\\033[27;1H> \\033[28;1H{rule}\\033[29;1Hstatus\\033[30;1Hmode\\033[30;60Hcycle'; \
                  sleep 5"
             ),
@@ -8302,6 +8308,33 @@ mod tests {
             "the keys clear the harness's status line off their row, past their own \
              end too: {screen:#?}"
         );
+
+        for focus in [None, Some(0)] {
+            app.focus = focus;
+            t.draw(|f| app.draw(f)).unwrap();
+            let dashboard: Vec<_> = (0..30).map(|y| cells(&t, y, 0..100)).collect();
+            for kind in [MouseEventKind::ScrollUp; 12]
+                .into_iter()
+                .chain([MouseEventKind::ScrollDown; 12])
+            {
+                app.mouse(MouseEvent {
+                    kind,
+                    column: 110,
+                    row: 3,
+                    modifiers: KeyModifiers::NONE,
+                });
+                t.draw(|f| app.draw(f)).unwrap();
+                let scrolled: Vec<_> = (0..30).map(|y| cells(&t, y, 0..100)).collect();
+                assert_eq!(
+                    scrolled,
+                    dashboard,
+                    "scrolling the viewer must leave the dashboard in place; focus={focus:?}, \
+                     scrollback={}",
+                    app.viewers[0].viewer.screen().scrollback()
+                );
+            }
+            assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
+        }
     }
 
     fn split_setup(

@@ -535,6 +535,17 @@ impl Screen {
         self.grid().visible_cell(crate::grid::Pos { row, col })
     }
 
+    /// Returns a cell on the active screen without applying the scrollback
+    /// offset, for inspecting fixed screen elements while viewing history.
+    #[must_use]
+    pub fn cell_unscrolled(
+        &self,
+        row: u16,
+        col: u16,
+    ) -> Option<&crate::Cell> {
+        self.grid().drawing_cell(crate::grid::Pos { row, col })
+    }
+
     /// Returns whether the text in row `row` should wrap to the next line.
     #[must_use]
     pub fn row_wrapped(&self, row: u16) -> bool {

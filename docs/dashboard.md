@@ -179,9 +179,9 @@ All viewers close with the dashboard. Closing a viewer leaves its daemon-owned a
 
 The emulator answers cursor-position, device and color queries. Colors are probed once from the real terminal after raw mode starts and before input polling. Kitty keyboard queries stay unanswered because input uses classic xterm encoding; some modified keys, including shift+enter, cannot be distinguished inside a viewer.
 
-Synchronized output holds the previous screen and cursor until the update ends, with a 150 ms timeout. Each viewer pump waits up to 1 ms between reads and spends at most 50 ms collecting a burst, allowing large redraws without starving dashboard input. UTF-8 tails are retained across reads. On close, the pty is drained while the child is reaped to avoid a macOS wait deadlock.
+Synchronized viewer output holds the previous screen and cursor until the update ends, with a 150 ms timeout. Dashboard redraws also use synchronized output, including clears and cursor placement, so terminals that support it display complete frames while scrolling. Each viewer pump waits up to 1 ms between reads and spends at most 50 ms collecting a burst, allowing large redraws without starving dashboard input. UTF-8 tails are retained across reads. On close, the pty is drained while the child is reaped to avoid a macOS wait deadlock.
 
-Scrollback retains 1000 lines from the normal screen. The vendored vt100 0.16.2 patch lets a scroll region beginning at row zero contribute history even when a fixed prompt occupies the rows below it. Interior regions and alternate screens add no history. `viewer::tests::history_above_a_fixed_prompt_stays_in_scrollback` covers this change.
+Scrollback retains 1000 lines from the normal screen. The vendored vt100 0.16.2 patch lets a scroll region beginning at row zero contribute history even when a fixed prompt occupies the rows below it. Interior regions and alternate screens add no history. The patch also exposes unscrolled cells so layout can inspect the live input box without moving the history view. `viewer::tests::history_above_a_fixed_prompt_stays_in_scrollback` and `tui::tests::the_composers_rule_lands_on_the_harnesss_own` cover these changes.
 
 Viewer bytes never reach the real terminal directly. Dashboard shutdown restores the shell's original tty settings and disables its own reporting modes.
 
@@ -195,7 +195,7 @@ Pins live in `~/.cones/folders`, recall history in `~/.cones/recent`. These path
 
 ## The composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu, or with no selected directory, it uses the dashboard's cwd. The input wraps to at most eight text rows. In side-by-side layout its lower rule aligns with the harness input box detected on the viewer's screen.
+Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu, or with no selected directory, it uses the dashboard's cwd. The input wraps to at most eight text rows. In side-by-side layout its lower rule aligns with the harness input box on the live screen and stays in place while scrolling history.
 
 Claude starts with `--bg`; a placeholder row appears immediately and becomes the registry row when available. A failed launch removes the placeholder and restores the instruction. New sessions take the selection unless a viewer is focused or an instruction is being typed. Codex opens a client of its app-server daemon. A harness that cannot remain running after its viewer exits is refused.
 
