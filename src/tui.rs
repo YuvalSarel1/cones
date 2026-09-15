@@ -2572,8 +2572,25 @@ impl App {
     }
 
     /// Pasted text: wrapped for a focused viewer that asked for bracketed paste, raw
-    /// otherwise; into the composer when nothing is focused.
+    /// otherwise; into the composer when nothing is focused. An empty paste is cmd+v with
+    /// no text on the clipboard, an image: xterm.js (VS Code) brackets the nothing it read.
+    /// It becomes ctrl+v, the image paste Claude Code and Codex have, in a viewer; the
+    /// composer reads the image off the clipboard itself, as its own ctrl+v does.
     fn paste(&mut self, text: &str) {
+        if text.is_empty() {
+            if let Some(open) = self.focused() {
+                open.viewer.write(b"\x16");
+            } else if matches!(self.mode, Mode::Normal) {
+                match paste_image() {
+                    Ok(path) => {
+                        attach(&mut self.text, &path);
+                        self.caret = self.text.len();
+                    }
+                    Err(e) => self.status = e,
+                }
+            }
+            return;
+        }
         if let Some(open) = self.focused() {
             if open.viewer.screen().bracketed_paste() {
                 let mut bytes = b"\x1b[200~".to_vec();
@@ -5052,6 +5069,15 @@ mod tests {
         );
         k(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
         assert!(app.text.is_empty());
+        app.paste("");
+        assert!(
+            app.text.contains("/cones/pasted-") || app.status == "no image on the clipboard",
+            "an empty paste is an image paste: the clipboard's PNG, or the status says there is none"
+        );
+        if let Some(png) = app.text.split_whitespace().next() {
+            let _ = std::fs::remove_file(png);
+        }
+        app.text.clear();
         assert_eq!(
             snap("héllo", 2),
             1,
