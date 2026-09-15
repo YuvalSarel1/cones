@@ -18,6 +18,13 @@ session = f"conescap-{uuid.uuid4().hex[:8]}"
 tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} tui", check=True)
 try:
     time.sleep(5)
+    # The cursor starts on the first session row, whose live viewer would paint another
+    # agent's transcript into the pane; `up` lands on the menu row, where the pane shows the
+    # picked button's screen instead. Nothing of a live session goes into a committed asset.
+    tmux("send-keys", "-t", session, "Up", check=True)
+    time.sleep(1)
+    tmux("send-keys", "-t", session, "Right", check=True)
+    time.sleep(2)
     lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
 finally:
     tmux("kill-session", "-t", session)

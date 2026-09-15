@@ -12,6 +12,10 @@ defaults:
   daily_budget_usd: 10.00
   write: false
 columns: [state, context, sparkline, model, activity, last]   # dashboard session columns, see dashboard.md
+pane:                 # the viewer pane's layout and its own columns, see dashboard.md
+  on: true
+  at: right
+  columns: [state, context]
 sparkline:            # the sparkline column's window, metric and scale, see dashboard.md
   bars: 16
   bucket: 1m

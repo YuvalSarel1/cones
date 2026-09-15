@@ -165,8 +165,11 @@ pub struct Data {
     pub jobs: Vec<ResolvedJob>,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
-    /// Session column names after the harness and title, from jobs.yaml.
+    /// Session column names after the harness and title, from jobs.yaml: `columns:` while
+    /// the pane is off, `pane.columns` while it is on.
     pub columns: Vec<String>,
+    /// The viewer pane's layout and its column set, from jobs.yaml.
+    pub pane: config::Pane,
     /// The `sparkline` column's window, metric and bound, from jobs.yaml.
     pub spark: config::Sparkline,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
@@ -200,6 +203,7 @@ impl Data {
             runs,
             sessions,
             columns: config::columns(jobs_path),
+            pane: config::pane(jobs_path),
             spark: config::sparkline(jobs_path),
             mark_secs: config::mark_secs(jobs_path),
             folders,
@@ -261,16 +265,18 @@ impl Data {
     /// Sessions grouped by directory like Claude's own agents view, or by state so the row that
     /// needs a human is on top.
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, false, &HashSet::new(), &mut Widths::new())
+        self.rows_excluding(by_state, false, false, &HashSet::new(), &mut Widths::new())
     }
 
     /// A confirmed delete leaves the list immediately while the harness command finishes.
     /// The source data stays intact so a failed command can restore its row. `jobs_view` is
     /// the jobs screen: the jobs alone, grouped as one, and no session, folder or run.
+    /// `pane_on` picks the `pane.columns` set over `columns:`.
     fn rows_excluding(
         &self,
         by_state: bool,
         jobs_view: bool,
+        pane_on: bool,
         deleting: &HashSet<&str>,
         widths: &mut Widths,
     ) -> Vec<Row> {
@@ -345,14 +351,19 @@ impl Data {
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
         // The state column sits before the title, where the eye lands after the icon, when
-        // `columns:` lists it; the other columns follow the title in their order. The jobs
-        // screen has the columns a job can fill, whatever `columns:` says for sessions.
+        // the column set lists it; the other columns follow the title in their order. The
+        // jobs screen has the columns a job can fill, whatever the set says for sessions.
         let job_columns = ["model".to_owned(), "activity".to_owned(), "last".to_owned()];
-        let has_state = jobs_view || self.columns.iter().any(|c| c == "state");
+        let set = if pane_on {
+            &self.pane.columns
+        } else {
+            &self.columns
+        };
+        let has_state = jobs_view || set.iter().any(|c| c == "state");
         let cols: Vec<&String> = if jobs_view {
             job_columns.iter().collect()
         } else {
-            self.columns.iter().filter(|c| *c != "state").collect()
+            set.iter().filter(|c| *c != "state").collect()
         };
         let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
         let cells = flat
@@ -1908,8 +1919,8 @@ const SYSTEM: &str = "system default";
 
 /// The groups the editor shows, each with a line on what it holds. `runs` and `jobs` are the
 /// `defaults` block: `runs` reaches every job and every session the composer starts, `jobs`
-/// only supervised runs. `cones` is the dashboard's own `columns:` line, `notify` and the
-/// `sparkline:` block. The `runs` group is also the session form `ctrl+o` opens.
+/// only supervised runs. `cones` is the dashboard's own `columns:` line, `notify`, the
+/// `pane:` and `sparkline:` blocks and the `mark_secs:` line. The `runs` group is also the session form `ctrl+o` opens.
 const GROUPS: [(&str, &str); 3] = [
     ("runs", "every job and session"),
     ("jobs", "supervised runs only"),
@@ -1917,7 +1928,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// The fields under their groups. A field named for a harness reaches only that harness.
-const FIELDS: [Field; 18] = [
+const FIELDS: [Field; 21] = [
     Field {
         group: "runs",
         name: "harness",
@@ -2024,6 +2035,30 @@ const FIELDS: [Field; 18] = [
     },
     Field {
         group: "cones",
+        name: "pane.on",
+        short: "open with the pane",
+        long: "true opens the dashboard with the viewer pane beside the list, false with the list alone; ctrl+\\ toggles it either way.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "cones",
+        name: "pane.at",
+        short: "where the pane sits",
+        long: "right: the list on the left at half the width, the pane beside it. bottom: the list on top at half the height, the pane under it.",
+        builtin: "right",
+        input: Answer::Pick(&["-", "right", "bottom"]),
+    },
+    Field {
+        group: "cones",
+        name: "pane.columns",
+        short: "columns beside the pane",
+        long: "The session columns while the pane is on; columns applies while it is off. Space adds or removes a column.",
+        builtin: "state, context",
+        input: Answer::Many(&config::COLUMNS),
+    },
+    Field {
+        group: "cones",
         name: "sparkline.bars",
         short: "bar count",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
@@ -2078,11 +2113,13 @@ pub enum ConfigAction {
     Stay,
     Cancel,
     /// The `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`
-    /// block, None when every field is left to the built-in, and the `mark_secs:` line.
+    /// and `pane:` blocks, None when every field is left to the built-in, and the
+    /// `mark_secs:` line.
     Save(
         Box<config::Policy>,
         Vec<String>,
         Option<config::Sparkline>,
+        Option<config::Pane>,
         Option<f64>,
     ),
 }
@@ -2122,7 +2159,7 @@ pub struct ConfigForm {
 impl ConfigForm {
     /// The `runs` group alone, as the settings of the next session the composer starts.
     pub fn session(policy: &config::Policy) -> Self {
-        let mut form = Self::new(policy, None, None, None);
+        let mut form = Self::new(policy, None, None, None, None);
         form.group = Some("runs");
         form
     }
@@ -2136,11 +2173,13 @@ impl ConfigForm {
         d: &config::Policy,
         columns: Option<&[String]>,
         spark: Option<&config::Sparkline>,
+        pane: Option<&config::Pane>,
         mark_secs: Option<f64>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
         let spark = |f: fn(&config::Sparkline) -> String| spark.map(f).unwrap_or_default();
+        let pane = |f: fn(&config::Pane) -> String| pane.map(f).unwrap_or_default();
         let values = FIELDS
             .iter()
             .map(|f| match f.name {
@@ -2165,6 +2204,9 @@ impl ConfigForm {
                 "notify" => flag(d.notify),
                 "bedrock" => flag(d.bedrock),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
+                "pane.on" => pane(|p| p.on.to_string()),
+                "pane.at" => pane(|p| p.at.clone()),
+                "pane.columns" => pane(|p| p.columns.join(", ")),
                 "sparkline.bars" => spark(|s| s.bars.to_string()),
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
                 "sparkline.metric" => spark(|s| s.metric.clone()),
@@ -2212,6 +2254,7 @@ impl ConfigForm {
             config::Policy,
             Vec<String>,
             Option<config::Sparkline>,
+            Option<config::Pane>,
             Option<f64>,
         ),
         String,
@@ -2312,6 +2355,36 @@ impl ConfigForm {
             })?;
             Some(s)
         };
+        // The pane block, the same way.
+        let pane = if ["on", "at", "columns"]
+            .iter()
+            .all(|f| v(&format!("pane.{f}")).is_empty())
+        {
+            None
+        } else {
+            let built = config::Pane::default();
+            let p = config::Pane {
+                on: flag("pane.on").unwrap_or(built.on),
+                at: text("pane.at").unwrap_or(built.at),
+                columns: match list("pane.columns") {
+                    c if c.is_empty() => built.columns,
+                    c => c,
+                },
+            };
+            p.check().map_err(|e| {
+                let e = format!("{e:#}");
+                let field = if e.starts_with("pane columns") {
+                    "columns"
+                } else {
+                    "at"
+                };
+                format!(
+                    "pane.{field}: {}",
+                    e.trim_start_matches(&format!("pane {field} "))
+                )
+            })?;
+            Some(p)
+        };
         let mark = num("mark_secs", "seconds, as in 2")?;
         if let Some(m) = mark {
             config::check_mark_secs(m).map_err(|e| {
@@ -2322,7 +2395,7 @@ impl ConfigForm {
                 )
             })?;
         }
-        Ok((policy, columns, spark, mark))
+        Ok((policy, columns, spark, pane, mark))
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
@@ -2333,7 +2406,7 @@ impl ConfigForm {
                 KeyCode::Enter => self.enter(),
                 KeyCode::Char('s') if mods == KeyModifiers::CONTROL => {
                     return match self.config() {
-                        Ok((p, c, s, m)) => ConfigAction::Save(Box::new(p), c, s, m),
+                        Ok((p, c, s, pn, m)) => ConfigAction::Save(Box::new(p), c, s, pn, m),
                         Err(e) => {
                             // The error lands on the field it names, open to be fixed.
                             self.go(FIELDS
@@ -2718,7 +2791,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "ctrl+\\",
-        "on a wide terminal, the pane on or off; inside a viewer, beside the list or over the whole frame",
+        "from the list, the pane on or off; inside a viewer, beside the list or over the whole frame",
     ),
     ("wheel", "scrolls the pane's viewer back, focused or not"),
     ("", "Leaving"),
@@ -2816,9 +2889,9 @@ struct App {
     /// The pane viewers are drawn in and sized to, from the last frame: the column beside the
     /// list on a wide frame, else the frame less the strip row under it.
     pane: Rect,
-    /// Whether a frame at least `SPLIT_MIN` wide draws the viewer beside the list; ctrl+\
-    /// toggles it, from the list or inside a viewer, and off it the viewer takes the whole
-    /// frame as on a narrow terminal. A layout, not a state: it stays until toggled again.
+    /// Whether the viewer is drawn beside the list, at any width; `pane.on` from jobs.yaml
+    /// to begin with, then ctrl+\ toggles it, from the list or inside a viewer, and off it
+    /// the viewer takes the whole frame. A layout, not a state: it stays until toggled again.
     split: bool,
     /// The focused viewer has the whole frame whatever `split` says: shift+enter opened it
     /// so, once. Cleared when the viewer is left, or when ctrl+\ inside it asks for the split.
@@ -2860,9 +2933,6 @@ const MAX_VIEWERS: usize = 3;
 /// a fresh attach, a quarter to half a second of blank pane; two covers that bounce. Not yet a
 /// setting; it will be one alongside `MAX_VIEWERS`.
 const SPECULATIVE_VIEWERS: usize = 2;
-
-/// The frame width from which the selected or focused viewer is drawn beside the list.
-const SPLIT_MIN: u16 = 140;
 
 /// What a launch thread reports: its status line, and the instruction to hand back if it failed.
 type Launched = (String, Option<String>);
@@ -2974,6 +3044,7 @@ impl PendingStop {
 
 impl App {
     fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
+        let data = Data::load(jobs_path, state, claude)?;
         Ok(Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
@@ -2981,7 +3052,8 @@ impl App {
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
             menu: 0,
-            data: Data::load(jobs_path, state, claude)?,
+            split: data.pane.on,
+            data,
             rows: vec![],
             visible: vec![],
             cursor: 0,
@@ -3020,7 +3092,6 @@ impl App {
             needs_clear: false,
             size: (24, 80),
             pane: Rect::new(0, 0, 80, 23),
-            split: true,
             full: false,
             rest: None,
             prespawned: None,
@@ -3255,11 +3326,12 @@ impl App {
             .collect();
         // The jobs screen in the pane has no menu row of its own: the menu stays on the list
         // beside it, with `jobs` pressed.
-        let in_pane = self.jobs_view && self.split_active(self.size.1);
+        let in_pane = self.jobs_view && self.split_active();
         self.rows = if in_pane { vec![] } else { menu_rows() };
         self.rows.extend(self.data.rows_excluding(
             self.by_state,
             self.jobs_view,
+            self.split,
             &deleting,
             &mut self.widths,
         ));
@@ -3267,6 +3339,7 @@ impl App {
         self.other.extend(self.data.rows_excluding(
             self.by_state,
             !self.jobs_view,
+            self.split,
             &deleting,
             &mut self.widths,
         ));
@@ -3432,38 +3505,47 @@ impl App {
         Rect::new(0, 0, self.size.1, self.size.0)
     }
 
-    /// Whether a frame `width` columns wide draws the viewer beside the list.
-    fn split_active(&self, width: u16) -> bool {
-        self.split && !(self.full && self.pane_focused()) && width >= SPLIT_MIN
+    /// Whether the pane is drawn beside the list, at any width.
+    fn split_active(&self) -> bool {
+        self.split && !(self.full && self.pane_focused())
     }
 
     /// How long the cursor rests on a row before its viewer opens: shorter beside the list.
     fn rest_for(&self) -> Duration {
-        if self.split_active(self.size.1) {
+        if self.split_active() {
             REST_SPLIT
         } else {
             REST
         }
     }
 
-    /// A wide frame's columns: the list, half the width within 60 to 100 columns; a one
-    /// column rule; the viewer pane with the rest, full height.
-    fn split_areas(frame: Rect) -> [Rect; 3] {
-        let list = (frame.width / 2).clamp(60, 100);
+    /// The split frame's parts: the list, a one cell rule, the viewer pane. `pane.at: right`
+    /// puts the list on the left at half the width, up to 100 columns, and the pane full
+    /// height with the rest; `bottom` puts the list on top at half the height and the pane
+    /// full width under it. No minimum: a small frame gets a small pane.
+    fn split_areas(&self, frame: Rect) -> [Rect; 3] {
+        if self.data.pane.at == "bottom" {
+            return Layout::vertical([
+                Constraint::Length(frame.height / 2),
+                Constraint::Length(1),
+                Constraint::Min(1),
+            ])
+            .areas(frame);
+        }
         Layout::horizontal([
-            Constraint::Length(list),
+            Constraint::Length((frame.width / 2).min(100)),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
         .areas(frame)
     }
 
-    /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list on
-    /// a wide frame, else the frame less the strip row under it, never fewer than one row.
-    /// Spawn, focus and draw all size the viewer by this, so focusing never resizes it.
+    /// The pane a viewer is drawn in and sized to, for a frame of `frame`: beside the list
+    /// when the split is on, else the frame less the strip row under it, never fewer than one
+    /// row. Spawn, focus and draw all size the viewer by this, so focusing never resizes it.
     fn pane(&self, frame: Rect) -> Rect {
-        if self.split_active(frame.width) {
-            return Self::split_areas(frame)[2];
+        if self.split_active() {
+            return self.split_areas(frame)[2];
         }
         let height = if frame.height >= 2 {
             frame.height - 1
@@ -3485,7 +3567,7 @@ impl App {
         if self.panel().is_some() {
             return None;
         }
-        if !self.split_active(self.size.1) {
+        if !self.split_active() {
             return None;
         }
         let own = self
@@ -3569,6 +3651,7 @@ impl App {
             &config::defaults(&self.jobs_path),
             config::file_columns(&self.jobs_path).as_deref(),
             config::file_sparkline(&self.jobs_path).as_ref(),
+            config::file_pane(&self.jobs_path).as_ref(),
             config::file_mark_secs(&self.jobs_path),
         ))
     }
@@ -3589,17 +3672,13 @@ impl App {
 
     /// ctrl+\: from the list, the pane on or off; inside a viewer, the viewer beside the
     /// list or over the whole frame. A viewer shift+enter gave the whole frame goes beside
-    /// the list first, whatever the layout was. Only a frame at least `SPLIT_MIN` wide draws
-    /// the difference, so a narrower one says so and keeps its state, rather than flip
-    /// something that would surface later when the terminal widens.
+    /// the list first, whatever the layout was. The list is rebuilt, since each layout has
+    /// its own column set.
     fn toggle_split(&mut self) {
-        if self.size.1 < SPLIT_MIN {
-            self.status = format!("split needs {SPLIT_MIN} columns");
-            return;
-        }
         let once = std::mem::take(&mut self.full) && self.pane_focused();
         self.split = once || !self.split;
         self.needs_clear = true;
+        self.rebuild();
         self.debug(|| format!("split {}", self.split));
     }
 
@@ -3851,7 +3930,7 @@ impl App {
     /// Close a viewer for good: its process group dies with it. A Codex thread it opened is
     /// recorded first, so its row stays.
     fn close(&mut self, i: usize) {
-        let had_frame = !self.split_active(self.size.1);
+        let had_frame = !self.split_active();
         let open = self.viewers.remove(i);
         match self.focus {
             Some(f) if f == i => {
@@ -3877,7 +3956,7 @@ impl App {
         }
         // Beside the list nothing leaves the frame, so ratatui's diff is enough; a viewer
         // that had the whole frame is not trusted to have left it clean.
-        self.needs_clear = !self.split_active(self.size.1);
+        self.needs_clear = !self.split_active();
         self.full = false;
         let i = self.focus.take().unwrap();
         self.feedback = Some(("return_to_draw", Instant::now()));
@@ -4042,11 +4121,11 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 )
             });
-        let mut keys = vec![Span::styled("ctrl+z back", dim())];
-        // Full screen on a wide frame is a choice; the way back to the split is here.
-        if width >= SPLIT_MIN as usize {
-            keys.push(Span::styled(" · ctrl+\\ split", dim()));
-        }
+        // Full screen is a choice; the way back to the split is here.
+        let mut keys = vec![
+            Span::styled("ctrl+z back", dim()),
+            Span::styled(" · ctrl+\\ split", dim()),
+        ];
         let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
         while !keys.is_empty() && ends(&keys) > width {
             keys.pop();
@@ -4078,7 +4157,7 @@ impl App {
     /// Split clicks and every focused viewer need mouse reports. A client that reads no
     /// mouse leaves the wheel to our emulator, including in the full-frame layout.
     fn wants_mouse(&self) -> bool {
-        self.split_active(self.size.1) || self.focus.is_some()
+        self.split_active() || self.focus.is_some()
     }
 
     /// Pasted text: wrapped for a focused viewer that asked for bracketed paste, raw
@@ -4149,7 +4228,7 @@ impl App {
     /// mouse (Codex, like a shell, leaves the wheel to the terminal) or shift is held, else
     /// goes to the viewer.
     fn mouse(&mut self, ev: MouseEvent) {
-        if self.split_active(self.size.1) && !self.click(ev) {
+        if self.split_active() && !self.click(ev) {
             return;
         }
         let Some(ev) = self.pane_mouse(ev) else {
@@ -4966,8 +5045,8 @@ impl App {
 
     /// The columns the hint line has: the list column beside a viewer, else the frame.
     fn hint_width(&self) -> u16 {
-        if self.split_active(self.size.1) {
-            Self::split_areas(self.frame())[0].width
+        if self.split_active() {
+            self.split_areas(self.frame())[0].width
         } else {
             self.size.1
         }
@@ -5319,12 +5398,13 @@ impl App {
                     self.mode = Mode::Normal;
                     self.status = format!("next session: {}", self.session_words().join(" · "));
                 }
-                ConfigAction::Save(policy, columns, spark, mark) => {
+                ConfigAction::Save(policy, columns, spark, pane, mark) => {
                     match config::write_config(
                         &self.jobs_path,
                         &policy,
                         Some(&columns),
                         spark.as_ref(),
+                        pane.as_ref(),
                         mark,
                     ) {
                         Ok(()) => {
@@ -5441,22 +5521,25 @@ impl App {
         let area = frame.area();
         self.size = (area.height, area.width);
         self.pane = self.pane(area);
-        // A wide frame: the dashboard in its column on the left, a rule, and the viewer on
-        // view in the pane, full height. Focus changes the rule's color and where keys go,
-        // nothing else; the header has the counts, so there is no strip.
-        if self.split_active(area.width) {
-            let [list, rule, pane] = Self::split_areas(area);
+        // The split: the dashboard in its part, a rule, and the viewer on view in the pane.
+        // Focus changes the rule's color and where keys go, nothing else; the header has the
+        // counts, so there is no strip.
+        if self.split_active() {
+            let [list, rule, pane] = self.split_areas(area);
             self.draw_dashboard(frame, list);
             let style = if self.focus.is_some() {
                 Style::default().fg(ORANGE)
             } else {
                 dim()
             };
+            let symbol = if rule.width == 1 { "│" } else { "─" };
             let buf = frame.buffer_mut();
             for y in rule.top()..rule.bottom() {
-                if let Some(cell) = buf.cell_mut((rule.x, y)) {
-                    cell.set_symbol("│");
-                    cell.set_style(style);
+                for x in rule.left()..rule.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol(symbol);
+                        cell.set_style(style);
+                    }
                 }
             }
             if let Some(name) = self.panel() {
@@ -5632,7 +5715,7 @@ impl App {
     /// a button's screen, the list and the composer stay in place: the screen's body and
     /// prompt line are drawn in the pane.
     fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
-        let in_pane = self.split_active(self.size.1) && self.panel().is_some();
+        let in_pane = self.split_active() && self.panel().is_some();
         let mut line = if in_pane {
             self.composer()
         } else {
@@ -5982,7 +6065,7 @@ mod tests {
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
-        let c = ConfigForm::new(&config::Policy::default(), None, None, None);
+        let c = ConfigForm::new(&config::Policy::default(), None, None, None, None);
         let lines = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
@@ -6023,6 +6106,8 @@ mod tests {
         // ctrl+g draws the guide where the list is; esc brings the list back.
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
@@ -6184,7 +6269,7 @@ mod tests {
             "the cursor is after the answer stepped back to"
         );
 
-        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None);
+        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None);
         c.go(field_at("timeout_min"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
@@ -6967,6 +7052,8 @@ mod tests {
         let mut app = app(claude);
         app.by_state = true;
         app.filter = Input::new("two");
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(B), "oldest match first");
         app.step(1);
@@ -7258,6 +7345,8 @@ mod tests {
         .unwrap();
         let mut app =
             App::new(Path::new("cones-not-installed"), &jobs, d.path(), d.path()).unwrap();
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         app.show_jobs();
         assert!(matches!(app.selected().unwrap().kind, Kind::Job(_)));
@@ -7443,6 +7532,8 @@ mod tests {
     fn the_composer_wraps_a_long_instruction_instead_of_cutting_it() {
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         app.text = "one two three four five six seven eight nine ten eleven twelve LAST".into();
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 14)).unwrap();
@@ -7462,6 +7553,8 @@ mod tests {
     fn the_bottom_lines_name_the_next_harness_and_what_ctrl_x_does() {
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         let text = |l: Line| {
             l.spans
@@ -7601,6 +7694,8 @@ mod tests {
         registry(claude, B, "/src/other", "idle", 1_757_682_871_000);
         let mut app = App::new(Path::new("cones"), &jobs, claude, claude).unwrap();
         app.pin_folder(cwd.clone()).unwrap();
+        // The pane off: the jobs screen takes the list's place and keeps the menu row.
+        app.split = false;
         app.refresh().unwrap();
         let keys: Vec<String> = app
             .rows
@@ -7874,6 +7969,8 @@ mod tests {
     fn a_focused_viewer_takes_the_frame_and_ctrl_z_brings_the_composer_back() {
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
         app.focus = Some(0);
@@ -7908,6 +8005,8 @@ mod tests {
     fn a_focused_viewer_sits_on_a_pane_above_the_dashboards_strip() {
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
         app.focus = Some(0);
@@ -7926,11 +8025,16 @@ mod tests {
             strip.contains("· attach ·"),
             "with no title the viewer's what names it: {strip:?}"
         );
+        // The counts are on it, cut from their right where the keys begin: at 80 columns the
+        // split key now sits beside `ctrl+z back` whatever the width, so there is less middle.
         assert!(
-            strip.contains("idle"),
+            strip.contains("0 working"),
             "the fleet counts are on it: {strip:?}"
         );
-        assert!(strip.trim_end().ends_with("ctrl+z back"), "{strip:?}");
+        assert!(
+            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            "{strip:?}"
+        );
         assert!(
             !strip.contains("ctrl+] next"),
             "one viewer has no next: {strip:?}"
@@ -8036,12 +8140,14 @@ mod tests {
         assert_eq!(line.width(), 200, "padded to the width");
 
         // Too narrow for the alert: it is dropped whole, and the middle is cut from its right.
-        // Under SPLIT_MIN there is no split to offer.
+        // The split is offered at any width, so it is the last key to go.
         let text = app.strip(0, 60).to_string();
         assert!(!text.contains("needs"), "no partial note: {text}");
-        assert!(!text.contains("split"), "{text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
-        assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
+        assert!(
+            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
+            "{text}"
+        );
         assert_eq!(app.strip(0, 60).width(), 60);
 
         // Narrower than both ends: `ctrl+z back` goes too.
@@ -8068,6 +8174,8 @@ mod tests {
         use ratatui::crossterm::event::MouseButton;
         let d = dir();
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
         app.focus = Some(0);
@@ -8161,7 +8269,7 @@ mod tests {
             assert!(app.split);
             assert!(!app.key(KeyCode::Enter, mods).unwrap());
             assert!(app.split, "{mods:?} leaves the layout alone");
-            assert!(!app.split_active(200), "{mods:?} takes the whole frame");
+            assert!(!app.split_active(), "{mods:?} takes the whole frame");
             assert_eq!(app.focus, Some(0));
             t.draw(|f| app.draw(f)).unwrap();
             assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
@@ -8171,12 +8279,12 @@ mod tests {
             app.needs_clear,
             "a viewer that had the frame is cleared away"
         );
-        assert!(app.split_active(200), "ctrl+z brings the pane back");
+        assert!(app.split_active(), "ctrl+z brings the pane back");
         app.needs_clear = false;
         // ctrl+\ inside a viewer shift+enter opened goes beside the list, whatever the layout.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split && app.split_active(200) && app.focus == Some(0));
+        assert!(app.split && app.split_active() && app.focus == Some(0));
         app.unfocus();
         app.split = false;
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
@@ -8397,13 +8505,16 @@ mod tests {
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
-        // 130 columns is under SPLIT_MIN, so the line has the whole frame and fits it.
+        // With the pane off the line has the whole frame and fits it.
         app.size = (30, 130);
+        app.split = false;
         let wide = app.hint_line().to_string();
         assert!(wide.ends_with("tab codex · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
-        // 140 columns: the list column is 70; a long filter in front leaves the keys no room.
+        // 140 columns with the pane on: the list column is 70; a long filter in front leaves
+        // the keys no room.
         app.size = (30, 140);
+        app.split = true;
         app.filter = Input::new("x".repeat(30));
         let fitted = app.hint_line();
         let fitted = Line::from(fitted.spans[1..].to_vec());
@@ -8529,7 +8640,7 @@ mod tests {
         // enter: the guide has the keys in the pane, the list stays beside it.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
-        assert!(app.split_active(160));
+        assert!(app.split_active());
         t.draw(|f| app.draw(f)).unwrap();
         assert!(pane(&t).contains("move between rows"), "{}", pane(&t));
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
@@ -8547,16 +8658,16 @@ mod tests {
         // shift+enter: the whole frame, as it was before the pane; ctrl+z brings the pane back.
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(matches!(app.mode, Mode::Guide(0)));
-        assert!(!app.split_active(160), "shift+enter takes the frame");
+        assert!(!app.split_active(), "shift+enter takes the frame");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(!left(&t).contains(&A[..8]), "{}", left(&t));
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
-        assert!(matches!(app.mode, Mode::Normal) && app.split_active(160));
+        assert!(matches!(app.mode, Mode::Normal) && app.split_active());
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Normal) && app.split_active(160));
+        assert!(matches!(app.mode, Mode::Normal) && app.split_active());
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
-        assert!(app.split_active(160), "full ends with the screen");
+        assert!(app.split_active(), "full ends with the screen");
         // jobs: the rows and the cursor move into the pane; the list keeps the menu with
         // `jobs` pressed; esc puts the cursor back on the menu row.
         assert!(app.menu_is("folder"));
@@ -8591,7 +8702,8 @@ mod tests {
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
         assert!(!app.jobs_view);
         assert!(app.menu_is("jobs"), "esc lands on the menu row");
-        // Narrow, the screen takes the list's place as it always has.
+        // With the pane off the screen takes the list's place, at any width.
+        app.split = false;
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
@@ -9082,14 +9194,68 @@ mod tests {
         assert!(!app.key(KeyCode::Char('4'), KeyModifiers::CONTROL).unwrap());
         assert!(app.split, "and on again");
         assert!(app.text.is_empty(), "nothing typed into the composer");
-        // A narrow frame keeps its state and says why.
+        // A narrow frame toggles the same: there is no minimum width.
         app.focus(0);
         app.size = (30, 80);
         app.needs_clear = false;
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
-        assert!(app.split, "a narrow frame keeps its state");
-        assert_eq!(app.status, "split needs 140 columns");
-        assert!(!app.needs_clear, "nothing changed, nothing to repaint");
+        assert!(!app.split, "a narrow frame toggles too");
+        assert!(app.needs_clear);
+    }
+
+    #[test]
+    fn the_pane_block_sets_the_opening_layout_its_side_and_the_columns_beside_it() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let jobs = d.path().join("none.yaml");
+        std::fs::write(
+            &jobs,
+            "version: 1\ncolumns: [state, model]\npane:\n  on: false\n  at: bottom\n  columns: [state, tokens]\njobs: []\n",
+        )
+        .unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(!app.split, "pane.on: false opens with the list alone");
+        let names = |app: &App| {
+            app.rows
+                .iter()
+                .find(|r| r.cells.iter().any(|c| c.0.trim() == "title"))
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(|c| c.0.trim().to_owned())
+                        .filter(|c| !c.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap()
+        };
+        assert_eq!(names(&app), ["state", "title", "model"]);
+        app.size = (30, 80);
+        app.toggle_split();
+        assert!(app.split);
+        assert_eq!(
+            names(&app),
+            ["state", "title", "tokens in/out"],
+            "the pane's own column set while it is on"
+        );
+        // bottom: the list on top at half the height, a rule row, the pane under it.
+        let [list, rule, pane] = app.split_areas(Rect::new(0, 0, 80, 30));
+        assert_eq!((list.height, list.width), (15, 80));
+        assert_eq!((rule.y, rule.height, rule.width), (15, 1, 80));
+        assert_eq!((pane.y, pane.height, pane.width), (16, 14, 80));
+        app.viewers.push(viewer_open(A, "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert_eq!(cells(&t, 15, 0..80), "─".repeat(80), "a horizontal rule");
+        assert!(
+            (16..30).any(|y| cells(&t, y, 0..80).contains("VIEW")),
+            "the viewer is under the rule"
+        );
+        // right, at 80 columns: the list has 40, the pane 39. No minimum.
+        app.data.pane.at = "right".into();
+        let [list, rule, pane] = app.split_areas(Rect::new(0, 0, 80, 30));
+        assert_eq!((list.width, rule.x, pane.x, pane.width), (40, 40, 41, 39));
     }
 
     #[test]
@@ -9212,13 +9378,13 @@ mod tests {
         app.mouse(click(10, 29));
         assert_eq!(key(&app).as_deref(), Some(A));
         assert_eq!(app.focus, None);
-        app.size = (30, 80);
+        app.split = false;
         assert!(
             !app.wants_mouse(),
-            "a narrow frame without a focused viewer reads none"
+            "with the pane off and no focused viewer none is read"
         );
         assert_eq!(app.rest_for(), REST);
-        app.size = (30, 200);
+        app.split = true;
         assert_eq!(app.rest_for(), REST_SPLIT);
     }
 
@@ -9465,12 +9631,14 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_frame_keeps_the_viewer_full_screen_over_the_strip() {
+    fn with_the_pane_off_the_viewer_is_full_screen_over_the_strip() {
         let (_d, mut app, mut t) = split_setup(120);
+        app.split = false;
+        t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 120);
         assert!(
             !screen.iter().any(|r| r.contains("VIEW")),
-            "unfocused on a narrow frame the list is alone: {screen:#?}"
+            "unfocused with the pane off the list is alone: {screen:#?}"
         );
         assert!(screen.iter().any(|r| r.contains("Type an instruction…")));
         assert_eq!(app.pane, Rect::new(0, 0, 120, 29));
@@ -9480,7 +9648,9 @@ mod tests {
         let screen = rows(&t, 120);
         assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
         assert!(
-            screen[29].trim_end().ends_with("ctrl+z back"),
+            screen[29]
+                .trim_end()
+                .ends_with("ctrl+z back · ctrl+\\ split"),
             "the strip: {:?}",
             screen[29]
         );
@@ -9552,6 +9722,8 @@ mod tests {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 1);
         let mut app = app(d.path());
+        // The pane off: this is about the frame alone.
+        app.split = false;
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
         rested(&mut app, A, OLD);

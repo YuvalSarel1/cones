@@ -72,8 +72,11 @@
 <text x="594" y="444" font-size="13.5" fill="#e6edf3" >the cursor rests on its row;</text>
 <text x="594" y="464" font-size="13.5" fill="#e6edf3" >enter is instant</text>
 <text x="582" y="484" font-size="13.5" fill="#e6edf3" >• the selected session shows</text>
-<text x="594" y="504" font-size="13.5" fill="#e6edf3" >live beside the list on a wide</text>
-<text x="594" y="524" font-size="13.5" fill="#e6edf3" >terminal</text>
+<text x="594" y="504" font-size="13.5" fill="#e6edf3" >live beside the list, at any</text>
+<text x="594" y="524" font-size="13.5" fill="#e6edf3" >terminal size</text>
+<text x="582" y="544" font-size="13.5" fill="#e6edf3" >• the pane: on or off, right or</text>
+<text x="594" y="564" font-size="13.5" fill="#e6edf3" >bottom, its own columns, all</text>
+<text x="594" y="584" font-size="13.5" fill="#e6edf3" >from jobs.yaml</text>
 <rect x="36" y="672" width="254" height="6" rx="3" fill="#3fb950"/>
 <text x="50" y="710" font-size="22" fill="#3fb950" font-weight="800" letter-spacing="1.5">NOW</text>
 <text x="50" y="730" font-size="12.5" fill="#8b949e" >One dashboard, every harness</text>
