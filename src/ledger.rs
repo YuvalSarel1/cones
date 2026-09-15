@@ -266,6 +266,24 @@ impl Ledger {
             .map(str::to_owned)
             .collect())
     }
+    /// The dashboard's pinned folders, one path per line in `folders`: a directory the menu's
+    /// `folder` prompt picked keeps its row while nothing runs there, until ctrl+x removes it.
+    pub fn folders(&self) -> Result<Vec<PathBuf>> {
+        Ok(std::fs::read_to_string(self.state.join("folders"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(PathBuf::from)
+            .collect())
+    }
+    pub fn write_folders(&self, folders: &[PathBuf]) -> Result<()> {
+        let mut f = private_file(&self.state.join("folders"))?;
+        f.set_len(0)?;
+        for p in folders {
+            writeln!(f, "{}", p.display())?;
+        }
+        Ok(())
+    }
     pub fn reserved_spend(&self, job: &str) -> Result<f64> {
         let cutoff = Utc::now() - chrono::Duration::hours(24);
         Ok(self

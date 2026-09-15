@@ -95,6 +95,9 @@ pub enum Kind {
     Run(String, String),
     /// A top-menu row: `runs`, `agents` or `folder`. From `App::rebuild`, never from `Data::rows`.
     Menu(&'static str),
+    /// A pinned folder nothing runs in, in `~` form: its group's one row until a session
+    /// starts there or ctrl+x removes the folder.
+    Folder(String),
 }
 
 impl Kind {
@@ -110,6 +113,7 @@ impl Kind {
             Kind::Job(name) => Some(name),
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
             Kind::Menu(name) => Some(name),
+            Kind::Folder(dir) => Some(dir),
             _ => None,
         }
     }
@@ -136,6 +140,8 @@ pub struct Data {
     pub sessions: Vec<Session>,
     /// Session column names after the harness and title, from jobs.yaml.
     pub columns: Vec<String>,
+    /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
+    pub folders: Vec<PathBuf>,
 }
 
 impl Data {
@@ -150,6 +156,7 @@ impl Data {
             runs,
             sessions,
             columns: config::columns(jobs_path),
+            folders: ledger.folders()?,
         })
     }
 
@@ -345,6 +352,21 @@ impl Data {
                 cells,
             });
         }
+        // ponytail: pinned folders trail the session groups instead of sorting among them.
+        for dir in &self.folders {
+            if self.sessions.iter().any(|s| &s.cwd == dir) {
+                continue;
+            }
+            header(&mut out, &fleet::tilde(dir));
+            out.push(Row {
+                kind: Kind::Folder(fleet::tilde(dir)),
+                cells: vec![(
+                    "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
+                        .to_owned(),
+                    dim(),
+                )],
+            });
+        }
         if !self.runs.is_empty() {
             header(&mut out, "runs");
             // ponytail: the newest 200 runs; paging when the ledger outgrows a screenful of scrolling.
@@ -497,6 +519,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
             Kind::Menu(m) => ("menu".to_owned(), (*m).to_owned()),
+            Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
         };
         out += &format!("{key}\t{aux}\t");
         if row.kind.selectable() {
@@ -545,6 +568,7 @@ fn enter_verb(kind: Option<&Kind>) -> &'static str {
         Some(Kind::Menu("runs")) => "new job",
         Some(Kind::Menu("agents")) => "agents",
         Some(Kind::Menu(_)) => "pick folder",
+        Some(Kind::Folder(_)) => "start here",
         _ => "open",
     }
 }
@@ -1697,6 +1721,12 @@ impl App {
                 .iter()
                 .find(|r| &r.started.run_id == id)
                 .and_then(|r| r.started.cwd.clone()),
+            Kind::Folder(dir) => self
+                .data
+                .folders
+                .iter()
+                .find(|p| &fleet::tilde(p) == dir)
+                .cloned(),
             _ => None,
         }
     }
@@ -2546,6 +2576,9 @@ impl App {
             Kind::Menu("runs") => self.new_job(),
             Kind::Menu("agents") => self.mode = Mode::Harness(0),
             Kind::Menu(_) => self.mode = Mode::Folder(String::new()),
+            Kind::Folder(dir) => {
+                self.status = format!("type an instruction · enter starts a session in {dir}");
+            }
             _ => {}
         }
         Ok(())
@@ -2694,6 +2727,38 @@ impl App {
         }
     }
 
+    /// ctrl+x on a pinned folder's row: once arms, again drops the folder from the dashboard.
+    fn remove_folder(&mut self, dir: String) {
+        match self.armed.take() {
+            Some(armed) if armed == dir => {
+                self.data.folders.retain(|p| fleet::tilde(p) != dir);
+                self.status = match self.save_folders() {
+                    Ok(()) => format!("{dir} removed · the folder itself is untouched"),
+                    Err(e) => format!("remove failed: {e:#}"),
+                };
+                self.rebuild();
+            }
+            _ => {
+                self.status = "ctrl+x again to remove this folder · any other key keeps it".into();
+                self.armed = Some(dir);
+            }
+        }
+    }
+
+    /// The menu's `folder` prompt took a directory: it gets a row at once and keeps it across
+    /// restarts until ctrl+x removes it.
+    fn pin_folder(&mut self, dir: PathBuf) -> Result<()> {
+        if !self.data.folders.contains(&dir) {
+            self.data.folders.push(dir);
+            self.save_folders()?;
+        }
+        Ok(())
+    }
+
+    fn save_folders(&self) -> Result<()> {
+        Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
+    }
+
     /// ctrl+n, and enter on the menu's `runs` row: the wizard on a new job, its directory
     /// defaulting to the selected row's.
     fn new_job(&mut self) {
@@ -2752,6 +2817,7 @@ impl App {
             Kind::Run(_, s) if s == "started" => Some("stop"),
             Kind::Run(..) => Some("hide"),
             Kind::Session(id, _) => Some(self.session_verb(id)),
+            Kind::Folder(_) => Some("remove"),
             _ => None,
         }
     }
@@ -2894,6 +2960,7 @@ impl App {
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
+            Some(Kind::Folder(dir)) => return self.remove_folder(dir),
             Some(Kind::Session(id, _)) if id.starts_with("starting:") => {
                 self.status = "still starting · nothing to stop yet".into();
                 return;
@@ -3145,9 +3212,12 @@ impl App {
                     let text = text.clone();
                     match launch_dir(&text, &self.cwd, &self.cwd) {
                         Ok(dir) => {
-                            self.cwd = dir;
+                            self.cwd = dir.clone();
                             self.mode = Mode::Normal;
-                            self.status = format!("working in {}", fleet::tilde(&self.cwd));
+                            self.status = match self.pin_folder(dir) {
+                                Ok(()) => format!("working in {}", fleet::tilde(&self.cwd)),
+                                Err(e) => format!("folder not saved: {e:#}"),
+                            };
                             self.rebuild();
                         }
                         Err(e) => self.status = e,
@@ -4617,6 +4687,71 @@ mod tests {
             Some("folder"),
             "a reload keeps the menu row"
         );
+    }
+
+    /// A folder the prompt picks has a row from then on, with nothing running there, across
+    /// reloads and restarts, until ctrl+x twice removes it; a session in the folder takes its
+    /// group over and the placeholder comes back when the session leaves.
+    #[test]
+    fn a_picked_folder_keeps_a_row_until_it_is_removed() {
+        let d = dir();
+        let claude = d.path();
+        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
+        let inside = claude.join("inside");
+        fs::create_dir(&inside).unwrap();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        let picked = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
+        let name = fleet::tilde(&picked);
+        app.cwd = picked.clone();
+        app.pin_folder(picked.clone()).unwrap();
+        app.rebuild();
+        let folder_row = |app: &App| {
+            app.visible
+                .iter()
+                .position(|&i| app.rows[i].kind == Kind::Folder(name.clone()))
+        };
+        assert!(folder_row(&app).is_some(), "the folder has a row at once");
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Header && r.text() == name),
+            "under its own group title"
+        );
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_some(), "a reload keeps it");
+        app.cursor = folder_row(&app).unwrap();
+        assert_eq!(app.target_dir(), picked, "the composer starts there");
+        assert_eq!(app.stop_verb(), Some("remove"));
+
+        registry(
+            claude,
+            B,
+            &picked.display().to_string(),
+            "idle",
+            1_757_682_871_000,
+        );
+        app.refresh().unwrap();
+        assert!(
+            folder_row(&app).is_none(),
+            "a session in the folder takes the group"
+        );
+        fs::remove_file(claude.join("sessions").join(format!("{B}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert!(
+            folder_row(&app).is_some(),
+            "and the row is back when it leaves"
+        );
+
+        app.cursor = folder_row(&app).unwrap();
+        app.stop();
+        assert!(app.status.starts_with("ctrl+x again"), "{}", app.status);
+        app.stop();
+        assert!(app.status.contains("removed"), "{}", app.status);
+        assert!(folder_row(&app).is_none(), "gone at once");
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_none(), "and after a reload");
+        assert_eq!(fs::read_to_string(claude.join("folders")).unwrap(), "");
     }
 
     #[test]
