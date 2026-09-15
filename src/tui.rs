@@ -2068,8 +2068,8 @@ impl ConfigForm {
 
     /// The editor where the list is: a title, the fields under their group headers, each row
     /// a field with its value (the built-in dim when empty) and a few words on it, then the
-    /// selected field's fuller explanation.
-    fn lines(&self) -> Vec<Line<'static>> {
+    /// selected field's fuller explanation, wrapped to `columns` with the rows' indent.
+    fn lines(&self, columns: u16) -> Vec<Line<'static>> {
         let mut lines = vec![
             Line::default(),
             Line::from(vec![
@@ -2090,14 +2090,14 @@ impl ConfigForm {
                     .unwrap_or((f.group, ""));
                 lines.push(Line::default());
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {name}"), Style::default().fg(ORANGE)),
+                    Span::styled(name.to_owned(), Style::default().fg(ORANGE)),
                     Span::styled(format!("  {what}"), dim()),
                 ]));
             }
             let selected = i == self.row;
             let value = &self.values[i];
             let mut spans = vec![Span::styled(
-                format!("    {:<width$}  ", f.name),
+                format!("  {:<width$}  ", f.name),
                 if selected { lit() } else { bold() },
             )];
             let shown = match (f.picks, selected) {
@@ -2136,10 +2136,15 @@ impl ConfigForm {
             lines.push(Line::from(spans));
         }
         lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {}  ", self.field().name), bold()),
-            Span::raw(self.field().long.to_owned()),
-        ]));
+        // The explanation wrapped here, not by the widget, so every line of it keeps the
+        // rows' indent rather than the second one falling back to the margin.
+        let f = self.field();
+        let mut first = vec![Span::styled(format!("  {}  ", f.name), bold())];
+        let room = (columns as usize).saturating_sub(first[0].width()).max(20);
+        let mut rest = wrap(f.long, room).into_iter();
+        first.push(Span::raw(rest.next().unwrap_or_default()));
+        lines.push(Line::from(first));
+        lines.extend(rest.map(|l| Line::from(format!("  {l}"))));
         lines
     }
 
@@ -2156,6 +2161,22 @@ impl ConfigForm {
             Span::styled(help, dim()),
         ])
     }
+}
+
+/// `text` broken at spaces into lines of at most `width` columns; a word longer than the
+/// width takes a line of its own.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = vec![];
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 1 + word.chars().count() <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
 }
 
 enum Mode {
@@ -4984,7 +5005,7 @@ impl App {
             );
         } else if let Mode::Config(form) = &self.mode {
             frame.render_widget(
-                Paragraph::new(form.lines()).wrap(Wrap { trim: false }),
+                Paragraph::new(form.lines(list.width)).wrap(Wrap { trim: false }),
                 list,
             );
         } else {
@@ -5264,6 +5285,37 @@ fn tty_state() -> String {
 #[cfg(test)]
 mod tests {
     /// Every key the guide names is in the dashboard's docs, so the two never drift.
+    #[test]
+    fn config_explanation_keeps_the_rows_indent() {
+        assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
+        assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
+        let c = ConfigForm::new(&config::Policy::default(), None);
+        let lines = c.lines(40);
+        let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert!(
+            shown.iter().any(|l| l.starts_with("runs  ")),
+            "group headers sit on the margin"
+        );
+        assert!(
+            shown.iter().any(|l| l.starts_with("  timeout_min")),
+            "rows are indented by two"
+        );
+        let tail: Vec<&String> = shown
+            .iter()
+            .skip_while(|l| !l.starts_with("  timeout_min  "))
+            .skip(1)
+            .collect();
+        let long = tail.iter().rev().take_while(|l| !l.is_empty()).count();
+        assert!(long > 1, "the explanation wraps at the width given");
+        assert!(
+            tail.iter()
+                .rev()
+                .take(long)
+                .all(|l| l.starts_with("  ") && l.chars().count() <= 40),
+            "every wrapped line keeps the indent and fits"
+        );
+    }
+
     #[test]
     fn guide_keys_are_documented() {
         let docs = include_str!("../docs/dashboard.md");
@@ -7673,11 +7725,11 @@ mod tests {
         assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("  runs  what") < at("timeout_min")
-                && at("overlap") < at("  tools  what")
-                && at("  tools  what") < at("write")
-                && at("write") < at("  cones  what")
-                && at("  cones  what") < at("notify")
+            at("\nruns  what") < at("timeout_min")
+                && at("overlap") < at("\ntools  what")
+                && at("\ntools  what") < at("write")
+                && at("write") < at("\ncones  what")
+                && at("\ncones  what") < at("notify")
                 && at("notify") < at("columns"),
             "the fields sit under their groups: {s}"
         );
