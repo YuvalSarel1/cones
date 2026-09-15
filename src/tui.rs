@@ -1857,14 +1857,11 @@ struct Field {
 
 const BOOL: &[&str] = &["-", "false", "true"];
 
-/// The groups the editor shows, each with a line on what it holds. `runs`, `claude` and
+/// The groups the editor shows, each with a line on what it holds. `jobs`, `claude` and
 /// `codex` are the `defaults` block, `cones` the dashboard's own `columns:` line, `notify`
 /// and the `sparkline:` block.
 const GROUPS: [(&str, &str); 4] = [
-    (
-        "runs",
-        "what one run may take and spend, for every job unless it sets its own",
-    ),
+    ("jobs", "what every job runs under unless it sets its own"),
     ("claude", "how a Claude job runs, unless it sets its own"),
     ("codex", "how a Codex job runs, unless it sets its own"),
     ("cones", "what the dashboard shows and when it speaks up"),
@@ -1874,7 +1871,7 @@ const GROUPS: [(&str, &str); 4] = [
 /// harness's jobs.
 const FIELDS: [Field; 16] = [
     Field {
-        group: "runs",
+        group: "jobs",
         name: "timeout_min",
         short: "minutes before cones kills a run",
         long: "How long one run may take, on the clock, from its start. When it passes, cones sends SIGTERM to the harness and everything it spawned, waits two seconds, then SIGKILL, and the ledger records the run as timeout. Positive, at most 10080 (one week).",
@@ -1882,7 +1879,7 @@ const FIELDS: [Field; 16] = [
         picks: None,
     },
     Field {
-        group: "runs",
+        group: "jobs",
         name: "budget_usd",
         short: "dollars one run may spend",
         long: "The most one run may spend, passed to Claude as --max-budget-usd. Claude stops itself at the number and reports why, so the run ends early with a budget result rather than a kill.",
@@ -1890,7 +1887,7 @@ const FIELDS: [Field; 16] = [
         picks: None,
     },
     Field {
-        group: "runs",
+        group: "jobs",
         name: "daily_budget_usd",
         short: "dollars a job may spend a day",
         long: "A rolling 24-hour cap per job. Before a run starts, cones adds up what the job's runs cost in the last day, counting a run still going at its budget_usd; a tick that would push the sum over the cap is recorded as skipped / budget and nothing starts. At least budget_usd. Empty is no cap.",
@@ -1898,7 +1895,7 @@ const FIELDS: [Field; 16] = [
         picks: None,
     },
     Field {
-        group: "runs",
+        group: "jobs",
         name: "write",
         short: "may a job change files",
         long: "false strips Edit, Write and Bash from a Claude job's tool list even when tools names them, and runs a Codex job read-only, so the job can only read. true keeps them, turns Claude's sandbox on whenever Bash is allowed, and gives Codex its workspace to write.",
@@ -1906,7 +1903,7 @@ const FIELDS: [Field; 16] = [
         picks: Some(BOOL),
     },
     Field {
-        group: "runs",
+        group: "jobs",
         name: "overlap",
         short: "a tick while the last run goes on",
         long: "skip records the tick as skipped / overlap and starts nothing. allow starts a second run beside the first. replace sends the old run SIGUSR1, waits up to 10 seconds for it to stop, then starts the new one.",
@@ -5574,7 +5571,7 @@ mod tests {
         let lines = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
-            shown.iter().any(|l| l.starts_with("runs  ")),
+            shown.iter().any(|l| l.starts_with("jobs  ")),
             "group headers sit on the margin"
         );
         assert!(
@@ -8130,7 +8127,7 @@ mod tests {
         assert!(s.contains("Read, Grep, Glob"), "built-ins show dim: {s}");
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\nruns  what") < at("timeout_min")
+            at("\njobs  what") < at("timeout_min")
                 && at("write") < at("\nclaude  how")
                 && at("\nclaude  how") < at("model")
                 && at("max_turns") < at("\ncodex  how")
