@@ -137,11 +137,13 @@ jobs:
     prompt: "Reply with the single word ok and nothing else."
     model: sonnet
     bedrock: true
+    aws_profile: claude          # bedrock: true is refused without these two
+    aws_region: us-east-1
     timeout_min: 3
     budget_usd: 0.50
 ```
 
-Export the AWS profile and region Bedrock needs, since `bedrock: true` imports every `AWS_` variable, then run each job with `cones run --jobs jobs.yaml --state-dir state <name>`. The proof is in `state/output/<run id>/events.jsonl`: the `init` event's `model` is the id Claude actually started on, a `us.anthropic.` id means Bedrock and a bare `claude-` id means the direct API, and the `result` event carries `total_cost_usd`. `state/runs.jsonl` records the exact arguments and the environment names each run got, so `--model` and `CLAUDE_CODE_USE_BEDROCK` can be read there. On 2026-09-15 every alias answered `ok` on both providers; on Bedrock the `sonnet` alias resolved to Sonnet 4.5 where the direct API gave Sonnet 5, which is Claude Code's mapping, not cones's.
+The profile and region are the job's own, so nothing has to be exported first; the run still inherits every other `AWS_` variable for the credentials themselves, which on this Mac means an SSO session `aws sso login --profile claude` has already opened. Run each job with `cones run --jobs jobs.yaml --state-dir state <name>`. The proof is in `state/output/<run id>/events.jsonl`: the `init` event's `model` is the id Claude actually started on, a `us.anthropic.` id means Bedrock and a bare `claude-` id means the direct API, and the `result` event carries `total_cost_usd`. `state/runs.jsonl` records the exact arguments and the environment names each run got, so `--model` and `CLAUDE_CODE_USE_BEDROCK` can be read there. On 2026-09-15 every alias answered `ok` on both providers; on Bedrock the `sonnet` alias resolved to Sonnet 4.5 where the direct API gave Sonnet 5, which is Claude Code's mapping, not cones's.
 
 Codex has no job path yet, so its provider switch is checked with the same flags the composer passes: `codex exec --skip-git-repo-check -C . -c model_provider=amazon-bedrock "<prompt>"`, and `model_provider=openai` for the direct API, which needs an OpenAI login on the machine.
 

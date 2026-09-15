@@ -76,14 +76,27 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy))
                 .current_dir(dir);
-            // Claude's provider switch is its environment variable. The shell's own setting
-            // stands when the policy says nothing.
+            // Claude's provider switch is its environment variable, and Bedrock answers only
+            // with an AWS profile and region beside it. The shell's own setting stands when
+            // the policy says nothing.
             // ponytail: a settings.json `env` that forces Bedrock still wins over `false`.
             match policy.bedrock {
-                Some(true) => c.env("CLAUDE_CODE_USE_BEDROCK", "1"),
-                Some(false) => c.env_remove("CLAUDE_CODE_USE_BEDROCK"),
-                None => &mut c,
-            };
+                Some(true) => {
+                    c.env("CLAUDE_CODE_USE_BEDROCK", "1");
+                    for (key, set) in [
+                        ("AWS_PROFILE", &policy.aws_profile),
+                        ("AWS_REGION", &policy.aws_region),
+                    ] {
+                        if let Some(v) = set {
+                            c.env(key, v);
+                        }
+                    }
+                }
+                Some(false) => {
+                    c.env_remove("CLAUDE_CODE_USE_BEDROCK");
+                }
+                None => {}
+            }
             Start::Background(c)
         }
         HarnessKind::Codex => {
@@ -378,10 +391,20 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
         );
     }
     if job.bedrock == Some(true) {
-        // Bedrock needs the shell's AWS credentials and region, so every AWS_ variable comes
-        // along; the job has nothing else to name them by.
+        // Bedrock needs the shell's AWS credentials, so every AWS_ variable comes along; the
+        // job has nothing else to name a credential file or an SSO cache by. The profile and
+        // region the block resolved to are set over them, since they are what it was checked
+        // against.
         env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
         env.extend(std::env::vars().filter(|(k, _)| k.starts_with("AWS_")));
+        for (key, set) in [
+            ("AWS_PROFILE", &job.aws_profile),
+            ("AWS_REGION", &job.aws_region),
+        ] {
+            if let Some(v) = set {
+                env.insert(key.into(), v.clone());
+            }
+        }
     }
     env.insert("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into());
     Ok(env)
@@ -722,6 +745,13 @@ mod tests {
         let env = environment(&job).unwrap();
         assert_eq!(env["CLAUDE_CODE_USE_BEDROCK"], "1");
         assert_eq!(env["AWS_CONES_TEST_REGION"], "us-west-2");
+        // The block's profile and region are what the job was checked against, so they are
+        // set over anything of the same name the shell carried in.
+        job.aws_profile = Some("claude".into());
+        job.aws_region = Some("us-east-1".into());
+        let env = environment(&job).unwrap();
+        assert_eq!(env["AWS_PROFILE"], "claude");
+        assert_eq!(env["AWS_REGION"], "us-east-1");
     }
 
     #[test]

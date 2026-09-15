@@ -52,6 +52,10 @@ pub struct Policy {
     /// Where the harness sends its requests: `true` Amazon Bedrock, `false` the harness's own
     /// endpoint, unset whatever the harness's own configuration says.
     pub bedrock: Option<bool>,
+    /// What Bedrock needs to answer: the AWS profile and region every run on it is given.
+    /// `bedrock: true` without both, here or in the environment, is refused.
+    pub aws_profile: Option<String>,
+    pub aws_region: Option<String>,
     /// The harness a job runs under when it names none, and the one the dashboard's composer
     /// starts on; unset is Claude.
     pub harness: Option<HarnessKind>,
@@ -94,6 +98,10 @@ pub struct Job {
     pub notify: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bedrock: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aws_region: Option<String>,
 }
 
 impl Job {
@@ -119,6 +127,8 @@ impl Job {
             overlap: None,
             notify: None,
             bedrock: None,
+            aws_profile: None,
+            aws_region: None,
         }
     }
 }
@@ -596,6 +606,8 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     );
     put("notify", d.notify.map(|v| v.to_string()));
     put("bedrock", d.bedrock.map(|v| v.to_string()));
+    put("aws_profile", d.aws_profile.clone());
+    put("aws_region", d.aws_region.clone());
     put("harness", d.harness.map(|v| v.to_string()));
     out
 }
@@ -727,6 +739,10 @@ pub struct ResolvedJob {
     pub overlap: Overlap,
     pub notify: bool,
     pub bedrock: Option<bool>,
+    /// Set only with `bedrock: true`, and then never empty: what the run's AWS_PROFILE and
+    /// AWS_REGION are, from the block or from the environment cones was started in.
+    pub aws_profile: Option<String>,
+    pub aws_region: Option<String>,
 }
 
 /// A one-off job for `cones run --prompt`: the template's policy (or the read-only defaults)
@@ -767,6 +783,8 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             overlap: Overlap::Skip,
             notify: false,
             bedrock: None,
+            aws_profile: None,
+            aws_region: None,
         },
     })
 }
@@ -795,6 +813,40 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
             resolve(j, &doc.defaults, path.parent().unwrap())
         })
         .collect()
+}
+
+/// What a run on Bedrock is given for AWS_PROFILE and AWS_REGION. `bedrock: true` needs both
+/// written beside it, since the switch alone points the harness at Bedrock with nothing to
+/// authenticate it and the session dies on its first call. With bedrock off or unset the two
+/// are carried but unused, so turning it off stays one edit.
+/// This is the whole rule: `resolve` and the dashboard's config editor both refuse here.
+// ponytail: the block only, never the environment. A rule that reads AWS_PROFILE would pass
+// or fail with the shell cones and its tests happen to be started from, and the run still
+// inherits every AWS_ variable for the credentials themselves.
+pub fn bedrock_aws(
+    bedrock: Option<bool>,
+    profile: Option<&str>,
+    region: Option<&str>,
+) -> Result<(Option<String>, Option<String>)> {
+    if bedrock != Some(true) {
+        return Ok((None, None));
+    }
+    let set = |v: Option<&str>| v.map(str::to_owned).filter(|v| !v.trim().is_empty());
+    let (profile, region) = (set(profile), set(region));
+    let missing: Vec<&str> = [("aws_profile", &profile), ("aws_region", &region)]
+        .iter()
+        .filter(|(_, v)| v.is_none())
+        .map(|(n, _)| *n)
+        .collect();
+    // The message names the field that is missing, not `bedrock`, so the config editor lands
+    // the cursor on the value to fill rather than on the switch that asked for it.
+    ensure!(
+        missing.is_empty(),
+        "{}: needed by bedrock: true, since Bedrock is reached with a profile and a region \
+         and the switch on its own is a session that dies on its first call",
+        missing.first().unwrap_or(&"aws_profile")
+    );
+    Ok((profile, region))
 }
 
 fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
@@ -900,6 +952,13 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     }
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
+    let bedrock = j.bedrock.or(d.bedrock);
+    let (aws_profile, aws_region) = bedrock_aws(
+        bedrock,
+        j.aws_profile.as_deref().or(d.aws_profile.as_deref()),
+        j.aws_region.as_deref().or(d.aws_region.as_deref()),
+    )
+    .with_context(|| format!("job {}", j.name))?;
     Ok(ResolvedJob {
         name: j.name,
         schedule: j.schedule,
@@ -918,7 +977,9 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         codex_full_access: full,
         overlap,
         notify: j.notify.or(d.notify).unwrap_or(false),
-        bedrock: j.bedrock.or(d.bedrock),
+        bedrock,
+        aws_profile,
+        aws_region,
     })
 }
 
@@ -989,6 +1050,54 @@ mod tests {
         assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
     }
 
+    /// `bedrock: true` is a setting with two others behind it, so the switch cannot be turned
+    /// on alone: the file is refused, naming the field to fill, and either block or job may
+    /// carry them. Off or unset, the two are read and carried but nothing is required. The
+    /// rule is the block's alone and never the shell's, so it answers the same wherever the
+    /// tests run.
+    #[test]
+    fn bedrock_is_refused_without_the_profile_and_region_it_runs_on() {
+        let bedrock = |p: &str, r: &str| {
+            format!(
+                "version: 1\ndefaults:\n  bedrock: true\n{p}{r}jobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n"
+            )
+        };
+        let profile = "  aws_profile: claude\n";
+        let region = "  aws_region: us-east-1\n";
+        for (text, want) in [
+            (bedrock("", ""), Some("aws_profile")),
+            (bedrock(profile, ""), Some("aws_region")),
+            (bedrock("", region), Some("aws_profile")),
+            (bedrock(profile, region), None),
+        ] {
+            let (_d, p) = file(&text);
+            match (read_jobs(&p), want) {
+                (Ok(jobs), None) => assert_eq!(
+                    (
+                        jobs[0].aws_profile.as_deref(),
+                        jobs[0].aws_region.as_deref()
+                    ),
+                    (Some("claude"), Some("us-east-1"))
+                ),
+                (Err(e), Some(field)) => {
+                    let e = format!("{e:#}");
+                    assert!(
+                        e.contains(&format!("{field}: needed by bedrock: true")),
+                        "{e}"
+                    );
+                }
+                (got, want) => panic!("{text}\nwanted {want:?}, got {got:?}"),
+            }
+        }
+        // A job carries its own, and bedrock off asks for nothing while keeping neither.
+        let (_d, p) = file(
+            "version: 1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    bedrock: true\n    aws_profile: claude\n    aws_region: us-east-1\n  - name: two\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    aws_profile: unused\n",
+        );
+        let jobs = read_jobs(&p).unwrap();
+        assert_eq!(jobs[0].aws_profile.as_deref(), Some("claude"));
+        assert_eq!(jobs[1].aws_profile, None, "carried but not resolved");
+    }
+
     #[test]
     fn write_config_replaces_the_blocks_creates_them_and_checks_them() {
         let (_d, p) = file(FILE);
@@ -1005,6 +1114,8 @@ mod tests {
             model: None,
             codex_model: None,
             bedrock: None,
+            aws_profile: None,
+            aws_region: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(&p, &d, Some(&cols), None, None, None, None).unwrap();

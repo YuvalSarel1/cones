@@ -1921,7 +1921,7 @@ const GROUPS: [(&str, &str); 3] = [
 /// The fields under their groups and blocks. A field named for a harness reaches only that
 /// harness. `start.harness` is what the composer comes up on, `runs.harness` what a job that
 /// names none runs under: one row each, so neither has to mean both.
-const FIELDS: [Field; 20] = [
+const FIELDS: [Field; 22] = [
     Field {
         group: "cones",
         sub: "",
@@ -1999,9 +1999,27 @@ const FIELDS: [Field; 20] = [
         sub: "",
         name: "bedrock",
         short: "run on Amazon Bedrock",
-        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. A Bedrock job also gets the shell's AWS_ variables.",
+        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
         builtin: SYSTEM,
         input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "aws_profile",
+        short: "AWS profile",
+        long: "The profile every Bedrock run is given as AWS_PROFILE, as named in ~/.aws/config. Required by bedrock: true and unused without it; the run still inherits every other AWS_ variable for the credentials themselves.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "aws_region",
+        short: "AWS region",
+        long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a model id is answered only by the regions that carry it.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
     },
     Field {
         group: "harnesses",
@@ -2107,7 +2125,14 @@ const FIELDS: [Field; 20] = [
 /// The rows the session form shows: what the next session the composer starts runs on, the
 /// same `defaults` fields the editor shows, seeded from the policy that session would take.
 /// Nothing on this form is written to the file.
-const SESSION: [&str; 4] = ["harness", "model", "codex_model", "bedrock"];
+const SESSION: [&str; 6] = [
+    "harness",
+    "model",
+    "codex_model",
+    "bedrock",
+    "aws_profile",
+    "aws_region",
+];
 
 /// Where `name` sits in `FIELDS`.
 fn field_at(name: &str) -> usize {
@@ -2218,6 +2243,8 @@ impl ConfigForm {
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "bedrock" => flag(d.bedrock),
+                "aws_profile" => d.aws_profile.clone().unwrap_or_default(),
+                "aws_region" => d.aws_region.clone().unwrap_or_default(),
                 "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
@@ -2313,12 +2340,23 @@ impl ConfigForm {
             model: text("model"),
             codex_model: text("codex_model"),
             bedrock: flag("bedrock"),
+            aws_profile: text("aws_profile"),
+            aws_region: text("aws_region"),
             harness: match v("harness") {
                 "claude" => Some(HarnessKind::Claude),
                 "codex" => Some(HarnessKind::Codex),
                 _ => None,
             },
         };
+        // Bedrock with nothing to authenticate it is refused here as the file refuses it, so
+        // the session form, which writes nothing and so never reaches `resolve`, cannot set
+        // one either. The message names `bedrock`, so it lands on that row.
+        config::bedrock_aws(
+            policy.bedrock,
+            policy.aws_profile.as_deref(),
+            policy.aws_region.as_deref(),
+        )
+        .map_err(|e| format!("{e:#}"))?;
         // The sparkline block: every field empty leaves it out; otherwise the built-in fills
         // what is not typed, and the block is checked the way jobs.yaml is read.
         let spark = if ["bars", "bucket", "metric", "bound"]
@@ -9184,11 +9222,11 @@ mod tests {
             "the harness row shows tab's pick, not the built-in dim: {s}"
         );
         // Down from the last shown row stays; the hidden rows are never visited.
-        for _ in 0..5 {
+        for _ in 0..7 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
         assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")));
-        for _ in 0..5 {
+        for _ in 0..7 {
             app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         }
         assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
@@ -9198,14 +9236,63 @@ mod tests {
         assert!(s.contains("bedrock › [system default] false  true "), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        // Bedrock with nothing behind it does not take: the cursor lands on the profile it
+        // needs, with the reason, and the composer still shows the harness alone.
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Config(f) => {
+                assert_eq!(f.row, field_at("aws_profile"));
+                assert!(
+                    f.error
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("aws_profile: needed by bedrock: true"),
+                    "{:?}",
+                    f.error
+                );
+            }
+            _ => panic!("stays in the form"),
+        }
+        assert_eq!(app.session_words(), ["claude"], "nothing took");
+        // Bounded, so a row that leaves the form fails the test instead of hanging it.
+        let go = |app: &mut App, name: &str| {
+            for _ in 0..=FIELDS.len() {
+                let Mode::Config(f) = &app.mode else {
+                    panic!("not in the form, looking for {name}")
+                };
+                if f.row == field_at(name) {
+                    return;
+                }
+                let code = if f.row < field_at(name) {
+                    KeyCode::Down
+                } else {
+                    KeyCode::Up
+                };
+                app.key(code, KeyModifiers::NONE).unwrap();
+            }
+            panic!("{name} is not a row the form visits");
+        };
+        for (name, text) in [("aws_profile", "claude"), ("aws_region", "us-east-1")] {
+            go(&mut app, name);
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            for c in text.chars() {
+                app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+            }
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        }
+        go(&mut app, "model");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         // Each field kept takes on the spot, so esc only closes the form.
         assert_eq!(app.status, "next session: claude · opus · bedrock");
+        let p = app.session_policy();
+        assert_eq!(
+            (p.aws_profile.as_deref(), p.aws_region.as_deref()),
+            (Some("claude"), Some("us-east-1")),
+            "the session carries what bedrock needs"
+        );
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(!d.path().join("none.yaml").exists(), "nothing is written");
@@ -9225,9 +9312,7 @@ mod tests {
         app.harness = (app.harness + 1) % harness::KNOWN.len();
         app.key(KeyCode::Char('o'), ctrl).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
-        while !matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")) {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
+        go(&mut app, "harness");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
