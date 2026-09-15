@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Which rows open and where every cell comes from is in [harness.md](harness.md); the job file in [jobs.md](jobs.md); commands in [cli.md](cli.md).
 
-`cones tui` shows live sessions and runs on one screen, and the jobs on a screen of their own behind the menu's `jobs` button. It reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, as [polling](#polling) describes, and reads `N working · N need input · N idle · N jobs · N runs` on its summary line. Stop and delete commands run in the background too, with their progress in the hint line: a confirmed delete removes the row at once, before `claude rm` returns, and a failed one puts it back with the error; the hint line names the session by its title. Returning from a viewer or completing an action requests fresh data and discards any read started before the transition. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
+`cones tui` shows live sessions and runs on one screen, and the jobs on a screen of their own behind the menu's `jobs` button. It reloads about every second, on a thread of its own so a slow transcript read never holds a keypress or the spinner, as [polling](#polling) describes, and reads `N working · N input · N idle · N jobs · N runs` on its summary line. Stop and delete commands run in the background too, with their progress in the hint line: a confirmed delete removes the row at once, before `claude rm` returns, and a failed one puts it back with the error; the hint line names the session by its title. Returning from a viewer or completing an action requests fresh data and discards any read started before the transition. Runs the dashboard starts are ordinary `cones run` subprocesses and appear in the ledger.
 
 ## Polling
 
@@ -30,7 +30,7 @@ A file watcher was not chosen. The files are in three trees, transcripts grow co
 
 There is no details pane for now; a session is read by opening it, a run by `cones logs`. `cones ls --json` still carries what the pane showed, so it can come back.
 
-Each table opens with a dim row naming its columns, padded to the table beneath. A column only grows for the life of the dashboard: a cell that changes length (`59s` to `1m`, `working` to `needs input`, a long title leaving) never moves the columns beside it, so a column that was once wide stays wide until the dashboard restarts. The cursor skips the naming row and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table.
+Each table opens with a dim row naming its columns, padded to the table beneath. A column only grows for the life of the dashboard: a cell that changes length (`59s` to `1m`, `working` to `input`, a long title leaving) never moves the columns beside it, so a column that was once wide stays wide until the dashboard restarts. The cursor skips the naming row and `/` hides it while a filter is set. The sessions row sits once above the first directory group, since the groups share one table.
 
 Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Directories are in name order with case set aside; a Codex thread whose directory is not known anywhere is under `no directory`. A folder the menu's `folder` prompt picked keeps a group of its own in the same name order, with one dim row while nothing runs there, its git branch and tree state in front when it is a repository, until `ctrl+x` twice removes it; grouped by state those folders follow the states. The folders are one path per line in `~/.cones/folders`. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session whose transcript reports no start sorts last, by id.
 
@@ -40,7 +40,7 @@ Sessions group by directory like Claude's own agents view, or by state so the ro
 | `failed` | `✗` | failed | red |
 | `stopped` | `▁` | stopped | dim |
 | `active` | `▁▂▃▄▅▆▇` and back, one frame per 160 ms, resting three frames full and three empty | working | plain |
-| `blocked` | `▇`, still | needs input | yellow |
+| `blocked` | `▇`, still | input | yellow |
 | `idle` | `▁` | idle | dim |
 | `-` | `–` | `-` | dim |
 | anything else | `✗` | the word itself | red |
@@ -55,7 +55,7 @@ Under the composer, the hint line names only the keys that act on the selected r
 
 | Column | Cell | Default |
 | --- | --- | --- |
-| `state` | working, needs input, idle, done, failed or stopped, as in the table above; before the title | yes |
+| `state` | working, input, idle, done, failed or stopped, as in the table above; before the title | yes |
 | `context` | `98k/200k`: the prompt size the harness reported on the last message over the window it stated; `98k` alone when nothing stated a window (a Claude session whose statusLine command does not save its payload) | yes |
 | `sparkline` | `▁▁▂▅▇▇▅▃▁▁▁▁▁▁▁▁`: one bar per time bucket, oldest left, newest right, counting what the harness wrote to the transcript in it; the header names the window, `last 16m`. Settings under [sparkline](#sparkline) | yes |
 | `model` | The bare API model id on the last message with usage, `claude-fable-5-1` or `openai.gpt-6-astra` | yes |

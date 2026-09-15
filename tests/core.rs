@@ -481,7 +481,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
     assert_eq!(
         b.state, "blocked",
-        "a blocked tempo on an idle status is needs input"
+        "a blocked tempo on an idle status is input"
     );
     registry(claude, other, bg("../x"));
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
@@ -633,7 +633,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let lines: Vec<&str> = list.lines().collect();
     assert!(
         lines[..3].iter().all(|l| l.starts_with("hdr\t-\t"))
-            && ["0 working", "0 need input", "1 idle"]
+            && ["0 working", "0 input", "1 idle"]
                 .iter()
                 .all(|s| plain(lines[1]).contains(s)),
         "three pinned header lines carry the summary"

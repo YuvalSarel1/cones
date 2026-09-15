@@ -232,7 +232,7 @@ impl Data {
         let mut spans = Vec::new();
         for (state, title) in [
             ("active", "working"),
-            ("blocked", "need input"),
+            ("blocked", "input"),
             ("idle", "idle"),
             ("done", "done"),
         ] {
@@ -294,7 +294,7 @@ impl Data {
             });
         };
         // A group's key sorts it and names it: folders by name with case set aside, shown in
-        // `~` form; grouped by state a rank digit leads, needs input first.
+        // `~` form; grouped by state a rank digit leads, input first.
         let folder = |dir: &Path| {
             let name = if dir.as_os_str().is_empty() {
                 "no directory".to_owned()
@@ -884,7 +884,7 @@ fn uncolored(text: &str) -> String {
 
 /// The widest each table's columns have been, keyed by its column names. A column only grows
 /// for the life of the dashboard, so a cell that changes length (`59s` to `1m`, `working` to
-/// `needs input`, a long title leaving) never moves the columns beside it.
+/// `input`, a long title leaving) never moves the columns beside it.
 pub type Widths = HashMap<Vec<String>, Vec<usize>>;
 
 /// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames.
@@ -1257,7 +1257,7 @@ fn brand(harness: &str) -> Style {
 fn label(state: &str) -> &str {
     match state {
         "active" => "working",
-        "blocked" => "needs input",
+        "blocked" => "input",
         s => s,
     }
 }
@@ -6456,7 +6456,7 @@ mod tests {
     fn header_keeps_its_border_at_narrow_widths_and_with_wide_folder_names() {
         for width in [0, 1, 7, 23, 24, 40, 60, 80, 120] {
             let lines = header_lines(
-                Line::raw("123 working  4 need input  5 idle  6 done  ·  7 jobs  8 runs"),
+                Line::raw("123 working  4 input  5 idle  6 done  ·  7 jobs  8 runs"),
                 "~/个人/projects/a-long-folder",
                 width,
             );
@@ -7195,7 +7195,7 @@ mod tests {
         app.rebuild();
         assert_eq!(
             headers(&app),
-            ["needs input", "idle", names[0].as_str()],
+            ["input", "idle", names[0].as_str()],
             "by state the pinned folder trails"
         );
     }
@@ -8240,11 +8240,7 @@ mod tests {
     fn columns_never_shrink() {
         let row = |a: &str, b: &str| vec![(a.to_owned(), plain()), (b.to_owned(), plain())];
         let mut widths = Widths::new();
-        let (_, wide) = columns(
-            &["state", "age"],
-            vec![row("needs input", "59s")],
-            &mut widths,
-        );
+        let (_, wide) = columns(&["state", "age"], vec![row("input", "59s")], &mut widths);
         let (_, narrow) = columns(&["state", "age"], vec![row("idle", "1m")], &mut widths);
         assert_eq!(
             wide[0][0].0.len(),
