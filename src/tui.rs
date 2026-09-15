@@ -34,7 +34,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -6064,6 +6064,9 @@ impl App {
                     height: 1,
                     ..pane
                 };
+                // Clear first: past the end of the keys the row is the viewer's, and a
+                // harness's status line is not the keys' background.
+                frame.render_widget(Clear, row);
                 frame.render_widget(Paragraph::new(self.hint_line()), row);
             }
             return;
@@ -8963,7 +8966,7 @@ mod tests {
             "-c",
             &format!(
                 "printf 'VIEW'; read x; \
-                 printf '\\033[26;1H{rule}\\033[27;1H> \\033[28;1H{rule}\\033[29;1Hstatus\\033[30;1Hmode'; \
+                 printf '\\033[26;1H{rule}\\033[27;1H> \\033[28;1H{rule}\\033[29;1Hstatus\\033[30;1Hmode\\033[30;60Hcycle'; \
                  sleep 5"
             ),
         ]);
@@ -9014,6 +9017,19 @@ mod tests {
             "mode",
             "and the harness's last status row is the frame's last row, with no row \
              of the pane held back: {screen:#?}"
+        );
+
+        // Focused, the keys are drawn over that row, so the row is theirs alone: the
+        // status line under them would read as part of the keys.
+        app.focus = Some(0);
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 200);
+        let row = cells(&t, 29, 101..200);
+        assert!(row.starts_with("tab back"), "{screen:#?}");
+        assert!(
+            !row.contains("mode") && !row.contains("cycle"),
+            "the keys clear the harness's status line off their row, past their own \
+             end too: {screen:#?}"
         );
     }
 
