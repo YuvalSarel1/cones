@@ -2925,7 +2925,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer and back out to the list; shift+tab inside a viewer is the client's",
+        "into the pane's viewer or a button's screen and back out to the list; a form that uses tab itself, the folder prompt or an open field, is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
     ),
     (
         "ctrl+z",
@@ -5186,7 +5186,12 @@ impl App {
                 keys.extend([("enter", "keep"), ("esc", "back")]);
                 hints(&keys)
             }
-            Mode::Config(_) => hints(&[("↑ ↓", "field"), ("enter", "edit"), ("esc", "done")]),
+            Mode::Config(_) => hints(&[
+                ("↑ ↓", "field"),
+                ("enter", "edit"),
+                ("tab", "back"),
+                ("esc", "done"),
+            ]),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Columns(f) => hints(&[
                 ("← →", "column"),
@@ -5420,9 +5425,9 @@ impl App {
     /// inside over the split, and a ctrl+] that focused the pane in place or cycled viewers
     /// were taken out on 2026-09-15 as too much to hold in mind. ctrl+\ means the same thing
     /// in both states, the pane or the whole frame, so it is the one key both take; tab is
-    /// the other, the bounce from the list into the pane and back out of it: into a viewer,
-    /// which tab leaves again, or into a button's screen, whose own forms take tab, so ctrl+z
-    /// and esc are the way out of that one.
+    /// the other, the bounce from the list into the pane and back out of it, a viewer or a
+    /// button's screen alike. Only where a form has its own use for tab, the folder prompt's
+    /// completion or an open config field's picks, is ctrl+z or esc the way out.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
@@ -5467,12 +5472,25 @@ impl App {
             self.full = false;
         }
         // ctrl+z leaves a button's screen one step at a time, as esc does: the key it shares
-        // with a viewer.
-        if ctrl && code == KeyCode::Char('z') && self.panel_focused() {
+        // with a viewer. tab leaves it too, the bounce it came in on, so one key moves the
+        // keys between the list and the pane whatever the pane holds. A form mid-edit is the
+        // exception, as the column editor is: an open field, a path to complete or a wizard
+        // answer keeps tab for itself, and ctrl+z or esc leave from there. The pane goes on
+        // showing the screen it just gave the keys back, so the hint line says where the
+        // keys are and the status says it left.
+        let tab_out = code == KeyCode::Tab
+            && mods.is_empty()
+            && match &self.mode {
+                Mode::Config(form) => !form.open,
+                Mode::Guide(_) => true,
+                _ => false,
+            };
+        if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
             if matches!(self.mode, Mode::Normal) {
                 self.leave_jobs();
             } else {
                 self.mode = Mode::Normal;
+                self.status = "back to the list".into();
             }
             self.needs_clear = true;
             return Ok(false);
@@ -9183,8 +9201,21 @@ mod tests {
         );
         assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
         assert!(
-            matches!(app.mode, Mode::Config(_)),
-            "tab in the editor is the form's own"
+            matches!(app.mode, Mode::Normal),
+            "tab bounces back out of the editor as it bounced in"
+        );
+        assert_eq!(app.status, "back to the list", "and says so");
+        // An open field keeps tab for its picks; ctrl+z leaves from there as esc does.
+        assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        let Mode::Config(form) = &app.mode else {
+            panic!("the editor is open on a field");
+        };
+        assert!(form.open);
+        assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.open),
+            "tab in an open field is the form's own"
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z comes back out");
