@@ -26,11 +26,11 @@ Supports Claude Code and Codex sessions. Scheduled jobs currently use Claude Cod
 
 Requires macOS, Rust and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later.
 
-From a checkout of this repository:
-
 ```sh
-cargo install --path .
+cargo install --git https://github.com/YuvalSarel1/cones
 ```
+
+From a checkout of this repository, `cargo install --path .` does the same.
 
 ## Quick start
 
