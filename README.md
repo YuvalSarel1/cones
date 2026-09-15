@@ -28,6 +28,7 @@ Requires macOS and Claude Code 2.1 or later, logged in. Claude Code must support
 
 ```sh
 brew tap YuvalSarel1/cones https://github.com/YuvalSarel1/cones
+brew trust YuvalSarel1/cones
 brew install cones
 ```
 
