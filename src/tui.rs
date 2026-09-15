@@ -1859,26 +1859,57 @@ struct Field {
     input: Answer,
 }
 
-/// How a field takes its value: typed; one of a few words, `-` for the built-in; or those
-/// words or something typed, named for the help line.
+/// How a field takes its value, which is also the control its row draws: a number stepped by
+/// the amount given; free text; one of a few words, `-` for the built-in; or those words or
+/// something typed, named for the help line.
 enum Answer {
     Typed,
+    Number(f64),
     Pick(&'static [&'static str]),
     PickOrType(&'static [&'static str], &'static str),
+    /// The `columns:` line. The row reads the list and `enter` hands over to the arranger on
+    /// the table the columns belong to, which is `ctrl+t`'s and needs the table on screen.
+    Columns,
 }
 
 impl Field {
     /// The words a field offers, when it offers any.
     fn picks(&self) -> Option<&'static [&'static str]> {
         match self.input {
-            Answer::Typed => None,
+            Answer::Typed | Answer::Number(_) | Answer::Columns => None,
             Answer::Pick(o) | Answer::PickOrType(o, _) => Some(o),
         }
     }
 
     /// Whether typing edits the value.
     fn typed(&self) -> bool {
-        !matches!(self.input, Answer::Pick(_))
+        !matches!(self.input, Answer::Pick(_) | Answer::Columns)
+    }
+
+    /// The amount `← →` steps a number field by, when the field is one.
+    fn step(&self) -> Option<f64> {
+        match self.input {
+            Answer::Number(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The values `← →` walk, in order: every word the field offers, and `value` last when it
+    /// is something typed rather than one of them, so a value typed in is one more choice on
+    /// the row and a step off it lands on the built-in beside it. The ring is read from the
+    /// value each time, so stepping away drops what was typed, as picking another word in a
+    /// radio group does. `-` stands for the built-in and is held as the empty string.
+    fn ring(&self, value: &str) -> Vec<String> {
+        let mut ring: Vec<String> = self
+            .picks()
+            .unwrap_or_default()
+            .iter()
+            .map(|o| if *o == "-" { "" } else { *o }.to_owned())
+            .collect();
+        if !value.is_empty() && !ring.iter().any(|o| o == value) {
+            ring.push(value.to_owned());
+        }
+        ring
     }
 
     /// How option `o` reads on the prompt line: `-` of a field the harness owns is
@@ -1921,21 +1952,30 @@ const GROUPS: [(&str, &str); 3] = [
 /// The fields under their groups and blocks. A field named for a harness reaches only that
 /// harness. `start.harness` is what the composer comes up on, `runs.harness` what a job that
 /// names none runs under: one row each, so neither has to mean both.
-const FIELDS: [Field; 22] = [
+const FIELDS: [Field; 23] = [
     Field {
         group: "cones",
         sub: "",
         name: "confirm_secs",
-        short: "ctrl+x stays armed (s)",
+        short: "ctrl+x armed (s)",
         long: "Seconds an armed ctrl+x waits for its second press with no key pressed, up to 600. 0 keeps the mark until the next key.",
         builtin: "2",
-        input: Answer::Typed,
+        input: Answer::Number(1.0),
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "columns",
+        short: "session columns",
+        long: "The columns the table draws after the harness and title, in their order. Enter arranges them on the table itself, where the set is picked against the rows it applies to and the width it has to fit; ctrl+t from the dashboard opens the same arranger.",
+        builtin: "state, context, sparkline, model, activity, last",
+        input: Answer::Columns,
     },
     Field {
         group: "cones",
         sub: "start",
         name: "start.harness",
-        short: "the composer comes up on",
+        short: "composer starts on",
         long: "The harness the composer is on in a new cones terminal; shift+tab and ctrl+o change it from there and cones writes nothing back. Codex sessions start, Codex jobs are still unavailable.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex"]),
@@ -1953,7 +1993,7 @@ const FIELDS: [Field; 22] = [
         group: "cones",
         sub: "pane",
         name: "pane.at",
-        short: "where the pane sits",
+        short: "pane side",
         long: "right puts the pane beside the list, bottom under it.",
         builtin: "right",
         input: Answer::Pick(&["-", "right", "bottom"]),
@@ -1965,7 +2005,7 @@ const FIELDS: [Field; 22] = [
         short: "bar count",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
         builtin: "16",
-        input: Answer::Typed,
+        input: Answer::Number(1.0),
     },
     Field {
         group: "cones",
@@ -1998,7 +2038,7 @@ const FIELDS: [Field; 22] = [
         group: "harnesses",
         sub: "",
         name: "bedrock",
-        short: "run on Amazon Bedrock",
+        short: "run on Bedrock",
         long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
         builtin: SYSTEM,
         input: Answer::Pick(BOOL),
@@ -2019,7 +2059,16 @@ const FIELDS: [Field; 22] = [
         short: "AWS region",
         long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a model id is answered only by the regions that carry it.",
         builtin: SYSTEM,
-        input: Answer::Typed,
+        input: Answer::PickOrType(
+            &[
+                "-",
+                "us-east-1",
+                "us-west-2",
+                "eu-central-1",
+                "ap-northeast-1",
+            ],
+            "a region",
+        ),
     },
     Field {
         group: "harnesses",
@@ -2037,7 +2086,7 @@ const FIELDS: [Field; 22] = [
         short: "turns per run",
         long: "Maximum assistant turns per Claude run. Empty passes nothing and Claude's own limit stands.",
         builtin: SYSTEM,
-        input: Answer::Typed,
+        input: Answer::Number(1.0),
     },
     Field {
         group: "harnesses",
@@ -2061,7 +2110,7 @@ const FIELDS: [Field; 22] = [
         group: "runs",
         sub: "",
         name: "harness",
-        short: "for a job that names none",
+        short: "for a job with none",
         long: "The harness a job runs under when it names no harness of its own. What the composer comes up on is start.harness. Codex jobs are still unavailable.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex"]),
@@ -2073,7 +2122,7 @@ const FIELDS: [Field; 22] = [
         short: "time limit (min)",
         long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
         builtin: "30",
-        input: Answer::Typed,
+        input: Answer::Number(5.0),
     },
     Field {
         group: "runs",
@@ -2082,7 +2131,7 @@ const FIELDS: [Field; 22] = [
         short: "cost per run (USD)",
         long: "Maximum cost per run in USD, passed to Claude as --max-budget-usd, which stops the run when it is reached. Codex jobs are still unavailable.",
         builtin: "2.00",
-        input: Answer::Typed,
+        input: Answer::Number(0.25),
     },
     Field {
         group: "runs",
@@ -2091,7 +2140,7 @@ const FIELDS: [Field; 22] = [
         short: "cost per 24h (USD)",
         long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
         builtin: "none",
-        input: Answer::Typed,
+        input: Answer::Number(1.0),
     },
     Field {
         group: "runs",
@@ -2106,7 +2155,7 @@ const FIELDS: [Field; 22] = [
         group: "runs",
         sub: "",
         name: "overlap",
-        short: "when already running",
+        short: "already running",
         long: "When a job is already running: skip the next run, allow both, or replace the active run.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "allow", "replace"]),
@@ -2147,6 +2196,9 @@ fn field_at(name: &str) -> usize {
 pub enum ConfigAction {
     Stay,
     Cancel,
+    /// The `columns` row: the arranger on the table, which the dashboard opens where the
+    /// table is rather than the editor drawing a second one over it.
+    Columns,
     /// A field closed on a new value, so the block is written and the editor stays where it
     /// is: the `defaults` block, the `columns:` list, empty for the built-in, the `sparkline:`,
     /// `pane:` and `start:` blocks, None when every field of one is left to the built-in, and
@@ -2163,17 +2215,18 @@ pub enum ConfigAction {
 
 /// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
 /// policy every job runs under unless it sets the field itself, and the dashboard's `columns:`
-/// line and `sparkline:` block, one row per field under its group where the list is. Every
-/// row is name, value, a few words, in three columns that stay put. `↑` `↓` move between
-/// fields and `enter` opens the selected one: its value is pressed and the prompt line is
-/// where it is edited, the options with the current one bracketed where the field is picked,
-/// the value with a cursor where it is typed; `← →` pick, typing edits, `enter` keeps the
-/// value, saves the block and returns to the list, `esc` puts the old one back. There is
-/// nothing to press to keep the block: every field that closes on a value it did not open
-/// with writes it, and `esc` on the list only closes the editor. The selected field's fuller
-/// explanation sits under the list. An empty answer leaves the field out of the file, so the
-/// built-in applies and shows dim in its place. Pure: the file is read and written by the
-/// dashboard.
+/// line and `sparkline:` block, one row per field under its group where the list is. Every row
+/// is a label and the control the field takes, drawn whole: every word a pick offers with the
+/// current one bracketed, a number between the arrows that step it, free text in a box. What a
+/// field accepts is read off its row rather than found by opening it. `↑` `↓` move between
+/// fields and `← →` change the selected one in place, writing the block under the key that
+/// moved it; `backspace` puts the built-in back. There is nothing to press to keep the block,
+/// and `esc` on the list only closes the editor. `enter` opens the one control a row cannot
+/// draw whole, the text of a typed value, where `enter` keeps it and `esc` puts the old one
+/// back. The selected field's fuller explanation sits under the list, and its key in jobs.yaml
+/// on the prompt line. An empty answer leaves the field out of the file, so the built-in
+/// applies and reads `default` in the control's place. Pure: the file is read and written by
+/// the dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConfigForm {
     pub row: usize,
@@ -2435,12 +2488,94 @@ impl ConfigForm {
         Ok((policy, columns, spark, pane, start, mark))
     }
 
+    /// `v` as a value the file takes, without the trailing zeros a step leaves behind.
+    fn trim_num(v: f64) -> String {
+        let s = format!("{v:.2}");
+        s.trim_end_matches('0').trim_end_matches('.').to_owned()
+    }
+
+    /// `← →` one place along the selected row's control: the next word of a pick's ring, or
+    /// the number stepped by its own amount, never below zero. The step lands back on the
+    /// step's grid so `0.25` reads `0.25` rather than what the arithmetic left. A built-in
+    /// that is not a number, `none` or `system default`, steps from zero. Whether it moved.
+    fn turn(&mut self, back: bool) -> bool {
+        let f = self.field();
+        let value = self.values[self.row].clone();
+        if let Some(step) = f.step() {
+            let base = if value.is_empty() { f.builtin } else { &value };
+            let now: f64 = base.parse().unwrap_or(0.0);
+            let next = (now + if back { -step } else { step }).max(0.0);
+            self.values[self.row] = Self::trim_num((next / step).round() * step);
+            return self.values[self.row] != value;
+        }
+        let ring = f.ring(&value);
+        if ring.is_empty() {
+            return false;
+        }
+        let at = ring.iter().position(|o| *o == value).unwrap_or(0);
+        let next = (at + if back { ring.len() - 1 } else { 1 }) % ring.len();
+        self.values[self.row] = ring[next].clone();
+        next != at
+    }
+
+    /// The block written for a value that just changed. The field's own complaint keeps the
+    /// cursor where it is and shows inline; another field's moves the cursor to the field it
+    /// names, since that is what stopped the block from being written. A value the block
+    /// takes goes to the dashboard to write, and a value that did not move writes nothing.
+    fn commit(&mut self) -> ConfigAction {
+        let changed = self.values[self.row] != self.before;
+        match self.config() {
+            Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
+                self.error = Some(e);
+                ConfigAction::Stay
+            }
+            Err(e) => {
+                self.open = false;
+                self.go(FIELDS
+                    .iter()
+                    .position(|f| e.starts_with(&format!("{}:", f.name)))
+                    .unwrap_or(self.row));
+                self.error = Some(e);
+                ConfigAction::Stay
+            }
+            Ok((p, c, s, pn, st, m)) => {
+                self.open = false;
+                if changed {
+                    ConfigAction::Save(Box::new(p), c, s, pn, st, m)
+                } else {
+                    ConfigAction::Stay
+                }
+            }
+        }
+    }
+
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.error = None;
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
-                KeyCode::Enter => self.enter(),
+                // The control is on the row, so `← →` change the value where it is read and
+                // the block is written under the key that moved it. There is nothing to open
+                // but the text of a typed value, the one control a row cannot draw whole.
+                KeyCode::Left | KeyCode::Right => {
+                    self.before = self.values[self.row].clone();
+                    if self.turn(code == KeyCode::Left) {
+                        return self.commit();
+                    }
+                }
+                // Back to the built-in, the one value no ring and no step reaches.
+                KeyCode::Backspace
+                    if !self.values[self.row].is_empty()
+                        && !matches!(self.field().input, Answer::Columns) =>
+                {
+                    self.before = self.values[self.row].clone();
+                    self.values[self.row].clear();
+                    return self.commit();
+                }
+                KeyCode::Enter if matches!(self.field().input, Answer::Columns) => {
+                    return ConfigAction::Columns;
+                }
+                KeyCode::Enter if self.field().typed() => self.enter(),
                 KeyCode::Up => {
                     if let Some(r) = (0..self.row).rev().find(|&i| self.shown(i)) {
                         self.go(r);
@@ -2449,6 +2584,20 @@ impl ConfigForm {
                 KeyCode::Down => {
                     if let Some(r) = (self.row + 1..FIELDS.len()).find(|&i| self.shown(i)) {
                         self.go(r);
+                    }
+                }
+                // A letter jumps to the word that starts with it.
+                KeyCode::Char(c) if !self.field().typed() => {
+                    let f = self.field();
+                    let opts = f.picks().unwrap_or_default();
+                    if let Some(o) = opts.iter().find(|o| f.label(o).starts_with(c)) {
+                        self.before = self.values[self.row].clone();
+                        self.values[self.row] = if *o == "-" {
+                            String::new()
+                        } else {
+                            (*o).to_owned()
+                        };
+                        return self.commit();
                     }
                 }
                 _ => {}
@@ -2460,68 +2609,10 @@ impl ConfigForm {
                 self.values[self.row] = std::mem::take(&mut self.before);
                 self.open = false;
             }
-            // A field that closes on a value it did not open with saves the block there and
-            // then. Its own complaint keeps it open to be fixed; another field's closes it
-            // and stands, since it is what the file would have got.
-            KeyCode::Enter => {
-                let changed = self.values[self.row] != self.before;
-                match self.config() {
-                    Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
-                        self.error = Some(e);
-                    }
-                    Err(e) => {
-                        // Another field's complaint: the cursor goes to the field it names,
-                        // since that is what stopped the block from being written.
-                        self.open = false;
-                        self.go(FIELDS
-                            .iter()
-                            .position(|f| e.starts_with(&format!("{}:", f.name)))
-                            .unwrap_or(self.row));
-                        self.error = Some(e);
-                    }
-                    Ok((p, c, s, pn, st, m)) => {
-                        self.open = false;
-                        if changed {
-                            return ConfigAction::Save(Box::new(p), c, s, pn, st, m);
-                        }
-                    }
-                }
-            }
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab
-                if self.field().picked(&self.values[self.row]) =>
-            {
-                let f = self.field();
-                let opts = f.picks().unwrap_or_default();
-                let step = |at: usize| {
-                    (at + if code == KeyCode::Left {
-                        opts.len() - 1
-                    } else {
-                        1
-                    }) % opts.len()
-                };
-                let at = opts
-                    .iter()
-                    .position(|o| *o == self.values[self.row])
-                    .unwrap_or(0);
-                self.values[self.row] = match step(at) {
-                    0 => String::new(),
-                    at => opts[at].to_owned(),
-                };
-            }
-            // A letter jumps to the option that starts with it.
-            KeyCode::Char(c) if !self.field().typed() => {
-                let f = self.field();
-                let opts = f.picks().unwrap_or_default();
-                if let Some(o) = opts.iter().find(|o| f.label(o).starts_with(c)) {
-                    self.values[self.row] = if *o == "-" {
-                        String::new()
-                    } else {
-                        (*o).to_owned()
-                    };
-                }
-            }
-            _ if self.field().typed() => {
-                // Typing over a single pick starts from empty rather than appending to it.
+            KeyCode::Enter => return self.commit(),
+            _ => {
+                // Typing over a word the field offers starts from empty rather than
+                // appending to it.
                 if matches!(self.field().input, Answer::PickOrType(..))
                     && self.field().picked(&self.values[self.row])
                 {
@@ -2531,7 +2622,6 @@ impl ConfigForm {
                     self.cursor = at;
                 }
             }
-            _ => {}
         }
         ConfigAction::Stay
     }
@@ -2541,7 +2631,7 @@ impl ConfigForm {
     /// the selected row's name lit and its value pressed, then the selected field's fuller
     /// explanation, wrapped to `columns` with the rows' indent and padded to the tallest one so
     /// the block keeps its height.
-    fn lines(&self, columns: u16) -> Vec<Line<'static>> {
+    fn lines(&self, columns: u16) -> (Vec<Line<'static>>, usize) {
         let title = if self.session {
             (
                 "next session",
@@ -2557,31 +2647,18 @@ impl ConfigForm {
                 Span::styled(format!("  {}", title.1), dim()),
             ]),
         ];
-        let name_w = FIELDS.iter().map(|f| f.name.len()).max().unwrap_or(0);
-        // The value column is as wide as the widest value on screen, so the words beside the
-        // rows sit in one column; a value past VALUE_W, the columns list mostly, is cut with an
-        // ellipsis and read whole on the prompt line while its row is selected.
-        const VALUE_W: usize = 22;
-        let shown = |i: usize| {
-            let (f, v) = (&FIELDS[i], &self.values[i]);
-            let (text, style) = if v.is_empty() {
-                (f.builtin, dim())
-            } else {
-                (v.as_str(), Style::default())
-            };
-            let text = if text.chars().count() > VALUE_W {
-                format!("{}…", text.chars().take(VALUE_W - 1).collect::<String>())
-            } else {
-                text.to_owned()
-            };
-            (text, style)
-        };
-        let value_w = (0..FIELDS.len())
+        // The label column is as wide as the widest label on screen, so every control starts
+        // in one column and the eye finds them without reading the labels.
+        let label_w = (0..FIELDS.len())
             .filter(|&i| self.shown(i))
-            .map(|i| shown(i).0.chars().count())
+            .map(|i| FIELDS[i].short.chars().count())
             .max()
             .unwrap_or(0);
+        let indent = 4 + label_w + 2;
         let mut head: Option<(&str, &str)> = None;
+        // Where the selected row starts, so a list taller than the pane can be drawn from a
+        // line that keeps the row being changed on screen.
+        let mut at = 0;
         for (i, f) in FIELDS.iter().enumerate() {
             if !self.shown(i) {
                 continue;
@@ -2606,39 +2683,47 @@ impl ConfigForm {
             }
             head = Some((f.group, f.sub));
             let selected = i == self.row;
-            let (value, style) = shown(i);
-            let gap = value_w - value.chars().count() + 2;
-            let mut spans = vec![
-                Span::styled(
-                    format!("    {:<name_w$}  ", f.name),
+            let row = |open| {
+                let mut spans = vec![Span::styled(
+                    format!("    {:<label_w$}  ", f.short),
                     if selected { lit() } else { bold() },
-                ),
-                Span::styled(
-                    value,
-                    if selected && self.open {
-                        pressed()
-                    } else if selected {
-                        bold()
-                    } else {
-                        style
-                    },
-                ),
-                Span::styled(format!("{}{}", " ".repeat(gap), f.short), dim()),
-            ];
-            if selected && let Some(e) = &self.error {
-                spans.push(Span::styled(
-                    format!("  {e}"),
-                    Style::default().fg(Color::Red),
-                ));
+                )];
+                spans.extend(self.control(i, open));
+                if selected && let Some(e) = &self.error {
+                    spans.push(Span::styled(
+                        format!("  {e}"),
+                        Style::default().fg(Color::Red),
+                    ));
+                }
+                // A control too wide for the pane takes as many rows as it needs, broken
+                // between words and hung under the column it started in. The break comes from
+                // the field and the width alone, so a row keeps its height whichever row is
+                // selected.
+                flow(spans, indent, columns as usize)
+            };
+            let open = selected && self.open;
+            if selected {
+                at = lines.len();
             }
-            lines.push(Line::from(spans));
+            let mut drawn = row(open);
+            // A value being typed is a box where its words were, which can be the shorter of
+            // the two; the row keeps the height it has shut so the rows under it hold still
+            // while it is typed into.
+            if open {
+                let shut = row(false).len();
+                drawn.resize_with(drawn.len().max(shut), Line::default);
+            }
+            lines.extend(drawn);
         }
         lines.push(Line::default());
         // The explanation wrapped here, not by the widget, so every line of it keeps the
-        // rows' indent rather than the second one falling back to the margin.
+        // rows' indent rather than the second one falling back to the margin. Its height is
+        // the tallest field's, so moving down the list moves nothing else.
         let f = self.field();
-        let explain = format!("    {:<name_w$}  ", f.name);
-        let room = (columns as usize).saturating_sub(explain.len()).max(20);
+        let explain = format!("    {:<label_w$}  ", f.name);
+        let room = (columns as usize)
+            .saturating_sub(explain.chars().count())
+            .max(20);
         let tall = FIELDS
             .iter()
             .enumerate()
@@ -2657,51 +2742,143 @@ impl ConfigForm {
             n += 1;
         }
         lines.extend((n..tall).map(|_| Line::default()));
-        lines
+        (lines, at)
     }
 
-    /// The prompt line: the selected field's value whole, with `enter` to open it; open, where
-    /// it is edited: its options with the current one bracketed when it is picked, or its
-    /// value under the cursor when it is typed, and what leaving it empty means.
+    /// The editor drawn in `body`, scrolled so the selected row is on screen: the list is
+    /// taller than the pane, and the row whose control the keys are on has to be the row the
+    /// eye can find. The selected row is held in the middle until the ends, which stay put.
+    fn paragraph(&self, body: Rect) -> Paragraph<'static> {
+        let (lines, at) = self.lines(body.width);
+        let height = body.height as usize;
+        let top = at
+            .saturating_sub(height / 2)
+            .min(lines.len().saturating_sub(height));
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((top as u16, 0))
+    }
+
+    /// The control row `i` draws for its field, the whole of what the field accepts: every
+    /// word a pick offers with the current one bracketed and `…` after the ones that also
+    /// take something typed, a number between the arrows that step it, or free text in a box.
+    /// A value left empty shows the built-in dim in its place. The selected row's open text
+    /// carries the cursor, the one control a row cannot draw whole.
+    fn control(&self, i: usize, open: bool) -> Vec<Span<'static>> {
+        /// Columns the box of a typed value keeps, whatever is in it.
+        const BOX_W: usize = 18;
+        let (f, value) = (&FIELDS[i], &self.values[i]);
+        if matches!(f.input, Answer::Columns) {
+            let default: Vec<String> = config::DEFAULT_COLUMNS
+                .iter()
+                .map(|c| (*c).into())
+                .collect();
+            let (list, style) = match &self.columns {
+                Some(c) if !c.is_empty() => (c.clone(), bold()),
+                _ => (default, dim()),
+            };
+            // One span per column, so a list longer than the pane breaks between names and
+            // hangs under the column it started in, as a row of words does.
+            let mut spans: Vec<Span<'static>> = list
+                .into_iter()
+                .map(|c| Span::styled(format!("{c}  "), style))
+                .collect();
+            spans.push(Span::styled("›", dim()));
+            return spans;
+        }
+        if let Some(opts) = f.picks() {
+            let ring = f.ring(value);
+            // A value typed into a pick-or-type field stands last in the ring, past the words,
+            // so it reads as one more choice rather than as none of them.
+            // `-` reads `default` beside the other words, rather than `-` or the whole of
+            // `system default`: the row has every word to fit, and the prompt line under it
+            // names the built-in the word stands for.
+            let labels: Vec<&str> = opts
+                .iter()
+                .map(|o| if *o == "-" { "default" } else { *o })
+                .chain(
+                    ring.last()
+                        .filter(|v| !opts.contains(&v.as_str()))
+                        .map(String::as_str),
+                )
+                .collect();
+            if !open {
+                let at = ring.iter().position(|o| o == value).unwrap_or(0);
+                let mut spans = vec![];
+                picks(&mut spans, &labels, at);
+                if matches!(f.input, Answer::PickOrType(..)) {
+                    spans.push(Span::styled(" …", dim()));
+                }
+                return spans;
+            }
+        }
+        if f.step().is_some() {
+            // A built-in that is no number of its own, `none` or `system default`, reads
+            // `default` between the arrows rather than a word no step could have left there.
+            let shown = match (value.is_empty(), f.builtin.parse::<f64>().is_ok()) {
+                (false, _) => value,
+                (true, true) => f.builtin,
+                (true, false) => "default",
+            };
+            let arrows = if open { lit() } else { dim() };
+            return vec![
+                Span::styled("‹ ", arrows),
+                if open {
+                    Span::styled(shown.to_owned(), pressed())
+                } else if value.is_empty() {
+                    Span::styled(shown.to_owned(), dim())
+                } else {
+                    Span::styled(shown.to_owned(), bold())
+                },
+                Span::styled(" ›", arrows),
+            ];
+        }
+        let mut spans = vec![Span::styled("[ ", dim())];
+        if open {
+            spans.extend(typed(value, self.cursor, f.builtin));
+        } else if value.is_empty() {
+            let builtin = if f.builtin == SYSTEM {
+                "default"
+            } else {
+                f.builtin
+            };
+            spans.push(Span::styled(builtin.to_owned(), dim()));
+        } else {
+            spans.push(Span::styled(value.clone(), bold()));
+        }
+        let used: usize = spans.iter().skip(1).map(Span::width).sum();
+        spans.push(Span::styled(
+            format!("{} ]", " ".repeat(BOX_W.saturating_sub(used))),
+            dim(),
+        ));
+        spans
+    }
+
+    /// The prompt line: the `jobs.yaml` key the selected row writes, since the row itself
+    /// reads as words rather than as the file, then what a value the field can also take
+    /// would be and what leaving it empty means. The value is read and changed on the row,
+    /// so the line never holds a copy of it.
     fn line(&self) -> Line<'static> {
         let f = self.field();
-        let value = &self.values[self.row];
         let mut spans = vec![Span::styled(
             format!("{} › ", f.name),
             Style::default().fg(ORANGE),
         )];
-        if !self.open {
-            if value.is_empty() {
-                spans.push(Span::styled(f.builtin.to_owned(), dim()));
-            } else {
-                spans.push(Span::raw(value.clone()));
-            }
-            spans.push(Span::styled("  enter edits", dim()));
-            return Line::from(spans);
-        }
-        let help = match f.input {
-            Answer::Pick(opts) | Answer::PickOrType(opts, _) if f.picked(value) => {
-                let at = opts.iter().position(|o| *o == *value).unwrap_or(0);
-                let labels: Vec<&str> = opts.iter().map(|o| f.label(o)).collect();
-                picks(&mut spans, &labels, at);
-                let typed = match f.input {
-                    Answer::PickOrType(_, what) => format!(", or {what}"),
-                    _ => String::new(),
-                };
-                if f.builtin == SYSTEM {
-                    format!("  system default passes nothing{typed}")
-                } else {
-                    format!("  - is the built-in, {}{typed}", f.builtin)
-                }
-            }
-            _ => {
-                spans.extend(typed(value, self.cursor, f.builtin));
-                match (value.is_empty(), f.builtin == SYSTEM) {
-                    (true, true) => "  passes nothing to the harness; type to set it".to_owned(),
-                    (true, false) => "  the built-in; type to set it".to_owned(),
-                    (false, true) => "  empty is the system default".to_owned(),
-                    (false, false) => format!("  empty is the built-in, {}", f.builtin),
-                }
+        // Short enough that no field's line wraps in the pane: a line that grew by a row
+        // would move the list under it, which is what the controls on the rows are for.
+        let default = if f.builtin == SYSTEM {
+            "default passes nothing".to_owned()
+        } else {
+            format!("default: {}", f.builtin)
+        };
+        let help = if self.open {
+            "enter keeps it · esc reverts".to_owned()
+        } else {
+            match f.input {
+                Answer::Columns => "enter arranges them on the table · ctrl+t does too".to_owned(),
+                Answer::Pick(_) => default,
+                Answer::PickOrType(_, what) => format!("enter types {what} · {default}"),
+                _ => format!("enter types it · {default}"),
             }
         };
         spans.push(Span::styled(help, dim()));
@@ -2711,6 +2888,30 @@ impl ConfigForm {
 
 /// `text` broken at spaces into lines of at most `width` columns; a word longer than the
 /// width takes a line of its own.
+/// `spans` as lines of at most `width` columns, broken between spans and every line after the
+/// first indented to `indent`, so a control too wide for the pane hangs under the column it
+/// started in. The first span keeps at least one span beside it whatever the width, and a span
+/// wider than the room it has is left to the widget to clip.
+fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![];
+    let mut row: Vec<Span<'static>> = vec![];
+    let mut used = 0;
+    for span in spans {
+        let w = span.width();
+        if used + w > width && used > indent {
+            lines.push(Line::from(std::mem::take(&mut row)));
+            row.push(Span::raw(" ".repeat(indent)));
+            used = indent;
+        }
+        used += w;
+        row.push(span);
+    }
+    if !row.is_empty() {
+        lines.push(Line::from(row));
+    }
+    lines
+}
+
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines: Vec<String> = vec![];
     for word in text.split_whitespace() {
@@ -5177,20 +5378,30 @@ impl App {
                 keys.push(("esc", "cancel"));
                 hints(&keys)
             }
-            Mode::Config(form) if form.open => {
-                let mut keys = vec![];
-                if form.field().picked(&form.values[form.row]) {
-                    keys.push(("← →", "pick"));
+            Mode::Config(form) if form.open => hints(&[("enter", "keep"), ("esc", "back")]),
+            // The control is on the row, so the key that changes a value is on the hint line
+            // whichever field is selected, rather than behind a field opened first. The keys
+            // are the selected control's own: the words of a pick are walked, a number is
+            // stepped, free text has neither and is typed into.
+            Mode::Config(form) => {
+                let f = form.field();
+                let mut keys = vec![("↑ ↓", "field")];
+                if f.picks().is_some() {
+                    keys.push(("← →", "change"));
+                } else if f.step().is_some() {
+                    keys.push(("← →", "step"));
                 }
-                keys.extend([("enter", "keep"), ("esc", "back")]);
+                if matches!(f.input, Answer::Columns) {
+                    keys.push(("enter", "arrange"));
+                } else if f.typed() {
+                    keys.push(("enter", "type"));
+                }
+                if !form.values[form.row].is_empty() {
+                    keys.push(("bksp", "reset"));
+                }
+                keys.push(("esc", "done"));
                 hints(&keys)
             }
-            Mode::Config(_) => hints(&[
-                ("↑ ↓", "field"),
-                ("enter", "edit"),
-                ("tab", "back"),
-                ("esc", "done"),
-            ]),
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
             Mode::Columns(f) => hints(&[
                 ("← →", "column"),
@@ -5644,6 +5855,11 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
+                // The arranger works on the table, so the editor gives the screen back for
+                // it; enter or esc there returns to the dashboard, not to this list.
+                ConfigAction::Columns => {
+                    self.mode = Mode::Columns(Box::new(ColumnForm::new(&self.data.columns)));
+                }
                 // The session form keeps its policy for the composer; nothing is written.
                 ConfigAction::Save(policy, ..) if form.session => {
                     self.harness = Self::harness_at(policy.harness);
@@ -5969,14 +6185,12 @@ impl App {
         let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
         match (&self.mode, name) {
             (Mode::Job(form), _) => frame.render_widget(wrapped(form.lines()), body),
-            (Mode::Config(form), _) => frame.render_widget(wrapped(form.lines(body.width)), body),
+            (Mode::Config(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Guide(top), _) => frame.render_widget(guide(*top), body),
             (_, "help") => frame.render_widget(guide(0), body),
             // ponytail: jobs.yaml is read again every frame the button is picked; cache the
             // form in `rebuild` if that ever shows in a profile.
-            (_, "config") => {
-                frame.render_widget(wrapped(self.config_form().lines(body.width)), body)
-            }
+            (_, "config") => frame.render_widget(self.config_form().paragraph(body), body),
             (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
             (_, "jobs") => {
                 let all: Vec<usize> = (0..self.other.len()).collect();
@@ -6098,10 +6312,7 @@ impl App {
                 list,
             );
         } else if let Mode::Config(form) = &self.mode {
-            frame.render_widget(
-                Paragraph::new(form.lines(list.width)).wrap(Wrap { trim: false }),
-                list,
-            );
+            frame.render_widget(form.paragraph(list), list);
         } else {
             self.draw_list(frame, list);
         }
@@ -6403,13 +6614,96 @@ fn tty_state() -> String {
 
 #[cfg(test)]
 mod tests {
+    /// `← →` step a number field on the step's own grid and never below zero, starting from
+    /// the built-in where the field is empty and from zero where the built-in is a word no
+    /// step could have left there. `backspace` puts the built-in back, the one value no ring
+    /// and no step reaches. A control too wide for the pane hangs under the column it started
+    /// in, and a row keeps that height whichever row is selected.
+    #[test]
+    fn arrows_step_a_number_field_on_its_own_grid() {
+        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
+        let none = KeyModifiers::NONE;
+        let value = |c: &ConfigForm| c.values[c.row].clone();
+
+        // budget_usd steps by 0.25 from its built-in, 2.00, and back to a bare 2.
+        c.go(field_at("budget_usd"));
+        c.key(KeyCode::Right, none);
+        assert_eq!(value(&c), "2.25");
+        c.key(KeyCode::Right, none);
+        assert_eq!(value(&c), "2.5");
+        for _ in 0..2 {
+            c.key(KeyCode::Left, none);
+        }
+        assert_eq!(
+            value(&c),
+            "2",
+            "the grid keeps the step's precision, not the float's"
+        );
+        c.key(KeyCode::Backspace, none);
+        assert!(
+            value(&c).is_empty(),
+            "backspace is the way back to the built-in"
+        );
+
+        // `none` is no number, so the first step is one step up from zero, and zero is the
+        // floor: a step down from it writes no negative cap.
+        c.go(field_at("daily_budget_usd"));
+        c.key(KeyCode::Right, none);
+        assert_eq!(value(&c), "1");
+        for _ in 0..3 {
+            c.key(KeyCode::Left, none);
+        }
+        assert_eq!(value(&c), "0");
+
+        // A pure pick walks its ring and comes back round to the built-in.
+        c.go(field_at("overlap"));
+        for want in ["skip", "allow", "replace", ""] {
+            c.key(KeyCode::Right, none);
+            assert_eq!(value(&c), want);
+        }
+        // A typed value stands last among the words while it is the value, so a step off it
+        // is a step to the built-in rather than to the first word; stepping away drops it, as
+        // picking another word in a radio group drops what was typed.
+        c.go(field_at("model"));
+        c.values[c.row] = "claude-opus-5".to_owned();
+        c.key(KeyCode::Right, none);
+        assert!(value(&c).is_empty(), "past the typed value is the built-in");
+        c.key(KeyCode::Left, none);
+        assert_eq!(value(&c), "haiku", "and the words alone from there");
+
+        // The columns row reads the list and hands over to the arranger rather than editing
+        // it here: there is no table under the editor to pick a set against.
+        c.go(field_at("columns"));
+        assert!(
+            matches!(c.key(KeyCode::Enter, none), ConfigAction::Columns),
+            "enter on the columns row asks for the arranger"
+        );
+        assert!(
+            matches!(c.key(KeyCode::Backspace, none), ConfigAction::Stay),
+            "and the row has no value of its own to reset"
+        );
+
+        let span = |t: &str| Span::raw(t.to_owned());
+        let wide = flow(vec![span("ab"), span("cd"), span("ef")], 2, 4);
+        assert_eq!(
+            wide.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["abcd", "  ef"],
+            "a control too wide hangs under the column it started in"
+        );
+        assert_eq!(
+            flow(vec![span("abcdef"), span("gh")], 2, 4).len(),
+            2,
+            "the first span keeps one span beside it whatever the width"
+        );
+    }
+
     /// Every key the guide names is in the dashboard's docs, so the two never drift.
     #[test]
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
         let c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
-        let lines = c.lines(48);
+        let (lines, _) = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
             shown.iter().any(|l| l.starts_with("runs  ")),
@@ -6420,12 +6714,12 @@ mod tests {
             "a block's sub-head is indented by two"
         );
         assert!(
-            shown.iter().any(|l| l.starts_with("    timeout_min")),
-            "rows are indented by four, under their sub-head"
+            shown.iter().any(|l| l.starts_with("    time limit (min)")),
+            "rows are indented by four and led by their label, under their sub-head"
         );
         let mut tail: Vec<&String> = shown
             .iter()
-            .skip_while(|l| !l.starts_with("    timeout_min  "))
+            .skip_while(|l| !l.starts_with("    time limit (min)  "))
             .skip(1)
             .collect();
         while tail.last().is_some_and(|l| l.is_empty()) {
@@ -9272,10 +9566,11 @@ mod tests {
     /// The menu is one row of buttons: ← → pick one with nothing typed, only the picked one
     /// explains itself, enter presses it, and `help` is the guide.
     /// The menu's `config` button opens the config editor where the list is: the fields under
-    /// their groups, `cones`, `harnesses` and `runs`, one row per field with its value and a
-    /// words, the selected field explained under the list. Enter opens a field: typing edits,
-    /// ← → pick, enter keeps the value and writes the `defaults` block and the `columns:`
-    /// line there and then; a bad value comes back on its field and nothing is written.
+    /// their groups, `cones`, `harnesses` and `runs`, one row per field with the whole of the
+    /// control it takes, the selected field explained under the list. `← →` change a value on
+    /// its row and write the `defaults` block and the `columns:` line there and then, and
+    /// `backspace` puts the built-in back; a bad value comes back on its field with nothing
+    /// written. `enter` opens the text of a typed value, the one control a row cannot draw.
     /// `ctrl+o` opens the `SESSION` rows alone as the next session's settings, seeded from the
     /// defaults; `-` reads `system default` there; each field kept takes without writing
     /// the file, the composer's prefix shows them, and the session starts under them.
@@ -9290,11 +9585,18 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("next session"), "{s}");
-        assert!(s.contains("bedrock") && s.contains("codex_model"), "{s}");
-        assert!(!s.contains("timeout_min") && !s.contains("notify"), "{s}");
+        // The rows read as their labels; the jobs.yaml key is on the prompt line under them.
         assert!(
-            s.contains("harness            claude"),
-            "the harness row shows tab's pick, not the built-in dim: {s}"
+            s.contains("run on Bedrock") && s.contains("AWS region"),
+            "{s}"
+        );
+        assert!(
+            !s.contains("time limit (min)") && !s.contains("failure alerts"),
+            "{s}"
+        );
+        assert!(
+            s.contains("[claude]"),
+            "the harness row brackets tab's pick, not the built-in: {s}"
         );
         // Down from the last shown row stays; the hidden rows are never visited.
         for _ in 0..7 {
@@ -9305,15 +9607,21 @@ mod tests {
             app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         }
         assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
-        assert!(s.contains("bedrock › [system default] false  true "), "{s}");
+        assert!(
+            s.contains("run on Bedrock       [default] false  true"),
+            "every word the field takes is on its own row, the current one bracketed: {s}"
+        );
+        assert!(
+            s.contains("bedrock › default passes nothing"),
+            "the prompt line names the key and what the built-in does, not the words: {s}"
+        );
+        // ← → change the value on the row with no field opened first, and each change is
+        // taken there and then: bedrock with nothing behind it does not take, so the cursor
+        // lands on the profile it needs, with the reason, under the key that moved it.
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        // Bedrock with nothing behind it does not take: the cursor lands on the profile it
-        // needs, with the reason, and the composer still shows the harness alone.
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         match &app.mode {
             Mode::Config(f) => {
                 assert_eq!(f.row, field_at("aws_profile"));
@@ -9356,10 +9664,8 @@ mod tests {
             app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         }
         go(&mut app, "model");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         // Each field kept takes on the spot, so esc only closes the form.
         assert_eq!(app.status, "next session: claude · opus · bedrock");
         let p = app.session_policy();
@@ -9419,9 +9725,8 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("timeout_min"), "{s}");
-        assert!(s.contains("sparkline.bound"), "{s}");
         assert!(s.contains("time limit (min)"), "{s}");
+        assert!(s.contains("chart scale"), "{s}");
         // The words beside the rows sit in one column, and the explanation block keeps its
         // height, whichever row is selected.
         let column = |s: &str, what: &str| {
@@ -9431,7 +9736,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("{what}: {s}"))
         };
         let height = |s: &str| {
-            let mut it = s.lines().skip_while(|l| !l.contains("sparkline.bound"));
+            let mut it = s.lines().skip_while(|l| !l.contains("chart scale"));
             it.next();
             it.take_while(|l| !l.contains("›")).count()
         };
@@ -9460,45 +9765,43 @@ mod tests {
         assert_eq!(column(&s, "count per bar"), col, "no bounce: {s}");
         assert_eq!(height(&s), tall, "no bounce: {s}");
         assert!(
-            s.contains("sparkline.metric › lines  enter edits"),
-            "closed, the prompt line shows the value: {s}"
+            s.contains("count per bar        [default] lines  messages  tools  tokens"),
+            "every word the field takes is on its row, the built-in bracketed: {s}"
         );
-        assert!(s.contains("enter edit"), "{s}");
+        assert!(
+            s.contains("sparkline.metric › default: lines"),
+            "the prompt line names the key and the built-in, not the words: {s}"
+        );
+        assert!(
+            s.contains("← → change"),
+            "the key that changes a value is always up: {s}"
+        );
         assert!(s.contains("esc done"), "{s}");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        t.draw(|f| app.draw(f)).unwrap();
-        let s = (0..60)
-            .map(|y| cells(&t, y, 81..160))
-            .chain([cells(&t, 59, 0..80)])
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            s.contains("sparkline.metric › [-] lines"),
-            "open, the options sit on the prompt line: {s}"
-        );
-        assert!(
-            !s.contains("[-] lines  messages  tools  tokens   count per bar"),
-            "not in the row: {s}"
-        );
-        // Right picks lines; esc puts the built-in back and closes the field.
+        // Right walks the words with nothing opened first; backspace puts the built-in back.
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "lines"));
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "lines"));
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
         // bound offers its words and also takes a typed number, which replaces a pick.
         go(&mut app, "sparkline.bound");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("sparkline.bound › [-] fleet  row  log"), "{s}");
-        assert!(s.contains("or a number"), "{s}");
+        assert!(
+            s.contains("chart scale          [default] fleet  row  log"),
+            "{s}"
+        );
+        assert!(
+            s.contains("sparkline.bound › enter types a number · default: fleet"),
+            "a field that also takes something typed says so: {s}"
+        );
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "row"));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "20".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
@@ -9508,9 +9811,29 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("sparkline.bound › 20"), "typed, no picks: {s}");
+        assert!(
+            s.contains("chart scale          [ 20"),
+            "typing replaces the words with the box it is typed in: {s}"
+        );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "20"));
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let row_of = |s: &str, label: &str| {
+            s.lines()
+                .find(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("{label}: {s}"))
+                .to_owned()
+        };
+        let bound = row_of(&s, "chart scale");
+        assert!(
+            bound.contains("fleet") && bound.contains("[20]"),
+            "a value typed in stands last among the words, as one more choice: {bound}"
+        );
         // model takes a full id the same way.
         go(&mut app, "model");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -9523,12 +9846,10 @@ mod tests {
         );
         // On a pure pick a letter jumps to its option and - to the built-in.
         go(&mut app, "write");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('t'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "true"));
         app.key(KeyCode::Char('-'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
@@ -9553,28 +9874,28 @@ mod tests {
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
         assert!(s.contains("2.00"), "built-ins show dim: {s}");
         assert!(
-            s.matches("system default").count() >= 3,
-            "harness-owned fields read system default when empty: {s}"
+            s.matches("default").count() >= 3,
+            "a field left to its built-in reads default in the control's place: {s}"
         );
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
-            at("\ncones  the dashboard itself") < at("    confirm_secs")
-                && at("    confirm_secs") < at("\n  start")
-                && at("\n  start") < at("    start.harness")
-                && at("    start.harness") < at("\n  pane")
-                && at("\n  pane") < at("    pane.at")
-                && at("    pane.at") < at("\n  sparkline")
-                && at("\n  sparkline") < at("    sparkline.bars")
-                && at("    sparkline.bars") < at("\nharnesses  how claude and codex are run")
-                && at("\nharnesses  how claude and codex are run") < at("    bedrock")
-                && at("    bedrock") < at("\n  claude")
-                && at("\n  claude") < at("    model ")
-                && at("    model ") < at("\n  codex ")
-                && at("\n  codex ") < at("    codex_model")
-                && at("    codex_model") < at("\nruns  every supervised run")
-                && at("\nruns  every supervised run") < at("    harness ")
-                && at("    harness ") < at("    timeout_min")
-                && at("    timeout_min") < at("    notify"),
+            at("\ncones  the dashboard itself") < at("    ctrl+x armed (s)")
+                && at("    ctrl+x armed (s)") < at("\n  start")
+                && at("\n  start") < at("    composer starts on")
+                && at("    composer starts on") < at("\n  pane")
+                && at("\n  pane") < at("    pane side")
+                && at("    pane side") < at("\n  sparkline")
+                && at("\n  sparkline") < at("    bar count")
+                && at("    bar count") < at("\nharnesses  how claude and codex are run")
+                && at("\nharnesses  how claude and codex are run") < at("    run on Bedrock")
+                && at("    run on Bedrock") < at("\n  claude")
+                && at("\n  claude") < at("    alias or model id")
+                && at("    alias or model id") < at("\n  codex ")
+                && at("\n  codex ") < at("    model id")
+                && at("    model id") < at("\nruns  every supervised run")
+                && at("\nruns  every supervised run") < at("    for a job with none")
+                && at("    for a job with none") < at("    time limit (min)")
+                && at("    time limit (min)") < at("    failure alerts"),
             "the fields sit under their groups and blocks: {s}"
         );
         go(&mut app, "timeout_min");
@@ -9624,25 +9945,26 @@ mod tests {
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         go(&mut app, "write");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("write › [-] false  true"), "picks on write: {s}");
-        assert!(s.contains("← → pick"), "{s}");
+        assert!(
+            s.contains("allow file changes   [default] false  true"),
+            "picks on write: {s}"
+        );
+        assert!(s.contains("← → change"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // backspace drops the typed id back to the built-in, and the words walk from there.
         go(&mut app, "model");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
         for _ in 0..3 {
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
 
         // The columns are ctrl+t's, arranged on the table; the editor has no row for them
         // and a field closing writes the block without touching the line.
