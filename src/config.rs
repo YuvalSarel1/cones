@@ -163,6 +163,12 @@ pub fn columns(path: &Path) -> Vec<String> {
         .unwrap_or_else(|| DEFAULT_COLUMNS.iter().map(|c| (*c).to_owned()).collect())
 }
 
+/// `columns:` as written, `None` when the file has none or cannot be read: what the config
+/// editor edits.
+pub fn file_columns(path: &Path) -> Option<Vec<String>> {
+    parse(path).ok().and_then(|d| d.columns)
+}
+
 /// The jobs as written, before defaults and path expansion: what the wizard edits.
 pub fn raw_jobs(path: &Path) -> Result<Vec<Job>> {
     Ok(parse(path)?.jobs)
@@ -303,11 +309,28 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     out
 }
 
-/// Rewrite the `defaults:` block of jobs.yaml with `d`: in place when the file has one, after
-/// `version:` when it does not, and a missing file is created around it with `jobs: []`. Only
-/// that block changes. The policy is checked as a Claude job would resolve it, so a default no
-/// job could run under is refused with the file untouched, whether or not the file has jobs.
-pub fn write_defaults(path: &Path, d: &Policy) -> Result<()> {
+/// Where `key:` sits in `lines`, to the next top-level key, leaving the blank lines before it
+/// where they are.
+fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
+    let s = lines.iter().position(|l| l.starts_with(key))?;
+    let mut e = lines
+        .iter()
+        .enumerate()
+        .skip(s + 1)
+        .find(|(_, l)| !l.starts_with([' ', '\t', '#']) && !l.trim().is_empty())
+        .map_or(lines.len(), |(i, _)| i);
+    while e > s + 1 && lines[e - 1].trim().is_empty() {
+        e -= 1;
+    }
+    Some((s, e))
+}
+
+/// Rewrite the `defaults:` block and the `columns:` line of jobs.yaml with `d` and `columns`:
+/// in place when the file has them, after `version:` when it does not, and a missing file is
+/// created around them with `jobs: []`. Only those change. The policy is checked as a Claude
+/// job would resolve it, so a default no job could run under is refused with the file
+/// untouched, whether or not the file has jobs; an unknown column is refused the same way.
+pub fn write_config(path: &Path, d: &Policy, columns: Option<&[String]>) -> Result<()> {
     let base = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -319,31 +342,35 @@ jobs: []
 "
         .to_owned()
     });
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let mut out: Vec<String> = text.lines().map(str::to_owned).collect();
     let block = defaults_lines(d);
     let block = if block.len() == 1 { vec![] } else { block };
-    match lines.iter().position(|l| l.starts_with("defaults:")) {
-        Some(s) => {
-            // To the next top-level key, leaving the blank lines before it where they are.
-            let mut e = lines
-                .iter()
-                .enumerate()
-                .skip(s + 1)
-                .find(|(_, l)| !l.starts_with([' ', '\t', '#']) && !l.trim().is_empty())
-                .map_or(lines.len(), |(i, _)| i);
-            while e > s + 1 && lines[e - 1].trim().is_empty() {
-                e -= 1;
+    let cols = columns
+        .filter(|c| !c.is_empty())
+        .map(|c| vec![format!("columns: [{}]", c.join(", "))])
+        .unwrap_or_default();
+    // columns first, so the defaults block's place is still where it was read.
+    for (key, block) in [("columns:", cols), ("defaults:", block)] {
+        let lines: Vec<&str> = out.iter().map(String::as_str).collect();
+        let at = match top_level(&lines, key) {
+            Some((s, e)) => s..e,
+            None => {
+                let at = if key == "columns:" {
+                    top_level(&lines, "defaults:").map(|(_, e)| e)
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    lines
+                        .iter()
+                        .position(|l| l.starts_with("version:"))
+                        .map(|i| i + 1)
+                })
+                .unwrap_or(0);
+                at..at
             }
-            out.splice(s..e, block);
-        }
-        None => {
-            let at = lines
-                .iter()
-                .position(|l| l.starts_with("version:"))
-                .map_or(0, |i| i + 1);
-            out.splice(at..at, block);
-        }
+        };
+        out.splice(at, block);
     }
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, out.join("\n") + "\n")?;
@@ -636,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn write_defaults_replaces_the_block_creates_it_and_checks_it() {
+    fn write_config_replaces_the_blocks_creates_them_and_checks_them() {
         let (_d, p) = file(FILE);
         let d = Policy {
             timeout_min: Some(5.0),
@@ -649,12 +676,18 @@ mod tests {
             notify: Some(true),
             codex_full_access: None,
         };
-        write_defaults(&p, &d).unwrap();
+        let cols = ["state".to_owned(), "age".to_owned()];
+        write_config(&p, &d, Some(&cols)).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  tools: [Read, Edit]\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
             "{text}"
         );
+        assert!(
+            text.ends_with("    model: sonnet\ncolumns: [state, age]\n"),
+            "the columns line is replaced where it is: {text}"
+        );
+        assert_eq!(columns(&p), cols);
         assert!(
             text.contains("  # two runs at night\n"),
             "the rest is untouched"
@@ -662,24 +695,37 @@ mod tests {
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
         assert_eq!(read_jobs(&p).unwrap()[0].tools, ["Read", "Edit"]);
 
-        // Nothing set removes the block; a file without one gets it after version.
-        write_defaults(&p, &Policy::default()).unwrap();
+        // Nothing set removes the block and the line; a file without them gets them after version.
+        write_config(&p, &Policy::default(), None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
+        assert!(!text.contains("columns"), "{text}");
         let d = Policy {
             notify: Some(true),
             ..Default::default()
         };
-        write_defaults(&p, &d).unwrap();
+        write_config(&p, &d, Some(&[])).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
+        assert_eq!(file_columns(&p), None);
+        write_config(&p, &Policy::default(), Some(&cols)).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.starts_with("version: 1\ncolumns: [state, age]\njobs:\n"),
+            "{text}"
+        );
+        let err = write_config(&p, &d, Some(&["speed".to_owned()]))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown column"), "{err}");
+        assert_eq!(file_columns(&p).as_deref(), Some(&cols[..]), "untouched");
 
         // A missing file is created; a default no job could run under is refused, jobs or not.
         let missing = p.with_file_name("new.yaml");
-        write_defaults(&missing, &d).unwrap();
+        write_config(&missing, &d, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 1\ndefaults:\n  notify: true\njobs: []\n"
@@ -689,7 +735,7 @@ mod tests {
             daily_budget_usd: Some(1.0),
             ..Default::default()
         };
-        let err = write_defaults(&missing, &bad).unwrap_err().to_string();
+        let err = write_config(&missing, &bad, None).unwrap_err().to_string();
         assert!(err.contains("daily_budget_usd must cover"), "{err}");
         assert!(
             fs::read_to_string(&missing)
