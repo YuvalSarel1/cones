@@ -41,6 +41,9 @@ const STDERR_TAIL: usize = 16 * 1024;
 const INPUT_CAP: usize = 8 * 1024 * 1024;
 /// Chunks read from the pty in one pump, so a flood of output cannot hold the dashboard's loop.
 const CHUNKS_PER_PUMP: usize = 64;
+/// How long a synchronized update (`CSI ?2026h`) holds the frame before it is drawn as is,
+/// so a viewer that never ends one does not look hung.
+const SYNC_MAX: Duration = Duration::from_millis(150);
 
 /// The real terminal's default foreground and background in xterm `rgb:RRRR/GGGG/BBBB` form,
 /// handed to a viewer that asks (Codex asks at start, to pick a light or dark theme).
@@ -141,6 +144,9 @@ pub(crate) struct Replies {
     pub(crate) out: Vec<u8>,
     colors: Colors,
     title: Option<String>,
+    /// The screen as it was when a synchronized update began (`CSI ?2026h`), shown until it
+    /// ends (`?2026l`): a frame Codex is still drawing keeps its cells and cursor to itself.
+    frozen: Option<(Instant, vt100::Screen)>,
 }
 
 impl Replies {
@@ -149,6 +155,16 @@ impl Replies {
             out: Vec::new(),
             colors,
             title: None,
+            frozen: None,
+        }
+    }
+
+    /// The screen to draw: `live`, or the snapshot from before a synchronized update still
+    /// in progress.
+    fn shown<'a>(&'a self, live: &'a vt100::Screen) -> &'a vt100::Screen {
+        match &self.frozen {
+            Some((since, screen)) if since.elapsed() < SYNC_MAX => screen,
+            _ => live,
         }
     }
 }
@@ -173,6 +189,12 @@ impl vt100::Callbacks for Replies {
             (Some(b'>'), None, [[0]], 'q') => self.out.extend_from_slice(
                 format!("\x1bP>|cones {}\x1b\\", env!("CARGO_PKG_VERSION")).as_bytes(),
             ),
+            (Some(b'?'), None, [[2026]], 'h') => {
+                if self.frozen.is_none() {
+                    self.frozen = Some((Instant::now(), screen.clone()));
+                }
+            }
+            (Some(b'?'), None, [[2026]], 'l') => self.frozen = None,
             _ => {}
         }
     }
@@ -384,7 +406,8 @@ impl Viewer {
             }
         }
         self.flush();
-        Ok(dirty)
+        // Inside a synchronized update nothing shown has changed yet.
+        Ok(dirty && self.parser.callbacks().frozen.is_none())
     }
 
     /// Feed one read to the parser, whole code points only: vte drops a byte when a two-byte
@@ -447,7 +470,7 @@ impl Viewer {
     }
 
     pub fn screen(&self) -> &vt100::Screen {
-        self.parser.screen()
+        self.parser.callbacks().shown(self.parser.screen())
     }
 
     pub fn exited(&self) -> Option<ExitStatus> {
@@ -1009,6 +1032,43 @@ mod tests {
         if text(broken.screen(), 0) == "· ←" {
             eprintln!("vte no longer splits code points; utf8_tail can go");
         }
+    }
+
+    #[test]
+    fn a_synchronized_update_is_shown_whole_and_not_while_it_is_drawn() {
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "printf 'one\\033[?2026h\\033[H\\033[2Ktwo\\033[10;10H'; sleep 0.3; printf '\\033[1;4H\\033[?2026l'; sleep 0.2"]);
+        let mut v = Viewer::spawn(c, 12, 20, None, Colors::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while text(v.screen(), 0) != "one" {
+            v.pump().unwrap();
+            assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The update has begun: the pane still shows the frame before it, cursor and all.
+        assert!(v.parser.callbacks().frozen.is_some());
+        assert_eq!(text(v.screen(), 0), "one");
+        assert_eq!(v.screen().cursor_position(), (0, 3));
+        assert_eq!(text(v.parser.screen(), 0), "two");
+        while v.parser.callbacks().frozen.is_some() {
+            let dirty = v.pump().unwrap();
+            if v.parser.callbacks().frozen.is_some() {
+                assert!(!dirty, "a frame still being drawn is not a change");
+            }
+            assert!(Instant::now() < deadline, "the update never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(text(v.screen(), 0), "two");
+        assert_eq!(v.screen().cursor_position(), (0, 3));
+    }
+
+    #[test]
+    fn a_synchronized_update_that_never_ends_is_drawn_after_sync_max() {
+        let mut p = vt100::Parser::new_with_callbacks(4, 20, 0, Replies::new(Colors::default()));
+        p.process(b"one\x1b[?2026h\x1b[H\x1b[2Ktwo");
+        assert_eq!(text(p.callbacks().shown(p.screen()), 0), "one");
+        p.callbacks_mut().frozen.as_mut().unwrap().0 = Instant::now() - SYNC_MAX;
+        assert_eq!(text(p.callbacks().shown(p.screen()), 0), "two");
     }
 
     #[test]
