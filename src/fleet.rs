@@ -68,6 +68,108 @@ pub struct Session {
     /// every tick; this session's pid and cwd match it. A title is never the evidence.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coordinator: bool,
+    /// One entry per transcript line that carries a timestamp, oldest first: what the
+    /// `sparkline` column counts. Not in `cones ls --json`.
+    #[serde(skip)]
+    pub activity: Vec<Activity>,
+}
+
+/// One transcript line the harness wrote, as the sparkline counts it: the line itself, the
+/// assistant messages, tool calls and output tokens it carried.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Activity {
+    pub at: DateTime<Utc>,
+    pub messages: u64,
+    pub tools: u64,
+    pub tokens_out: u64,
+}
+
+impl Activity {
+    pub fn at(at: DateTime<Utc>) -> Self {
+        Self {
+            at,
+            ..Self::default()
+        }
+    }
+}
+
+/// The sparkline's buckets for one session, oldest first: `metric` summed over its activity in
+/// each `bucket` of seconds back from `now`. A line after `now` counts in the newest bucket.
+pub fn buckets(
+    activity: &[Activity],
+    spark: &crate::config::Sparkline,
+    now: DateTime<Utc>,
+) -> Vec<u64> {
+    let secs = spark.bucket_seconds().unwrap_or(60) as i64;
+    let mut out = vec![0; spark.bars];
+    for a in activity {
+        let ago = (now - a.at).num_seconds().max(0);
+        let i = (ago / secs) as usize;
+        if i >= spark.bars {
+            continue;
+        }
+        out[spark.bars - 1 - i] += match spark.metric.as_str() {
+            "messages" => a.messages,
+            "tools" => a.tools,
+            "tokens" => a.tokens_out,
+            _ => 1,
+        };
+    }
+    out
+}
+
+/// Every session's sparkline cell by session id, drawn against one bound: the busiest bucket
+/// on screen for `fleet` and `log`, the row's own for `row`, the number given otherwise. A
+/// bucket with nothing in it is the lowest bar; one over a fixed bound is the highest.
+pub fn sparklines(
+    sessions: &[Session],
+    spark: &crate::config::Sparkline,
+    now: DateTime<Utc>,
+) -> HashMap<String, String> {
+    let all: Vec<(&Session, Vec<u64>)> = sessions
+        .iter()
+        .map(|s| (s, buckets(&s.activity, spark, now)))
+        .collect();
+    let fleet = all
+        .iter()
+        .flat_map(|(_, b)| b.iter().copied())
+        .max()
+        .unwrap_or(0);
+    all.iter()
+        .map(|(s, b)| {
+            let (values, bound): (Vec<f64>, f64) = match spark.bound.as_str() {
+                "row" => (
+                    b.iter().map(|v| *v as f64).collect(),
+                    b.iter().copied().max().unwrap_or(0) as f64,
+                ),
+                "log" => (
+                    b.iter().map(|v| (*v as f64).ln_1p()).collect(),
+                    (fleet as f64).ln_1p(),
+                ),
+                "fleet" => (b.iter().map(|v| *v as f64).collect(), fleet as f64),
+                _ => (
+                    b.iter().map(|v| *v as f64).collect(),
+                    spark.fixed_bound().unwrap_or(1.0),
+                ),
+            };
+            (s.session_id.clone(), bars(&values, bound))
+        })
+        .collect()
+}
+
+/// One bar per value, the lowest for nothing and the highest at or over `bound`.
+pub fn bars(values: &[f64], bound: f64) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    values
+        .iter()
+        .map(|v| {
+            if *v <= 0.0 || bound <= 0.0 {
+                BARS[0]
+            } else {
+                BARS[((v / bound).min(1.0) * 7.999) as usize]
+            }
+        })
+        .collect()
 }
 
 impl Session {
@@ -283,6 +385,7 @@ fn session(
             .map(Into::into)
             .or(d.last),
         coordinator: false,
+        activity: d.report.activity,
     })
 }
 /// `context_window.context_window_size` from the statusLine payload the user's statusLine command
@@ -531,6 +634,8 @@ struct Report {
     /// The `timestamp` on the first and the last line that carries one.
     started: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
+    /// Every line with a timestamp, with the messages, tool calls and output tokens on it.
+    activity: Vec<Activity>,
 }
 
 /// Total input and output tokens in a Claude transcript, the last message's prompt size as the
@@ -554,8 +659,17 @@ fn report(transcript: &Path) -> Result<Report> {
         {
             r.started.get_or_insert(t);
             r.last_activity = Some(t);
+            r.activity.push(Activity::at(t));
         }
         let message = &event["message"];
+        // Tool calls are content blocks on assistant lines; streaming repeats a message's
+        // usage per block but writes each block once.
+        if event["type"] == "assistant"
+            && let Some(blocks) = message["content"].as_array()
+            && let Some(a) = r.activity.last_mut()
+        {
+            a.tools += blocks.iter().filter(|b| b["type"] == "tool_use").count() as u64;
+        }
         if r.first_prompt.is_none() && event["type"] == "user" && event["isMeta"] != true {
             r.first_prompt = match &message["content"] {
                 Value::String(text) => headline(text),
@@ -587,6 +701,12 @@ fn report(transcript: &Path) -> Result<Report> {
         counted = true;
         r.context = Some(prompt);
         r.model = model.map(Into::into);
+        if let Some(a) = r.activity.last_mut()
+            && event["type"] == "assistant"
+        {
+            a.messages += 1;
+            a.tokens_out += n("output_tokens");
+        }
     }
     if counted {
         r.tokens_in = Some(input);
@@ -783,6 +903,90 @@ pub fn tilde(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sparkline_counts_what_the_transcript_wrote_and_scales_to_its_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("t.jsonl");
+        // Three timestamped lines: a user prompt, a streamed reply in two blocks (one usage,
+        // one tool call) and a tool result four minutes later.
+        fs::write(&transcript, concat!(
+            "{\"type\":\"user\",\"timestamp\":\"2026-09-15T10:00:00Z\",\"message\":{\"content\":\"go\"}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-15T10:00:05Z\",\"message\":{\"id\":\"m1\",\"model\":\"claude-fable-5-1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":40},\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-09-15T10:00:06Z\",\"message\":{\"id\":\"m1\",\"model\":\"claude-fable-5-1\",\"usage\":{\"input_tokens\":10,\"output_tokens\":40},\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\"},{\"type\":\"tool_use\",\"name\":\"Grep\"}]}}\n",
+            "{\"type\":\"user\",\"timestamp\":\"2026-09-15T10:04:00Z\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n",
+        )).unwrap();
+        let r = report(&transcript).unwrap();
+        let sum = |f: fn(&Activity) -> u64| r.activity.iter().map(f).sum::<u64>();
+        assert_eq!(r.activity.len(), 4, "one entry per timestamped line");
+        assert_eq!(sum(|a| a.messages), 1, "a streamed message counts once");
+        assert_eq!(sum(|a| a.tools), 2, "each tool_use block counts");
+        assert_eq!(sum(|a| a.tokens_out), 40);
+
+        let now = "2026-09-15T10:05:00Z".parse::<DateTime<Utc>>().unwrap();
+        let spark = |metric: &str, bound: &str| crate::config::Sparkline {
+            bars: 6,
+            bucket: "1m".into(),
+            metric: metric.into(),
+            bound: bound.into(),
+        };
+        // Oldest left: the prompt five minutes back, the reply's two lines in the next minute,
+        // quiet, the tool result a minute ago, nothing in the newest minute.
+        assert_eq!(
+            buckets(&r.activity, &spark("lines", "fleet"), now),
+            [1, 2, 0, 0, 1, 0]
+        );
+        assert_eq!(
+            buckets(&r.activity, &spark("tools", "fleet"), now),
+            [0, 2, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            buckets(&r.activity, &spark("tokens", "fleet"), now),
+            [0, 40, 0, 0, 0, 0]
+        );
+
+        assert_eq!(bars(&[0.0, 1.0, 2.0, 4.0, 8.0], 8.0), "▁▁▂▄█");
+        assert_eq!(
+            bars(&[3.0, 30.0], 10.0),
+            "▃█",
+            "over a fixed bound draws full"
+        );
+
+        let session = |id: &str| -> Session {
+            serde_json::from_value(serde_json::json!({
+                "session_id": id, "cwd": "/x", "state": "idle"
+            }))
+            .unwrap()
+        };
+        let mut a = session("a");
+        a.activity = r.activity.clone();
+        let mut b = session("b");
+        b.activity = vec![Activity::at("2026-09-15T10:04:30Z".parse().unwrap()); 30];
+        let rows = |bound: &str| {
+            let s = sparklines(&[a.clone(), b.clone()], &spark("lines", bound), now);
+            (s["a"].clone(), s["b"].clone())
+        };
+        assert_eq!(
+            rows("fleet"),
+            ("▁▁▁▁▁▁".into(), "▁▁▁▁▁█".into()),
+            "one scale: a's few lines are a sliver of b's 30"
+        );
+        assert_eq!(
+            rows("row"),
+            ("▄█▁▁▄▁".into(), "▁▁▁▁▁█".into()),
+            "each row to its own peak"
+        );
+        assert_eq!(
+            rows("4"),
+            ("▂▄▁▁▂▁".into(), "▁▁▁▁▁█".into()),
+            "a fixed count fills a bar"
+        );
+        assert_eq!(
+            rows("log").0,
+            "▂▃▁▁▂▁",
+            "log lifts the quiet row above the sliver fleet gave it"
+        );
+    }
 
     #[test]
     fn an_unnamed_claude_session_uses_its_first_instruction_until_named() {

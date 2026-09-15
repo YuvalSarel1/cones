@@ -76,11 +76,21 @@ fn reset_terminal_protocols() {
 const ORANGE: Color = Color::Indexed(208);
 /// A second ctrl+c within this window quits the dashboard, as in Claude Code.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
-const SPINNER: [&str; 4] = ["▲", "◭", "▲", "◮"];
-/// Claude Code's own working animation: its star grows then shrinks.
-const CLAUDE_SPINNER: [&str; 12] = ["·", "✢", "✳", "✶", "✻", "✽", "✽", "✻", "✶", "✳", "✢", "·"];
-/// Codex and pi both spin braille dots.
-const DOTS_SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// A working row's icon: a bar that fills and empties, the same family as the sparkline and
+/// the resting `▁`. One animation for every harness; until 2026-09-15 each harness spun its
+/// own mark, and Claude's star spent a third of its cycle as a dot, so a working row read as
+/// less than an idle one.
+const SPINNER: [&str; 14] = [
+    "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+];
+/// Milliseconds per spinner frame; the draw loop ticks every 100.
+const FRAME_MS: usize = 160;
+/// The strip's mark beside the word cones. Still: the mascot does not animate.
+const CONE: &str = "▲";
+
+fn spinner_frame(tick: usize) -> usize {
+    tick * 100 / FRAME_MS % SPINNER.len()
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -149,6 +159,8 @@ pub struct Data {
     pub sessions: Vec<Session>,
     /// Session column names after the harness and title, from jobs.yaml.
     pub columns: Vec<String>,
+    /// The `sparkline` column's window, metric and bound, from jobs.yaml.
+    pub spark: config::Sparkline,
     /// Folders the menu's `folder` prompt picked, kept as rows while nothing runs there.
     pub folders: Vec<PathBuf>,
     /// Folders a session has been seen in, newest first: what the `folder` prompt recalls.
@@ -178,6 +190,7 @@ impl Data {
             runs,
             sessions,
             columns: config::columns(jobs_path),
+            spark: config::sparkline(jobs_path),
             folders,
             recent: ledger.recent(&seen)?,
             git,
@@ -193,9 +206,10 @@ impl Data {
         self.sessions.iter().filter(|s| s.state == state).count()
     }
 
-    /// The fleet in one line: a cone glyph and count per state, each in the state's color, then
-    /// the jobs and runs. A count of zero goes dim so the live numbers stand out.
-    pub fn summary(&self) -> Line<'static> {
+    /// The fleet in one line: the state's icon and count per state, each in the state's color,
+    /// then the jobs and runs. A count of zero goes dim so the live numbers stand out. The
+    /// working icon is the spinner's `frame`, so it moves with the rows while anything works.
+    pub fn summary(&self, frame: usize) -> Line<'static> {
         let sep = || Span::styled("  ", plain());
         let mut spans = Vec::new();
         for (state, title) in [
@@ -206,7 +220,12 @@ impl Data {
         ] {
             let n = self.count(state);
             let style = if n == 0 { dim() } else { color(state) };
-            spans.push(Span::styled(format!("{} ", icon(state)), style));
+            let glyph = if state == "active" && n > 0 {
+                SPINNER[frame]
+            } else {
+                icon(state)
+            };
+            spans.push(Span::styled(format!("{glyph} "), style));
             spans.push(Span::styled(
                 n.to_string(),
                 style.add_modifier(Modifier::BOLD),
@@ -314,6 +333,11 @@ impl Data {
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
+        // The state column sits before the title, where the eye lands after the icon, when
+        // `columns:` lists it; the other columns follow the title in their order.
+        let has_state = self.columns.iter().any(|c| c == "state");
+        let cols: Vec<&String> = self.columns.iter().filter(|c| *c != "state").collect();
+        let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
         let cells = flat
             .iter()
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
@@ -323,21 +347,25 @@ impl Data {
                     let mut row = vec![
                         (icon(&s.state).into(), color(&s.state)),
                         (logo(&s.harness), brand(&s.harness)),
-                        // The same words as the footer, on the row, so a session that cannot be
-                        // joined from here is known before it is selected. The folder's
-                        // orchestrator says so here and carries its title in cones' orange, so it
-                        // is told from the workers at a glance.
-                        (
-                            [
-                                s.coordinator.then_some("orchestrator"),
-                                s.own_terminal().then_some("own terminal"),
-                            ]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>()
-                            .join(" · "),
-                            if s.coordinator { lit() } else { dim() },
-                        ),
+                        if has_state {
+                            cell("state", s, by_state, None)
+                        } else {
+                            // The same words as the footer, on the row, so a session that
+                            // cannot be joined from here is known before it is selected. The
+                            // folder's orchestrator says so here and carries its title in cones'
+                            // orange, so it is told from the workers at a glance.
+                            (
+                                [
+                                    s.coordinator.then_some("orchestrator"),
+                                    s.own_terminal().then_some("own terminal"),
+                                ]
+                                .into_iter()
+                                .flatten()
+                                .collect::<Vec<_>>()
+                                .join(" · "),
+                                if s.coordinator { lit() } else { dim() },
+                            )
+                        },
                         (
                             // A long title would push every metric column off a 120-column screen.
                             clip(
@@ -349,7 +377,8 @@ impl Data {
                             if s.coordinator { lit() } else { plain() },
                         ),
                     ];
-                    row.extend(self.columns.iter().map(|c| cell(c, s, by_state)));
+                    let spark = sparks.get(&s.session_id).map(String::as_str);
+                    row.extend(cols.iter().map(|c| cell(c, s, by_state, spark)));
                     row
                 }
                 Entry::Job(j) => {
@@ -362,22 +391,27 @@ impl Data {
                     let mut row = vec![
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
                         (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
-                        (format!("job · {}", j.schedule), dim()),
+                        // The last run's status, or `off`, takes the state slot with the
+                        // schedule beside it.
+                        if has_state {
+                            let (word, style) = job_cell("state", j, last, &status, by_state);
+                            (format!("{word} · {}", j.schedule), style)
+                        } else {
+                            (format!("job · {}", j.schedule), dim())
+                        },
                         (j.name.clone(), plain()),
                     ];
-                    row.extend(
-                        self.columns
-                            .iter()
-                            .map(|c| job_cell(c, j, last, &status, by_state)),
-                    );
+                    row.extend(cols.iter().map(|c| job_cell(c, j, last, &status, by_state)));
                     row
                 }
             })
             .collect();
-        let mut names = vec!["", "", "", "title"];
-        names.extend(self.columns.iter().map(|c| match c.as_str() {
+        let spark_title = self.spark.title();
+        let mut names = vec!["", "", if has_state { "state" } else { "" }, "title"];
+        names.extend(cols.iter().map(|c| match c.as_str() {
             "tokens" => "tokens in/out",
             "last" if by_state => "dir",
+            "sparkline" => spark_title.as_str(),
             c => c,
         }));
         let (names, cells) = columns(&names, cells, widths);
@@ -568,7 +602,7 @@ impl Data {
 pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     let data = Data::load(jobs_path, state, claude)?;
     let mut out = String::new();
-    let summary = data.summary();
+    let summary = data.summary(0);
     let width = summary.width() + 16;
     let folder = std::env::current_dir().map_or_else(|_| String::new(), |p| fleet::tilde(&p));
     for line in header_lines(summary, &folder, width) {
@@ -876,10 +910,17 @@ fn job_cell(
     }
 }
 
-fn cell(column: &str, s: &Session, by_state: bool) -> (String, Style) {
+/// A session's cell under `column`; `spark` is its sparkline, drawn once for the whole fleet so
+/// every row shares one bound.
+fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
         "state" => (label(&s.state).into(), color(&s.state)),
+        "sparkline" => {
+            let bars = spark.unwrap_or_default().to_owned();
+            let quiet = bars.chars().all(|c| c == '▁');
+            (bars, if quiet { dim() } else { plain() })
+        }
         "model" => (s.model.clone().unwrap_or_else(|| "-".into()), dim()),
         "age" => (since(s.started), dim()),
         "activity" => (since(s.last_activity), dim()),
@@ -1142,27 +1183,29 @@ fn expand(text: &str, mut f: impl FnMut(usize) -> String) -> String {
         .collect()
 }
 
-/// One glyph per state, cone-shaped where it can be: a solid cone is busy, a hollow one is
-/// resting, a warning cone wants a human. `-` is a session whose harness reported no state, a
-/// Codex before its first turn; it is not a failure.
+/// One glyph per state, one family: a bar. Working fills and empties (`SPINNER` draws it), a
+/// still full bar in yellow wants a human, the lowest bar is resting or stopped, dim, with the
+/// word telling the two apart. Finished work keeps `✓` and `✗`, as in `claude agents`. `-` is
+/// a session whose harness reported no state, a Codex before its first turn; not a failure.
 fn icon(state: &str) -> &str {
     match state {
-        "active" | "started" => "▲",
-        "blocked" => "⚠",
-        "idle" => "△",
-        "exited" | "stopped" => "▵",
+        "active" | "started" => "▁",
+        "blocked" => "█",
+        "idle" | "exited" | "stopped" => "▁",
         "ok" | "done" => "✓",
         "skipped" | "-" => "–",
         _ => "✗",
     }
 }
 
-/// Which harness a session or job runs under, written the way each app writes itself: Codex's
-/// `>_` startup box title, Claude's and pi's plain word (Claude's ✻ already spins in the state
-/// column while it works; π is only pi's window title).
+/// Which harness a session or job runs under, with the mark each app draws for itself: Claude's
+/// ✻, Codex's `>_` startup box title, pi's π window title. Still, in the harness's color; the
+/// state icon carries the motion.
 fn logo(harness: &str) -> String {
     match harness {
+        "claude" => "✻ claude".into(),
         "codex" => ">_ codex".into(),
+        "pi" => "π pi".into(),
         other => other.to_owned(),
     }
 }
@@ -1174,24 +1217,6 @@ fn brand(harness: &str) -> Style {
         "pi" => Style::default().fg(Color::Rgb(138, 190, 183)),
         _ => dim(),
     }
-}
-
-/// The working animation and color a row's harness would draw for itself. A cones run keeps the
-/// flipping cone.
-// ponytail: the harness is read back from the logo cell rather than carried on Row.
-fn spinner(row: &Row) -> (&'static [&'static str], Option<Style>) {
-    let mark = row.cells.get(1).map(|c| c.0.trim()).unwrap_or("");
-    for h in ["claude", "codex", "pi"] {
-        if mark == logo(h) {
-            let frames: &'static [&'static str] = if h == "claude" {
-                &CLAUDE_SPINNER
-            } else {
-                &DOTS_SPINNER
-            };
-            return (frames, Some(brand(h)));
-        }
-    }
-    (&SPINNER, None)
 }
 
 fn label(state: &str) -> &str {
@@ -1820,7 +1845,7 @@ const GROUPS: [(&str, &str); 3] = [
 
 /// The fields under their groups. `codex_full_access` is left out: no Codex job runs yet and
 /// on a Claude job it is a validation error.
-const FIELDS: [Field; 9] = [
+const FIELDS: [Field; 13] = [
     Field {
         group: "runs",
         name: "timeout_min",
@@ -1889,8 +1914,40 @@ const FIELDS: [Field; 9] = [
         group: "cones",
         name: "columns",
         short: "the session columns",
-        long: "The columns of a session row after its icon, harness and title, separated by commas, in the order given: any of state, model, age, activity, context, tokens, last. Written to jobs.yaml as its columns: line; see dashboard.md for what each cell reads.",
-        builtin: "state, model, activity, context, last",
+        long: "The columns of a session row, separated by commas, in the order given: any of state, model, age, activity, context, tokens, last, sparkline. state sits before the title; the rest follow it. Written to jobs.yaml as its columns: line; see dashboard.md for what each cell reads.",
+        builtin: "state, context, sparkline, model, activity, last",
+        picks: None,
+    },
+    Field {
+        group: "cones",
+        name: "sparkline.bars",
+        short: "how many bars the sparkline draws",
+        long: "The sparkline column is one bar per time bucket, oldest on the left, newest on the right. This is the number of buckets, 1 to 64; with the bucket length it is the window the column covers, named in its header as last 16m.",
+        builtin: "16",
+        picks: None,
+    },
+    Field {
+        group: "cones",
+        name: "sparkline.bucket",
+        short: "how long one bar covers",
+        long: "The length of one bucket: a count of s, m or h, as in 30s, 1m or 5m, at most 24h. Sixteen bars of 1m show the last sixteen minutes; twelve of 5m the last hour.",
+        builtin: "1m",
+        picks: None,
+    },
+    Field {
+        group: "cones",
+        name: "sparkline.metric",
+        short: "what a bar counts",
+        long: "What is counted in each bucket, from the lines the harness wrote to the transcript in it. lines is every line, tool results and progress included. messages is assistant replies. tools is tool calls. tokens is output tokens, the closest to work produced.",
+        builtin: "lines",
+        picks: Some(&["-", "lines", "messages", "tools", "tokens"]),
+    },
+    Field {
+        group: "cones",
+        name: "sparkline.bound",
+        short: "what a full bar means",
+        long: "fleet scales every row to the busiest bucket on screen, so rows compare. row scales each row to its own busiest bucket, so it shows shape only. log is fleet on a log scale, so quiet rows still show. A number is the count that fills a bar, the same tomorrow; a bucket over it draws full.",
+        builtin: "fleet",
         picks: None,
     },
 ];
@@ -1900,8 +1957,9 @@ const FIELDS: [Field; 9] = [
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// The `defaults` block and the `columns:` list, empty for the built-in.
-    Save(Box<config::Policy>, Vec<String>),
+    /// The `defaults` block, the `columns:` list, empty for the built-in, and the `sparkline:`
+    /// block, None when every field is left to the built-in.
+    Save(Box<config::Policy>, Vec<String>, Option<config::Sparkline>),
 }
 
 /// The config editor the menu's `config` button opens: the `defaults` block of jobs.yaml, the
@@ -1922,9 +1980,14 @@ pub struct ConfigForm {
 }
 
 impl ConfigForm {
-    pub fn new(d: &config::Policy, columns: Option<&[String]>) -> Self {
+    pub fn new(
+        d: &config::Policy,
+        columns: Option<&[String]>,
+        spark: Option<&config::Sparkline>,
+    ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
+        let spark = |f: fn(&config::Sparkline) -> String| spark.map(f).unwrap_or_default();
         Self {
             row: 0,
             values: vec![
@@ -1944,6 +2007,10 @@ impl ConfigForm {
                 d.tools.as_ref().map(|t| t.join(", ")).unwrap_or_default(),
                 flag(d.notify),
                 columns.map(|c| c.join(", ")).unwrap_or_default(),
+                spark(|s| s.bars.to_string()),
+                spark(|s| s.bucket.clone()),
+                spark(|s| s.metric.clone()),
+                spark(|s| s.bound.clone()),
             ],
             error: None,
             cursor: usize::MAX,
@@ -1962,7 +2029,7 @@ impl ConfigForm {
 
     /// The values as a policy and the columns list; the error is the one line shown inline on
     /// the field it names.
-    fn config(&self) -> Result<(config::Policy, Vec<String>), String> {
+    fn config(&self) -> Result<(config::Policy, Vec<String>, Option<config::Sparkline>), String> {
         let v = |i: usize| self.values[i].trim();
         let num = |i: usize, what: &str| -> Result<Option<f64>, String> {
             match v(i) {
@@ -2017,7 +2084,47 @@ impl ConfigForm {
             },
             notify: flag(7),
         };
-        Ok((policy, columns))
+        // The sparkline block: every field empty leaves it out; otherwise the built-in fills
+        // what is not typed, and the block is checked the way jobs.yaml is read.
+        let spark = if (9..13).all(|i| v(i).is_empty()) {
+            None
+        } else {
+            let built = config::Sparkline::default();
+            let s = config::Sparkline {
+                bars: match v(9) {
+                    "" => built.bars,
+                    t => t.parse().map_err(|_| {
+                        format!("sparkline.bars: a whole number, as in 16, not {t:?}")
+                    })?,
+                },
+                bucket: match v(10) {
+                    "" => built.bucket,
+                    t => t.to_owned(),
+                },
+                metric: match v(11) {
+                    "" => built.metric,
+                    t => t.to_owned(),
+                },
+                bound: match v(12) {
+                    "" => built.bound,
+                    t => t.to_owned(),
+                },
+            };
+            // Name the field the message is about, so the error lands on it.
+            s.check().map_err(|e| {
+                let e = format!("{e:#}");
+                let field = ["bars", "bucket", "metric", "bound"]
+                    .into_iter()
+                    .find(|f| e.starts_with(&format!("sparkline {f}")))
+                    .unwrap_or("bars");
+                format!(
+                    "sparkline.{field}: {}",
+                    e.trim_start_matches(&format!("sparkline {field} "))
+                )
+            })?;
+            Some(s)
+        };
+        Ok((policy, columns, spark))
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
@@ -2028,7 +2135,7 @@ impl ConfigForm {
         match code {
             KeyCode::Enter => {
                 return match self.config() {
-                    Ok((p, c)) => ConfigAction::Save(Box::new(p), c),
+                    Ok((p, c, s)) => ConfigAction::Save(Box::new(p), c, s),
                     Err(e) => {
                         // The error lands on the field it names.
                         self.go(FIELDS
@@ -2455,6 +2562,7 @@ fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
         title: Some(prompt.lines().next().unwrap_or("").trim().to_owned()),
         last: Some("starting".into()),
         coordinator: false,
+        activity: Vec::new(),
     }
 }
 
@@ -3487,14 +3595,7 @@ impl App {
     fn strip(&self, i: usize, width: u16) -> Line<'static> {
         let open = &self.viewers[i];
         let width = width as usize;
-        let working = self.data.sessions.iter().any(|s| s.state == "active")
-            || self.data.runs.iter().any(|r| r.status() == "started");
-        let cone = if working {
-            SPINNER[self.tick % SPINNER.len()]
-        } else {
-            SPINNER[0]
-        };
-        let left = Span::styled(format!("{cone} cones"), Style::default().fg(ORANGE));
+        let left = Span::styled(format!("{CONE} cones"), Style::default().fg(ORANGE));
         let name = open
             .viewer
             .title()
@@ -3513,7 +3614,7 @@ impl App {
             Span::styled(name, plain()),
             Span::styled(" · ", dim()),
         ];
-        middle.extend(self.data.summary().spans);
+        middle.extend(self.data.summary(spinner_frame(self.tick)).spans);
         // A Codex thread started from the composer keeps a launch key until its first ctrl+z
         // records it, so its own row cannot be told apart from another's; no alert until then.
         let has_id = open.record.is_none() || open.recorded;
@@ -3935,6 +4036,7 @@ impl App {
                     self.mode = Mode::Config(Box::new(ConfigForm::new(
                         &config::defaults(&self.jobs_path),
                         config::file_columns(&self.jobs_path).as_deref(),
+                        config::file_sparkline(&self.jobs_path).as_ref(),
                     )));
                 }
                 _ => self.mode = Mode::Guide(0),
@@ -4695,8 +4797,13 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                ConfigAction::Save(policy, columns) => {
-                    match config::write_config(&self.jobs_path, &policy, Some(&columns)) {
+                ConfigAction::Save(policy, columns, spark) => {
+                    match config::write_config(
+                        &self.jobs_path,
+                        &policy,
+                        Some(&columns),
+                        spark.as_ref(),
+                    ) {
                         Ok(()) => {
                             self.mode = Mode::Normal;
                             self.status =
@@ -4990,7 +5097,7 @@ impl App {
         .areas(area);
         frame.render_widget(
             Paragraph::new(header_lines(
-                self.data.summary(),
+                self.data.summary(spinner_frame(self.tick)),
                 &fleet::tilde(&self.cwd),
                 head.width as usize,
             )),
@@ -5068,7 +5175,6 @@ impl App {
                         Style::default().fg(if armed { Color::Red } else { ORANGE }),
                     ));
                 }
-                let (frames, brand) = spinner(row);
                 let menu;
                 let cells = if row.kind == Kind::Menu {
                     menu = self.menu_cells(selected);
@@ -5077,10 +5183,11 @@ impl App {
                     &row.cells
                 };
                 for (c, (text, style)) in cells.iter().enumerate() {
+                    // The icon cell of a working row is the spinner's current frame.
                     let (text, style) = if c == 0 && row.working() {
                         (
-                            text.replacen('▲', frames[self.tick % frames.len()], 1),
-                            brand.unwrap_or(*style),
+                            text.replacen('▁', SPINNER[spinner_frame(self.tick)], 1),
+                            *style,
                         )
                     } else {
                         (text.clone(), *style)
@@ -5289,7 +5396,7 @@ mod tests {
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
-        let c = ConfigForm::new(&config::Policy::default(), None);
+        let c = ConfigForm::new(&config::Policy::default(), None, None);
         let lines = c.lines(40);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
@@ -5488,7 +5595,7 @@ mod tests {
             "the cursor is after the answer stepped back to"
         );
 
-        let mut c = ConfigForm::new(&config::Policy::default(), None);
+        let mut c = ConfigForm::new(&config::Policy::default(), None, None);
         for ch in "15".chars() {
             c.key(KeyCode::Char(ch), KeyModifiers::NONE);
         }
@@ -5571,6 +5678,7 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         });
         app.apply(data);
         app.filter = Input::new("209aa1a4");
@@ -5602,19 +5710,25 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         };
         data.sessions
             .push(session("aaaa-interactive", "interactive"));
         data.sessions.push(session("bbbb-background", "bg"));
-        let marker = |id: &str| {
+        let marker = |data: &Data, id: &str| {
             data.rows(false)
                 .into_iter()
                 .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
                 .map(|r| r.cells[2].0.trim().to_owned())
                 .unwrap()
         };
-        assert_eq!(marker("aaaa-interactive"), "own terminal");
-        assert_eq!(marker("bbbb-background"), "");
+        // With `state` among the columns, the slot before the title is the state; the footer
+        // still says own terminal. Without it, the words come back to the row.
+        assert_eq!(marker(&data, "aaaa-interactive"), "working");
+        assert_eq!(marker(&data, "bbbb-background"), "working");
+        data.columns = vec!["model".into()];
+        assert_eq!(marker(&data, "aaaa-interactive"), "own terminal");
+        assert_eq!(marker(&data, "bbbb-background"), "");
     }
 
     #[test]
@@ -5640,25 +5754,31 @@ mod tests {
             title: Some("sweep".into()),
             last: None,
             coordinator,
+            activity: Vec::new(),
         };
         data.sessions.push(session("aaaa-worker", "bg", false));
         data.sessions.push(session("bbbb-orchestrator", "bg", true));
         data.sessions
             .push(session("cccc-typed", "interactive", true));
-        let row = |id: &str| {
+        let row = |data: &Data, id: &str| {
             data.rows(false)
                 .into_iter()
                 .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
                 .unwrap()
         };
-        assert_eq!(row("aaaa-worker").cells[2].0.trim(), "");
-        assert_eq!(row("aaaa-worker").cells[3].1, plain());
-        let marked = row("bbbb-orchestrator");
+        // The orange title marks the orchestrator; the state takes the slot before it.
+        assert_eq!(row(&data, "aaaa-worker").cells[2].0.trim(), "working");
+        assert_eq!(row(&data, "aaaa-worker").cells[3].1, plain());
+        let marked = row(&data, "bbbb-orchestrator");
+        assert_eq!(marked.cells[2].0.trim(), "working");
+        assert_eq!(marked.cells[3].1, lit());
+        // Without a state column the slot names the orchestrator and the terminal.
+        data.columns = vec!["model".into()];
+        let marked = row(&data, "bbbb-orchestrator");
         assert_eq!(marked.cells[2].0.trim(), "orchestrator");
         assert_eq!(marked.cells[2].1, lit());
-        assert_eq!(marked.cells[3].1, lit());
         assert_eq!(
-            row("cccc-typed").cells[2].0.trim(),
+            row(&data, "cccc-typed").cells[2].0.trim(),
             "orchestrator · own terminal"
         );
     }
@@ -5693,6 +5813,7 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         });
         app.apply(data);
         app.filter = Input::new("codex-77");
@@ -5728,6 +5849,7 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         });
         app.apply(data);
         app.filter = Input::new("dddd-dae");
@@ -6719,7 +6841,7 @@ mod tests {
                 .map(|s| s.content.to_string())
                 .collect::<String>()
         };
-        assert!(text(app.composer()).starts_with("claude › an instruction for "));
+        assert!(text(app.composer()).starts_with("✻ claude › an instruction for "));
         let hint = text(app.hint_line());
         assert!(
             hint.starts_with("enter new run · ← → pick · tab codex · ctrl+p pin"),
@@ -6883,7 +7005,10 @@ mod tests {
             .find(|r| r.kind.key() == Some("nightly"))
             .unwrap();
         let text = job.text();
-        assert!(text.contains("job · 0 2 * * *"), "{text}");
+        assert!(
+            text.contains("off · 0 2 * * *"),
+            "the last run's status, or off, sits before the name with the schedule: {text}"
+        );
         assert!(text.contains("nightly"), "{text}");
         assert!(
             text.contains(" off "),
@@ -7188,6 +7313,7 @@ mod tests {
             title: Some(title.into()),
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         }
     }
 
@@ -7657,6 +7783,7 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         });
         app.apply(data);
         assert_eq!(key(&app).as_deref(), Some("dddd-daemon"));
@@ -7709,10 +7836,11 @@ mod tests {
         assert_eq!(app.enter_label(), "defaults");
         app.enter().unwrap();
         assert!(matches!(app.mode, Mode::Config(_)));
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 30)).unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = rows(&t, 160).join("\n");
         assert!(s.contains("timeout_min"), "{s}");
+        assert!(s.contains("sparkline.bound"), "{s}");
         assert!(s.contains("minutes before cones kills a run"), "{s}");
         assert!(
             s.contains("SIGTERM"),
@@ -7734,7 +7862,7 @@ mod tests {
             "the fields sit under their groups: {s}"
         );
         assert!(
-            s.contains("state, model, activity, context, last"),
+            s.contains("state, context, sparkline, model, activity, last"),
             "the dashboard's columns are a field: {s}"
         );
 
@@ -8174,6 +8302,7 @@ mod tests {
             title: None,
             last: None,
             coordinator: false,
+            activity: Vec::new(),
         });
         app.apply(data);
         // The new Codex row took the cursor; back on A for the viewer.

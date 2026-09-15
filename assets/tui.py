@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Render assets/tui.svg, a screenshot of a live `cones tui`, from a tmux pane.
-Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in]."""
+Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in] [jobs file]."""
 import html, re, shlex, subprocess, sys, time, uuid
 
 COLS, ROWS = 120, 34
 BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
 CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, where the menu row launches
+JOBS = sys.argv[3] if len(sys.argv) > 3 else "jobs.example.yaml"  # the example job, so no live session's viewer opens
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the cone's tones and the menu button fill
@@ -14,7 +15,7 @@ def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output
 
 session = f"conescap-{uuid.uuid4().hex[:8]}"
 # Start on the example job, so capturing the dashboard does not open a live session's viewer.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR {shlex.quote(BIN)} --jobs jobs.example.yaml tui", check=True)
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} tui", check=True)
 try:
     time.sleep(5)
     lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")

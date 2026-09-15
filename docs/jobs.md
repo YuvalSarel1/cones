@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and an optional `columns` list for the dashboard, described in [dashboard.md](dashboard.md#columns). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `overlap`, `notify` and `codex_full_access`; each job may override them. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
+`jobs.yaml` is `version: 1`, an optional `defaults` block, a list of jobs, and for the dashboard an optional `columns` list and `sparkline` block, described in [dashboard.md](dashboard.md#columns). `defaults` accepts the policy fields `timeout_min`, `budget_usd`, `daily_budget_usd`, `write`, `tools`, `max_turns`, `overlap`, `notify` and `codex_full_access`; each job may override them. The dashboard's `config` button edits the block and the `columns` list with a line on each field, see [dashboard.md](dashboard.md#the-defaults-editor). Unknown fields anywhere in the file are rejected. The dashboard's wizard (the `runs` button, `ctrl+e` and `ctrl+x` in `cones tui`) adds, edits and deletes a job by rewriting only its block; see [dashboard.md](dashboard.md#the-wizard).
 
 ```yaml
 version: 1
@@ -11,7 +11,12 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
-columns: [state, model, activity, context, last]   # dashboard session columns, see dashboard.md
+columns: [state, context, sparkline, model, activity, last]   # dashboard session columns, see dashboard.md
+sparkline:            # the sparkline column's window, metric and scale, see dashboard.md
+  bars: 16
+  bucket: 1m
+  metric: lines
+  bound: fleet
 jobs:
   - name: nightly-triage
     schedule: "0 2 * * *"          # five-field cron, compiled to launchd

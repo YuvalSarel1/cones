@@ -23,7 +23,7 @@ A file watcher was not chosen. The files are in three trees, transcripts grow co
 | Pane | Columns |
 | --- | --- |
 | Menu | `runs`, `agents`, `folder`, `config`, `help`: one row of buttons above the tables, described under [the menu](#the-menu) |
-| Sessions | icon, harness, `orchestrator` on the folder's coordinator and `own terminal` on a session that cannot be joined from here (blank otherwise), title or short id, then the `columns:` list from jobs.yaml, described under [columns](#columns). A job is a row of this table in its folder's group, ahead of the sessions there: `◆` or `◇` for enabled or not, colored by its last run, the harness, `job · <schedule>`, the name, then under the columns its last run's status or `off`, its model, how long since the last run fired, and its directory when grouped by state; the columns that are a session's alone stay blank |
+| Sessions | icon, harness with its own mark (`✻ claude`, `>_ codex`, `π pi`), the state word when `columns:` lists `state` (else `orchestrator` on the folder's coordinator and `own terminal` on a session that cannot be joined from here, blank otherwise), title or short id, then the rest of the `columns:` list from jobs.yaml, described under [columns](#columns). A job is a row of this table in its folder's group, ahead of the sessions there: `◆` or `◇` for enabled or not, colored by its last run, the harness, its last run's status or `off` with the schedule beside it (`ok · 0 9 * * *`; `job · <schedule>` without a state column), the name, then under the columns its model, how long since the last run fired, and its directory when grouped by state; the columns that are a session's alone stay blank |
 | Runs (newest 200) | icon, job, status, fired time, duration, dollars, reason |
 | Viewer | the selected or focused session's live screen, on a terminal at least 140 columns wide |
 
@@ -33,33 +33,58 @@ Each table opens with a dim row naming its columns, padded to the table beneath.
 
 Sessions group by directory like Claude's own agents view, or by state so the rows that need a human are on top. Directories are in name order with case set aside; a Codex thread whose directory is not known anywhere is under `no directory`. Jobs sit in their folder's group first, in jobs.yaml order, so a folder with a job has a group whether or not a session runs there; grouped by state they are one `jobs` group after the states. A folder the menu's `folder` prompt picked keeps a group of its own in the same name order, with one dim row while nothing runs there, its git branch and tree state in front when it is a repository, until `ctrl+x` twice removes it; grouped by state those folders follow the `jobs` group. The folders are one path per line in `~/.cones/folders`. Within a group they are ordered oldest first by start time, so a new session appends at the bottom and rows hold still; a session whose transcript reports no start sorts last, by id.
 
-| State | Label | Color |
-| --- | --- | --- |
-| `done`, `failed`, `stopped` | the word itself | green, red, dim |
-| `active` | working | plain |
-| `blocked` | needs input | yellow |
-| `idle` | idle | dim |
-| anything else | the word itself | red |
+| State | Icon | Label | Color |
+| --- | --- | --- | --- |
+| `done` | `✓` | done | green |
+| `failed` | `✗` | failed | red |
+| `stopped` | `▁` | stopped | dim |
+| `active` | `▁▂▃▄▅▆▇█` and back, one frame per 160 ms | working | plain |
+| `blocked` | `█`, still | needs input | yellow |
+| `idle` | `▁` | idle | dim |
+| `-` | `–` | `-` | dim |
+| anything else | `✗` | the word itself | red |
 
-Working is plain and green is kept for finished work, as in Claude's own agents view. Which harness fact each state comes from is the State row in [harness.md](harness.md#observe). The folder's coordinator says `orchestrator` and its title is orange, as [coordinator.md](coordinator.md) describes.
+The icons are one family, the bar, the same the `sparkline` column draws: a bar that fills and empties is the machine at work, a still full bar in yellow is yours, the lowest bar dim is resting, with the word telling idle from stopped. Finished work keeps the check and the cross, as in Claude's own agents view, and working is plain so green stays finished work's. Every harness spins the same bar; until 2026-09-15 each row spun its harness's own mark, and Claude's star spent a third of each turn as a dot, so on a screen of working rows the busiest looked emptiest. The harness mark is still, in the harness's color, beside the harness's name. Which harness fact each state comes from is the State row in [harness.md](harness.md#observe). The folder's coordinator's title is orange, as [coordinator.md](coordinator.md) describes; the word `orchestrator` shows only when no `state` column takes the slot before the title.
 
 Under the composer, the hint line names only the keys that act on the selected row, then the ones that act everywhere: `enter <verb> · ctrl+x <stop|delete|hide|forget> · ctrl+e edit · tab <harness> · ctrl+p pin · ctrl+s regroup · ctrl+o agents · ctrl+g guide · esc quit`. The verb is `start job` on a job, `follow log` on a running run, `attach` on a session or a finished run, `return` on a row whose viewer is alive inside the dashboard and `own terminal` on a session that cannot be joined from here; `ctrl+x` reads `delete` on a job with no run in flight, `forget` on a Codex daemon thread, `hide` on a finished run and `delete` on a Claude background session, which `claude rm` removes from `claude agents` as well; `ctrl+e` shows on a job only; on the menu row the verb is the picked button's, `new run`, `agents`, `add folder`, `defaults` or `guide`, with `← → pick` beside it, and on a pinned folder's row `start here`, with `ctrl+x` reading `remove`. With an instruction typed it reads `enter start <harness> in <dir> · tab <harness> · ctrl+v paste image · esc clear`, or `enter new run with it` on the menu's `runs` row. The last action's status takes the line until the next key. On a list column too narrow for every key, the keys that act everywhere go, last first, while the selected row's key and `esc quit` stay.
 
 ## Columns
 
-`columns` in jobs.yaml picks what a session row shows after its icon, harness and title. Order is kept. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line the harness wrote, named in the Observe table of [harness.md](harness.md#observe); it is `-` until that line exists, never an estimate.
+`columns` in jobs.yaml picks what a session row shows after its icon and harness. `state`, when listed, sits before the title, where the eye lands after the icon; the rest follow the title in the order given. An unknown name fails validation, so a column cones cannot fill never renders as a dash. Each cell reads one line the harness wrote, named in the Observe table of [harness.md](harness.md#observe); it is `-` until that line exists, never an estimate.
 
 | Column | Cell | Default |
 | --- | --- | --- |
-| `state` | working, needs input, idle, done, failed or stopped, as in the table above | yes |
-| `model` | The bare API model id on the last message with usage, `claude-fable-5-1` or `openai.gpt-6-astra` | yes |
-| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
-| `activity` | Time since the transcript's last timestamp | yes |
+| `state` | working, needs input, idle, done, failed or stopped, as in the table above; before the title | yes |
 | `context` | `98k/200k`: the prompt size the harness reported on the last message over the window it stated; `98k` alone when nothing stated a window (a Claude session whose statusLine command does not save its payload) | yes |
+| `sparkline` | `▁▁▂▅▇▇▅▃▁▁▁▁▁▁▁▁`: one bar per time bucket, oldest left, newest right, counting what the harness wrote to the transcript in it; the header names the window, `last 16m`. Settings under [sparkline](#sparkline) | yes |
+| `model` | The bare API model id on the last message with usage, `claude-fable-5-1` or `openai.gpt-6-astra` | yes |
+| `activity` | Time since the transcript's last timestamp | yes |
 | `last` | First line of the last reply, or the directory when grouped by state | yes |
+| `age` | Time since the transcript's first timestamp, `4s`, `6m`, `2h` | no |
 | `tokens` | `49.2M/201k`: input and output tokens summed over the session | no |
 
 `age` counts from the transcript's first timestamp and `activity` from its last; neither reads the registry's `updatedAt` or the file's mtime, so a session that is idle shows a growing `activity` and a fixed `age`. Cost is not a column: the harnesses write tokens to the transcript and no price, so live sessions have no dollars to show. Run rows take theirs from the ledger.
+
+### Sparkline
+
+The `sparkline` column is a chart of reported timestamps, not a state: the state word stays the harness's word, and a row of low bars beside `working` means a turn that has written nothing lately, not a stuck one. The `sparkline:` block in jobs.yaml sets its window, metric and scale; every field has a built-in, so the block may name only what changes, and the config editor's `cones` group edits the same four fields.
+
+```yaml
+sparkline:
+  bars: 16      # buckets, 1 to 64; with bucket, the window the header names
+  bucket: 1m    # one bar covers this long: a count of s, m or h, at most 24h
+  metric: lines # lines | messages | tools | tokens
+  bound: fleet  # fleet | row | log | a number
+```
+
+| Field | Meaning |
+| --- | --- |
+| `bars` | How many buckets, so how many cells the column takes. 16 of `1m` is the last 16 minutes; 12 of `5m` the last hour. |
+| `bucket` | How long one bar covers. |
+| `metric` | What is counted in a bucket, from the transcript lines timestamped inside it. `lines` is every line, tool results and progress notes included. `messages` is assistant replies, a streamed reply counted once by its id. `tools` is tool calls, one per `tool_use` block. `tokens` is output tokens on those replies. The Codex row of the Observe table in [harness.md](harness.md#observe) names the rollout lines each reads. |
+| `bound` | What a full bar means. `fleet` scales every row to the busiest bucket on screen, so rows compare and one hot session flattens the rest. `row` scales each row to its own busiest bucket, so it shows shape only. `log` is `fleet` on a log scale, so quiet rows still show. A number is the count that fills a bar, the same tomorrow; a bucket over it draws full. |
+
+A bucket with nothing in it is the lowest bar, and a row with nothing in the window is dim. The buckets are recounted on every reload from the activity the transcript pass already collects, so the column costs no extra read.
 
 ## Keys
 
@@ -127,7 +152,7 @@ The job is a Claude job under the file's defaults, which the menu's `config` but
 
 ## The defaults editor
 
-`enter` on the menu's `config` row opens it where the list is: the `defaults` block of jobs.yaml, described in [jobs.md](jobs.md), and the dashboard's `columns:` line, described under [columns](#columns), one row per field under three group headers. `runs` holds what one run may take and spend: `timeout_min`, `budget_usd`, `daily_budget_usd`, `max_turns` and `overlap`. `tools` holds what a job may call and change: `write` and `tools`. `cones` holds what the dashboard shows and when it speaks up: `notify` and `columns`. Each row is the field, its value and a few words on what it does; the selected field's fuller explanation sits under the list, and the prompt line says what an answer looks like. `↑` `↓` move between fields, typing edits the selected one, `← →` pick on `write`, `overlap` and `notify`, `enter` saves, `esc` cancels. An empty value, or `-` on a pick, leaves the field out of the file, so the built-in applies and shows dim in its place. `codex_full_access` is not offered: no Codex job runs yet, and on a Claude job it is a validation error.
+`enter` on the menu's `config` row opens it where the list is: the `defaults` block of jobs.yaml, described in [jobs.md](jobs.md), the dashboard's `columns:` line, described under [columns](#columns), and its `sparkline:` block, described under [sparkline](#sparkline), one row per field under three group headers. `runs` holds what one run may take and spend: `timeout_min`, `budget_usd`, `daily_budget_usd`, `max_turns` and `overlap`. `tools` holds what a job may call and change: `write` and `tools`. `cones` holds what the dashboard shows and when it speaks up: `notify`, `columns` and the four `sparkline.` fields. Each row is the field, its value and a few words on what it does; the selected field's fuller explanation sits under the list, and the prompt line says what an answer looks like. `↑` `↓` move between fields, typing edits the selected one, `← →` pick on `write`, `overlap`, `notify` and `sparkline.metric`, `enter` saves, `esc` cancels. An empty value, or `-` on a pick, leaves the field out of the file, so the built-in applies and shows dim in its place; one `sparkline.` field set writes the whole block, the built-ins filling the rest. `codex_full_access` is not offered: no Codex job runs yet, and on a Claude job it is a validation error.
 
 | Field | Row | Under the list |
 | --- | --- | --- |
@@ -139,6 +164,11 @@ The job is a Claude job under the file's defaults, which the menu's `config` but
 | `max_turns` | turns before Claude must stop | `--max-turns`; empty leaves it to Claude |
 | `overlap` | a tick while the last run goes on | `skip`, `allow` or `replace` |
 | `notify` | notification when a run goes wrong | macOS notification on `failed`, `timeout` or a budget skip; `CONES_NOTIFIER` replaces it |
+| `columns` | the session columns | the `columns:` line, comma-separated |
+| `sparkline.bars` | how many bars the sparkline draws | 1 to 64 buckets; with the bucket, the window |
+| `sparkline.bucket` | how long one bar covers | `30s`, `1m`, `5m`, at most `24h` |
+| `sparkline.metric` | what a bar counts | `lines`, `messages`, `tools` or `tokens` |
+| `sparkline.bound` | what a full bar means | `fleet`, `row`, `log` or a number |
 
-Saving checks the block the way a Claude job would resolve it, whether or not the file has jobs, so a `daily_budget_usd` under `budget_usd` or an unknown tool comes back inline on its field with the file untouched; a value that is not a number does too, and so does a column name not in the table above. Only the `defaults:` block and the `columns:` line are rewritten, in place, or after `version:` when the file has none, and a missing jobs file is created around them with `jobs: []`. Nothing is reinstalled: the policy is compiled when a run starts, not into the plist.
+Saving checks the block the way a Claude job would resolve it, whether or not the file has jobs, so a `daily_budget_usd` under `budget_usd` or an unknown tool comes back inline on its field with the file untouched; a value that is not a number does too, and so does a column name not in the table above or a sparkline bucket cones cannot parse. Only the `defaults:` block, the `columns:` line and the `sparkline:` block are rewritten, in place, or after `version:` when the file has none, and a missing jobs file is created around them with `jobs: []`. Nothing is reinstalled: the policy is compiled when a run starts, not into the plist.
 

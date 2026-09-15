@@ -631,8 +631,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
     for s in [
-        "claude  ",
-        "own terminal  ",
+        "✻ claude  ",
+        "idle  ",
         "fix the widget",
         "claude-fable-5-1",
         "100k  ",
@@ -672,7 +672,10 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "a column cones cannot show is a validation error"
     );
     assert!(lines[3] == "hdr\t-\t", "a blank row separates sections");
-    assert!(row.contains("△"), "{row}");
+    assert!(
+        row.contains("▁"),
+        "an idle row rests on the lowest bar: {row}"
+    );
     assert!(
         lines.iter().any(|l| l.contains("~/src/repo")),
         "sessions are grouped by directory"

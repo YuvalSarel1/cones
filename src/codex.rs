@@ -69,6 +69,11 @@ pub struct Tail {
     pub context_tokens: Option<u64>,
     /// `token_count.info.model_context_window` on that event.
     pub context_window: Option<u64>,
+    /// Every line with a timestamp: assistant messages are `response_item` messages with the
+    /// assistant role, tool calls the `function_call`, `custom_tool_call` and
+    /// `local_shell_call` items, output tokens `last_token_usage.output_tokens` on a
+    /// `token_count` event.
+    pub activity: Vec<crate::fleet::Activity>,
 }
 
 /// Every live Codex session, oldest first by process start. No Codex home means Codex is not
@@ -302,6 +307,24 @@ impl Tail {
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             {
                 t.last_activity = Some(ts.into());
+                t.activity.push(crate::fleet::Activity::at(ts.into()));
+            }
+            let payload = &v["payload"];
+            if let Some(a) = t.activity.last_mut() {
+                if v["type"] == "response_item" {
+                    match payload["type"].as_str() {
+                        Some("message") if payload["role"] == "assistant" => a.messages += 1,
+                        Some("function_call" | "custom_tool_call" | "local_shell_call") => {
+                            a.tools += 1
+                        }
+                        _ => {}
+                    }
+                }
+                if v["type"] == "event_msg" && payload["type"] == "token_count" {
+                    a.tokens_out += payload["info"]["last_token_usage"]["output_tokens"]
+                        .as_u64()
+                        .unwrap_or(0);
+                }
             }
             if let Some(first) = assistant_texts(&v).find_map(crate::fleet::headline) {
                 t.last = Some(first);
@@ -632,6 +655,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 cost_usd: None,
                 last: t.last,
                 coordinator: false,
+                activity: t.activity,
             }
         })
         .collect();
@@ -760,6 +784,7 @@ pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session>
                 cost_usd: None,
                 last: tail.last,
                 coordinator: false,
+                activity: tail.activity,
                 session_id: id,
             })
         })

@@ -128,12 +128,139 @@ pub struct JobsFile {
     /// Session columns the dashboard shows after the harness and title, from `COLUMNS`.
     #[serde(default)]
     pub columns: Option<Vec<String>>,
+    /// The `sparkline` column's window, metric and scale.
+    #[serde(default)]
+    pub sparkline: Option<Sparkline>,
 }
 
-pub const COLUMNS: [&str; 7] = [
-    "state", "model", "age", "activity", "context", "tokens", "last",
+pub const COLUMNS: [&str; 8] = [
+    "state",
+    "model",
+    "age",
+    "activity",
+    "context",
+    "tokens",
+    "last",
+    "sparkline",
 ];
-pub const DEFAULT_COLUMNS: [&str; 5] = ["state", "model", "activity", "context", "last"];
+pub const DEFAULT_COLUMNS: [&str; 6] =
+    ["state", "context", "sparkline", "model", "activity", "last"];
+
+/// The `sparkline` column: `bars` buckets of `bucket` each, newest on the right, one bar per
+/// bucket for the `metric` counted from the transcript lines the harness wrote in it, scaled so
+/// a full bar is `bound`. Every field has a built-in, so `sparkline:` may name only what changes.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Sparkline {
+    #[serde(default = "sixteen")]
+    pub bars: usize,
+    /// `15s`, `1m`, `5m`, `1h`: a count of seconds, minutes or hours.
+    #[serde(default = "one_minute")]
+    pub bucket: String,
+    /// `lines`, every transcript line; `messages`, assistant replies; `tools`, tool calls;
+    /// `tokens`, output tokens.
+    #[serde(default = "lines")]
+    pub metric: String,
+    /// `fleet`, the busiest bucket on screen; `row`, the row's own busiest bucket; `log`, the
+    /// fleet's on a log scale; or a number, the count that fills a bar, the same tomorrow.
+    #[serde(default = "fleet")]
+    pub bound: String,
+}
+
+fn sixteen() -> usize {
+    16
+}
+fn one_minute() -> String {
+    "1m".into()
+}
+fn lines() -> String {
+    "lines".into()
+}
+fn fleet() -> String {
+    "fleet".into()
+}
+
+pub const METRICS: [&str; 4] = ["lines", "messages", "tools", "tokens"];
+pub const BOUNDS: [&str; 3] = ["fleet", "row", "log"];
+
+impl Default for Sparkline {
+    fn default() -> Self {
+        Self {
+            bars: sixteen(),
+            bucket: one_minute(),
+            metric: lines(),
+            bound: fleet(),
+        }
+    }
+}
+
+impl Sparkline {
+    /// The bucket in seconds, from `30s`, `5m` or `1h`.
+    pub fn bucket_seconds(&self) -> Result<u64> {
+        let t = self.bucket.trim();
+        let what = || format!("sparkline bucket {t:?}: a count of s, m or h, as in 1m");
+        let (n, unit) = t.split_at(t.len() - t.chars().last().map_or(0, char::len_utf8));
+        let n: u64 = n.parse().ok().filter(|n| *n > 0).with_context(what)?;
+        let secs = match unit {
+            "s" => n,
+            "m" => n * 60,
+            "h" => n * 3600,
+            _ => bail!(what()),
+        };
+        ensure!(secs <= 86400, "sparkline bucket {t:?}: at most 24h");
+        Ok(secs)
+    }
+
+    /// A fixed bound as a number, None for `fleet`, `row` or `log`.
+    pub fn fixed_bound(&self) -> Option<f64> {
+        self.bound.trim().parse::<f64>().ok().filter(|b| *b > 0.0)
+    }
+
+    pub fn check(&self) -> Result<()> {
+        ensure!(
+            (1..=64).contains(&self.bars),
+            "sparkline bars {}: 1 to 64",
+            self.bars
+        );
+        self.bucket_seconds()?;
+        ensure!(
+            METRICS.contains(&self.metric.as_str()),
+            "sparkline metric {:?}: any of {}",
+            self.metric,
+            METRICS.join(", ")
+        );
+        ensure!(
+            BOUNDS.contains(&self.bound.as_str()) || self.fixed_bound().is_some(),
+            "sparkline bound {:?}: any of {}, or a positive number",
+            self.bound,
+            BOUNDS.join(", ")
+        );
+        Ok(())
+    }
+
+    /// The column's name, what it covers: `last 16m`.
+    pub fn title(&self) -> String {
+        let secs = self.bucket_seconds().unwrap_or(60) * self.bars as u64;
+        let span = match secs {
+            0..60 => format!("{secs}s"),
+            60..3600 => format!("{}m", secs / 60),
+            _ if secs.is_multiple_of(3600) => format!("{}h", secs / 3600),
+            _ => format!("{}m", secs / 60),
+        };
+        format!("last {span}")
+    }
+
+    /// The block as jobs.yaml lines.
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            "sparkline:".to_owned(),
+            format!("  bars: {}", self.bars),
+            format!("  bucket: {}", self.bucket),
+            format!("  metric: {}", self.metric),
+            format!("  bound: {}", self.bound),
+        ]
+    }
+}
 
 fn parse(path: &Path) -> Result<JobsFile> {
     let doc: JobsFile =
@@ -151,7 +278,24 @@ fn parse(path: &Path) -> Result<JobsFile> {
     {
         bail!("unknown column {bad:?}; columns are {}", COLUMNS.join(", "));
     }
+    if let Some(sp) = &doc.sparkline {
+        sp.check()?;
+    }
     Ok(doc)
+}
+
+/// The `sparkline` column's settings: `sparkline:` from jobs.yaml, or the built-in when the
+/// file is missing, invalid or silent on it.
+pub fn sparkline(path: &Path) -> Sparkline {
+    parse(path)
+        .ok()
+        .and_then(|d| d.sparkline)
+        .unwrap_or_default()
+}
+
+/// `sparkline:` as written, `None` when the file has none: what the config editor edits.
+pub fn file_sparkline(path: &Path) -> Option<Sparkline> {
+    parse(path).ok().and_then(|d| d.sparkline)
 }
 
 /// The dashboard's session columns: `columns:` from jobs.yaml, or the default when the file is
@@ -325,12 +469,18 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     Some((s, e))
 }
 
-/// Rewrite the `defaults:` block and the `columns:` line of jobs.yaml with `d` and `columns`:
-/// in place when the file has them, after `version:` when it does not, and a missing file is
-/// created around them with `jobs: []`. Only those change. The policy is checked as a Claude
-/// job would resolve it, so a default no job could run under is refused with the file
-/// untouched, whether or not the file has jobs; an unknown column is refused the same way.
-pub fn write_config(path: &Path, d: &Policy, columns: Option<&[String]>) -> Result<()> {
+/// Rewrite the `defaults:` block, the `columns:` line and the `sparkline:` block of jobs.yaml
+/// with `d`, `columns` and `sparkline`: in place when the file has them, after `version:` when
+/// it does not, and a missing file is created around them with `jobs: []`. Only those change.
+/// The policy is checked as a Claude job would resolve it, so a default no job could run under
+/// is refused with the file untouched, whether or not the file has jobs; an unknown column or a
+/// sparkline value cones cannot draw is refused the same way.
+pub fn write_config(
+    path: &Path,
+    d: &Policy,
+    columns: Option<&[String]>,
+    sparkline: Option<&Sparkline>,
+) -> Result<()> {
     let base = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -349,16 +499,24 @@ jobs: []
         .filter(|c| !c.is_empty())
         .map(|c| vec![format!("columns: [{}]", c.join(", "))])
         .unwrap_or_default();
-    // columns first, so the defaults block's place is still where it was read.
-    for (key, block) in [("columns:", cols), ("defaults:", block)] {
+    let spark = sparkline.map(Sparkline::lines).unwrap_or_default();
+    // Last first, so each block's place is still where it was read: the sparkline block
+    // follows the columns line, which follows the defaults block.
+    for (key, block) in [
+        ("sparkline:", spark),
+        ("columns:", cols),
+        ("defaults:", block),
+    ] {
         let lines: Vec<&str> = out.iter().map(String::as_str).collect();
         let at = match top_level(&lines, key) {
             Some((s, e)) => s..e,
             None => {
-                let at = if key == "columns:" {
-                    top_level(&lines, "defaults:").map(|(_, e)| e)
-                } else {
-                    None
+                let at = match key {
+                    "sparkline:" => top_level(&lines, "columns:")
+                        .or_else(|| top_level(&lines, "defaults:"))
+                        .map(|(_, e)| e),
+                    "columns:" => top_level(&lines, "defaults:").map(|(_, e)| e),
+                    _ => None,
                 }
                 .or_else(|| {
                     lines
@@ -677,7 +835,7 @@ mod tests {
             codex_full_access: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
-        write_config(&p, &d, Some(&cols)).unwrap();
+        write_config(&p, &d, Some(&cols), None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  tools: [Read, Edit]\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
@@ -696,7 +854,7 @@ mod tests {
         assert_eq!(read_jobs(&p).unwrap()[0].tools, ["Read", "Edit"]);
 
         // Nothing set removes the block and the line; a file without them gets them after version.
-        write_config(&p, &Policy::default(), None).unwrap();
+        write_config(&p, &Policy::default(), None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
@@ -704,20 +862,20 @@ mod tests {
             notify: Some(true),
             ..Default::default()
         };
-        write_config(&p, &d, Some(&[])).unwrap();
+        write_config(&p, &d, Some(&[]), None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
-        write_config(&p, &Policy::default(), Some(&cols)).unwrap();
+        write_config(&p, &Policy::default(), Some(&cols), None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 1\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
-        let err = write_config(&p, &d, Some(&["speed".to_owned()]))
+        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("unknown column"), "{err}");
@@ -725,7 +883,7 @@ mod tests {
 
         // A missing file is created; a default no job could run under is refused, jobs or not.
         let missing = p.with_file_name("new.yaml");
-        write_config(&missing, &d, None).unwrap();
+        write_config(&missing, &d, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 1\ndefaults:\n  notify: true\njobs: []\n"
@@ -735,7 +893,9 @@ mod tests {
             daily_budget_usd: Some(1.0),
             ..Default::default()
         };
-        let err = write_config(&missing, &bad, None).unwrap_err().to_string();
+        let err = write_config(&missing, &bad, None, None)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("daily_budget_usd must cover"), "{err}");
         assert!(
             fs::read_to_string(&missing)
@@ -744,5 +904,90 @@ mod tests {
             "untouched"
         );
         assert!(!missing.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn the_sparkline_block_is_read_checked_and_written() {
+        let (_d, p) = file(FILE);
+        assert_eq!(
+            sparkline(&p),
+            Sparkline::default(),
+            "built-in without a block"
+        );
+        assert_eq!(file_sparkline(&p), None);
+        let sp = Sparkline {
+            bars: 12,
+            bucket: "5m".into(),
+            metric: "tools".into(),
+            bound: "20".into(),
+        };
+        write_config(
+            &p,
+            &Policy::default(),
+            Some(&["state".to_owned()]),
+            Some(&sp),
+        )
+        .unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.ends_with(
+                "columns: [state]\nsparkline:\n  bars: 12\n  bucket: 5m\n  metric: tools\n  bound: 20\n"
+            ),
+            "the block follows the columns line: {text}"
+        );
+        assert_eq!(sparkline(&p), sp);
+        assert_eq!(sp.bucket_seconds().unwrap(), 300);
+        assert_eq!(sp.fixed_bound(), Some(20.0));
+        assert_eq!(sp.title(), "last 1h");
+        assert_eq!(Sparkline::default().title(), "last 16m");
+        // A value cones cannot draw is refused with the file untouched.
+        for (bad, msg) in [
+            (
+                Sparkline {
+                    bars: 0,
+                    ..sp.clone()
+                },
+                "sparkline bars 0",
+            ),
+            (
+                Sparkline {
+                    bucket: "5x".into(),
+                    ..sp.clone()
+                },
+                "sparkline bucket",
+            ),
+            (
+                Sparkline {
+                    metric: "cost".into(),
+                    ..sp.clone()
+                },
+                "sparkline metric",
+            ),
+            (
+                Sparkline {
+                    bound: "-3".into(),
+                    ..sp.clone()
+                },
+                "sparkline bound",
+            ),
+        ] {
+            let err = write_config(&p, &Policy::default(), None, Some(&bad))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(msg), "{err}");
+            assert_eq!(sparkline(&p), sp, "untouched after {msg}");
+        }
+        // Nothing set removes the block.
+        write_config(&p, &Policy::default(), None, None).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("sparkline"));
+        // A block may name only what changes.
+        let (_d, p) = file("version: 1\nsparkline:\n  metric: tokens\njobs: []\n");
+        assert_eq!(
+            sparkline(&p),
+            Sparkline {
+                metric: "tokens".into(),
+                ..Default::default()
+            }
+        );
     }
 }
