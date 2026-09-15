@@ -27,7 +27,8 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 Requires macOS and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later. pi sessions need nothing: any pi running in a terminal is a row.
 
 ```sh
-brew install YuvalSarel1/cones/cones
+brew tap YuvalSarel1/cones https://github.com/YuvalSarel1/cones
+brew install cones
 ```
 
 Or build it with Cargo:
