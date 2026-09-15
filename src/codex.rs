@@ -56,7 +56,8 @@ pub struct Meta {
 pub struct Tail {
     /// First line of the assistant's most recent message.
     pub last: Option<String>,
-    /// `active` after `task_started`, `idle` after `task_complete` or `turn_aborted`.
+    /// Latest turn: `active` after `task_started`, `done` after `task_complete`,
+    /// `stopped` after `turn_aborted`. A new turn returns to `active`.
     pub state: Option<&'static str>,
     /// Timestamp of the last line.
     pub last_activity: Option<DateTime<Utc>>,
@@ -337,7 +338,8 @@ impl Tail {
             if v["type"] == "event_msg" {
                 match v["payload"]["type"].as_str() {
                     Some("task_started") => t.state = Some("active"),
-                    Some("task_complete" | "turn_aborted") => t.state = Some("idle"),
+                    Some("task_complete") => t.state = Some("done"),
+                    Some("turn_aborted") => t.state = Some("stopped"),
                     Some("token_count") => {
                         let info = &v["payload"]["info"];
                         let total = &info["total_token_usage"];
@@ -640,7 +642,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 harness: "codex".into(),
                 kind,
                 cwd: p.cwd.clone().unwrap_or_default(),
-                // Codex writes task_started and task_complete; nothing else about the turn.
+                // The latest turn's start, completion or cancellation from the rollout.
                 state: t.state.unwrap_or("-").into(),
                 // The rollout's last timestamp; the process start is not substituted for it.
                 last_activity: t.last_activity,
@@ -999,7 +1001,25 @@ mod tests {
         );
         writeln!(f, "{}", &done[40..]).unwrap();
         f.flush().unwrap();
-        assert_eq!(tail_of(&path).state, Some("idle"));
+        assert_eq!(tail_of(&path).state, Some("done"));
+        writeln!(f, "{started}").unwrap();
+        f.flush().unwrap();
+        assert_eq!(
+            tail_of(&path).state,
+            Some("active"),
+            "a new turn replaces the completed turn's state"
+        );
+        let aborted = r#"{"timestamp":"2026-09-15T08:41:00.000Z","type":"event_msg","payload":{"type":"turn_aborted","reason":"interrupted"}}"#;
+        writeln!(f, "{aborted}").unwrap();
+        f.flush().unwrap();
+        assert_eq!(tail_of(&path).state, Some("stopped"));
+        writeln!(f, "{started}").unwrap();
+        f.flush().unwrap();
+        assert_eq!(
+            tail_of(&path).state,
+            Some("active"),
+            "a new turn replaces the aborted turn's state"
+        );
         fs::write(&path, format!("{started}\n")).unwrap();
         assert_eq!(
             tail_of(&path).state,
@@ -1172,7 +1192,7 @@ mod tests {
         );
         assert_eq!(
             (rows[0].state.as_str(), rows[0].title.as_deref()),
-            ("idle", Some("fix the build"))
+            ("done", Some("fix the build"))
         );
         let live = rows.clone();
         assert!(

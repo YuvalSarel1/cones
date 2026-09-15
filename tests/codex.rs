@@ -67,7 +67,7 @@ fn rollout_lines_give_meta_last_reply_and_turn_state() {
         t.last.as_deref(),
         Some("For native Computer Use, the verified setup is the desktop app.")
     );
-    assert_eq!(t.state, Some("idle"));
+    assert_eq!(t.state, Some("done"));
     assert_eq!(t.model.as_deref(), Some("openai.gpt-6-astra"));
     assert_eq!(
         t.last_activity.unwrap().to_rfc3339(),
@@ -190,7 +190,7 @@ fn rows_read_the_rollout_and_the_session_index() {
         matched.title.as_deref(),
         Some("Polish shared filter controls")
     );
-    assert_eq!(matched.state, "idle");
+    assert_eq!(matched.state, "done");
     assert_eq!(
         matched.last.as_deref(),
         Some("For native Computer Use, the verified setup is the desktop app.")
