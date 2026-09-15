@@ -48,6 +48,9 @@ pub struct Policy {
     /// Codex job. A job's `model:` is one field, so the default is per harness.
     pub model: Option<String>,
     pub codex_model: Option<String>,
+    /// Where the harness sends its requests: `true` Amazon Bedrock, `false` the harness's own
+    /// endpoint, unset whatever the harness's own configuration says.
+    pub bedrock: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -85,6 +88,8 @@ pub struct Job {
     pub overlap: Option<Overlap>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bedrock: Option<bool>,
 }
 
 impl Job {
@@ -110,6 +115,7 @@ impl Job {
             codex_full_access: None,
             overlap: None,
             notify: None,
+            bedrock: None,
         }
     }
 }
@@ -484,6 +490,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         }),
     );
     put("notify", d.notify.map(|v| v.to_string()));
+    put("bedrock", d.bedrock.map(|v| v.to_string()));
     out
 }
 
@@ -605,6 +612,7 @@ pub struct ResolvedJob {
     pub codex_full_access: bool,
     pub overlap: Overlap,
     pub notify: bool,
+    pub bedrock: Option<bool>,
 }
 
 /// A one-off job for `cones run --prompt`: the template's policy (or the read-only defaults)
@@ -645,6 +653,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             codex_full_access: false,
             overlap: Overlap::Skip,
             notify: false,
+            bedrock: None,
         },
     })
 }
@@ -808,6 +817,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         codex_full_access: full,
         overlap,
         notify: j.notify.or(d.notify).unwrap_or(false),
+        bedrock: j.bedrock.or(d.bedrock),
     })
 }
 
@@ -893,6 +903,7 @@ mod tests {
             codex_full_access: None,
             model: None,
             codex_model: None,
+            bedrock: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(&p, &d, Some(&cols), None, None).unwrap();

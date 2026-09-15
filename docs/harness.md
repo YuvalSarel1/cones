@@ -106,7 +106,7 @@ What `cones run` and `cones coordinator start` need to launch a harness. The com
 | No user or project settings, no MCP, no slash commands | reported: `--setting-sources ""`, `--strict-mcp-config --mcp-config`, `--disable-slash-commands` | unknown |
 | Version and flag probe | reported: `claude --version` against `>=2.1, <3`; every compiled flag against `claude --help` | unknown |
 | Background session with a skill | reported: `claude --bg --plugin-dir <dir> /<skill>` | unknown |
-| Session in a directory with a first instruction (the dashboard's composer) | reported: `claude --bg` with the instruction in that cwd, resolved from the launch PATH | reported: `codex --remote` with the instruction in that cwd, as a client of the daemon |
+| Session in a directory with a first instruction (the dashboard's composer) | reported: `claude --bg` with the instruction in that cwd, resolved from the launch PATH; `--model` from `defaults.model` and `CLAUDE_CODE_USE_BEDROCK` in its environment from `defaults.bedrock` | reported: `codex --remote` with the instruction in that cwd, as a client of the daemon; `-m` from `defaults.codex_model` and `-c model_provider=amazon-bedrock` (`openai` for `false`) from `defaults.bedrock` |
 
 ## Open
 

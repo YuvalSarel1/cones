@@ -1,10 +1,11 @@
-use crate::config::{HarnessKind, ResolvedJob};
+use crate::config::{HarnessKind, Policy, ResolvedJob};
 use anyhow::{Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 
@@ -63,7 +64,7 @@ pub enum Start {
     Foreground(std::process::Command),
 }
 
-pub fn start(kind: HarnessKind, dir: &Path, prompt: &str) -> Result<Start> {
+pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Result<Start> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
@@ -71,19 +72,61 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str) -> Result<Start> {
     Ok(match kind {
         HarnessKind::Claude => {
             let mut c = std::process::Command::new(path);
-            c.args(["--bg", "--", prompt]).current_dir(dir);
+            c.args(session_args(kind, None, prompt, policy))
+                .current_dir(dir);
+            // Claude's provider switch is its environment variable. The shell's own setting
+            // stands when the policy says nothing.
+            // ponytail: a settings.json `env` that forces Bedrock still wins over `false`.
+            match policy.bedrock {
+                Some(true) => c.env("CLAUDE_CODE_USE_BEDROCK", "1"),
+                Some(false) => c.env_remove("CLAUDE_CODE_USE_BEDROCK"),
+                None => &mut c,
+            };
             Start::Background(c)
         }
         HarnessKind::Codex => {
             let (path, remote) = codex_remote(&path)?;
             let mut c = std::process::Command::new(path);
-            c.args(["--remote", &remote, "-C"])
-                .arg(dir)
-                .arg(prompt)
+            c.args(session_args(kind, Some((&remote, dir)), prompt, policy))
                 .current_dir(dir);
             Start::Foreground(c)
         }
     })
+}
+
+/// The arguments of a session the composer starts: the defaults' model for the harness, and
+/// for Codex the provider `bedrock` picks (`amazon-bedrock` or its own `openai`), as its
+/// `-c` override of config.toml. Claude's provider is set in its environment instead.
+pub fn session_args(
+    kind: HarnessKind,
+    remote: Option<(&str, &Path)>,
+    prompt: &str,
+    policy: &Policy,
+) -> Vec<OsString> {
+    let mut args: Vec<OsString> = vec![];
+    match kind {
+        HarnessKind::Claude => {
+            args.push("--bg".into());
+            if let Some(m) = &policy.model {
+                args.extend(["--model".into(), m.into()]);
+            }
+            args.push("--".into());
+        }
+        HarnessKind::Codex => {
+            if let Some((remote, dir)) = remote {
+                args.extend(["--remote".into(), remote.into(), "-C".into(), dir.into()]);
+            }
+            if let Some(m) = &policy.codex_model {
+                args.extend(["-m".into(), m.into()]);
+            }
+            if let Some(bedrock) = policy.bedrock {
+                let provider = if bedrock { "amazon-bedrock" } else { "openai" };
+                args.extend(["-c".into(), format!("model_provider={provider}").into()]);
+            }
+        }
+    }
+    args.push(prompt.into());
+    args
 }
 
 /// Whether this build of the harness can be opened from the dashboard and left running: Claude
@@ -322,6 +365,12 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
                 )
             })?,
         );
+    }
+    if job.bedrock == Some(true) {
+        // Bedrock needs the shell's AWS credentials and region, so every AWS_ variable comes
+        // along; the job has nothing else to name them by.
+        env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
+        env.extend(std::env::vars().filter(|(k, _)| k.starts_with("AWS_")));
     }
     env.insert("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into());
     Ok(env)
@@ -624,6 +673,67 @@ pub fn compiled_flags(args: &[String]) -> Vec<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_composer_launch_carries_the_defaults_model_and_provider() {
+        let p = Policy {
+            model: Some("opus".into()),
+            codex_model: Some("gpt-5.6-luna".into()),
+            bedrock: Some(true),
+            ..Policy::default()
+        };
+        assert_eq!(
+            session_args(HarnessKind::Claude, None, "fix it", &p),
+            ["--bg", "--model", "opus", "--", "fix it"]
+        );
+        assert_eq!(
+            session_args(
+                HarnessKind::Codex,
+                Some(("unix:///s.sock", Path::new("/repo"))),
+                "fix it",
+                &p
+            ),
+            [
+                "--remote",
+                "unix:///s.sock",
+                "-C",
+                "/repo",
+                "-m",
+                "gpt-5.6-luna",
+                "-c",
+                "model_provider=amazon-bedrock",
+                "fix it"
+            ]
+        );
+        // Nothing set: the harness's own model and provider, as before.
+        assert_eq!(
+            session_args(HarnessKind::Claude, None, "x", &Policy::default()),
+            ["--bg", "--", "x"]
+        );
+        let direct = Policy {
+            bedrock: Some(false),
+            ..Policy::default()
+        };
+        assert_eq!(
+            session_args(HarnessKind::Codex, None, "x", &direct),
+            ["-c", "model_provider=openai", "x"]
+        );
+    }
+
+    #[test]
+    fn a_bedrock_job_gets_the_switch_and_the_shell_s_aws_variables() {
+        let dir = std::env::temp_dir();
+        let mut job = crate::config::adhoc(None, "p", &dir).unwrap();
+        // SAFETY: a name no other test reads, set before the environment is built.
+        unsafe { std::env::set_var("AWS_CONES_TEST_REGION", "us-west-2") };
+        let env = environment(&job).unwrap();
+        assert!(!env.contains_key("CLAUDE_CODE_USE_BEDROCK"));
+        assert!(!env.contains_key("AWS_CONES_TEST_REGION"));
+        job.bedrock = Some(true);
+        let env = environment(&job).unwrap();
+        assert_eq!(env["CLAUDE_CODE_USE_BEDROCK"], "1");
+        assert_eq!(env["AWS_CONES_TEST_REGION"], "us-west-2");
+    }
 
     #[test]
     fn the_daemon_socket_comes_from_the_first_json_line() {

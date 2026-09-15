@@ -1905,7 +1905,7 @@ const GROUPS: [(&str, &str); 4] = [
 
 /// The fields under their groups. A field under `claude` or `codex` reaches only that
 /// harness's jobs.
-const FIELDS: [Field; 17] = [
+const FIELDS: [Field; 18] = [
     Field {
         group: "jobs",
         name: "timeout_min",
@@ -1947,6 +1947,14 @@ const FIELDS: [Field; 17] = [
         input: Answer::Pick(&["-", "skip", "allow", "replace"]),
     },
     Field {
+        group: "jobs",
+        name: "bedrock",
+        short: "run on Amazon Bedrock",
+        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; - leaves it to the harness's own configuration. A Bedrock job also gets the shell's AWS_ variables.",
+        builtin: "harness's",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
         group: "claude",
         name: "model",
         short: "alias or model id",
@@ -1974,7 +1982,7 @@ const FIELDS: [Field; 17] = [
         group: "codex",
         name: "codex_model",
         short: "empty uses default",
-        long: "Empty uses Codex's default model. Codex jobs are currently unavailable because their dollar budget cannot be enforced.",
+        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Codex jobs are still unavailable.",
         builtin: "default",
         input: Answer::Typed,
     },
@@ -2127,6 +2135,7 @@ impl ConfigForm {
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
+                "bedrock" => flag(d.bedrock),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
                 "sparkline.bars" => spark(|s| s.bars.to_string()),
                 "sparkline.bucket" => spark(|s| s.bucket.clone()),
@@ -2235,6 +2244,7 @@ impl ConfigForm {
             notify: flag("notify"),
             model: text("model"),
             codex_model: text("codex_model"),
+            bedrock: flag("bedrock"),
         };
         // The sparkline block: every field empty leaves it out; otherwise the built-in fills
         // what is not typed, and the block is checked the way jobs.yaml is read.
@@ -4342,6 +4352,8 @@ impl App {
         }
         let dir = self.target_dir();
         let kind = harness::KNOWN[self.harness];
+        // The defaults block's model and provider reach a session as they reach a job.
+        let policy = config::defaults(&self.jobs_path);
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         // Rollout timestamps are the thread's own clock; a little slack covers it.
@@ -4354,7 +4366,7 @@ impl App {
             // recorded on the first ctrl+z, when the viewer takes the thread's id as its key.
             let key = format!("codex:start:{}", since.timestamp_millis());
             self.prepare_viewer(what, key, record, retry, move || {
-                match harness::start(kind, &dir, prompt.trim())? {
+                match harness::start(kind, &dir, prompt.trim(), &policy)? {
                     Start::Foreground(command) => Ok(command),
                     Start::Background(_) => anyhow::bail!("expected a Codex viewer"),
                 }
@@ -4378,7 +4390,8 @@ impl App {
         std::thread::spawn(move || {
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
-                let Start::Background(mut command) = harness::start(kind, &dir, prompt.trim())?
+                let Start::Background(mut command) =
+                    harness::start(kind, &dir, prompt.trim(), &policy)?
                 else {
                     anyhow::bail!("expected a background Claude session");
                 };
@@ -8302,7 +8315,8 @@ mod tests {
         let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
         assert!(
             at("\njobs  defaults") < at("timeout_min")
-                && at("write") < at("\nclaude  defaults")
+                && at("overlap") < at("bedrock")
+                && at("bedrock") < at("\nclaude  defaults")
                 && at("\nclaude  defaults") < at("model")
                 && at("max_turns") < at("\ncodex  defaults")
                 && at("\ncodex  defaults") < at("codex_model")
