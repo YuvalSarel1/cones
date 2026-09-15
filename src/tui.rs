@@ -720,8 +720,9 @@ fn header_lines(summary: Line<'static>, width: usize) -> Vec<Line<'static>> {
             })
             .collect();
     }
-    // The box wraps the counts, so it stops where they do.
-    let inner = (summary.width() + 2).min(width - 14);
+    // The box wraps the counts, so it stops where they do. The floor keeps "── cones ─" whole,
+    // and `fit` below never returns more than it was given, so the padding cannot underflow.
+    let inner = (summary.width() + 2).max(10).min(width - 14);
     let top = vec![
         Span::styled("── ", dim()),
         Span::styled("cones ", lit()),
@@ -6156,24 +6157,28 @@ mod tests {
 
     #[test]
     fn header_fits_the_counts_and_keeps_its_border_at_narrow_widths() {
-        let summary = Line::raw("123 working  4 input  5 idle  6 done  ·  7 jobs  8 runs");
-        let fitted = summary.width() + 16;
-        for width in [0, 1, 7, 23, 24, 40, 60, 80, 120] {
-            let lines = header_lines(summary.clone(), width);
-            assert_eq!(lines.len(), 3);
-            assert!(lines.iter().all(|line| line.width() <= width));
-            if width >= 24 {
-                let want = width.min(fitted);
-                assert!(lines.iter().all(|line| line.width() == want), "{width}");
-                for (line, border) in lines.iter().zip(['┐', '│', '┘']) {
-                    assert!(line.to_string().ends_with(border));
+        let counts = Line::raw("123 working  4 input  5 idle  6 done  ·  7 jobs  8 runs");
+        for summary in [counts.clone(), Line::raw("1 idle"), Line::default()] {
+            // 14 for the mascot, its gap and the borders, 2 for the padding inside them.
+            let fitted = (summary.width() + 16).max(24);
+            for width in [0, 1, 7, 23, 24, 40, 60, 80, 120] {
+                let lines = header_lines(summary.clone(), width);
+                assert_eq!(lines.len(), 3);
+                assert!(lines.iter().all(|line| line.width() <= width));
+                if width >= 24 {
+                    let want = width.min(fitted);
+                    assert!(lines.iter().all(|line| line.width() == want), "{width}");
+                    for (line, border) in lines.iter().zip(['┐', '│', '┘']) {
+                        let line = line.to_string();
+                        assert!(line.ends_with(border), "{line}");
+                    }
+                    assert!(lines[0].to_string().contains("cones ─"), "{width}");
                 }
             }
-            if width == 120 {
-                let counts = lines[1].to_string();
-                assert!(counts.contains("123 working") && counts.contains("8 runs"));
-            }
         }
+        let wide = header_lines(counts, 120);
+        let middle = wide[1].to_string();
+        assert!(middle.contains("123 working") && middle.contains("8 runs"));
     }
     use ratatui::Terminal;
     use std::fs;
