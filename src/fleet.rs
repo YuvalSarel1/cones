@@ -233,6 +233,12 @@ pub fn process_table(ps: &str) -> Result<String> {
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("reading the process table with {ps}"))?;
+    // Listing every process has no empty case, so a nonzero exit is a failure like any other.
+    ensure!(
+        out.status.success(),
+        "{ps} could not list the process table: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 

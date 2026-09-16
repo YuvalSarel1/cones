@@ -46,7 +46,7 @@ From a checkout of this repository, `cargo install --path .` does the same.
 Open the dashboard. Existing sessions appear automatically; no jobs file is needed.
 
 ```sh
-cones tui
+cones
 ```
 
 To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Shift+Tab` cycles Claude Code, Codex and pi.

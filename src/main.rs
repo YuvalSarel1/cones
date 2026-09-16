@@ -7,7 +7,7 @@ use cones::{
 };
 use std::{
     fs,
-    io::Write,
+    io::{IsTerminal, Write},
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::PathBuf,
     process::Command,
@@ -20,8 +20,12 @@ struct Cli {
     jobs: PathBuf,
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
+    /// Log terminal hand-offs, input events and transition timings to STATE_DIR/tui-debug.log.
+    #[arg(long, global = true)]
+    debug: bool,
+    /// The dashboard, with no subcommand at all.
     #[command(subcommand)]
-    command: Action,
+    command: Option<Action>,
 }
 #[derive(Clone, Copy, ValueEnum)]
 enum Trigger {
@@ -83,12 +87,6 @@ enum Action {
     },
     /// Check execution prerequisites and policy hazards.
     Doctor,
-    /// Dashboard with live session viewers, a composer and job controls.
-    Tui {
-        /// Log terminal hand-offs, input events and transition timings to STATE_DIR/tui-debug.log.
-        #[arg(long)]
-        debug: bool,
-    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -115,7 +113,7 @@ fn main() {
     std::process::exit(code);
 }
 fn execute(cli: Cli) -> Result<i32> {
-    if let Action::Worker { run_id } = &cli.command {
+    if let Some(Action::Worker { run_id }) = &cli.command {
         return runner::worker(run_id);
     }
     let cwd = std::env::current_dir()?;
@@ -125,7 +123,22 @@ fn execute(cli: Cli) -> Result<i32> {
     )?;
     let jobs_path = cones::expand_path(&cli.jobs, &cwd)?;
     let claude = cones::fleet::claude_dir()?;
-    match cli.command {
+    // No subcommand is the dashboard: `cones` is the dashboard, and the rest is machinery.
+    let Some(command) = cli.command else {
+        // Now that a bare `cones` is the dashboard, a pipe or a cron line reaches it by accident.
+        ensure!(
+            std::io::stdout().is_terminal(),
+            "the dashboard is what plain `cones` does, and it needs a terminal"
+        );
+        return cones::tui::run(
+            &std::env::current_exe()?,
+            &jobs_path,
+            &state,
+            &claude,
+            cli.debug,
+        );
+    };
+    match command {
         Action::Validate => {
             let jobs = config::read_jobs(&jobs_path)?;
             for job in &jobs {
@@ -246,13 +259,6 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Action::Tui { debug } => cones::tui::run(
-            &std::env::current_exe()?,
-            &jobs_path,
-            &state,
-            &claude,
-            debug,
-        ),
         Action::List => {
             print!("{}", cones::tui::list(&jobs_path, &state, &claude)?);
             Ok(0)

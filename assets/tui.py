@@ -141,7 +141,7 @@ session = f"conescap-{uuid.uuid4().hex[:8]}"
 # CLAUDE_CONFIG_DIR and keeps its runs in --state-dir, so all three come from the fixture home;
 # CODEX_HOME goes with it, or the machine's own Codex threads land in the asset. The example job
 # is the jobs file, so no job row has a run of this machine's in flight.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR -u CODEX_HOME HOME={shlex.quote(HOME)} CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)} tui", check=True)
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR -u CODEX_HOME HOME={shlex.quote(HOME)} CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)}", check=True)
 try:
     # The dashboard selects the first row and spawns its viewer, which needs a moment to attach
     # and paint before the pane holds an agent's screen rather than an empty frame.

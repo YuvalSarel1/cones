@@ -3,7 +3,7 @@
 
     python3 scripts/bench-tui.py --log ~/.cones/tui-debug.log
 
-summarizes a `cones tui --debug` log for intermittent delays. The timings separate harness
+summarizes a `cones --debug` log for intermittent delays. The timings separate harness
 commands, data reads, discarded snapshots, row rebuilding, a viewer's spawn to its first text
 and the first draw after input or returning from a viewer. Time spent inside a viewer is
 excluded from return latency.
@@ -194,7 +194,7 @@ def measure(args):
                 start = time.monotonic()
                 tmux("new-session", "-d", "-s", "bench", "-x", "160", "-y", "40",
                      str(binary), "--jobs", str(root / "none.yaml"),
-                     "--state-dir", str(state), "tui", "--debug")
+                     "--state-dir", str(state), "--debug")
                 tmux("set-option", "-s", "exit-empty", "off")
                 sample("startup", start, wait(lambda s: selected(s, "Bench Alpha")))
                 # 160 columns draws the viewer beside the list, where enter and ctrl+z move

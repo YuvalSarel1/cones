@@ -2,10 +2,11 @@
 
 Back to the [README](../README.md). Jobs and runs are in [jobs.md](jobs.md), the dashboard in [dashboard.md](dashboard.md), where every session fact comes from in [harness.md](harness.md).
 
-Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (default `~/.cones`).
+Global flags: `--jobs PATH` (default `jobs.yaml`), `--state-dir PATH` (default `~/.cones`) and `--debug`.
 
 | Command | What it does |
 | --- | --- |
+| `cones` | The dashboard, described in [dashboard.md](dashboard.md). No subcommand at all: everything below is machinery around it. |
 | `cones validate` | Compile every job's policy; print `name valid harness` per job or fail. |
 | `cones install [--dry-run]` | Write and load LaunchAgents for enabled jobs, remove disabled ones; `--dry-run` prints the plists (with `env` values) and installs nothing. |
 | `cones uninstall` | Remove every `local.cones.*` LaunchAgent; keep runs and transcripts. |
@@ -17,7 +18,7 @@ Global flags: `--jobs PATH` (default `jobs.yaml`) and `--state-dir PATH` (defaul
 | `cones attach ID [--print-command]` | Resume a finished run in its cwd, restoring its archived Claude transcript if needed. Attach directly to a live Claude background session. Interactive Claude, Codex and pi sessions are refused by this CLI command; the dashboard can join Codex daemon threads. `--print-command` prints the command instead. A running headless run cannot be attached; follow its log. |
 | `cones coordinator start [DIR]` | Launch the folder's coordinator: the start-orchestrator skill embedded in the binary, written to `~/.cones/coordinator/plugin` and loaded for one background Claude session in DIR (default: the current directory) with `--plugin-dir`; Claude prints the session id. When the skill's status file already names a live coordinator for that folder, print it and exit 0. Nothing is installed under `~/.claude`. See [coordinator.md](coordinator.md). |
 | `cones doctor` | The checks listed below; `OK`/`WARN`/`FAIL` per line, exit 1 on any `FAIL`. |
-| `cones tui [--debug]` | The dashboard, described in [dashboard.md](dashboard.md). `--debug` appends to `STATE_DIR/tui-debug.log`: the terminal's state at start, every input event, each viewer's open (with its pid and command; one opened while the cursor rested is a `prespawn` line, and its end carries the last line of its stderr), focus, leave, close and exit, the time from a viewer's spawn to its first text (`viewer_first_paint`), how long a viewer opened while the cursor rested had been running when `enter` took it (`viewer_prespawn_hit`), command durations, refresh reads and discarded snapshots, transition-to-draw timings (`startup_to_draw`, `input_to_draw`, `action_result_to_draw`, `opening_result_to_draw`, `return_to_draw`) and frames taking at least 16ms (`slow_draw`). |
+| `cones --debug` | `--debug` appends to `STATE_DIR/tui-debug.log`: the terminal's state at start, every input event, each viewer's open (with its pid and command; one opened while the cursor rested is a `prespawn` line, and its end carries the last line of its stderr), focus, leave, close and exit, the time from a viewer's spawn to its first text (`viewer_first_paint`), how long a viewer opened while the cursor rested had been running when `enter` took it (`viewer_prespawn_hit`), command durations, refresh reads and discarded snapshots, transition-to-draw timings (`startup_to_draw`, `input_to_draw`, `action_result_to_draw`, `opening_result_to_draw`, `return_to_draw`) and frames taking at least 16ms (`slow_draw`). |
 
 ## Sessions at the shell
 

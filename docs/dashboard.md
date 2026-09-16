@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). See [harness.md](harness.md) for session sources and supported actions, [jobs.md](jobs.md) for job policy, and [cli.md](cli.md) for commands.
 
-`cones tui` shows live sessions and recent runs. The menu opens folders, jobs, configuration and help. The composer starts native sessions in the selected row's directory. No jobs file is needed to view sessions.
+`cones` shows live sessions and recent runs. The menu opens folders, jobs, configuration and help. The composer starts native sessions in the selected row's directory. No jobs file is needed to view sessions.
 
 ## The screen
 
@@ -262,4 +262,4 @@ Claude and pi transcript summaries are cached by file length and recounted when 
 
 The config-button preview rereads jobs.yaml every frame. If profiling shows this cost, cache the form during the dashboard's rebuild.
 
-For delays, use `cones tui --debug`. [cli.md](cli.md) lists its timing events; `scripts/bench-tui.py` summarizes logs or measures the TUI with fixture harnesses, without model calls. Limits in the code are implementation settings, not guarantees of harness startup time or memory use.
+For delays, use `cones --debug`. [cli.md](cli.md) lists its timing events; `scripts/bench-tui.py` summarizes logs or measures the TUI with fixture harnesses, without model calls. Limits in the code are implementation settings, not guarantees of harness startup time or memory use.
