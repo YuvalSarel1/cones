@@ -44,7 +44,7 @@ The pane shows live viewers only. Use `cones logs` for recorded output; the dash
 | `state` | working, input, idle, done, failed or stopped | yes |
 | `context` | Reported prompt/window tokens, such as `98k/200k`; prompt alone when the window is unavailable | yes |
 | `activity` | Counts per time bucket as bars; the window is bars × bucket | yes |
-| `model` | Reported model under the name it is presented by, `claude-fable-5-1` as Fable 5.1; an id with no such name is shown verbatim | yes |
+| `model` | Reported model under the name its provider presents it by, `claude-fable-5-1` as Fable 5.1 and `openai.gpt-6-astra` as GPT-6 Astra; an id of no name cones knows is shown verbatim, see [harness.md](harness.md) | yes |
 | `age` | Time since the reported session start | yes |
 | `last` | Latest reply or status text; directory when grouped by state | yes |
 | `tokens` | Session input/output totals, such as `49.2M/201k` | no |

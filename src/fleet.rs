@@ -855,39 +855,159 @@ fn short(n: u64) -> String {
     }
 }
 
-/// Name a Claude model the way it is presented: `claude-fable-5-1` is Fable 5.1,
-/// `claude-opus-5[1m]` is Opus 5 (1M). Ids from other providers, and aliases a
-/// job writes by hand, pass through verbatim.
+/// Every model Bedrock serves, under the name it presents it by, from
+/// `aws bedrock list-foundation-models` on 2026-09-16. Keyed by [`stem`], so one
+/// row answers for the id in every region and every `-v1:0` revision of it.
+/// Regenerate when a provider ships a model cones should name.
+const NAMES: [(&str, &str); 70] = [
+    ("claude-fable-5", "Claude Fable 5"),
+    ("claude-fable-5-1", "Claude Fable 5.1"),
+    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+    ("claude-opus-4-1-20250805", "Claude Opus 4.1"),
+    ("claude-opus-4-5-20251101", "Claude Opus 4.5"),
+    ("claude-opus-4-6", "Claude Opus 4.6"),
+    ("claude-opus-4-7", "Claude Opus 4.7"),
+    ("claude-opus-4-8", "Claude Opus 4.8"),
+    ("claude-opus-5", "Claude Opus 5"),
+    ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
+    ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+    ("claude-sonnet-5", "Claude Sonnet 5"),
+    ("devstral-2-123b", "Devstral 2 123B"),
+    ("gemma-3-12b-it", "Gemma 3 12B IT"),
+    ("gemma-3-4b-it", "Gemma 3 4B IT"),
+    ("glm-4.7", "GLM 4.7"),
+    ("glm-4.7-flash", "GLM 4.7 Flash"),
+    ("glm-5", "GLM 5"),
+    ("gpt-5.6-luna", "GPT-5.6 Luna"),
+    ("gpt-5.6-sol", "GPT-5.6 Sol"),
+    ("gpt-5.6-terra", "GPT-5.6 Terra"),
+    ("gpt-6-astra", "GPT-6 Astra"),
+    ("gpt-oss-120b-1", "gpt-oss-120b"),
+    ("gpt-oss-20b-1", "gpt-oss-20b"),
+    ("gpt-oss-safeguard-120b", "GPT OSS Safeguard 120B"),
+    ("gpt-oss-safeguard-20b", "GPT OSS Safeguard 20B"),
+    ("grok-4.6", "Grok 4.6"),
+    ("kimi-k2-thinking", "Kimi K2 Thinking"),
+    ("kimi-k2.5", "Kimi K2.5"),
+    ("llama3-1-70b-instruct", "Llama 3.1 70B Instruct"),
+    ("llama3-1-8b-instruct", "Llama 3.1 8B Instruct"),
+    ("llama3-3-70b-instruct", "Llama 3.3 70B Instruct"),
+    ("llama3-70b-instruct", "Llama 3 70B Instruct"),
+    ("llama3-8b-instruct", "Llama 3 8B Instruct"),
+    (
+        "llama4-maverick-17b-instruct",
+        "Llama 4 Maverick 17B Instruct",
+    ),
+    ("llama4-scout-17b-instruct", "Llama 4 Scout 17B Instruct"),
+    ("magistral-small-2509", "Magistral Small 2509"),
+    ("minimax-m2", "MiniMax M2"),
+    ("minimax-m2.1", "MiniMax M2.1"),
+    ("minimax-m2.5", "MiniMax M2.5"),
+    ("ministral-3-14b-instruct", "Ministral 14B 3.0"),
+    ("ministral-3-3b-instruct", "Ministral 3B"),
+    ("ministral-3-8b-instruct", "Ministral 3 8B"),
+    ("mistral-7b-instruct", "Mistral 7B Instruct"),
+    ("mistral-large-2402", "Mistral Large (24.02)"),
+    ("mistral-large-2407", "Mistral Large (24.07)"),
+    ("mistral-large-3-675b-instruct", "Mistral Large 3"),
+    ("mixtral-8x7b-instruct", "Mixtral 8x7B Instruct"),
+    ("nemotron-nano-3-30b", "Nemotron Nano 3 30B"),
+    ("nova-2-lite", "Nova 2 Lite"),
+    ("nova-2-sonic", "Nova 2 Sonic"),
+    ("nova-lite", "Nova Lite"),
+    ("nova-micro", "Nova Micro"),
+    ("nova-pro", "Nova Pro"),
+    ("palmyra-x4", "Palmyra X4"),
+    ("palmyra-x5", "Palmyra X5"),
+    ("pegasus-1-2", "Pegasus v1.2"),
+    ("pixtral-large-2502", "Pixtral Large (25.02)"),
+    ("qwen3-235b-a22b-2507", "Qwen3 235B A22B 2507"),
+    ("qwen3-32b", "Qwen3 32B (dense)"),
+    ("qwen3-coder-30b-a3b", "Qwen3-Coder-30B-A3B-Instruct"),
+    ("qwen3-coder-480b-a35b", "Qwen3 Coder 480B A35B Instruct"),
+    ("qwen3-next-80b-a3b", "Qwen3 Next 80B A3B"),
+    ("qwen3-vl-235b-a22b", "Qwen3 VL 235B A22B"),
+    ("r1", "DeepSeek-R1"),
+    ("v3", "DeepSeek-V3.1"),
+    ("v3.2", "DeepSeek V3.2"),
+    ("voxtral-mini-3b-2507", "Voxtral Mini 3B 2507"),
+    ("voxtral-small-24b-2507", "Voxtral Small 24B 2507"),
+];
+
+/// The part of a model id that names the model: no region, no provider, no
+/// revision. `us.anthropic.claude-sonnet-4-5-20250929-v1:0` is
+/// `claude-sonnet-4-5-20250929`.
+fn stem(id: &str) -> &str {
+    let mut id = id;
+    // Region and provider lead in dotted words; a version carries digits.
+    while let Some((word, rest)) = id.split_once('.')
+        && word.chars().all(|c| c.is_ascii_alphabetic())
+    {
+        id = rest;
+    }
+    let id = id.split(':').next().unwrap_or(id);
+    id.rsplit_once("-v")
+        .filter(|(_, rev)| !rev.is_empty() && rev.bytes().all(|b| b.is_ascii_digit()))
+        .map_or(id, |(head, _)| head)
+}
+
+/// Name a model the way it is presented: `claude-fable-5-1` is Fable 5.1 and
+/// `us.openai.gpt-5.6-sol` is GPT-5.6 Sol. [`NAMES`] answers first. An id it does
+/// not carry is spelled from its own words, so a model newer than the table is
+/// named too, and the vendor word leads only when the id does not say the family.
+/// An id of no family cones knows, and a bare alias a job writes by hand, are
+/// shown verbatim.
 pub fn model(id: &str) -> String {
     let (base, window) = id
         .split_once("[1m]")
         .map_or((id, ""), |(b, _)| (b, " (1M)"));
-    // Bedrock and Vertex carry the same id behind a prefix and a `-v1:0` tail.
-    let Some(base) = base.rfind("claude").map(|i| &base[i..]) else {
-        return id.into();
+    let base = stem(base);
+    if let Some((_, name)) = NAMES.iter().find(|(k, _)| *k == base) {
+        // The row already shows the harness, so the column need not say Claude twice.
+        return name.strip_prefix("Claude ").unwrap_or(name).to_owned() + window;
+    }
+    let capitalize = |w: &str| match w.chars().next() {
+        Some(c) => c.to_uppercase().to_string() + &w[c.len_utf8()..],
+        None => String::new(),
     };
-    let mut family = None;
-    let mut version = Vec::new();
-    for word in base.split(['-', '.']).skip(1) {
+    let (mut family, mut version, mut rest) = (None, Vec::new(), Vec::new());
+    for word in base.split('-').filter(|w| !w.is_empty()) {
+        let digits = |w: &str| w.bytes().all(|b| b.is_ascii_digit());
         match word {
-            "fable" => family = Some("Fable"),
-            "opus" => family = Some("Opus"),
-            "sonnet" => family = Some("Sonnet"),
-            "haiku" => family = Some("Haiku"),
-            // A release date is not a version number.
-            _ if word.len() < 3 && word.chars().all(|c| c.is_ascii_digit()) => version.push(word),
-            _ => {}
+            "claude" => {}
+            "fable" | "opus" | "sonnet" | "haiku" | "gpt" => family = Some(word),
+            // A release date is not a version.
+            _ if word.len() == 8 && digits(word) => {}
+            // `5`, `4o` and `5.6` are versions; `0613` and `16k` are names, and a
+            // version leads, so the `1` of `gpt-oss-120b-1` is a revision.
+            _ if rest.is_empty()
+                && word.starts_with(|c: char| c.is_ascii_digit())
+                && (word.len() <= 2 || word.contains('.')) =>
+            {
+                version.push(word);
+            }
+            _ => rest.push(word),
         }
     }
-    let Some(family) = family else {
+    // A family word on its own is an alias, not a model: `sonnet` stays `sonnet`.
+    let Some(family) = family.filter(|_| !version.is_empty() || !rest.is_empty()) else {
         return id.into();
     };
-    let mut out = family.to_owned();
-    if !version.is_empty() {
-        out.push(' ');
-        out.push_str(&version.join("."));
-    }
-    out + window
+    let version = version.join(".");
+    // Claude spaces its version off the family, GPT carries it in the name.
+    let head = match (family, version.is_empty()) {
+        ("gpt", true) => "GPT".to_owned(),
+        ("gpt", false) => format!("GPT-{version}"),
+        (_, true) => capitalize(family),
+        (_, false) => format!("{} {version}", capitalize(family)),
+    };
+    [head]
+        .into_iter()
+        .chain(rest.into_iter().map(capitalize))
+        .collect::<Vec<_>>()
+        .join(" ")
+        + window
 }
 
 pub fn tilde(path: &Path) -> String {
@@ -906,16 +1026,36 @@ mod tests {
     #[test]
     fn a_model_id_is_shown_under_the_name_it_is_presented_by() {
         for (id, shown) in [
+            // Bedrock's own name for it, in any region and any revision.
             ("claude-fable-5-1", "Fable 5.1"),
             ("claude-opus-5", "Opus 5"),
             ("claude-opus-5[1m]", "Opus 5 (1M)"),
             ("claude-haiku-4-5-20251001", "Haiku 4.5"),
-            ("claude-3-5-sonnet-20241022", "Sonnet 3.5"),
             ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Sonnet 4.5"),
-            // Nothing to look up: the harness's own word for it stands.
-            ("gpt-5-codex", "gpt-5-codex"),
-            ("us.openai.gpt-5.6-sol", "us.openai.gpt-5.6-sol"),
+            ("openai.gpt-6-astra", "GPT-6 Astra"),
+            ("us.openai.gpt-5.6-sol", "GPT-5.6 Sol"),
+            (
+                "meta.llama3-3-70b-instruct-v1:0:128k",
+                "Llama 3.3 70B Instruct",
+            ),
+            ("amazon.nova-pro-v1:0", "Nova Pro"),
+            ("deepseek.r1-v1:0", "DeepSeek-R1"),
+            ("openai.gpt-oss-120b-1:0", "gpt-oss-120b"),
+            // Bedrock's own name loses to the id here, so the id stands.
+            ("google.gemma-3-27b-it", "google.gemma-3-27b-it"),
+            ("nvidia.nemotron-nano-9b-v2", "nvidia.nemotron-nano-9b-v2"),
+            // Not a model Bedrock serves: spelled from the id's own words.
+            ("gpt-5-codex", "GPT-5 Codex"),
+            ("claude-opus-6", "Opus 6"),
+            ("claude-3-7-sonnet-latest", "Sonnet 3.7 Latest"),
+            ("gpt-4o", "GPT-4o"),
+            // A snapshot and a window are names, not versions, and never join one.
+            ("gpt-4-0613", "GPT-4 0613"),
+            ("gpt-3.5-turbo-16k", "GPT-3.5 Turbo 16k"),
+            // Nothing to name: the harness's own word for it stands.
+            ("o3", "o3"),
             ("sonnet", "sonnet"),
+            ("gpt", "gpt"),
         ] {
             assert_eq!(model(id), shown, "{id}");
         }
