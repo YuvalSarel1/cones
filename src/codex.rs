@@ -71,7 +71,7 @@ pub struct Process {
     pub thread: Option<String>,
     /// `--remote` makes this process a viewer of an app-server thread, not its writer.
     pub remote: bool,
-    /// The prompt on the command line, whitespace collapsed by `ps`, or `None` without one.
+    /// The first line of the prompt on the command line, or `None` without one.
     pub prompt: Option<String>,
 }
 
@@ -209,9 +209,17 @@ pub fn processes(ps: &str) -> Vec<Process> {
 fn client_options<'a>(
     mut args: impl Iterator<Item = &'a str>,
 ) -> (bool, Option<String>, Option<String>) {
+    /// `ps` keeps a multi-line prompt on one line and spells its breaks out: a newline prints as
+    /// the four characters `\012` and a carriage return as `^M`. Words either side of a break are
+    /// not neighbours, so take the first line and say that it was cut rather than glue the halves.
     fn rest<'a>(words: impl Iterator<Item = &'a str>) -> Option<String> {
         let text = words.collect::<Vec<_>>().join(" ");
-        (!text.is_empty()).then_some(text)
+        let cut = ["\\012", "^M"].iter().filter_map(|b| text.find(b)).min();
+        let first = cut.map_or(text.as_str(), |i| text[..i].trim_end());
+        (!first.is_empty()).then(|| match cut {
+            Some(_) => format!("{first}…"),
+            None => first.to_owned(),
+        })
     }
     let mut remote = false;
     let mut resume = false;
@@ -982,6 +990,23 @@ mod tests {
         for args in ["--remote unix:///s.sock", "--remote unix:///s.sock --"] {
             assert_eq!(client_options(args.split_whitespace()).2, None, "{args}");
         }
+        // `ps` prints a newline inside the prompt as `\012` and a carriage return as `^M`.
+        for args in [
+            "--remote unix:///s.sock -- fix this\\012then explain it",
+            "--remote unix:///s.sock -- fix this^Mthen explain it",
+            "--remote unix:///s.sock -- fix this \\012 then explain it",
+        ] {
+            assert_eq!(
+                client_options(args.split_whitespace()).2,
+                Some("fix this…".into()),
+                "a line break is not a space: {args}"
+            );
+        }
+        assert_eq!(
+            client_options("--remote unix:///s.sock -- \\012fix this".split_whitespace()).2,
+            None,
+            "a prompt whose first line is empty says nothing"
+        );
     }
 
     fn rollout(home: &Path, name: &str, id: &str, cwd: &Path, at: &str, turn: bool) -> PathBuf {
