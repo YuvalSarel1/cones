@@ -1226,8 +1226,6 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
         let rows = codex::thread_rows(&home, state, &out);
         out.extend(rows);
     }
-    let hidden = Ledger::new(state)?.hidden()?;
-    out.retain(|s| !hidden.contains(&s.session_id));
     fleet::sort(&mut out);
     Ok(out)
 }
@@ -5029,7 +5027,6 @@ impl App {
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
-                        Ledger::new(&state)?.hide(&target)?;
                         if let Some(pid) = client {
                             fleet::terminate(pid, "codex")?;
                         }
@@ -6877,14 +6874,15 @@ mod tests {
             .map(|s| s.session_id)
             .collect();
         assert_eq!(ids, ["dddd", A], "the older thread comes first");
-        // Forgotten and hidden: the row stays away even if the daemon holds the thread again.
-        Ledger::new(&state).unwrap().hide("dddd").unwrap();
+        // Forgetting drops the record, and the row goes with it; a thread the daemon still
+        // holds keeps its row, because a live thread is worth seeing.
+        codex::forget(&state, "dddd").unwrap();
         let ids: Vec<String> = fleet_rows(&claude, &state, &[])
             .unwrap()
             .into_iter()
             .map(|s| s.session_id)
             .collect();
-        assert_eq!(ids, [A], "a hidden thread has no row");
+        assert_eq!(ids, [A], "a forgotten thread has no row");
     }
 
     #[test]
