@@ -96,8 +96,3 @@ It runs as a visible Claude Code session in that folder. Job policies apply to s
 
 [Dashboard controls](docs/dashboard.md) · [Job configuration](docs/jobs.md) · [Coordinator](docs/coordinator.md) · [Harness support](docs/harness.md) · [CLI reference](docs/cli.md)
 
-## Roadmap
-
-<p align="center"><a href="assets/roadmap.svg"><img src="assets/roadmap.svg" alt="cones roadmap: Now, Next, Later" width="100%"></a></p>
-
-[Roadmap source](assets/roadmap.py).

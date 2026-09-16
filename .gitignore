@@ -1,5 +1,6 @@
 /target/
 /jobs.yaml
 /repomix-output.*
+/docs/roadmap.md
 .DS_Store
 /.claude/
