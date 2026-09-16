@@ -94,7 +94,7 @@ activity:
 | `bars` | 1 to 64 buckets, oldest left and newest right. |
 | `bucket` | Positive duration in `s`, `m` or `h`, at most `24h`. |
 | `metric` | `lines`, `messages`, `tools` or `tokens` (output tokens). See the [activity mappings](harness.md#observe) for each harness. |
-| `bound` | `fleet`: busiest bucket across loaded sessions; `row`: each row's busiest bucket; `log`: fleet scale with logarithmic values; a positive number: fixed count for a full bar. |
+| `bound` | `fleet`: busiest bucket across loaded sessions; `row`: each row's busiest bucket; `log`: fleet scale with logarithmic values; a positive number: fixed count for a full bar, set in the file rather than the editor. |
 
 Omitted fields use the values above. Bucket edges align to the clock, so bars move left once per bucket and only the newest grows between boundaries. Empty buckets use the lowest bar; rows with no activity in the window are dim. Future timestamps count in the newest bucket.
 
@@ -230,8 +230,8 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 | Control | Fields and behavior |
 | --- | --- |
-| Choices | Harness, provider, write, overlap, notify, pane settings and metric. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
-| Choices or text | Claude model, AWS region, bucket and bound. A custom value joins the choices while selected; stepping away drops it. |
+| Choices | Harness, provider, write, overlap, notify, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
+| Choices or text | Claude model, AWS region and bucket. A custom value joins the choices while selected; stepping away drops it. |
 | Numbers | `confirm_secs`, bar count, turn cap and daily budget step by 1; timeout by 5 minutes; per-run budget by 0.25 USD. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
 | Text | AWS profile and Codex model id. |
 | Columns | Arrows select, space shows/hides, brackets reorder, backspace restores defaults. Each change saves immediately; `ctrl+t` offers the same arrangement on the table. |

@@ -1873,9 +1873,9 @@ const FIELDS: [Field; 23] = [
         sub: "activity",
         name: "activity.bound",
         short: "chart scale",
-        long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number sets the count for a full bar.",
+        long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number in jobs.yaml sets the count for a full bar.",
         builtin: "fleet",
-        input: Answer::PickOrType(&["-", "fleet", "row", "log"], "a number"),
+        input: Answer::Pick(&["-", "fleet", "row", "log"]),
     },
     Field {
         group: "harnesses",
@@ -2549,9 +2549,6 @@ impl ConfigForm {
                 let at = ring.iter().position(|o| o == value).unwrap_or(0);
                 let mut spans = vec![];
                 picks(&mut spans, &labels, at);
-                if matches!(f.input, Answer::PickOrType(..)) {
-                    spans.push(Span::styled(" …", dim()));
-                }
                 return spans;
             }
         }
@@ -9143,15 +9140,32 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
+        let row_of = |s: &str, label: &str| {
+            s.lines()
+                .find(|l| l.contains(label))
+                .unwrap_or_else(|| panic!("{label}: {s}"))
+                .to_owned()
+        };
         assert!(s.contains("chart scale          [fleet] row  log"), "{s}");
         assert!(
-            s.contains("activity.bound › enter types a number · default: fleet"),
-            "a field that also takes something typed says so: {s}"
+            s.contains("activity.bound › default: fleet"),
+            "a field with only its own words says nothing about typing: {s}"
         );
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "row"));
+        go(&mut app, "activity.bucket");
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = (0..60)
+            .map(|y| cells(&t, y, 81..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            s.contains("activity.bucket › enter types a duration · default: 1m"),
+            "a field that also takes something typed says so, and only there: {s}"
+        );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        for c in "20".chars() {
+        for c in "10m".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         t.draw(|f| app.draw(f)).unwrap();
@@ -9161,27 +9175,21 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            s.contains("chart scale          [ 20"),
+            row_of(&s, "time per bar").contains("[ 10m"),
             "typing replaces the words with the box it is typed in: {s}"
         );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "20"));
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "10m"));
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        let row_of = |s: &str, label: &str| {
-            s.lines()
-                .find(|l| l.contains(label))
-                .unwrap_or_else(|| panic!("{label}: {s}"))
-                .to_owned()
-        };
-        let bound = row_of(&s, "chart scale");
+        let bucket = row_of(&s, "time per bar");
         assert!(
-            bound.contains("fleet") && bound.contains("[20]"),
-            "a value typed in stands last among the words, as one more choice: {bound}"
+            bucket.contains("30s") && bucket.contains("[10m]"),
+            "a value typed in stands last among the words, as one more choice: {bucket}"
         );
         go(&mut app, "model");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
