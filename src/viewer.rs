@@ -643,7 +643,12 @@ pub fn at_empty_prompt(screen: &vt100::Screen) -> bool {
     }
     let (row, col) = screen.cursor_position();
     let left = screen.contents_between(row, 0, row, col);
-    let mut marks = left.chars().filter(|c| !c.is_whitespace()).peekable();
+    // Codex sprinkles braille dots around its composer as an ambient animation; one
+    // can land between the marker and the caret, so they count as blanks.
+    let mut marks = left
+        .chars()
+        .filter(|c| !c.is_whitespace() && !('\u{2800}'..='\u{28ff}').contains(c))
+        .peekable();
     // ponytail: a marker has to be there, so a full-screen client parking the caret
     // on blank space keeps its key. Add a client's marker here when one is missing.
     marks.peek().is_some()
@@ -1170,6 +1175,8 @@ mod tests {
         assert!(at("\u{2502} > ".as_bytes()));
         assert!(at(b"$ "));
         assert!(!at("\u{2502} > hi".as_bytes()));
+        // Codex's ambient braille sparkle drifting over the composer row.
+        assert!(at("\u{203a}\u{2801} \u{2808}\x1b[2G".as_bytes()));
         assert!(!at(b"\x1b[?25l$ "));
         assert!(!at(b"> hi\x1b[H"));
         // A full-screen client parks the caret mid-screen, not behind a marker.
