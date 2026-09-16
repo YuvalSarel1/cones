@@ -309,6 +309,12 @@ fn launchctl(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Writes and loads one LaunchAgent per job.
+///
+/// `exe` becomes `ProgramArguments[0]` in every plist and callers pass
+/// `std::env::current_exe()`, so the agents name whichever copy of the binary ran the install.
+/// Installing from a stray copy therefore schedules that copy: delete it later and the job cannot
+/// launch, silently, until the next install. Run this from the binary on `PATH`.
 pub fn install(
     jobs: &[ResolvedJob],
     exe: &Path,
