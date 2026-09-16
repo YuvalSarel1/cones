@@ -17,7 +17,7 @@ thread() {
   local id cwd
   id=$(ps -o command= -p "$pid" | sed -n 's/.* resume \([0-9a-f-]\{36\}\).*/\1/p')
   if [ -z "$id" ]; then
-    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed "s/'/''/g")
     # A thread's title is its first prompt, and a client started with a prompt carries it in argv
     # after `-C <cwd>`; three fresh threads in one cwd resolve by that prefix, newest as fallback.
     prompt=$(ps -o command= -p "$pid" | sed -n 's/.* -C [^ ]* //p' | cut -c1-40 | sed "s/'/''/g")

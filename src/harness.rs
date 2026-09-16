@@ -116,6 +116,7 @@ pub fn session_args(
                 let provider = if bedrock { "amazon-bedrock" } else { "openai" };
                 args.extend(["-c".into(), format!("model_provider={provider}").into()]);
             }
+            args.push("--".into());
         }
         HarnessKind::Pi => {}
     }
@@ -661,6 +662,7 @@ mod tests {
                 "gpt-5.6-luna",
                 "-c",
                 "model_provider=amazon-bedrock",
+                "--",
                 "fix it"
             ]
         );
@@ -674,7 +676,7 @@ mod tests {
         };
         assert_eq!(
             session_args(HarnessKind::Codex, None, "x", &direct),
-            ["-c", "model_provider=openai", "x"]
+            ["-c", "model_provider=openai", "--", "x"]
         );
     }
 

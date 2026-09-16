@@ -519,14 +519,7 @@ pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()
             }
         }
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, out.join("\n") + "\n")?;
-    let checked = read_jobs(&tmp).map(drop);
-    if checked.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    checked?;
-    fs::rename(&tmp, path)?;
+    save(path, out.join("\n") + "\n")?;
     Ok(())
 }
 
@@ -662,14 +655,7 @@ jobs: []
         };
         out.splice(at, block);
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, out.join("\n") + "\n")?;
-    let checked = read_jobs(&tmp).map(drop);
-    if checked.is_err() {
-        let _ = fs::remove_file(&tmp);
-    }
-    checked?;
-    fs::rename(&tmp, path)?;
+    save(path, out.join("\n") + "\n")?;
     Ok(())
 }
 
@@ -738,6 +724,26 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             aws_region: None,
         },
     })
+}
+
+/// Validate the new text in a sibling file before it replaces the old one. The sibling is
+/// created fresh so a planted symlink there cannot redirect the write.
+fn save(path: &Path, text: String) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    let _ = fs::remove_file(&tmp);
+    let checked = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()))
+        .map_err(Into::into)
+        .and_then(|()| read_jobs(&tmp).map(drop));
+    if checked.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    checked?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
