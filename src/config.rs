@@ -145,7 +145,7 @@ pub struct JobsFile {
     #[serde(default)]
     pub columns: Option<Vec<String>>,
     #[serde(default)]
-    pub sparkline: Option<Sparkline>,
+    pub activity: Option<Activity>,
     #[serde(default)]
     pub pane: Option<Pane>,
     #[serde(default)]
@@ -166,29 +166,16 @@ pub fn check_confirm_secs(secs: f64) -> Result<()> {
 }
 
 pub const COLUMNS: [&str; 8] = [
-    "harness",
-    "state",
-    "model",
-    "age",
-    "context",
-    "tokens",
-    "last",
-    "sparkline",
+    "harness", "state", "model", "age", "context", "tokens", "last", "activity",
 ];
 pub const DEFAULT_COLUMNS: [&str; 7] = [
-    "harness",
-    "state",
-    "context",
-    "sparkline",
-    "model",
-    "age",
-    "last",
+    "harness", "state", "context", "activity", "model", "age", "last",
 ];
 
-/// Sparkline settings; omitted fields use built-ins. See docs/dashboard.md.
+/// Activity settings; omitted fields use built-ins. See docs/dashboard.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct Sparkline {
+pub struct Activity {
     #[serde(default = "sixteen")]
     pub bars: usize,
     /// `15s`, `1m`, `5m`, `1h`: a count of seconds, minutes or hours.
@@ -287,7 +274,7 @@ impl Pane {
     }
 }
 
-impl Default for Sparkline {
+impl Default for Activity {
     fn default() -> Self {
         Self {
             bars: sixteen(),
@@ -298,10 +285,10 @@ impl Default for Sparkline {
     }
 }
 
-impl Sparkline {
+impl Activity {
     pub fn bucket_seconds(&self) -> Result<u64> {
         let t = self.bucket.trim();
-        let what = || format!("sparkline bucket {t:?}: a count of s, m or h, as in 1m");
+        let what = || format!("activity bucket {t:?}: a count of s, m or h, as in 1m");
         let (n, unit) = t.split_at(t.len() - t.chars().last().map_or(0, char::len_utf8));
         let n: u64 = n.parse().ok().filter(|n| *n > 0).with_context(what)?;
         let secs = match unit {
@@ -310,7 +297,7 @@ impl Sparkline {
             "h" => n * 3600,
             _ => bail!(what()),
         };
-        ensure!(secs <= 86400, "sparkline bucket {t:?}: at most 24h");
+        ensure!(secs <= 86400, "activity bucket {t:?}: at most 24h");
         Ok(secs)
     }
 
@@ -322,19 +309,19 @@ impl Sparkline {
     pub fn check(&self) -> Result<()> {
         ensure!(
             (1..=64).contains(&self.bars),
-            "sparkline bars {}: 1 to 64",
+            "activity bars {}: 1 to 64",
             self.bars
         );
         self.bucket_seconds()?;
         ensure!(
             METRICS.contains(&self.metric.as_str()),
-            "sparkline metric {:?}: any of {}",
+            "activity metric {:?}: any of {}",
             self.metric,
             METRICS.join(", ")
         );
         ensure!(
             BOUNDS.contains(&self.bound.as_str()) || self.fixed_bound().is_some(),
-            "sparkline bound {:?}: any of {}, or a positive number",
+            "activity bound {:?}: any of {}, or a positive number",
             self.bound,
             BOUNDS.join(", ")
         );
@@ -343,7 +330,7 @@ impl Sparkline {
 
     pub fn lines(&self) -> Vec<String> {
         vec![
-            "sparkline:".to_owned(),
+            "activity:".to_owned(),
             format!("  bars: {}", self.bars),
             format!("  bucket: {}", self.bucket),
             format!("  metric: {}", self.metric),
@@ -368,7 +355,7 @@ fn parse(path: &Path) -> Result<JobsFile> {
     {
         bail!("unknown column {bad:?}; columns are {}", COLUMNS.join(", "));
     }
-    if let Some(sp) = &doc.sparkline {
+    if let Some(sp) = &doc.activity {
         sp.check()?;
     }
     if let Some(p) = &doc.pane {
@@ -380,17 +367,17 @@ fn parse(path: &Path) -> Result<JobsFile> {
     Ok(doc)
 }
 
-/// Read sparkline settings, falling back to built-ins if missing or invalid.
-pub fn sparkline(path: &Path) -> Sparkline {
+/// Read activity settings, falling back to built-ins if missing or invalid.
+pub fn activity(path: &Path) -> Activity {
     parse(path)
         .ok()
-        .and_then(|d| d.sparkline)
+        .and_then(|d| d.activity)
         .unwrap_or_default()
 }
 
 /// Read without applying defaults; missing or invalid files return `None`.
-pub fn file_sparkline(path: &Path) -> Option<Sparkline> {
-    parse(path).ok().and_then(|d| d.sparkline)
+pub fn file_activity(path: &Path) -> Option<Activity> {
+    parse(path).ok().and_then(|d| d.activity)
 }
 
 /// Read pane settings, falling back to built-ins if missing or invalid.
@@ -585,7 +572,7 @@ pub fn write_config(
     path: &Path,
     d: &Policy,
     columns: Option<&[String]>,
-    sparkline: Option<&Sparkline>,
+    activity: Option<&Activity>,
     pane: Option<&Pane>,
     start: Option<&Start>,
     confirm_secs: Option<f64>,
@@ -608,7 +595,7 @@ jobs: []
         .filter(|c| !c.is_empty())
         .map(|c| vec![format!("columns: [{}]", c.join(", "))])
         .unwrap_or_default();
-    let spark = sparkline.map(Sparkline::lines).unwrap_or_default();
+    let spark = activity.map(Activity::lines).unwrap_or_default();
     let pane = pane.map(Pane::lines).unwrap_or_default();
     let start = start.map(Start::lines).unwrap_or_default();
     let mark = confirm_secs
@@ -618,7 +605,7 @@ jobs: []
     let order = [
         "defaults:",
         "columns:",
-        "sparkline:",
+        "activity:",
         "pane:",
         "start:",
         "confirm_secs:",
@@ -627,7 +614,7 @@ jobs: []
         ("confirm_secs:", mark),
         ("start:", start),
         ("pane:", pane),
-        ("sparkline:", spark),
+        ("activity:", spark),
         ("columns:", cols),
         ("defaults:", block),
     ] {
@@ -1153,15 +1140,15 @@ mod tests {
     }
 
     #[test]
-    fn the_sparkline_block_is_read_checked_and_written() {
+    fn the_activity_block_is_read_checked_and_written() {
         let (_d, p) = file(FILE);
         assert_eq!(
-            sparkline(&p),
-            Sparkline::default(),
+            activity(&p),
+            Activity::default(),
             "built-in without a block"
         );
-        assert_eq!(file_sparkline(&p), None);
-        let sp = Sparkline {
+        assert_eq!(file_activity(&p), None);
+        let sp = Activity {
             bars: 12,
             bucket: "5m".into(),
             metric: "tools".into(),
@@ -1180,51 +1167,51 @@ mod tests {
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.ends_with(
-                "columns: [state]\nsparkline:\n  bars: 12\n  bucket: 5m\n  metric: tools\n  bound: 20\n"
+                "columns: [state]\nactivity:\n  bars: 12\n  bucket: 5m\n  metric: tools\n  bound: 20\n"
             ),
             "the block follows the columns line: {text}"
         );
-        assert_eq!(sparkline(&p), sp);
+        assert_eq!(activity(&p), sp);
         assert_eq!(sp.bucket_seconds().unwrap(), 300);
         assert_eq!(sp.fixed_bound(), Some(20.0));
         for (bad, msg) in [
             (
-                Sparkline {
+                Activity {
                     bars: 0,
                     ..sp.clone()
                 },
-                "sparkline bars 0",
+                "activity bars 0",
             ),
             (
-                Sparkline {
+                Activity {
                     bucket: "5x".into(),
                     ..sp.clone()
                 },
-                "sparkline bucket",
+                "activity bucket",
             ),
             (
-                Sparkline {
+                Activity {
                     metric: "cost".into(),
                     ..sp.clone()
                 },
-                "sparkline metric",
+                "activity metric",
             ),
             (
-                Sparkline {
+                Activity {
                     bound: "-3".into(),
                     ..sp.clone()
                 },
-                "sparkline bound",
+                "activity bound",
             ),
         ] {
             let err = write_config(&p, &Policy::default(), None, Some(&bad), None, None, None)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains(msg), "{err}");
-            assert_eq!(sparkline(&p), sp, "untouched after {msg}");
+            assert_eq!(activity(&p), sp, "untouched after {msg}");
         }
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
-        assert!(!fs::read_to_string(&p).unwrap().contains("sparkline"));
+        assert!(!fs::read_to_string(&p).unwrap().contains("activity"));
         assert_eq!(confirm_secs(&p), CONFIRM_SECS, "built-in without a line");
         write_config(
             &p,
@@ -1249,10 +1236,10 @@ mod tests {
         assert_eq!(confirm_secs(&p), 3.5, "untouched after a refused value");
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("confirm_secs"));
-        let (_d, p) = file("version: 1\nsparkline:\n  metric: tokens\njobs: []\n");
+        let (_d, p) = file("version: 1\nactivity:\n  metric: tokens\njobs: []\n");
         assert_eq!(
-            sparkline(&p),
-            Sparkline {
+            activity(&p),
+            Activity {
                 metric: "tokens".into(),
                 ..Default::default()
             }
@@ -1317,7 +1304,7 @@ mod tests {
         let pn = Pane {
             at: "bottom".into(),
         };
-        let sp = Sparkline::default();
+        let sp = Activity::default();
         write_config(
             &p,
             &Policy::default(),
@@ -1331,7 +1318,7 @@ mod tests {
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.contains("  bound: fleet\npane:\n  at: bottom\nconfirm_secs: 2\n"),
-            "the block sits between sparkline and confirm_secs: {text}"
+            "the block sits between activity and confirm_secs: {text}"
         );
         assert_eq!((pane(&p), file_pane(&p)), (pn.clone(), Some(pn.clone())));
         let bad = Pane { at: "left".into() };

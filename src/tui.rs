@@ -139,7 +139,7 @@ pub struct Data {
     pub pane: config::Pane,
     /// Applied at startup only.
     pub start: config::Start,
-    pub spark: config::Sparkline,
+    pub spark: config::Activity,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
     pub confirm_secs: f64,
     /// Pinned folders retained as rows when empty.
@@ -172,7 +172,7 @@ impl Data {
             columns: config::columns(jobs_path),
             pane: config::pane(jobs_path),
             start: config::start(jobs_path),
-            spark: config::sparkline(jobs_path),
+            spark: config::activity(jobs_path),
             confirm_secs: config::confirm_secs(jobs_path),
             folders,
             recent: ledger.recent(&seen)?,
@@ -386,7 +386,6 @@ impl Data {
         names.extend(cols.iter().map(|c| match c.as_str() {
             "tokens" => "tokens in/out",
             "last" if by_state => "dir",
-            "sparkline" => "recent activity",
             c => c,
         }));
         let (names, cells) = columns(&names, cells, widths);
@@ -868,7 +867,7 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
         "state" => (label(&s.state).into(), color(&s.state)),
-        "sparkline" => {
+        "activity" => {
             let bars = spark.unwrap_or_default().to_owned();
             let quiet = bars.chars().all(|c| c == '▁');
             (bars, if quiet { dim() } else { plain() })
@@ -1812,7 +1811,7 @@ const FIELDS: [Field; 23] = [
         name: "columns",
         short: "session columns",
         long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
-        builtin: "harness, state, context, sparkline, model, age, last",
+        builtin: "harness, state, context, activity, model, age, last",
         input: Answer::Columns,
     },
     Field {
@@ -1844,8 +1843,8 @@ const FIELDS: [Field; 23] = [
     },
     Field {
         group: "cones",
-        sub: "sparkline",
-        name: "sparkline.bars",
+        sub: "activity",
+        name: "activity.bars",
         short: "bar count",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
         builtin: "16",
@@ -1853,8 +1852,8 @@ const FIELDS: [Field; 23] = [
     },
     Field {
         group: "cones",
-        sub: "sparkline",
-        name: "sparkline.bucket",
+        sub: "activity",
+        name: "activity.bucket",
         short: "time per bar",
         long: "Time per bar, such as 30s, 1m or 5m. Maximum 24h.",
         builtin: "1m",
@@ -1862,8 +1861,8 @@ const FIELDS: [Field; 23] = [
     },
     Field {
         group: "cones",
-        sub: "sparkline",
-        name: "sparkline.metric",
+        sub: "activity",
+        name: "activity.metric",
         short: "count per bar",
         long: "lines: all transcript lines. messages: assistant replies. tools: tool calls. tokens: output tokens.",
         builtin: "lines",
@@ -1871,8 +1870,8 @@ const FIELDS: [Field; 23] = [
     },
     Field {
         group: "cones",
-        sub: "sparkline",
-        name: "sparkline.bound",
+        sub: "activity",
+        name: "activity.bound",
         short: "chart scale",
         long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number sets the count for a full bar.",
         builtin: "fleet",
@@ -2030,7 +2029,7 @@ pub enum ConfigAction {
     Save(
         Box<config::Policy>,
         Vec<String>,
-        Option<config::Sparkline>,
+        Option<config::Activity>,
         Option<config::Pane>,
         Option<config::Start>,
         Option<f64>,
@@ -2057,14 +2056,14 @@ impl ConfigForm {
     pub fn new(
         d: &config::Policy,
         columns: Option<&[String]>,
-        spark: Option<&config::Sparkline>,
+        spark: Option<&config::Activity>,
         pane: Option<&config::Pane>,
         start: Option<&config::Start>,
         confirm_secs: Option<f64>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
-        let spark = |f: fn(&config::Sparkline) -> String| spark.map(f).unwrap_or_default();
+        let spark = |f: fn(&config::Activity) -> String| spark.map(f).unwrap_or_default();
         let pane = |f: fn(&config::Pane) -> String| pane.map(f).unwrap_or_default();
         let values = FIELDS
             .iter()
@@ -2094,9 +2093,9 @@ impl ConfigForm {
                 "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
-                "sparkline.bars" => spark(|s| s.bars.to_string()),
-                "sparkline.bucket" => spark(|s| s.bucket.clone()),
-                "sparkline.metric" => spark(|s| s.metric.clone()),
+                "activity.bars" => spark(|s| s.bars.to_string()),
+                "activity.bucket" => spark(|s| s.bucket.clone()),
+                "activity.metric" => spark(|s| s.metric.clone()),
                 "confirm_secs" => num(confirm_secs),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
                 _ => spark(|s| s.bound.clone()),
@@ -2135,7 +2134,7 @@ impl ConfigForm {
         (
             config::Policy,
             Vec<String>,
-            Option<config::Sparkline>,
+            Option<config::Activity>,
             Option<config::Pane>,
             Option<config::Start>,
             Option<f64>,
@@ -2201,32 +2200,32 @@ impl ConfigForm {
         .map_err(|e| format!("{e:#}"))?;
         let spark = if ["bars", "bucket", "metric", "bound"]
             .iter()
-            .all(|f| v(&format!("sparkline.{f}")).is_empty())
+            .all(|f| v(&format!("activity.{f}")).is_empty())
         {
             None
         } else {
-            let built = config::Sparkline::default();
-            let s = config::Sparkline {
-                bars: match v("sparkline.bars") {
+            let built = config::Activity::default();
+            let s = config::Activity {
+                bars: match v("activity.bars") {
                     "" => built.bars,
                     t => t.parse().map_err(|_| {
-                        format!("sparkline.bars: a whole number, as in 16, not {t:?}")
+                        format!("activity.bars: a whole number, as in 16, not {t:?}")
                     })?,
                 },
-                bucket: text("sparkline.bucket").unwrap_or(built.bucket),
-                metric: text("sparkline.metric").unwrap_or(built.metric),
-                bound: text("sparkline.bound").unwrap_or(built.bound),
+                bucket: text("activity.bucket").unwrap_or(built.bucket),
+                metric: text("activity.metric").unwrap_or(built.metric),
+                bound: text("activity.bound").unwrap_or(built.bound),
             };
             // Name the field the message is about, so the error lands on it.
             s.check().map_err(|e| {
                 let e = format!("{e:#}");
                 let field = ["bars", "bucket", "metric", "bound"]
                     .into_iter()
-                    .find(|f| e.starts_with(&format!("sparkline {f}")))
+                    .find(|f| e.starts_with(&format!("activity {f}")))
                     .unwrap_or("bars");
                 format!(
-                    "sparkline.{field}: {}",
-                    e.trim_start_matches(&format!("sparkline {field} "))
+                    "activity.{field}: {}",
+                    e.trim_start_matches(&format!("activity {field} "))
                 )
             })?;
             Some(s)
@@ -3644,7 +3643,7 @@ impl App {
         Box::new(ConfigForm::new(
             &config::defaults(&self.jobs_path),
             config::file_columns(&self.jobs_path).as_deref(),
-            config::file_sparkline(&self.jobs_path).as_ref(),
+            config::file_activity(&self.jobs_path).as_ref(),
             config::file_pane(&self.jobs_path).as_ref(),
             config::file_start(&self.jobs_path).as_ref(),
             config::file_confirm_secs(&self.jobs_path),
@@ -4246,6 +4245,14 @@ impl App {
         if self.focus.is_some() {
             self.unfocus();
         }
+        // A click off the pane takes the keys back from a focused panel, as esc would.
+        if !on_pane && self.panel_focused() {
+            if self.jobs_view {
+                self.leave_jobs();
+            } else {
+                self.mode = Mode::Normal;
+            }
+        }
         let l = self.list_area;
         if (l.top()..l.bottom()).contains(&ev.row) && ev.column < l.right() {
             let n = self.scroll + (ev.row - l.y) as usize;
@@ -4689,7 +4696,7 @@ impl App {
             &path,
             &config::defaults(&path),
             Some(cols),
-            config::file_sparkline(&path).as_ref(),
+            config::file_activity(&path).as_ref(),
             config::file_pane(&path).as_ref(),
             config::file_start(&path).as_ref(),
             config::file_confirm_secs(&path),
@@ -5572,6 +5579,16 @@ impl App {
     }
 
     fn draw_panel(&mut self, frame: &mut Frame, name: &str, pane: Rect) {
+        // A column of air beside the vertical rule, so the text is not against it.
+        let pane = if self.data.pane.at == "bottom" {
+            pane
+        } else {
+            Rect {
+                x: pane.x + 1,
+                width: pane.width.saturating_sub(1),
+                ..pane
+            }
+        };
         let (_, verb, what) = MENU.iter().find(|(n, ..)| *n == name).unwrap_or(&MENU[0]);
         let line = if self.panel_focused() {
             self.mode_line()
@@ -6096,7 +6113,7 @@ mod tests {
             "group headers sit on the margin"
         );
         assert!(
-            shown.iter().any(|l| l.as_str() == "  sparkline"),
+            shown.iter().any(|l| l.as_str() == "  activity"),
             "a block's sub-head is indented by two"
         );
         assert!(
@@ -9087,7 +9104,7 @@ mod tests {
                 app.key(code, KeyModifiers::NONE).unwrap();
             }
         };
-        go(&mut app, "sparkline.metric");
+        go(&mut app, "activity.metric");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
@@ -9101,7 +9118,7 @@ mod tests {
             "every word the field takes is on its row, the built-in bracketed: {s}"
         );
         assert!(
-            s.contains("sparkline.metric › default: lines"),
+            s.contains("activity.metric › default: lines"),
             "the prompt line names the key and the built-in, not the words: {s}"
         );
         assert!(
@@ -9119,7 +9136,7 @@ mod tests {
         );
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
-        go(&mut app, "sparkline.bound");
+        go(&mut app, "activity.bound");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
@@ -9128,7 +9145,7 @@ mod tests {
             .join("\n");
         assert!(s.contains("chart scale          [fleet] row  log"), "{s}");
         assert!(
-            s.contains("sparkline.bound › enter types a number · default: fleet"),
+            s.contains("activity.bound › enter types a number · default: fleet"),
             "a field that also takes something typed says so: {s}"
         );
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
@@ -9183,7 +9200,7 @@ mod tests {
         go(&mut app, "codex_full_access");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
-            .map(|y| cells(&t, y, 81..160))
+            .map(|y| cells(&t, y, 82..160))
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
@@ -9193,7 +9210,7 @@ mod tests {
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
-            .map(|y| cells(&t, y, 81..160))
+            .map(|y| cells(&t, y, 82..160))
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
@@ -9214,8 +9231,8 @@ mod tests {
                 && at("\n  start") < at("    composer starts on")
                 && at("    composer starts on") < at("\n  pane")
                 && at("\n  pane") < at("    pane side")
-                && at("    pane side") < at("\n  sparkline")
-                && at("\n  sparkline") < at("    bar count")
+                && at("    pane side") < at("\n  activity")
+                && at("\n  activity") < at("    bar count")
                 && at("    bar count") < at("\nharnesses  how claude and codex are run")
                 && at("\nharnesses  how claude and codex are run") < at("    run on Bedrock")
                 && at("    run on Bedrock") < at("\n  claude")
@@ -9658,6 +9675,18 @@ mod tests {
         app.mouse(click(10, 29));
         assert_eq!(key(&app).as_deref(), Some(A));
         assert_eq!(app.focus, None);
+        app.mode = Mode::Config(app.config_form());
+        app.mouse(click(list + 5, 5));
+        assert!(
+            matches!(app.mode, Mode::Config(_)),
+            "a click inside the editor stays in it"
+        );
+        app.mouse(click(10, row));
+        assert!(
+            matches!(app.mode, Mode::Normal),
+            "a click on the list takes the keys back from the editor"
+        );
+        assert_eq!(key(&app).as_deref(), Some(A));
         app.split = false;
         assert!(
             !app.wants_mouse(),

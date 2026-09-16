@@ -4,7 +4,7 @@ defaults:
   budget_usd: 0.25
   daily_budget_usd: 2.00
   write: false
-columns: [state, context, sparkline, model, activity]   # dashboard session columns, see docs/dashboard.md
+columns: [state, context, activity, model, age]   # dashboard session columns, see docs/dashboard.md
 jobs:
   - name: readme-check
     schedule: "0 9 * * 1-5"

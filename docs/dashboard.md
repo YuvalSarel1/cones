@@ -43,7 +43,7 @@ The pane shows live viewers only. Use `cones logs` for recorded output; the dash
 | `harness` | The harness name after its mark, `✻ claude`; without it the mark stands alone | yes |
 | `state` | working, input, idle, done, failed or stopped | yes |
 | `context` | Reported prompt/window tokens, such as `98k/200k`; prompt alone when the window is unavailable | yes |
-| `sparkline` | Activity by time bucket under a `recent activity` header; the window is bars × bucket | yes |
+| `activity` | Counts per time bucket as bars; the window is bars × bucket | yes |
 | `model` | Reported model id, verbatim | yes |
 | `age` | Time since the reported session start | yes |
 | `last` | Latest reply or status text; directory when grouped by state | yes |
@@ -79,10 +79,10 @@ start:
 
 A job's default harness is the separate `defaults.harness` field.
 
-### Sparkline
+### Activity
 
 ```yaml
-sparkline:
+activity:
   bars: 16
   bucket: 1m
   metric: lines
@@ -238,7 +238,7 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 Empty values omit overrides and use built-ins. Harness-owned fields pass no override when empty. Bedrock requires both an explicit AWS profile and region, including in the temporary session form. Codex settings can be saved for native sessions, but supervised Codex jobs are unavailable.
 
-Saving replaces only `defaults`, `columns`, `sparkline`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The editor does not run `cones install`; reinstall when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured at installation.
+Saving replaces only `defaults`, `columns`, `activity`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The editor does not run `cones install`; reinstall when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured at installation.
 
 ## Polling
 

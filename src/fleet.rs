@@ -82,7 +82,7 @@ impl Activity {
 /// Future timestamps count in the newest bucket.
 pub fn buckets(
     activity: &[Activity],
-    spark: &crate::config::Sparkline,
+    spark: &crate::config::Activity,
     now: DateTime<Utc>,
 ) -> Vec<u64> {
     let secs = spark.bucket_seconds().unwrap_or(60) as i64;
@@ -106,7 +106,7 @@ pub fn buckets(
 
 pub fn sparklines(
     sessions: &[Session],
-    spark: &crate::config::Sparkline,
+    spark: &crate::config::Activity,
     now: DateTime<Utc>,
 ) -> HashMap<String, String> {
     let all: Vec<(&Session, Vec<u64>)> = sessions
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(sum(|a| a.tokens_out), 40);
 
         let now = "2026-09-15T10:05:00Z".parse::<DateTime<Utc>>().unwrap();
-        let spark = |metric: &str, bound: &str| crate::config::Sparkline {
+        let spark = |metric: &str, bound: &str| crate::config::Activity {
             bars: 6,
             bucket: "1m".into(),
             metric: metric.into(),

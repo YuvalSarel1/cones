@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` contains `version: 1`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `sparkline`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
+`jobs.yaml` contains `version: 1`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
 
 Jobs override policy defaults individually. Claude uses `defaults.model` and `max_turns`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
 
@@ -15,13 +15,13 @@ defaults:
   budget_usd: 2.00
   daily_budget_usd: 10.00
   write: false
-columns: [harness, state, context, sparkline, model, age, last]   # dashboard session columns, see dashboard.md
+columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see dashboard.md
 pane:                 # which side the viewer pane sits on, see dashboard.md
   at: right
 start:                # what a new cones terminal comes up with, see dashboard.md
   harness: claude
   pane: true
-sparkline:            # the sparkline column's window, metric and scale, see dashboard.md
+activity:              # the activity column's window, metric and scale, see dashboard.md
   bars: 16
   bucket: 1m
   metric: lines

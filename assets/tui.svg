@@ -30,7 +30,7 @@
 <text x="437.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">1</text>
 <text x="445.9" y="50" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#3fb950"> done</text>
 <text x="513.4" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">││</text>
-<text x="530.2" y="50" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
+<text x="538.7" y="50" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
 <rect x="24.43" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="32.86" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="41.29" y="53" width="8.43" height="20" fill="#ff8700"/>
@@ -39,8 +39,8 @@
 <rect x="66.58" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="75.01" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="70" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">└──────────────────────────────────────────────┘│</text>
-<text x="547.1" y="70" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
-<text x="623.0" y="70" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
+<text x="555.5" y="70" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
+<text x="631.4" y="70" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
 <text x="521.8" y="90" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="110" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">▌ </text>
 <rect x="32.9" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
@@ -97,11 +97,13 @@
 <text x="521.8" y="570" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="590" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="610" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="630" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│───────────────────────────────────────────────────────────</text>
+<text x="16.0" y="630" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│</text>
+<text x="538.7" y="630" xml:space="preserve" textLength="488.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────</text>
 <text x="521.8" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="530.2" y="650" xml:space="preserve" textLength="59.0" lengthAdjust="spacingAndGlyphs" fill="#ff8700">jobs › </text>
-<text x="589.2" y="650" xml:space="preserve" textLength="252.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the jobs: start, edit, add one</text>
-<text x="16.0" y="670" xml:space="preserve" textLength="1011.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│───────────────────────────────────────────────────────────</text>
+<text x="538.7" y="650" xml:space="preserve" textLength="59.0" lengthAdjust="spacingAndGlyphs" fill="#ff8700">jobs › </text>
+<text x="597.7" y="650" xml:space="preserve" textLength="252.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the jobs: start, edit, add one</text>
+<text x="16.0" y="670" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│</text>
+<text x="538.7" y="670" xml:space="preserve" textLength="488.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────</text>
 <text x="16.0" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
 <text x="58.1" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> jobs · </text>
 <text x="125.6" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">← →</text>
