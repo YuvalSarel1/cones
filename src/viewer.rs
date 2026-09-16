@@ -399,7 +399,7 @@ impl Viewer {
         self.pending_input.extend_from_slice(&replies);
     }
 
-    fn flush(&mut self) {
+    fn drain(&mut self) {
         while !self.pending_input.is_empty() && self.master_open && self.status.is_none() {
             match self.master.write(&self.pending_input) {
                 Ok(0) => break,
@@ -417,6 +417,12 @@ impl Viewer {
         self.parser.screen_mut().set_scrollback(0);
         self.pending_input.extend_from_slice(bytes);
         self.flush();
+    }
+
+    /// Write queued input, and stop a viewer that has let it pile past `INPUT_CAP`,
+    /// whether the queue is user keys or the parser's replies to the client's queries.
+    fn flush(&mut self) {
+        self.drain();
         if self.pending_input.len() > INPUT_CAP {
             self.pending_input.clear();
             self.errors
