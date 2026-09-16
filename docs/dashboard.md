@@ -108,7 +108,7 @@ These keys apply to the dashboard. A focused viewer receives its own input as de
 | --- | --- |
 | `↑ ↓` | Move between rows; up past the first table reaches the menu. |
 | `enter` | With an empty composer, act on the row: open a session or finished run, follow a running run, start a job, or press a menu button. With an instruction, start a session; on `jobs` or `new job`, open the wizard with that instruction. |
-| `shift+enter` | Open the selected viewer or menu screen over the whole frame once. Leaving restores the prior layout. Terminals reporting alt+enter use the same action. |
+| `shift+enter` | With an empty composer, open the selected viewer or menu screen over the whole frame once; leaving restores the prior layout. With an instruction, break the line instead of starting. Terminals reporting alt+enter use the same action. |
 | `tab` | Move focus between the list and pane. Forms keep tab for their own input; leave those with `ctrl+z` or `esc`. |
 | `shift+tab` | Cycle the composer's harness: Claude, Codex, pi. Inside a viewer, this key belongs to the harness. |
 | `ctrl+x twice` | Stop, delete, hide, forget or remove the selected row, as listed below. |

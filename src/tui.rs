@@ -2882,7 +2882,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+enter",
-        "the same over the whole frame; ctrl+z or esc come back to the pane",
+        "the same over the whole frame; ctrl+z or esc come back to the pane; with an instruction typed, a line break",
     ),
     (
         "ctrl+x twice",
@@ -4238,8 +4238,10 @@ impl App {
                 open.viewer.write(text.as_bytes());
             }
         } else if matches!(self.mode, Mode::Normal) {
+            // A bracketed paste breaks lines with CR; the composer keeps one kind of break.
+            let text = text.replace("\r\n", "\n").replace('\r', "\n");
             let at = snap(&self.text, self.caret);
-            self.text.insert_str(at, text);
+            self.text.insert_str(at, &text);
             self.caret = at + text.len();
         }
     }
@@ -4928,8 +4930,10 @@ impl App {
             ));
         }
         let label = |n: usize| format!("[Image #{}]", n + 1);
-        let shown = expand(&self.text, label);
-        let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
+        // The composer is one line; a break shows as its glyph and stays a break in the prompt.
+        let show = |t: &str| expand(t, label).replace('\n', "⏎");
+        let shown = show(&self.text);
+        let caret = show(&self.text[..snap(&self.text, self.caret)]).len();
         spans.extend(typed(&shown, caret, "Type an instruction…"));
         Line::from(spans)
     }
@@ -5547,6 +5551,12 @@ impl App {
                     KeyCode::Enter if self.text.trim().is_empty() => {
                         self.full = false;
                         self.enter()?;
+                    }
+                    // With something typed, the same chord breaks the line instead of launching.
+                    KeyCode::Enter if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => {
+                        let at = snap(&self.text, self.caret);
+                        self.text.insert(at, '\n');
+                        self.caret = at + 1;
                     }
                     KeyCode::Enter => self.start(),
                     KeyCode::Char('s') if ctrl => {
@@ -8513,6 +8523,32 @@ mod tests {
         let buf = t.backend().buffer();
         x.map(|x| buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(""))
             .collect()
+    }
+
+    #[test]
+    fn shift_enter_mid_prompt_breaks_the_line_instead_of_starting() {
+        let (_d, mut app, mut t) = split_setup(200);
+        app.unfocus();
+        for c in "ab".chars() {
+            assert!(!app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap());
+        }
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        for mods in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            assert!(!app.key(KeyCode::Enter, mods).unwrap());
+        }
+        assert_eq!(app.text, "a\n\nb");
+        assert!(app.pending.is_empty(), "nothing was started");
+        // A paste brings CR breaks; they join the typed ones.
+        app.paste("c\r\nd\re");
+        assert_eq!(app.text, "a\n\nc\nd\neb");
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 200);
+        assert!(
+            screen.iter().any(|r| r.contains("a⏎⏎c⏎d⏎eb")),
+            "the breaks show as a glyph on the one composer line: {screen:#?}"
+        );
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        assert!(!app.pending.is_empty(), "plain enter still starts it");
     }
 
     #[test]
