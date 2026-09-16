@@ -559,6 +559,16 @@ pub fn spawn_worker(executable: &Path, run_id: &str) -> Result<Child> {
 }
 
 pub fn resume_finished(run: &Run, harness: &dyn harness::Harness) -> Result<Command> {
+    // A skip has no terminal record either, and calling it active would be a lie: admission
+    // refused it, so no session was ever started. `stop` already reads the two apart.
+    ensure!(
+        run.started.status != Status::Skipped,
+        "run was skipped ({}) and never started a session",
+        run.started
+            .reason
+            .as_deref()
+            .unwrap_or("no reason recorded")
+    );
     ensure!(
         run.terminal.is_some(),
         "run is still active; headless runs can be resumed after they finish"

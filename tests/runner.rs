@@ -391,6 +391,28 @@ fn exhausted_daily_reservation_skips_without_spawning() {
     assert_eq!(runs[1].started.reason.as_deref(), Some("budget"));
 }
 #[test]
+fn attaching_a_skipped_run_names_the_skip_rather_than_calling_it_active() {
+    let f = Fixture::new("success", 1.0);
+    let text = fs::read_to_string(&f.jobs).unwrap().replace(
+        "budget_usd: 0.1",
+        "budget_usd: 0.1\n    daily_budget_usd: 0.1",
+    );
+    fs::write(&f.jobs, text).unwrap();
+    assert!(f.output().status.success());
+    assert!(f.output().status.success());
+    let runs = f.ledger().runs().unwrap();
+    assert_eq!(runs[1].started.status, Status::Skipped);
+    let out = f
+        .command()
+        .args(["attach", &runs[1].started.run_id])
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("skipped (budget)"), "{err}");
+    assert!(!err.contains("still active"), "{err}");
+}
+#[test]
 fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
     let f = Fixture::new("failed", 1.0);
     let log = f.dir.path().join("notified");

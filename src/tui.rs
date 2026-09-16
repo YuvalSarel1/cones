@@ -5304,7 +5304,9 @@ impl App {
             return Ok(());
         }
         match kind {
-            Kind::Job(name) => self.spawn(&["run", &name], None, &format!("started {name}")),
+            // `spawn` only forks: overlap and budget decide admission inside the child, so the
+            // run's own row reports whether it started or was skipped.
+            Kind::Job(name) => self.spawn(&["run", &name], None, &format!("run {name} requested")),
             Kind::NewJob => self.new_job(),
             // Running headless jobs expose logs; completed runs can resume.
             Kind::Run(id, s) if s == "started" => {
