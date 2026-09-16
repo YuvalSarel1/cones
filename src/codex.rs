@@ -601,10 +601,25 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
         .collect();
     let guessed = attribute(procs, &rollouts);
+    // A remote client is a viewer, so `thread_rows` supplies its row. The daemon creates the
+    // thread after the client asks for one, and until it does that thread is in no lock, database
+    // or rollout, so a client with nothing yet to view keeps a row of its own. Only a thread this
+    // client could have opened counts, by folder and by starting no earlier than the client; a
+    // client that resumes an older thread without naming it is rare enough to show twice.
+    let viewable: Vec<Meta> = locks
+        .iter()
+        .filter(|(_, pid)| Some(**pid) == daemon)
+        .filter_map(|(id, _)| meta_of(&rollout_for(codex, &index, id)?))
+        .collect();
     let mut out: Vec<Session> = procs
         .iter()
-        // Remote clients without thread ids are supplied by `thread_rows`; avoid duplicate rows.
-        .filter(|p| !(p.remote && daemon.is_some() && p.thread.is_none()))
+        .filter(|p| {
+            !(p.remote
+                && p.thread.is_none()
+                && viewable
+                    .iter()
+                    .any(|m| Some(m.cwd.as_path()) == p.cwd.as_deref() && m.started >= p.started))
+        })
         .map(|p| {
             // Explicit resume ids and held locks beat cwd/start-time attribution.
             let stated = p
@@ -1026,9 +1041,13 @@ mod tests {
             live.sort_by(|a, b| a.session_id.cmp(&b.session_id));
             live
         };
-        assert!(
-            fleet(&procs).is_empty(),
-            "a client waiting for its thread is not a separate session"
+        assert_eq!(
+            fleet(&procs)
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["codex-7", "codex-8"],
+            "a client whose thread the daemon has not created yet is still a session"
         );
         let held: Vec<_> = [(A, "2026-09-13T10:00:01Z"), (B, "2026-09-13T10:01:01Z")]
             .into_iter()
@@ -1065,6 +1084,20 @@ mod tests {
                 .collect::<Vec<_>>(),
             [A, B],
             "two resume clients on one thread still give it just one row"
+        );
+        let latecomer = Process {
+            pid: 10,
+            started: "2026-09-13T10:02:00Z".parse().unwrap(),
+            thread: None,
+            ..procs[0].clone()
+        };
+        assert_eq!(
+            rows(&home, &[latecomer])
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["codex-10"],
+            "older threads in the folder do not cover a client waiting for its own"
         );
         let standalone = Process {
             pid: 9,
