@@ -22,6 +22,44 @@ pub fn home(claude: &Path) -> PathBuf {
     }
 }
 
+/// Every Codex home to read. `CODEX_HOME` pins one; otherwise the default home and
+/// its `.codex-*` siblings, because a daemon serves one provider region and a model
+/// in another region needs a home of its own to be seen and joined here.
+pub fn homes(claude: &Path) -> Vec<PathBuf> {
+    let base = home(claude);
+    if std::env::var_os("CODEX_HOME").is_some_and(|d| !d.is_empty()) {
+        return vec![base];
+    }
+    // ponytail: siblings by name; a configured list if homes ever live elsewhere.
+    let mut extra: Vec<PathBuf> = base
+        .parent()
+        .and_then(|p| fs::read_dir(p).ok())
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".codex-"))
+                && p.join("config.toml").is_file()
+        })
+        .collect();
+    extra.sort();
+    let mut out = vec![base];
+    out.extend(extra);
+    out
+}
+
+/// The home a rollout lives in: the parent of the `sessions` directory holding it.
+/// A row carries its rollout, so a join resumes against the daemon that owns it.
+pub fn home_of(rollout: &Path) -> Option<&Path> {
+    rollout
+        .ancestors()
+        .find(|a| a.file_name() == Some(std::ffi::OsStr::new("sessions")))?
+        .parent()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
     pub pid: u32,

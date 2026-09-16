@@ -78,7 +78,8 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             Start::Background(c)
         }
         HarnessKind::Codex => {
-            let (path, remote) = codex_remote(&path)?;
+            let (path, remote) =
+                codex_remote(&path, &crate::codex::home(&crate::fleet::claude_dir()?))?;
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, Some((&remote, dir)), prompt, policy))
                 .current_dir(dir);
@@ -169,22 +170,25 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     }
 }
 
-pub fn codex_resume(id: &str, cwd: &Path) -> Result<std::process::Command> {
+/// Resume a thread against the daemon of the home that holds it, not the ambient one:
+/// a home pinned to another provider region keeps its own daemon and its own socket.
+pub fn codex_resume(home: &Path, id: &str, cwd: &Path) -> Result<std::process::Command> {
     let path = executable("codex", &launch_path())
         .ok_or_else(|| anyhow::anyhow!("codex not found on the launch PATH"))?;
-    let (path, remote) = codex_remote(&path)?;
+    let (path, remote) = codex_remote(&path, home)?;
     let mut c = std::process::Command::new(path);
-    c.args(["--remote", &remote, "resume", id]).current_dir(cwd);
+    c.env("CODEX_HOME", home);
+    c.args(["--remote", &remote, "resume", "--", id])
+        .current_dir(cwd);
     Ok(c)
 }
 
 /// Start the daemon idempotently and read its `socketPath` response.
-fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
+fn codex_remote(codex: &Path, home: &Path) -> Result<(PathBuf, String)> {
     // Reuse reported addresses only while their sockets accept connections.
     type Addresses = BTreeMap<(PathBuf, PathBuf), String>;
     static ADDRESSES: std::sync::Mutex<Addresses> = std::sync::Mutex::new(BTreeMap::new());
-    let home = crate::codex::home(&crate::fleet::claude_dir()?);
-    let key = (codex.to_owned(), home);
+    let key = (codex.to_owned(), home.to_owned());
     let cached = ADDRESSES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -197,6 +201,7 @@ fn codex_remote(codex: &Path) -> Result<(PathBuf, String)> {
         return Ok((codex.to_owned(), remote));
     }
     let out = std::process::Command::new(codex)
+        .env("CODEX_HOME", home)
         .args(["app-server", "daemon", "start"])
         .output()
         .map_err(|e| anyhow::anyhow!("codex app-server daemon start: {e}"))?;
@@ -721,10 +726,11 @@ mod tests {
             fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         };
         advertise(&first_path);
-        let (_, address) = codex_remote(&program).unwrap();
+        let home = dir.path().join("home");
+        let (_, address) = codex_remote(&program, &home).unwrap();
         fs::write(&program, "#!/bin/sh\nexit 99\n").unwrap();
         assert_eq!(
-            codex_remote(&program).unwrap().1,
+            codex_remote(&program, &home).unwrap().1,
             address,
             "an existing daemon does not require another CLI startup"
         );
@@ -734,7 +740,7 @@ mod tests {
         let _second = UnixListener::bind(&second_path).unwrap();
         advertise(&second_path);
         assert_eq!(
-            codex_remote(&program).unwrap().1,
+            codex_remote(&program, &home).unwrap().1,
             format!("unix://{}", second_path.display())
         );
     }

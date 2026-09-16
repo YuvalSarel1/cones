@@ -1,8 +1,12 @@
 //! Codex 0.154 rollout, ps and lsof fixtures; no harness or model calls.
 use cones::codex::{
-    Meta, Process, attribute, cwds, home, meta, processes, rows, sessions, tail, titles,
+    Meta, Process, attribute, cwds, home, home_of, homes, meta, processes, rows, sessions, tail,
+    titles,
 };
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 const CODEX_META: &str = r#"{"timestamp":"2026-09-12T09:17:08.160Z","ordinal":0,"type":"session_meta","payload":{"session_id":"01a094e7-c194-7980-9804-34f24290597e","id":"01a094e7-c194-7980-9804-34f24290597e","timestamp":"2026-09-12T09:16:51.535Z","cwd":"/Users/me/work/pocs/workbench","originator":"codex-tui","cli_version":"0.154.0","source":"vscode","base_instructions":{"text":"You are Codex"}}}"#;
 const CODEX_TURN: &str = r#"{"timestamp":"2026-09-12T09:33:11.539Z","ordinal":539,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a094f6"}}
@@ -235,4 +239,32 @@ fn no_codex_home_means_no_process_scan() {
     }
     assert!(sessions(&dir.path().join(".codex")).is_empty());
     assert!(cones::fleet::all(&claude).unwrap().is_empty());
+}
+
+#[test]
+fn a_sibling_codex_home_is_read_beside_the_default_one() {
+    // A pinned `CODEX_HOME` is the only home, so the sibling scan never runs.
+    if std::env::var_os("CODEX_HOME").is_some_and(|d| !d.is_empty()) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let claude = dir.path().join(".claude");
+    let blue = dir.path().join(".codex-blue");
+    fs::create_dir_all(&blue).unwrap();
+    fs::write(blue.join("config.toml"), "model = \"blue\"\n").unwrap();
+    // A directory without a config is not a home.
+    fs::create_dir_all(dir.path().join(".codex-scratch")).unwrap();
+    assert_eq!(homes(&claude), vec![dir.path().join(".codex"), blue]);
+}
+
+#[test]
+fn a_rollout_names_the_home_that_holds_it() {
+    let blue = Path::new("/u/.codex-blue");
+    let rollout = blue.join("sessions/2026/09/15/rollout-2026-09-15T23-37-15-01a0a6c9.jsonl");
+    assert_eq!(
+        home_of(&rollout),
+        Some(blue),
+        "a join resumes against the daemon of the home that holds the thread"
+    );
+    assert_eq!(home_of(Path::new("/tmp/loose.jsonl")), None);
 }

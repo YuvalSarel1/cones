@@ -1200,7 +1200,10 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
         .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect();
     // Detached daemon threads have no client in the process table; include their saved records.
-    out.extend(codex::thread_rows(&codex::home(claude), state, &out));
+    for home in codex::homes(claude) {
+        let rows = codex::thread_rows(&home, state, &out);
+        out.extend(rows);
+    }
     let hidden = Ledger::new(state)?.hidden()?;
     out.retain(|s| !hidden.contains(&s.session_id));
     fleet::sort(&mut out);
@@ -4423,8 +4426,13 @@ impl App {
                 }
                 if harness == "codex" {
                     let key = id.clone();
+                    let home = s
+                        .transcript_path
+                        .as_deref()
+                        .and_then(codex::home_of)
+                        .map_or_else(|| codex::home(&self.claude), Path::to_path_buf);
                     self.prepare_viewer("codex".into(), key, None, None, move || {
-                        harness::codex_resume(&id, &cwd)
+                        harness::codex_resume(&home, &id, &cwd)
                     });
                     return Ok(());
                 }
