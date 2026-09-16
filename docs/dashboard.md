@@ -164,7 +164,7 @@ Words are runs of non-space characters. macOS terminal bindings usually translat
 
 ## Viewers
 
-Viewers are harness clients on private ptys, rendered by a vt100 emulator. Agents remain in their harness daemons. Claude background sessions and Codex daemon threads can be opened; sessions marked `own terminal` cannot. A finished run resumes through `cones attach`; a running run opens its log. The [kinds table](harness.md#kinds) covers each case.
+Viewers are harness clients on private ptys, rendered by a vt100 emulator. Claude background sessions and Codex daemon threads can be opened; sessions marked `own terminal` cannot. A composer pi runs in its viewer and ends with it. A finished run opens its saved session; a running run opens its log. The [kinds table](harness.md#kinds) covers each case.
 
 The pane shows the focused viewer, otherwise the selected session's viewer. A session never displays another session's screen. Non-session rows can retain the last focused viewer, while menu rows preview their selected button. A pane stays blank until its live viewer paints; it never substitutes transcript text.
 
@@ -180,7 +180,7 @@ Resting on a joinable Claude row opens a speculative viewer after 50 ms in split
 
 The live pool targets three viewers. Making room closes the least recently focused Claude attach of a listed session. Codex clients and resumed runs cannot be reopened speculatively, so they are retained and may exceed the cap. Two speculative viewers have a separate pool, oldest evicted first. A viewer left in Claude's own agent list is closed to avoid displaying that list under a session's name.
 
-All viewers close with the dashboard. Closing a viewer leaves its daemon-owned agent running; confirming a stop or removal is a separate action. Codex threads are recorded after their first turn for later resume. A launch left before its first turn has no resumable record. Codex startup prepares the daemon connection on a background thread; `esc` cancels the pending opening.
+All viewers close with the dashboard. Closing a viewer leaves its daemon-owned agent running; confirming a stop or removal is a separate action. A composer pi ends with its viewer. Identified Codex threads are recorded after a reported turn for later resume. Returning to the list before the thread appears does not end discovery or claim that it has been recorded. Startup prepares Codex and pi commands on a background thread; `esc` cancels a pending opening.
 
 ### Terminal behavior
 
@@ -202,9 +202,13 @@ Pins live in `~/.cones/folders`, recall history in `~/.cones/recent`. These path
 
 ## The composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu, or with no selected directory, it uses the dashboard's cwd. The input wraps to at most eight text rows. In side-by-side layout its lower rule aligns with the harness input box on the live screen and stays in place while scrolling history.
+Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu, or with no selected directory, it uses the dashboard's cwd. The input wraps to at most eight text rows. In side-by-side layout its lower rule aligns with Claude or pi's input box when its lower border is near the bottom of the live screen, and stays in place while scrolling history. Codex and log viewers leave the composer at its normal bottom position. pi's standard editor has a lower rule with footer rows beneath it, so alignment remains useful once it reaches the bottom; an input still near the top does not move the dashboard composer.
 
-Claude starts with `--bg`; a placeholder row appears immediately and becomes the registry row when available. A failed launch removes the placeholder and restores the instruction. New sessions take the selection unless a viewer is focused or an instruction is being typed. Codex opens a client of its app-server daemon, which keeps the thread when the client goes. pi has no daemon and no attach, so a pi is the viewer itself: `enter` on its row returns to that viewer, and closing the viewer or quitting the dashboard ends the session.
+Every composer launch adds and selects a row immediately, before checking the harness or preparing a daemon connection. The row shows the harness, folder and first instruction line; model, usage and other reported details fill in through discovery. The list keeps focus while startup finishes. `enter`, `tab` or a pane click enters the ready viewer. A cancelled preparation or failed command preparation or spawn removes the launch row and restores the instruction unless new text has been typed.
+
+The launch row becomes its discovered row without losing selection or opening another viewer. This handover follows the selected session even while its viewer has focus. Moving to another row during startup stays respected. Unrelated sessions discovered later take the selection only when no viewer is focused and no instruction is being typed.
+
+Claude starts with `--bg`. Codex opens a client of its app-server daemon, which keeps the thread when the client goes. pi has no daemon and no attach, so a pi is the viewer itself: `enter` on its row returns to that viewer, and closing the viewer or quitting the dashboard ends the session. The [launch and identity table](harness.md#composer-launches-and-identity) records the sources, handover limits and reasons for these differences.
 
 `shift+tab` cycles the harness, so the hint names the key's effect rather than the next harness. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. A pi takes none of them and starts on its own configured model. The config editor is where those fields change. The prefix shows the selected harness alone; the model each session came up on is the `model` column of its row.
 
@@ -230,7 +234,7 @@ Under the answers, a `runs` section holds every field a job's own line carries: 
 
 The section comes up shut on a job that sets none of those fields and open on one that does; `enter` or `→` on its head opens it and `←` shuts it. A `once` run writes no line of its own, so it takes the defaults and the section is not offered.
 
-New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs currently pass execution validation. Saving validates the whole file and rewrites only the selected job block, retaining surrounding formatting and comments; a refused value keeps the form open on the row it belongs to. Save and delete run `cones install` afterward; errors appear in the hint line.
+New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs currently pass execution validation. Saving validates the whole file and rewrites only the selected job block, retaining surrounding formatting and comments; a refused value keeps the form open on the row it belongs to. Save and delete regenerate the scheduled agents afterward; errors appear in the hint line.
 
 ## The defaults editor
 
@@ -250,7 +254,7 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 Empty values omit overrides and use built-ins. Harness-owned fields pass no override when empty. Bedrock requires both an explicit AWS profile and region, including in the temporary session form. Codex settings can be saved for native sessions, but supervised Codex jobs are unavailable.
 
-Saving replaces only `defaults`, `columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The editor does not run `cones install`; reinstall when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured at installation.
+Saving replaces only `defaults`, `columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The config editor does not regenerate scheduled agents. Save a job afterward when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured when its agents were installed.
 
 ## Polling
 

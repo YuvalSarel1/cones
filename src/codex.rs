@@ -851,7 +851,7 @@ fn meta_of(path: &Path) -> Option<Meta> {
 
 /// Cache the first actual prompt. Earlier user-role messages contain instructions
 /// and skills; retry uncached files until a `UserMessage` arrives.
-fn prompt_of(path: &Path) -> Option<String> {
+pub(crate) fn prompt_of(path: &Path) -> Option<String> {
     static CACHE: Mutex<Option<HashMap<PathBuf, String>>> = Mutex::new(None);
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);

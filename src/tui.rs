@@ -3775,7 +3775,7 @@ struct App {
     harness: usize,
     /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
-    /// Placeholder rows until the registry reports the launched sessions.
+    /// Immediate rows until discovery reports the launched sessions.
     pending: Vec<Pending>,
     opening: Option<Opening>,
     tick: usize,
@@ -3844,7 +3844,7 @@ const SPECULATIVE_VIEWERS: usize = 2;
 /// Launch status and, on failure, the prompt to restore.
 type Launched = (String, Option<String>);
 
-/// Match a placeholder to the registry using the short id returned by `claude --bg`.
+/// Match a launch by Claude's returned id or the foreground viewer's child pid.
 struct Pending {
     session: Session,
     short: Option<String>,
@@ -3853,12 +3853,14 @@ struct Pending {
 
 impl Pending {
     fn matches(&self, s: &Session) -> bool {
-        s.harness == "claude"
+        s.harness == self.session.harness
             && s.cwd == self.session.cwd
-            && self
-                .short
-                .as_deref()
-                .is_some_and(|short| s.session_id.starts_with(short))
+            && (self.session.pid.is_some_and(|pid| s.pid == Some(pid))
+                || (s.harness == "claude"
+                    && self
+                        .short
+                        .as_deref()
+                        .is_some_and(|short| s.session_id.starts_with(short))))
     }
 }
 
@@ -3875,11 +3877,15 @@ fn short_id(status: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
+fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session {
     Session {
         session_id: id.to_owned(),
-        harness: "claude".into(),
-        kind: Some("bg".into()),
+        harness: kind.to_string(),
+        kind: match kind {
+            HarnessKind::Claude => Some("bg".into()),
+            HarnessKind::Codex => Some("daemon".into()),
+            HarnessKind::Pi => None,
+        },
         cwd: dir.to_owned(),
         state: "started".into(),
         started: Some(chrono::Utc::now()),
@@ -3892,7 +3898,7 @@ fn placeholder(id: &str, dir: &Path, prompt: &str) -> Session {
         context_tokens: None,
         context_window: None,
         cost_usd: None,
-        title: Some(prompt.lines().next().unwrap_or("").trim().to_owned()),
+        title: fleet::headline(prompt),
         last: Some("starting".into()),
         coordinator: false,
         activity: Vec::new(),
@@ -4170,17 +4176,18 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
-        // Follow a placeholder into its registry row only if the cursor is still on it.
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        let mut follow = true;
+        let replaced = self.reconcile_launches(&mut data);
         self.pending.retain(|p| {
-            let listed = data.sessions.iter().any(|s| p.matches(s));
-            if listed && on.as_deref() != Some(p.session.session_id.as_str()) {
-                follow = false;
-            }
-            !listed && p.at.elapsed() < PENDING_TTL
+            !replaced.contains_key(&p.session.session_id)
+                && (p.at.elapsed() < PENDING_TTL
+                    || self.viewers.iter().any(|o| o.key == p.session.session_id)
+                    || self
+                        .opening
+                        .as_ref()
+                        .is_some_and(|o| o.key == p.session.session_id))
         });
         data.sessions
             .extend(self.pending.iter().map(|p| p.session.clone()));
@@ -4188,22 +4195,163 @@ impl App {
             .sessions
             .iter()
             .filter(|s| {
-                !self
-                    .data
-                    .sessions
-                    .iter()
-                    .any(|o| o.session_id == s.session_id)
+                !replaced.values().any(|id| id == &s.session_id)
+                    && !self
+                        .data
+                        .sessions
+                        .iter()
+                        .any(|o| o.session_id == s.session_id)
             })
             .max_by_key(|s| s.started)
             .map(|s| s.session_id.clone());
         self.data = data;
         self.rebuild();
-        if let Some(id) = arrived
-            && follow
+        if let Some(id) = on
+            .as_ref()
+            .and_then(|id| replaced.get(id).filter(|next| *next != id))
         {
+            // This is the same selected session, even while its viewer has focus.
+            if let Some(i) = self
+                .visible
+                .iter()
+                .position(|&i| self.rows[i].kind.key() == Some(id.as_str()))
+            {
+                self.cursor = i;
+                self.settle();
+            }
+        } else if let Some(id) = arrived {
             self.select_new(&id);
         }
         self.refreshed = Instant::now();
+    }
+
+    /// Preserve row and viewer identity as process rows acquire native session ids.
+    fn reconcile_launches(&mut self, data: &mut Data) -> HashMap<String, String> {
+        let mut replaced = HashMap::new();
+        for p in &self.pending {
+            if let Some(s) = data.sessions.iter().find(|s| p.matches(s)) {
+                replaced.insert(p.session.session_id.clone(), s.session_id.clone());
+            }
+        }
+        for old in &self.data.sessions {
+            if let Some(s) = data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == old.session_id)
+                .or_else(|| {
+                    data.sessions.iter().find(|s| {
+                        old.harness != "claude"
+                            && s.harness == old.harness
+                            && s.cwd == old.cwd
+                            && old.pid.is_some_and(|pid| s.pid == Some(pid))
+                    })
+                })
+            {
+                replaced.insert(old.session_id.clone(), s.session_id.clone());
+            }
+        }
+        // A new remote Codex client does not report its thread id. Discovery replaces its
+        // process row with a daemon row. Pair only a unique new thread and unique launch;
+        // simultaneous launches in one folder must not steal each other's viewers.
+        let candidates = |open: &Open| -> Vec<&Session> {
+            let Some((dir, since)) = &open.record else {
+                return vec![];
+            };
+            let Some(prompt) = self
+                .data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == open.key)
+                .and_then(|s| s.title.as_deref())
+            else {
+                return vec![];
+            };
+            if !(open.key.starts_with("codex:start:")
+                || open.key == format!("codex-{}", open.viewer.pid()))
+            {
+                return vec![];
+            }
+            data.sessions
+                .iter()
+                .filter(|s| {
+                    s.harness == "codex"
+                        && s.kind.as_deref() == Some("daemon")
+                        && s.cwd == *dir
+                        && s.started.is_some_and(|at| at >= *since)
+                        && !self.viewers.iter().any(|o| o.key == s.session_id)
+                        && s.transcript_path
+                            .as_deref()
+                            .and_then(codex::prompt_of)
+                            .as_deref()
+                            == Some(prompt)
+                })
+                .collect()
+        };
+        for open in &self.viewers {
+            let possible = candidates(open);
+            if let [s] = possible.as_slice()
+                && self
+                    .viewers
+                    .iter()
+                    .filter(|o| candidates(o).iter().any(|p| p.session_id == s.session_id))
+                    .count()
+                    == 1
+            {
+                replaced.insert(open.key.clone(), s.session_id.clone());
+            }
+        }
+        for open in &mut self.viewers {
+            if let Some(id) = replaced.get(&open.key) {
+                let old = self.data.sessions.iter().find(|s| s.session_id == open.key);
+                if let Some(s) = data.sessions.iter_mut().find(|s| &s.session_id == id) {
+                    let original = old.and_then(|s| s.title.clone());
+                    s.title = if s.session_id == format!("{}-{}", s.harness, open.viewer.pid()) {
+                        // The original prompt is more precise than ps's flattened argv.
+                        original.or(s.title.clone())
+                    } else {
+                        s.title.clone().or(original)
+                    };
+                    if matches!(s.harness.as_str(), "codex" | "pi") {
+                        s.pid = Some(open.viewer.pid());
+                    }
+                    if open.record.is_some()
+                        && !open.recorded
+                        && s.harness == "codex"
+                        && s.kind.as_deref() == Some("daemon")
+                        && s.state != "-"
+                        && let (Some(started), Some(rollout)) = (s.started, &s.transcript_path)
+                    {
+                        open.recorded = codex::remember(
+                            &self.state,
+                            codex::Thread {
+                                id: s.session_id.clone(),
+                                cwd: s.cwd.clone(),
+                                started,
+                                rollout: rollout.clone(),
+                            },
+                        )
+                        .is_ok();
+                    }
+                }
+                open.key = id.clone();
+            }
+        }
+        // The live client is still our row while discovery has no certain native identity.
+        for open in &self.viewers {
+            if (open.key.starts_with("codex:start:")
+                || open.key == format!("codex-{}", open.viewer.pid())
+                || open.key.starts_with("pi:start:"))
+                && !self
+                    .pending
+                    .iter()
+                    .any(|p| p.session.session_id == open.key)
+                && !data.sessions.iter().any(|s| s.session_id == open.key)
+                && let Some(old) = self.data.sessions.iter().find(|s| s.session_id == open.key)
+            {
+                data.sessions.push(old.clone());
+            }
+        }
+        replaced
     }
 
     /// Do not change the launch target while typing or move selection away from a focused viewer.
@@ -4623,12 +4771,12 @@ impl App {
         what: &str,
         key: String,
         record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
-    ) {
+    ) -> bool {
         self.size = terminal_size;
         self.pane = self.pane(self.frame());
         if let Some(i) = self.viewer_index(&key) {
             self.focus(i);
-            return;
+            return true;
         }
         self.debug(|| format!("open {what} as {key}: {c:?}"));
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
@@ -4640,6 +4788,18 @@ impl App {
             self.colors.clone(),
         ) {
             Ok(viewer) => {
+                if let Some(p) = self
+                    .pending
+                    .iter_mut()
+                    .find(|p| p.session.session_id == key)
+                {
+                    p.session.pid = Some(viewer.pid());
+                }
+                if let Some(s) = self.data.sessions.iter_mut().find(|s| s.session_id == key)
+                    && matches!(s.harness.as_str(), "codex" | "pi")
+                {
+                    s.pid = Some(viewer.pid());
+                }
                 // Evict only after the new viewer starts successfully.
                 while self.live_viewers() >= MAX_FOCUSED_VIEWERS {
                     let Some(oldest) = self.least_recently_focused(None) else {
@@ -4660,8 +4820,12 @@ impl App {
                 let pid = self.viewers.last().unwrap().viewer.pid();
                 self.debug(|| format!("viewer pid {pid}; the dashboard keeps the terminal"));
                 self.focus(self.viewers.len() - 1);
+                true
             }
-            Err(e) => self.status = format!("{what} failed: {e}"),
+            Err(e) => {
+                self.status = format!("{what} failed: {e}");
+                false
+            }
         }
     }
 
@@ -4818,6 +4982,7 @@ impl App {
     fn close(&mut self, i: usize) {
         let had_frame = !self.split_active();
         let open = self.viewers.remove(i);
+        self.remove_launch(&open.key);
         match self.focus {
             Some(f) if f == i => {
                 self.focus = None;
@@ -4827,10 +4992,8 @@ impl App {
             _ => {}
         }
         self.debug(|| format!("close {} ({})", open.key, open.what));
-        if let Some((dir, since)) = &open.record
-            && !open.recorded
-        {
-            self.record_codex(dir, *since);
+        if open.record.is_some() && !open.recorded {
+            self.record_codex(&open.key);
         }
     }
 
@@ -4846,13 +5009,9 @@ impl App {
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
         self.status.clear();
-        let record = (!open.recorded).then(|| open.record.clone()).flatten();
-        if let Some((dir, since)) = record {
-            self.viewers[i].recorded = true;
-            // Replace the launch key with the recorded thread id to reuse this client on return.
-            if let Some(id) = self.record_codex(&dir, since) {
-                self.viewers[i].key = id;
-            }
+        if open.record.is_some() && !open.recorded {
+            let key = open.key.clone();
+            self.viewers[i].recorded = self.record_codex(&key);
         }
         self.invalidate();
         let open = &self.viewers[i];
@@ -5245,17 +5404,37 @@ impl App {
             Ok(command) => command,
         };
         let opening = self.opening.take().unwrap();
+        let key = opening.key.clone();
+        let launching = self.pending.iter().any(|p| p.session.session_id == key);
+        let previous_focus = self.focus.map(|i| self.viewers[i].key.clone());
         match command {
             Ok(command) => {
-                self.open(
+                if self.open(
                     self.size,
                     command,
                     &opening.what,
                     opening.key,
                     opening.record,
-                );
+                ) {
+                    if launching {
+                        // Starting a session leaves the list selected, as Claude does.
+                        self.focus = previous_focus
+                            .as_deref()
+                            .and_then(|key| self.viewer_index(key));
+                    }
+                    self.status.clear();
+                    self.invalidate();
+                } else {
+                    self.remove_launch(&key);
+                    if self.text.is_empty()
+                        && let Some(prompt) = opening.prompt
+                    {
+                        self.fill(prompt);
+                    }
+                }
             }
             Err(error) => {
+                self.remove_launch(&key);
                 // A start that never opens leaves no row, so the log is the only record of why.
                 let failed = format!("{} failed: {error:#}", opening.what);
                 self.debug(|| failed.clone());
@@ -5275,6 +5454,7 @@ impl App {
         let Some(opening) = self.opening.take() else {
             return false;
         };
+        self.remove_launch(&opening.key);
         if self.text.is_empty()
             && let Some(prompt) = opening.prompt
         {
@@ -5284,24 +5464,43 @@ impl App {
         true
     }
 
-    /// Record the launched thread for later resume; a client closed before its first turn has none.
-    fn record_codex(&mut self, dir: &Path, since: chrono::DateTime<chrono::Utc>) -> Option<String> {
-        let home = codex::home(&self.claude);
-        match codex::launched(&home, dir, since) {
-            Some(t) => {
-                let id = t.id.clone();
-                let short: String = id.chars().take(8).collect();
-                self.status = match codex::remember(&self.state, t) {
-                    Ok(()) => format!("codex thread {short} kept · enter on its row returns to it"),
-                    Err(e) => format!("could not record codex thread {short}: {e}"),
-                };
-                Some(id)
-            }
-            None => {
-                if !self.status.contains("failed") {
-                    self.status = "codex thread will appear when the harness reports it".into();
-                }
-                None
+    fn remove_launch(&mut self, id: &str) {
+        if self.pending.iter().any(|p| p.session.session_id == id) {
+            self.pending.retain(|p| p.session.session_id != id);
+            self.data.sessions.retain(|s| s.session_id != id);
+            self.rebuild();
+        }
+    }
+
+    /// Record only this viewer's identified thread after a reported turn.
+    fn record_codex(&mut self, id: &str) -> bool {
+        let Some(s) = self
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id && s.harness == "codex" && s.state != "-")
+        else {
+            return false;
+        };
+        let (Some(started), Some(rollout)) = (s.started, &s.transcript_path) else {
+            return false;
+        };
+        match codex::remember(
+            &self.state,
+            codex::Thread {
+                id: id.to_owned(),
+                cwd: s.cwd.clone(),
+                started,
+                rollout: rollout.clone(),
+            },
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status = format!(
+                    "could not record codex thread {}: {e}",
+                    &id[..id.len().min(8)]
+                );
+                false
             }
         }
     }
@@ -5313,6 +5512,12 @@ impl App {
             .is_some_and(|i| !self.viewers[i].speculative)
         {
             return "return";
+        }
+        if row
+            .and_then(|r| r.kind.key())
+            .is_some_and(|id| self.pending.iter().any(|p| p.session.session_id == id))
+        {
+            return "starting";
         }
         if let Some(Kind::Session(id, _)) = row.map(|r| &r.kind)
             && self
@@ -5360,8 +5565,9 @@ impl App {
                 c.args(["__logs", &id, "--follow"]);
                 self.open(self.size, c, "logs", format!("run:{id}"), None);
             }
-            Kind::Session(id, _) if id.starts_with("starting:") => {
-                self.status = "still starting · its row fills in when Claude lists it".into();
+            Kind::Session(id, _) if self.pending.iter().any(|p| p.session.session_id == id) => {
+                self.status =
+                    "still starting · its row fills in when the harness reports it".into();
             }
             Kind::Session(id, _) => {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
@@ -5389,7 +5595,9 @@ impl App {
                     return Ok(());
                 }
                 match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
-                    Ok(c) => self.open(self.size, c, "attach", id, None),
+                    Ok(c) => {
+                        self.open(self.size, c, "attach", id, None);
+                    }
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
             }
@@ -5465,16 +5673,15 @@ impl App {
         let policy = self.session_policy();
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
-        // Rollout timestamps are the thread's own clock; a little slack covers it.
-        let since = chrono::Utc::now() - chrono::Duration::seconds(5);
+        let since = chrono::Utc::now();
         self.debug(|| format!("start {what}: {prompt:?}"));
+        let id = self.launch_row(kind, &dir, &prompt);
         // Codex and pi run as the dashboard's own client; only Claude is launched and left.
         if kind != HarnessKind::Claude {
             let record = (kind == HarnessKind::Codex).then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
             // Use a temporary launch key until the harness reports the session's own id.
-            let key = format!("{kind}:start:{}", since.timestamp_millis());
-            self.prepare_viewer(what, key, record, retry, move || {
+            self.prepare_viewer(what, id, record, retry, move || {
                 match harness::start(kind, &dir, prompt.trim(), &policy)? {
                     Start::Foreground(command) => Ok(command),
                     Start::Background(_) => anyhow::bail!("expected a {kind} viewer"),
@@ -5484,16 +5691,6 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         self.status = format!("starting {what}");
-        let id = format!("starting:{}", since.timestamp_millis());
-        let session = placeholder(&id, &dir, &prompt);
-        self.data.sessions.push(session.clone());
-        self.pending.push(Pending {
-            session,
-            short: None,
-            at: Instant::now(),
-        });
-        self.rebuild();
-        self.select_new(&id);
         std::thread::spawn(move || {
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
@@ -5520,6 +5717,24 @@ impl App {
             let _ = tx.send(feedback);
         });
         self.started.push((id, rx));
+    }
+
+    fn launch_row(&mut self, kind: HarnessKind, dir: &Path, prompt: &str) -> String {
+        let nonce = uuid::Uuid::new_v4();
+        let id = match kind {
+            HarnessKind::Claude => format!("starting:{nonce}"),
+            _ => format!("{kind}:start:{nonce}"),
+        };
+        let session = placeholder(kind, &id, dir, prompt);
+        self.data.sessions.push(session.clone());
+        self.pending.push(Pending {
+            session,
+            short: None,
+            at: Instant::now(),
+        });
+        self.rebuild();
+        self.select_new(&id);
+        id
     }
 
     fn arm(&mut self, key: String) {
@@ -5711,6 +5926,12 @@ impl App {
             Kind::Job(_) => Some("delete"),
             Kind::Run(_, s) if s == "started" => Some("stop"),
             Kind::Run(..) => Some("hide"),
+            Kind::Session(id, _)
+                if self.pending.iter().any(|p| p.session.session_id == *id)
+                    && self.viewer_index(id).is_none() =>
+            {
+                None
+            }
             Kind::Session(id, _) => Some(self.session_verb(id)),
             Kind::Folder(_) => Some("remove"),
             _ => None,
@@ -5877,7 +6098,10 @@ impl App {
         let id = match self.selected().map(|r| r.kind.clone()) {
             Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
             Some(Kind::Folder(dir)) => return self.remove_folder(dir),
-            Some(Kind::Session(id, _)) if id.starts_with("starting:") => {
+            Some(Kind::Session(id, _))
+                if self.pending.iter().any(|p| p.session.session_id == id)
+                    && self.viewer_index(&id).is_none() =>
+            {
                 self.status = "still starting · nothing to stop yet".into();
                 return;
             }
@@ -5906,6 +6130,21 @@ impl App {
         }
         match self.armed.take() {
             Some(armed) if armed == id => {
+                let local = self.selected().and_then(|r| self.viewer_of(&r.kind));
+                let ended_with_viewer = local.is_some()
+                    && self.data.sessions.iter().any(|s| {
+                        s.session_id == id && matches!(s.harness.as_str(), "codex" | "pi")
+                    });
+                // Capture the native pid before closing can remove a launch placeholder.
+                let client = self
+                    .data
+                    .sessions
+                    .iter()
+                    .find(|s| s.session_id == id)
+                    .and_then(|s| s.pid);
+                if let Some(i) = local {
+                    self.close(i);
+                }
                 for key in [id.clone(), format!("run:{id}")] {
                     if let Some(i) = self.viewer_index(&key) {
                         self.close(i);
@@ -5914,18 +6153,14 @@ impl App {
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
                 // Terminate the attached client to release the daemon-held thread; it remains resumable.
                 // No registry lists a Codex client, so signal its pid rather than looking it up.
-                let client = self
-                    .data
-                    .sessions
-                    .iter()
-                    .find(|s| s.session_id == id)
-                    .and_then(|s| s.pid);
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
-                        if let Some(pid) = client {
+                        if !ended_with_viewer && let Some(pid) = client {
                             fleet::terminate(pid, "codex")?;
                         }
+                        Ok(true)
+                    } else if ended_with_viewer {
                         Ok(true)
                     } else {
                         Ledger::new(&state).and_then(|l| runner::stop(&l, &claude, &target))
@@ -6545,13 +6780,18 @@ impl App {
         lines
     }
 
-    /// Align the composer's lower rule with the harness's live input, even while viewing history.
+    /// Align with Claude and pi's lower input rule, even while viewing history.
     /// Without a visible rule, reserve only the hint row.
     fn foot_rows(&self) -> u16 {
         if self.data.pane.at == "bottom" {
             return 1;
         }
         let Some(i) = self.shown() else { return 1 };
+        let open = &self.viewers[i];
+        // Codex's composer is not a bottom-anchored input box; logs have no input box.
+        if !(open.what == "attach" || open.what == "pi" || open.what.starts_with("pi in ")) {
+            return 1;
+        }
         let screen = self.viewers[i].viewer.screen();
         let (rows, cols) = screen.size();
         let ruled = |y: u16| {
@@ -6565,7 +6805,9 @@ impl App {
                 * 2
                 > cols
         };
-        (0..rows)
+        // pi's regular renderer can begin near the top before its transcript fills
+        // the terminal. A distant rule must not pull the dashboard composer upward.
+        (rows.saturating_sub(7)..rows)
             .rev()
             .find(|&y| ruled(y))
             .map_or(1, |y| rows - 1 - y)
@@ -8192,7 +8434,7 @@ mod tests {
             Some(B),
             "a row seen once is not new again"
         );
-        let session = placeholder("starting:1", claude, "again");
+        let session = placeholder(HarnessKind::Claude, "starting:1", claude, "again");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
             session,
@@ -8210,7 +8452,7 @@ mod tests {
             Some(d),
             "the listed row took the cursor"
         );
-        let session = placeholder("starting:2", claude, "once more");
+        let session = placeholder(HarnessKind::Claude, "starting:2", claude, "once more");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
             session,
@@ -8242,7 +8484,12 @@ mod tests {
         let claude = dir.path();
         let mut app = app(claude);
         app.refresh().unwrap();
-        let session = placeholder("starting:1", claude, "fix the tests\nplease");
+        let session = placeholder(
+            HarnessKind::Claude,
+            "starting:1",
+            claude,
+            "fix the tests\nplease",
+        );
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
             session,
@@ -8273,7 +8520,7 @@ mod tests {
             !has(&app, "starting:1") && has(&app, A),
             "the listed row took over"
         );
-        let session = placeholder("starting:2", claude, "again");
+        let session = placeholder(HarnessKind::Claude, "starting:2", claude, "again");
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
             session,
@@ -8292,6 +8539,356 @@ mod tests {
         app.poll();
         assert!(!has(&app, "starting:2") && app.pending.is_empty());
         assert_eq!(app.text, "again");
+    }
+
+    #[test]
+    fn every_harness_selects_its_launch_before_discovery_and_keeps_it_during_a_slow_read() {
+        for kind in harness::KNOWN {
+            let d = dir();
+            registry(d.path(), A, d.path().to_str().unwrap(), "idle", 1);
+            let mut app = app(d.path());
+            app.refresh().unwrap();
+            let stale = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+            let id = app.launch_row(kind, d.path(), "fix the tests\nplease");
+            assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+            assert_eq!(app.focus, None, "{kind} keeps the list focused");
+            assert_eq!(app.enter_label(), "starting");
+            assert_eq!(app.stop_verb(), None, "no process exists yet");
+            assert!(app.selected().unwrap().text().contains("fix the tests"));
+            let s = app.selected_session().unwrap();
+            assert_eq!(s.harness, kind.to_string());
+            assert_eq!(
+                (s.pid, s.model.as_ref(), s.context_tokens),
+                (None, None, None)
+            );
+            app.apply(stale);
+            assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+            app.enter().unwrap();
+            assert!(app.status.contains("still starting"));
+            assert!(app.viewers.is_empty());
+        }
+    }
+
+    fn finish_opening(app: &mut App) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.poll_opening() {
+            assert!(Instant::now() < deadline, "preparation did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn foreground_launches_keep_selection_and_reuse_their_viewer_when_the_id_changes() {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+            for moved in [false, true] {
+                let d = dir();
+                registry(d.path(), A, d.path().to_str().unwrap(), "idle", 1);
+                let mut app = app(d.path());
+                app.refresh().unwrap();
+                let id = app.launch_row(kind, d.path(), "fix the tests");
+                let (release, wait) = mpsc::channel();
+                app.prepare_viewer(
+                    format!("{kind} in /x"),
+                    id.clone(),
+                    None,
+                    Some("fix the tests".into()),
+                    move || {
+                        wait.recv_timeout(Duration::from_secs(3))?;
+                        let mut c = Command::new("/bin/sh");
+                        c.args(["-c", "read line"]);
+                        Ok(c)
+                    },
+                );
+                assert!(
+                    !app.poll_opening(),
+                    "a slow prepare leaves the row on screen"
+                );
+                if moved {
+                    app.select_new(A);
+                }
+                release.send(()).unwrap();
+                finish_opening(&mut app);
+                assert_eq!(app.focus, None, "startup keeps dashboard focus");
+                assert_eq!(key(&app).as_deref(), Some(if moved { A } else { &id }));
+                let pid = app.viewers[0].viewer.pid();
+                assert_eq!(app.pending[0].session.pid, Some(pid));
+                if !moved {
+                    app.enter().unwrap();
+                    assert_eq!(app.focus, Some(0));
+                }
+                for native in [format!("{kind}-{pid}"), B.to_owned()] {
+                    let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+                    let mut s = placeholder(kind, &native, d.path(), "");
+                    s.title = None;
+                    s.pid = Some(pid);
+                    s.state = "active".into();
+                    data.sessions.push(s);
+                    app.apply(data);
+                    assert!(app.pending.is_empty());
+                    assert_eq!(
+                        app.data.sessions.len(),
+                        2,
+                        "one existing row and one launch"
+                    );
+                    assert_eq!(key(&app).as_deref(), Some(if moved { A } else { &native }));
+                    assert_eq!(app.viewers[0].key, native);
+                    assert_eq!(app.viewers[0].viewer.pid(), pid);
+                    assert!(app.data.sessions.iter().any(|s| {
+                        s.session_id == native && s.title.as_deref() == Some("fix the tests")
+                    }));
+                }
+                app.unfocus();
+                app.select_new(B);
+                assert_eq!(app.enter_label(), "return");
+                app.enter().unwrap();
+                assert_eq!(app.viewers.len(), 1);
+                assert_eq!(app.focus, Some(0));
+            }
+        }
+    }
+
+    #[test]
+    fn a_claude_attach_keeps_the_registry_workers_pid() {
+        let d = dir();
+        registry_bg(d.path(), A, d.path().to_str().unwrap(), "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let worker = app.selected_session().unwrap().pid;
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "read line"]);
+        assert!(app.open((30, 120), c, "attach", A.into(), None));
+        assert_ne!(worker, Some(app.viewers[0].viewer.pid()));
+        assert_eq!(app.selected_session().unwrap().pid, worker);
+        app.refresh().unwrap();
+        assert_eq!(app.selected_session().unwrap().pid, worker);
+    }
+
+    #[test]
+    fn stopping_an_owned_foreground_session_closes_its_viewer_before_and_after_native_identity() {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+            for native in [false, true] {
+                let d = dir();
+                let mut app = app(d.path());
+                let id = app.launch_row(kind, d.path(), "fix the tests");
+                let mut c = Command::new("/bin/sh");
+                c.args(["-c", "read line"]);
+                let record =
+                    (kind == HarnessKind::Codex).then(|| (d.path().to_owned(), chrono::Utc::now()));
+                assert!(app.open((30, 120), c, &kind.to_string(), id, record));
+                let pid = app.viewers[0].viewer.pid();
+                let id = if native {
+                    B.into()
+                } else {
+                    format!("{kind}-{pid}")
+                };
+                let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+                let mut s = placeholder(kind, &id, d.path(), "fix the tests");
+                s.pid = Some(pid);
+                s.state = "active".into();
+                if !native {
+                    s.kind = None;
+                } else if kind == HarnessKind::Codex {
+                    let rollout = d.path().join("rollout.jsonl");
+                    fs::write(&rollout, "").unwrap();
+                    s.transcript_path = Some(rollout);
+                }
+                data.sessions.push(s);
+                app.apply(data);
+                app.unfocus();
+                assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+                app.stop();
+                app.stop();
+                poll_until(&mut app, |app| app.stopping.is_empty());
+                assert!(app.viewers.is_empty());
+                assert!(app.pending.is_empty());
+                assert!(!app.status.contains("failed"), "{}", app.status);
+                assert!(
+                    codex::threads(&app.state).is_empty(),
+                    "forget removes the saved thread"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_codex_daemon_id_replaces_its_launch_and_records_only_the_identified_thread() {
+        for process_first in [false, true] {
+            let d = dir();
+            let mut app = app(d.path());
+            app.refresh().unwrap();
+            let since = chrono::Utc::now();
+            let id = app.launch_row(HarnessKind::Codex, d.path(), "fix the tests");
+            let mut c = Command::new("/bin/sh");
+            c.args(["-c", "read line"]);
+            assert!(app.open(
+                (30, 120),
+                c,
+                "codex in /x",
+                id.clone(),
+                Some((d.path().to_owned(), since)),
+            ));
+            let pid = app.viewers[0].viewer.pid();
+            if process_first {
+                let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+                let mut s = placeholder(
+                    HarnessKind::Codex,
+                    &format!("codex-{pid}"),
+                    d.path(),
+                    "fix the tests",
+                );
+                s.kind = None;
+                s.pid = Some(pid);
+                data.sessions.push(s);
+                app.apply(data);
+            }
+            app.unfocus();
+            assert!(
+                !app.viewers[0].recorded,
+                "no thread has been identified yet"
+            );
+            assert!(codex::threads(&app.state).is_empty());
+            let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+            let mut s = placeholder(HarnessKind::Codex, B, d.path(), "reported title");
+            s.state = "active".into();
+            let rollout = d.path().join("rollout.jsonl");
+            fs::write(
+                &rollout,
+                serde_json::json!({
+                    "type": "event_msg",
+                    "payload": {"item": {"type": "UserMessage", "content": [
+                        {"type": "text", "text": "fix the tests"}
+                    ]}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            s.transcript_path = Some(rollout);
+            assert_eq!(s.pid, None, "the daemon row has no client pid");
+            data.sessions.push(s);
+            app.apply(data);
+            assert_eq!(app.data.sessions.len(), 1);
+            assert_eq!(key(&app).as_deref(), Some(B));
+            assert_eq!(app.viewers[0].key, B);
+            assert_eq!(app.selected_session().unwrap().pid, Some(pid));
+            assert_eq!(codex::threads(&app.state)[0].id, B);
+            app.enter().unwrap();
+            assert_eq!(app.viewers.len(), 1);
+            assert_eq!(app.viewers[0].viewer.pid(), pid);
+        }
+    }
+
+    #[test]
+    fn ambiguous_codex_threads_do_not_claim_a_launch_or_record_the_newest_thread() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let since = chrono::Utc::now();
+        let id = app.launch_row(HarnessKind::Codex, d.path(), "fix the tests");
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "read line"]);
+        app.open(
+            (30, 120),
+            c,
+            "codex in /x",
+            id.clone(),
+            Some((d.path().to_owned(), since)),
+        );
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        for native in [A, B] {
+            let mut s = placeholder(HarnessKind::Codex, native, d.path(), "another launch");
+            s.state = "active".into();
+            let rollout = d.path().join(format!("{native}.jsonl"));
+            fs::write(
+                &rollout,
+                serde_json::json!({
+                    "type": "event_msg",
+                    "payload": {"item": {"type": "UserMessage", "content": [
+                        {"type": "text", "text": "fix the tests"}
+                    ]}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            s.transcript_path = Some(rollout);
+            data.sessions.push(s);
+        }
+        app.apply(data);
+        assert_eq!(app.viewers[0].key, id);
+        assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+        app.unfocus();
+        assert!(!app.viewers[0].recorded);
+        assert!(codex::threads(&app.state).is_empty());
+    }
+
+    #[test]
+    fn an_unrelated_codex_prompt_in_the_launch_folder_cannot_claim_its_viewer() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let since = chrono::Utc::now();
+        let id = app.launch_row(HarnessKind::Codex, d.path(), "fix the tests");
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "read line"]);
+        app.open(
+            (30, 120),
+            c,
+            "codex in /x",
+            id.clone(),
+            Some((d.path().to_owned(), since)),
+        );
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let mut s = placeholder(HarnessKind::Codex, B, d.path(), "fix the tests");
+        let rollout = d.path().join("other.jsonl");
+        fs::write(
+            &rollout,
+            serde_json::json!({
+                "type": "event_msg",
+                "payload": {"item": {"type": "UserMessage", "content": [
+                    {"type": "text", "text": "a different task"}
+                ]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        s.transcript_path = Some(rollout);
+        data.sessions.push(s);
+        app.apply(data);
+        assert_eq!(app.viewers[0].key, id);
+        assert!(!app.viewers[0].recorded);
+        assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+    }
+
+    #[test]
+    fn cancelling_or_failing_a_foreground_launch_removes_its_row_and_restores_the_prompt() {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+            for failure in ["cancel", "prepare", "spawn"] {
+                let d = dir();
+                let mut app = app(d.path());
+                let id = app.launch_row(kind, d.path(), "fix the tests\nplease");
+                app.prepare_viewer(
+                    kind.to_string(),
+                    id,
+                    None,
+                    Some("fix the tests\nplease".into()),
+                    move || {
+                        if failure == "prepare" {
+                            anyhow::bail!("fixture refused launch");
+                        }
+                        Ok(Command::new("/a/fixture/program/that/does/not/exist"))
+                    },
+                );
+                if failure == "cancel" {
+                    assert!(app.cancel_opening());
+                } else {
+                    finish_opening(&mut app);
+                    assert!(app.status.contains("failed"));
+                }
+                assert!(app.pending.is_empty());
+                assert!(app.data.sessions.is_empty());
+                assert!(app.viewers.is_empty());
+                assert_eq!(app.text, "fix the tests\nplease");
+            }
+        }
     }
 
     #[test]
@@ -9438,7 +10035,7 @@ mod tests {
 
     /// A pi the composer starts is the process cones holds in a viewer, and pi reports no
     /// session id until its first turn writes one, so the row that discovers the process is
-    /// the only way back in. One row, not two: cones adds no placeholder of its own.
+    /// the only way back in once discovery replaces the launch placeholder.
     #[test]
     fn a_composer_pi_is_one_row_that_returns_to_the_viewer_holding_its_process() {
         let d = dir();
@@ -9846,6 +10443,36 @@ mod tests {
             }
             assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
         }
+        for what in ["pi", "pi in /x"] {
+            app.viewers[0].what = what.into();
+            assert_eq!(
+                app.foot_rows(),
+                2,
+                "pi keeps the footer below its input rule"
+            );
+        }
+        for what in ["codex", "codex in /x", "logs"] {
+            app.viewers[0].what = what.into();
+            for focus in [None, Some(0)] {
+                app.focus = focus;
+                assert_eq!(app.foot_rows(), 1, "{what} does not move the composer");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pi_input_near_the_top_does_not_move_the_dashboard_composer() {
+        let d = dir();
+        let mut app = app(d.path());
+        let rule = "─".repeat(60);
+        app.viewers.push(viewer_open(
+            "pi:start:test",
+            "pi in /x",
+            &format!("PI\\r\\n{rule}\\r\\ninput\\r\\n{rule}\\r\\nfolder\\r\\nmodel"),
+        ));
+        app.focus = Some(0);
+        wait_paint(&mut app, 0, "PI");
+        assert_eq!(app.foot_rows(), 1);
     }
 
     #[test]
