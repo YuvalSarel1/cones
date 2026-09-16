@@ -35,16 +35,6 @@ enum Trigger {
 }
 #[derive(Subcommand)]
 enum Action {
-    /// Validate all jobs and their compiled execution policy.
-    Validate,
-    /// Install enabled jobs as launchd LaunchAgents.
-    Install {
-        /// Print plists without installing anything. Contains values of named env variables.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Remove cones LaunchAgents, retaining run history and transcripts.
-    Uninstall,
     /// Run a job now, or `--prompt` for a one-off task in the current directory.
     Run {
         /// Job name; with --prompt, the job whose policy the task borrows (default: the first).
@@ -55,7 +45,20 @@ enum Action {
         #[arg(long, value_enum, default_value = "manual")]
         trigger: Trigger,
     },
-    /// List runs and live sessions as tab-separated rows.
+    /// Start jobs whose ticks passed while the Mac was off or logged out. The login agent runs this.
+    Catchup {
+        /// Name the ticks that were missed without starting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write and load the LaunchAgents for the jobs; the dashboard runs this when a job is saved.
+    #[command(name = "__install", hide = true)]
+    Install {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Runs and live sessions as rows; the harness checks in docs/harness.md read this.
+    #[command(name = "__ls", hide = true)]
     Ls {
         #[arg(long)]
         job: Option<String>,
@@ -64,7 +67,8 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
-    /// Show captured output. Ctrl+C detaches a follower without stopping the run.
+    /// A run's captured output; the dashboard opens this in a viewer.
+    #[command(name = "__logs", hide = true)]
     Logs {
         id: String,
         #[arg(long)]
@@ -72,28 +76,16 @@ enum Action {
         #[arg(long)]
         raw: bool,
     },
-    /// Stop a run or supported fleet session after verifying process identity.
-    Stop { id: String },
-    /// Attach to a Claude background session or resume a completed run.
+    /// A background session or a finished run in this terminal; the dashboard opens this.
+    #[command(name = "__attach", hide = true)]
     Attach {
         id: String,
-        /// Show the native resume command without opening a TUI.
         #[arg(long)]
         print_command: bool,
     },
-    /// Start the coordinator for a folder: one Claude Code session running the start-orchestrator skill.
-    Coordinator {
-        #[command(subcommand)]
-        action: CoordinatorAction,
-    },
-    /// Start jobs whose ticks passed while the Mac was off or logged out. The login agent runs this.
-    Catchup {
-        /// Name the ticks that were missed without starting anything.
-        #[arg(long)]
-        dry_run: bool,
-    },
-    /// Check execution prerequisites and policy hazards.
-    Doctor,
+    /// The folder's coordinator: the embedded start-orchestrator skill in one background session.
+    #[command(name = "__coordinator", hide = true)]
+    Coordinator { dir: Option<PathBuf> },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -101,12 +93,6 @@ enum Action {
         #[arg(long)]
         run_id: String,
     },
-}
-
-#[derive(Subcommand)]
-enum CoordinatorAction {
-    /// Launch the embedded skill in DIR (default: here) as a background Claude session, unless one already runs there.
-    Start { dir: Option<PathBuf> },
 }
 
 fn main() {
@@ -146,14 +132,6 @@ fn execute(cli: Cli) -> Result<i32> {
         );
     };
     match command {
-        Action::Validate => {
-            let jobs = config::read_jobs(&jobs_path)?;
-            for job in &jobs {
-                harness::adapter(job.harness)?.compile(job, &uuid::Uuid::new_v4().to_string())?;
-                println!("{}\tvalid\t{}", job.name, job.harness);
-            }
-            Ok(0)
-        }
         Action::Install { dry_run } => {
             launchd::install(
                 &config::read_jobs(&jobs_path)?,
@@ -162,10 +140,6 @@ fn execute(cli: Cli) -> Result<i32> {
                 &state,
                 dry_run,
             )?;
-            Ok(0)
-        }
-        Action::Uninstall => {
-            launchd::uninstall_all()?;
             Ok(0)
         }
         Action::Catchup { dry_run } => {
@@ -326,19 +300,6 @@ fn execute(cli: Cli) -> Result<i32> {
             output::logs(&ledger, &id, follow, raw)?;
             Ok(0)
         }
-        Action::Stop { id } => {
-            let stopped = runner::stop(&Ledger::new(&state)?, &claude, &id)?;
-            println!(
-                "{}\t{}",
-                id,
-                if stopped {
-                    "stop requested"
-                } else {
-                    "already finished"
-                }
-            );
-            Ok(0)
-        }
         Action::Attach { id, print_command } => {
             let ledger = Ledger::new(&state)?;
             let run = match ledger.resolve(&id) {
@@ -425,9 +386,7 @@ fn execute(cli: Cli) -> Result<i32> {
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
-        Action::Coordinator {
-            action: CoordinatorAction::Start { dir },
-        } => {
+        Action::Coordinator { dir } => {
             let dir = cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), &cwd)?
                 .canonicalize()
                 .context("coordinator directory")?;
@@ -445,7 +404,6 @@ fn execute(cli: Cli) -> Result<i32> {
                 .context("start claude")?;
             Ok(status.code().unwrap_or(1))
         }
-        Action::Doctor => doctor(&jobs_path, &state),
         Action::Worker { .. } => unreachable!(),
     }
 }
@@ -482,216 +440,4 @@ fn attach_real_tty(command: &mut Command) {
 
 fn quote(s: &std::ffi::OsStr) -> String {
     format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"))
-}
-fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
-    let mut failed = false;
-    let mut report = |level: &str, message: String| {
-        if level == "FAIL" {
-            failed = true;
-        }
-        println!("{level}\t{message}");
-    };
-    report(
-        if cfg!(target_os = "macos") {
-            "OK"
-        } else {
-            "FAIL"
-        },
-        "launchd requires a logged-in macOS user; wake coalescing does not wake a sleeping Mac"
-            .into(),
-    );
-    for kind in harness::KNOWN {
-        match harness::leave_and_return(kind) {
-            Ok(m) => report("OK", format!("dashboard opens {m}")),
-            Err(e) => report("WARN", format!("dashboard cannot open {kind}: {e:#}")),
-        }
-    }
-    let expected = harness::launch_path();
-    let shell_path = std::env::var("PATH").unwrap_or_default();
-    for part in std::env::split_paths(&expected).take(3) {
-        report(
-            if std::env::split_paths(&shell_path).any(|p| p == part) {
-                "OK"
-            } else {
-                "WARN"
-            },
-            format!(
-                "shell PATH entry {} (generated launchd PATH includes it)",
-                part.display()
-            ),
-        );
-    }
-    let jobs = match config::read_jobs(jobs_path) {
-        Ok(jobs) => jobs,
-        Err(e) => {
-            report("FAIL", format!("jobs: {e:#}"));
-            vec![]
-        }
-    };
-    for job in &jobs {
-        let compiled = harness::adapter(job.harness)
-            .and_then(|a| a.compile(job, &uuid::Uuid::new_v4().to_string()));
-        report(
-            if compiled.is_ok() { "OK" } else { "FAIL" },
-            match compiled {
-                Ok(_) => format!("job {} policy compiles", job.name),
-                Err(e) => format!("job {}: {e:#}", job.name),
-            },
-        );
-        for name in &job.env {
-            report(
-                if std::env::var_os(name).is_some() {
-                    "OK"
-                } else {
-                    "FAIL"
-                },
-                format!(
-                    "job {} imports {name} from this shell (value not printed)",
-                    job.name
-                ),
-            );
-        }
-        if job.codex_full_access {
-            report(
-                "WARN",
-                format!("job {} enables Codex full access", job.name),
-            );
-        }
-        if job.write {
-            report(
-                "WARN",
-                format!(
-                    "job {} permits Edit, Write and Bash{}; native sandbox and ordinary permission checks remain enabled",
-                    job.name,
-                    if job.archive_transcript {
-                        " and archives plaintext transcripts"
-                    } else {
-                        ""
-                    }
-                ),
-            );
-        }
-        let path = launchd::exported_plist_path(&job.name)?;
-        if path.exists() {
-            let env = plist::Value::from_file(&path)
-                .ok()
-                .and_then(|p| p.as_dictionary().cloned())
-                .and_then(|d| d.get("EnvironmentVariables").cloned())
-                .and_then(|e| e.as_dictionary().cloned())
-                .unwrap_or_default();
-            match env.get("PATH").and_then(plist::Value::as_string) {
-                Some(path)
-                    if std::env::split_paths(&expected)
-                        .all(|p| std::env::split_paths(path).any(|q| p == q)) =>
-                {
-                    report("OK", format!("job {} installed launchd PATH", job.name))
-                }
-                _ => report(
-                    "FAIL",
-                    format!(
-                        "job {} installed plist has missing PATH entries; reinstall",
-                        job.name
-                    ),
-                ),
-            }
-            // Check installed values separately from what a reinstall would capture.
-            for name in &job.env {
-                report(
-                    if env.contains_key(name) { "OK" } else { "FAIL" },
-                    if env.contains_key(name) {
-                        format!("job {} installed plist carries {name}", job.name)
-                    } else {
-                        format!("job {} installed plist lacks {name}; reinstall", job.name)
-                    },
-                );
-            }
-        } else {
-            report("WARN", format!("job {} is not installed", job.name));
-        }
-    }
-    if let Some(claude) = harness::executable("claude", &expected) {
-        let version = Command::new(&claude).arg("--version").output()?;
-        let version_text = String::from_utf8_lossy(&version.stdout).trim().to_owned();
-        report(
-            if version.status.success() {
-                "OK"
-            } else {
-                "FAIL"
-            },
-            version_text.clone(),
-        );
-        report(
-            if harness::claude_version_tested(&version_text) == Some(true) {
-                "OK"
-            } else {
-                "WARN"
-            },
-            format!(
-                "Claude version inside the tested range {}",
-                harness::TESTED_CLAUDE_RANGE
-            ),
-        );
-        let help = Command::new(&claude).arg("--help").output()?;
-        let help = String::from_utf8_lossy(&help.stdout);
-        // Probe exactly the switches the compiler emits for a job that uses every option.
-        let mut sample = config::adhoc(None, "doctor probe", std::path::Path::new("/"))?;
-        sample.write = true;
-        sample.model = Some("sonnet".into());
-        let sample = harness::adapter(sample.harness)?
-            .compile(&sample, &uuid::Uuid::new_v4().to_string())?;
-        for flag in harness::compiled_flags(&sample.args) {
-            report(
-                if help.contains(flag) { "OK" } else { "FAIL" },
-                format!("Claude capability {flag}"),
-            );
-        }
-        let auth = Command::new(&claude)
-            .args(["auth", "status", "--json"])
-            .stdin(std::process::Stdio::null())
-            .output()?;
-        let logged_in = serde_json::from_slice::<serde_json::Value>(&auth.stdout)
-            .ok()
-            .and_then(|v| v["loggedIn"].as_bool())
-            .unwrap_or(false);
-        report(
-            if logged_in { "OK" } else { "FAIL" },
-            "Claude authentication status (no credentials printed; a scheduled job cannot prompt to log in; named job env still needs to match the auth provider)".into(),
-        );
-    } else {
-        report("FAIL", "claude not found in generated launchd PATH".into());
-    }
-    let claude = cones::fleet::claude_dir()?;
-    for (dir, what) in [
-        ("sessions", "session registry"),
-        ("projects", "session store"),
-    ] {
-        let path = claude.join(dir);
-        report(
-            if path.is_dir() { "OK" } else { "WARN" },
-            format!("Claude {what} {}", path.display()),
-        );
-    }
-    let settings = claude.join("settings.json");
-    report(
-        if cones::fleet::stale_hook(&settings) {
-            "WARN"
-        } else {
-            "OK"
-        },
-        format!(
-            "no entries from the removed cones hook in {} (delete those whose command ends in ` hook $PPID`)",
-            settings.display()
-        ),
-    );
-    match Ledger::new(state).and_then(|ledger| ledger.runs()) {
-        Ok(_) => report(
-            "OK",
-            format!(
-                "run ledger {} is readable and writable",
-                state.join("runs.jsonl").display()
-            ),
-        ),
-        Err(e) => report("FAIL", format!("run ledger: {e:#}")),
-    }
-    Ok(if failed { 1 } else { 0 })
 }

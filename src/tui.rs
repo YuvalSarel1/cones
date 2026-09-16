@@ -5333,7 +5333,7 @@ impl App {
             // Running headless jobs expose logs; completed runs can resume.
             Kind::Run(id, s) if s == "started" => {
                 let mut c = self.me();
-                c.args(["logs", &id, "--follow"]);
+                c.args(["__logs", &id, "--follow"]);
                 self.open(self.size, c, "logs", format!("run:{id}"), None);
             }
             Kind::Session(id, _) if id.starts_with("starting:") => {
@@ -5371,7 +5371,7 @@ impl App {
             }
             Kind::Run(id, _) => {
                 let mut c = self.me();
-                c.args(["attach", &id]);
+                c.args(["__attach", &id]);
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
             Kind::Menu => self.open_menu(),
@@ -5393,7 +5393,7 @@ impl App {
     }
 
     fn install(&mut self, done: &str) {
-        let r = self.me().arg("install").output();
+        let r = self.me().arg("__install").output();
         self.status = match r {
             Ok(o) if o.status.success() => format!("{done} · launchd reinstalled"),
             Ok(o) => {
@@ -5553,7 +5553,7 @@ impl App {
         match self.armed.take() {
             Some(armed) if armed == id => {
                 self.status = match Ledger::new(&self.state).and_then(|l| l.hide(&id)) {
-                    Ok(()) => "run hidden · cones ls still has it".into(),
+                    Ok(()) => "run hidden · the ledger still has it".into(),
                     Err(e) => format!("hide failed: {e:#}"),
                 };
                 self.invalidate();

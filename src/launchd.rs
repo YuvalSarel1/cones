@@ -410,7 +410,7 @@ fn install_agent(agents: &Path, state: &Path, name: &str, bytes: &[u8]) -> Resul
 pub fn kickstart(job: &str) -> Result<()> {
     ensure!(
         loaded(&label(job))?,
-        "job {job} has no LaunchAgent loaded; run cones install"
+        "job {job} has no LaunchAgent loaded; save it in the dashboard to install it"
     );
     launchctl(&["kickstart", &format!("{}/{}", domain(), label(job))])
 }

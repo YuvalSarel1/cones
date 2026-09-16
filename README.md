@@ -71,26 +71,13 @@ This runs a supervised Claude Code task in the current directory. With no jobs f
 
 ### Schedule a task
 
-Adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, setting `cwd` and `prompt` for your project. Check the configuration, run the example job once, then install its schedule:
+Adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, setting `cwd` and `prompt` for your project. Run the example job once to see what it does:
 
 ```sh
-cones validate
-cones doctor
 cones run readme-check
-cones install
 ```
 
-Schedules run through macOS launchd. The [jobs guide](docs/jobs.md) covers timeouts, permissions and what happens when a previous run is still going.
-
-### Start a coordinator
-
-In a folder where agents are working:
-
-```sh
-cones coordinator start
-```
-
-It runs as a visible Claude Code session in that folder. Job policies apply to supervised runs; dashboard sessions and the coordinator use their harness's own permissions.
+Then open `jobs` in the dashboard menu and save the job. Saving validates the whole file and installs the job's schedule as a launchd LaunchAgent. The [jobs guide](docs/jobs.md) covers timeouts, permissions and what happens when a previous run is still going.
 
 ## Documentation
 

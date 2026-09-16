@@ -32,7 +32,7 @@ Column headers are dim and unselectable. Widths only grow during a dashboard ses
 
 The activity bar advances every 160 ms, holding three frames at each endpoint. Harness marks and the mascot stay still. The coordinator's title is orange with a `★` before it; the table never spells the word out. Without a `state` column there is no slot before the title; a session that requires its own terminal says so in the footer.
 
-The pane shows live viewers only. Use `cones logs` for recorded output; the dashboard has no transcript details pane.
+The pane shows live viewers only. `enter` on a finished run opens its recorded output in a viewer of its own; the dashboard has no transcript details pane.
 
 ## Columns
 

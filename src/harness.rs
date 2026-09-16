@@ -441,9 +441,8 @@ impl Harness for Claude {
         args.extend(["--".into(), job.prompt.clone()]);
         // Resolve from the same PATH that launchd will use. Never rely on a shell alias.
         let env = environment(job)?;
-        let program = executable("claude", &env["PATH"]).ok_or_else(|| {
-            anyhow::anyhow!("claude is missing from the launchd PATH; run cones doctor")
-        })?;
+        let program = executable("claude", &env["PATH"])
+            .ok_or_else(|| anyhow::anyhow!("claude is missing from the launchd PATH"))?;
         Ok(Invocation {
             program,
             args,
@@ -583,7 +582,7 @@ impl Outcome {
     }
 }
 
-/// Tested Claude version range used by `cones doctor`.
+/// Tested Claude version range, reported on a job that would run an untested Claude.
 pub const TESTED_CLAUDE_RANGE: &str = ">=2.1, <3";
 
 /// `None` when the output has no leading version.

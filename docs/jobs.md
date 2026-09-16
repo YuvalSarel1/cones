@@ -51,7 +51,7 @@ jobs:
 | `cwd` | required | Working directory. `~/` expands, a relative path resolves against the jobs file's directory, and it must exist. |
 | `prompt` | required | The task. Nonempty; passed after `--` on the command line. |
 | `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, the harness's own otherwise; a pi job takes no default | Passed as `--model`. |
-| `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and `cones install` removes that job's LaunchAgent. |
+| `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and saving the job removes its LaunchAgent. |
 | `archive_transcript` | `defaults.archive_transcript`, else `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
 | `env` | `defaults.env`, else `[]` | Names of shell variables to pass through. A job's own list replaces the default one; there is no per-name removal, and `env: []` on a job still takes `defaults.env`, so a job cannot opt out of an inherited list. Drop the name from `defaults.env` instead. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
@@ -66,7 +66,7 @@ jobs:
 
 ## Validation
 
-`cones validate` compiles every job's policy and prints `<name>  valid  <harness>`, or the first error with the job's name. Beyond the per-field rules it rejects:
+Saving in the dashboard compiles every job's policy and reports the first error with the job's name. Beyond the per-field rules it rejects:
 
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - `bedrock: true` with no `aws_profile` or no `aws_region`, on the job or in `defaults`. These fields must be explicit in the file; shell values do not satisfy this check.
@@ -76,7 +76,7 @@ jobs:
 
 ## What the harness is told
 
-The job compiles to one `claude` command with a fixed argv. `cones validate` and `cones doctor` both compile it, and `cones doctor` checks each flag against `claude --help`. The compiled argument list, its hash and the resolved policy are stored in the run's `started` record.
+The job compiles to one `claude` command with a fixed argv, compiled again whenever the file is saved. The compiled argument list, its hash and the resolved policy are stored in the run's `started` record.
 
 | Guarantee | Claude flags |
 | --- | --- |
@@ -110,7 +110,7 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `skipped` | `replace_unconfirmed` | `overlap: replace` and the previous run did not confirm shutdown within 10 seconds | 0 |
 | `timeout` | `timeout` | The runner's clock ran out | 124 |
 | `timeout` | `replaced` | This run was the old one under `overlap: replace`; it received SIGUSR1 and stopped | 124 |
-| `failed` | `interrupted` | `cones stop`, or SIGTERM / SIGINT to the runner | 1 |
+| `failed` | `interrupted` | `ctrl+x` on the run's row, or SIGTERM / SIGINT to the runner | 1 |
 | `failed` | `permission` | Claude reported a permission denial: a `permission_denials` entry on the result or a `permission_denied` system event. A sandboxed command the OS refuses is not one; the sandbox blocks it and the run goes on | 1 |
 | `failed` | `session_mismatch` | An event carried a session id other than the pinned one | 1 |
 | `failed` | `missing_result`, `missing_cost` | Claude exited without a result event, or with one that had no `total_cost_usd` | 1 |
@@ -148,11 +148,11 @@ The planned `overlap: continue` would stop run 1 and start run 2 with `claude --
 
 ## What a run costs
 
-A run has no dollar or turn cap: cones records what the harness reports and stops a run on the clock alone. `timeout_min` is the only limit a run carries. Each terminal record keeps the run's `cost_usd` as Claude reported it, `cones ls` shows it per run, and a run whose result carries no `total_cost_usd` is `failed` / `missing_cost`. Claude's `--max-budget-usd` and `--max-turns` are in [harness.md](harness.md#trigger) as flags cones does not pass.
+A run has no dollar or turn cap: cones records what the harness reports and stops a run on the clock alone. `timeout_min` is the only limit a run carries. Each terminal record keeps the run's `cost_usd` as Claude reported it, the dashboard shows it per run, and a run whose result carries no `total_cost_usd` is `failed` / `missing_cost`. Claude's `--max-budget-usd` and `--max-turns` are in [harness.md](harness.md#trigger) as flags cones does not pass.
 
 ## Schedules on launchd: sleep, login and reboot
 
-`cones install` writes one per-user LaunchAgent per enabled job and loads it with `launchctl bootstrap` in the `gui/<uid>` domain.
+Saving the jobs file writes one per-user LaunchAgent per enabled job and loads it with `launchctl bootstrap` in the `gui/<uid>` domain.
 
 | plist key | Value |
 | --- | --- |
@@ -165,7 +165,7 @@ A run has no dollar or turn cap: cones records what the harness reports and stop
 | `StandardOutPath`, `StandardErrorPath` | `~/.cones/logs/<name>.out.log`, `.err.log` |
 | `EnvironmentVariables` | The environment described under [What the harness is told](#what-the-harness-is-told), including the values of variables named in `env`, so a variable exported after install needs a reinstall |
 
-`cones install` rewrites and re-bootstraps only plists whose content changed, bootstraps ones that are on disk and not loaded, and boots out the LaunchAgent of any job now disabled. `cones uninstall` boots out and deletes every `local.cones.<name>.plist` whose `Label` matches its file name, refuses to continue when one does not, and keeps every ledger record and transcript.
+It rewrites and re-bootstraps only plists whose content changed, bootstraps ones that are on disk and not loaded, and boots out the LaunchAgent of any job now disabled. Every ledger record and transcript is kept.
 
 Per launchd.plist(5), ticks missed while the Mac sleeps coalesce into one launch on wake, so a wake starts at most one run per job and `overlap` decides if the previous run is still going; no job's own agent runs at login or on `cones install`. Ticks that pass while the Mac is powered off or you are logged out are lost to launchd, and launchd does not wake the Mac.
 

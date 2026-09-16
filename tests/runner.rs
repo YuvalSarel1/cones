@@ -72,12 +72,10 @@ impl Fixture {
         (child, line.split('\t').next().unwrap().to_owned())
     }
     fn stop(&self, id: &str, child: &mut std::process::Child) {
-        let result = self.command().args(["stop", id]).output().unwrap();
-        assert!(
-            result.status.success(),
-            "{}",
-            String::from_utf8_lossy(&result.stderr)
-        );
+        // The dashboard stops a run through the library, which is now the only way in.
+        let stopped =
+            cones::runner::stop(&self.ledger(), &self.dir.path().join(".claude"), id).unwrap();
+        assert!(stopped, "the run was already finished");
         assert_eq!(child.wait().unwrap().code(), Some(1));
     }
 }
@@ -104,7 +102,7 @@ fn durable_start_success_cost_and_archived_native_resume() {
     );
     let attach = f
         .command()
-        .args(["attach", &r.started.run_id, "--print-command"])
+        .args(["__attach", &r.started.run_id, "--print-command"])
         .output()
         .unwrap();
     assert!(
@@ -156,7 +154,7 @@ fn successful_read_of_permission_documentation_finishes_ok() {
     assert_eq!(run.terminal.unwrap().status, Status::Ok);
     let logs = f
         .command()
-        .args(["logs", &run.started.run_id])
+        .args(["__logs", &run.started.run_id])
         .output()
         .unwrap();
     assert!(logs.status.success());
@@ -169,7 +167,7 @@ fn following_output_can_detach_without_stopping_the_job() {
     let (mut job, id) = f.start();
     let mut follower = f
         .command()
-        .args(["logs", &id, "--follow", "--raw"])
+        .args(["__logs", &id, "--follow", "--raw"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
@@ -260,7 +258,11 @@ fn two_writer_jobs_in_one_directory_both_run() {
 #[test]
 fn dry_run_warns_on_stderr_before_printing_injected_environment() {
     let f = Fixture::new("success", 1.0);
-    let result = f.command().args(["install", "--dry-run"]).output().unwrap();
+    let result = f
+        .command()
+        .args(["__install", "--dry-run"])
+        .output()
+        .unwrap();
     assert!(result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("may contain secrets"));
     assert!(String::from_utf8_lossy(&result.stdout).starts_with("<?xml"));
@@ -441,7 +443,7 @@ fn attaching_a_skipped_run_names_the_skip_rather_than_calling_it_active() {
     assert_eq!(runs[0].started.status, Status::Skipped);
     let out = f
         .command()
-        .args(["attach", &runs[0].started.run_id])
+        .args(["__attach", &runs[0].started.run_id])
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
@@ -539,7 +541,7 @@ fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
     fs::write(status.join("x.json"), live.to_string()).unwrap();
     let out = f
         .command()
-        .args(["coordinator", "start", dir.to_str().unwrap()])
+        .args(["__coordinator", dir.to_str().unwrap()])
         .output()
         .unwrap();
     assert!(out.status.success());
