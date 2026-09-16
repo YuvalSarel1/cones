@@ -177,4 +177,4 @@ Tests check the plist configuration; physical sleep/wake and reboot behavior has
 
 `harness: codex` and `harness: pi` parse, but no execution adapters are available. Validation and installation fail because cones cannot enforce their dollar budgets natively. Running such a job records `failed` with a `validation: ...` reason. `max_turns` is Claude-only, and `codex_full_access` is Codex-only.
 
-Native Codex and pi sessions still appear in the fleet. Codex daemon threads can be joined through the dashboard; pi stays in its own terminal. See [harness.md](harness.md#kinds).
+Native Codex and pi sessions still appear in the fleet. Codex daemon threads can be joined through the dashboard; a pi can be joined only when the dashboard's own composer started it, and stays in its own terminal otherwise. See [harness.md](harness.md#kinds).

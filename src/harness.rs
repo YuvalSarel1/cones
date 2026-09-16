@@ -36,8 +36,9 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     }
 }
 
-/// Composer harnesses. Each must support sessions that outlive their viewer; pi cannot.
-pub const KNOWN: [HarnessKind; 2] = [HarnessKind::Claude, HarnessKind::Codex];
+/// Composer harnesses, in the order shift+tab cycles them. How long a session
+/// outlives its viewer is the harness's own; `leave_and_return` states it.
+pub const KNOWN: [HarnessKind; 3] = [HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Pi];
 
 /// Native session launch with harness-owned permissions and lifetime.
 /// Background commands return after launch; foreground commands are daemon clients.
@@ -85,7 +86,12 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
                 .current_dir(dir);
             Start::Foreground(c)
         }
-        HarnessKind::Pi => bail!("pi sessions are seen here, not started"),
+        HarnessKind::Pi => {
+            let mut c = std::process::Command::new(path);
+            c.args(session_args(kind, None, prompt, policy))
+                .current_dir(dir);
+            Start::Foreground(c)
+        }
     })
 }
 
@@ -114,13 +120,14 @@ pub fn session_args(
             }
             args.push("--".into());
         }
-        HarnessKind::Pi => {}
+        HarnessKind::Pi => args.push("--".into()),
     }
     args.push(prompt.into());
     args
 }
 
-/// Check that the installed harness can leave a session running after its viewer exits.
+/// Check that the installed harness can run a session the dashboard starts, and
+/// say how long that session lives once its viewer is gone.
 pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
@@ -161,9 +168,14 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
                 "codex {ver}: threads behind the app-server daemon (experimental in Codex)"
             ))
         }
-        HarnessKind::Pi => bail!(
-            "pi runs in its own terminal: it has no background mode or attach, so a session opened here could not be left running"
-        ),
+        HarnessKind::Pi => {
+            let (ok, version) = run(&["--version"])?;
+            ensure!(ok, "this pi does not run, so no session could be started");
+            Ok(format!(
+                "pi {}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach",
+                version.trim()
+            ))
+        }
     }
 }
 
@@ -674,6 +686,21 @@ mod tests {
         assert_eq!(
             session_args(HarnessKind::Codex, None, "x", &direct),
             ["-m", "a-model", "--", "x"]
+        );
+        // pi is started with the instruction alone: the model and provider defaults
+        // name claude and codex, and a Claude alias is not a pi model pattern.
+        assert_eq!(
+            session_args(HarnessKind::Pi, None, "fix it", &p),
+            ["--", "fix it"]
+        );
+    }
+
+    #[test]
+    fn the_composer_offers_every_harness_claude_first() {
+        assert_eq!(
+            KNOWN.map(|k| k.to_string()),
+            ["claude", "codex", "pi"],
+            "shift+tab cycles in this order and start.harness defaults to the first"
         );
     }
 

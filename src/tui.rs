@@ -1820,9 +1820,9 @@ const FIELDS: [Field; 23] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
-        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex sessions start, Codex jobs are still unavailable.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and is started with the instruction alone: the model and provider defaults name claude and codex.",
         builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex"]),
+        input: Answer::Pick(&["-", "claude", "codex", "pi"]),
     },
     Field {
         group: "cones",
@@ -1883,7 +1883,7 @@ const FIELDS: [Field; 23] = [
         sub: "",
         name: "bedrock",
         short: "run on Bedrock",
-        long: "true sends Claude and Codex to Amazon Bedrock, false to their own endpoints; system default passes nothing and the harness's own configuration decides. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
+        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi starts with no provider switch. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
         builtin: SYSTEM,
         input: Answer::Pick(BOOL),
     },
@@ -1955,9 +1955,9 @@ const FIELDS: [Field; 23] = [
         sub: "",
         name: "harness",
         short: "for a job with none",
-        long: "The harness a job runs under when it names no harness of its own. What the composer comes up on is start.harness. Codex jobs are still unavailable.",
+        long: "The harness a job runs under when it names no harness of its own. What the composer comes up on is start.harness. Codex and pi jobs are still unavailable.",
         builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex"]),
+        input: Answer::Pick(&["-", "claude", "codex", "pi"]),
     },
     Field {
         group: "runs",
@@ -2188,11 +2188,9 @@ impl ConfigForm {
             bedrock: flag("bedrock"),
             aws_profile: text("aws_profile"),
             aws_region: text("aws_region"),
-            harness: match v("harness") {
-                "claude" => Some(HarnessKind::Claude),
-                "codex" => Some(HarnessKind::Codex),
-                _ => None,
-            },
+            harness: harness::KNOWN
+                .into_iter()
+                .find(|k| k.to_string() == v("harness")),
         };
         // Session overrides bypass file resolution, so validate Bedrock credentials here too.
         config::bedrock_aws(
@@ -2254,11 +2252,10 @@ impl ConfigForm {
         } else {
             let built = config::Start::default();
             Some(config::Start {
-                harness: match v("start.harness") {
-                    "codex" => HarnessKind::Codex,
-                    "claude" => HarnessKind::Claude,
-                    _ => built.harness,
-                },
+                harness: harness::KNOWN
+                    .into_iter()
+                    .find(|k| k.to_string() == v("start.harness"))
+                    .unwrap_or(built.harness),
                 pane: flag("start.pane").unwrap_or(built.pane),
             })
         };
@@ -2832,7 +2829,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+tab",
-        "the harness the next session starts under, claude or codex; the composer's prefix shows it",
+        "the harness the next session starts under; the composer's prefix shows it, and a pi ends with the viewer it runs in",
     ),
     (
         "ctrl+v",
@@ -3502,6 +3499,25 @@ impl App {
         self.viewers.iter().position(|o| o.key == key)
     }
 
+    /// The viewer a row is already open in. A pi never reports a session id the composer
+    /// could have used as a key, and reports a new one once it writes its session file, so
+    /// its viewer is paired with the process it holds instead. The launch key carries the
+    /// harness word so a pid the kernel has recycled cannot pair a row with another
+    /// harness's viewer, the way `fleet::terminate` refuses to signal a reused pid.
+    fn viewer_of(&self, kind: &Kind) -> Option<usize> {
+        if let Some(i) = Self::viewer_key(kind).and_then(|k| self.viewer_index(&k)) {
+            return Some(i);
+        }
+        let Kind::Session(id, _) = kind else {
+            return None;
+        };
+        let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+        let (pid, launched) = (s.pid?, format!("{}:start:", s.harness));
+        self.viewers
+            .iter()
+            .position(|o| o.viewer.pid() == pid && o.key.starts_with(&launched))
+    }
+
     fn frame(&self) -> Rect {
         Rect::new(0, 0, self.size.1, self.size.0)
     }
@@ -3556,10 +3572,7 @@ impl App {
         if !self.split_active() {
             return None;
         }
-        let own = self
-            .selected()
-            .and_then(|r| Self::viewer_key(&r.kind))
-            .and_then(|k| self.viewer_index(&k));
+        let own = self.selected().and_then(|r| self.viewer_of(&r.kind));
         if own.is_some() || matches!(self.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
             return own;
         }
@@ -4350,8 +4363,7 @@ impl App {
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if row
-            .and_then(|r| Self::viewer_key(&r.kind))
-            .and_then(|k| self.viewer_index(&k))
+            .and_then(|r| self.viewer_of(&r.kind))
             .is_some_and(|i| !self.viewers[i].speculative)
         {
             return "return";
@@ -4387,7 +4399,7 @@ impl App {
                 enter_verb(Some(&kind), self.menu)
             )
         });
-        if let Some(i) = Self::viewer_key(&kind).and_then(|k| self.viewer_index(&k)) {
+        if let Some(i) = self.viewer_of(&kind) {
             self.focus(i);
             return Ok(());
         }
@@ -4508,15 +4520,16 @@ impl App {
         // Rollout timestamps are the thread's own clock; a little slack covers it.
         let since = chrono::Utc::now() - chrono::Duration::seconds(5);
         self.debug(|| format!("start {what}: {prompt:?}"));
-        if kind == HarnessKind::Codex {
-            let record = Some((dir.clone(), since));
+        // Codex and pi run as the dashboard's own client; only Claude is launched and left.
+        if kind != HarnessKind::Claude {
+            let record = (kind == HarnessKind::Codex).then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
-            // Use a temporary launch key until the rollout supplies the thread id.
-            let key = format!("codex:start:{}", since.timestamp_millis());
+            // Use a temporary launch key until the harness reports the session's own id.
+            let key = format!("{kind}:start:{}", since.timestamp_millis());
             self.prepare_viewer(what, key, record, retry, move || {
                 match harness::start(kind, &dir, prompt.trim(), &policy)? {
                     Start::Foreground(command) => Ok(command),
-                    Start::Background(_) => anyhow::bail!("expected a Codex viewer"),
+                    Start::Background(_) => anyhow::bail!("expected a {kind} viewer"),
                 }
             });
             return;
@@ -4780,7 +4793,7 @@ impl App {
         };
         let mut words = vec![kind.to_string()];
         words.extend(model);
-        if p.bedrock == Some(true) {
+        if kind == HarnessKind::Claude && p.bedrock == Some(true) {
             words.push("bedrock".into());
         }
         words
@@ -4840,7 +4853,6 @@ impl App {
 
     /// Drop global hints from the end until they fit; keep the selected row's action and exit key.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
-        let next = harness::KNOWN[(self.harness + 1) % harness::KNOWN.len()].to_string();
         let start = if self.menu_is("jobs") || self.on_new_job() {
             "new job with it".to_owned()
         } else {
@@ -4913,7 +4925,7 @@ impl App {
             ]),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if !self.text.is_empty() => {
-                hints(&[("enter", &start), ("shift+tab", &next)])
+                hints(&[("enter", &start), ("shift+tab", "harness")])
             }
             Mode::Normal => {
                 let mut keys = vec![];
@@ -4932,7 +4944,7 @@ impl App {
                 if self.shown().is_some() || self.panel_shown() {
                     keys.push(("tab", "pane"));
                 }
-                keys.push(("shift+tab", next.as_str()));
+                keys.push(("shift+tab", "harness"));
                 // Drop setup hints before the harness picker when space is tight.
                 if !self.jobs_view {
                     keys.push(("ctrl+t", "columns"));
@@ -7379,7 +7391,7 @@ mod tests {
             .collect();
         assert!(
             hint.starts_with(
-                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab codex · esc back"
+                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab harness · esc back"
             ),
             "a job row offers its own keys first: {hint}"
         );
@@ -7583,15 +7595,27 @@ mod tests {
         let hint = text(app.hint_line());
         assert!(
             hint.starts_with(
-                "enter add folder · ← → pick · shift+tab codex · ctrl+t columns · esc quit"
+                "enter add folder · ← → pick · shift+tab harness · ctrl+t columns · esc quit"
             ),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
-        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(text(app.hint_line()).contains("shift+tab claude"));
         app.text = "fix the tests".into();
-        assert!(text(app.composer()).starts_with(">_ codex › "));
-        assert!(text(app.hint_line()).starts_with("enter start codex in "));
+        // The key names its own effect: with three harnesses it cannot name the next one.
+        for (mark, name) in [(">_", "codex"), ("\u{3c0}", "pi"), ("\u{273b}", "claude")] {
+            app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+            let (composer, hint) = (text(app.composer()), text(app.hint_line()));
+            assert!(
+                composer.starts_with(&format!("{mark} {name} \u{203a} ")),
+                "{composer}"
+            );
+            assert!(
+                hint.starts_with(&format!("enter start {name} in ")),
+                "{hint}"
+            );
+            assert!(hint.contains("shift+tab harness"), "{hint}");
+        }
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(text(app.composer()).starts_with(">_ codex \u{203a} "));
         app.menu = 1;
         assert!(text(app.hint_line()).starts_with("enter new job with it"));
         app.status = "back from attach".into();
@@ -8067,6 +8091,62 @@ mod tests {
         assert!(!app.hint_line().to_string().contains("ctrl+]"));
         assert!(!app.key(KeyCode::Char(']'), KeyModifiers::CONTROL).unwrap());
         assert_eq!(app.focus, None, "from the list the key does nothing");
+    }
+
+    /// A pi the composer starts is the process cones holds in a viewer, and pi reports no
+    /// session id until its first turn writes one, so the row that discovers the process is
+    /// the only way back in. One row, not two: cones adds no placeholder of its own.
+    #[test]
+    fn a_composer_pi_is_one_row_that_returns_to_the_viewer_holding_its_process() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let open = viewer_open("pi:start:1757682871000", "pi in /x", "");
+        let pid = open.viewer.pid();
+        app.viewers.push(open);
+        let row = |id: &str, harness: &str| {
+            let mut s = session(id, "working", "fix the tests", 1);
+            s.harness = harness.into();
+            s.kind = None;
+            s.pid = Some(pid);
+            s.title = None;
+            s
+        };
+        let listed = |app: &mut App, s: Session| {
+            let id = s.session_id.clone();
+            let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+            data.sessions.push(s);
+            app.apply(data);
+            // A row shows a nameless session by the head of its id; the filter reads the row.
+            app.filter = Input::new(id.chars().take(8).collect::<String>());
+            app.apply_filter();
+            app.settle();
+            assert!(
+                matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(s, _)) if *s == id),
+                "{id} is the selected row"
+            );
+            app.rows
+                .iter()
+                .filter(|r| matches!(&r.kind, Kind::Session(s, _) if *s == id))
+                .count()
+        };
+        assert_eq!(listed(&mut app, row(&format!("pi-{pid}"), "pi")), 1);
+        assert_eq!(
+            app.enter_label(),
+            "return",
+            "the viewer cones holds is the way in"
+        );
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        app.unfocus();
+        // The first turn gives the session a name of its own; the process has not changed.
+        listed(&mut app, row("4f3c2b1a-pi", "pi"));
+        assert_eq!(app.enter_label(), "return");
+        // A pid the kernel recycled into another harness is not this viewer's session.
+        listed(&mut app, row("codex-99", "codex"));
+        assert_eq!(app.enter_label(), "own terminal");
+        app.enter().unwrap();
+        assert!(app.status.contains("cannot be joined"), "{}", app.status);
     }
 
     fn session(id: &str, state: &str, title: &str, secs: i64) -> Session {
