@@ -9569,6 +9569,59 @@ mod tests {
         assert_eq!(fs::read(transcript).unwrap(), before);
     }
 
+    #[test]
+    fn history_results_preserve_the_live_fleets_stale_marker() {
+        for live_stale in [false, true] {
+            for history_fails in [false, true] {
+                let (d, mut app, mut terminal) = history_fixture(1);
+                let good = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+                if live_stale {
+                    let (tx, rx) = mpsc::channel();
+                    app.loading = Some(rx);
+                    tx.send(Err(anyhow::anyhow!("live fixture read failed")))
+                        .unwrap();
+                    app.poll();
+                }
+                if history_fails {
+                    let invalid_home = d.path().join("not-a-directory");
+                    fs::write(&invalid_home, "").unwrap();
+                    app.history.reader = Some(
+                        history::Reader::new(vec![history::Source {
+                            harness: HarnessKind::Claude,
+                            home: invalid_home,
+                        }])
+                        .unwrap(),
+                    );
+                }
+                app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+                history_until(&mut app, &mut terminal, |a| {
+                    if history_fails {
+                        a.history.error.is_some()
+                    } else {
+                        a.history.ready && a.history.fetch.is_none()
+                    }
+                });
+                assert_eq!(app.stale, live_stale);
+                assert_eq!(
+                    app.header_summary().to_string().contains("! stale"),
+                    live_stale
+                );
+                assert_eq!(
+                    rows(&terminal, 160).iter().any(|r| r.contains("! stale")),
+                    live_stale
+                );
+                if live_stale {
+                    let (tx, rx) = mpsc::channel();
+                    app.loading = Some(rx);
+                    tx.send(Ok(good)).unwrap();
+                    app.poll();
+                    assert!(!app.stale, "only a successful live read clears its marker");
+                    assert_eq!(app.history.error.is_some(), history_fails);
+                }
+            }
+        }
+    }
+
     fn app(dir: &Path) -> App {
         App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
     }
