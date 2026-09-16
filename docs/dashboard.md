@@ -226,12 +226,12 @@ New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs cu
 
 Open `config` to edit jobs.yaml. Fields are grouped under `cones` (dashboard settings), `harnesses` (models and provider), and `runs` (supervised job defaults). Subheadings name actual config blocks or harnesses. Job fields and defaults are listed in [jobs.md](jobs.md); dashboard fields are described above.
 
-Each row displays its control and current value. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in. `enter` opens text editing where supported; enter accepts it and escape restores the previous value. Leaving the form keeps already saved changes. Validation errors focus the relevant field and leave the file untouched.
+Each row displays its control and current value. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in. `enter` moves on to the next field; on a plain text or number field it opens editing first, and a second enter accepts the text and moves on. Escape restores the previous value. Leaving the form keeps already saved changes. Validation errors focus the relevant field and leave the file untouched.
 
 | Control | Fields and behavior |
 | --- | --- |
 | Choices | Harness, provider, write, overlap, notify, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
-| Choices or text | Claude model, AWS region and bucket. A custom value joins the choices while selected; stepping away drops it. |
+| Choices or text | Claude model, AWS region and bucket. An empty slot follows the words; arrows step onto it or typing starts in it, and a value the words do not offer stays there. Stepping back onto a word drops it. |
 | Numbers | `confirm_secs`, bar count, turn cap and daily budget step by 1; timeout by 5 minutes; per-run budget by 0.25 USD. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
 | Text | AWS profile and Codex model id. |
 | Columns | Arrows select, space shows/hides, brackets reorder, backspace restores defaults. Each change saves immediately; `ctrl+t` offers the same arrangement on the table. |

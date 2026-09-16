@@ -1745,8 +1745,9 @@ impl Field {
         }
     }
 
-    /// Append a custom value to the option ring. Stepping away drops it; empty means built-in,
-    /// and the built-in's own word is not offered a second time.
+    /// The option ring. Empty means built-in, and the built-in's own word is not offered a
+    /// second time. A pick-only field keeps a value from the file it does not offer; a field
+    /// that also types shows it in the slot past the ring instead.
     fn ring(&self, value: &str) -> Vec<String> {
         let mut ring: Vec<String> = self
             .picks()
@@ -1755,10 +1756,22 @@ impl Field {
             .filter(|o| **o != self.builtin)
             .map(|o| if *o == "-" { "" } else { *o }.to_owned())
             .collect();
-        if !value.is_empty() && value != self.builtin && !ring.iter().any(|o| o == value) {
+        if !self.typed()
+            && !value.is_empty()
+            && value != self.builtin
+            && !ring.iter().any(|o| o == value)
+        {
             ring.push(value.to_owned());
         }
         ring
+    }
+
+    /// The ring stop a value sits on; a value on no stop is the typed slot past them.
+    fn stop(&self, ring: &[String], value: &str) -> usize {
+        let value = if value == self.builtin { "" } else { value };
+        ring.iter()
+            .position(|o| o == value)
+            .unwrap_or(if self.typed() { ring.len() } else { 0 })
     }
 
     fn label<'a>(&self, o: &'a str) -> &'a str {
@@ -2296,10 +2309,28 @@ impl ConfigForm {
         if ring.is_empty() {
             return false;
         }
-        let at = ring.iter().position(|o| *o == value).unwrap_or(0);
-        let next = (at + if back { ring.len() - 1 } else { 1 }) % ring.len();
+        // A field that also types has one more stop past the words: the slot typed into.
+        let stops = ring.len() + f.typed() as usize;
+        let at = if self.open {
+            ring.len()
+        } else {
+            f.stop(&ring, &value)
+        };
+        let next = (at + if back { stops - 1 } else { 1 }) % stops;
+        if next == ring.len() {
+            self.enter();
+            self.values[self.row].clear();
+            return false;
+        }
+        self.open = false;
         self.values[self.row] = ring[next].clone();
         next != at
+    }
+
+    fn down(&mut self) {
+        if self.row + 1 < FIELDS.len() {
+            self.go(self.row + 1);
+        }
     }
 
     /// Validate changed values and focus the field named by a validation error.
@@ -2358,16 +2389,25 @@ impl ConfigForm {
                     }
                     return self.commit();
                 }
-                KeyCode::Enter if self.field().typed() => self.enter(),
+                KeyCode::Enter
+                    if matches!(self.field().input, Answer::Typed | Answer::Number(_)) =>
+                {
+                    self.enter()
+                }
+                // The words are already picked by the arrows; enter goes on to the next setting.
+                KeyCode::Enter | KeyCode::Down => self.down(),
                 KeyCode::Up => {
                     if self.row > 0 {
                         self.go(self.row - 1);
                     }
                 }
-                KeyCode::Down => {
-                    if self.row + 1 < FIELDS.len() {
-                        self.go(self.row + 1);
-                    }
+                // Typing on a field that also types goes into its slot.
+                KeyCode::Char(_)
+                    if matches!(self.field().input, Answer::PickOrType(..))
+                        && !mods.contains(KeyModifiers::CONTROL) =>
+                {
+                    self.enter();
+                    return self.key(code, mods);
                 }
                 KeyCode::Char(c) if !self.field().typed() => {
                     let f = self.field();
@@ -2394,7 +2434,29 @@ impl ConfigForm {
                 self.values[self.row] = std::mem::take(&mut self.before);
                 self.open = false;
             }
-            KeyCode::Enter => return self.commit(),
+            KeyCode::Enter => {
+                let action = self.commit();
+                if self.error.is_none() {
+                    self.down();
+                }
+                return action;
+            }
+            // Arrows past either end of the slot step back onto the words.
+            KeyCode::Left | KeyCode::Right
+                if mods.is_empty() && matches!(self.field().input, Answer::PickOrType(..)) && {
+                    let v = &self.values[self.row];
+                    let at = snap(v, self.cursor);
+                    if code == KeyCode::Left {
+                        at == 0
+                    } else {
+                        at == v.len()
+                    }
+                } =>
+            {
+                if self.turn(code == KeyCode::Left) {
+                    return self.commit();
+                }
+            }
             _ => {
                 // Typing over a word the field offers starts from empty rather than
                 // appending to it.
@@ -2537,6 +2599,10 @@ impl ConfigForm {
             }
             return spans;
         }
+        let mut spans = vec![];
+        // A field that also types keeps a slot past its words; typing or a value the words
+        // do not offer sits there.
+        let mut slot: Option<&str> = None;
         if f.picks().is_some() {
             let ring = f.ring(value);
             let labels: Vec<&str> = ring
@@ -2549,10 +2615,23 @@ impl ConfigForm {
                     }
                 })
                 .collect();
-            if !open {
-                let at = ring.iter().position(|o| o == value).unwrap_or(0);
-                let mut spans = vec![];
-                picks(&mut spans, &labels, at);
+            let at = if open {
+                ring.len()
+            } else {
+                f.stop(&ring, value)
+            };
+            picks(&mut spans, &labels, at);
+            match f.input {
+                Answer::PickOrType(_, what) => slot = Some(what),
+                _ => return spans,
+            }
+            spans.push(Span::raw(" "));
+            if at < ring.len() {
+                // On a word the slot stands empty, saying what it takes, and wraps whole.
+                spans.push(Span::styled(
+                    format!("[ {what:<BOX_W$} ]", what = slot.unwrap_or_default()),
+                    dim(),
+                ));
                 return spans;
             }
         }
@@ -2575,9 +2654,17 @@ impl ConfigForm {
                 Span::styled(" ›", arrows),
             ];
         }
-        let mut spans = vec![Span::styled("[ ", dim())];
+        let box_at = spans.len();
+        spans.push(Span::styled(
+            "[ ",
+            if slot.is_some() && i == self.row {
+                lit()
+            } else {
+                dim()
+            },
+        ));
         if open {
-            spans.extend(typed(value, self.cursor, f.builtin));
+            spans.extend(typed(value, self.cursor, slot.unwrap_or(f.builtin)));
         } else if value.is_empty() {
             let builtin = if f.builtin == SYSTEM {
                 "default"
@@ -2588,10 +2675,14 @@ impl ConfigForm {
         } else {
             spans.push(Span::styled(value.clone(), bold()));
         }
-        let used: usize = spans.iter().skip(1).map(Span::width).sum();
+        let used: usize = spans.iter().skip(box_at + 1).map(Span::width).sum();
         spans.push(Span::styled(
             format!("{} ]", " ".repeat(BOX_W.saturating_sub(used))),
-            dim(),
+            if slot.is_some() && i == self.row {
+                lit()
+            } else {
+                dim()
+            },
         ));
         spans
     }
@@ -2616,7 +2707,7 @@ impl ConfigForm {
                     "space shows or hides · [ ] move it · bksp the built-in set".to_owned()
                 }
                 Answer::Pick(_) => default,
-                Answer::PickOrType(_, what) => format!("enter types {what} · {default}"),
+                Answer::PickOrType(_, what) => format!("or type {what} · enter next · {default}"),
                 _ => format!("enter types it · {default}"),
             }
         };
@@ -6092,7 +6183,19 @@ mod tests {
         c.key(KeyCode::Right, none);
         assert!(value(&c).is_empty(), "past the typed value is the built-in");
         c.key(KeyCode::Left, none);
-        assert_eq!(value(&c), "haiku", "and the words alone from there");
+        assert!(
+            c.open && value(&c).is_empty(),
+            "back is the slot, empty and typed into"
+        );
+        c.key(KeyCode::Left, none);
+        assert!(!c.open, "and past the slot the words again");
+        assert_eq!(value(&c), "haiku");
+        c.key(KeyCode::Enter, none);
+        assert_eq!(
+            c.row,
+            field_at("model") + 1,
+            "enter on a word goes to the next setting"
+        );
 
         c.go(field_at("columns"));
         assert!(
@@ -6352,11 +6455,10 @@ mod tests {
             "the defaults editor types where the cursor is"
         );
         c.key(KeyCode::Enter, KeyModifiers::NONE);
-        c.key(KeyCode::Down, KeyModifiers::NONE);
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('2'), KeyModifiers::NONE);
         c.key(KeyCode::Enter, KeyModifiers::NONE);
-        c.key(KeyCode::Up, KeyModifiers::NONE);
+        c.go(field_at("timeout_min"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('7'), KeyModifiers::NONE);
         assert_eq!(
@@ -9233,10 +9335,13 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            s.contains("activity.bucket › enter types a duration · default: 1m"),
+            s.contains("activity.bucket › or type a duration · enter next · default: 1m"),
             "a field that also takes something typed says so, and only there: {s}"
         );
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            row_of(&s, "time per bar").contains("[ a duration"),
+            "an empty slot follows the words, naming what it takes: {s}"
+        );
         for c in "10m".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
@@ -9246,12 +9351,17 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
+        let bucket = row_of(&s, "time per bar");
         assert!(
-            row_of(&s, "time per bar").contains("[ 10m"),
-            "typing replaces the words with the box it is typed in: {s}"
+            bucket.contains("30s") && bucket.contains("[ 10m"),
+            "typing goes into the slot past the words: {s}"
         );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "10m"));
+        assert!(
+            matches!(&app.mode, Mode::Config(f)
+            if !f.open && f.values[field_at("activity.bucket")] == "10m" && f.row == field_at("activity.bucket") + 1),
+            "enter keeps the slot's value and goes on to the next setting"
+        );
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
             .map(|y| cells(&t, y, 81..160))
@@ -9260,17 +9370,16 @@ mod tests {
             .join("\n");
         let bucket = row_of(&s, "time per bar");
         assert!(
-            bucket.contains("30s") && bucket.contains("[10m]"),
-            "a value typed in stands last among the words, as one more choice: {bucket}"
+            bucket.contains("30s") && bucket.contains("[ 10m") && !bucket.contains("[1m]"),
+            "a value typed in stays in the slot, with no word picked: {bucket}"
         );
         go(&mut app, "model");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "claude-opus-5".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "claude-opus-5")
+            matches!(&app.mode, Mode::Config(f) if !f.open && f.values[field_at("model")] == "claude-opus-5")
         );
         go(&mut app, "write");
         app.key(KeyCode::Char('t'), KeyModifiers::NONE).unwrap();
@@ -9361,7 +9470,10 @@ mod tests {
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open));
         assert!(app.status.starts_with("config saved"), "{}", app.status);
         assert_eq!(config::defaults(&app.jobs_path).timeout_min, Some(5.0));
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.row == field_at("budget_usd")),
+            "enter on a typed value saves it and goes on to the next setting"
+        );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "0.25".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
