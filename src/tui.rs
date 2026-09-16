@@ -1905,8 +1905,17 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// The group a fresh editor keeps shut. A run inherits these settings and rarely changes them,
-/// while the rows above are the dashboard's own; `enter` or `→` on the head opens the section.
+/// while the rows above are the dashboard's own; `enter` or `→` on the head opens the section
+/// and `←` shuts it again.
 const SHUT: &str = "runs";
+
+/// The row the folding group's head stands on: the first field the group holds.
+fn fold_row() -> usize {
+    FIELDS
+        .iter()
+        .position(|f| f.group == SHUT)
+        .expect("SHUT names a group")
+}
 
 /// What the shut group's head explains in the place of a field's own text.
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
@@ -2225,6 +2234,8 @@ pub struct ConfigForm {
     cursor: usize,
     /// The `SHUT` group is folded into its head until `enter` or `→` opens it.
     shut: bool,
+    /// The selection sits on that head rather than on the field it stands for, open or shut.
+    on_head: bool,
     arrange: ColumnForm,
 }
 
@@ -2290,13 +2301,14 @@ impl ConfigForm {
             before: String::new(),
             cursor: usize::MAX,
             shut: true,
+            on_head: false,
             arrange: ColumnForm::new(columns.unwrap_or(&built_columns())),
         }
     }
 
-    /// The selected row is the shut group's head, not a field of its own.
+    /// The selected row is the folding group's head, not a field of its own.
     fn head(&self) -> bool {
-        self.shut && FIELDS[self.row].group == SHUT
+        self.on_head
     }
 
     /// A jump asks for the field itself, so it opens the group holding it.
@@ -2310,6 +2322,7 @@ impl ConfigForm {
     fn step(&mut self, row: usize) {
         self.row = row;
         self.cursor = usize::MAX;
+        self.on_head = false;
     }
 
     fn enter(&mut self) {
@@ -2542,15 +2555,21 @@ impl ConfigForm {
         next != at
     }
 
-    /// Walking stops on the shut group's head; only `enter` or `→` goes past it.
+    /// The folding group's head is a stop of its own on the walk, above its first field.
+    /// A shut head keeps the walk; only `enter` or `→` goes past it.
     fn down(&mut self) {
-        if !self.head() && self.row + 1 < FIELDS.len() {
+        if self.on_head {
+            self.on_head = self.shut;
+        } else if self.row + 1 < FIELDS.len() {
             self.step(self.row + 1);
+            self.on_head = self.row == fold_row();
         }
     }
 
     fn up(&mut self) {
-        if self.row > 0 {
+        if !self.on_head && self.row == fold_row() {
+            self.on_head = true;
+        } else if self.row > 0 {
             self.step(self.row - 1);
         }
     }
@@ -2585,12 +2604,17 @@ impl ConfigForm {
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.error = None;
-        // The shut head takes no value: it opens, or it moves off itself.
+        // The head takes no value: it opens or shuts the section, or it moves off itself.
         if self.head() {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
-                KeyCode::Enter | KeyCode::Right => self.shut = false,
+                KeyCode::Enter | KeyCode::Right => {
+                    self.shut = false;
+                    self.on_head = false;
+                }
+                KeyCode::Left => self.shut = true,
                 KeyCode::Up => self.up(),
+                KeyCode::Down => self.down(),
                 _ => {}
             }
             return ConfigAction::Stay;
@@ -2726,29 +2750,40 @@ impl ConfigForm {
                     .copied()
                     .unwrap_or((f.group, ""));
                 lines.push(Line::default());
-                // A shut group's head is the row itself, so it takes the selection.
-                let picked = self.shut && f.group == SHUT && i == self.row;
+                // The folding group's head is a row of its own, so it takes the selection.
+                let folds = f.group == SHUT;
+                let picked = folds && self.on_head && i == self.row;
                 if picked {
                     at = lines.len();
                 }
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        name.to_owned(),
+                let mut spans = vec![Span::styled(
+                    name.to_owned(),
+                    if picked {
+                        lit()
+                    } else {
+                        Style::default().fg(ORANGE)
+                    },
+                )];
+                spans.push(Span::styled(format!("  {what}"), dim()));
+                // The mark says the section folds, and stays whichever way it is folded.
+                if folds {
+                    spans.push(Span::styled(
+                        if self.shut {
+                            "  ▸  enter opens it"
+                        } else if picked {
+                            "  ▾  ← shuts it"
+                        } else {
+                            "  ▾"
+                        }
+                        .to_owned(),
                         if picked {
-                            lit()
-                        } else {
                             Style::default().fg(ORANGE)
-                        },
-                    ),
-                    Span::styled(
-                        if self.shut && f.group == SHUT {
-                            format!("  {what}  ›  enter opens it")
                         } else {
-                            format!("  {what}")
+                            dim()
                         },
-                        dim(),
-                    ),
-                ]));
+                    ));
+                }
+                lines.push(Line::from(spans));
             }
             if self.shut && f.group == SHUT {
                 head = Some((f.group, f.sub));
@@ -2950,7 +2985,14 @@ impl ConfigForm {
         if self.head() {
             return Line::from(vec![
                 Span::styled(format!("{SHUT} › "), Style::default().fg(ORANGE)),
-                Span::styled("enter or → opens the section", dim()),
+                Span::styled(
+                    if self.shut {
+                        "enter or → opens the section"
+                    } else {
+                        "← shuts the section · → goes into it"
+                    },
+                    dim(),
+                ),
             ]);
         }
         let mut spans = vec![Span::styled(
@@ -6455,6 +6497,30 @@ mod tests {
         assert_eq!(c.row, head, "→ opens the section on its first field");
         c.key(KeyCode::Down, none);
         assert_eq!(c.row, head + 1, "and the walk goes on through it");
+        let mark = |c: &ConfigForm| {
+            c.lines(120)
+                .0
+                .iter()
+                .map(ToString::to_string)
+                .find(|l| l.starts_with(SHUT))
+                .expect("the section has a head")
+        };
+        assert!(mark(&c).contains('▾'), "an open head says so: {}", mark(&c));
+        for _ in 0..2 {
+            c.key(KeyCode::Up, none);
+        }
+        assert!(
+            c.head() && !c.shut,
+            "walking back up stops on the open head"
+        );
+        c.key(KeyCode::Left, none);
+        assert!(
+            c.shut && c.head(),
+            "← shuts the section and stays on its head"
+        );
+        assert!(mark(&c).contains('▸'), "a shut head says so: {}", mark(&c));
+        c.key(KeyCode::Down, none);
+        assert!(c.head(), "and the shut head keeps the walk again");
 
         let p = config::Policy {
             env: Some(vec!["FOO".to_owned(), "BAR".to_owned()]),
@@ -9756,19 +9822,22 @@ mod tests {
         assert_eq!(column(&s, "alias or model id"), col, "{s}");
         let go = |app: &mut App, name: &str| {
             while let Mode::Config(f) = &app.mode
-                && f.row != field_at(name)
+                && (f.row != field_at(name) || f.on_head)
             {
-                let row = f.row;
-                let code = if row < field_at(name) {
+                let want = field_at(name);
+                // On the section's head → opens it and goes in, ↑ leaves it for the row above.
+                let code = if f.on_head {
+                    if f.row > want {
+                        KeyCode::Up
+                    } else {
+                        KeyCode::Right
+                    }
+                } else if f.row < want {
                     KeyCode::Down
                 } else {
                     KeyCode::Up
                 };
                 app.key(code, KeyModifiers::NONE).unwrap();
-                // A shut section's head keeps the walk; → opens it and lets it go on.
-                if matches!(&app.mode, Mode::Config(f) if f.row == row) {
-                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-                }
             }
         };
         go(&mut app, "activity.metric");
