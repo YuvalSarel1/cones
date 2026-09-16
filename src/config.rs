@@ -660,6 +660,28 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
     Some((s, e))
 }
 
+/// A name a run may import. The config editor asks before writing the line, so a name
+/// YAML would read as something other than a string never reaches the file.
+pub fn env_name(key: &str) -> Result<()> {
+    ensure!(
+        !key.is_empty()
+            && key.bytes().enumerate().all(|(i, b)| b == b'_'
+                || b.is_ascii_alphabetic()
+                || (i > 0 && b.is_ascii_digit())),
+        "invalid environment variable name: {key}"
+    );
+    ensure!(
+        !matches!(
+            key,
+            "HOME" | "PATH" | "SHELL" | "BASH_ENV" | "ENV" | "NODE_OPTIONS" | "CLAUDE_CONFIG_DIR"
+        ) && !key.starts_with("DYLD_")
+            && !key.starts_with("LD_")
+            && !key.starts_with("CLAUDE_CODE_"),
+        "{key} can override execution policy and cannot be imported"
+    );
+    Ok(())
+}
+
 /// Validate and replace dashboard settings and defaults while preserving job blocks.
 /// Create a missing file with `jobs: []`; validate defaults even when no jobs exist.
 /// One argument per top-level setting, since each is written on its own.
@@ -965,30 +987,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         j.env
     };
     for key in &env {
-        ensure!(
-            !key.is_empty()
-                && key.bytes().enumerate().all(|(i, b)| b == b'_'
-                    || b.is_ascii_alphabetic()
-                    || (i > 0 && b.is_ascii_digit())),
-            "job {}: invalid environment variable name: {key}",
-            j.name
-        );
-        ensure!(
-            !matches!(
-                key.as_str(),
-                "HOME"
-                    | "PATH"
-                    | "SHELL"
-                    | "BASH_ENV"
-                    | "ENV"
-                    | "NODE_OPTIONS"
-                    | "CLAUDE_CONFIG_DIR"
-            ) && !key.starts_with("DYLD_")
-                && !key.starts_with("LD_")
-                && !key.starts_with("CLAUDE_CODE_"),
-            "job {}: {key} can override execution policy and cannot be imported",
-            j.name
-        );
+        env_name(key).with_context(|| format!("job {}", j.name))?;
     }
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
@@ -1200,6 +1199,22 @@ mod tests {
         );
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
         assert!(read_jobs(&p).unwrap()[0].write);
+
+        // The defaults are resolved before the file is touched, so a name the sequence
+        // could not be read back from never reaches it.
+        let bad = Policy {
+            env: Some(vec!["A: B".to_owned()]),
+            ..Default::default()
+        };
+        assert!(
+            write_config(&p, &bad, None, None, None, None, None, None).is_err(),
+            "a name YAML would read as a mapping is refused"
+        );
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            text,
+            "and nothing is written"
+        );
 
         write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();

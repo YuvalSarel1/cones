@@ -55,7 +55,7 @@ jobs:
 | `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, the harness's own otherwise; a pi job takes no default | Passed as `--model`. |
 | `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and `cones install` removes that job's LaunchAgent. |
 | `archive_transcript` | `defaults.archive_transcript`, else `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
-| `env` | `defaults.env`, else `[]` | Names of shell variables to pass through. A job's own list replaces the default one; there is no per-name removal. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
+| `env` | `defaults.env`, else `[]` | Names of shell variables to pass through. A job's own list replaces the default one; there is no per-name removal, and `env: []` on a job still takes `defaults.env`, so a job cannot opt out of an inherited list. Drop the name from `defaults.env` instead. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
 | `budget_usd` | `2.00` | Per-run cap, passed as `--max-budget-usd`. |
 | `daily_budget_usd` | none | Rolling 24-hour cap per job. At least `budget_usd`. |
@@ -75,7 +75,7 @@ jobs:
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - `bedrock: true` with no `aws_profile` or no `aws_region`, on the job or in `defaults`. These fields must be explicit in the file; shell values do not satisfy this check.
 - `bedrock` on a Codex job, from the job or from `defaults`. cones cannot hold a Codex session to it, so it is a validation error rather than a setting that does nothing.
-- An `env` name that could change execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
+- An `env` name that could change execution policy, on a job or in `defaults`. The config editor refuses it on its own row, before the line reaches the file: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
 - `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a job that is not Claude's, `codex_full_access` on a job that is not Codex's, a `claude` binary missing from the launchd PATH.
 
 ## What the harness is told

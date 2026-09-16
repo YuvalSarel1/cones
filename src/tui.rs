@@ -2306,6 +2306,12 @@ impl ConfigForm {
                 .collect()
         };
         let columns = names("columns");
+        let env = names("env");
+        // Refuse a name on the row: written into the file's flow sequence, one carrying YAML
+        // punctuation would be read back as something other than a string.
+        for key in &env {
+            config::env_name(key).map_err(|e| format!("env: {e:#}"))?;
+        }
         let policy = config::Policy {
             timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
             budget_usd: num("budget_usd", "dollars, as in 2.00")?,
@@ -2327,7 +2333,7 @@ impl ConfigForm {
             },
             notify: flag("notify"),
             archive_transcript: flag("archive_transcript"),
-            env: Some(names("env")).filter(|e: &Vec<String>| !e.is_empty()),
+            env: Some(env).filter(|e: &Vec<String>| !e.is_empty()),
             model: text("model"),
             codex_model: text("codex_model"),
             bedrock: flag("bedrock"),
@@ -6408,9 +6414,20 @@ mod tests {
         let saved = c.config().unwrap().0;
         assert_eq!(
             (saved.env, saved.archive_transcript),
-            (p.env, p.archive_transcript),
+            (p.env.clone(), p.archive_transcript),
             "a run field the file names comes back from its row unchanged"
         );
+
+        let mut c = ConfigForm::new(&p, None, None, None, None, None, None);
+        c.go(field_at("env"));
+        for bad in ["A: B", "1FOO", "PATH"] {
+            c.values[c.row] = bad.to_owned();
+            let e = c.config().unwrap_err();
+            assert!(
+                e.starts_with("env:"),
+                "{bad} is refused on the row, before the line is written: {e}"
+            );
+        }
     }
 
     #[test]
