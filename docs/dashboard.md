@@ -207,7 +207,7 @@ Type an instruction and press `enter` to start a native session in the selected 
 
 Claude starts with `--bg`; a placeholder row appears immediately and becomes the registry row when available. A failed launch removes the placeholder and restores the instruction. New sessions take the selection unless a viewer is focused or an instruction is being typed. Codex opens a client of its app-server daemon, which keeps the thread when the client goes. pi has no daemon and no attach, so a pi is the viewer itself: `enter` on its row returns to that viewer, and closing the viewer or quitting the dashboard ends the session.
 
-`shift+tab` cycles the harness, so the hint names the key's effect rather than the next harness. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. A pi takes none of them and starts on its own configured model. The config editor is where those fields change. The prefix shows the selected harness, an explicit model and Bedrock when enabled.
+`shift+tab` cycles the harness, so the hint names the key's effect rather than the next harness. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. A pi takes none of them and starts on its own configured model. The config editor is where those fields change. The prefix shows the selected harness alone; the model each session came up on is the `model` column of its row.
 
 Native sessions use their harness's permissions. Job budgets, timeouts and tool restrictions apply to supervised runs, started with `cones run --prompt` or `once` in the wizard.
 
@@ -231,16 +231,18 @@ New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs cu
 
 ## The defaults editor
 
-Open `config` to edit jobs.yaml. Fields are grouped under `cones` (dashboard settings), `harnesses` (models and provider), and `runs` (supervised job defaults). Subheadings name actual config blocks or harnesses. Job fields and defaults are listed in [jobs.md](jobs.md); dashboard fields are described above.
+Open `config` to edit jobs.yaml. Fields are grouped under `cones` (dashboard settings), `harnesses` (models and provider), and `runs`, which holds the value every run starts with, for each field a run has, unless the job's own line says otherwise. Subheadings name actual config blocks or harnesses. Job fields and defaults are listed in [jobs.md](jobs.md); dashboard fields are described above.
+
+The `runs` section comes up shut, since a run inherits it and rarely changes it: `enter` or `→` on its head opens it, and `↑ ↓` stop on that head until they do.
 
 Each row displays its control and current value. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in. `enter` moves on to the next field; on a plain text or number field it opens editing first, and a second enter accepts the text and moves on. Escape restores the previous value. Leaving the form keeps already saved changes. Validation errors focus the relevant field and leave the file untouched.
 
 | Control | Fields and behavior |
 | --- | --- |
 | Choices | Harness, provider, write, overlap, notify, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
-| Choices or text | Claude model, AWS region and bucket. An empty slot follows the words; arrows step onto it or typing starts in it, and a value the words do not offer stays there. Stepping back onto a word drops it. |
+| Choices or text | Claude model, Codex model, AWS region and bucket. An empty slot follows the words; arrows step onto it or typing starts in it, and a value the words do not offer stays there. Stepping back onto a word drops it. The Claude words carry `opus[1m]` and `sonnet[1m]` beside the bare aliases: the suffix asks for the million-token window, which `opus` alone does not get. |
 | Numbers | `confirm_secs`, bar count, turn cap and daily budget step by 1; timeout by 5 minutes; per-run budget by 0.25 USD. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
-| Text | AWS profile and Codex model id. |
+| Text | AWS profile, and the names of the shell variables every run imports, separated by commas. |
 | Columns | Arrows select, space shows/hides, brackets reorder, backspace restores defaults. Each change saves immediately; `ctrl+t` offers the same arrangement on the table. |
 
 Empty values omit overrides and use built-ins. Harness-owned fields pass no override when empty. Bedrock requires both an explicit AWS profile and region, including in the temporary session form. Codex settings can be saved for native sessions, but supervised Codex jobs are unavailable.

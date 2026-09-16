@@ -6,7 +6,7 @@ Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard
 
 An older file is migrated on the first read: cones renames what the version it declares called a setting, bumps the version line and writes the file back, keeping comments and layout. Version 1 called the activity column and its block `sparkline`. A file cones cannot rewrite still loads, and the next save migrates it instead.
 
-Jobs override policy defaults individually. Claude uses `defaults.model` and `max_turns`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
+Jobs override policy defaults individually, and every field a run has takes a default. Claude uses `defaults.model` and `max_turns`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
 
 The dashboard's `config` button edits defaults and dashboard settings. The `jobs` screen adds jobs through `new job`, edits with `ctrl+e`, and deletes with `ctrl+x twice`; see [the wizard](dashboard.md#the-wizard).
 
@@ -54,13 +54,13 @@ jobs:
 | `prompt` | required | The task. Nonempty; passed after `--` on the command line. |
 | `model` | `defaults.model` on a Claude job, `defaults.codex_model` on a Codex job, the harness's own otherwise; a pi job takes no default | Passed as `--model`. |
 | `enabled` | `true` | `false` records each tick as `skipped` with reason `disabled`, and `cones install` removes that job's LaunchAgent. |
-| `archive_transcript` | `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
-| `env` | `[]` | Names of shell variables to pass through. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
+| `archive_transcript` | `defaults.archive_transcript`, else `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
+| `env` | `defaults.env`, else `[]` | Names of shell variables to pass through. A job's own list replaces the default one; there is no per-name removal. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
 | `budget_usd` | `2.00` | Per-run cap, passed as `--max-budget-usd`. |
 | `daily_budget_usd` | none | Rolling 24-hour cap per job. At least `budget_usd`. |
 | `write` | `false` | `false` allows Read, Grep and Glob. `true` adds Edit, Write and Bash, and turns on Claude's sandbox. There is no per-tool list: Claude treats a scoped `Bash(pattern)` rule as a pre-approval, not an exclusive allowlist, so cones cannot promise one. |
-| `max_turns` | none | Passed as `--max-turns`. |
+| `max_turns` | `defaults.max_turns` | Passed as `--max-turns`. Claude only. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
 | `codex_full_access` | `false` | Codex only. Rejected on a Claude job; as a default it reaches Codex jobs alone. |

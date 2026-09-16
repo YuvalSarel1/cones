@@ -1846,11 +1846,18 @@ const SYSTEM: &str = "system default";
 const GROUPS: [(&str, &str); 3] = [
     ("cones", "the dashboard itself"),
     ("harnesses", "how claude and codex are run"),
-    ("runs", "every supervised run"),
+    ("runs", "what a run starts with"),
 ];
 
+/// The group a fresh editor keeps shut. A run inherits these settings and rarely changes them,
+/// while the rows above are the dashboard's own; `enter` or `→` on the head opens the section.
+const SHUT: &str = "runs";
+
+/// What the shut group's head explains in the place of a field's own text.
+const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
+
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 25] = [
+const FIELDS: [Field; 27] = [
     Field {
         group: "cones",
         sub: "",
@@ -1991,27 +1998,38 @@ const FIELDS: [Field; 25] = [
         sub: "claude",
         name: "model",
         short: "alias or model id",
-        long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. system default passes nothing and Claude's own settings decide.",
+        long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. A [1m] suffix asks for the million-token window, which the bare alias does not: opus starts on 200k. system default passes nothing and Claude's own settings decide.",
         builtin: SYSTEM,
-        input: Answer::PickOrType(&["-", "fable", "opus", "sonnet", "haiku"], "a model id"),
-    },
-    Field {
-        group: "harnesses",
-        sub: "claude",
-        name: "max_turns",
-        short: "turns per run",
-        long: "Maximum assistant turns per Claude run. Empty passes nothing and Claude's own limit stands.",
-        builtin: SYSTEM,
-        input: Answer::Number(1.0),
+        input: Answer::PickOrType(
+            &[
+                "-",
+                "fable",
+                "opus",
+                "opus[1m]",
+                "sonnet",
+                "sonnet[1m]",
+                "haiku",
+            ],
+            "a model id",
+        ),
     },
     Field {
         group: "harnesses",
         sub: "codex",
         name: "codex_model",
         short: "model id",
-        long: "Passed to Codex as -m for sessions the composer starts; on Bedrock the id carries the openai. prefix. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
+        long: "Passed to Codex as -m for sessions the composer starts. The words are the ids as OpenAI names them; a Bedrock daemon takes the same id with the openai. prefix, typed in the slot. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
         builtin: SYSTEM,
-        input: Answer::Typed,
+        input: Answer::PickOrType(
+            &[
+                "-",
+                "gpt-6-astra",
+                "gpt-5.6-sol",
+                "gpt-5.6-luna",
+                "gpt-5.6-terra",
+            ],
+            "a model id",
+        ),
     },
     Field {
         group: "harnesses",
@@ -2026,8 +2044,8 @@ const FIELDS: [Field; 25] = [
         group: "runs",
         sub: "",
         name: "harness",
-        short: "for a job with none",
-        long: "The harness a job runs under when it names no harness of its own. What the composer comes up on is start.harness. Codex and pi jobs are still unavailable.",
+        short: "harness",
+        long: "The harness a run starts under, unless the job names one of its own. What the composer comes up on is start.harness above. Codex and pi jobs are still unavailable.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi"]),
     },
@@ -2070,6 +2088,15 @@ const FIELDS: [Field; 25] = [
     Field {
         group: "runs",
         sub: "",
+        name: "max_turns",
+        short: "turns per run",
+        long: "Maximum assistant turns per run, passed to Claude as --max-turns. Empty passes nothing and Claude's own limit stands. Claude only.",
+        builtin: SYSTEM,
+        input: Answer::Number(1.0),
+    },
+    Field {
+        group: "runs",
+        sub: "",
         name: "overlap",
         short: "already running",
         long: "When a job is already running: skip the next run, allow both, or replace the active run.",
@@ -2084,6 +2111,24 @@ const FIELDS: [Field; 25] = [
         long: "Notify on failures, timeouts and runs skipped for budget.",
         builtin: "false",
         input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "archive_transcript",
+        short: "keep the transcript",
+        long: "true copies Claude's transcript into ~/.cones/transcripts/<run id>/ when the run ends.",
+        builtin: "false",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "runs",
+        sub: "",
+        name: "env",
+        short: "import env vars",
+        long: "Shell variables every run imports, by name, separated by commas. A job's own list replaces this one. Values are read when the schedule is installed. Names that could change execution policy are refused, and Bedrock credentials come from the switch above instead.",
+        builtin: "none",
+        input: Answer::Typed,
     },
 ];
 
@@ -2123,6 +2168,8 @@ pub struct ConfigForm {
     before: String,
     /// Byte offset in the selected value.
     cursor: usize,
+    /// The `SHUT` group is folded into its head until `enter` or `→` opens it.
+    shut: bool,
     arrange: ColumnForm,
 }
 
@@ -2162,6 +2209,8 @@ impl ConfigForm {
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
+                "archive_transcript" => flag(d.archive_transcript),
+                "env" => d.env.as_ref().map(|e| e.join(", ")).unwrap_or_default(),
                 "bedrock" => flag(d.bedrock),
                 "aws_profile" => d.aws_profile.clone().unwrap_or_default(),
                 "aws_region" => d.aws_region.clone().unwrap_or_default(),
@@ -2185,11 +2234,25 @@ impl ConfigForm {
             open: false,
             before: String::new(),
             cursor: usize::MAX,
+            shut: true,
             arrange: ColumnForm::new(columns.unwrap_or(&built_columns())),
         }
     }
 
+    /// The selected row is the shut group's head, not a field of its own.
+    fn head(&self) -> bool {
+        self.shut && FIELDS[self.row].group == SHUT
+    }
+
+    /// A jump asks for the field itself, so it opens the group holding it.
     fn go(&mut self, row: usize) {
+        if FIELDS[row].group == SHUT {
+            self.shut = false;
+        }
+        self.step(row);
+    }
+
+    fn step(&mut self, row: usize) {
         self.row = row;
         self.cursor = usize::MAX;
     }
@@ -2235,11 +2298,14 @@ impl ConfigForm {
             _ => None,
         };
         let text = |name: &str| Some(v(name).to_owned()).filter(|t| !t.is_empty());
-        let columns: Vec<String> = v("columns")
-            .split(',')
-            .map(|c| c.trim().to_owned())
-            .filter(|c| !c.is_empty())
-            .collect();
+        let names = |name: &str| -> Vec<String> {
+            v(name)
+                .split(',')
+                .map(|c| c.trim().to_owned())
+                .filter(|c| !c.is_empty())
+                .collect()
+        };
+        let columns = names("columns");
         let policy = config::Policy {
             timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
             budget_usd: num("budget_usd", "dollars, as in 2.00")?,
@@ -2260,6 +2326,8 @@ impl ConfigForm {
                 _ => None,
             },
             notify: flag("notify"),
+            archive_transcript: flag("archive_transcript"),
+            env: Some(names("env")).filter(|e: &Vec<String>| !e.is_empty()),
             model: text("model"),
             codex_model: text("codex_model"),
             bedrock: flag("bedrock"),
@@ -2413,9 +2481,16 @@ impl ConfigForm {
         next != at
     }
 
+    /// Walking stops on the shut group's head; only `enter` or `→` goes past it.
     fn down(&mut self) {
-        if self.row + 1 < FIELDS.len() {
-            self.go(self.row + 1);
+        if !self.head() && self.row + 1 < FIELDS.len() {
+            self.step(self.row + 1);
+        }
+    }
+
+    fn up(&mut self) {
+        if self.row > 0 {
+            self.step(self.row - 1);
         }
     }
 
@@ -2449,6 +2524,16 @@ impl ConfigForm {
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.error = None;
+        // The shut head takes no value: it opens, or it moves off itself.
+        if self.head() {
+            match code {
+                KeyCode::Esc => return ConfigAction::Cancel,
+                KeyCode::Enter | KeyCode::Right => self.shut = false,
+                KeyCode::Up => self.up(),
+                _ => {}
+            }
+            return ConfigAction::Stay;
+        }
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
@@ -2482,11 +2567,7 @@ impl ConfigForm {
                 }
                 // The words are already picked by the arrows; enter goes on to the next setting.
                 KeyCode::Enter | KeyCode::Down => self.down(),
-                KeyCode::Up => {
-                    if self.row > 0 {
-                        self.go(self.row - 1);
-                    }
-                }
+                KeyCode::Up => self.up(),
                 // Typing on a field that also types goes into its slot.
                 KeyCode::Char(_)
                     if matches!(self.field().input, Answer::PickOrType(..))
@@ -2584,10 +2665,33 @@ impl ConfigForm {
                     .copied()
                     .unwrap_or((f.group, ""));
                 lines.push(Line::default());
+                // A shut group's head is the row itself, so it takes the selection.
+                let picked = self.shut && f.group == SHUT && i == self.row;
+                if picked {
+                    at = lines.len();
+                }
                 lines.push(Line::from(vec![
-                    Span::styled(name.to_owned(), Style::default().fg(ORANGE)),
-                    Span::styled(format!("  {what}"), dim()),
+                    Span::styled(
+                        name.to_owned(),
+                        if picked {
+                            lit()
+                        } else {
+                            Style::default().fg(ORANGE)
+                        },
+                    ),
+                    Span::styled(
+                        if self.shut && f.group == SHUT {
+                            format!("  {what}  ›  enter opens it")
+                        } else {
+                            format!("  {what}")
+                        },
+                        dim(),
+                    ),
                 ]));
+            }
+            if self.shut && f.group == SHUT {
+                head = Some((f.group, f.sub));
+                continue;
             }
             if !f.sub.is_empty() && head.map(|(_, b)| b) != Some(f.sub) {
                 lines.push(Line::from(Span::styled(format!("  {}", f.sub), dim())));
@@ -2624,16 +2728,23 @@ impl ConfigForm {
         lines.push(Line::default());
         // Wrap explanations at the row indent and reserve the tallest explanation's height.
         let f = self.field();
-        let explain = format!("    {:<label_w$}  ", f.name);
+        let (name, long) = if self.head() {
+            (SHUT, SHUT_LONG)
+        } else {
+            (f.name, f.long)
+        };
+        let explain = format!("    {name:<label_w$}  ");
         let room = (columns as usize)
             .saturating_sub(explain.chars().count())
             .max(20);
         let tall = FIELDS
             .iter()
-            .map(|f| wrap(f.long, room).len())
+            .map(|f| f.long)
+            .chain([SHUT_LONG])
+            .map(|l| wrap(l, room).len())
             .max()
             .unwrap_or(1);
-        let mut rest = wrap(f.long, room).into_iter();
+        let mut rest = wrap(long, room).into_iter();
         lines.push(Line::from(vec![
             Span::styled(explain, bold()),
             Span::raw(rest.next().unwrap_or_default()),
@@ -2775,6 +2886,12 @@ impl ConfigForm {
 
     fn line(&self) -> Line<'static> {
         let f = self.field();
+        if self.head() {
+            return Line::from(vec![
+                Span::styled(format!("{SHUT} › "), Style::default().fg(ORANGE)),
+                Span::styled("enter or → opens the section", dim()),
+            ]);
+        }
         let mut spans = vec![Span::styled(
             format!("{} › ", f.name),
             Style::default().fg(ORANGE),
@@ -4991,38 +5108,15 @@ impl App {
         }
     }
 
-    fn session_words(&self) -> Vec<String> {
-        let kind = harness::KNOWN[self.harness];
-        let p = self.session_policy();
-        let model = match kind {
-            HarnessKind::Claude => p.model,
-            HarnessKind::Codex => p.codex_model,
-            HarnessKind::Pi => None,
-        };
-        let mut words = vec![kind.to_string()];
-        words.extend(model);
-        if kind == HarnessKind::Claude && p.bedrock == Some(true) {
-            words.push("bedrock".into());
-        }
-        words
-    }
-
     fn composer(&self) -> Line<'static> {
         if self.on_button() {
             return Line::default();
         }
         let kind = harness::KNOWN[self.harness].to_string();
-        let words = self.session_words();
         let mut spans = vec![Span::styled(
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
         )];
-        if words.len() > 1 {
-            spans.push(Span::styled(
-                format!("{} › ", words[1..].join(" · ")),
-                dim(),
-            ));
-        }
         let label = |n: usize| format!("[Image #{}]", n + 1);
         // The composer is one line; a break shows as its glyph and stays a break in the prompt.
         let show = |t: &str| expand(t, label).replace('\n', "⏎");
@@ -5097,6 +5191,9 @@ impl App {
                 hints(&keys)
             }
             Mode::Config(form) if form.open => hints(&[("enter", "keep"), ("esc", "back")]),
+            Mode::Config(form) if form.head() => {
+                hints(&[("↑", "field"), ("enter →", "open"), ("esc", "done")])
+            }
             Mode::Config(form) => {
                 let f = form.field();
                 let mut keys = vec![("↑ ↓", "field")];
@@ -6269,6 +6366,54 @@ fn tty_state() -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn the_shut_section_takes_no_value_until_enter_opens_it() {
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let none = KeyModifiers::NONE;
+        let head = FIELDS.iter().position(|f| f.group == SHUT).unwrap();
+        for _ in 0..FIELDS.len() {
+            c.key(KeyCode::Down, none);
+        }
+        assert_eq!(c.row, head, "walking down stops on the shut head");
+        for code in [KeyCode::Left, KeyCode::Backspace, KeyCode::Char('t')] {
+            c.key(code, none);
+        }
+        assert!(
+            c.values.iter().all(|v| v.is_empty()) && !c.open,
+            "the head answers no key that changes a value"
+        );
+        c.key(KeyCode::Up, none);
+        assert_eq!(c.row, head - 1, "up leaves the head for the row above");
+        c.key(KeyCode::Down, none);
+        c.key(KeyCode::Right, none);
+        assert_eq!(c.row, head, "→ opens the section on its first field");
+        c.key(KeyCode::Down, none);
+        assert_eq!(c.row, head + 1, "and the walk goes on through it");
+
+        let p = config::Policy {
+            env: Some(vec!["FOO".to_owned(), "BAR".to_owned()]),
+            archive_transcript: Some(true),
+            ..Default::default()
+        };
+        let c = ConfigForm::new(&p, None, None, None, None, None, None);
+        assert_eq!(c.values[field_at("env")], "FOO, BAR");
+        assert_eq!(c.values[field_at("archive_transcript")], "true");
+        let saved = c.config().unwrap().0;
+        assert_eq!(
+            (saved.env, saved.archive_transcript),
+            (p.env, p.archive_transcript),
+            "a run field the file names comes back from its row unchanged"
+        );
+    }
+
+    #[test]
     fn arrows_step_a_number_field_on_its_own_grid() {
         let mut c = ConfigForm::new(
             &config::Policy::default(),
@@ -6391,12 +6536,19 @@ mod tests {
             "a block's sub-head is indented by two"
         );
         assert!(
-            shown.iter().any(|l| l.starts_with("    time limit (min)")),
+            shown.iter().any(|l| l.starts_with("    alias or model id")),
             "rows are indented by four and led by their label, under their sub-head"
+        );
+        assert!(
+            shown
+                .iter()
+                .any(|l| l.starts_with("runs  ") && l.contains("enter opens it"))
+                && !shown.iter().any(|l| l.starts_with("    time limit (min)")),
+            "the runs section starts shut, with its head saying how to open it"
         );
         let mut tail: Vec<&String> = shown
             .iter()
-            .skip_while(|l| !l.starts_with("    time limit (min)  "))
+            .skip_while(|l| !l.starts_with("    alias or model id  "))
             .skip(1)
             .collect();
         while tail.last().is_some_and(|l| l.is_empty()) {
@@ -9472,8 +9624,11 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(s.contains("time limit (min)"), "{s}");
         assert!(s.contains("chart scale"), "{s}");
+        assert!(
+            s.contains("enter opens it") && !s.contains("time limit (min)"),
+            "the runs section comes up shut: {s}"
+        );
         let column = |s: &str, what: &str| {
             s.lines()
                 .find(|l| l.contains(what))
@@ -9485,19 +9640,24 @@ mod tests {
             it.next();
             it.take_while(|l| !l.contains("›")).count()
         };
-        let (col, tall) = (column(&s, "time limit (min)"), height(&s));
+        let (col, tall) = (column(&s, "chart scale"), height(&s));
         assert_eq!(column(&s, "count per bar"), col, "{s}");
-        assert_eq!(column(&s, "turns per run"), col, "{s}");
+        assert_eq!(column(&s, "alias or model id"), col, "{s}");
         let go = |app: &mut App, name: &str| {
             while let Mode::Config(f) = &app.mode
                 && f.row != field_at(name)
             {
-                let code = if f.row < field_at(name) {
+                let row = f.row;
+                let code = if row < field_at(name) {
                     KeyCode::Down
                 } else {
                     KeyCode::Up
                 };
                 app.key(code, KeyModifiers::NONE).unwrap();
+                // A shut section's head keeps the walk; → opens it and lets it go on.
+                if matches!(&app.mode, Mode::Config(f) if f.row == row) {
+                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                }
             }
         };
         go(&mut app, "activity.metric");
@@ -9633,7 +9793,6 @@ mod tests {
             "the selected field, the first one, is explained: {s}"
         );
         assert!(!s.contains("Maximum cost"), "only the selected one: {s}");
-        assert!(s.contains("2.00"), "built-ins show dim: {s}");
         assert!(
             s.matches("default").count() >= 3,
             "a field left to its built-in reads default in the control's place: {s}"
@@ -9653,13 +9812,30 @@ mod tests {
                 && at("\n  claude") < at("    alias or model id")
                 && at("    alias or model id") < at("\n  codex ")
                 && at("\n  codex ") < at("    model id")
-                && at("    model id") < at("\nruns  every supervised run")
-                && at("\nruns  every supervised run") < at("    for a job with none")
-                && at("    for a job with none") < at("    time limit (min)")
-                && at("    time limit (min)") < at("    failure alerts"),
+                && at("    model id") < at("\nruns  what a run starts with"),
             "the fields sit under their groups and blocks: {s}"
         );
         go(&mut app, "timeout_min");
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = (0..60)
+            .map(|y| cells(&t, y, 82..160))
+            .chain([cells(&t, 59, 0..80)])
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = |what: &str| s.find(what).unwrap_or_else(|| panic!("{what}: {s}"));
+        assert!(
+            at("\nruns  what a run starts with") < at("    time limit (min)")
+                && at("    time limit (min)") < at("    import env vars"),
+            "walking into the shut section opens it, fields and all: {s}"
+        );
+        assert!(
+            s.lines()
+                .skip_while(|l| !l.contains("runs  what a run starts with"))
+                .nth(1)
+                .is_some_and(|l| l.contains("harness")),
+            "the harness a run takes is the section's first row: {s}"
+        );
+        assert!(s.contains("2.00"), "built-ins show dim: {s}");
         app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
 
@@ -9730,7 +9906,11 @@ mod tests {
             (saved.timeout_min, saved.budget_usd, saved.write),
             (Some(5.0), Some(0.25), Some(true))
         );
-        assert_eq!(saved.model.as_deref(), Some("sonnet"));
+        assert_eq!(
+            saved.model.as_deref(),
+            Some("opus[1m]"),
+            "the million-token window is a word of its own"
+        );
         assert_eq!(
             saved.max_turns, None,
             "empty leaves the built-in out of the file"
@@ -9743,7 +9923,7 @@ mod tests {
             Mode::Config(f) => assert_eq!(
                 ["timeout_min", "budget_usd", "write", "model"]
                     .map(|n| f.values[field_at(n)].as_str()),
-                ["5", "0.25", "true", "sonnet"]
+                ["5", "0.25", "true", "opus[1m]"]
             ),
             _ => panic!(),
         }

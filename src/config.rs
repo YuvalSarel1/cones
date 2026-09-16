@@ -45,6 +45,9 @@ pub struct Policy {
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
     pub notify: Option<bool>,
+    pub archive_transcript: Option<bool>,
+    /// Variable names every run imports; a job's own list replaces it.
+    pub env: Option<Vec<String>>,
     /// Per-harness model defaults; each job has a single `model` override.
     pub model: Option<String>,
     pub codex_model: Option<String>,
@@ -71,8 +74,8 @@ pub struct Job {
     pub model: Option<String>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub enabled: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub archive_transcript: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_transcript: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub env: Vec<String>,
     // Keep these explicit: serde flatten cannot enforce unknown-field rejection reliably.
@@ -110,7 +113,7 @@ impl Job {
             prompt: prompt.to_owned(),
             model: None,
             enabled: true,
-            archive_transcript: false,
+            archive_transcript: None,
             env: vec![],
             timeout_min: None,
             budget_usd: None,
@@ -634,6 +637,11 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("aws_profile", d.aws_profile.clone());
     put("aws_region", d.aws_region.clone());
     put("harness", d.harness.map(|v| v.to_string()));
+    put(
+        "archive_transcript",
+        d.archive_transcript.map(|v| v.to_string()),
+    );
+    put("env", d.env.as_ref().map(|e| format!("[{}]", e.join(", "))));
     out
 }
 
@@ -949,7 +957,14 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         j.name,
         cwd.display()
     );
-    for key in &j.env {
+    // A job's own list replaces the default one, so a job can import nothing by writing `env: []`
+    // only when the defaults name none; there is no per-name removal.
+    let env = if j.env.is_empty() {
+        d.env.clone().unwrap_or_default()
+    } else {
+        j.env
+    };
+    for key in &env {
         ensure!(
             !key.is_empty()
                 && key.bytes().enumerate().all(|(i, b)| b == b'_'
@@ -1002,8 +1017,11 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         prompt: j.prompt,
         model,
         enabled: j.enabled,
-        archive_transcript: j.archive_transcript,
-        env: j.env,
+        archive_transcript: j
+            .archive_transcript
+            .or(d.archive_transcript)
+            .unwrap_or(false),
+        env,
         timeout_min: timeout,
         budget_usd: budget,
         daily_budget_usd: daily,
@@ -1161,12 +1179,14 @@ mod tests {
             bedrock: None,
             aws_profile: None,
             aws_region: None,
+            archive_transcript: Some(true),
+            env: Some(vec!["FOO".to_owned()]),
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(&p, &d, Some(&cols), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 2\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
+            text.starts_with("version: 2\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
             "{text}"
         );
         assert!(
