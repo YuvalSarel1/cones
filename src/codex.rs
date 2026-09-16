@@ -71,6 +71,8 @@ pub struct Process {
     pub thread: Option<String>,
     /// `--remote` makes this process a viewer of an app-server thread, not its writer.
     pub remote: bool,
+    /// The prompt on the command line, whitespace collapsed by `ps`, or `None` without one.
+    pub prompt: Option<String>,
 }
 
 /// The `session_meta` line Codex writes first in every rollout file.
@@ -187,7 +189,7 @@ pub fn processes(ps: &str) -> Vec<Process> {
             if program != "codex" || words.next().is_some_and(|a| NOT_SESSIONS.contains(&a)) {
                 return None;
             }
-            let (remote, thread) = client_options(command.split_whitespace().skip(1));
+            let (remote, thread, prompt) = client_options(command.split_whitespace().skip(1));
             Some(Process {
                 pid: pid.parse().ok()?,
                 started: NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
@@ -196,13 +198,21 @@ pub fn processes(ps: &str) -> Vec<Process> {
                 cwd: None,
                 thread,
                 remote,
+                prompt,
             })
         })
         .collect()
 }
 
-/// Stop parsing options at the prompt so its text cannot identify a client or thread.
-fn client_options<'a>(mut args: impl Iterator<Item = &'a str>) -> (bool, Option<String>) {
+/// Stop parsing options at the prompt so its text cannot identify a client or thread, and
+/// return the prompt itself: until the daemon makes the thread, it is all the row can say.
+fn client_options<'a>(
+    mut args: impl Iterator<Item = &'a str>,
+) -> (bool, Option<String>, Option<String>) {
+    fn rest<'a>(words: impl Iterator<Item = &'a str>) -> Option<String> {
+        let text = words.collect::<Vec<_>>().join(" ");
+        (!text.is_empty()).then_some(text)
+    }
     let mut remote = false;
     let mut resume = false;
     while let Some(arg) = args.next() {
@@ -230,7 +240,7 @@ fn client_options<'a>(mut args: impl Iterator<Item = &'a str>) -> (bool, Option<
             | "--ask-for-approval" => {
                 args.next();
             }
-            "--" => break,
+            "--" => return (remote, None, rest(args)),
             "resume" if !resume => resume = true,
             _ if arg.starts_with('-') => {}
             _ => {
@@ -238,11 +248,17 @@ fn client_options<'a>(mut args: impl Iterator<Item = &'a str>) -> (bool, Option<
                     && arg.len() == 36
                     && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()))
                 .then(|| arg.to_owned());
-                return (remote, thread);
+                // A resumed thread names itself first; anything after it is the prompt.
+                let prompt = if thread.is_some() {
+                    rest(args)
+                } else {
+                    rest(std::iter::once(arg).chain(args))
+                };
+                return (remote, thread, prompt);
             }
         }
     }
-    (remote, None)
+    (remote, None, None)
 }
 
 /// Working directory per pid from `lsof -a -p <pids> -d cwd -Fn`: a `p<pid>` line, then
@@ -639,7 +655,8 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                     .titles
                     .get(&id)
                     .cloned()
-                    .or_else(|| rollout.and_then(|(path, _)| prompt_of(path))),
+                    .or_else(|| rollout.and_then(|(path, _)| prompt_of(path)))
+                    .or_else(|| p.prompt.clone()),
                 session_id: id,
                 harness: "codex".into(),
                 kind,
@@ -931,7 +948,40 @@ mod tests {
             assert!(!client_options(args.split_whitespace()).0, "{args}");
         }
         let prompt = "--remote unix:///s.sock explain resume 01a0a430-b8d1-7682-a7ed-51904a118c65";
-        assert_eq!(client_options(prompt.split_whitespace()), (true, None));
+        assert_eq!(
+            client_options(prompt.split_whitespace()),
+            (
+                true,
+                None,
+                Some("explain resume 01a0a430-b8d1-7682-a7ed-51904a118c65".into())
+            ),
+            "a prompt that says resume is still the prompt"
+        );
+        for args in [
+            "--remote unix:///s.sock -C /repo -- fix this",
+            "--remote unix:///s.sock -C /repo fix this",
+        ] {
+            assert_eq!(
+                client_options(args.split_whitespace()).2,
+                Some("fix this".into()),
+                "{args}"
+            );
+        }
+        assert_eq!(
+            client_options(
+                "--remote unix:///s.sock resume 01a0a430-b8d1-7682-a7ed-51904a118c65 fix this"
+                    .split_whitespace()
+            ),
+            (
+                true,
+                Some("01a0a430-b8d1-7682-a7ed-51904a118c65".into()),
+                Some("fix this".into())
+            ),
+            "a resumed thread names itself before its prompt"
+        );
+        for args in ["--remote unix:///s.sock", "--remote unix:///s.sock --"] {
+            assert_eq!(client_options(args.split_whitespace()).2, None, "{args}");
+        }
     }
 
     fn rollout(home: &Path, name: &str, id: &str, cwd: &Path, at: &str, turn: bool) -> PathBuf {
@@ -1044,10 +1094,13 @@ mod tests {
         assert_eq!(
             fleet(&procs)
                 .iter()
-                .map(|s| s.session_id.as_str())
+                .map(|s| (s.session_id.as_str(), s.title.as_deref()))
                 .collect::<Vec<_>>(),
-            ["codex-7", "codex-8"],
-            "a client whose thread the daemon has not created yet is still a session"
+            [
+                ("codex-7", Some("first prompt")),
+                ("codex-8", Some("second prompt"))
+            ],
+            "a client whose thread the daemon has not created yet is still a session, and says              what it was asked"
         );
         let held: Vec<_> = [(A, "2026-09-13T10:00:01Z"), (B, "2026-09-13T10:01:01Z")]
             .into_iter()
