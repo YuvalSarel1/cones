@@ -1820,7 +1820,7 @@ const FIELDS: [Field; 23] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
-        long: "The harness the composer is on in a new cones terminal; shift+tab and ctrl+o change it from there and cones writes nothing back. Codex sessions start, Codex jobs are still unavailable.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex sessions start, Codex jobs are still unavailable.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex"]),
     },
@@ -2015,16 +2015,6 @@ const FIELDS: [Field; 23] = [
     },
 ];
 
-/// Session overrides use these policy fields without writing jobs.yaml.
-const SESSION: [&str; 6] = [
-    "harness",
-    "model",
-    "codex_model",
-    "bedrock",
-    "aws_profile",
-    "aws_region",
-];
-
 fn field_at(name: &str) -> usize {
     FIELDS
         .iter()
@@ -2060,22 +2050,10 @@ pub struct ConfigForm {
     before: String,
     /// Byte offset in the selected value.
     cursor: usize,
-    /// Show only `SESSION` fields for the next launch.
-    pub session: bool,
     arrange: ColumnForm,
 }
 
 impl ConfigForm {
-    pub fn session(policy: &config::Policy) -> Self {
-        let mut form = Self::new(policy, None, None, None, None, None);
-        form.session = true;
-        form
-    }
-
-    fn shown(&self, i: usize) -> bool {
-        !self.session || SESSION.contains(&FIELDS[i].name)
-    }
-
     pub fn new(
         d: &config::Policy,
         columns: Option<&[String]>,
@@ -2131,7 +2109,6 @@ impl ConfigForm {
             open: false,
             before: String::new(),
             cursor: usize::MAX,
-            session: false,
             arrange: ColumnForm::new(columns.unwrap_or(&built_columns())),
         }
     }
@@ -2383,13 +2360,13 @@ impl ConfigForm {
                 }
                 KeyCode::Enter if self.field().typed() => self.enter(),
                 KeyCode::Up => {
-                    if let Some(r) = (0..self.row).rev().find(|&i| self.shown(i)) {
-                        self.go(r);
+                    if self.row > 0 {
+                        self.go(self.row - 1);
                     }
                 }
                 KeyCode::Down => {
-                    if let Some(r) = (self.row + 1..FIELDS.len()).find(|&i| self.shown(i)) {
-                        self.go(r);
+                    if self.row + 1 < FIELDS.len() {
+                        self.go(self.row + 1);
                     }
                 }
                 KeyCode::Char(c) if !self.field().typed() => {
@@ -2436,34 +2413,23 @@ impl ConfigForm {
 
     /// Render editor rows and return the selected row's line offset.
     fn lines(&self, columns: u16) -> (Vec<Line<'static>>, usize) {
-        let title = if self.session {
-            (
-                "next session",
-                "harness, model and provider, from the defaults",
-            )
-        } else {
-            ("config", "jobs.yaml")
-        };
         let mut lines = vec![
             Line::default(),
             Line::from(vec![
-                Span::styled(title.0, Style::default().fg(ORANGE)),
-                Span::styled(format!("  {}", title.1), dim()),
+                Span::styled("config", Style::default().fg(ORANGE)),
+                Span::styled("  jobs.yaml", dim()),
             ]),
         ];
-        let label_w = (0..FIELDS.len())
-            .filter(|&i| self.shown(i))
-            .map(|i| FIELDS[i].short.chars().count())
+        let label_w = FIELDS
+            .iter()
+            .map(|f| f.short.chars().count())
             .max()
             .unwrap_or(0);
         let indent = 4 + label_w + 2;
         let mut head: Option<(&str, &str)> = None;
         let mut at = 0;
         for (i, f) in FIELDS.iter().enumerate() {
-            if !self.shown(i) {
-                continue;
-            }
-            if !self.session && head.map(|(g, _)| g) != Some(f.group) {
+            if head.map(|(g, _)| g) != Some(f.group) {
                 let (name, what) = GROUPS
                     .iter()
                     .find(|(g, _)| *g == f.group)
@@ -2475,7 +2441,7 @@ impl ConfigForm {
                     Span::styled(format!("  {what}"), dim()),
                 ]));
             }
-            if !self.session && !f.sub.is_empty() && head.map(|(_, b)| b) != Some(f.sub) {
+            if !f.sub.is_empty() && head.map(|(_, b)| b) != Some(f.sub) {
                 lines.push(Line::from(Span::styled(format!("  {}", f.sub), dim())));
             }
             head = Some((f.group, f.sub));
@@ -2516,9 +2482,7 @@ impl ConfigForm {
             .max(20);
         let tall = FIELDS
             .iter()
-            .enumerate()
-            .filter(|(i, _)| self.shown(*i))
-            .map(|(_, f)| wrap(f.long, room).len())
+            .map(|f| wrap(f.long, room).len())
             .max()
             .unwrap_or(1);
         let mut rest = wrap(f.long, room).into_iter();
@@ -2871,10 +2835,6 @@ const GUIDE: &[(&str, &str)] = &[
         "the harness the next session starts under, claude or codex; the composer's prefix shows it",
     ),
     (
-        "ctrl+o",
-        "the harness, model and provider the next sessions start with, seeded from the defaults; the composer's prefix shows them",
-    ),
-    (
         "ctrl+v",
         "paste the clipboard's image; its path is typed into the instruction",
     ),
@@ -2939,8 +2899,6 @@ struct App {
     images: Vec<PathBuf>,
     /// Index into `harness::KNOWN` for the next launch.
     harness: usize,
-    /// Session overrides; `None` uses the file's defaults.
-    session: Option<config::Policy>,
     /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
     /// Placeholder rows until the registry reports the launched sessions.
@@ -3130,7 +3088,6 @@ impl App {
             caret: 0,
             images: Vec::new(),
             harness: Self::harness_at(Some(start.harness)),
-            session: None,
             started: Vec::new(),
             pending: Vec::new(),
             opening: None,
@@ -4535,9 +4492,7 @@ impl App {
     }
 
     fn session_policy(&self) -> config::Policy {
-        self.session
-            .clone()
-            .unwrap_or_else(|| config::defaults(&self.jobs_path))
+        config::defaults(&self.jobs_path)
     }
 
     fn start(&mut self) {
@@ -5355,11 +5310,6 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                ConfigAction::Save(policy, ..) if form.session => {
-                    self.harness = Self::harness_at(policy.harness);
-                    self.session = Some(*policy);
-                    self.status = format!("next session: {}", self.session_words().join(" · "));
-                }
                 ConfigAction::Save(policy, columns, spark, pane, start, mark) => {
                     self.data.columns = if columns.is_empty() {
                         built_columns()
@@ -5476,11 +5426,6 @@ impl App {
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
-                    KeyCode::Char('o') if ctrl => {
-                        let mut policy = self.session_policy();
-                        policy.harness = Some(harness::KNOWN[self.harness]);
-                        self.mode = Mode::Config(Box::new(ConfigForm::session(&policy)));
-                    }
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
                     KeyCode::Char('t') if ctrl => {
                         if self.jobs_view {
@@ -8989,126 +8934,18 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_picks_the_next_session_s_model_and_provider() {
+    fn ctrl_o_is_not_a_dashboard_key() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        let ctrl = KeyModifiers::CONTROL;
-        app.key(KeyCode::Char('o'), ctrl).unwrap();
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 40)).unwrap();
-        t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
-        assert!(s.contains("next session"), "{s}");
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "the list keeps the key");
+        assert!(app.text.is_empty(), "a ctrl key types nothing");
         assert!(
-            s.contains("run on Bedrock") && s.contains("AWS region"),
-            "{s}"
+            !GUIDE.iter().any(|(k, _)| *k == "ctrl+o"),
+            "no key the guide leaves out does anything"
         );
-        assert!(
-            !s.contains("time limit (min)") && !s.contains("failure alerts"),
-            "{s}"
-        );
-        assert!(
-            s.contains("[claude]"),
-            "the harness row brackets tab's pick, not the built-in: {s}"
-        );
-        for _ in 0..7 {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("harness")));
-        for _ in 0..7 {
-            app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        }
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("bedrock")));
-        t.draw(|f| app.draw(f)).unwrap();
-        let s = rows(&t, 160).join("\n");
-        assert!(
-            s.contains("run on Bedrock       [default] false  true"),
-            "every word the field takes is on its own row, the current one bracketed: {s}"
-        );
-        assert!(
-            s.contains("bedrock › default passes nothing"),
-            "the prompt line names the key and what the built-in does, not the words: {s}"
-        );
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        match &app.mode {
-            Mode::Config(f) => {
-                assert_eq!(f.row, field_at("aws_profile"));
-                assert!(
-                    f.error
-                        .as_deref()
-                        .unwrap()
-                        .starts_with("aws_profile: needed by bedrock: true"),
-                    "{:?}",
-                    f.error
-                );
-            }
-            _ => panic!("stays in the form"),
-        }
-        assert_eq!(app.session_words(), ["claude"], "nothing took");
-        // Bounded, so a row that leaves the form fails the test instead of hanging it.
-        let go = |app: &mut App, name: &str| {
-            for _ in 0..=FIELDS.len() {
-                let Mode::Config(f) = &app.mode else {
-                    panic!("not in the form, looking for {name}")
-                };
-                if f.row == field_at(name) {
-                    return;
-                }
-                let code = if f.row < field_at(name) {
-                    KeyCode::Down
-                } else {
-                    KeyCode::Up
-                };
-                app.key(code, KeyModifiers::NONE).unwrap();
-            }
-            panic!("{name} is not a row the form visits");
-        };
-        for (name, text) in [("aws_profile", "claude"), ("aws_region", "us-east-1")] {
-            go(&mut app, name);
-            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-            for c in text.chars() {
-                app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
-            }
-            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        }
-        go(&mut app, "model");
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.status, "next session: claude · opus · bedrock");
-        let p = app.session_policy();
-        assert_eq!(
-            (p.aws_profile.as_deref(), p.aws_region.as_deref()),
-            (Some("claude"), Some("us-east-1")),
-            "the session carries what bedrock needs"
-        );
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert!(!d.path().join("none.yaml").exists(), "nothing is written");
-        app.text = "hi".into();
-        let composer: String = app
-            .composer()
-            .spans
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect();
-        assert!(composer.contains("› opus · bedrock › "), "{composer}");
-        let args = harness::session_args(HarnessKind::Claude, None, "hi", &app.session_policy());
-        assert!(args.contains(&"--model".into()) && args.contains(&"opus".into()));
-        app.harness = (app.harness + 1) % harness::KNOWN.len();
-        assert_eq!(app.session_words(), ["codex", "bedrock"]);
-        app.harness = (app.harness + 1) % harness::KNOWN.len();
-        app.key(KeyCode::Char('o'), ctrl).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if f.values[field_at("harness")] == "claude"));
-        go(&mut app, "harness");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.harness, 1, "codex");
-        assert_eq!(app.session_words(), ["codex", "bedrock"]);
     }
-
     #[test]
     fn the_config_button_edits_the_defaults_block() {
         let d = dir();

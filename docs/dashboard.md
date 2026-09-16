@@ -75,7 +75,7 @@ start:
   pane: true
 ```
 
-`harness` is `claude` or `codex`, initially selected in the composer. `pane` opens the viewer pane when true. Omitted fields use the values above. These settings are applied at startup; `shift+tab`, `ctrl+o` and `ctrl+\` change the current dashboard without saving them. The config editor can save startup settings for future dashboards.
+`harness` is `claude` or `codex`, initially selected in the composer. `pane` opens the viewer pane when true. Omitted fields use the values above. These settings are applied at startup; `shift+tab` and `ctrl+\` change the current dashboard without saving them. The config editor can save startup settings for future dashboards.
 
 A job's default harness is the separate `defaults.harness` field.
 
@@ -111,7 +111,6 @@ These keys apply to the dashboard. A focused viewer receives its own input as de
 | `shift+enter` | Open the selected viewer or menu screen over the whole frame once. Leaving restores the prior layout. Terminals reporting alt+enter use the same action. |
 | `tab` | Move focus between the list and pane. Forms keep tab for their own input; leave those with `ctrl+z` or `esc`. |
 | `shift+tab` | Cycle the composer's harness between Claude and Codex. Inside a viewer, this key belongs to the harness. |
-| `ctrl+o` | Edit the harness, model and provider for subsequent composer sessions without saving jobs.yaml. |
 | `ctrl+x twice` | Stop, delete, hide, forget or remove the selected row, as listed below. |
 | `ctrl+p` | Pin the selected row's folder, or the dashboard's cwd from the menu. |
 | `ctrl+e` | Edit a selected job when the composer is empty; otherwise move to the instruction's end. |
@@ -199,7 +198,7 @@ Type an instruction and press `enter` to start a native session in the selected 
 
 Claude starts with `--bg`; a placeholder row appears immediately and becomes the registry row when available. A failed launch removes the placeholder and restores the instruction. New sessions take the selection unless a viewer is focused or an instruction is being typed. Codex opens a client of its app-server daemon. A harness that cannot remain running after its viewer exits is refused.
 
-`shift+tab` selects Claude or Codex. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. `ctrl+o` opens these fields plus the harness choice as temporary overrides, retained for subsequent launches. The prefix shows the selected harness, an explicit model and Bedrock when enabled.
+`shift+tab` selects Claude or Codex. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. The config editor is where those fields change. The prefix shows the selected harness, an explicit model and Bedrock when enabled.
 
 Native sessions use their harness's permissions. Job budgets, timeouts and tool restrictions apply to supervised runs, started with `cones run --prompt` or `once` in the wizard.
 
