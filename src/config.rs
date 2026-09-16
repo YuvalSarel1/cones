@@ -34,6 +34,17 @@ pub enum Overlap {
     Replace,
 }
 
+/// What to do about ticks that passed while the Mac was off or logged out. launchd loses them:
+/// it coalesces a slept-through tick into one launch on wake, but never replays a tick missed
+/// while powered down, and never wakes the Mac.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CatchUp {
+    #[default]
+    Skip,
+    Once,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -41,6 +52,7 @@ pub struct Policy {
     pub write: Option<bool>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
+    pub catch_up: Option<CatchUp>,
     pub notify: Option<bool>,
     pub archive_transcript: Option<bool>,
     /// Variable names every run imports; a job's own list replaces it.
@@ -85,6 +97,8 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Overlap>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub catch_up: Option<CatchUp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub notify: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bedrock: Option<bool>,
@@ -110,6 +124,7 @@ impl Job {
             write: None,
             codex_full_access: None,
             overlap: None,
+            catch_up: None,
             notify: None,
             bedrock: None,
             aws_profile: None,
@@ -637,6 +652,15 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
                 .to_owned()
         }),
     );
+    put(
+        "catch_up",
+        d.catch_up.map(|v| {
+            serde_yaml::to_string(&v)
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        }),
+    );
     put("notify", d.notify.map(|v| v.to_string()));
     put("bedrock", d.bedrock.map(|v| v.to_string()));
     put("aws_profile", d.aws_profile.clone());
@@ -787,6 +811,7 @@ pub struct ResolvedJob {
     pub write: bool,
     pub codex_full_access: bool,
     pub overlap: Overlap,
+    pub catch_up: CatchUp,
     pub notify: bool,
     pub bedrock: Option<bool>,
     /// Validated Bedrock profile and region; both absent unless `bedrock` is true.
@@ -825,6 +850,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             write: false,
             codex_full_access: false,
             overlap: Overlap::Skip,
+            catch_up: CatchUp::Skip,
             notify: false,
             bedrock: None,
             aws_profile: None,
@@ -873,6 +899,12 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
                 names.insert(j.name.clone()),
                 "duplicate job name: {}",
                 j.name
+            );
+            // The login agent that catches up missed ticks holds this LaunchAgent label.
+            ensure!(
+                j.name != crate::launchd::CATCHUP,
+                "{} is reserved for the catch-up agent; name the job something else",
+                crate::launchd::CATCHUP
             );
             resolve(j, &doc.defaults, path.parent().unwrap())
         })
@@ -962,6 +994,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     }
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
+    let catch_up = j.catch_up.or(d.catch_up).unwrap_or_default();
     let bedrock = j.bedrock.or(d.bedrock);
     // Codex reaches its model through the app-server daemon, which takes its provider
     // from the Codex configuration it started with and ignores what a thread asks for.
@@ -996,6 +1029,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         write,
         codex_full_access: full,
         overlap,
+        catch_up,
         notify: j.notify.or(d.notify).unwrap_or(false),
         bedrock,
         aws_profile,
@@ -1153,6 +1187,7 @@ mod tests {
             harness: None,
             write: Some(true),
             overlap: Some(Overlap::Replace),
+            catch_up: Some(CatchUp::Once),
             notify: Some(true),
             codex_full_access: None,
             model: None,
@@ -1167,7 +1202,7 @@ mod tests {
         write_config(&p, &d, Some(&cols), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  overlap: replace\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
+            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
             "{text}"
         );
         assert!(

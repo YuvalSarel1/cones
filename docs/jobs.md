@@ -38,6 +38,7 @@ jobs:
     write: true                    # adds Edit, Write and sandboxed Bash to Read, Grep, Glob
     model: sonnet
     overlap: skip                  # skip | allow | replace
+    catch_up: once                 # skip | once: one run at login for ticks missed while off
     notify: true                   # macOS notification when a run fails or times out
     # env: ["ANTHROPIC_API_KEY"]   # additional shell variables to import
 ```
@@ -56,6 +57,7 @@ jobs:
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
 | `write` | `false` | `false` allows Read, Grep and Glob. `true` adds Edit, Write and Bash, and turns on Claude's sandbox. There is no per-tool list: Claude treats a scoped `Bash(pattern)` rule as a pre-approval, not an exclusive allowlist, so cones cannot promise one. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
+| `catch_up` | `skip` | `skip` or `once`: what to do about ticks that passed while the Mac was off or logged out. `once` starts one run at the next login however many ticks were missed; `skip` leaves them lost. Three things bound the burst: one run per job whatever the number of missed ticks, a lookback that stops at 31 days, and `overlap`, since a catch-up is admitted like any other tick. A tick slept through needs neither value: launchd already fires it on wake. See [Schedules on launchd](#schedules-on-launchd-sleep-login-and-reboot). |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
 | `codex_full_access` | `false` | Codex only. Rejected on a Claude job; as a default it reaches Codex jobs alone. |
 | `bedrock` | none | `true` runs the job on Amazon Bedrock: Claude gets `CLAUDE_CODE_USE_BEDROCK=1` and every `AWS_` variable of the installing shell. A Codex job is refused, because the app-server daemon keeps the provider of the Codex configuration it started with and ignores what a thread asks for. `true` needs `aws_profile` and `aws_region` beside it and is rejected without them. `false` asks for the harness's own endpoint. Unset leaves it to the harness's own settings. `model` aliases such as `sonnet` resolve on either provider; a full model id is the provider's. |
@@ -165,9 +167,23 @@ A run has no dollar or turn cap: cones records what the harness reports and stop
 
 `cones install` rewrites and re-bootstraps only plists whose content changed, bootstraps ones that are on disk and not loaded, and boots out the LaunchAgent of any job now disabled. `cones uninstall` boots out and deletes every `local.cones.<name>.plist` whose `Label` matches its file name, refuses to continue when one does not, and keeps every ledger record and transcript.
 
-Per launchd.plist(5), ticks missed while the Mac sleeps coalesce into one launch on wake, so a wake starts at most one run per job and `overlap` decides if the previous run is still going; nothing runs at login or on `cones install`. Ticks that pass while the Mac is powered off or you are logged out are lost, and launchd does not wake the Mac.
+Per launchd.plist(5), ticks missed while the Mac sleeps coalesce into one launch on wake, so a wake starts at most one run per job and `overlap` decides if the previous run is still going; no job's own agent runs at login or on `cones install`. Ticks that pass while the Mac is powered off or you are logged out are lost to launchd, and launchd does not wake the Mac.
 
-Tests check the plist configuration; physical sleep/wake and reboot behavior has not been verified. A live check should show one `schedule` record after a slept-through tick and none for a tick missed while powered off.
+`catch_up: once` on any enabled job adds one further LaunchAgent, the only one that is not a job. `catchup` is a reserved job name.
+
+| plist key | Value |
+| --- | --- |
+| `Label` | `local.cones.catchup`, at `~/Library/LaunchAgents/local.cones.catchup.plist` |
+| `RunAtLoad` | `true`, and there is no `StartCalendarInterval`: login is its only trigger |
+| `ProcessType` | `Background` |
+| `WorkingDirectory` | The state directory |
+| `ProgramArguments` | The installed `cones` binary with `--jobs <file> --state-dir <dir> catchup` |
+| `StandardOutPath`, `StandardErrorPath` | `~/.cones/logs/catchup.out.log`, `.err.log` |
+| `EnvironmentVariables` | None. Each run comes from the job's own agent, so it carries the environment `install` captured for that job |
+
+For every job that asked to catch up, `cones catchup` takes the newest `schedule` record's fired time as the mark and walks that job's cron forward from it in local time. The first tick that should already have fired makes it ask launchd to start the job with `launchctl kickstart`, which is why the run's environment and its `schedule` trigger are the same as any tick's; the catch-up decision itself is only in `catchup.out.log`. One run per job however many ticks passed, and admission still applies, so a catch-up can be recorded `skipped` like any other tick. A job with no `schedule` record behind it has no mark and is left alone, so a first install never fires one. Lookback stops at 31 days. `cones catchup --dry-run` names what it would start without starting it, and `cones install` drops the agent again once no enabled job asks for it.
+
+Tests check the plist configuration, the missed-tick walk against weekday and month constraints, and what `--dry-run` names; physical sleep/wake, reboot and login behavior has not been verified. A live check should show one `schedule` record after a slept-through tick, none for a tick missed while powered off with `catch_up: skip`, and one after the next login with `catch_up: once`.
 
 ## Codex and pi
 

@@ -1969,6 +1969,11 @@ impl JobForm {
             "replace" => Some(config::Overlap::Replace),
             _ => None,
         };
+        job.catch_up = match self.set("catch_up") {
+            "skip" => Some(config::CatchUp::Skip),
+            "once" => Some(config::CatchUp::Once),
+            _ => None,
+        };
         job.notify = flag("notify");
         job.archive_transcript = flag("archive_transcript");
         job.env = self
@@ -2329,7 +2334,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 24] = [
+const FIELDS: [Field; 25] = [
     Field {
         group: "cones",
         sub: "",
@@ -2551,6 +2556,15 @@ const FIELDS: [Field; 24] = [
     Field {
         group: "runs",
         sub: "",
+        name: "catch_up",
+        short: "missed ticks",
+        long: "launchd loses a tick that passes while the Mac is powered off or logged out. once starts one run at the next login when any tick was missed, however many passed; skip leaves them lost. A slept-through tick already fires on wake and needs neither.",
+        builtin: "skip",
+        input: Answer::Pick(&["-", "skip", "once"]),
+    },
+    Field {
+        group: "runs",
+        sub: "",
         name: "notify",
         short: "failure alerts",
         long: "Notify on failures and timeouts.",
@@ -2597,13 +2611,14 @@ const ENABLED: Field = Field {
 
 /// What the wizard's settings section holds: the job's own field, then every field a default
 /// covers, in the order a job line carries them. An empty row inherits `defaults`.
-const RUN_FIELDS: [&str; 13] = [
+const RUN_FIELDS: [&str; 14] = [
     "enabled",
     "harness",
     "model",
     "timeout_min",
     "write",
     "overlap",
+    "catch_up",
     "notify",
     "archive_transcript",
     "env",
@@ -2639,6 +2654,7 @@ fn inherited(f: &Field, d: &config::Policy) -> String {
         "timeout_min" => num(d.timeout_min),
         "write" => flag(d.write),
         "overlap" => d.overlap.map(|o| overlap_word(o).to_owned()),
+        "catch_up" => d.catch_up.map(|c| catch_up_word(c).to_owned()),
         "notify" => flag(d.notify),
         "archive_transcript" => flag(d.archive_transcript),
         "env" => d.env.as_ref().map(|e| e.join(", ")),
@@ -2656,6 +2672,13 @@ fn overlap_word(o: config::Overlap) -> &'static str {
         config::Overlap::Skip => "skip",
         config::Overlap::Allow => "allow",
         config::Overlap::Replace => "replace",
+    }
+}
+
+fn catch_up_word(c: config::CatchUp) -> &'static str {
+    match c {
+        config::CatchUp::Skip => "skip",
+        config::CatchUp::Once => "once",
     }
 }
 
@@ -2765,6 +2788,7 @@ fn job_value(f: &Field, j: &config::Job) -> String {
         "timeout_min" => num(j.timeout_min),
         "write" => flag(j.write),
         "overlap" => j.overlap.map(|o| overlap_word(o).to_owned()),
+        "catch_up" => j.catch_up.map(|c| catch_up_word(c).to_owned()),
         "notify" => flag(j.notify),
         "archive_transcript" => flag(j.archive_transcript),
         "env" => Some(j.env.join(", ")).filter(|e| !e.is_empty()),
@@ -2841,6 +2865,7 @@ impl ConfigForm {
                     })
                     .unwrap_or_default()
                     .to_owned(),
+                "catch_up" => d.catch_up.map(catch_up_word).unwrap_or_default().to_owned(),
                 "model" => d.model.clone().unwrap_or_default(),
                 "harness" => d.harness.map(|h| h.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
@@ -2959,6 +2984,11 @@ impl ConfigForm {
                 "skip" => Some(config::Overlap::Skip),
                 "allow" => Some(config::Overlap::Allow),
                 "replace" => Some(config::Overlap::Replace),
+                _ => None,
+            },
+            catch_up: match v("catch_up") {
+                "skip" => Some(config::CatchUp::Skip),
+                "once" => Some(config::CatchUp::Once),
                 _ => None,
             },
             notify: flag("notify"),

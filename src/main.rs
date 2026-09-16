@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
+use chrono::Local;
 use clap::{Parser, Subcommand, ValueEnum};
 use cones::{
     config, harness, launchd,
@@ -85,6 +86,12 @@ enum Action {
         #[command(subcommand)]
         action: CoordinatorAction,
     },
+    /// Start jobs whose ticks passed while the Mac was off or logged out. The login agent runs this.
+    Catchup {
+        /// Name the ticks that were missed without starting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Check execution prerequisites and policy hazards.
     Doctor,
     #[command(name = "__list", hide = true)]
@@ -160,6 +167,47 @@ fn execute(cli: Cli) -> Result<i32> {
         Action::Uninstall => {
             launchd::uninstall_all()?;
             Ok(0)
+        }
+        Action::Catchup { dry_run } => {
+            let jobs = config::read_jobs(&jobs_path)?;
+            let runs = Ledger::new(&state)?.runs()?;
+            let now = Local::now();
+            let mut failed = false;
+            for job in jobs
+                .iter()
+                .filter(|j| j.enabled && j.catch_up == config::CatchUp::Once)
+            {
+                // The mark is the last tick launchd actually delivered, skip or run alike. A job
+                // with no scheduled run behind it has missed nothing: there is no window yet.
+                let Some(last) = runs
+                    .iter()
+                    .rev()
+                    .find(|r| {
+                        r.started.job.as_deref() == Some(job.name.as_str())
+                            && r.started.trigger.as_deref() == Some("schedule")
+                    })
+                    .and_then(|r| r.started.fired_at)
+                else {
+                    continue;
+                };
+                // ponytail: a month of lookback, so a Mac off since spring starts one run and not
+                // a season of them. Make it a policy field if a job ever needs a different memory.
+                let since = last
+                    .with_timezone(&Local)
+                    .max(now - chrono::Duration::days(31));
+                let Some(missed) = launchd::first_missed(&job.schedule, since, now)? else {
+                    continue;
+                };
+                println!("{}\tmissed\t{}", job.name, missed.format("%Y-%m-%d %H:%M"));
+                // One run per job however many ticks passed: `catch_up: once`. Admission still
+                // decides, so a catch-up onto a running job is skipped like any other tick.
+                if !dry_run && let Err(e) = launchd::kickstart(&job.name) {
+                    // One job without an agent must not keep the others from catching up.
+                    eprintln!("cones: {}: {e:#}", job.name);
+                    failed = true;
+                }
+            }
+            Ok(if failed { 1 } else { 0 })
         }
         Action::Run {
             job,

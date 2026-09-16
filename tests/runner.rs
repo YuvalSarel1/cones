@@ -371,6 +371,67 @@ fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {
     assert_eq!(runs[1].terminal.as_ref().unwrap().status, Status::Ok);
     assert_dead(f.state.join("child.pid"));
 }
+/// Move every timestamp in the ledger back, standing in for a Mac that was off that long.
+fn age_ledger(path: &PathBuf, hours: i64) {
+    let text = fs::read_to_string(path).unwrap();
+    let aged: Vec<_> = text
+        .lines()
+        .map(|line| {
+            let mut record: serde_json::Value = serde_json::from_str(line).unwrap();
+            for key in ["fired_at", "ended_at"] {
+                if let Some(at) = record.get(key).and_then(|v| v.as_str()) {
+                    let at = chrono::DateTime::parse_from_rfc3339(at).unwrap()
+                        - chrono::Duration::hours(hours);
+                    record[key] = serde_json::Value::String(at.to_rfc3339());
+                }
+            }
+            record.to_string()
+        })
+        .collect();
+    fs::write(path, format!("{}\n", aged.join("\n"))).unwrap();
+}
+
+#[test]
+fn catch_up_names_one_missed_tick_and_says_nothing_when_none_was_missed() {
+    let f = Fixture::new("success", 1.0);
+    f.add_options("    catch_up: once\n");
+    let scheduled = f
+        .command()
+        .args(["run", "test", "--trigger", "schedule"])
+        .output()
+        .unwrap();
+    assert!(scheduled.status.success());
+    // The mark is that run, so no tick has passed unattended yet.
+    let quiet = f.command().args(["catchup", "--dry-run"]).output().unwrap();
+    assert!(quiet.status.success());
+    assert_eq!(String::from_utf8_lossy(&quiet.stdout), "");
+    // An hour off the mark. The fixture runs every minute, so 60 ticks were lost.
+    age_ledger(&f.state.join("runs.jsonl"), 1);
+    let out = f.command().args(["catchup", "--dry-run"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.starts_with("test\tmissed\t"), "{text}");
+    // `once` means one run however many ticks passed.
+    assert_eq!(text.lines().count(), 1, "{text}");
+    // A job that never asked for it stays lost.
+    let g = Fixture::new("success", 1.0);
+    assert!(
+        g.command()
+            .args(["run", "test", "--trigger", "schedule"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    age_ledger(&g.state.join("runs.jsonl"), 1);
+    let out = g.command().args(["catchup", "--dry-run"]).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "");
+}
+
 #[test]
 fn attaching_a_skipped_run_names_the_skip_rather_than_calling_it_active() {
     let f = Fixture::new("success", 1.0);

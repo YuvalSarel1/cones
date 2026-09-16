@@ -226,7 +226,7 @@ Open `new job`, or press `enter` on the menu's `jobs` button with an instruction
 | `at` | `09:00` for daily/weekdays; `mon 09:00` for weekly; five-field cron otherwise. Hourly uses `0 * * * *` and skips this row. Empty uses the default on the row. |
 | `name` | The task's slug until it is typed; 1-80 ASCII letters, digits, `-` or `_`. |
 
-Under the answers, a `runs` section holds every field a job's own line carries: `enabled`, `harness`, `model`, the time limit, `write`, `overlap`, `notify`, `archive_transcript`, `env`, and the Bedrock and Codex settings. Each row is labelled by the key it writes and stands on what an empty row inherits from `defaults`, with the resolved value in the hint line. Controls are the defaults editor's: `← →` change a choice or step a number, typing fills a text slot, and backspace restores the default. `enter` on a settings row saves the job.
+Under the answers, a `runs` section holds every field a job's own line carries: `enabled`, `harness`, `model`, the time limit, `write`, `overlap`, `catch_up`, `notify`, `archive_transcript`, `env`, and the Bedrock and Codex settings. Each row is labelled by the key it writes and stands on what an empty row inherits from `defaults`, with the resolved value in the hint line. Controls are the defaults editor's: `← →` change a choice or step a number, typing fills a text slot, and backspace restores the default. `enter` on a settings row saves the job.
 
 The section comes up shut on a job that sets none of those fields and open on one that does; `enter` or `→` on its head opens it and `←` shuts it. A `once` run writes no line of its own, so it takes the defaults and the section is not offered.
 
@@ -242,7 +242,7 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 | Control | Fields and behavior |
 | --- | --- |
-| Choices | Harness, provider, write, overlap, notify, whole columns, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
+| Choices | Harness, provider, write, overlap, catch-up, notify, whole columns, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
 | Choices or text | Claude model, Codex model, AWS region and bucket. An empty slot follows the words; arrows step onto it or typing starts in it, and a value the words do not offer stays there. Stepping back onto a word drops it. The Claude words carry `opus[1m]` and `sonnet[1m]` beside the bare aliases: the suffix asks for the million-token window, which `opus` alone does not get. |
 | Numbers | `confirm_secs` and bar count step by 1; timeout by 5 minutes. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
 | Text | AWS profile, and the names of the shell variables every run imports, separated by commas. |
