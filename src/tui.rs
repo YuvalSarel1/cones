@@ -1409,6 +1409,15 @@ pub enum Step {
     Name,
 }
 
+/// A wizard row: one of the answers a job needs, the settings section's head, or one of the
+/// job's own fields under it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobRow {
+    Ask(Step),
+    Head,
+    Set(usize),
+}
+
 #[derive(Debug, PartialEq)]
 pub enum FormAction {
     Stay,
@@ -1509,11 +1518,11 @@ fn slug(prompt: &str) -> String {
     s.trim_end_matches('-').to_owned()
 }
 
-/// Job wizard state. Editing preserves fields the wizard does not expose;
+/// Job wizard state. Every row has a default, so an answer left alone still writes a job;
 /// `FormAction::Save` leaves persistence to the dashboard.
 #[derive(Debug, Clone, PartialEq)]
 pub struct JobForm {
-    pub step: Step,
+    pub row: JobRow,
     pub prompt: String,
     pub dir: String,
     /// An index into `WHEN`.
@@ -1523,7 +1532,13 @@ pub struct JobForm {
     pub error: Option<String>,
     /// Byte offset in the current answer.
     cursor: usize,
-    schedule: String,
+    /// Values for `RUN_FIELDS`; empty inherits `defaults`.
+    values: Vec<String>,
+    /// The settings section stays folded until the job already sets one of them, or `enter`
+    /// on its head opens it.
+    shut: bool,
+    /// The file's defaults, for what an empty settings row inherits.
+    defaults: config::Policy,
     /// The job being edited, as written in the file; `None` adds one.
     original: Option<config::Job>,
     base: PathBuf,
@@ -1531,8 +1546,15 @@ pub struct JobForm {
 }
 
 impl JobForm {
-    /// `base` resolves relative paths; `fallback` supplies an empty directory; `seed` fills the prompt.
-    pub fn new(base: &Path, fallback: &Path, original: Option<config::Job>, seed: &str) -> Self {
+    /// `base` resolves relative paths; `fallback` supplies an empty directory; `seed` fills the
+    /// prompt; `defaults` is what a settings row left empty inherits.
+    pub fn new(
+        base: &Path,
+        fallback: &Path,
+        original: Option<config::Job>,
+        seed: &str,
+        defaults: &config::Policy,
+    ) -> Self {
         let (name, dir, prompt, (when, at)) = match &original {
             Some(j) => (
                 j.name.clone(),
@@ -1542,8 +1564,14 @@ impl JobForm {
             ),
             None => Default::default(),
         };
+        let values: Vec<String> = (0..RUN_FIELDS.len())
+            .map(|i| match &original {
+                Some(j) => job_value(run_field(i), j),
+                None => String::new(),
+            })
+            .collect();
         Self {
-            step: Step::What,
+            row: JobRow::Ask(Step::What),
             prompt: if original.is_some() {
                 prompt
             } else {
@@ -1555,16 +1583,56 @@ impl JobForm {
             name,
             error: None,
             cursor: usize::MAX,
-            schedule: String::new(),
+            // A job that already carries settings of its own opens on them.
+            shut: values.iter().all(String::is_empty),
+            values,
+            defaults: defaults.clone(),
             original,
             base: base.to_owned(),
             fallback: fallback.to_owned(),
         }
     }
 
-    fn go(&mut self, step: Step) {
-        self.step = step;
+    fn go(&mut self, row: JobRow) {
+        if let JobRow::Set(_) = row {
+            self.shut = false;
+        }
+        self.row = row;
         self.cursor = usize::MAX;
+    }
+
+    /// The rows on screen, in order. `once` writes no line, so it takes the defaults and asks
+    /// for neither a name nor settings of its own.
+    fn rows(&self) -> Vec<JobRow> {
+        let mut rows = vec![
+            JobRow::Ask(Step::What),
+            JobRow::Ask(Step::Where),
+            JobRow::Ask(Step::When),
+        ];
+        if WHEN[self.when] == "once" {
+            return rows;
+        }
+        if self.asks_at() {
+            rows.push(JobRow::Ask(Step::At));
+        }
+        rows.push(JobRow::Ask(Step::Name));
+        rows.push(JobRow::Head);
+        if !self.shut {
+            rows.extend((0..RUN_FIELDS.len()).map(JobRow::Set));
+        }
+        rows
+    }
+
+    /// Move to the neighbouring row, staying put at either end.
+    fn walk(&mut self, back: bool) {
+        let rows = self.rows();
+        let at = rows.iter().position(|r| *r == self.row).unwrap_or(0);
+        let next = if back {
+            at.saturating_sub(1)
+        } else {
+            (at + 1).min(rows.len() - 1)
+        };
+        self.go(rows[next]);
     }
 
     pub fn complete(&mut self) -> Vec<String> {
@@ -1576,12 +1644,13 @@ impl JobForm {
     }
 
     fn field(&mut self) -> Option<&mut String> {
-        match self.step {
-            Step::What => Some(&mut self.prompt),
-            Step::Where => Some(&mut self.dir),
-            Step::When => None,
-            Step::At => Some(&mut self.at),
-            Step::Name => Some(&mut self.name),
+        match self.row {
+            JobRow::Ask(Step::What) => Some(&mut self.prompt),
+            JobRow::Ask(Step::Where) => Some(&mut self.dir),
+            JobRow::Ask(Step::At) => Some(&mut self.at),
+            JobRow::Ask(Step::Name) => Some(&mut self.name),
+            JobRow::Set(i) if run_field(i).typed() => Some(&mut self.values[i]),
+            _ => None,
         }
     }
 
@@ -1597,22 +1666,88 @@ impl JobForm {
         }
     }
 
+    /// Rows whose arrows change the value in place rather than move the cursor through it.
+    /// A typed value the words do not offer keeps the arrows for its own cursor.
+    fn turns(&self) -> bool {
+        match self.row {
+            JobRow::Ask(Step::When) => true,
+            JobRow::Set(i) => match run_field(i).input {
+                Answer::Typed | Answer::Columns => false,
+                Answer::Number(_) | Answer::Pick(_) => true,
+                Answer::PickOrType(..) => run_field(i).picked(&self.values[i]),
+            },
+            _ => false,
+        }
+    }
+
+    /// What `enter` does on this row, for the hint line and for the key itself.
+    fn enter_does(&self) -> &'static str {
+        match self.row {
+            JobRow::Ask(Step::When) if WHEN[self.when] == "once" => "run now",
+            JobRow::Ask(Step::What | Step::Where | Step::When | Step::At) => "next",
+            _ => "save",
+        }
+    }
+
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> FormAction {
         if code == KeyCode::Esc {
             return FormAction::Cancel;
         }
         self.error = None;
-        let cursor = self.cursor;
-        match code {
-            KeyCode::Enter => return self.next(),
-            KeyCode::Left | KeyCode::Right | KeyCode::Tab if self.step == Step::When => {
-                let n = WHEN.len();
-                self.when = (self.when + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
-                self.at.clear();
+        // The head takes no value: it opens or shuts the section, or moves off itself.
+        if self.row == JobRow::Head {
+            match code {
+                KeyCode::Enter | KeyCode::Right => self.go(JobRow::Set(0)),
+                KeyCode::Left => self.shut = true,
+                KeyCode::Up => self.walk(true),
+                KeyCode::Down | KeyCode::Tab => self.walk(false),
+                _ => {}
             }
-            KeyCode::Up => self.back(),
-            KeyCode::Backspace if self.field().is_none_or(|f| f.is_empty()) => self.back(),
+            return FormAction::Stay;
+        }
+        let mut cursor = self.cursor;
+        match code {
+            KeyCode::Enter => return self.enter(),
+            KeyCode::Up => self.walk(true),
+            KeyCode::Down | KeyCode::Tab => self.walk(false),
+            KeyCode::Left | KeyCode::Right if self.turns() => {
+                self.turn(code == KeyCode::Left);
+            }
+            // A settings row goes back to the default; an empty answer walks back.
+            KeyCode::Backspace if self.field().is_none_or(|f| f.is_empty()) => match self.row {
+                JobRow::Set(i) if !self.values[i].is_empty() => self.values[i].clear(),
+                _ => self.walk(true),
+            },
             _ => {
+                if let JobRow::Set(i) = self.row {
+                    let (f, default) = (run_field(i), self.inherited(i));
+                    if !f.typed() {
+                        if let KeyCode::Char(c) = code
+                            && let Some(o) = f
+                                .picks()
+                                .unwrap_or_default()
+                                .iter()
+                                .find(|o| f.label_from(&default, o).starts_with(c))
+                        {
+                            self.values[i] = if *o == "-" {
+                                String::new()
+                            } else {
+                                (*o).to_owned()
+                            };
+                        }
+                        return FormAction::Stay;
+                    }
+                    // The first key on a word the row offers types over it; later keys go on
+                    // typing, even where what is typed so far is a word of its own.
+                    if cursor == usize::MAX
+                        && matches!(code, KeyCode::Char(_))
+                        && matches!(f.input, Answer::PickOrType(..))
+                        && f.picked(&self.values[i])
+                    {
+                        self.values[i].clear();
+                        cursor = usize::MAX;
+                    }
+                }
                 if let Some(f) = self.field()
                     && let Some(at) = edit(f, cursor, code, mods)
                 {
@@ -1623,93 +1758,219 @@ impl JobForm {
         FormAction::Stay
     }
 
-    fn back(&mut self) {
-        self.go(match self.step {
-            Step::What | Step::Where => Step::What,
-            Step::When => Step::Where,
-            Step::At => Step::When,
-            Step::Name if self.asks_at() => Step::At,
-            Step::Name => Step::When,
-        });
+    /// Step a number on its grid from what it inherits, or turn the words a row offers.
+    fn turn(&mut self, back: bool) {
+        if self.row == JobRow::Ask(Step::When) {
+            let n = WHEN.len();
+            self.when = (self.when + if back { n - 1 } else { 1 }) % n;
+            self.at.clear();
+            return;
+        }
+        let JobRow::Set(i) = self.row else { return };
+        let f = run_field(i);
+        let value = self.values[i].clone();
+        if let Some(step) = f.step() {
+            let base = if value.is_empty() {
+                self.inherited(i)
+            } else {
+                value
+            };
+            let now: f64 = base.parse().unwrap_or(0.0);
+            let next = (now + if back { -step } else { step }).max(0.0);
+            self.values[i] = ConfigForm::trim_num((next / step).round() * step);
+            return;
+        }
+        let default = self.inherited(i);
+        let ring = f.ring_from(&default, &value);
+        if ring.is_empty() {
+            return;
+        }
+        let at = f.stop_from(&default, &ring, &value);
+        self.values[i] = ring[(at + if back { ring.len() - 1 } else { 1 }) % ring.len()].clone();
+        self.cursor = usize::MAX;
     }
 
-    fn next(&mut self) -> FormAction {
-        match self.step {
-            Step::What => {
-                if self.prompt.trim().is_empty() {
-                    self.error = Some("the task cannot be empty".into());
-                } else {
-                    self.go(Step::Where);
-                }
+    /// `enter` answers the row and moves on where an answer follows. Where nothing is left to
+    /// answer it writes the job, and on `once` it starts the run instead.
+    fn enter(&mut self) -> FormAction {
+        match self.row {
+            JobRow::Ask(Step::What) if self.prompt.trim().is_empty() => {
+                self.error = Some("the task cannot be empty".into());
             }
-            Step::Where => match launch_dir(&self.dir, &self.base, &self.fallback) {
+            JobRow::Ask(Step::What) => self.walk(false),
+            JobRow::Ask(Step::Where) => match launch_dir(&self.dir, &self.base, &self.fallback) {
                 Ok(dir) => {
                     self.dir = fleet::tilde(&dir);
-                    self.go(Step::When);
+                    self.walk(false);
                 }
                 Err(e) => self.error = Some(e),
             },
-            Step::When => {
-                if WHEN[self.when] == "once" {
-                    return match launch_dir(&self.dir, &self.base, &self.fallback) {
-                        Ok(dir) => FormAction::RunOnce(self.prompt.trim().to_owned(), dir),
-                        Err(e) => {
-                            self.error = Some(e);
-                            FormAction::Stay
-                        }
-                    };
+            JobRow::Ask(Step::When) if WHEN[self.when] == "once" => {
+                if self.prompt.trim().is_empty() {
+                    self.go(JobRow::Ask(Step::What));
+                    self.error = Some("the task cannot be empty".into());
+                    return FormAction::Stay;
                 }
-                if self.asks_at() {
-                    self.go(Step::At);
-                } else {
-                    self.schedule = to_cron(self.when, "").unwrap_or_default();
-                    self.go(Step::Name);
-                }
-            }
-            Step::At => {
-                if self.at.trim().is_empty() {
-                    self.at = self.at_placeholder().to_owned();
-                }
-                match to_cron(self.when, &self.at) {
-                    Ok(s) => {
-                        self.schedule = s;
-                        self.go(Step::Name);
+                return match launch_dir(&self.dir, &self.base, &self.fallback) {
+                    Ok(dir) => FormAction::RunOnce(self.prompt.trim().to_owned(), dir),
+                    Err(e) => {
+                        self.error = Some(e);
+                        FormAction::Stay
                     }
+                };
+            }
+            JobRow::Ask(Step::When) => self.walk(false),
+            JobRow::Ask(Step::At) => {
+                let cron = to_cron(self.when, self.time());
+                match cron {
+                    Ok(_) => self.walk(false),
                     Err(e) => self.error = Some(e),
                 }
             }
-            Step::Name => {
-                let ok = !self.name.is_empty()
-                    && self.name.len() <= 80
-                    && self
-                        .name
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-                if !ok {
-                    self.error = Some("1-80 letters, digits, - or _".into());
-                    return FormAction::Stay;
-                }
-                let mut job = self.original.clone().unwrap_or_else(|| {
-                    config::Job::new(&self.name, &self.schedule, Path::new(&self.dir), "")
-                });
-                job.name = self.name.clone();
-                job.cwd = PathBuf::from(&self.dir);
-                job.schedule = self.schedule.clone();
-                job.prompt = self.prompt.trim().to_owned();
-                return FormAction::Save(
-                    self.original.as_ref().map(|j| j.name.clone()),
-                    Box::new(job),
-                );
-            }
-        }
-        if self.step == Step::Name && self.name.is_empty() {
-            self.name = slug(&self.prompt);
+            _ => return self.save(),
         }
         FormAction::Stay
     }
 
-    fn lines(&self, columns: u16) -> Vec<Line<'static>> {
-        /// Columns a step's label keeps, so a wrapped answer hangs under the same one.
+    /// The time the schedule is built from: the answer, or the default on the row.
+    fn time(&self) -> &str {
+        if self.at.trim().is_empty() {
+            self.at_placeholder()
+        } else {
+            &self.at
+        }
+    }
+
+    /// The name the job is written under: the answer, or the one the task suggests.
+    fn title(&self) -> String {
+        if self.name.trim().is_empty() {
+            slug(&self.prompt)
+        } else {
+            self.name.trim().to_owned()
+        }
+    }
+
+    fn set(&self, name: &str) -> &str {
+        let JobRow::Set(i) = run_row(name) else {
+            unreachable!("run_row is a settings row")
+        };
+        self.values[i].trim()
+    }
+
+    fn inherited(&self, i: usize) -> String {
+        inherited(run_field(i), &self.defaults)
+    }
+
+    fn save(&mut self) -> FormAction {
+        match self.job() {
+            Ok(job) => FormAction::Save(
+                self.original.as_ref().map(|j| j.name.clone()),
+                Box::new(job),
+            ),
+            Err((row, e)) => {
+                self.go(row);
+                self.error = Some(e);
+                FormAction::Stay
+            }
+        }
+    }
+
+    /// The job the rows describe, or the row a validation error belongs on. Every row left
+    /// empty takes its default, so only a bad answer stops the save.
+    fn job(&self) -> Result<config::Job, (JobRow, String)> {
+        let prompt = self.prompt.trim();
+        if prompt.is_empty() {
+            return Err((
+                JobRow::Ask(Step::What),
+                "the task cannot be empty".to_owned(),
+            ));
+        }
+        let dir = launch_dir(&self.dir, &self.base, &self.fallback)
+            .map_err(|e| (JobRow::Ask(Step::Where), e))?;
+        let schedule = to_cron(self.when, self.time()).map_err(|e| (JobRow::Ask(Step::At), e))?;
+        let name = self.title();
+        let named = !name.is_empty()
+            && name.len() <= 80
+            && name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+        if !named {
+            return Err((
+                JobRow::Ask(Step::Name),
+                "1-80 letters, digits, - or _".to_owned(),
+            ));
+        }
+        let dir = fleet::tilde(&dir);
+        let mut job = self
+            .original
+            .clone()
+            .unwrap_or_else(|| config::Job::new(&name, &schedule, Path::new(&dir), ""));
+        job.name = name;
+        job.cwd = PathBuf::from(&dir);
+        job.schedule = schedule;
+        job.prompt = prompt.to_owned();
+        let flag = |f: &str| match self.set(f) {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        };
+        let text = |f: &str| Some(self.set(f).to_owned()).filter(|t| !t.is_empty());
+        let num = |f: &str, what: &str| -> Result<Option<f64>, (JobRow, String)> {
+            match self.set(f) {
+                "" => Ok(None),
+                t => t
+                    .parse::<f64>()
+                    .map(Some)
+                    .map_err(|_| (run_row(f), format!("{f}: {what}, not {t:?}"))),
+            }
+        };
+        job.enabled = self.set("enabled") != "false";
+        job.harness = harness::KNOWN
+            .into_iter()
+            .find(|k| k.to_string() == self.set("harness"));
+        job.model = text("model");
+        job.timeout_min = num("timeout_min", "a number of minutes, as in 30")?;
+        job.budget_usd = num("budget_usd", "dollars, as in 2.00")?;
+        job.daily_budget_usd = num("daily_budget_usd", "dollars, as in 10.00")?;
+        job.write = flag("write");
+        job.max_turns = match self.set("max_turns") {
+            "" => None,
+            t => Some(t.parse::<u32>().map_err(|_| {
+                (
+                    run_row("max_turns"),
+                    format!("max_turns: a whole number, as in 5, not {t:?}"),
+                )
+            })?),
+        };
+        job.overlap = match self.set("overlap") {
+            "skip" => Some(config::Overlap::Skip),
+            "allow" => Some(config::Overlap::Allow),
+            "replace" => Some(config::Overlap::Replace),
+            _ => None,
+        };
+        job.notify = flag("notify");
+        job.archive_transcript = flag("archive_transcript");
+        job.env = self
+            .set("env")
+            .split(',')
+            .map(|e| e.trim().to_owned())
+            .filter(|e| !e.is_empty())
+            .collect();
+        // Refuse a name on its row: written into the file's flow sequence, one carrying YAML
+        // punctuation would be read back as something other than a string.
+        for key in &job.env {
+            config::env_name(key).map_err(|e| (run_row("env"), format!("env: {e:#}")))?;
+        }
+        job.bedrock = flag("bedrock");
+        job.aws_profile = text("aws_profile");
+        job.aws_region = text("aws_region");
+        job.codex_full_access = flag("codex_full_access");
+        Ok(job)
+    }
+
+    /// Render the wizard's rows and return the selected row's line offset.
+    fn lines(&self, columns: u16) -> (Vec<Line<'static>>, usize) {
+        /// Columns an answer's label keeps, so what wraps hangs under the same one.
         const LABEL_W: usize = 9;
         let title = match &self.original {
             Some(j) => format!("edit {}", j.name),
@@ -1720,81 +1981,188 @@ impl JobForm {
             Line::from(Span::styled(title, Style::default().fg(ORANGE))),
             Line::default(),
         ];
+        // The settings rows are labelled by the key each one writes, in a label column of their
+        // own, so the answers above stay tight whichever way the section is folded.
+        let set_w = RUN_FIELDS
+            .iter()
+            .map(|n| n.chars().count())
+            .max()
+            .unwrap_or(0);
         let fallback = fleet::tilde(&self.fallback);
-        let once = WHEN[self.when] == "once";
-        for step in [Step::What, Step::Where, Step::When, Step::At, Step::Name] {
-            if (step == Step::At && !self.asks_at()) || (step > Step::When && once) {
-                continue;
-            }
-            let (label, value, placeholder): (&str, &str, &str) = match step {
-                Step::What => ("what", &self.prompt, "the task"),
-                Step::Where => ("where", &self.dir, &fallback),
-                Step::When => ("when", WHEN[self.when], ""),
-                Step::At => ("at", &self.at, self.at_placeholder()),
-                Step::Name => ("name", &self.name, "from the task"),
-            };
-            let style = match step.cmp(&self.step) {
-                std::cmp::Ordering::Equal => lit(),
-                std::cmp::Ordering::Less => bold(),
-                std::cmp::Ordering::Greater => dim(),
-            };
-            let mut spans = vec![Span::styled(format!("  {label:<6} "), style)];
-            if step == Step::When {
-                if step == self.step {
-                    picks(&mut spans, &WHEN, self.when);
-                } else {
-                    spans.push(Span::styled(
-                        value.to_owned(),
-                        style.remove_modifier(Modifier::BOLD),
-                    ));
+        let suggested = slug(&self.prompt);
+        let mut at = 0;
+        for row in self.rows() {
+            let selected = row == self.row;
+            let error = selected.then_some(self.error.as_deref()).flatten();
+            match row {
+                JobRow::Ask(step) => {
+                    let (label, value, placeholder): (&str, &str, &str) = match step {
+                        Step::What => ("what", &self.prompt, "the task"),
+                        Step::Where => ("where", &self.dir, &fallback),
+                        Step::When => ("when", WHEN[self.when], ""),
+                        Step::At => ("at", &self.at, self.at_placeholder()),
+                        Step::Name if suggested.is_empty() => ("name", &self.name, "from the task"),
+                        Step::Name => ("name", &self.name, &suggested),
+                    };
+                    if selected {
+                        at = lines.len();
+                    }
+                    let style = if selected { lit() } else { bold() };
+                    let mut spans = vec![Span::styled(format!("  {label:<6} "), style)];
+                    if step == Step::When {
+                        picks(&mut spans, &WHEN, self.when);
+                    } else if selected {
+                        spans.extend(typed(value, self.cursor, placeholder));
+                    } else if value.is_empty() {
+                        spans.push(Span::styled(placeholder.to_owned(), dim()));
+                    } else {
+                        spans.push(Span::raw(value.to_owned()));
+                    }
+                    if let Some(e) = error {
+                        spans.push(Span::styled(
+                            format!("  {e}"),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                    lines.extend(hang(spans, LABEL_W, columns as usize));
                 }
-            } else if step == self.step {
-                spans.extend(typed(value, self.cursor, placeholder));
-            } else if step < self.step || !value.is_empty() {
-                spans.push(Span::raw(value.to_owned()));
-            } else {
-                spans.push(Span::styled(placeholder.to_owned(), dim()));
+                JobRow::Head => {
+                    lines.push(Line::default());
+                    if selected {
+                        at = lines.len();
+                    }
+                    let mark = if self.shut {
+                        "  ▸  enter opens it"
+                    } else if selected {
+                        "  ▾  ← shuts it"
+                    } else {
+                        "  ▾"
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "  runs".to_owned(),
+                            if selected {
+                                lit()
+                            } else {
+                                Style::default().fg(ORANGE)
+                            },
+                        ),
+                        Span::styled("  this job's own, over the defaults".to_owned(), dim()),
+                        Span::styled(
+                            mark.to_owned(),
+                            if selected {
+                                Style::default().fg(ORANGE)
+                            } else {
+                                dim()
+                            },
+                        ),
+                    ]));
+                }
+                JobRow::Set(i) => {
+                    let f = run_field(i);
+                    let value = &self.values[i];
+                    if selected {
+                        at = lines.len();
+                    }
+                    let mut spans = vec![Span::styled(
+                        format!("    {:<set_w$}  ", f.name),
+                        if selected { lit() } else { bold() },
+                    )];
+                    // The cursor belongs in the slot only where typing is what fills it.
+                    let open = selected
+                        && match f.input {
+                            Answer::PickOrType(..) => !f.picked(value),
+                            _ => f.typed(),
+                        };
+                    spans.extend(control(
+                        f,
+                        &self.inherited(i),
+                        value,
+                        open,
+                        self.cursor,
+                        selected,
+                    ));
+                    if let Some(e) = error {
+                        spans.push(Span::styled(
+                            format!("  {e}"),
+                            Style::default().fg(Color::Red),
+                        ));
+                    }
+                    lines.extend(flow(spans, 4 + set_w + 2, columns as usize));
+                }
             }
-            if step == self.step
-                && let Some(e) = &self.error
-            {
-                spans.push(Span::styled(
-                    format!("  {e}"),
-                    Style::default().fg(Color::Red),
-                ));
-            }
-            lines.extend(hang(spans, LABEL_W, columns as usize));
         }
-        lines
+        (lines, at)
+    }
+
+    fn paragraph(&self, body: Rect) -> Paragraph<'static> {
+        let (lines, at) = self.lines(body.width);
+        let height = body.height as usize;
+        let top = at
+            .saturating_sub(height / 2)
+            .min(lines.len().saturating_sub(height));
+        Paragraph::new(lines).scroll((top as u16, 0))
     }
 
     fn line(&self) -> Line<'static> {
-        let (what, help) = match self.step {
-            Step::What => ("what", "the task, as you would type it to the harness"),
-            Step::Where => (
+        let (what, help): (&str, String) = match self.row {
+            JobRow::Ask(Step::What) => (
+                "what",
+                "the task, as you would type it to the harness".to_owned(),
+            ),
+            JobRow::Ask(Step::Where) => (
                 "where",
-                "a folder; empty takes the one shown, tab completes",
+                "a folder; empty takes the one shown, tab completes".to_owned(),
             ),
-            Step::When => (
+            JobRow::Ask(Step::When) => (
                 "when",
-                "once runs it now, supervised and in the ledger; the rest schedule a job",
+                "once runs it now, supervised and in the ledger; the rest schedule a job"
+                    .to_owned(),
             ),
-            Step::At => (
+            JobRow::Ask(Step::At) => (
                 "at",
                 match WHEN[self.when] {
                     "weekly" => "a day and a local time, as in mon 09:00",
                     "cron" => "minute hour day month weekday, as in 0 9 * * 1-5",
                     _ => "a local time, as in 09:00",
-                },
+                }
+                .to_owned(),
             ),
-            Step::Name => (
+            JobRow::Ask(Step::Name) => (
                 "name",
-                "the job's name in jobs.yaml and launchd: letters, digits, - or _",
+                "the job's name in jobs.yaml and launchd: letters, digits, - or _".to_owned(),
             ),
+            JobRow::Head => (
+                "runs",
+                if self.shut {
+                    "enter or → opens the section"
+                } else {
+                    "← shuts the section · → goes into it"
+                }
+                .to_owned(),
+            ),
+            JobRow::Set(i) => {
+                let f = run_field(i);
+                let d = self.inherited(i);
+                let default = if d.is_empty() || d == SYSTEM {
+                    "default passes nothing".to_owned()
+                } else {
+                    format!("default: {d}")
+                };
+                (
+                    f.name,
+                    match f.input {
+                        Answer::PickOrType(_, w) => {
+                            format!("{}, or type {w} · {default}", f.short)
+                        }
+                        _ => format!("{} · {default}", f.short),
+                    },
+                )
+            }
         };
         Line::from(vec![
             Span::styled(format!("{what} › "), Style::default().fg(ORANGE)),
-            Span::styled(help.to_owned(), dim()),
+            Span::styled(help, dim()),
         ])
     }
 }
@@ -1842,16 +2210,32 @@ impl Field {
     /// second time. A pick-only field keeps a value from the file it does not offer; a field
     /// that also types shows it in the slot past the ring instead.
     fn ring(&self, value: &str) -> Vec<String> {
+        self.ring_from(self.builtin, value)
+    }
+
+    /// The ring stop a value sits on; a value on no stop is the typed slot past them.
+    fn stop(&self, ring: &[String], value: &str) -> usize {
+        self.stop_from(self.builtin, ring, value)
+    }
+
+    fn label<'a>(&self, o: &'a str) -> &'a str {
+        self.label_from(self.builtin, o)
+    }
+
+    /// The same ring against a built-in of the caller's own. The wizard's rows inherit the
+    /// file's defaults rather than the built-in here, so their first stop stands for whatever
+    /// `defaults` says and every word the field offers stays on the ring.
+    fn ring_from(&self, builtin: &str, value: &str) -> Vec<String> {
         let mut ring: Vec<String> = self
             .picks()
             .unwrap_or_default()
             .iter()
-            .filter(|o| **o != self.builtin)
+            .filter(|o| **o != builtin)
             .map(|o| if *o == "-" { "" } else { *o }.to_owned())
             .collect();
         if !self.typed()
             && !value.is_empty()
-            && value != self.builtin
+            && value != builtin
             && !ring.iter().any(|o| o == value)
         {
             ring.push(value.to_owned());
@@ -1859,29 +2243,28 @@ impl Field {
         ring
     }
 
-    /// The ring stop a value sits on; a value on no stop is the typed slot past them.
-    fn stop(&self, ring: &[String], value: &str) -> usize {
-        let value = if value == self.builtin { "" } else { value };
+    fn stop_from(&self, builtin: &str, ring: &[String], value: &str) -> usize {
+        let value = if value == builtin { "" } else { value };
         ring.iter()
             .position(|o| o == value)
             .unwrap_or(if self.typed() { ring.len() } else { 0 })
     }
 
-    fn label<'a>(&self, o: &'a str) -> &'a str {
+    fn label_from<'a>(&self, builtin: &'a str, o: &'a str) -> &'a str {
         if o != "-" {
             o
-        } else if self.builtin == SYSTEM {
+        } else if builtin == SYSTEM {
             SYSTEM
         } else {
-            self.default_word()
+            self.word_from(builtin)
         }
     }
 
-    /// What the row shows for an unset value: the built-in's own word when it is one of
-    /// the options, so the answer is on the row and not in the help line under it.
-    fn default_word(&self) -> &'static str {
-        if self.picks().is_some_and(|o| o.contains(&self.builtin)) {
-            self.builtin
+    /// What a row shows for an unset value: the built-in's own word when it is one of the
+    /// options, so the answer is on the row and not in the help line under it.
+    fn word_from<'a>(&self, builtin: &'a str) -> &'a str {
+        if self.picks().is_some_and(|o| o.contains(&builtin)) {
+            builtin
         } else {
             "default"
         }
@@ -2201,6 +2584,208 @@ fn field_at(name: &str) -> usize {
         .iter()
         .position(|f| f.name == name)
         .unwrap_or_else(|| panic!("no config field {name}"))
+}
+
+/// The one field a job has that `defaults` does not, so the config editor never carries it.
+const ENABLED: Field = Field {
+    group: "runs",
+    sub: "",
+    name: "enabled",
+    short: "on its schedule",
+    long: "false keeps the job in the file and off the schedule; cones still starts it by hand.",
+    builtin: "true",
+    input: Answer::Pick(&["-", "true", "false"]),
+};
+
+/// What the wizard's settings section holds: the job's own field, then every field a default
+/// covers, in the order a job line carries them. An empty row inherits `defaults`.
+const RUN_FIELDS: [&str; 16] = [
+    "enabled",
+    "harness",
+    "model",
+    "timeout_min",
+    "budget_usd",
+    "daily_budget_usd",
+    "write",
+    "max_turns",
+    "overlap",
+    "notify",
+    "archive_transcript",
+    "env",
+    "bedrock",
+    "aws_profile",
+    "aws_region",
+    "codex_full_access",
+];
+
+fn run_field(i: usize) -> &'static Field {
+    match RUN_FIELDS[i] {
+        "enabled" => &ENABLED,
+        name => &FIELDS[field_at(name)],
+    }
+}
+
+fn run_row(name: &str) -> JobRow {
+    JobRow::Set(
+        RUN_FIELDS
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or_else(|| panic!("no run field {name}")),
+    )
+}
+
+/// What an empty settings row falls back to: the file's own default, else the built-in.
+fn inherited(f: &Field, d: &config::Policy) -> String {
+    let num = |v: Option<f64>| v.map(ConfigForm::trim_num);
+    let flag = |v: Option<bool>| v.map(|b| b.to_string());
+    let text = match f.name {
+        "harness" => d.harness.map(|h| h.to_string()),
+        "model" => d.model.clone(),
+        "timeout_min" => num(d.timeout_min),
+        "budget_usd" => num(d.budget_usd),
+        "daily_budget_usd" => num(d.daily_budget_usd),
+        "write" => flag(d.write),
+        "max_turns" => d.max_turns.map(|v| v.to_string()),
+        "overlap" => d.overlap.map(|o| overlap_word(o).to_owned()),
+        "notify" => flag(d.notify),
+        "archive_transcript" => flag(d.archive_transcript),
+        "env" => d.env.as_ref().map(|e| e.join(", ")),
+        "bedrock" => flag(d.bedrock),
+        "aws_profile" => d.aws_profile.clone(),
+        "aws_region" => d.aws_region.clone(),
+        "codex_full_access" => flag(d.codex_full_access),
+        _ => None,
+    };
+    text.unwrap_or_else(|| f.builtin.to_owned())
+}
+
+fn overlap_word(o: config::Overlap) -> &'static str {
+    match o {
+        config::Overlap::Skip => "skip",
+        config::Overlap::Allow => "allow",
+        config::Overlap::Replace => "replace",
+    }
+}
+
+/// A field's control and current value, against the built-in the caller stands behind: the
+/// config editor's own, or what a wizard row inherits from `defaults`. `open` draws the typed
+/// slot with the cursor in it.
+fn control(
+    f: &Field,
+    builtin: &str,
+    value: &str,
+    open: bool,
+    cursor: usize,
+    selected: bool,
+) -> Vec<Span<'static>> {
+    /// Columns the box of a typed value keeps, whatever is in it.
+    const BOX_W: usize = 18;
+    let mut spans = vec![];
+    // A field that also types keeps a slot past its words; typing or a value the words
+    // do not offer sits there.
+    let mut slot: Option<&str> = None;
+    if f.picks().is_some() {
+        let ring = f.ring_from(builtin, value);
+        let labels: Vec<&str> = ring
+            .iter()
+            .map(|o| {
+                if o.is_empty() {
+                    f.word_from(builtin)
+                } else {
+                    o.as_str()
+                }
+            })
+            .collect();
+        let at = if open {
+            ring.len()
+        } else {
+            f.stop_from(builtin, &ring, value)
+        };
+        picks(&mut spans, &labels, at);
+        match f.input {
+            Answer::PickOrType(_, what) => slot = Some(what),
+            _ => return spans,
+        }
+        spans.push(Span::raw(" "));
+        if at < ring.len() {
+            // On a word the slot stands empty, saying what it takes, and wraps whole.
+            spans.push(Span::styled(
+                format!("[ {what:<BOX_W$} ]", what = slot.unwrap_or_default()),
+                dim(),
+            ));
+            return spans;
+        }
+    }
+    if f.step().is_some() {
+        let shown = match (value.is_empty(), builtin.parse::<f64>().is_ok()) {
+            (false, _) => value,
+            (true, true) => builtin,
+            (true, false) => "default",
+        };
+        let arrows = if open { lit() } else { dim() };
+        return vec![
+            Span::styled("‹ ", arrows),
+            if open {
+                Span::styled(shown.to_owned(), pressed())
+            } else if value.is_empty() {
+                Span::styled(shown.to_owned(), dim())
+            } else {
+                Span::styled(shown.to_owned(), bold())
+            },
+            Span::styled(" ›", arrows),
+        ];
+    }
+    let box_at = spans.len();
+    let edge = if slot.is_some() && selected {
+        lit()
+    } else {
+        dim()
+    };
+    spans.push(Span::styled("[ ", edge));
+    if open {
+        spans.extend(typed(value, cursor, slot.unwrap_or(builtin)));
+    } else if value.is_empty() {
+        let builtin = if builtin == SYSTEM {
+            "default"
+        } else {
+            builtin
+        };
+        spans.push(Span::styled(builtin.to_owned(), dim()));
+    } else {
+        spans.push(Span::styled(value.to_owned(), bold()));
+    }
+    let used: usize = spans.iter().skip(box_at + 1).map(Span::width).sum();
+    spans.push(Span::styled(
+        format!("{} ]", " ".repeat(BOX_W.saturating_sub(used))),
+        edge,
+    ));
+    spans
+}
+
+/// What a job's own line says for a field, empty where it leaves the field to `defaults`.
+fn job_value(f: &Field, j: &config::Job) -> String {
+    let num = |v: Option<f64>| v.map(ConfigForm::trim_num);
+    let flag = |v: Option<bool>| v.map(|b| b.to_string());
+    let text = match f.name {
+        "enabled" => (!j.enabled).then(|| "false".to_owned()),
+        "harness" => j.harness.map(|h| h.to_string()),
+        "model" => j.model.clone(),
+        "timeout_min" => num(j.timeout_min),
+        "budget_usd" => num(j.budget_usd),
+        "daily_budget_usd" => num(j.daily_budget_usd),
+        "write" => flag(j.write),
+        "max_turns" => j.max_turns.map(|v| v.to_string()),
+        "overlap" => j.overlap.map(|o| overlap_word(o).to_owned()),
+        "notify" => flag(j.notify),
+        "archive_transcript" => flag(j.archive_transcript),
+        "env" => Some(j.env.join(", ")).filter(|e| !e.is_empty()),
+        "bedrock" => flag(j.bedrock),
+        "aws_profile" => j.aws_profile.clone(),
+        "aws_region" => j.aws_region.clone(),
+        "codex_full_access" => flag(j.codex_full_access),
+        _ => None,
+    };
+    text.unwrap_or_default()
 }
 
 #[derive(Debug, PartialEq)]
@@ -2866,8 +3451,6 @@ impl ConfigForm {
     }
 
     fn control(&self, i: usize, open: bool) -> Vec<Span<'static>> {
-        /// Columns the box of a typed value keeps, whatever is in it.
-        const BOX_W: usize = 18;
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
             let built = value.is_empty();
@@ -2892,92 +3475,7 @@ impl ConfigForm {
             }
             return spans;
         }
-        let mut spans = vec![];
-        // A field that also types keeps a slot past its words; typing or a value the words
-        // do not offer sits there.
-        let mut slot: Option<&str> = None;
-        if f.picks().is_some() {
-            let ring = f.ring(value);
-            let labels: Vec<&str> = ring
-                .iter()
-                .map(|o| {
-                    if o.is_empty() {
-                        f.default_word()
-                    } else {
-                        o.as_str()
-                    }
-                })
-                .collect();
-            let at = if open {
-                ring.len()
-            } else {
-                f.stop(&ring, value)
-            };
-            picks(&mut spans, &labels, at);
-            match f.input {
-                Answer::PickOrType(_, what) => slot = Some(what),
-                _ => return spans,
-            }
-            spans.push(Span::raw(" "));
-            if at < ring.len() {
-                // On a word the slot stands empty, saying what it takes, and wraps whole.
-                spans.push(Span::styled(
-                    format!("[ {what:<BOX_W$} ]", what = slot.unwrap_or_default()),
-                    dim(),
-                ));
-                return spans;
-            }
-        }
-        if f.step().is_some() {
-            let shown = match (value.is_empty(), f.builtin.parse::<f64>().is_ok()) {
-                (false, _) => value,
-                (true, true) => f.builtin,
-                (true, false) => "default",
-            };
-            let arrows = if open { lit() } else { dim() };
-            return vec![
-                Span::styled("‹ ", arrows),
-                if open {
-                    Span::styled(shown.to_owned(), pressed())
-                } else if value.is_empty() {
-                    Span::styled(shown.to_owned(), dim())
-                } else {
-                    Span::styled(shown.to_owned(), bold())
-                },
-                Span::styled(" ›", arrows),
-            ];
-        }
-        let box_at = spans.len();
-        spans.push(Span::styled(
-            "[ ",
-            if slot.is_some() && i == self.row {
-                lit()
-            } else {
-                dim()
-            },
-        ));
-        if open {
-            spans.extend(typed(value, self.cursor, slot.unwrap_or(f.builtin)));
-        } else if value.is_empty() {
-            let builtin = if f.builtin == SYSTEM {
-                "default"
-            } else {
-                f.builtin
-            };
-            spans.push(Span::styled(builtin.to_owned(), dim()));
-        } else {
-            spans.push(Span::styled(value.clone(), bold()));
-        }
-        let used: usize = spans.iter().skip(box_at + 1).map(Span::width).sum();
-        spans.push(Span::styled(
-            format!("{} ]", " ".repeat(BOX_W.saturating_sub(used))),
-            if slot.is_some() && i == self.row {
-                lit()
-            } else {
-                dim()
-            },
-        ));
-        spans
+        control(f, f.builtin, value, open, self.cursor, i == self.row)
     }
 
     fn line(&self) -> Line<'static> {
@@ -5153,7 +5651,13 @@ impl App {
     fn new_job(&mut self) {
         let (base, fallback) = (self.jobs_dir(), self.target_dir());
         let seed = self.take_prompt();
-        self.mode = Mode::Job(Box::new(JobForm::new(&base, &fallback, None, &seed)));
+        self.mode = Mode::Job(Box::new(JobForm::new(
+            &base,
+            &fallback,
+            None,
+            &seed,
+            &config::defaults(&self.jobs_path),
+        )));
     }
 
     fn edit_job(&mut self) {
@@ -5169,6 +5673,7 @@ impl App {
                         &self.cwd,
                         Some(j),
                         "",
+                        &config::defaults(&self.jobs_path),
                     )));
                 }
                 None => {
@@ -5271,24 +5776,23 @@ impl App {
         };
         match &self.mode {
             Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
+            Mode::Job(form) if form.row == JobRow::Head => {
+                let mut keys = vec![("↑ ↓", "field"), ("enter →", "open")];
+                if !form.shut {
+                    keys.push(("←", "shut"));
+                }
+                keys.push(("esc", "cancel"));
+                hints(&keys)
+            }
             Mode::Job(form) => {
                 let mut keys = vec![];
-                if form.step == Step::When {
-                    keys.push(("← →", "pick"));
+                if form.turns() {
+                    keys.push(("← →", "change"));
                 }
-                keys.push((
-                    "enter",
-                    match (form.step, WHEN[form.when]) {
-                        (Step::Name, _) => "save",
-                        (Step::When, "once") => "run now",
-                        _ => "next",
-                    },
-                ));
-                if form.step == Step::Where {
+                keys.push(("enter", form.enter_does()));
+                keys.push(("↑ ↓", "field"));
+                if form.row == JobRow::Ask(Step::Where) {
                     keys.push(("tab", "complete"));
-                }
-                if form.step != Step::What {
-                    keys.push(("↑", "back"));
                 }
                 keys.push(("esc", "cancel"));
                 hints(&keys)
@@ -5715,7 +6219,7 @@ impl App {
                     input.key(code, mods);
                 }
             },
-            Mode::Job(form) if code == KeyCode::Tab && form.step == Step::Where => {
+            Mode::Job(form) if code == KeyCode::Tab && form.row == JobRow::Ask(Step::Where) => {
                 self.status = form.complete().join("  ");
             }
             Mode::Job(form) => match form.key(code, mods) {
@@ -6031,9 +6535,7 @@ impl App {
         ])
         .areas(pane);
         match (&self.mode, name) {
-            (Mode::Job(form), _) => {
-                frame.render_widget(Paragraph::new(form.lines(body.width)), body);
-            }
+            (Mode::Job(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Config(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Guide(top), _) => frame.render_widget(guide(*top, body.width), body),
             (_, "help") => frame.render_widget(guide(0, body.width), body),
@@ -6144,7 +6646,7 @@ impl App {
         } else if let Mode::Guide(top) = self.mode {
             frame.render_widget(guide(top, list.width), list);
         } else if let Mode::Job(form) = &self.mode {
-            frame.render_widget(Paragraph::new(form.lines(list.width)), list);
+            frame.render_widget(form.paragraph(list), list);
         } else if let Mode::Config(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
         } else {
@@ -6860,11 +7362,15 @@ mod tests {
         f.key(KeyCode::Enter, KeyModifiers::NONE)
     }
 
+    fn job_form(base: &Path, original: Option<config::Job>, seed: &str) -> JobForm {
+        JobForm::new(base, base, original, seed, &config::Policy::default())
+    }
+
     #[test]
     fn every_prompt_edits_where_the_cursor_is() {
         let base = tempfile::tempdir().unwrap();
         std::fs::create_dir(base.path().join("src")).unwrap();
-        let mut f = JobForm::new(base.path(), base.path(), None, "fix the tests");
+        let mut f = job_form(base.path(), None, "fix the tests");
         f.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
         f.key(KeyCode::Char('a'), KeyModifiers::CONTROL);
         typed(&mut f, "please ");
@@ -6899,8 +7405,8 @@ mod tests {
         f.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
         f.key(KeyCode::Backspace, KeyModifiers::NONE);
         assert_eq!(
-            f.step,
-            Step::What,
+            f.row,
+            JobRow::Ask(Step::What),
             "backspace on an empty answer still steps back"
         );
         assert_eq!(f.prompt, "fix the ");
@@ -7295,22 +7801,26 @@ mod tests {
         assert!(launch_dir("", base.path(), &base.path().join("gone")).is_err());
     }
 
+    fn shown(f: &JobForm, columns: u16) -> Vec<String> {
+        f.lines(columns).0.iter().map(|l| l.to_string()).collect()
+    }
+
     #[test]
     fn the_wizard_runs_once_or_schedules_a_claude_job() {
         let base = dir();
-        let mut f = JobForm::new(base.path(), base.path(), None, "");
+        let mut f = job_form(base.path(), None, "");
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(
-            (f.step, f.error.is_some()),
-            (Step::What, true),
+            (f.row, f.error.is_some()),
+            (JobRow::Ask(Step::What), true),
             "an empty task stays"
         );
         typed(&mut f, "triage the TODOs");
         assert_eq!(f.error, None, "the next key clears the error");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Where);
+        assert_eq!(f.row, JobRow::Ask(Step::Where));
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::When);
+        assert_eq!(f.row, JobRow::Ask(Step::When));
         let canon = base.path().canonicalize().unwrap();
         assert_eq!(f.dir, fleet::tilde(&canon));
         assert_eq!(
@@ -7318,43 +7828,48 @@ mod tests {
             FormAction::RunOnce("triage the TODOs".into(), canon.clone()),
             "once runs now; no name is asked"
         );
-        let shown = f
-            .lines(120)
-            .iter()
-            .map(|l| l.to_string())
-            .collect::<Vec<_>>();
-        assert!(shown[1].starts_with("new job"), "{shown:?}");
-        assert!(shown[3].contains("what   triage the TODOs"), "{shown:?}");
-        assert!(shown[5].contains("[once] hourly"), "{shown:?}");
-        assert_eq!(shown.len(), 6, "once asks nothing more: {shown:?}");
+        let rows = shown(&f, 120);
+        assert!(rows[1].starts_with("new job"), "{rows:?}");
+        assert!(rows[3].contains("what   triage the TODOs"), "{rows:?}");
+        assert!(rows[5].contains("[once] hourly"), "{rows:?}");
+        assert_eq!(
+            rows.len(),
+            6,
+            "once takes the defaults, so it asks nothing more: {rows:?}"
+        );
         for _ in 0..3 {
             f.key(KeyCode::Right, KeyModifiers::NONE);
         }
         assert_eq!(WHEN[f.when], "weekdays");
-        assert_eq!(f.lines(120).len(), 8, "weekdays asks a time and a name");
+        let rows = shown(&f, 120);
+        assert!(
+            rows[7].contains("name   triage-the-todos"),
+            "the name follows the task until it is typed: {rows:?}"
+        );
+        assert!(
+            rows[9].contains("runs") && rows[9].contains("enter opens it"),
+            "{rows:?}"
+        );
+        assert_eq!(
+            rows.len(),
+            10,
+            "weekdays asks a time and a name, the settings stay shut: {rows:?}"
+        );
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::At);
+        assert_eq!(f.row, JobRow::Ask(Step::At));
         typed(&mut f, "25:00");
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert!(f.error.is_some(), "a bad time stays");
         f.at.clear();
         typed(&mut f, "8:30");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(
-            (f.step, f.name.as_str()),
-            (Step::Name, "triage-the-todos"),
-            "the name is suggested from the task"
-        );
+        assert_eq!(f.row, JobRow::Ask(Step::Name));
         f.key(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(f.step, Step::At);
+        assert_eq!(f.row, JobRow::Ask(Step::At), "the rows walk both ways");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert_eq!(f.step, Step::Name);
-        for _ in 0..16 {
-            f.key(KeyCode::Backspace, KeyModifiers::NONE);
-        }
         typed(&mut f, "bad name");
         assert_eq!(enter(&mut f), FormAction::Stay);
-        assert!(f.error.is_some());
+        assert!(f.error.is_some(), "a name with a space stays on its row");
         f.name = "nightly".into();
         match enter(&mut f) {
             FormAction::Save(None, job) => {
@@ -7364,6 +7879,92 @@ mod tests {
                 assert_eq!(job.cwd, PathBuf::from(&f.dir));
                 assert_eq!(job.prompt, "triage the TODOs");
                 assert_eq!(job.model, None);
+                assert!(job.enabled);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_settings_section_writes_a_jobs_own_fields_and_defaults_the_rest() {
+        let base = dir();
+        let defaults = config::Policy {
+            timeout_min: Some(45.0),
+            write: Some(true),
+            ..Default::default()
+        };
+        let mut f = JobForm::new(base.path(), base.path(), None, "sweep", &defaults);
+        f.when = 2;
+        f.go(JobRow::Head);
+        assert!(f.shut, "a job with no settings of its own comes up folded");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(
+            f.row,
+            run_row("enabled"),
+            "enter opens the section and goes in"
+        );
+        let rows = shown(&f, 200);
+        let row = |key: &str| {
+            rows.iter()
+                .find(|l| l.trim_start().starts_with(key))
+                .unwrap_or_else(|| panic!("no {key} row in {rows:?}"))
+                .to_owned()
+        };
+        assert!(
+            row("timeout_min").contains("45"),
+            "the file's default is on the row"
+        );
+        assert!(
+            row("write").contains("[true]"),
+            "an empty row shows what it inherits: {}",
+            row("write")
+        );
+        assert!(row("enabled").contains("[true]"), "{}", row("enabled"));
+        f.go(run_row("write"));
+        f.key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(
+            f.set("write"),
+            "false",
+            "the arrows turn a row against what it inherits"
+        );
+        f.go(run_row("timeout_min"));
+        f.key(KeyCode::Right, KeyModifiers::NONE);
+        assert_eq!(
+            f.set("timeout_min"),
+            "50",
+            "a number steps from what it inherits"
+        );
+        f.go(run_row("env"));
+        typed(&mut f, "LANG, BAD NAME");
+        assert_eq!(enter(&mut f), FormAction::Stay);
+        assert_eq!(f.row, run_row("env"), "a refused name lands on its own row");
+        assert!(f.error.is_some());
+        for _ in 0..10 {
+            f.key(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        assert_eq!(f.set("env"), "LANG");
+        f.go(run_row("model"));
+        typed(&mut f, "opus[1m]");
+        assert_eq!(
+            f.set("model"),
+            "opus[1m]",
+            "typing a word the ring offers keeps typing"
+        );
+        match enter(&mut f) {
+            FormAction::Save(None, job) => {
+                assert_eq!((job.write, job.timeout_min), (Some(false), Some(50.0)));
+                assert_eq!(job.model.as_deref(), Some("opus[1m]"));
+                assert_eq!(job.env, vec!["LANG".to_owned()]);
+                assert_eq!(job.name, "sweep", "the name follows the task");
+                assert_eq!(
+                    job.schedule, "0 9 * * *",
+                    "the time takes the row's default"
+                );
+                assert_eq!(
+                    (job.budget_usd, job.notify, job.harness, job.max_turns),
+                    (None, None, None, None),
+                    "a row left alone writes nothing and inherits"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -7397,23 +7998,35 @@ mod tests {
     }
 
     #[test]
-    fn editing_keeps_the_fields_the_wizard_does_not_ask_about() {
+    fn editing_opens_on_the_fields_the_job_carries() {
         let base = dir();
         let mut j = config::Job::new("one", "0 9 * * *", Path::new("."), "first");
         j.model = Some("sonnet".into());
         j.budget_usd = Some(0.5);
-        let mut f = JobForm::new(base.path(), base.path(), Some(j), "ignored seed");
+        let mut f = JobForm::new(
+            base.path(),
+            base.path(),
+            Some(j),
+            "ignored seed",
+            &config::Policy::default(),
+        );
         assert_eq!(
             (f.name.as_str(), f.dir.as_str(), WHEN[f.when], f.at.as_str()),
             ("one", ".", "daily", "09:00"),
             "the schedule opens on the picks that made it"
         );
-        assert!(f.lines(120)[1].to_string().starts_with("edit one"));
+        let rows = shown(&f, 120);
+        assert!(rows[1].starts_with("edit one"));
+        assert!(!f.shut, "a job that already sets fields opens on them");
+        assert!(
+            rows.iter().any(|l| l.contains("sonnet")),
+            "the job's own model is on its row: {rows:?}"
+        );
         typed(&mut f, ", revised");
         for _ in 0..4 {
             assert_eq!(enter(&mut f), FormAction::Stay);
         }
-        assert_eq!(f.step, Step::Name);
+        assert_eq!(f.row, JobRow::Ask(Step::Name));
         match enter(&mut f) {
             FormAction::Save(Some(old), job) => {
                 assert_eq!(old, "one");

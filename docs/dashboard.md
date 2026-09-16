@@ -217,17 +217,21 @@ The menu's `jobs` button opens jobs in file order, followed by `new job`. With t
 
 ## The wizard
 
-Open `new job`, or press `enter` on the menu's `jobs` button with an instruction typed. `enter` accepts each answer, `← →` pick a schedule, `↑` or backspace on an empty answer goes back, and `esc` cancels. Earlier answers remain visible.
+Open `new job`, or press `enter` on the menu's `jobs` button with an instruction typed. `↑ ↓` walk the rows in any order, `enter` accepts an answer and moves on, `← →` pick a schedule, backspace on an empty answer goes back, and `esc` cancels. Every row carries a default, so a row left alone still writes a job.
 
 | Question | Answer |
 | --- | --- |
 | `what` | Task, seeded from the composer. |
 | `where` | Existing directory; `~` expands, relative paths use the jobs file's directory, and empty uses the selected row's directory. Tab completes paths. |
 | `when` | `once`, `hourly`, `daily`, `weekdays`, `weekly` or `cron`. `once` immediately starts a supervised run under the first job's policy, or read-only defaults when no template is available. |
-| `at` | `09:00` for daily/weekdays; `mon 09:00` for weekly; five-field cron otherwise. Hourly uses `0 * * * *` and skips this question. Empty uses the displayed default. |
-| `name` | Suggested from the task; 1-80 ASCII letters, digits, `-` or `_`. |
+| `at` | `09:00` for daily/weekdays; `mon 09:00` for weekly; five-field cron otherwise. Hourly uses `0 * * * *` and skips this row. Empty uses the default on the row. |
+| `name` | The task's slug until it is typed; 1-80 ASCII letters, digits, `-` or `_`. |
 
-New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs currently pass execution validation. Editing preserves fields the wizard does not expose. Saving validates the whole file and rewrites only the selected job block, retaining surrounding formatting and comments. Save and delete run `cones install` afterward; errors appear in the hint line.
+Under the answers, a `runs` section holds every field a job's own line carries: `enabled`, `harness`, `model`, the time limit and the budgets, `write`, `max_turns`, `overlap`, `notify`, `archive_transcript`, `env`, and the Bedrock and Codex settings. Each row is labelled by the key it writes and stands on what an empty row inherits from `defaults`, with the resolved value in the hint line. Controls are the defaults editor's: `← →` change a choice or step a number, typing fills a text slot, and backspace restores the default. `enter` on a settings row saves the job.
+
+The section comes up shut on a job that sets none of those fields and open on one that does; `enter` or `→` on its head opens it and `←` shuts it. A `once` run writes no line of its own, so it takes the defaults and the section is not offered.
+
+New jobs inherit `defaults.harness`, falling back to Claude; only Claude jobs currently pass execution validation. Saving validates the whole file and rewrites only the selected job block, retaining surrounding formatting and comments; a refused value keeps the form open on the row it belongs to. Save and delete run `cones install` afterward; errors appear in the hint line.
 
 ## The defaults editor
 
