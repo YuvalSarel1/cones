@@ -3827,11 +3827,16 @@ const WHEEL_LINES: i32 = 3;
 
 const AGENT_VIEW_TITLE: &str = "claude agents";
 
-/// Evict only listed-session Claude attaches, which can be reopened speculatively.
-/// Other clients stay alive and may exceed this cap.
-const MAX_VIEWERS: usize = 3;
+/// Focused viewers only, so this is not the number of harness clients a dashboard runs: the
+/// prespawned pool sits outside it and the ceiling is `MAX_FOCUSED_VIEWERS + SPECULATIVE_VIEWERS`,
+/// each client its own process at roughly 165MB. Five is deliberate rather than a bug to fix: the
+/// two prespawned clients are what make peek instant, and that is worth their 330MB on a machine
+/// with memory to spare. Evict only listed-session Claude attaches, which can be reopened
+/// speculatively; other clients stay alive and may exceed this cap too.
+const MAX_FOCUSED_VIEWERS: usize = 3;
 
-/// Two speculative slots avoid reattaching when moving between adjacent rows.
+/// Two speculative slots avoid reattaching when moving between adjacent rows. They are held on top
+/// of `MAX_FOCUSED_VIEWERS` rather than inside it, so raising either constant costs a whole client.
 const SPECULATIVE_VIEWERS: usize = 2;
 
 /// Launch status and, on failure, the prompt to restore.
@@ -4568,7 +4573,7 @@ impl App {
         if std::mem::take(&mut self.viewers[i].speculative) {
             let spawned = self.viewers[i].last_focused;
             self.timing("viewer_prespawn_hit", spawned);
-            while self.live_viewers() > MAX_VIEWERS {
+            while self.live_viewers() > MAX_FOCUSED_VIEWERS {
                 let Some(oldest) = self.least_recently_focused(Some(i)) else {
                     break;
                 };
@@ -4612,7 +4617,7 @@ impl App {
         ) {
             Ok(viewer) => {
                 // Evict only after the new viewer starts successfully.
-                while self.live_viewers() >= MAX_VIEWERS {
+                while self.live_viewers() >= MAX_FOCUSED_VIEWERS {
                     let Some(oldest) = self.least_recently_focused(None) else {
                         break;
                     };
@@ -4640,7 +4645,7 @@ impl App {
         self.viewers.iter().filter(|o| !o.speculative).count()
     }
 
-    /// Only listed-session Claude attaches can be reopened quietly; see `MAX_VIEWERS`.
+    /// Only listed-session Claude attaches can be reopened quietly; see `MAX_FOCUSED_VIEWERS`.
     fn least_recently_focused(&self, keep: Option<usize>) -> Option<usize> {
         self.viewers
             .iter()
@@ -11517,8 +11522,44 @@ mod tests {
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
         assert_eq!(keys, vec!["two", "three", A, "four"], "{keys:?}");
         assert!(app.viewers[2].speculative, "the speculative one survived");
-        assert_eq!(app.live_viewers(), MAX_VIEWERS);
+        assert_eq!(app.live_viewers(), MAX_FOCUSED_VIEWERS);
         assert_eq!(app.focus, Some(3));
+    }
+
+    /// `MAX_FOCUSED_VIEWERS` bounds the focused pool alone, so the count that matters for the
+    /// machine is the sum of the two constants. The five is a literal rather than a sum of them on
+    /// purpose: raising either constant adds a whole harness client, and this is what says so.
+    #[test]
+    fn the_focused_cap_plus_the_prespawned_pool_is_the_real_client_ceiling() {
+        assert_eq!(
+            MAX_FOCUSED_VIEWERS + SPECULATIVE_VIEWERS,
+            5,
+            "harness clients one dashboard runs, each a process at roughly 165MB"
+        );
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for k in ["one", "two", "three"] {
+            app.viewers.push(silent_open(k));
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        for k in [A, B] {
+            app.viewers.push(speculative_open(k));
+        }
+        assert_eq!(app.viewers.len(), 5, "three focused and two prespawned");
+        let mut c = Command::new("/bin/sleep");
+        c.arg("5");
+        app.open((12, 80), c, "attach", "four".into(), None);
+        assert_eq!(
+            app.live_viewers(),
+            MAX_FOCUSED_VIEWERS,
+            "the focused pool held its cap"
+        );
+        assert_eq!(
+            app.viewers.len(),
+            5,
+            "a fourth focused viewer evicted one instead of raising the ceiling"
+        );
     }
 
     #[test]
@@ -11578,7 +11619,7 @@ mod tests {
         assert_eq!(keys, vec![A, "two", "three"], "{keys:?}");
         assert_eq!(app.focus, Some(0));
         assert!(!app.viewers[0].speculative);
-        assert_eq!(app.live_viewers(), MAX_VIEWERS);
+        assert_eq!(app.live_viewers(), MAX_FOCUSED_VIEWERS);
     }
 
     #[test]
