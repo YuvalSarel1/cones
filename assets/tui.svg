@@ -30,7 +30,7 @@
 <text x="437.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">1</text>
 <text x="445.9" y="50" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#3fb950"> done</text>
 <text x="513.4" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">││</text>
-<text x="538.7" y="50" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
+<text x="538.7" y="50" xml:space="preserve" textLength="480.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state            title         model   age</text>
 <rect x="24.43" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="32.86" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="41.29" y="53" width="8.43" height="20" fill="#ff8700"/>
@@ -39,9 +39,13 @@
 <rect x="66.58" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="75.01" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="70" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">└──────────────────────────────────────────────┘│</text>
-<text x="555.5" y="70" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
-<text x="631.4" y="70" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
+<text x="538.7" y="70" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
 <text x="521.8" y="90" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="555.5" y="90" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">◆  </text>
+<text x="580.8" y="90" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
+<text x="665.1" y="90" xml:space="preserve" textLength="143.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">- · 0 9 * * 1-5  </text>
+<text x="808.4" y="90" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
+<text x="926.4" y="90" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">sonnet  -</text>
 <text x="16.0" y="110" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">▌ </text>
 <rect x="32.9" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
 <text x="32.9" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> folder </text>
@@ -53,6 +57,8 @@
 <text x="243.6" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> help </text>
 <text x="302.6" y="110" xml:space="preserve" textLength="219.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700"> the jobs: start, edit, ad</text>
 <text x="521.8" y="110" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="555.5" y="110" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
+<text x="631.4" y="110" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
 <text x="521.8" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="150" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                          conte│</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>

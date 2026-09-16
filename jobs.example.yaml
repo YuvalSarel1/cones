@@ -4,14 +4,13 @@ defaults:
   budget_usd: 0.25
   daily_budget_usd: 2.00
   write: false
-columns: [state, context, activity, model, age]   # dashboard session columns, see docs/dashboard.md
+columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see docs/dashboard.md
 jobs:
   - name: readme-check
     schedule: "0 9 * * 1-5"
     harness: claude
     cwd: .
     prompt: "Read README.md and summarize the next verification step. Do not modify files."
-    tools: ["Read", "Grep", "Glob"]
     model: sonnet
     max_turns: 3
     enabled: true
