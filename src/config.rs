@@ -165,7 +165,8 @@ pub fn check_confirm_secs(secs: f64) -> Result<()> {
     Ok(())
 }
 
-pub const COLUMNS: [&str; 7] = [
+pub const COLUMNS: [&str; 8] = [
+    "harness",
     "state",
     "model",
     "age",
@@ -174,7 +175,15 @@ pub const COLUMNS: [&str; 7] = [
     "last",
     "sparkline",
 ];
-pub const DEFAULT_COLUMNS: [&str; 6] = ["state", "context", "sparkline", "model", "age", "last"];
+pub const DEFAULT_COLUMNS: [&str; 7] = [
+    "harness",
+    "state",
+    "context",
+    "sparkline",
+    "model",
+    "age",
+    "last",
+];
 
 /// Sparkline settings; omitted fields use built-ins. See docs/dashboard.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,17 +339,6 @@ impl Sparkline {
             BOUNDS.join(", ")
         );
         Ok(())
-    }
-
-    pub fn title(&self) -> String {
-        let secs = self.bucket_seconds().unwrap_or(60) * self.bars as u64;
-        let span = match secs {
-            0..60 => format!("{secs}s"),
-            60..3600 => format!("{}m", secs / 60),
-            _ if secs.is_multiple_of(3600) => format!("{}h", secs / 3600),
-            _ => format!("{}m", secs / 60),
-        };
-        format!("last {span}")
     }
 
     pub fn lines(&self) -> Vec<String> {
@@ -1189,8 +1187,6 @@ mod tests {
         assert_eq!(sparkline(&p), sp);
         assert_eq!(sp.bucket_seconds().unwrap(), 300);
         assert_eq!(sp.fixed_bound(), Some(20.0));
-        assert_eq!(sp.title(), "last 1h");
-        assert_eq!(Sparkline::default().title(), "last 16m");
         for (bad, msg) in [
             (
                 Sparkline {

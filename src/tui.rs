@@ -307,10 +307,21 @@ impl Data {
         // Keep the same columns at every width; narrow panes clip the right edge.
         let set = &self.columns;
         let has_state = jobs_view || set.iter().any(|c| c == "state");
+        // The harness column is the name after its mark; the mark itself always shows.
+        let has_harness = jobs_view || set.iter().any(|c| c == "harness");
+        let harness = |h: &str| {
+            if has_harness {
+                logo(h)
+            } else {
+                mark(h).to_owned()
+            }
+        };
         let cols: Vec<&String> = if jobs_view {
             job_columns.iter().collect()
         } else {
-            set.iter().filter(|c| *c != "state").collect()
+            set.iter()
+                .filter(|c| *c != "state" && *c != "harness")
+                .collect()
         };
         let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
         let cells = flat
@@ -321,33 +332,24 @@ impl Data {
                 Entry::Session(s) => {
                     let mut row = vec![
                         (icon(&s.state).into(), color(&s.state)),
-                        (logo(&s.harness), brand(&s.harness)),
-                        if has_state {
-                            cell("state", s, by_state, None)
-                        } else {
-                            (
-                                [
-                                    s.coordinator.then_some("orchestrator"),
-                                    s.own_terminal().then_some("own terminal"),
-                                ]
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .join(" · "),
-                                if s.coordinator { lit() } else { dim() },
-                            )
-                        },
-                        (
-                            // A long title would push every metric column off a 120-column screen.
-                            clip(
-                                &s.title
-                                    .clone()
-                                    .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
-                                40,
-                            ),
-                            if s.coordinator { lit() } else { plain() },
-                        ),
+                        (harness(&s.harness), brand(&s.harness)),
                     ];
+                    if has_state {
+                        row.push(cell("state", s, by_state, None));
+                    }
+                    // A long title would push every metric column off a 120-column screen.
+                    let title = clip(
+                        &s.title
+                            .clone()
+                            .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+                        40,
+                    );
+                    // The coordinator is a mark and a colour, never a word in the table.
+                    row.push(if s.coordinator {
+                        (format!("{COORDINATOR} {title}"), lit())
+                    } else {
+                        (title, plain())
+                    });
                     let spark = sparks.get(&s.session_id).map(String::as_str);
                     row.extend(cols.iter().map(|c| cell(c, s, by_state, spark)));
                     row
@@ -361,26 +363,30 @@ impl Data {
                     let status = last.map_or("-".to_owned(), |r| r.status());
                     let mut row = vec![
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
-                        (logo(&j.harness.to_string()), brand(&j.harness.to_string())),
-                        if has_state {
-                            let (word, style) = job_cell("state", j, last, &status, by_state);
-                            (format!("{word} · {}", j.schedule), style)
-                        } else {
-                            (format!("job · {}", j.schedule), dim())
-                        },
-                        (j.name.clone(), plain()),
+                        (
+                            harness(&j.harness.to_string()),
+                            brand(&j.harness.to_string()),
+                        ),
                     ];
+                    if has_state {
+                        let (word, style) = job_cell("state", j, last, &status, by_state);
+                        row.push((format!("{word} · {}", j.schedule), style));
+                    }
+                    row.push((j.name.clone(), plain()));
                     row.extend(cols.iter().map(|c| job_cell(c, j, last, &status, by_state)));
                     row
                 }
             })
             .collect();
-        let spark_title = self.spark.title();
-        let mut names = vec!["", "", if has_state { "state" } else { "" }, "title"];
+        let mut names = vec!["", ""];
+        if has_state {
+            names.push("state");
+        }
+        names.push("title");
         names.extend(cols.iter().map(|c| match c.as_str() {
             "tokens" => "tokens in/out",
             "last" if by_state => "dir",
-            "sparkline" => spark_title.as_str(),
+            "sparkline" => "recent activity",
             c => c,
         }));
         let (names, cells) = columns(&names, cells, widths);
@@ -1117,14 +1123,25 @@ fn icon(state: &str) -> &str {
     }
 }
 
+/// The harness's mark alone; an unknown harness has only its name.
+fn mark(harness: &str) -> &str {
+    match harness {
+        "claude" => "✻",
+        "codex" => ">_",
+        "pi" => "π",
+        other => other,
+    }
+}
+
 fn logo(harness: &str) -> String {
     match harness {
-        "claude" => "✻ claude".into(),
-        "codex" => ">_ codex".into(),
-        "pi" => "π pi".into(),
+        "claude" | "codex" | "pi" => format!("{} {harness}", mark(harness)),
         other => other.to_owned(),
     }
 }
+
+/// Prefix on the coordinator's title, which is also drawn in orange.
+const COORDINATOR: &str = "★";
 
 fn brand(harness: &str) -> Style {
     match harness {
@@ -1795,7 +1812,7 @@ const FIELDS: [Field; 23] = [
         name: "columns",
         short: "session columns",
         long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
-        builtin: "state, context, sparkline, model, age, last",
+        builtin: "harness, state, context, sparkline, model, age, last",
         input: Answer::Columns,
     },
     Field {
@@ -6464,8 +6481,19 @@ mod tests {
         assert_eq!(marker(&data, "aaaa-interactive"), "working");
         assert_eq!(marker(&data, "bbbb-background"), "working");
         data.columns = vec!["model".into()];
-        assert_eq!(marker(&data, "aaaa-interactive"), "own terminal");
-        assert_eq!(marker(&data, "bbbb-background"), "");
+        let width = |data: &Data, id: &str| {
+            data.rows(false)
+                .into_iter()
+                .find(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
+                .map(|r| r.cells.len())
+                .unwrap()
+        };
+        assert_eq!(
+            width(&data, "aaaa-interactive"),
+            4,
+            "without a state column there is no slot before the title; the footer says own terminal"
+        );
+        assert_eq!(width(&data, "bbbb-background"), 4);
     }
 
     #[test]
@@ -6504,18 +6532,28 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(row(&data, "aaaa-worker").cells[2].0.trim(), "working");
+        assert_eq!(row(&data, "aaaa-worker").cells[3].0.trim(), "sweep");
         assert_eq!(row(&data, "aaaa-worker").cells[3].1, plain());
         let marked = row(&data, "bbbb-orchestrator");
         assert_eq!(marked.cells[2].0.trim(), "working");
+        assert_eq!(marked.cells[3].0.trim(), "★ sweep");
         assert_eq!(marked.cells[3].1, lit());
         data.columns = vec!["model".into()];
         let marked = row(&data, "bbbb-orchestrator");
-        assert_eq!(marked.cells[2].0.trim(), "orchestrator");
-        assert_eq!(marked.cells[2].1, lit());
         assert_eq!(
-            row(&data, "cccc-typed").cells[2].0.trim(),
-            "orchestrator · own terminal"
+            marked.cells[2].0.trim(),
+            "★ sweep",
+            "no state, no word: the title carries the mark"
         );
+        assert_eq!(marked.cells[2].1, lit());
+        assert_eq!(row(&data, "cccc-typed").cells[2].0.trim(), "★ sweep");
+        assert_eq!(
+            row(&data, "aaaa-worker").cells[1].0.trim(),
+            "✻",
+            "without the harness column the mark stays and the name goes"
+        );
+        data.columns = vec!["harness".into()];
+        assert_eq!(row(&data, "aaaa-worker").cells[1].0.trim(), "✻ claude");
     }
 
     #[test]
@@ -9465,7 +9503,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Columns(_)));
         let line = text(app.mode_line());
         assert!(
-            line.starts_with("columns ›  state   model   context  ·  age "),
+            line.starts_with("columns ›  state   model   context  ·  harness   age "),
             "{line}"
         );
         let hint = text(app.hint_line());

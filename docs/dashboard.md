@@ -10,7 +10,7 @@ Back to the [README](../README.md). See [harness.md](harness.md) for session sou
 | --- | --- |
 | Summary | Counts of working, input, idle and done sessions, plus jobs and runs. |
 | Menu | `folder`, `jobs`, `config`, `help`. |
-| Sessions | Activity icon, harness, optional state, title, then the configured [columns](#columns). |
+| Sessions | Activity icon, harness mark, optional harness name and state, title, then the configured [columns](#columns). |
 | Jobs | A separate screen with enabled marker, harness, last run status and schedule, name, model, last run age and directory. A `new job` row opens the wizard. |
 | Runs | Newest 200 visible runs: icon, job, status, fired time, duration, dollars and reason. |
 | Viewer | A live terminal screen for the focused or selected session. |
@@ -30,19 +30,20 @@ Column headers are dim and unselectable. Widths only grow during a dashboard ses
 | `stopped` | `▁` | stopped | dim |
 | `-` | `–` | `-` | dim |
 
-The activity bar advances every 160 ms, holding three frames at each endpoint. Harness marks and the mascot stay still. The coordinator's title is orange. Without a `state` column, the slot before the title identifies coordinators and sessions that require their own terminal.
+The activity bar advances every 160 ms, holding three frames at each endpoint. Harness marks and the mascot stay still. The coordinator's title is orange with a `★` before it; the table never spells the word out. Without a `state` column there is no slot before the title; a session that requires its own terminal says so in the footer.
 
 The pane shows live viewers only. Use `cones logs` for recorded output; the dashboard has no transcript details pane.
 
 ## Columns
 
-`columns:` in jobs.yaml selects session columns. `state`, when present, sits before the title; the rest follow it in the listed order. Unknown names fail validation. Missing data shows `-`; [harness.md](harness.md#observe) names each source.
+`columns:` in jobs.yaml selects session columns. `harness` and `state`, when present, sit before the title in that order; the rest follow it in the listed order. Unknown names fail validation. Missing data shows `-`; [harness.md](harness.md#observe) names each source.
 
 | Column | Cell | Default |
 | --- | --- | --- |
+| `harness` | The harness name after its mark, `✻ claude`; without it the mark stands alone | yes |
 | `state` | working, input, idle, done, failed or stopped | yes |
 | `context` | Reported prompt/window tokens, such as `98k/200k`; prompt alone when the window is unavailable | yes |
-| `sparkline` | Activity by time bucket; header names the window, such as `last 16m` | yes |
+| `sparkline` | Activity by time bucket under a `recent activity` header; the window is bars × bucket | yes |
 | `model` | Reported model id, verbatim | yes |
 | `age` | Time since the reported session start | yes |
 | `last` | Latest reply or status text; directory when grouped by state | yes |
