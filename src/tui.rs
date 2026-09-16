@@ -5361,6 +5361,20 @@ impl App {
                     self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
                     return Ok(false);
                 }
+                // Right on a row with nothing typed reaches for the pane: open it, then focus it.
+                if !self.on_button()
+                    && code == KeyCode::Right
+                    && mods.is_empty()
+                    && self.text.is_empty()
+                {
+                    match self.shown() {
+                        _ if !self.split => self.toggle_split(),
+                        Some(i) => self.focus(i),
+                        None if self.panel_shown() => self.open_menu(),
+                        None => self.status = "nothing in the pane".into(),
+                    }
+                    return Ok(false);
+                }
                 if !self.on_button()
                     && let Some(at) = edit(&mut self.text, self.caret, code, mods)
                 {
@@ -8777,6 +8791,31 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         assert!(app.rows.iter().any(|r| r.kind == Kind::Menu));
         assert!(rows(&t, 120).join("\n").contains("new job"));
+    }
+
+    #[test]
+    fn right_on_a_row_with_nothing_typed_opens_the_pane_then_reaches_into_it() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
+            app.step(1);
+        }
+        app.split = false;
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        assert!(app.split, "the first right opens the pane");
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        assert!(app.split, "and the next one reaches into it");
+        assert_eq!(app.status, "nothing in the pane", "as tab would");
+        app.text = "hi".into();
+        app.caret = 0;
+        app.status.clear();
+        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
+        assert_eq!(
+            app.caret, 1,
+            "with something typed right still moves the caret"
+        );
     }
 
     #[test]
