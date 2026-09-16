@@ -2,6 +2,7 @@ pub mod codex;
 pub mod config;
 pub mod fleet;
 pub mod harness;
+pub mod history;
 pub mod launchd;
 pub mod ledger;
 pub mod output;

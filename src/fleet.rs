@@ -639,6 +639,9 @@ pub fn rename(session: &Session, name: &str) -> Result<()> {
 struct Report {
     /// The user's first instruction, used while Claude has not supplied a descriptive name.
     first_prompt: Option<String>,
+    title: Option<String>,
+    ai_title: Option<String>,
+    last: Option<String>,
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
     context: Option<u64>,
@@ -648,12 +651,30 @@ struct Report {
     activity: Vec<Activity>,
 }
 
+/// History hydrates only requested rows and never takes the live fleet's cache mutex.
+pub(crate) fn history_columns(transcript: &Path) -> Result<crate::history::Columns> {
+    let report = report_with_activity(transcript, false)?;
+    Ok(crate::history::Columns {
+        title: report.title.or(report.ai_title).or(report.first_prompt),
+        model: report.model,
+        tokens_in: report.tokens_in,
+        tokens_out: report.tokens_out,
+        context_tokens: report.context,
+        last: report.last,
+        ..crate::history::Columns::default()
+    })
+}
+
 /// Count streaming usage once per message id; skip `<synthetic>` placeholder messages.
 fn report(transcript: &Path) -> Result<Report> {
+    report_with_activity(transcript, true)
+}
+
+fn report_with_activity(transcript: &Path, activity: bool) -> Result<Report> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
     let mut r = Report::default();
-    let mut counted = false;
+    let (mut input_counted, mut output_counted) = (false, false);
     for line in std::io::BufReader::new(fs::File::open(transcript)?).lines() {
         let Ok(event) = serde_json::from_str::<Value>(&line?) else {
             continue;
@@ -665,9 +686,37 @@ fn report(transcript: &Path) -> Result<Report> {
         {
             r.started.get_or_insert(t);
             r.last_activity = Some(t);
-            r.activity.push(Activity::at(t));
+            if activity {
+                r.activity.push(Activity::at(t));
+            }
         }
         let message = &event["message"];
+        // Live discovery already has its tail scan; only history needs these
+        // strings from the full pass, so it can find titles outside the tail window.
+        if !activity {
+            match event["type"].as_str() {
+                Some("custom-title") => {
+                    r.title = event["customTitle"].as_str().and_then(headline);
+                }
+                Some("agent-name") => {
+                    r.title = event["agentName"].as_str().and_then(headline);
+                }
+                Some("ai-title") => {
+                    r.ai_title = event["aiTitle"].as_str().and_then(headline);
+                }
+                _ => {}
+            }
+            if event["type"] == "assistant"
+                && let Some(last) = message["content"].as_array().and_then(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|b| b["text"].as_str().and_then(headline))
+                        .next_back()
+                })
+            {
+                r.last = Some(last);
+            }
+        }
         // Tool calls are content blocks on assistant lines; streaming repeats a message's
         // usage per block but writes each block once.
         if event["type"] == "assistant"
@@ -687,7 +736,7 @@ fn report(transcript: &Path) -> Result<Report> {
                 _ => None,
             };
         }
-        let Some(u) = message.get("usage") else {
+        let Some(u) = message.get("usage").filter(|u| u.is_object()) else {
             continue;
         };
         let model = message["model"].as_str();
@@ -704,8 +753,18 @@ fn report(transcript: &Path) -> Result<Report> {
             n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
         input += prompt;
         output += n("output_tokens");
-        counted = true;
-        r.context = Some(prompt);
+        let has_input = [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .any(|k| u[k].is_u64());
+        input_counted |= has_input;
+        output_counted |= u["output_tokens"].is_u64();
+        if has_input {
+            r.context = Some(prompt);
+        }
         r.model = model.map(Into::into);
         if let Some(a) = r.activity.last_mut()
             && event["type"] == "assistant"
@@ -714,8 +773,10 @@ fn report(transcript: &Path) -> Result<Report> {
             a.tokens_out += n("output_tokens");
         }
     }
-    if counted {
+    if input_counted {
         r.tokens_in = Some(input);
+    }
+    if output_counted {
         r.tokens_out = Some(output);
     }
     Ok(r)
