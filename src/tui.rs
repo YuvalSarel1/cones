@@ -936,6 +936,18 @@ fn lit() -> Style {
     Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
 
+/// Pad an editor row out to the pane and shade it, so the row the cursor is on reads as one line.
+fn on_row(lines: &mut [Line<'static>], columns: u16) {
+    for l in lines {
+        let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+        let pad = (columns as usize).saturating_sub(w);
+        if pad > 0 {
+            l.spans.push(Span::raw(" ".repeat(pad)));
+        }
+        l.style = l.style.bg(Color::Indexed(237));
+    }
+}
+
 /// Render the cursor at a byte offset, or on the placeholder when empty.
 fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
     let block = Modifier::REVERSED;
@@ -2078,6 +2090,10 @@ impl JobForm {
                     }
                     lines.extend(flow(spans, 4 + set_w + 2, columns as usize));
                 }
+            }
+            // `at` is where the selected row starts, so the rest of it shades as one line.
+            if selected {
+                on_row(&mut lines[at..], columns);
             }
         }
         (lines, at)
@@ -3309,6 +3325,10 @@ impl ConfigForm {
                     ));
                 }
                 lines.push(Line::from(spans));
+                if picked {
+                    let last = lines.len() - 1;
+                    on_row(&mut lines[last..], columns);
+                }
             }
             if self.shut && f.group == SHUT {
                 head = Some((f.group, f.sub));
@@ -3339,6 +3359,9 @@ impl ConfigForm {
                 at = lines.len();
             }
             let mut drawn = row(open);
+            if selected {
+                on_row(&mut drawn, columns);
+            }
             // Keep the closed control's height while editing so later rows stay put.
             if open {
                 let shut = row(false).len();
@@ -7098,6 +7121,42 @@ mod tests {
                 .take(long)
                 .all(|l| l.starts_with("    ") && l.chars().count() <= 48),
             "every wrapped line keeps the indent and fits"
+        );
+    }
+
+    #[test]
+    fn the_row_the_cursor_is_on_is_shaded_across_the_pane() {
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        c.row = 2;
+        let (lines, at) = c.lines(48);
+        let shaded: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.style.bg.is_some())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            shaded,
+            (at..at + shaded.len()).collect::<Vec<_>>(),
+            "the shading is the selected row and nothing else"
+        );
+        assert!(
+            !shaded.is_empty()
+                && shaded.iter().all(|&i| lines[i]
+                    .spans
+                    .iter()
+                    .map(|s| s.content.chars().count())
+                    .sum::<usize>()
+                    == 48),
+            "every line of the row is padded out to the pane"
         );
     }
 
