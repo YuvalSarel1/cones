@@ -190,7 +190,7 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         .filter_map(|p| fs::read(p).ok())
         .filter_map(|b| serde_json::from_slice(&b).ok())
         .collect();
-    let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()));
+    let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()))?;
     let coordinators = coordinators(claude);
     out.extend(
         values
@@ -221,7 +221,16 @@ fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
 }
 
 /// Batch process start times in Claude's UTC format to reject reused pids.
-fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
+///
+/// An unreadable process table is an error, never an empty map: every liveness check reads
+/// this, so swallowing the failure would report a machine full of sessions as an empty fleet.
+/// `ps` exiting nonzero because no listed pid is alive is a real empty table, not a failure.
+fn process_starts(pids: impl Iterator<Item = u64>) -> Result<HashMap<u32, String>> {
+    starts_from("/bin/ps", pids)
+}
+
+/// `process_starts` against a named `ps`, so a test can point it at one that cannot run.
+fn starts_from(ps: &str, pids: impl Iterator<Item = u64>) -> Result<HashMap<u32, String>> {
     // ps rejects the whole list when one pid is above the kernel's maximum (99998 on macOS);
     // such a pid runs nothing anyway.
     let list = pids
@@ -230,23 +239,21 @@ fn process_starts(pids: impl Iterator<Item = u64>) -> HashMap<u32, String> {
         .collect::<Vec<_>>()
         .join(",");
     if list.is_empty() {
-        return HashMap::new();
+        return Ok(HashMap::new());
     }
-    Command::new("/bin/ps")
+    let out = Command::new(ps)
         .env("TZ", "UTC")
         .args(["-o", "pid=,lstart=", "-p", &list])
         .stdin(Stdio::null())
         .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| {
-                    let (pid, start) = l.trim().split_once(' ')?;
-                    Some((pid.parse().ok()?, start.trim().to_owned()))
-                })
-                .collect()
+        .with_context(|| format!("reading the process table with {ps}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (pid, start) = l.trim().split_once(' ')?;
+            Some((pid.parse().ok()?, start.trim().to_owned()))
         })
-        .unwrap_or_default()
+        .collect())
 }
 
 fn session(
@@ -737,7 +744,7 @@ fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
                     continue;
                 };
                 if value["sessionId"].as_str() == Some(session_id) {
-                    let starts = process_starts(value["pid"].as_u64().into_iter());
+                    let starts = process_starts(value["pid"].as_u64().into_iter())?;
                     return Ok(session(claude, &value, &starts, false));
                 }
             }
@@ -1381,6 +1388,45 @@ mod tests {
         assert!(
             rename(&codex, "x").is_err(),
             "codex threads are named in codex"
+        );
+    }
+
+    // An empty table is how a pid is reported dead, so a table that could not be read must not
+    // become one: it would report every session on the machine as gone, and harness.md's rule is
+    // that an unreported value is absent rather than guessed.
+    #[test]
+    fn an_unreadable_process_table_is_an_error_not_an_empty_fleet() {
+        let me = u64::from(std::process::id());
+        assert!(
+            starts_from("/nonexistent/ps", [me].into_iter()).is_err(),
+            "a ps that cannot run is an error, not an empty table"
+        );
+        assert!(
+            starts_from("/bin/ps", [me].into_iter())
+                .unwrap()
+                .contains_key(&std::process::id()),
+            "the real ps still reports this live process"
+        );
+        // The other half of the invariant: an empty table is what marks a session dead, which is
+        // why the error above must never arrive as one.
+        let dir = tempfile::tempdir().unwrap();
+        let value = serde_json::json!({
+            "pid": std::process::id(), "sessionId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "cwd": "/src/example", "kind": "bg", "status": "idle"
+        });
+        assert!(
+            session(dir.path(), &value, &HashMap::new(), false).is_none(),
+            "a pid absent from the table is dropped as dead"
+        );
+        assert!(
+            session(
+                dir.path(),
+                &value,
+                &starts_from("/bin/ps", [me].into_iter()).unwrap(),
+                false
+            )
+            .is_some(),
+            "the same entry is live when the table reports its pid"
         );
     }
 
