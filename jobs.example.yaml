@@ -1,8 +1,6 @@
-version: 2
+version: 3
 defaults:
   timeout_min: 5
-  budget_usd: 0.25
-  daily_budget_usd: 2.00
   write: false
 columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see docs/dashboard.md
 jobs:
@@ -12,6 +10,5 @@ jobs:
     cwd: .
     prompt: "Read README.md and summarize the next verification step. Do not modify files."
     model: sonnet
-    max_turns: 3
     enabled: true
     archive_transcript: true
