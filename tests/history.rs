@@ -927,7 +927,8 @@ fn measure_local_claude_archive() {
         )
         .unwrap();
         eprintln!(
-            "history refresh={refresh} sessions={} files={} reads={} bytes={} elapsed_ms={:.1}",
+            "history debug_assertions={} refresh={refresh} sessions={} files={} reads={} bytes={} elapsed_ms={:.1}",
+            cfg!(debug_assertions),
             result.total,
             result.stats.indexed_files,
             result.stats.metadata_reads,
