@@ -4080,7 +4080,14 @@ impl App {
         // The strip is the only row a full-frame viewer leaves the dashboard, so an armed
         // quit shows there; otherwise the first ctrl+c would look ignored.
         let mut keys = if self.quitting() {
-            vec![Span::styled(QUIT_HINT, Style::default().fg(Color::Red))]
+            // Two spans, so a strip too narrow for the whole hint drops its tail the way it
+            // drops a key instead of losing the warning altogether.
+            let red = Style::default().fg(Color::Red);
+            let cut = QUIT_HINT.find(" · ").unwrap_or(QUIT_HINT.len());
+            vec![
+                Span::styled(&QUIT_HINT[..cut], red),
+                Span::styled(&QUIT_HINT[cut..], red),
+            ]
         } else {
             vec![
                 Span::styled("tab back", dim()),
@@ -8045,10 +8052,22 @@ mod tests {
             "the client never saw the byte"
         );
         app.full = true;
-        let strip = app.strip(0, 120);
+        let text = |w| {
+            app.strip(0, w)
+                .spans
+                .iter()
+                .map(|s| s.content.clone().into_owned())
+                .collect::<String>()
+        };
         assert!(
-            strip.spans.iter().any(|s| s.content == QUIT_HINT),
-            "a full-frame viewer shows the armed quit in its strip: {strip:?}"
+            text(120).contains(QUIT_HINT),
+            "a full-frame viewer shows the armed quit in its strip: {:?}",
+            text(120)
+        );
+        assert!(
+            text(40).contains("ctrl+c again quits"),
+            "a narrow strip keeps the press that quits: {:?}",
+            text(40)
         );
         assert!(
             app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap(),
