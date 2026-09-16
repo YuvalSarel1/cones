@@ -769,12 +769,14 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-fn guide(top: usize) -> Paragraph<'static> {
+fn guide(top: usize, columns: u16) -> Paragraph<'static> {
     let width = GUIDE
         .iter()
         .map(|(key, _)| key.chars().count())
         .max()
         .unwrap_or(0);
+    // Wrap what a key does under the key's column, not back at the frame's edge.
+    let indent = 2 + width + 2;
     let mut lines = vec![];
     for (key, what) in GUIDE {
         if key.is_empty() {
@@ -783,16 +785,18 @@ fn guide(top: usize) -> Paragraph<'static> {
                 (*what).to_owned(),
                 Style::default().fg(ORANGE),
             )));
-        } else {
-            lines.push(Line::from(vec![
+            continue;
+        }
+        lines.extend(hang(
+            vec![
                 Span::styled(format!("  {key:width$}  "), bold()),
                 Span::styled((*what).to_owned(), dim()),
-            ]));
-        }
+            ],
+            indent,
+            columns as usize,
+        ));
     }
-    Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .scroll((top as u16, 0))
+    Paragraph::new(lines).scroll((top as u16, 0))
 }
 
 fn uncolored(text: &str) -> String {
@@ -953,6 +957,55 @@ fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
         Span::styled(first, dim().add_modifier(cursor)),
         Span::styled(rest.as_str().to_owned(), dim()),
     ]
+}
+
+/// Wrap a label's row at spaces so what spills hangs under the label, not at the frame's edge.
+/// `indent` is the columns the label keeps and the spans passed in include it. Unlike `flow`
+/// this breaks inside a span, which prose needs and a control's chips do not.
+fn hang(spans: Vec<Span<'static>>, indent: usize, columns: usize) -> Vec<Line<'static>> {
+    let width = columns.max(2);
+    // Leave the continuation at least one column, however narrow the frame is.
+    let indent = indent.min(width - 1);
+    let cells: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().zip(std::iter::repeat(s.style)))
+        .collect();
+    if cells.len() <= width {
+        return vec![Line::from(spans)];
+    }
+    let mut lines = vec![];
+    let (mut rest, mut pad) = (&cells[..], 0);
+    loop {
+        let room = width - pad;
+        if rest.len() <= room {
+            lines.push(padded(rest, pad));
+            return lines;
+        }
+        // Break after the last space that fits; a word wider than the line breaks at the edge.
+        let cut = rest[..=room]
+            .iter()
+            .rposition(|(c, _)| *c == ' ')
+            .map_or(room, |i| i + 1);
+        lines.push(padded(&rest[..cut], pad));
+        rest = &rest[cut..];
+        pad = indent;
+    }
+}
+
+/// Regroup styled characters into spans behind `pad` columns of indent.
+fn padded(cells: &[(char, Style)], pad: usize) -> Line<'static> {
+    let mut spans = vec![];
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(pad)));
+    }
+    let mut cells = cells;
+    while let Some((_, style)) = cells.first().copied() {
+        let n = cells.iter().take_while(|(_, s)| *s == style).count();
+        let text: String = cells[..n].iter().map(|(c, _)| *c).collect();
+        spans.push(Span::styled(text, style));
+        cells = &cells[n..];
+    }
+    Line::from(spans)
 }
 
 /// Clamp a possibly stale byte offset to a character boundary.
@@ -1655,7 +1708,9 @@ impl JobForm {
         FormAction::Stay
     }
 
-    fn lines(&self) -> Vec<Line<'static>> {
+    fn lines(&self, columns: u16) -> Vec<Line<'static>> {
+        /// Columns a step's label keeps, so a wrapped answer hangs under the same one.
+        const LABEL_W: usize = 9;
         let title = match &self.original {
             Some(j) => format!("edit {}", j.name),
             None => "new job".to_owned(),
@@ -1708,7 +1763,7 @@ impl JobForm {
                     Style::default().fg(Color::Red),
                 ));
             }
-            lines.push(Line::from(spans));
+            lines.extend(hang(spans, LABEL_W, columns as usize));
         }
         lines
     }
@@ -2757,7 +2812,7 @@ impl ConfigForm {
         ]));
         let mut n = 1;
         for l in rest {
-            lines.push(Line::from(format!("    {l}")));
+            lines.push(Line::from(format!("{:indent$}{l}", "")));
             n += 1;
         }
         lines.extend((n..tall).map(|_| Line::default()));
@@ -5933,12 +5988,13 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(pane);
-        let wrapped = |lines| Paragraph::new(lines).wrap(Wrap { trim: false });
         match (&self.mode, name) {
-            (Mode::Job(form), _) => frame.render_widget(wrapped(form.lines()), body),
+            (Mode::Job(form), _) => {
+                frame.render_widget(Paragraph::new(form.lines(body.width)), body);
+            }
             (Mode::Config(form), _) => frame.render_widget(form.paragraph(body), body),
-            (Mode::Guide(top), _) => frame.render_widget(guide(*top), body),
-            (_, "help") => frame.render_widget(guide(0), body),
+            (Mode::Guide(top), _) => frame.render_widget(guide(*top, body.width), body),
+            (_, "help") => frame.render_widget(guide(0, body.width), body),
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
             (_, "config") => frame.render_widget(self.config_form().paragraph(body), body),
@@ -6044,12 +6100,9 @@ impl App {
         } else if in_pane {
             self.draw_list(frame, list);
         } else if let Mode::Guide(top) = self.mode {
-            frame.render_widget(guide(top), list);
+            frame.render_widget(guide(top, list.width), list);
         } else if let Mode::Job(form) = &self.mode {
-            frame.render_widget(
-                Paragraph::new(form.lines()).wrap(Wrap { trim: false }),
-                list,
-            );
+            frame.render_widget(Paragraph::new(form.lines(list.width)), list);
         } else if let Mode::Config(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
         } else {
@@ -6526,6 +6579,43 @@ mod tests {
             flow(vec![span("abcdef"), span("gh")], 2, 4).len(),
             2,
             "the first span keeps one span beside it whatever the width"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_answer_hangs_under_its_label() {
+        let hung = hang(
+            vec![
+                Span::styled("  what  ".to_owned(), bold()),
+                Span::raw("one two three four".to_owned()),
+            ],
+            8,
+            22,
+        );
+        assert_eq!(
+            hung.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["  what  one two three ", "        four"],
+            "the tail starts on the label's column"
+        );
+        assert_eq!(
+            hang(vec![Span::raw("a".repeat(60))], 8, 28).len(),
+            3,
+            "a word wider than the line breaks at the edge instead of running off it"
+        );
+        // The cursor splits a word into three spans, so the break has to fall inside one.
+        let cursor = hang(
+            [
+                vec![Span::raw("  what  ".to_owned())],
+                super::typed("aaa bbb ccc", 5, ""),
+            ]
+            .concat(),
+            8,
+            16,
+        );
+        assert_eq!(
+            cursor.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["  what  aaa bbb ", "        ccc"],
+            "a wrapped answer keeps its cursor"
         );
     }
 
@@ -7162,7 +7252,11 @@ mod tests {
             FormAction::RunOnce("triage the TODOs".into(), canon.clone()),
             "once runs now; no name is asked"
         );
-        let shown = f.lines().iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        let shown = f
+            .lines(120)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>();
         assert!(shown[1].starts_with("new job"), "{shown:?}");
         assert!(shown[3].contains("what   triage the TODOs"), "{shown:?}");
         assert!(shown[5].contains("[once] hourly"), "{shown:?}");
@@ -7171,7 +7265,7 @@ mod tests {
             f.key(KeyCode::Right, KeyModifiers::NONE);
         }
         assert_eq!(WHEN[f.when], "weekdays");
-        assert_eq!(f.lines().len(), 8, "weekdays asks a time and a name");
+        assert_eq!(f.lines(120).len(), 8, "weekdays asks a time and a name");
         assert_eq!(enter(&mut f), FormAction::Stay);
         assert_eq!(f.step, Step::At);
         typed(&mut f, "25:00");
@@ -7248,7 +7342,7 @@ mod tests {
             ("one", ".", "daily", "09:00"),
             "the schedule opens on the picks that made it"
         );
-        assert!(f.lines()[1].to_string().starts_with("edit one"));
+        assert!(f.lines(120)[1].to_string().starts_with("edit one"));
         typed(&mut f, ", revised");
         for _ in 0..4 {
             assert_eq!(enter(&mut f), FormAction::Stay);
