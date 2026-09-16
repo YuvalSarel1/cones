@@ -678,14 +678,17 @@ impl Grid {
             let mut prev_pos = self.pos;
             self.pos.col = 0;
             let scrolled = self.row_inc_scroll(1);
-            prev_pos.row -= scrolled;
+            // The row being written can scroll off the top entirely, and then there
+            // is no row left to mark as wrapped: a one-row grid does that on every
+            // wrap, which is the size a dashboard gets from a pty nobody sized.
+            let Some(row) = prev_pos.row.checked_sub(scrolled) else {
+                return;
+            };
+            prev_pos.row = row;
             let new_pos = self.pos;
-            self.drawing_row_mut(prev_pos.row)
-                // we assume self.pos.row is always valid, and so prev_pos.row
-                // must be valid because it is always less than or equal to
-                // self.pos.row
-                .unwrap()
-                .wrap(wrap && prev_pos.row + 1 == new_pos.row);
+            if let Some(row) = self.drawing_row_mut(prev_pos.row) {
+                row.wrap(wrap && prev_pos.row + 1 == new_pos.row);
+            }
         }
     }
 

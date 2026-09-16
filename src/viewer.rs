@@ -780,6 +780,24 @@ mod tests {
     }
 
     #[test]
+    fn a_pty_nobody_sized_wraps_without_panicking() {
+        // A zero-size pty clamps to one row, and then every wrap scrolls the row
+        // being written off the top, leaving none to mark as wrapped.
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "printf 'aaaaaaaaaa'; sleep 0.2"]);
+        let mut v = Viewer::spawn(c, 0, 0, None, Colors::default()).unwrap();
+        assert_eq!(v.screen().size(), (1, 2), "one row is the clamped floor");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            v.pump().unwrap();
+            if v.screen().contents().contains('a') {
+                return;
+            }
+        }
+        panic!("the child never drew");
+    }
+
+    #[test]
     fn a_viewer_draws_on_the_emulated_screen_and_its_cursor_query_is_answered() {
         let mut c = Command::new("/bin/sh");
         c.args(["-c", "printf 'hello\\033[6n'; sleep 0.2"]);

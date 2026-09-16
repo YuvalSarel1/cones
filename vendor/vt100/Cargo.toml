@@ -1,7 +1,9 @@
 # Modified copy of vt100 0.16.2 by Jesse Luehrs (https://github.com/doy/vt100-rust), MIT, see LICENSE.
-# cones's changes: a scroll region beginning at row zero contributes to scrollback, and unscrolled
-# cells can be read while the history view is scrolled. See docs/dashboard.md. The version and name
-# below are upstream's because [patch.crates-io] matches on them; this is not an upstream release.
+# cones's changes: a scroll region beginning at row zero contributes to scrollback, unscrolled
+# cells can be read while the history view is scrolled, insert-line and scroll-down counts are
+# clamped to the scroll region, and a wrap whose row has scrolled away leaves the flag unset
+# instead of panicking. See docs/dashboard.md. The version and name below are upstream's because
+# [patch.crates-io] matches on them; this is not an upstream release.
 [package]
 name = "vt100"
 version = "0.16.2"
