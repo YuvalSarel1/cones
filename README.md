@@ -14,7 +14,7 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 
 [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
 
-<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: live sessions grouped by folder, a finished run, and the guide open in the pane with the keys and what they do" width="100%"></a></p>
+<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: live sessions grouped by folder, a finished run, and a peek into the selected agent in the pane" width="100%"></a></p>
 
 ## What you can do
 
