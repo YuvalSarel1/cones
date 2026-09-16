@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
 """Render assets/tui.svg, a screenshot of `cones tui` on a fixed cast of sessions, from a tmux pane.
-Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [folder to open in] [jobs file]."""
+Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones] [jobs file].
+
+The capture runs against a home of its own, with a fixture `claude` on its PATH: the dashboard
+attaches to the selected row through it, so the pane peeks into a running agent, and no session
+of this machine's, no model call and no key of its own is in reach."""
 import html, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, uuid
 from datetime import datetime, timedelta, timezone
 
-# Wide enough for the context column and the whole keys row, tall enough for the guide's last
-# key: the pane wraps its lines, so a narrower or shorter frame cuts the bottom of the guide off.
-COLS, ROWS = 140, 32
-# A relative binary path resolves against CWD below, the dashboard's folder, not the shell's:
-# from a worktree that captures the main checkout's stale binary. Pass BIN absolute, and pass
-# the main repo as the folder, or its path lands in the header of a committed asset.
-BIN = sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones"
-CWD = sys.argv[2] if len(sys.argv) > 2 else "."  # the dashboard's folder, where the menu row launches
-JOBS = sys.argv[3] if len(sys.argv) > 3 else "jobs.example.yaml"  # the example job, so no live session's viewer opens
+# Wide enough for the context column and the whole keys row, tall enough for both tables and the
+# agent's screen in the pane, with no band of empty rows under them.
+COLS, ROWS = 140, 26
+# The dashboard starts in the fixture home, not in this checkout, so both paths are resolved
+# here: a relative binary would otherwise come from a worktree that captures a stale build.
+BIN = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else "target/debug/cones")
+JOBS = os.path.abspath(sys.argv[2] if len(sys.argv) > 2 else "jobs.example.yaml")
 BG, FG, DIM = "#0d1117", "#e6edf3", "#7d8590"
 ANSI16 = ["#000", "#f85149", "#3fb950", "#d29922", "#58a6ff", "#bc8cff", "#39c5cf", "#e6edf3"] * 2
 C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the cone's tones and the menu button fill
@@ -21,7 +23,10 @@ C256 = {202: "#ff5f00", 208: "#ff8700", 214: "#ffaf00", 237: "#3a3a3a"}  # the c
 # to be running into the README, so the cast is written here instead: a folder with work in
 # flight and one waiting on a human, another folder with a run that finished. `bars` is lines
 # per minute over the sparkline's window, `context` the tokens the row reports.
-HOME = os.path.expanduser("~")
+# A home of the capture's own. The dashboard shortens paths under it, so the folder rows read
+# ~/personal/cones and ~/work while nothing of this machine's home is in reach.
+HOME = tempfile.mkdtemp(prefix="coneshome-")
+CWD = os.path.join(HOME, "personal", "cones")  # the dashboard's folder, where the menu row launches
 CAST = [
     (".", "busy", "the ledger's write path", "claude-opus-5", 56_000, [1, 2, 5, 7, 6, 3, 2, 4], "Reading the ledger writer to see where the lock is taken"),
     (".", "waiting", "sparkline bounds", "claude-opus-5", 86_000, [2, 3, 2, 1, 1, 2, 1, 1], "Two ways to scale the bars; which one do you want?"),
@@ -30,24 +35,65 @@ CAST = [
     ("work", "done", "the invoice export endpoint", "claude-sonnet-5", 41_000, [2, 4, 3, 1, 1, 1, 1, 1], "Shipped behind the export flag; the tests cover both currencies"),
 ]
 
+# The `claude` the dashboard finds on the fixture home's PATH. `attach` paints one screen of the
+# first row's session, the one the dashboard selects, and then holds the pty open, so the pane
+# shows a running agent for the capture. A real attach would put this machine's own work, and a
+# model call, into a committed asset.
+PEEK = r'''
+import os, sys
+
+if len(sys.argv) < 2 or sys.argv[1] != "attach":
+    print("2.1.0 (Claude Code): --bg, attach")  # what a version or capability check reads
+    raise SystemExit(0)
+
+O, D, B, R = "\x1b[38;5;208m", "\x1b[2m", "\x1b[1m", "\x1b[0m"
+SCREEN = [
+    f"{D}> Give every state a harness reports its own row in the table{R}",
+    "",
+    f"{O}⏺{R} Read({B}docs/harness.md{R})",
+    f"  {D}⎿  148 lines{R}",
+    "",
+    f"{O}⏺{R} Update({B}docs/harness.md{R})",
+    f"  {D}⎿  6 rows: queued, working, input, idle, done, gone{R}",
+    "",
+    f"{O}⏺{R} Bash({B}cargo test --all-targets harness{R})",
+    f"  {D}⎿  3 passed in 4.1s{R}",
+    "",
+    f"{O}⏺{R} Every state a harness reports now has a row.",
+    "",
+    f"{O}✻{R} Working{D}… (24s · ↑ 1.2k tokens · esc to interrupt){R}",
+]
+cols, rows = os.get_terminal_size(0)
+box = cols - 2
+composer = [f"{D}╭{'─' * box}╮{R}", f"{D}│{R} > {' ' * (box - 3)}{D}│{R}", f"{D}╰{'─' * box}╯{R}"]
+body = SCREEN + [""] * max(0, rows - len(SCREEN) - len(composer)) + composer
+sys.stdout.write("\x1b[?1049h\x1b[2J\x1b[H" + "\r\n".join(body[:rows]))
+sys.stdout.flush()
+# The dashboard closes a viewer by closing its pty, so end of input is the exit.
+while os.read(0, 1) not in (b"", b"\x1a"):
+    pass
+sys.stdout.write("\x1b[?1049l")
+'''
+
 def tmux(*a, **k): return subprocess.run(["tmux", *a], text=True, capture_output=True, **k)
 
 def cast(claude):
     """Claude's own layout under `claude`: a registry entry, a transcript and a statusLine
     payload per row. The pid is this script's, alive for the capture, so cones reads the rows
-    as live; `interactive` is the kind a session in its own terminal has, which the dashboard
-    never opens a viewer for, so capturing launches no client."""
+    as live; `bg` is the kind a background session has, the one the dashboard opens a viewer
+    for, which is how the pane peeks into the selected row through the fixture `claude`."""
     now = datetime.now(timezone.utc)
     for i, (folder, status, title, model, context, bars, last) in enumerate(CAST):
         # "." is the folder the dashboard itself opens in, where its own work sits.
         sid = f"{uuid.uuid4()}"
-        cwd = os.path.abspath(CWD) if folder == "." else os.path.join(HOME, folder)
+        cwd = CWD if folder == "." else os.path.join(HOME, folder)
+        os.makedirs(cwd, exist_ok=True)
         os.makedirs(os.path.join(claude, "sessions"), exist_ok=True)
         os.makedirs(os.path.join(claude, "statusline"), exist_ok=True)
         project = os.path.join(claude, "projects", re.sub(r"[^A-Za-z0-9]", "-", cwd))
         os.makedirs(project, exist_ok=True)
         started = int((now - timedelta(minutes=len(bars) + i + 4)).timestamp() * 1000)
-        json.dump({"pid": os.getpid(), "sessionId": sid, "cwd": cwd, "kind": "interactive",
+        json.dump({"pid": os.getpid(), "sessionId": sid, "cwd": cwd, "kind": "bg",
                    "status": status, "startedAt": started, "updatedAt": started},
                   open(os.path.join(claude, "sessions", f"{sid}.json"), "w"))
         json.dump({"context_window": {"context_window_size": 1_000_000}},
@@ -82,31 +128,28 @@ def runs(state):
     ]
     open(os.path.join(state, "runs.jsonl"), "w").write("\n".join(json.dumps(r) for r in records) + "\n")
 
-claude = tempfile.mkdtemp(prefix="conescast-")
-state = tempfile.mkdtemp(prefix="conesstate-")
+claude = os.path.join(HOME, ".claude")
+state = os.path.join(HOME, "state")
+peek = os.path.join(HOME, ".local", "bin", "claude")
+os.makedirs(os.path.dirname(peek))
+open(peek, "w").write(f"#!{sys.executable}\n{PEEK}")
+os.chmod(peek, 0o755)
 cast(claude)
 runs(state)
 session = f"conescap-{uuid.uuid4().hex[:8]}"
-# CLAUDE_CONFIG_DIR is the override Claude Code itself honors, so the dashboard reads the cast
-# above and nothing of this machine's own work. Start on the example job, so no job row's run
-# is live either.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)} tui", check=True)
+# The dashboard resolves `claude` under HOME/.local/bin, reads the registry under
+# CLAUDE_CONFIG_DIR and keeps its runs in --state-dir, so all three come from the fixture home;
+# CODEX_HOME goes with it, or the machine's own Codex threads land in the asset. The example job
+# is the jobs file, so no job row has a run of this machine's in flight.
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR -u CODEX_HOME HOME={shlex.quote(HOME)} CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)} tui", check=True)
 try:
-    time.sleep(5)
-    # `up` lands on the menu row, where the pane shows the picked button's screen rather than
-    # a session's viewer, and three `right`s pick `help`, so the asset shows the guide: the
-    # keys and what they do, next to the rows they act on.
-    tmux("send-keys", "-t", session, "Up", check=True)
-    time.sleep(1)
-    for _ in range(3):
-        tmux("send-keys", "-t", session, "Right", check=True)
-        time.sleep(0.4)
-    time.sleep(2)
+    # The dashboard selects the first row and spawns its viewer, which needs a moment to attach
+    # and paint before the pane holds an agent's screen rather than an empty frame.
+    time.sleep(8)
     lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
 finally:
     tmux("kill-session", "-t", session)
-    shutil.rmtree(claude, ignore_errors=True)
-    shutil.rmtree(state, ignore_errors=True)
+    shutil.rmtree(HOME, ignore_errors=True)
 
 CW, LH, PAD, FS = 8.43, 20, 16, 14
 W, H = int(COLS * CW + 2 * PAD), ROWS * LH + 2 * PAD
