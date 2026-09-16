@@ -32,7 +32,11 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{OnceLock, mpsc},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     time::{Duration, Instant},
 };
 
@@ -47,6 +51,23 @@ fn hand_back_tty() {
         }
     }
     reset_terminal_protocols();
+}
+
+/// The signals that end the dashboard, as a flag its loop reads rather than a death it never sees.
+/// A default disposition kills the process inside raw mode, which hands the shell back a terminal
+/// with no echo and cones's reporting modes still on; the flag routes a `kill` or a closed terminal
+/// through the same `hand_back_tty` and viewer reaping as `q`. Ctrl+c is a key here, not a signal,
+/// so SIGINT arrives only from an explicit kill.
+fn quit_on_signals() -> Result<Arc<AtomicBool>> {
+    let signalled = Arc::new(AtomicBool::new(false));
+    for signal in [
+        signal_hook::consts::SIGHUP,
+        signal_hook::consts::SIGINT,
+        signal_hook::consts::SIGTERM,
+    ] {
+        signal_hook::flag::register(signal, Arc::clone(&signalled))?;
+    }
+    Ok(signalled)
 }
 
 fn reset_terminal_protocols() {
@@ -6690,6 +6711,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         libc::signal(libc::SIGTSTP, libc::SIG_IGN);
         libc::signal(libc::SIGTTOU, libc::SIG_IGN);
     }
+    let signalled = quit_on_signals()?;
     SHELL_TTY.get_or_init(|| unsafe {
         let mut t: libc::termios = std::mem::zeroed();
         (libc::tcgetattr(0, &mut t) == 0).then_some(t)
@@ -6712,6 +6734,11 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
         let mut drawn_refresh = app.refreshed;
         let mut redraw = true;
         loop {
+            // A closed terminal or a `kill` leaves through the same teardown as `q`, so the shell
+            // gets its line discipline back and the viewers are reaped rather than hung up on.
+            if signalled.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             app.tick = (animation.elapsed().as_millis() / 100) as usize;
             if app.refreshed.elapsed() >= Duration::from_secs(1) {
                 app.reload();
@@ -11583,5 +11610,24 @@ mod tests {
             vec![B],
             "the speculative viewer went; a viewer the user has been in stays"
         );
+    }
+
+    /// A dropped `Viewer` is the only thing that reaps a viewer's `setsid` child, so a signal has to
+    /// reach the loop rather than kill the dashboard where it stands and orphan one viewer apiece.
+    #[test]
+    fn a_signal_asks_the_dashboard_loop_to_quit() {
+        let signalled = quit_on_signals().unwrap();
+        assert!(
+            !signalled.load(Ordering::Relaxed),
+            "nothing has signalled yet"
+        );
+        // ponytail: raises SIGHUP alone; all three share the one registration above.
+        unsafe { libc::raise(libc::SIGHUP) };
+        let flipped = signalled.load(Ordering::Relaxed);
+        // Hand the signals back, or this test binary becomes the thing only SIGKILL can stop.
+        for signal in [libc::SIGHUP, libc::SIGINT, libc::SIGTERM] {
+            unsafe { libc::signal(signal, libc::SIG_DFL) };
+        }
+        assert!(flipped, "SIGHUP sets the flag the dashboard loop reads");
     }
 }
