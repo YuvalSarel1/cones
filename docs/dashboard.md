@@ -228,7 +228,7 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 | Control | Fields and behavior |
 | --- | --- |
-| Choices | Harness, provider, write, overlap, notify, pane settings and metric. Arrows cycle; an initial letter selects a matching option. |
+| Choices | Harness, provider, write, overlap, notify, pane settings and metric. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
 | Choices or text | Claude model, AWS region, bucket and bound. A custom value joins the choices while selected; stepping away drops it. |
 | Numbers | `confirm_secs`, bar count, turn cap and daily budget step by 1; timeout by 5 minutes; per-run budget by 0.25 USD. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
 | Text | AWS profile and Codex model id. |

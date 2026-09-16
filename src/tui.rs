@@ -1725,25 +1725,39 @@ impl Field {
         }
     }
 
-    /// Append a custom value to the option ring. Stepping away drops it; empty means built-in.
+    /// Append a custom value to the option ring. Stepping away drops it; empty means built-in,
+    /// and the built-in's own word is not offered a second time.
     fn ring(&self, value: &str) -> Vec<String> {
         let mut ring: Vec<String> = self
             .picks()
             .unwrap_or_default()
             .iter()
+            .filter(|o| **o != self.builtin)
             .map(|o| if *o == "-" { "" } else { *o }.to_owned())
             .collect();
-        if !value.is_empty() && !ring.iter().any(|o| o == value) {
+        if !value.is_empty() && value != self.builtin && !ring.iter().any(|o| o == value) {
             ring.push(value.to_owned());
         }
         ring
     }
 
     fn label<'a>(&self, o: &'a str) -> &'a str {
-        if o == "-" && self.builtin == SYSTEM {
+        if o != "-" {
+            o
+        } else if self.builtin == SYSTEM {
             SYSTEM
         } else {
-            o
+            self.default_word()
+        }
+    }
+
+    /// What the row shows for an unset value: the built-in's own word when it is one of
+    /// the options, so the answer is on the row and not in the help line under it.
+    fn default_word(&self) -> &'static str {
+        if self.picks().is_some_and(|o| o.contains(&self.builtin)) {
+            self.builtin
+        } else {
+            "default"
         }
     }
 
@@ -2364,7 +2378,10 @@ impl ConfigForm {
                 KeyCode::Char(c) if !self.field().typed() => {
                     let f = self.field();
                     let opts = f.picks().unwrap_or_default();
-                    if let Some(o) = opts.iter().find(|o| f.label(o).starts_with(c)) {
+                    if let Some(o) = opts
+                        .iter()
+                        .find(|o| (**o == "-" && c == '-') || f.label(o).starts_with(c))
+                    {
                         self.before = self.values[self.row].clone();
                         self.values[self.row] = if *o == "-" {
                             String::new()
@@ -2539,16 +2556,17 @@ impl ConfigForm {
             }
             return spans;
         }
-        if let Some(opts) = f.picks() {
+        if f.picks().is_some() {
             let ring = f.ring(value);
-            let labels: Vec<&str> = opts
+            let labels: Vec<&str> = ring
                 .iter()
-                .map(|o| if *o == "-" { "default" } else { *o })
-                .chain(
-                    ring.last()
-                        .filter(|v| !opts.contains(&v.as_str()))
-                        .map(String::as_str),
-                )
+                .map(|o| {
+                    if o.is_empty() {
+                        f.default_word()
+                    } else {
+                        o.as_str()
+                    }
+                })
                 .collect();
             if !open {
                 let at = ring.iter().position(|o| o == value).unwrap_or(0);
@@ -6053,9 +6071,9 @@ mod tests {
         assert_eq!(value(&c), "0");
 
         c.go(field_at("overlap"));
-        for want in ["skip", "allow", "replace", ""] {
+        for want in ["allow", "replace", ""] {
             c.key(KeyCode::Right, none);
-            assert_eq!(value(&c), want);
+            assert_eq!(value(&c), want, "the built-in is one stop, not two");
         }
         c.go(field_at("model"));
         c.values[c.row] = "claude-opus-5".to_owned();
@@ -9114,7 +9132,7 @@ mod tests {
         assert_eq!(column(&s, "count per bar"), col, "no bounce: {s}");
         assert_eq!(height(&s), tall, "no bounce: {s}");
         assert!(
-            s.contains("count per bar        [default] lines  messages  tools  tokens"),
+            s.contains("count per bar        [lines] messages  tools  tokens"),
             "every word the field takes is on its row, the built-in bracketed: {s}"
         );
         assert!(
@@ -9127,7 +9145,13 @@ mod tests {
         );
         assert!(s.contains("esc done"), "{s}");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "lines"));
+        assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row] == "messages"));
+        t.draw(|f| app.draw(f)).unwrap();
+        let s = rows(&t, 160).join("\n");
+        assert!(
+            s.contains("count per bar         lines [messages] tools  tokens"),
+            "the built-in keeps its word while another is picked: {s}"
+        );
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if !f.open && f.values[f.row].is_empty()));
         go(&mut app, "sparkline.bound");
@@ -9137,15 +9161,11 @@ mod tests {
             .chain([cells(&t, 59, 0..80)])
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            s.contains("chart scale          [default] fleet  row  log"),
-            "{s}"
-        );
+        assert!(s.contains("chart scale          [fleet] row  log"), "{s}");
         assert!(
             s.contains("sparkline.bound › enter types a number · default: fleet"),
             "a field that also takes something typed says so: {s}"
         );
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row] == "row"));
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -9293,11 +9313,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            s.contains("allow file changes   [default] false  true"),
+            s.contains("allow file changes   [false] true"),
             "picks on write: {s}"
         );
         assert!(s.contains("← → change"), "{s}");
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         go(&mut app, "model");
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
