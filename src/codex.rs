@@ -632,12 +632,13 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
         .collect();
     let guessed = attribute(procs, &rollouts);
-    // A remote client is a viewer, so `thread_rows` supplies the row of the thread it names and the
-    // viewer gets none: its own start time is not the thread's. The daemon creates the thread after
-    // the client asks for one, and until it does that thread is in no lock, database or rollout, so
-    // a client with nothing yet to view keeps a row of its own. Only a thread this client could have
-    // opened counts, by folder and by starting no earlier than the client; a client that resumes an
-    // older thread without naming it is rare enough to show twice.
+    // A remote client is a viewer, so `thread_rows` supplies the row of a thread the daemon holds and
+    // the viewer gets none: its own start time is not the thread's. Until the daemon takes the thread
+    // there is no row there to defer to, whether the client named one or asked for a new one, so the
+    // client keeps a row of its own rather than leave the fleet a gap. Only a thread this client could
+    // have opened counts, by folder and by starting no earlier than the client; a client that resumes
+    // an older thread without naming it is rare enough to show twice.
+    let daemon_holds = |id: &str| daemon.is_some() && locks.get(id) == daemon.as_ref();
     let viewable: Vec<Meta> = locks
         .iter()
         .filter(|(_, pid)| Some(**pid) == daemon)
@@ -647,7 +648,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .iter()
         .filter(|p| {
             !(p.remote
-                && (p.thread.is_some()
+                && (p.thread.as_deref().is_some_and(daemon_holds)
                     || viewable.iter().any(|m| {
                         Some(m.cwd.as_path()) == p.cwd.as_deref() && m.started >= p.started
                     })))
@@ -1211,6 +1212,14 @@ mod tests {
             "a standalone TUI cannot claim a rollout whose writer is the daemon"
         );
         drop(held);
+        assert_eq!(
+            fleet(&viewers)
+                .iter()
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [A, B],
+            "a thread the daemon has not taken has no row to defer to, so its client keeps one"
+        );
         assert!(fleet(&[]).is_empty(), "the daemon released both threads");
     }
 
