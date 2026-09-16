@@ -198,7 +198,7 @@ Type an instruction and press `enter` to start a native session in the selected 
 
 Claude starts with `--bg`; a placeholder row appears immediately and becomes the registry row when available. A failed launch removes the placeholder and restores the instruction. New sessions take the selection unless a viewer is focused or an instruction is being typed. Codex opens a client of its app-server daemon. A harness that cannot remain running after its viewer exits is refused.
 
-`shift+tab` selects Claude or Codex. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`. `ctrl+o` opens these fields plus the harness choice as temporary overrides, retained for subsequent launches. The prefix shows the selected harness, an explicit model and Bedrock when enabled.
+`shift+tab` selects Claude or Codex. The composer takes model and provider settings from `defaults`: `model` for Claude, `codex_model` for Codex, and `bedrock`, `aws_profile` and `aws_region`, which reach Claude only. `ctrl+o` opens these fields plus the harness choice as temporary overrides, retained for subsequent launches. The prefix shows the selected harness, an explicit model and Bedrock when enabled.
 
 Native sessions use their harness's permissions. Job budgets, timeouts and tool restrictions apply to supervised runs, started with `cones run --prompt` or `once` in the wizard.
 

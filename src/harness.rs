@@ -112,10 +112,6 @@ pub fn session_args(
             if let Some(m) = &policy.codex_model {
                 args.extend(["-m".into(), m.into()]);
             }
-            if let Some(bedrock) = policy.bedrock {
-                let provider = if bedrock { "amazon-bedrock" } else { "openai" };
-                args.extend(["-c".into(), format!("model_provider={provider}").into()]);
-            }
             args.push("--".into());
         }
         HarnessKind::Pi => {}
@@ -660,8 +656,6 @@ mod tests {
                 "/repo",
                 "-m",
                 "gpt-5.6-luna",
-                "-c",
-                "model_provider=amazon-bedrock",
                 "--",
                 "fix it"
             ]
@@ -670,13 +664,16 @@ mod tests {
             session_args(HarnessKind::Claude, None, "x", &Policy::default()),
             ["--bg", "--", "x"]
         );
+        // The app-server daemon keeps the provider it started with, so cones passes
+        // no provider of its own; config refuses `bedrock` on a Codex job for that reason.
         let direct = Policy {
             bedrock: Some(false),
+            codex_model: Some("a-model".into()),
             ..Policy::default()
         };
         assert_eq!(
             session_args(HarnessKind::Codex, None, "x", &direct),
-            ["-c", "model_provider=openai", "--", "x"]
+            ["-m", "a-model", "--", "x"]
         );
     }
 

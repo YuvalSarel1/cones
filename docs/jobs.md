@@ -60,7 +60,7 @@ jobs:
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
 | `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
 | `codex_full_access` | `false` | Codex only. Rejected on a Claude job; as a default it reaches Codex jobs alone. |
-| `bedrock` | none | `true` runs the job on Amazon Bedrock: Claude gets `CLAUDE_CODE_USE_BEDROCK=1` and every `AWS_` variable of the installing shell, a Codex job would get `-c model_provider=amazon-bedrock`. `true` needs `aws_profile` and `aws_region` beside it and is rejected without them. `false` asks for the harness's own endpoint. Unset leaves it to the harness's own settings. `model` aliases such as `sonnet` resolve on either provider; a full model id is the provider's. |
+| `bedrock` | none | `true` runs the job on Amazon Bedrock: Claude gets `CLAUDE_CODE_USE_BEDROCK=1` and every `AWS_` variable of the installing shell. A Codex job is refused, because the app-server daemon keeps the provider of the Codex configuration it started with and ignores what a thread asks for. `true` needs `aws_profile` and `aws_region` beside it and is rejected without them. `false` asks for the harness's own endpoint. Unset leaves it to the harness's own settings. `model` aliases such as `sonnet` resolve on either provider; a full model id is the provider's. |
 | `aws_profile` | none | Required by `bedrock: true`, ignored without it. The profile, as named in `~/.aws/config`, that the run gets as `AWS_PROFILE`. It is set over an `AWS_PROFILE` the installing shell carried in, since it is the one the job was checked against. |
 | `aws_region` | none | Required by `bedrock: true`, ignored without it. The region the run gets as `AWS_REGION`, as in `us-east-1`. A model id is answered only by the regions that carry it. |
 
@@ -70,6 +70,7 @@ jobs:
 
 - A schedule that restricts both day and weekday while one uses a wildcard step. launchd ORs the two fields where cron ANDs them.
 - `bedrock: true` with no `aws_profile` or no `aws_region`, on the job or in `defaults`. These fields must be explicit in the file; shell values do not satisfy this check.
+- `bedrock` on a Codex job, from the job or from `defaults`. cones cannot hold a Codex session to it, so it is a validation error rather than a setting that does nothing.
 - An `env` name that could change execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
 - `version` other than `1`, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a job that is not Claude's, `codex_full_access` on a job that is not Codex's, a `claude` binary missing from the launchd PATH.
 

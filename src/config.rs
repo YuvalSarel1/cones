@@ -900,6 +900,16 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
     let bedrock = j.bedrock.or(d.bedrock);
+    // Codex reaches its model through the app-server daemon, which takes its provider
+    // from the Codex configuration it started with and ignores what a thread asks for.
+    // cones cannot hold a Codex session to this switch, so it refuses to imply that it can.
+    ensure!(
+        kind != HarnessKind::Codex || bedrock.is_none(),
+        "job {}: bedrock cannot be set on a Codex job, here or in defaults. Choose the \
+         provider in the Codex configuration instead, in a Codex home of its own when \
+         the model needs a region the daemon was not started with",
+        j.name
+    );
     let (aws_profile, aws_region) = bedrock_aws(
         bedrock,
         j.aws_profile.as_deref().or(d.aws_profile.as_deref()),
@@ -994,6 +1004,23 @@ mod tests {
         assert_eq!(raw_jobs(&p).unwrap().len(), 1);
         write_job(&p, Some("one"), None).unwrap();
         assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
+    }
+
+    #[test]
+    fn bedrock_is_refused_on_a_codex_job_rather_than_passed_and_ignored() {
+        let job = |harness: &str| {
+            format!(
+                "version: 1\ndefaults:\n  bedrock: true\n  aws_profile: claude\n  aws_region: us-east-1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    harness: {harness}\n"
+            )
+        };
+        let (_d, claude) = file(&job("claude"));
+        assert_eq!(read_jobs(&claude).unwrap()[0].bedrock, Some(true));
+        let (_d, codex) = file(&job("codex"));
+        let e = format!("{:#}", read_jobs(&codex).unwrap_err());
+        assert!(
+            e.contains("bedrock cannot be set on a Codex job"),
+            "the daemon keeps its own provider, so the switch is a validation error: {e}"
+        );
     }
 
     #[test]
