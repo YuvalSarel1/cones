@@ -4,7 +4,9 @@ Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones
 import html, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, uuid
 from datetime import datetime, timedelta, timezone
 
-COLS, ROWS = 120, 34
+# Wide enough for the context column and the whole keys row, tall enough for the guide's last
+# key: the pane wraps its lines, so a narrower or shorter frame cuts the bottom of the guide off.
+COLS, ROWS = 140, 32
 # A relative binary path resolves against CWD below, the dashboard's folder, not the shell's:
 # from a worktree that captures the main checkout's stale binary. Pass BIN absolute, and pass
 # the main repo as the folder, or its path lands in the header of a committed asset.
@@ -65,25 +67,46 @@ def cast(claude):
                     "content": [{"type": "text", "text": text}]}}))
         open(os.path.join(project, f"{sid}.jsonl"), "w").write("\n".join(reversed(lines)) + "\n")
 
+def runs(state):
+    """One finished run of the example job, in a state dir of its own: the machine's own ledger
+    holds whatever ran here today, and its job names have no place in a committed asset."""
+    os.makedirs(state, mode=0o700, exist_ok=True)
+    fired = datetime.now(timezone.utc) - timedelta(hours=3)
+    stamp = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    run_id = f"{uuid.uuid4()}"
+    records = [
+        {"v": 1, "run_id": run_id, "status": "started", "job": "readme-check", "trigger": "schedule",
+         "fired_at": stamp(fired), "harness": "claude", "cwd": os.path.abspath(CWD)},
+        {"v": 1, "run_id": run_id, "status": "ok", "ended_at": stamp(fired + timedelta(seconds=74)),
+         "duration_s": 74.2, "exit": 0, "tokens_in": 18_402, "tokens_out": 1_120, "cost_usd": 0.21},
+    ]
+    open(os.path.join(state, "runs.jsonl"), "w").write("\n".join(json.dumps(r) for r in records) + "\n")
+
 claude = tempfile.mkdtemp(prefix="conescast-")
+state = tempfile.mkdtemp(prefix="conesstate-")
 cast(claude)
+runs(state)
 session = f"conescap-{uuid.uuid4().hex[:8]}"
 # CLAUDE_CONFIG_DIR is the override Claude Code itself honors, so the dashboard reads the cast
 # above and nothing of this machine's own work. Start on the example job, so no job row's run
 # is live either.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} tui", check=True)
+tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)} tui", check=True)
 try:
     time.sleep(5)
     # `up` lands on the menu row, where the pane shows the picked button's screen rather than
-    # a session's viewer, and `right` picks the button the asset shows.
+    # a session's viewer, and three `right`s pick `help`, so the asset shows the guide: the
+    # keys and what they do, next to the rows they act on.
     tmux("send-keys", "-t", session, "Up", check=True)
     time.sleep(1)
-    tmux("send-keys", "-t", session, "Right", check=True)
+    for _ in range(3):
+        tmux("send-keys", "-t", session, "Right", check=True)
+        time.sleep(0.4)
     time.sleep(2)
     lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
 finally:
     tmux("kill-session", "-t", session)
     shutil.rmtree(claude, ignore_errors=True)
+    shutil.rmtree(state, ignore_errors=True)
 
 CW, LH, PAD, FS = 8.43, 20, 16, 14
 W, H = int(COLS * CW + 2 * PAD), ROWS * LH + 2 * PAD

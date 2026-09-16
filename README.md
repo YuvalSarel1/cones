@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/cones.svg" alt="cones: Traffic control for agents." width="520">
+  <img src="assets/cones.svg" alt="cones: Traffic control for agents." width="720">
 </p>
 
 **A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.
@@ -14,7 +14,7 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 
 [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
 
-<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: jobs and live sessions grouped by folder, and recent runs" width="100%"></a></p>
+<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: live sessions grouped by folder, a finished run, and the guide open in the pane with the keys and what they do" width="100%"></a></p>
 
 ## What you can do
 

@@ -1,11 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1043" height="712" viewBox="0 0 1043 712" font-family="SFMono-Regular,Menlo,Consolas,monospace" font-size="14">
-<rect width="1043" height="712" rx="8" fill="#0d1117"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1212" height="672" viewBox="0 0 1212 672" font-family="SFMono-Regular,Menlo,Consolas,monospace" font-size="14">
+<rect width="1212" height="672" rx="8" fill="#0d1117"/>
 <rect x="41.29" y="23.0" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="49.72" y="13" width="8.43" height="20" fill="#ff8700"/>
 <rect x="58.15" y="23.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="30" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">┌── </text>
 <text x="150.9" y="30" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">cones </text>
-<text x="201.5" y="30" xml:space="preserve" textLength="328.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">─────────────────────────────────────┐│</text>
+<text x="201.5" y="30" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">───────────────────────────────────────────────┐│</text>
 <rect x="24.43" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="32.9" y="33" width="8.4" height="20" rx="0" fill="#ff8700"/>
 <rect x="32.86" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
@@ -17,7 +17,7 @@
 <rect x="66.58" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
 <rect x="75.01" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▇ </text>
+<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▅ </text>
 <text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">3</text>
 <text x="159.3" y="50" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> working  </text>
 <text x="243.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇ </text>
@@ -29,8 +29,11 @@
 <text x="420.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓ </text>
 <text x="437.5" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="700">1</text>
 <text x="445.9" y="50" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#3fb950"> done</text>
-<text x="513.4" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">││</text>
-<text x="538.7" y="50" xml:space="preserve" textLength="480.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state            title         model   age</text>
+<text x="504.9" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">·  </text>
+<text x="530.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">1</text>
+<text x="538.7" y="50" xml:space="preserve" textLength="59.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> jobs  </text>
+<text x="597.7" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">││</text>
+<text x="623.0" y="50" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#ff8700">Rows</text>
 <rect x="24.43" y="53" width="8.43" height="10.0" fill="#ff8700"/>
 <rect x="32.86" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="41.29" y="53" width="8.43" height="20" fill="#ff8700"/>
@@ -38,86 +41,126 @@
 <rect x="58.15" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="66.58" y="53" width="8.43" height="20" fill="#ff8700"/>
 <rect x="75.01" y="53" width="8.43" height="10.0" fill="#ff8700"/>
-<text x="117.2" y="70" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">└──────────────────────────────────────────────┘│</text>
-<text x="538.7" y="70" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">jobs</text>
-<text x="521.8" y="90" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="555.5" y="90" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">◆  </text>
-<text x="580.8" y="90" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="665.1" y="90" xml:space="preserve" textLength="143.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">- · 0 9 * * 1-5  </text>
-<text x="808.4" y="90" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
-<text x="926.4" y="90" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">sonnet  -</text>
+<text x="117.2" y="70" xml:space="preserve" textLength="497.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">└────────────────────────────────────────────────────────┘│</text>
+<text x="623.0" y="70" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ↑ ↓           </text>
+<text x="757.8" y="70" xml:space="preserve" textLength="421.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">move between rows; ↑ past the first table lands on</text>
+<text x="606.1" y="90" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="90" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the menu, where ← → pick a button</text>
 <text x="16.0" y="110" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">▌ </text>
 <rect x="32.9" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
 <text x="32.9" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> folder </text>
-<rect x="108.7" y="93" width="50.6" height="20" rx="3" fill="#ff8700"/>
-<text x="108.7" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#000" font-weight="700"> jobs </text>
+<rect x="108.7" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
+<text x="108.7" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> jobs </text>
 <rect x="167.7" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
 <text x="167.7" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> config </text>
-<rect x="243.6" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
-<text x="243.6" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700"> help </text>
-<text x="302.6" y="110" xml:space="preserve" textLength="219.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700"> the jobs: start, edit, ad</text>
-<text x="521.8" y="110" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="555.5" y="110" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
-<text x="631.4" y="110" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
-<text x="521.8" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="150" xml:space="preserve" textLength="463.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                          </text>
-<text x="521.8" y="150" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<rect x="243.6" y="93" width="50.6" height="20" rx="3" fill="#ff8700"/>
+<text x="243.6" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#000" font-weight="700"> help </text>
+<text x="302.6" y="110" xml:space="preserve" textLength="219.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700"> the keys and what they do</text>
+<text x="606.1" y="110" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="110" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  enter         </text>
+<text x="757.8" y="110" xml:space="preserve" textLength="396.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">start the job, follow the running run, open the</text>
+<text x="606.1" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="130" xml:space="preserve" textLength="531.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">session or finished run as a viewer, return to a viewer that is</text>
+<text x="16.0" y="150" xml:space="preserve" textLength="556.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                          context    </text>
+<text x="606.1" y="150" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="150" xml:space="preserve" textLength="564.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">alive; on the menu row, give the picked button&#x27;s screen the keys in</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
-<text x="521.8" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
+<text x="606.1" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="170" xml:space="preserve" textLength="539.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the pane: add folder, jobs, defaults, help; on the jobs screen&#x27;s</text>
+<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="190" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the harness table in the docs       </text>
-<text x="521.8" y="190" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="142.4" y="190" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the harness table in the docs  </text>
+<text x="479.6" y="190" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">120k/1.0M  </text>
+<text x="606.1" y="190" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="190" xml:space="preserve" textLength="278.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">last row, the wizard on a new job</text>
 <text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
 <text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="210" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">input    </text>
-<text x="218.3" y="210" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sparkline bounds                    </text>
-<text x="521.8" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
+<text x="218.3" y="210" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sparkline bounds               </text>
+<text x="479.6" y="210" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">86k/1.0M   </text>
+<text x="606.1" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="210" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  shift+enter   </text>
+<text x="757.8" y="210" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the same over the whole frame; ctrl+z or esc come</text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
 <text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the ledger&#x27;s write path             </text>
-<text x="521.8" y="230" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="250" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="142.4" y="230" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the ledger&#x27;s write path        </text>
+<text x="479.6" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">56k/1.0M   </text>
+<text x="606.1" y="230" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="230" xml:space="preserve" textLength="480.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">back to the pane; with an instruction typed, a line break</text>
+<text x="606.1" y="250" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="250" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+x twice  </text>
+<text x="757.8" y="250" xml:space="preserve" textLength="438.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">stop the run or session; delete a job with no run in</text>
 <text x="16.0" y="270" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
-<text x="521.8" y="270" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="606.1" y="270" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="270" xml:space="preserve" textLength="564.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">flight; hide a finished run; forget a Codex daemon thread; remove a</text>
 <text x="32.9" y="290" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
 <text x="58.1" y="290" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="290" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done     </text>
-<text x="218.3" y="290" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">the invoice export endpoint         </text>
-<text x="521.8" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
+<text x="218.3" y="290" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">the invoice export endpoint    </text>
+<text x="479.6" y="290" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">41k/1.0M   </text>
+<text x="606.1" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="290" xml:space="preserve" textLength="109.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">pinned folder</text>
+<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▅  </text>
 <text x="58.1" y="310" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="310" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the flaky checkout test             </text>
-<text x="521.8" y="310" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="390" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="410" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="430" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="450" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="470" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="490" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="510" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="530" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="550" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="570" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="590" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="521.8" y="610" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="630" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│</text>
-<text x="538.7" y="630" xml:space="preserve" textLength="488.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────</text>
-<text x="521.8" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="538.7" y="650" xml:space="preserve" textLength="59.0" lengthAdjust="spacingAndGlyphs" fill="#ff8700">jobs › </text>
-<text x="597.7" y="650" xml:space="preserve" textLength="252.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the jobs: start, edit, add one</text>
-<text x="16.0" y="670" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────│</text>
-<text x="538.7" y="670" xml:space="preserve" textLength="488.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────</text>
-<text x="16.0" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
-<text x="58.1" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> jobs · </text>
-<text x="125.6" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">← →</text>
-<text x="150.9" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> pick · </text>
-<text x="218.3" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
-<text x="243.6" y="690" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> pane · </text>
-<text x="311.1" y="690" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">esc</text>
-<text x="336.3" y="690" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> quit</text>
-<text x="521.8" y="690" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="142.4" y="310" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the flaky checkout test        </text>
+<text x="479.6" y="310" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">67k/1.0M   </text>
+<text x="606.1" y="310" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="310" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+e        </text>
+<text x="757.8" y="310" xml:space="preserve" textLength="404.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">edit the selected job in the wizard, on the jobs</text>
+<text x="606.1" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="330" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">screen</text>
+<text x="16.0" y="350" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">runs</text>
+<text x="606.1" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="350" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+p        </text>
+<text x="757.8" y="350" xml:space="preserve" textLength="429.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">pin the selected row&#x27;s folder: it keeps a row after</text>
+<text x="16.0" y="370" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">     job           status  started         took  cost   reason</text>
+<text x="606.1" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="370" xml:space="preserve" textLength="244.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the last session there leaves</text>
+<text x="32.9" y="390" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
+<text x="58.1" y="390" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
+<text x="176.2" y="390" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
+<text x="243.6" y="390" xml:space="preserve" textLength="244.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-16 08:22:02  74s   $0.21  </text>
+<text x="606.1" y="390" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="390" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+s        </text>
+<text x="757.8" y="390" xml:space="preserve" textLength="345.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">regroup sessions by state or by directory</text>
+<text x="606.1" y="410" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="410" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+t        </text>
+<text x="757.8" y="410" xml:space="preserve" textLength="396.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">arrange the session columns with the table live</text>
+<text x="606.1" y="430" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="430" xml:space="preserve" textLength="573.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">under them: ← → pick a column, space shows or hides it, [ ] move it,</text>
+<text x="606.1" y="450" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="450" xml:space="preserve" textLength="227.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">enter keeps it in jobs.yaml</text>
+<text x="606.1" y="470" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="470" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+f        </text>
+<text x="757.8" y="470" xml:space="preserve" textLength="404.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">filter rows by text; enter keeps the filter, esc</text>
+<text x="606.1" y="490" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="490" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590">clears it</text>
+<text x="606.1" y="510" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="510" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+n        </text>
+<text x="757.8" y="510" xml:space="preserve" textLength="404.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">rename the selected Claude session; the title is</text>
+<text x="606.1" y="530" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="530" xml:space="preserve" textLength="320.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590">written where claude --resume reads it</text>
+<text x="606.1" y="550" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="550" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">  ctrl+r        </text>
+<text x="757.8" y="550" xml:space="preserve" textLength="413.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">reload now; the dashboard reloads every second on</text>
+<text x="606.1" y="570" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="570" xml:space="preserve" textLength="59.0" lengthAdjust="spacingAndGlyphs" fill="#7d8590">its own</text>
+<text x="16.0" y="590" xml:space="preserve" textLength="598.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────────────────│</text>
+<text x="623.0" y="590" xml:space="preserve" textLength="573.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────</text>
+<text x="606.1" y="610" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="623.0" y="610" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#ff8700">guide › </text>
+<text x="690.4" y="610" xml:space="preserve" textLength="210.8" lengthAdjust="spacingAndGlyphs" fill="#7d8590">the keys and what they do</text>
+<text x="16.0" y="630" xml:space="preserve" textLength="598.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">──────────────────────────────────────────────────────────────────────│</text>
+<text x="623.0" y="630" xml:space="preserve" textLength="573.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">────────────────────────────────────────────────────────────────────</text>
+<text x="16.0" y="650" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">enter</text>
+<text x="58.1" y="650" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> guide · </text>
+<text x="134.0" y="650" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">← →</text>
+<text x="159.3" y="650" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> pick · </text>
+<text x="226.8" y="650" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">tab</text>
+<text x="252.0" y="650" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> pane · </text>
+<text x="319.5" y="650" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">shift+tab</text>
+<text x="395.3" y="650" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> harness · </text>
+<text x="488.1" y="650" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">esc</text>
+<text x="513.4" y="650" xml:space="preserve" textLength="42.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> quit</text>
+<text x="606.1" y="650" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 </svg>
