@@ -1047,6 +1047,7 @@ mod tests {
             // Not a model Bedrock serves: spelled from the id's own words.
             ("gpt-5-codex", "GPT-5 Codex"),
             ("claude-opus-6", "Opus 6"),
+            ("claude-3-5-sonnet-20241022", "Sonnet 3.5"),
             ("claude-3-7-sonnet-latest", "Sonnet 3.7 Latest"),
             ("gpt-4o", "GPT-4o"),
             // A snapshot and a window are names, not versions, and never join one.
