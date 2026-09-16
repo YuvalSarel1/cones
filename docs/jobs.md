@@ -2,20 +2,18 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` contains `version: 2`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `whole_columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
+`jobs.yaml` contains `version: 3`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `whole_columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
 
-An older file is migrated on the first read: cones renames what the version it declares called a setting, bumps the version line and writes the file back, keeping comments and layout. Version 1 called the activity column and its block `sparkline`. A file cones cannot rewrite still loads, and the next save migrates it instead.
+An older file is migrated on the first read: cones renames what the version it declares called a setting, deletes the lines of a setting a later version stopped having, bumps the version line and writes the file back, keeping comments and layout. Version 1 called the activity column and its block `sparkline`. Version 2 had `budget_usd`, `daily_budget_usd` and `max_turns`, which version 3 drops. A file cones cannot rewrite still loads, and the next save migrates it instead.
 
-Jobs override policy defaults individually, and every field a run has takes a default. Claude uses `defaults.model` and `max_turns`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
+Jobs override policy defaults individually, and every field a run has takes a default. Claude uses `defaults.model`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
 
 The dashboard's `config` button edits defaults and dashboard settings. The `jobs` screen adds jobs through `new job`, edits with `ctrl+e`, and deletes with `ctrl+x twice`; see [the wizard](dashboard.md#the-wizard).
 
 ```yaml
-version: 2
+version: 3
 defaults:
   timeout_min: 30
-  budget_usd: 2.00
-  daily_budget_usd: 10.00
   write: false
 columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see dashboard.md
 whole_columns: true   # leave out a column the list's right edge would cut through
@@ -39,9 +37,8 @@ jobs:
     prompt: "Read the TODOs and draft TRIAGE.md."
     write: true                    # adds Edit, Write and sandboxed Bash to Read, Grep, Glob
     model: sonnet
-    max_turns: 5
     overlap: skip                  # skip | allow | replace
-    notify: true                   # macOS notification when a run fails, times out or is skipped on budget
+    notify: true                   # macOS notification when a run fails or times out
     # env: ["ANTHROPIC_API_KEY"]   # additional shell variables to import
 ```
 
@@ -57,12 +54,9 @@ jobs:
 | `archive_transcript` | `defaults.archive_transcript`, else `false` | Copy Claude's transcript into `~/.cones/transcripts/<run_id>/<session_id>.jsonl` when the run ends. |
 | `env` | `defaults.env`, else `[]` | Names of shell variables to pass through. A job's own list replaces the default one; there is no per-name removal, and `env: []` on a job still takes `defaults.env`, so a job cannot opt out of an inherited list. Drop the name from `defaults.env` instead. Values are read at install or run time; installed schedules retain them in the plist. Standard variables and Bedrock credentials are handled separately below. |
 | `timeout_min` | `30` | Runner timeout. Positive, at most 10080 (one week). |
-| `budget_usd` | `2.00` | Per-run cap, passed as `--max-budget-usd`. |
-| `daily_budget_usd` | none | Rolling 24-hour cap per job. At least `budget_usd`. |
 | `write` | `false` | `false` allows Read, Grep and Glob. `true` adds Edit, Write and Bash, and turns on Claude's sandbox. There is no per-tool list: Claude treats a scoped `Bash(pattern)` rule as a pre-approval, not an exclusive allowlist, so cones cannot promise one. |
-| `max_turns` | `defaults.max_turns` | Passed as `--max-turns`. Claude only. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`: what a tick does while the previous run is still going. |
-| `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`, or `skipped` with reason `budget`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
+| `notify` | `false` | macOS notification (`osascript`) when a run is `failed` or `timeout`. `CONES_NOTIFIER` names a command that receives the title and message instead. |
 | `codex_full_access` | `false` | Codex only. Rejected on a Claude job; as a default it reaches Codex jobs alone. |
 | `bedrock` | none | `true` runs the job on Amazon Bedrock: Claude gets `CLAUDE_CODE_USE_BEDROCK=1` and every `AWS_` variable of the installing shell. A Codex job is refused, because the app-server daemon keeps the provider of the Codex configuration it started with and ignores what a thread asks for. `true` needs `aws_profile` and `aws_region` beside it and is rejected without them. `false` asks for the harness's own endpoint. Unset leaves it to the harness's own settings. `model` aliases such as `sonnet` resolve on either provider; a full model id is the provider's. |
 | `aws_profile` | none | Required by `bedrock: true`, ignored without it. The profile, as named in `~/.aws/config`, that the run gets as `AWS_PROFILE`. It is set over an `AWS_PROFILE` the installing shell carried in, since it is the one the job was checked against. |
@@ -76,7 +70,7 @@ jobs:
 - `bedrock: true` with no `aws_profile` or no `aws_region`, on the job or in `defaults`. These fields must be explicit in the file; shell values do not satisfy this check.
 - `bedrock` on a Codex job, from the job or from `defaults`. cones cannot hold a Codex session to it, so it is a validation error rather than a setting that does nothing.
 - An `env` name that could change execution policy, on a job or in `defaults`. The config editor refuses it on its own row, before the line reaches the file: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, or anything starting with `DYLD_`, `LD_` or `CLAUDE_CODE_`. Names must be valid shell identifiers. Bedrock is the `bedrock` field, not an `env` name.
-- A `version` above `2`, since an older one is migrated on read, a duplicate name, a `cwd` that is not a directory, `daily_budget_usd` below `budget_usd`, `max_turns` on a job that is not Claude's, `codex_full_access` on a job that is not Codex's, a `claude` binary missing from the launchd PATH.
+- A `version` above `3`, since an older one is migrated on read, a duplicate name, a `cwd` that is not a directory, `codex_full_access` on a job that is not Codex's, a `claude` binary missing from the launchd PATH.
 
 ## What the harness is told
 
@@ -92,10 +86,9 @@ The job compiles to one `claude` command with a fixed argv. `cones validate` and
 | No slash commands | `--disable-slash-commands` |
 | Tool allowlist | `--tools` and `--allowedTools`, both `Read,Grep,Glob` or with `write` `Read,Grep,Glob,Edit,Write,Bash` |
 | Pinned session ID | `--session-id <fresh uuid>`. cones generates it, so the ledger, the transcript, `attach` and the fleet agree; a mismatch ends the run with reason `session_mismatch`. |
-| Dollar budget | `--max-budget-usd <budget_usd>` |
 | Job name | `--name <job>` |
 | Sandbox when `write` is true | `--settings` with `sandbox.enabled` and `sandbox.failIfUnavailable` true, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands` false, `excludedCommands` empty |
-| Model, turn cap | `--model <m>`, `--max-turns <n>` when set |
+| Model | `--model <m>` when set |
 | The task | `-- <prompt>` as the final positional argument |
 
 The timeout is the runner's: at `timeout_min` the whole process group gets SIGTERM, then SIGKILL after two seconds. The worker also ends itself one second past the timeout or when its supervisor disappears.
@@ -112,7 +105,6 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `ok` | | Claude exited 0 with a `success` result and a reported cost. | 0 |
 | `skipped` | `disabled` | `enabled: false` | 0 |
 | `skipped` | `overlap` | `overlap: skip` and a previous run is still going | 0 |
-| `skipped` | `budget` | The daily reservation would exceed `daily_budget_usd` | 0 |
 | `skipped` | `replace_unconfirmed` | `overlap: replace` and the previous run did not confirm shutdown within 10 seconds | 0 |
 | `timeout` | `timeout` | The runner's clock ran out | 124 |
 | `timeout` | `replaced` | This run was the old one under `overlap: replace`; it received SIGUSR1 and stopped | 124 |
@@ -125,7 +117,7 @@ A run is one supervised harness process. `cones run` takes a global admission lo
 | `failed` | `orphan` | The supervisor died; written when the next run of that job reaps it | |
 | `crashed` | | Derived at read time: a `started` record with no terminal record past its timeout plus five seconds. | |
 
-The `started` record has `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `budget_usd`, the compiled `policy` and its SHA-256 `policy_hash` (session id, job name and prompt normalized out, so a compiler flag change changes the hash). The terminal record has `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`.
+The `started` record has `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, the compiled `policy` and its SHA-256 `policy_hash` (session id, job name and prompt normalized out, so a compiler flag change changes the hash). The terminal record has `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`.
 
 State lives in `~/.cones` (`--state-dir` to isolate). Directories are created `0700` and files `0600`.
 
@@ -152,9 +144,9 @@ State lives in `~/.cones` (`--state-dir` to isolate). Directories are created `0
 
 The planned `overlap: continue` would stop run 1 and start run 2 with `claude --resume` on run 1's session id. It is not an accepted configuration value yet.
 
-## Budgets: a per-run cap Claude enforces and a rolling daily reservation
+## What a run costs
 
-`budget_usd` is Claude's own `--max-budget-usd`. `daily_budget_usd` is a rolling 24-hour reservation per job: the ledger sums the job's runs from the last 24 hours, counting a run's actual cost when its record has one and its `budget_usd` while it is still going or when it ended without a reported cost, and a tick whose own `budget_usd` would push that sum over the cap is `skipped` / `budget`. The reservation is checked before a `replace` sends SIGUSR1, so a budget skip leaves the previous run going.
+A run has no dollar or turn cap: cones records what the harness reports and stops a run on the clock alone. `timeout_min` is the only limit a run carries. Each terminal record keeps the run's `cost_usd` as Claude reported it, `cones ls` shows it per run, and a run whose result carries no `total_cost_usd` is `failed` / `missing_cost`. Claude's `--max-budget-usd` and `--max-turns` are in [harness.md](harness.md#trigger) as flags cones does not pass.
 
 ## Schedules on launchd: sleep, login and reboot
 
@@ -179,6 +171,6 @@ Tests check the plist configuration; physical sleep/wake and reboot behavior has
 
 ## Codex and pi
 
-`harness: codex` and `harness: pi` parse, but no execution adapters are available. Validation and installation fail because cones cannot enforce their dollar budgets natively. Running such a job records `failed` with a `validation: ...` reason. `max_turns` is Claude-only, and `codex_full_access` is Codex-only.
+`harness: codex` and `harness: pi` parse, but no execution adapters are available, so validation and installation fail. Running such a job records `failed` with a `validation: ...` reason. `codex_full_access` is Codex-only.
 
 Native Codex and pi sessions still appear in the fleet. Codex daemon threads can be joined through the dashboard; a pi can be joined only when the dashboard's own composer started it, and stays in its own terminal otherwise. See [harness.md](harness.md#kinds).

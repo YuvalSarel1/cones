@@ -30,9 +30,7 @@ pub struct Claude;
 pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     match kind {
         HarnessKind::Claude => Ok(Box::new(Claude)),
-        _ => bail!(
-            "{kind} execution is not available in v0.1; its dollar budget cannot yet be enforced. Use harness: claude"
-        ),
+        _ => bail!("{kind} has no execution adapter in v0.1. Use harness: claude"),
     }
 }
 
@@ -418,8 +416,6 @@ impl Harness for Claude {
             &tools,
             "--session-id",
             session_id,
-            "--max-budget-usd",
-            &job.budget_usd.to_string(),
             "--name",
             &job.name,
         ]
@@ -441,9 +437,6 @@ impl Harness for Claude {
         }
         if let Some(model) = &job.model {
             args.extend(["--model".into(), model.clone()]);
-        }
-        if let Some(turns) = job.max_turns {
-            args.extend(["--max-turns".into(), turns.to_string()]);
         }
         args.extend(["--".into(), job.prompt.clone()]);
         // Resolve from the same PATH that launchd will use. Never rely on a shell alias.
@@ -515,15 +508,13 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
     }
     args.pop(); // The final positional prompt is task content, not policy.
     let policy = serde_json::json!({
-        "v":2, "harness":job.harness, "program":invocation.program,
+        "v":3, "harness":job.harness, "program":invocation.program,
         "enforcement":"native-flags",
         "args":args,
         "cwd":job.cwd, "write":job.write, "tools":effective_tools(job),
         "permission_mode":"dontAsk", "permission_prompts":"none",
         "safe_mode":true, "restricted":true, "mcp":false,
-        "timeout_s":invocation.timeout_s, "budget_usd":job.budget_usd,
-        "overlap":job.overlap,
-        "daily_budget_usd":job.daily_budget_usd, "max_turns":job.max_turns,
+        "timeout_s":invocation.timeout_s, "overlap":job.overlap,
         "model":job.model, "env_names":job.env,
     });
     Ok(policy)
@@ -587,29 +578,6 @@ impl Outcome {
                 )
             });
             self.tokens_out = event["usage"]["output_tokens"].as_u64();
-            // Budget-stop results can zero the aggregate usage while retaining per-model
-            // accounting. Use the harness's reported totals rather than recording false zeros.
-            if self.tokens_in.unwrap_or(0) == 0
-                && self.tokens_out.unwrap_or(0) == 0
-                && let Some(models) = event["modelUsage"].as_object()
-            {
-                let mut input = 0u64;
-                let mut output = 0u64;
-                for usage in models.values() {
-                    for key in [
-                        "inputTokens",
-                        "cacheReadInputTokens",
-                        "cacheCreationInputTokens",
-                    ] {
-                        input = input.saturating_add(usage[key].as_u64().unwrap_or(0));
-                    }
-                    output = output.saturating_add(usage["outputTokens"].as_u64().unwrap_or(0));
-                }
-                if input > 0 || output > 0 {
-                    self.tokens_in = Some(input);
-                    self.tokens_out = Some(output);
-                }
-            }
         }
         Ok(())
     }

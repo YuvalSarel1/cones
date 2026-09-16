@@ -1,6 +1,6 @@
 # Rules for agents working on cones
 
-1. cones owns scheduling, supervision, budgets and the ledger. The harness owns execution and permissions. Never intercept harness tool calls or add a second permission engine.
+1. cones owns scheduling, supervision and the ledger. The harness owns execution and permissions. `timeout_min` is the only limit cones puts on a run: a dollar, token or turn cap is the harness's to hold, never cones's to add back. Never intercept harness tool calls or add a second permission engine.
 2. A policy guarantee the harness cannot enforce natively is a validation error, not a best effort.
 3. Markdown in this repo is `README.md`, this file, `docs/` and the coordinator skill under `assets/coordinator/`, which Claude Code requires as `SKILL.md`. The README is the pitch, install and quick start; reference material lives in `docs/`. No plan, status or verification documents. Durable facts go in `docs/` or in tests.
 4. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --all-targets` pass before every commit. Tests spend no model tokens.

@@ -59,8 +59,6 @@ pub struct Record {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_s: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_s: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<i32>,
@@ -104,7 +102,6 @@ impl Record {
             pgid: None,
             policy_hash: None,
             timeout_s: None,
-            budget_usd: None,
             duration_s: None,
             exit: None,
             tokens_in: None,
@@ -304,29 +301,6 @@ impl Ledger {
             }
         }
         Ok(recent)
-    }
-    pub fn reserved_spend(&self, job: &str) -> Result<f64> {
-        let cutoff = Utc::now() - chrono::Duration::hours(24);
-        Ok(self
-            .runs()?
-            .into_iter()
-            .filter(|r| {
-                r.started.job.as_deref() == Some(job)
-                    && r.started.status == Status::Started
-                    && (r.terminal.is_none()
-                        || r.terminal
-                            .as_ref()
-                            .and_then(|t| t.ended_at)
-                            .or(r.started.fired_at)
-                            .is_some_and(|t| t >= cutoff))
-            })
-            .map(|r| {
-                r.terminal
-                    .as_ref()
-                    .and_then(|t| t.cost_usd)
-                    .unwrap_or(r.started.budget_usd.unwrap_or(f64::INFINITY))
-            })
-            .sum())
     }
     pub fn resolve(&self, id: &str) -> Result<Run> {
         let candidates: Vec<_> = self

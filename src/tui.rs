@@ -514,9 +514,8 @@ impl Data {
                         fleet::tilde(&j.cwd)
                     ),
                     format!(
-                        "timeout {:.0}m · budget ${:.2} · write {} · overlap {:?}",
+                        "timeout {:.0}m · write {} · overlap {:?}",
                         j.timeout_min,
-                        j.budget_usd,
                         if j.write { "yes" } else { "no" },
                         j.overlap,
                     ),
@@ -1930,18 +1929,7 @@ impl JobForm {
             .find(|k| k.to_string() == self.set("harness"));
         job.model = text("model");
         job.timeout_min = num("timeout_min", "a number of minutes, as in 30")?;
-        job.budget_usd = num("budget_usd", "dollars, as in 2.00")?;
-        job.daily_budget_usd = num("daily_budget_usd", "dollars, as in 10.00")?;
         job.write = flag("write");
-        job.max_turns = match self.set("max_turns") {
-            "" => None,
-            t => Some(t.parse::<u32>().map_err(|_| {
-                (
-                    run_row("max_turns"),
-                    format!("max_turns: a whole number, as in 5, not {t:?}"),
-                )
-            })?),
-        };
         job.overlap = match self.set("overlap") {
             "skip" => Some(config::Overlap::Skip),
             "allow" => Some(config::Overlap::Allow),
@@ -2304,7 +2292,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 27] = [
+const FIELDS: [Field; 24] = [
     Field {
         group: "cones",
         sub: "",
@@ -2508,38 +2496,11 @@ const FIELDS: [Field; 27] = [
     Field {
         group: "runs",
         sub: "",
-        name: "budget_usd",
-        short: "cost per run (USD)",
-        long: "Maximum cost per run in USD, passed to Claude as --max-budget-usd, which stops the run when it is reached. Codex jobs are still unavailable.",
-        builtin: "2.00",
-        input: Answer::Number(0.25),
-    },
-    Field {
-        group: "runs",
-        sub: "",
-        name: "daily_budget_usd",
-        short: "cost per 24h (USD)",
-        long: "Rolling cap per job over 24 hours. Active runs reserve budget_usd; runs that would exceed the cap are skipped. Must be at least budget_usd. Empty means no cap.",
-        builtin: "none",
-        input: Answer::Number(1.0),
-    },
-    Field {
-        group: "runs",
-        sub: "",
         name: "write",
         short: "allow file changes",
         long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
         builtin: "false",
         input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "runs",
-        sub: "",
-        name: "max_turns",
-        short: "turns per run",
-        long: "Maximum assistant turns per run, passed to Claude as --max-turns. Empty passes nothing and Claude's own limit stands. Claude only.",
-        builtin: SYSTEM,
-        input: Answer::Number(1.0),
     },
     Field {
         group: "runs",
@@ -2555,7 +2516,7 @@ const FIELDS: [Field; 27] = [
         sub: "",
         name: "notify",
         short: "failure alerts",
-        long: "Notify on failures, timeouts and runs skipped for budget.",
+        long: "Notify on failures and timeouts.",
         builtin: "false",
         input: Answer::Pick(BOOL),
     },
@@ -2599,15 +2560,12 @@ const ENABLED: Field = Field {
 
 /// What the wizard's settings section holds: the job's own field, then every field a default
 /// covers, in the order a job line carries them. An empty row inherits `defaults`.
-const RUN_FIELDS: [&str; 16] = [
+const RUN_FIELDS: [&str; 13] = [
     "enabled",
     "harness",
     "model",
     "timeout_min",
-    "budget_usd",
-    "daily_budget_usd",
     "write",
-    "max_turns",
     "overlap",
     "notify",
     "archive_transcript",
@@ -2642,10 +2600,7 @@ fn inherited(f: &Field, d: &config::Policy) -> String {
         "harness" => d.harness.map(|h| h.to_string()),
         "model" => d.model.clone(),
         "timeout_min" => num(d.timeout_min),
-        "budget_usd" => num(d.budget_usd),
-        "daily_budget_usd" => num(d.daily_budget_usd),
         "write" => flag(d.write),
-        "max_turns" => d.max_turns.map(|v| v.to_string()),
         "overlap" => d.overlap.map(|o| overlap_word(o).to_owned()),
         "notify" => flag(d.notify),
         "archive_transcript" => flag(d.archive_transcript),
@@ -2771,10 +2726,7 @@ fn job_value(f: &Field, j: &config::Job) -> String {
         "harness" => j.harness.map(|h| h.to_string()),
         "model" => j.model.clone(),
         "timeout_min" => num(j.timeout_min),
-        "budget_usd" => num(j.budget_usd),
-        "daily_budget_usd" => num(j.daily_budget_usd),
         "write" => flag(j.write),
-        "max_turns" => j.max_turns.map(|v| v.to_string()),
         "overlap" => j.overlap.map(|o| overlap_word(o).to_owned()),
         "notify" => flag(j.notify),
         "archive_transcript" => flag(j.archive_transcript),
@@ -2842,8 +2794,6 @@ impl ConfigForm {
             .iter()
             .map(|f| match f.name {
                 "timeout_min" => num(d.timeout_min),
-                "budget_usd" => num(d.budget_usd),
-                "daily_budget_usd" => num(d.daily_budget_usd),
                 "write" => flag(d.write),
                 "overlap" => d
                     .overlap
@@ -2856,7 +2806,6 @@ impl ConfigForm {
                     .to_owned(),
                 "model" => d.model.clone().unwrap_or_default(),
                 "harness" => d.harness.map(|h| h.to_string()).unwrap_or_default(),
-                "max_turns" => d.max_turns.map(|v| v.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
@@ -2967,16 +2916,7 @@ impl ConfigForm {
         }
         let policy = config::Policy {
             timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
-            budget_usd: num("budget_usd", "dollars, as in 2.00")?,
-            daily_budget_usd: num("daily_budget_usd", "dollars, as in 10.00")?,
             write: flag("write"),
-            max_turns: match v("max_turns") {
-                "" => None,
-                t => Some(
-                    t.parse::<u32>()
-                        .map_err(|_| format!("max_turns: a whole number, as in 5, not {t:?}"))?,
-                ),
-            },
             codex_full_access: flag("codex_full_access"),
             overlap: match v("overlap") {
                 "skip" => Some(config::Overlap::Skip),
@@ -5307,7 +5247,7 @@ impl App {
             return Ok(());
         }
         match kind {
-            // `spawn` only forks: overlap and budget decide admission inside the child, so the
+            // `spawn` only forks: overlap decides admission inside the child, so the
             // run's own row reports whether it started or was skipped.
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("run {name} requested")),
             Kind::NewJob => self.new_job(),
@@ -6986,11 +6926,11 @@ mod tests {
         let none = KeyModifiers::NONE;
         let value = |c: &ConfigForm| c.values[c.row].clone();
 
-        c.go(field_at("budget_usd"));
+        c.go(field_at("confirm_secs"));
         c.key(KeyCode::Right, none);
-        assert_eq!(value(&c), "2.25");
+        assert_eq!(value(&c), "3");
         c.key(KeyCode::Right, none);
-        assert_eq!(value(&c), "2.5");
+        assert_eq!(value(&c), "4");
         for _ in 0..2 {
             c.key(KeyCode::Left, none);
         }
@@ -7005,13 +6945,13 @@ mod tests {
             "backspace is the way back to the built-in"
         );
 
-        c.go(field_at("daily_budget_usd"));
+        c.go(field_at("timeout_min"));
         c.key(KeyCode::Right, none);
-        assert_eq!(value(&c), "1");
-        for _ in 0..3 {
+        assert_eq!(value(&c), "35");
+        for _ in 0..8 {
             c.key(KeyCode::Left, none);
         }
-        assert_eq!(value(&c), "0");
+        assert_eq!(value(&c), "0", "a step never goes below zero");
 
         c.go(field_at("overlap"));
         for want in ["allow", "replace", ""] {
@@ -7359,6 +7299,7 @@ mod tests {
             "the defaults editor types where the cursor is"
         );
         c.key(KeyCode::Enter, KeyModifiers::NONE);
+        c.go(field_at("confirm_secs"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         c.key(KeyCode::Char('2'), KeyModifiers::NONE);
         c.key(KeyCode::Enter, KeyModifiers::NONE);
@@ -7370,7 +7311,7 @@ mod tests {
             "1057",
             "another row puts the cursor after its value"
         );
-        assert_eq!(c.values[field_at("budget_usd")], "2");
+        assert_eq!(c.values[field_at("confirm_secs")], "2");
 
         let mut i = Input::new("ab");
         assert!(i.key(KeyCode::Left, KeyModifiers::NONE));
@@ -7882,8 +7823,8 @@ mod tests {
                     "the time takes the row's default"
                 );
                 assert_eq!(
-                    (job.budget_usd, job.notify, job.harness, job.max_turns),
-                    (None, None, None, None),
+                    (job.notify, job.harness, job.overlap),
+                    (None, None, None),
                     "a row left alone writes nothing and inherits"
                 );
             }
@@ -7923,7 +7864,7 @@ mod tests {
         let base = dir();
         let mut j = config::Job::new("one", "0 9 * * *", Path::new("."), "first");
         j.model = Some("sonnet".into());
-        j.budget_usd = Some(0.5);
+        j.timeout_min = Some(45.0);
         let mut f = JobForm::new(
             base.path(),
             base.path(),
@@ -7954,7 +7895,7 @@ mod tests {
                 assert_eq!(job.prompt, "first, revised");
                 assert_eq!(job.schedule, "0 9 * * *");
                 assert_eq!(job.model.as_deref(), Some("sonnet"));
-                assert_eq!(job.budget_usd, Some(0.5));
+                assert_eq!(job.timeout_min, Some(45.0));
                 assert_eq!(
                     job.cwd,
                     PathBuf::from(fleet::tilde(&base.path().canonicalize().unwrap()))
@@ -10573,7 +10514,7 @@ mod tests {
                 .is_some_and(|l| l.contains("harness")),
             "the harness a run takes is the section's first row: {s}"
         );
-        assert!(s.contains("2.00"), "built-ins show dim: {s}");
+        assert!(s.contains("‹ 30 ›"), "built-ins show dim: {s}");
         app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
         assert!(matches!(&app.mode, Mode::Config(f) if f.values[f.row].is_empty()));
 
@@ -10610,14 +10551,10 @@ mod tests {
         assert!(app.status.starts_with("config saved"), "{}", app.status);
         assert_eq!(config::defaults(&app.jobs_path).timeout_min, Some(5.0));
         assert!(
-            matches!(&app.mode, Mode::Config(f) if f.row == field_at("budget_usd")),
+            matches!(&app.mode, Mode::Config(f) if f.row == field_at("write")),
             "enter on a typed value saves it and goes on to the next setting"
         );
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        for c in "0.25".chars() {
-            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
-        }
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        go(&mut app, "overlap");
         go(&mut app, "write");
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
@@ -10640,17 +10577,14 @@ mod tests {
 
         assert_eq!(config::file_columns(&app.jobs_path), None);
         let saved = config::defaults(&app.jobs_path);
-        assert_eq!(
-            (saved.timeout_min, saved.budget_usd, saved.write),
-            (Some(5.0), Some(0.25), Some(true))
-        );
+        assert_eq!((saved.timeout_min, saved.write), (Some(5.0), Some(true)));
         assert_eq!(
             saved.model.as_deref(),
             Some("opus[1m]"),
             "the million-token window is a word of its own"
         );
         assert_eq!(
-            saved.max_turns, None,
+            saved.overlap, None,
             "empty leaves the built-in out of the file"
         );
 
@@ -10667,9 +10601,8 @@ mod tests {
         app.enter().unwrap();
         match &app.mode {
             Mode::Config(f) => assert_eq!(
-                ["timeout_min", "budget_usd", "write", "model"]
-                    .map(|n| f.values[field_at(n)].as_str()),
-                ["5", "0.25", "true", "opus[1m]"]
+                ["timeout_min", "write", "model"].map(|n| f.values[field_at(n)].as_str()),
+                ["5", "true", "opus[1m]"]
             ),
             _ => panic!(),
         }

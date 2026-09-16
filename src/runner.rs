@@ -135,7 +135,7 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
 
 /// `CONES_NOTIFIER` overrides osascript and receives (title, message).
 fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
-    let wanted = matches!(status, Status::Failed | Status::Timeout) || reason == Some("budget");
+    let wanted = matches!(status, Status::Failed | Status::Timeout);
     if !job.notify || !wanted {
         return;
     }
@@ -359,13 +359,6 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     if job.overlap == Overlap::Skip && !previous.is_empty() {
         return skipped(ledger, job, trigger, "overlap", &run_id);
     }
-    // Reserve against still-running jobs before replacing one; a budget skip must not
-    // cancel useful work when there is no budget to start its successor.
-    if let Some(limit) = job.daily_budget_usd
-        && ledger.reserved_spend(&job.name)? + job.budget_usd > limit + 1e-9
-    {
-        return skipped(ledger, job, trigger, "budget", &run_id);
-    }
     if job.overlap == Overlap::Replace
         && let Err(e) = replace_runs(ledger, &previous)
     {
@@ -387,7 +380,6 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     initial.pid = Some(std::process::id());
     initial.owns_run_lock = Some(true);
     initial.timeout_s = Some(job.timeout_min * 60.0);
-    initial.budget_usd = Some(job.budget_usd);
     initial.output = Some(output.events_path.clone());
     initial.stderr = Some(output.stderr_path.clone());
     initial.attach_mode = Some("events".into());

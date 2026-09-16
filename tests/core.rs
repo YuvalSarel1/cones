@@ -79,14 +79,10 @@ fn yaml_rejects_typos_duplicates_and_unknown_fields() {
 fn policy_inherits_defaults_and_write_decides_the_allowlist() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
-    let text = config_text("").replace(
-        "jobs:\n",
-        "defaults:\n  budget_usd: 0.5\n  max_turns: 4\njobs:\n",
-    );
+    let text = config_text("").replace("jobs:\n", "defaults:\n  timeout_min: 5\njobs:\n");
     fs::write(&path, text).unwrap();
     let mut job = config::read_jobs(&path).unwrap().remove(0);
-    assert_eq!(job.budget_usd, 0.5);
-    assert_eq!(job.max_turns, Some(4));
+    assert_eq!(job.timeout_min, 5.0);
     assert_eq!(
         cones::harness::effective_tools(&job),
         ["Read", "Grep", "Glob"]
@@ -167,7 +163,7 @@ fn ledger_repairs_only_torn_tail_and_never_hides_middle_corruption() {
     assert!(ledger.append(&r).is_err());
 }
 #[test]
-fn ledger_lock_budget_and_orphan_status() {
+fn ledger_lock_cost_and_orphan_status() {
     let dir = tempfile::tempdir().unwrap();
     let ledger = Ledger::new(dir.path()).unwrap();
     let lock_id = uuid::Uuid::new_v4().to_string();
@@ -177,17 +173,14 @@ fn ledger_lock_budget_and_orphan_status() {
     assert!(ledger.run_lock(&lock_id).unwrap().is_some());
     let mut start = Record::new("run".into(), Status::Started);
     start.job = Some("job".into());
-    start.budget_usd = Some(2.0);
     start.fired_at = Some(Utc::now() - chrono::Duration::minutes(5));
     start.timeout_s = Some(5.0);
     ledger.append(&start).unwrap();
     assert_eq!(ledger.runs().unwrap()[0].status(), "crashed");
-    assert_eq!(ledger.reserved_spend("job").unwrap(), 2.0);
     let mut terminal = Record::new("run".into(), Status::Ok);
     terminal.cost_usd = Some(0.25);
     terminal.ended_at = Some(Utc::now());
     ledger.append(&terminal).unwrap();
-    assert_eq!(ledger.reserved_spend("job").unwrap(), 0.25);
     let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
     let row = list.lines().find(|l| l.starts_with("run\tok\t")).unwrap();
     assert!(
@@ -205,21 +198,6 @@ fn permission_words_in_read_output_are_data_not_denials() {
             .unwrap();
     }
     assert!(result.result_seen && !result.failed && !result.permission_denied);
-}
-
-#[test]
-fn budget_stop_preserves_reported_per_model_usage() {
-    let mut result = Outcome::default();
-    result
-        .observe(
-            include_str!("fixtures/claude-budget-exhausted.jsonl").trim(),
-            "1dca15df-bb7c-41bb-9086-b85bd6bd6b83",
-        )
-        .unwrap();
-    assert!(result.failed && !result.permission_denied);
-    assert_eq!(result.tokens_in, Some(4781));
-    assert_eq!(result.tokens_out, Some(271));
-    assert_eq!(result.cost_usd, Some(0.010907));
 }
 
 #[test]
@@ -687,9 +665,9 @@ fn adhoc_job_borrows_policy_or_defaults_to_read_only() {
     );
     let mut template = plain.clone();
     template.write = true;
-    template.budget_usd = 9.0;
+    template.timeout_min = 9.0;
     let borrowed = cones::config::adhoc(Some(&template), "ship it", dir.path()).unwrap();
-    assert!(borrowed.write && borrowed.budget_usd == 9.0 && borrowed.name != template.name);
+    assert!(borrowed.write && borrowed.timeout_min == 9.0 && borrowed.name != template.name);
     assert_eq!(borrowed.prompt, "ship it");
     assert!(cones::config::adhoc(None, "  ", dir.path()).is_err());
 }

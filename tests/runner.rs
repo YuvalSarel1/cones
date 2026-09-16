@@ -31,7 +31,7 @@ impl Fixture {
         let state = dir.path().join("state");
         fs::create_dir_all(&state).unwrap();
         let jobs = dir.path().join("jobs.yaml");
-        fs::write(&jobs,format!("version: 1\njobs:\n  - name: test\n    schedule: '* * * * *'\n    harness: claude\n    cwd: .\n    prompt: test\n    model: {mode}\n    timeout_min: {timeout}\n    budget_usd: 0.1\n    archive_transcript: true\n    env: [FAKE_LEDGER, FAKE_CHILD_PID]\n")).unwrap();
+        fs::write(&jobs,format!("version: 1\njobs:\n  - name: test\n    schedule: '* * * * *'\n    harness: claude\n    cwd: .\n    prompt: test\n    model: {mode}\n    timeout_min: {timeout}\n    archive_transcript: true\n    env: [FAKE_LEDGER, FAKE_CHILD_PID]\n")).unwrap();
         Self { dir, jobs, state }
     }
     fn command(&self) -> Command {
@@ -196,23 +196,18 @@ fn following_output_can_detach_without_stopping_the_job() {
 }
 
 #[test]
-fn read_only_allow_runs_can_overlap_but_reservations_are_atomic() {
+fn read_only_allow_runs_can_overlap() {
     let f = Fixture::new("hang", 0.5);
-    f.add_options("    overlap: allow\n    daily_budget_usd: 0.2\n");
+    f.add_options("    overlap: allow\n");
     let (mut first, a) = f.start();
     let (mut second, b) = f.start();
     assert!(first.try_wait().unwrap().is_none() && second.try_wait().unwrap().is_none());
-    assert!(f.output().status.success());
     let runs = f.ledger().runs().unwrap();
     assert_eq!(
         runs.iter()
             .filter(|r| r.started.status == Status::Started)
             .count(),
         2
-    );
-    assert_eq!(
-        runs.last().unwrap().started.reason.as_deref(),
-        Some("budget")
     );
     f.stop(&a, &mut first);
     f.stop(&b, &mut second);
@@ -377,43 +372,24 @@ fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {
     assert_dead(f.state.join("child.pid"));
 }
 #[test]
-fn exhausted_daily_reservation_skips_without_spawning() {
-    let f = Fixture::new("success", 1.0);
-    let text = fs::read_to_string(&f.jobs).unwrap().replace(
-        "budget_usd: 0.1",
-        "budget_usd: 0.1\n    daily_budget_usd: 0.1",
-    );
-    fs::write(&f.jobs, text).unwrap();
-    assert!(f.output().status.success());
-    assert!(f.output().status.success());
-    let runs = f.ledger().runs().unwrap();
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[1].started.reason.as_deref(), Some("budget"));
-}
-#[test]
 fn attaching_a_skipped_run_names_the_skip_rather_than_calling_it_active() {
     let f = Fixture::new("success", 1.0);
-    let text = fs::read_to_string(&f.jobs).unwrap().replace(
-        "budget_usd: 0.1",
-        "budget_usd: 0.1\n    daily_budget_usd: 0.1",
-    );
-    fs::write(&f.jobs, text).unwrap();
-    assert!(f.output().status.success());
+    f.add_options("    enabled: false\n");
     assert!(f.output().status.success());
     let runs = f.ledger().runs().unwrap();
-    assert_eq!(runs[1].started.status, Status::Skipped);
+    assert_eq!(runs[0].started.status, Status::Skipped);
     let out = f
         .command()
-        .args(["attach", &runs[1].started.run_id])
+        .args(["attach", &runs[0].started.run_id])
         .output()
         .unwrap();
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{err}");
-    assert!(err.contains("skipped (budget)"), "{err}");
+    assert!(err.contains("skipped (disabled)"), "{err}");
     assert!(!err.contains("still active"), "{err}");
 }
 #[test]
-fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
+fn notify_fires_only_when_opted_in_on_failure() {
     let f = Fixture::new("failed", 1.0);
     let log = f.dir.path().join("notified");
     let notifier = f.dir.path().join("notifier.sh");
@@ -434,15 +410,10 @@ fn notify_fires_only_when_opted_in_on_failure_and_budget_skip() {
     assert!(!log.exists(), "notify defaults to off");
     f.add_options("    notify: true\n");
     run(&f);
-    f.add_options("    daily_budget_usd: 0.2\n");
-    run(&f);
     let lines = fs::read_to_string(&log).unwrap();
     assert_eq!(
         lines.lines().collect::<Vec<_>>(),
-        [
-            "cones test failed: error_during_execution",
-            "cones test skipped: budget"
-        ]
+        ["cones test failed: error_during_execution"]
     );
 }
 // Build a fixture binary: macOS kills renamed copies of signed system binaries

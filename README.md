@@ -20,7 +20,7 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 
 * **See what is running.** Find sessions grouped by folder, including ones cones did not start. See their state, recent activity and token usage as each harness reports them.
 * **Move between sessions.** Preview output, open supported sessions and return to the dashboard while they keep working.
-* **Schedule recurring work.** Run Claude Code jobs with budgets, timeouts and tool permissions, then review their output and cost.
+* **Schedule recurring work.** Run Claude Code jobs with timeouts and tool permissions, then review their output and cost.
 * **Coordinate agents.** Start the bundled coordinator in a folder to help agents share findings and coordinate changes. It appears alongside the other sessions.
 
 ## Install
@@ -80,7 +80,7 @@ cones run readme-check
 cones install
 ```
 
-Schedules run through macOS launchd. The [jobs guide](docs/jobs.md) covers budgets, permissions and what happens when a previous run is still going.
+Schedules run through macOS launchd. The [jobs guide](docs/jobs.md) covers timeouts, permissions and what happens when a previous run is still going.
 
 ### Start a coordinator
 

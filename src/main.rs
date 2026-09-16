@@ -583,32 +583,14 @@ fn doctor(jobs_path: &std::path::Path, state: &std::path::Path) -> Result<i32> {
         let mut sample = config::adhoc(None, "doctor probe", std::path::Path::new("/"))?;
         sample.write = true;
         sample.model = Some("sonnet".into());
-        sample.max_turns = Some(1);
         let sample = harness::adapter(sample.harness)?
             .compile(&sample, &uuid::Uuid::new_v4().to_string())?;
         for flag in harness::compiled_flags(&sample.args) {
-            if flag == "--max-turns" {
-                continue; // hidden from --help; probed below
-            }
             report(
                 if help.contains(flag) { "OK" } else { "FAIL" },
                 format!("Claude capability {flag}"),
             );
         }
-        // Invalid values exercise the parser without starting an API call; --version bypasses parsing.
-        let probe = Command::new(&claude)
-            .args(["-p", "--max-turns", "cones-invalid"])
-            .stdin(std::process::Stdio::null())
-            .output()?;
-        let error = String::from_utf8_lossy(&probe.stderr);
-        report(
-            if error.contains("must be a number") {
-                "OK"
-            } else {
-                "WARN"
-            },
-            "Claude hidden --max-turns parser probe".into(),
-        );
         let auth = Command::new(&claude)
             .args(["auth", "status", "--json"])
             .stdin(std::process::Stdio::null())

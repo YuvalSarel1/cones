@@ -54,7 +54,7 @@ With no jobs file, or one that does not parse, the task runs under the read-only
 | A job enables writes (with an additional note if it archives plaintext transcripts), or enables Codex full access | WARN |
 | `claude` is on the launchd PATH and `claude --version` runs | FAIL |
 | Claude version is inside the tested range `>=2.1, <3` | WARN |
-| Every flag the compiler emits for a job that uses every option appears in `claude --help`; `--max-turns` is hidden there and probed by parsing an invalid value instead | FAIL (WARN for the probe) |
+| Every flag the compiler emits for a job that uses every option appears in `claude --help` | FAIL |
 | `claude auth status --json` reports logged in; a scheduled job cannot prompt to log in | FAIL |
 | `~/.claude/sessions`, Claude's session registry, and `~/.claude/projects`, its session store, exist | WARN |
 | `~/.claude/settings.json` has no entries left from the removed `cones hook`; delete those whose command ends in ` hook $PPID` | WARN |

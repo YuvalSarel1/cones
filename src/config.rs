@@ -38,10 +38,7 @@ pub enum Overlap {
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub timeout_min: Option<f64>,
-    pub budget_usd: Option<f64>,
-    pub daily_budget_usd: Option<f64>,
     pub write: Option<bool>,
-    pub max_turns: Option<u32>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
     pub notify: Option<bool>,
@@ -82,13 +79,7 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub budget_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub daily_budget_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub write: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_full_access: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,10 +107,7 @@ impl Job {
             archive_transcript: None,
             env: vec![],
             timeout_min: None,
-            budget_usd: None,
-            daily_budget_usd: None,
             write: None,
-            max_turns: None,
             codex_full_access: None,
             overlap: None,
             notify: None,
@@ -369,12 +357,16 @@ impl Activity {
 }
 
 /// The schema `cones` writes and reads. Older files are migrated on the first read.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 /// What each earlier version called a setting the current one renamed: `(version, was, is)`,
 /// oldest first. A rename is the only migration a text rewrite can do, which is all the
 /// versions so far have needed; a change of meaning would need its own step here.
 const RENAMES: [(u32, &str, &str); 1] = [(1, "sparkline", "activity")];
+
+/// Settings a later version stopped having, `(version, key)`: their lines are deleted so a
+/// file written for the older schema still loads, since every field here is denied as unknown.
+const DROPS: [(u32, &str); 3] = [(2, "budget_usd"), (2, "daily_budget_usd"), (2, "max_turns")];
 
 /// Read the version alone. The whole file cannot be deserialized before migrating it,
 /// since a renamed key is an unknown field.
@@ -389,8 +381,18 @@ struct Version {
 /// is what a comment about that line should say anyway.
 fn migrated(text: &str, from: u32) -> String {
     let renames: Vec<_> = RENAMES.iter().filter(|(v, ..)| *v >= from).collect();
+    let drops: Vec<_> = DROPS.iter().filter(|(v, _)| *v >= from).collect();
     let out: Vec<String> = text
         .lines()
+        // A dropped setting is a `defaults` or job key, two or four spaces in, so a prompt
+        // written as a block scalar keeps every line of its own that says the same word.
+        .filter(|l| {
+            !drops.iter().any(|(_, key)| {
+                ["  ", "    "]
+                    .iter()
+                    .any(|pad| l.starts_with(&format!("{pad}{key}:")))
+            })
+        })
         .map(|l| {
             if l.starts_with("version:") {
                 return format!("version: {VERSION}");
@@ -405,6 +407,15 @@ fn migrated(text: &str, from: u32) -> String {
             }
             line
         })
+        .collect();
+    // A `defaults` block whose every setting was dropped would read back as null, not a policy.
+    let out: Vec<String> = out
+        .iter()
+        .enumerate()
+        .filter(|(i, l)| {
+            l.trim_end() != "defaults:" || out.get(i + 1).is_some_and(|next| next.starts_with("  "))
+        })
+        .map(|(_, l)| l.to_owned())
         .collect();
     out.join("\n") + "\n"
 }
@@ -610,13 +621,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         }
     };
     put("timeout_min", d.timeout_min.map(|v| v.to_string()));
-    put("budget_usd", d.budget_usd.map(|v| v.to_string()));
-    put(
-        "daily_budget_usd",
-        d.daily_budget_usd.map(|v| v.to_string()),
-    );
     put("write", d.write.map(|v| v.to_string()));
-    put("max_turns", d.max_turns.map(|v| v.to_string()));
     put("model", d.model.clone());
     put("codex_model", d.codex_model.clone());
     put(
@@ -779,10 +784,7 @@ pub struct ResolvedJob {
     pub archive_transcript: bool,
     pub env: Vec<String>,
     pub timeout_min: f64,
-    pub budget_usd: f64,
-    pub daily_budget_usd: Option<f64>,
     pub write: bool,
-    pub max_turns: Option<u32>,
     pub codex_full_access: bool,
     pub overlap: Overlap,
     pub notify: bool,
@@ -820,10 +822,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             archive_transcript: false,
             env: vec![],
             timeout_min: 30.0,
-            budget_usd: 2.0,
-            daily_budget_usd: None,
             write: false,
-            max_turns: None,
             codex_full_access: false,
             overlap: Overlap::Skip,
             notify: false,
@@ -920,38 +919,10 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: codex_full_access applies only to Codex",
         j.name
     );
-    let max_turns = j.max_turns.or(d.max_turns.filter(|_| claude));
-    ensure!(
-        max_turns != Some(0),
-        "job {}: max_turns must be positive",
-        j.name
-    );
-    ensure!(
-        max_turns.is_none() || claude,
-        "job {}: max_turns is supported only by Claude",
-        j.name
-    );
     let timeout = j.timeout_min.or(d.timeout_min).unwrap_or(30.0);
-    let budget = j.budget_usd.or(d.budget_usd).unwrap_or(2.0);
-    let daily = j.daily_budget_usd.or(d.daily_budget_usd);
     ensure!(
         timeout.is_finite() && timeout > 0.0 && timeout <= 10080.0,
         "job {}: timeout_min must be positive and at most 10080",
-        j.name
-    );
-    ensure!(
-        budget.is_finite() && budget > 0.0,
-        "job {}: budget_usd must be positive and finite",
-        j.name
-    );
-    ensure!(
-        daily.is_none_or(|x| x.is_finite() && x > 0.0),
-        "job {}: daily_budget_usd must be positive and finite",
-        j.name
-    );
-    ensure!(
-        daily.is_none_or(|x| x >= budget),
-        "job {}: daily_budget_usd must cover at least one budget_usd reservation",
         j.name
     );
     launchd::calendar_intervals(&j.schedule).with_context(|| format!("job {} schedule", j.name))?;
@@ -1022,10 +993,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
             .unwrap_or(false),
         env,
         timeout_min: timeout,
-        budget_usd: budget,
-        daily_budget_usd: daily,
         write,
-        max_turns,
         codex_full_access: full,
         overlap,
         notify: j.notify.or(d.notify).unwrap_or(false),
@@ -1039,7 +1007,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
 mod tests {
     use super::*;
 
-    const FILE: &str = "version: 1\ndefaults:\n  budget_usd: 1.0   # cheap\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: first\n\n  # two runs at night\n  - name: two\n    schedule: \"0 2 * * *\"\n    harness: claude\n    cwd: .\n    prompt: second\n    model: sonnet\ncolumns: [state]\n";
+    const FILE: &str = "version: 1\ndefaults:\n  timeout_min: 5   # quick\n  budget_usd: 1.0\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: first\n\n  # two runs at night\n  - name: two\n    schedule: \"0 2 * * *\"\n    harness: claude\n    cwd: .\n    prompt: second\n    model: sonnet\ncolumns: [state]\n";
 
     fn file(text: &str) -> (tempfile::TempDir, PathBuf) {
         let d = tempfile::tempdir().unwrap();
@@ -1055,8 +1023,12 @@ mod tests {
         write_job(&p, None, Some(&three)).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("  budget_usd: 1.0   # cheap\n"),
+            text.contains("  timeout_min: 5   # quick\n"),
             "comments survive"
+        );
+        assert!(
+            !text.contains("budget_usd"),
+            "a setting a later version dropped is deleted on migration: {text}"
         );
         assert!(text.contains("  # two runs at night\n"));
         assert!(
@@ -1092,13 +1064,26 @@ mod tests {
     }
 
     #[test]
+    fn a_defaults_block_of_dropped_settings_alone_leaves_with_them() {
+        let (_d, p) = file(
+            "version: 2\ndefaults:\n  budget_usd: 1.0\n  daily_budget_usd: 4.0\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n    max_turns: 5\n",
+        );
+        assert_eq!(read_jobs(&p).unwrap().len(), 1, "an older file still loads");
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            "version: 3\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
+            "the empty block goes with its settings"
+        );
+    }
+
+    #[test]
     fn write_job_handles_an_empty_list_both_ways() {
-        let (_d, p) = file("version: 2\njobs: []\n");
+        let (_d, p) = file("version: 3\njobs: []\n");
         let one = Job::new("one", "0 9 * * *", Path::new("."), "first");
         write_job(&p, None, Some(&one)).unwrap();
         assert_eq!(raw_jobs(&p).unwrap().len(), 1);
         write_job(&p, Some("one"), None).unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 2\njobs: []\n");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 3\njobs: []\n");
     }
 
     #[test]
@@ -1165,11 +1150,8 @@ mod tests {
         let (_d, p) = file(FILE);
         let d = Policy {
             timeout_min: Some(5.0),
-            budget_usd: Some(0.25),
-            daily_budget_usd: Some(2.0),
             harness: None,
             write: Some(true),
-            max_turns: Some(3),
             overlap: Some(Overlap::Replace),
             notify: Some(true),
             codex_full_access: None,
@@ -1185,7 +1167,7 @@ mod tests {
         write_config(&p, &d, Some(&cols), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 2\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
+            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  overlap: replace\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
             "{text}"
         );
         assert!(
@@ -1218,7 +1200,7 @@ mod tests {
 
         write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.starts_with("version: 2\njobs:\n"), "{text}");
+        assert!(text.starts_with("version: 3\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
         let d = Policy {
             notify: Some(true),
@@ -1227,7 +1209,7 @@ mod tests {
         write_config(&p, &d, Some(&[]), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 2\ndefaults:\n  notify: true\njobs:\n"),
+            text.starts_with("version: 3\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
@@ -1244,7 +1226,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 2\ncolumns: [state, age]\njobs:\n"),
+            text.starts_with("version: 3\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
         let err = write_config(
@@ -1266,17 +1248,16 @@ mod tests {
         write_config(&missing, &d, None, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
-            "version: 2\ndefaults:\n  notify: true\njobs: []\n"
+            "version: 3\ndefaults:\n  notify: true\njobs: []\n"
         );
         let bad = Policy {
-            budget_usd: Some(3.0),
-            daily_budget_usd: Some(1.0),
+            timeout_min: Some(0.0),
             ..Default::default()
         };
         let err = write_config(&missing, &bad, None, None, None, None, None, None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("daily_budget_usd must cover"), "{err}");
+        assert!(err.contains("timeout_min must be positive"), "{err}");
         assert!(
             fs::read_to_string(&missing)
                 .unwrap()
@@ -1300,7 +1281,7 @@ mod tests {
         let text = fs::read_to_string(&p).unwrap();
         assert_eq!(
             text,
-            "version: 2\ncolumns: [context, activity, model]   # mine\nactivity:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
+            "version: 3\ncolumns: [context, activity, model]   # mine\nactivity:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
             "the file says what it means, keeping its comment and the word in the prompt: {text}"
         );
         let keep = file_activity(&p);
@@ -1342,7 +1323,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 2\nactivity:\n  metric: tools\n"),
+            text.starts_with("version: 3\nactivity:\n  metric: tools\n"),
             "the writer migrates what the read could not: {text}"
         );
     }
@@ -1622,16 +1603,15 @@ mod tests {
     #[test]
     fn a_harness_default_applies_only_to_that_harness_and_a_job_keeps_its_own_model() {
         let (_d, p) = file(
-            "version: 1\ndefaults:\n  max_turns: 3\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
+            "version: 1\ndefaults:\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
         );
         let jobs = read_jobs(&p).unwrap();
         let (c, x, own) = (&jobs[0], &jobs[1], &jobs[2]);
-        assert_eq!((c.max_turns, c.codex_full_access), (Some(3), false));
+        assert!(!c.codex_full_access);
         assert_eq!(c.model.as_deref(), Some("sonnet"));
-        assert_eq!(
-            (x.max_turns, x.codex_full_access),
-            (None, true),
-            "Claude's max_turns does not reach a Codex job"
+        assert!(
+            x.codex_full_access,
+            "Codex's own default does not reach a Claude job"
         );
         assert_eq!(x.model.as_deref(), Some("o3"));
         assert_eq!(own.model.as_deref(), Some("opus"));
