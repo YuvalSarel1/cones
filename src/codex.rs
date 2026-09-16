@@ -220,6 +220,10 @@ fn client_options<'a>(
             None => first.to_owned(),
         })
     }
+    /// A thread id as Codex prints it: 36 characters of hex and dashes.
+    fn is_thread(arg: &str) -> bool {
+        arg.len() == 36 && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit())
+    }
     let mut remote = false;
     let mut resume = false;
     while let Some(arg) = args.next() {
@@ -247,14 +251,18 @@ fn client_options<'a>(
             | "--ask-for-approval" => {
                 args.next();
             }
-            "--" => return (remote, None, rest(args)),
+            // A separator does not hide the thread: `resume -- <id>` is how this dashboard joins one.
+            "--" => {
+                let next = args.next();
+                return match next.filter(|a| resume && is_thread(a)) {
+                    Some(id) => (remote, Some(id.to_owned()), rest(args)),
+                    None => (remote, None, rest(next.into_iter().chain(args))),
+                };
+            }
             "resume" if !resume => resume = true,
             _ if arg.starts_with('-') => {}
             _ => {
-                let thread = (resume
-                    && arg.len() == 36
-                    && arg.bytes().all(|b| b == b'-' || b.is_ascii_hexdigit()))
-                .then(|| arg.to_owned());
+                let thread = (resume && is_thread(arg)).then(|| arg.to_owned());
                 // A resumed thread names itself first; anything after it is the prompt.
                 let prompt = if thread.is_some() {
                     rest(args)
@@ -624,11 +632,12 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
         .collect();
     let guessed = attribute(procs, &rollouts);
-    // A remote client is a viewer, so `thread_rows` supplies its row. The daemon creates the
-    // thread after the client asks for one, and until it does that thread is in no lock, database
-    // or rollout, so a client with nothing yet to view keeps a row of its own. Only a thread this
-    // client could have opened counts, by folder and by starting no earlier than the client; a
-    // client that resumes an older thread without naming it is rare enough to show twice.
+    // A remote client is a viewer, so `thread_rows` supplies the row of the thread it names and the
+    // viewer gets none: its own start time is not the thread's. The daemon creates the thread after
+    // the client asks for one, and until it does that thread is in no lock, database or rollout, so
+    // a client with nothing yet to view keeps a row of its own. Only a thread this client could have
+    // opened counts, by folder and by starting no earlier than the client; a client that resumes an
+    // older thread without naming it is rare enough to show twice.
     let viewable: Vec<Meta> = locks
         .iter()
         .filter(|(_, pid)| Some(**pid) == daemon)
@@ -638,10 +647,10 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .iter()
         .filter(|p| {
             !(p.remote
-                && p.thread.is_none()
-                && viewable
-                    .iter()
-                    .any(|m| Some(m.cwd.as_path()) == p.cwd.as_deref() && m.started >= p.started))
+                && (p.thread.is_some()
+                    || viewable.iter().any(|m| {
+                        Some(m.cwd.as_path()) == p.cwd.as_deref() && m.started >= p.started
+                    })))
         })
         .map(|p| {
             // Explicit resume ids and held locks beat cwd/start-time attribution.
@@ -1151,16 +1160,30 @@ mod tests {
             fleet(&[]).iter().map(|s| s.started).collect::<Vec<_>>(),
             "closing the viewer leaves the thread's row and start time unchanged"
         );
-        for p in &mut procs {
-            p.thread = Some(A.into());
-        }
+        let mut viewers = processes(&format!(
+            "11 Sun Sep 13 10:05:00 2026 codex --remote unix:///s.sock resume -- {A}\n\
+             12 Sun Sep 13 10:05:01 2026 codex --remote unix:///s.sock resume -- {B}\n"
+        ));
         assert_eq!(
-            fleet(&procs)
+            viewers
                 .iter()
-                .map(|s| s.session_id.as_str())
+                .map(|p| p.thread.as_deref())
                 .collect::<Vec<_>>(),
-            [A, B],
-            "two resume clients on one thread still give it just one row"
+            [Some(A), Some(B)],
+            "a separator does not hide the thread a peek names"
+        );
+        for p in &mut viewers {
+            p.cwd = Some(work.clone());
+        }
+        let ids = |list: &[Session]| {
+            list.iter()
+                .map(|s| (s.session_id.clone(), s.started))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ids(&fleet(&viewers)),
+            ids(&fleet(&[])),
+            "peeking threads adds no viewer rows and leaves their start times alone"
         );
         let latecomer = Process {
             pid: 10,
