@@ -4077,10 +4077,16 @@ impl App {
                     Style::default().fg(Color::Yellow),
                 )
             });
-        let mut keys = vec![
-            Span::styled("tab back", dim()),
-            Span::styled(" · ctrl+\\ split", dim()),
-        ];
+        // The strip is the only row a full-frame viewer leaves the dashboard, so an armed
+        // quit shows there; otherwise the first ctrl+c would look ignored.
+        let mut keys = if self.quitting() {
+            vec![Span::styled(QUIT_HINT, Style::default().fg(Color::Red))]
+        } else {
+            vec![
+                Span::styled("tab back", dim()),
+                Span::styled(" · ctrl+\\ split", dim()),
+            ]
+        };
         let ends = |keys: &[Span]| left.width() + keys.iter().map(Span::width).sum::<usize>();
         while !keys.is_empty() && ends(&keys) > width {
             keys.pop();
@@ -8037,6 +8043,12 @@ mod tests {
         assert!(
             app.viewers[0].viewer.exited().is_none() && app.viewers[0].viewer.pid() == before,
             "the client never saw the byte"
+        );
+        app.full = true;
+        let strip = app.strip(0, 120);
+        assert!(
+            strip.spans.iter().any(|s| s.content == QUIT_HINT),
+            "a full-frame viewer shows the armed quit in its strip: {strip:?}"
         );
         assert!(
             app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap(),
