@@ -142,6 +142,8 @@ pub struct Data {
     pub spark: config::Activity,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
     pub confirm_secs: f64,
+    /// Leave a table column out rather than draw the part of it that fits.
+    pub whole_columns: bool,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
     /// Previously seen session folders, newest first.
@@ -174,6 +176,7 @@ impl Data {
             start: config::start(jobs_path),
             spark: config::activity(jobs_path),
             confirm_secs: config::confirm_secs(jobs_path),
+            whole_columns: config::whole_columns(jobs_path),
             folders,
             recent: ledger.recent(&seen)?,
             git,
@@ -1210,6 +1213,41 @@ fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     out
 }
 
+/// Keep whole columns: a cell the width cuts through is left out instead of drawn in part.
+/// The first `keep` cells are cut as before, so a row still names itself in a narrow list.
+fn whole_cells(spans: Vec<Span<'static>>, width: usize, keep: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut used = 0;
+    for (i, span) in spans.into_iter().enumerate() {
+        // The two spaces between columns are the cell's own; falling off the edge is no cut.
+        let pad = span.content.len() - span.content.trim_end_matches(' ').len();
+        if used + span.width() - pad > width {
+            if i < keep {
+                out.extend(fit(vec![span], width.saturating_sub(used)));
+            }
+            break;
+        }
+        used += span.width();
+        out.push(span);
+    }
+    out
+}
+
+/// The column names above a row say which cell names it: `title` for a session or job,
+/// `job` for a run. Cells up to it are never dropped.
+fn named_cell(rows: &[Row], i: usize) -> usize {
+    rows[..=i]
+        .iter()
+        .rev()
+        .find(|r| r.kind == Kind::Columns)
+        .and_then(|h| {
+            h.cells
+                .iter()
+                .position(|(t, _)| matches!(t.trim(), "title" | "job"))
+        })
+        .map_or(usize::MAX, |n| n + 1)
+}
+
 /// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
 /// to a ledger run collapse into that run's row.
 pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
@@ -1812,7 +1850,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 23] = [
+const FIELDS: [Field; 25] = [
     Field {
         group: "cones",
         sub: "",
@@ -1830,6 +1868,15 @@ const FIELDS: [Field; 23] = [
         long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
         builtin: "harness, state, context, activity, model, age, last",
         input: Answer::Columns,
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "whole_columns",
+        short: "whole columns only",
+        long: "true leaves out a column the list's right edge would cut through, so the table ends on a column that fits. false draws as much of it as there is room for. The mark, harness, state and title are always drawn, so a row names itself however narrow the list is.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
@@ -1857,6 +1904,15 @@ const FIELDS: [Field; 23] = [
         long: "right puts the pane beside the list, bottom under it.",
         builtin: "right",
         input: Answer::Pick(&["-", "right", "bottom"]),
+    },
+    Field {
+        group: "cones",
+        sub: "pane",
+        name: "pane.ratio",
+        short: "pane share (%)",
+        long: "Percent of the frame the pane takes, 30 to 70 in tens. The list keeps the rest, less the divider between them; a taller or wider terminal gives both more.",
+        builtin: "50",
+        input: Answer::Pick(&["-", "30", "40", "50", "60", "70"]),
     },
     Field {
         group: "cones",
@@ -2050,6 +2106,7 @@ pub enum ConfigAction {
         Option<config::Pane>,
         Option<config::Start>,
         Option<f64>,
+        Option<bool>,
     ),
 }
 
@@ -2077,6 +2134,7 @@ impl ConfigForm {
         pane: Option<&config::Pane>,
         start: Option<&config::Start>,
         confirm_secs: Option<f64>,
+        whole_columns: Option<bool>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -2110,10 +2168,12 @@ impl ConfigForm {
                 "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
+                "pane.ratio" => pane(|p| p.ratio.to_string()),
                 "activity.bars" => spark(|s| s.bars.to_string()),
                 "activity.bucket" => spark(|s| s.bucket.clone()),
                 "activity.metric" => spark(|s| s.metric.clone()),
                 "confirm_secs" => num(confirm_secs),
+                "whole_columns" => flag(whole_columns),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
                 _ => spark(|s| s.bound.clone()),
             })
@@ -2155,6 +2215,7 @@ impl ConfigForm {
             Option<config::Pane>,
             Option<config::Start>,
             Option<f64>,
+            Option<bool>,
         ),
         String,
     > {
@@ -2247,16 +2308,33 @@ impl ConfigForm {
             })?;
             Some(s)
         };
-        let pane = if ["at"].iter().all(|f| v(&format!("pane.{f}")).is_empty()) {
+        let pane = if ["at", "ratio"]
+            .iter()
+            .all(|f| v(&format!("pane.{f}")).is_empty())
+        {
             None
         } else {
             let built = config::Pane::default();
             let p = config::Pane {
                 at: text("pane.at").unwrap_or(built.at),
+                ratio: match v("pane.ratio") {
+                    "" => built.ratio,
+                    t => t
+                        .parse()
+                        .map_err(|_| format!("pane.ratio: a whole percent, as in 50, not {t:?}"))?,
+                },
             };
+            // Name the field the message is about, so the error lands on it.
             p.check().map_err(|e| {
                 let e = format!("{e:#}");
-                format!("pane.at: {}", e.trim_start_matches("pane at "))
+                let field = ["at", "ratio"]
+                    .into_iter()
+                    .find(|f| e.starts_with(&format!("pane {f} ")))
+                    .unwrap_or("at");
+                format!(
+                    "pane.{field}: {}",
+                    e.trim_start_matches(&format!("pane {field} "))
+                )
             })?;
             Some(p)
         };
@@ -2285,7 +2363,15 @@ impl ConfigForm {
                 )
             })?;
         }
-        Ok((policy, columns, spark, pane, start, mark))
+        Ok((
+            policy,
+            columns,
+            spark,
+            pane,
+            start,
+            mark,
+            flag("whole_columns"),
+        ))
     }
 
     fn trim_num(v: f64) -> String {
@@ -2350,10 +2436,10 @@ impl ConfigForm {
                 self.error = Some(e);
                 ConfigAction::Stay
             }
-            Ok((p, c, s, pn, st, m)) => {
+            Ok((p, c, s, pn, st, m, w)) => {
                 self.open = false;
                 if changed {
-                    ConfigAction::Save(Box::new(p), c, s, pn, st, m)
+                    ConfigAction::Save(Box::new(p), c, s, pn, st, m, w)
                 } else {
                     ConfigAction::Stay
                 }
@@ -3625,17 +3711,23 @@ impl App {
         }
     }
 
+    /// The pane takes `pane.ratio` percent of the frame and the list keeps the rest,
+    /// less the divider between them.
     fn split_areas(&self, frame: Rect) -> [Rect; 3] {
+        let list = |total: u16| {
+            let share = u32::from(100u16.saturating_sub(self.data.pane.ratio));
+            (u32::from(total) * share / 100) as u16
+        };
         if self.data.pane.at == "bottom" {
             return Layout::vertical([
-                Constraint::Length(frame.height / 2),
+                Constraint::Length(list(frame.height)),
                 Constraint::Length(1),
                 Constraint::Min(1),
             ])
             .areas(frame);
         }
         Layout::horizontal([
-            Constraint::Length((frame.width / 2).min(100)),
+            Constraint::Length(list(frame.width)),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
@@ -3739,6 +3831,7 @@ impl App {
             config::file_pane(&self.jobs_path).as_ref(),
             config::file_start(&self.jobs_path).as_ref(),
             config::file_confirm_secs(&self.jobs_path),
+            config::file_whole_columns(&self.jobs_path),
         ))
     }
 
@@ -4807,6 +4900,7 @@ impl App {
             config::file_pane(&path).as_ref(),
             config::file_start(&path).as_ref(),
             config::file_confirm_secs(&path),
+            config::file_whole_columns(&path),
         );
         self.status = match wrote {
             Ok(()) => {
@@ -5450,12 +5544,13 @@ impl App {
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => self.mode = Mode::Normal,
-                ConfigAction::Save(policy, columns, spark, pane, start, mark) => {
+                ConfigAction::Save(policy, columns, spark, pane, start, mark, whole) => {
                     self.data.columns = if columns.is_empty() {
                         built_columns()
                     } else {
                         columns.clone()
                     };
+                    self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
                     self.rebuild();
                     match config::write_config(
                         &self.jobs_path,
@@ -5465,6 +5560,7 @@ impl App {
                         pane.as_ref(),
                         start.as_ref(),
                         mark,
+                        whole,
                     ) {
                         Ok(()) => {
                             self.status =
@@ -5746,7 +5842,8 @@ impl App {
             (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
             (_, "jobs") => {
                 let all: Vec<usize> = (0..self.other.len()).collect();
-                let lines = self.row_lines(&self.other, &all, None, 0, body.height as usize);
+                let lines =
+                    self.row_lines(&self.other, &all, None, 0, body.height as usize, body.width);
                 frame.render_widget(Paragraph::new(lines), body);
             }
             _ => frame.render_widget(Paragraph::new(self.recent_lines()), body),
@@ -5838,7 +5935,8 @@ impl App {
         );
         if in_pane && self.jobs_view {
             let all: Vec<usize> = (0..self.other.len()).collect();
-            let lines = self.row_lines(&self.other, &all, None, 0, list.height as usize);
+            let lines =
+                self.row_lines(&self.other, &all, None, 0, list.height as usize, list.width);
             frame.render_widget(Paragraph::new(lines), list);
         } else if in_pane {
             self.draw_list(frame, list);
@@ -5906,11 +6004,13 @@ impl App {
             Some(self.cursor),
             self.scroll,
             height,
+            area.width,
         );
         frame.render_widget(Paragraph::new(lines), area);
     }
 
     /// A missing cursor selects only the menu row, as used beside the jobs pane.
+    #[allow(clippy::too_many_arguments)]
     fn row_lines(
         &self,
         rows: &[Row],
@@ -5918,6 +6018,7 @@ impl App {
         cursor: Option<usize>,
         scroll: usize,
         height: usize,
+        width: u16,
     ) -> Vec<Line<'static>> {
         visible
             .iter()
@@ -5932,11 +6033,13 @@ impl App {
                     .as_deref()
                     .is_some_and(|a| row.kind.key() == Some(a));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
+                let mut mark = 0;
                 if row.kind.selectable() {
                     spans.push(Span::styled(
                         if selected { "▌ " } else { "  " },
                         Style::default().fg(if armed { Color::Red } else { ORANGE }),
                     ));
+                    mark = 2;
                 }
                 let menu;
                 let cells = if row.kind == Kind::Menu {
@@ -5945,6 +6048,7 @@ impl App {
                 } else {
                     &row.cells
                 };
+                let mut drawn = Vec::with_capacity(cells.len());
                 for (c, (text, style)) in cells.iter().enumerate() {
                     let (text, style) = if c == 0 && row.working() {
                         (
@@ -5954,11 +6058,25 @@ impl App {
                     } else {
                         (text.clone(), *style)
                     };
-                    spans.push(Span::styled(
+                    drawn.push(Span::styled(
                         text,
                         if armed { style.fg(Color::Red) } else { style },
                     ));
                 }
+                // Only a table has columns; a menu or hint row keeps every cell it has.
+                let tabular = matches!(
+                    row.kind,
+                    Kind::Session(..) | Kind::Job(_) | Kind::Run(..) | Kind::Columns
+                );
+                spans.extend(if self.data.whole_columns && tabular {
+                    whole_cells(
+                        drawn,
+                        (width as usize).saturating_sub(mark),
+                        named_cell(rows, i),
+                    )
+                } else {
+                    drawn
+                });
                 let line = Line::from(spans);
                 if selected { line.style(bold()) } else { line }
             })
@@ -6152,7 +6270,15 @@ fn tty_state() -> String {
 mod tests {
     #[test]
     fn arrows_step_a_number_field_on_its_own_grid() {
-        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let none = KeyModifiers::NONE;
         let value = |c: &ConfigForm| c.values[c.row].clone();
 
@@ -6245,7 +6371,15 @@ mod tests {
     fn config_explanation_keeps_the_rows_indent() {
         assert_eq!(wrap("a bb ccc dddd", 6), ["a bb", "ccc", "dddd"]);
         assert_eq!(wrap("toolongword x", 4), ["toolongword", "x"]);
-        let c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
+        let c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let (lines, _) = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         assert!(
@@ -6451,7 +6585,15 @@ mod tests {
             "the cursor is after the answer stepped back to"
         );
 
-        let mut c = ConfigForm::new(&config::Policy::default(), None, None, None, None, None);
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         c.go(field_at("timeout_min"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         for ch in "15".chars() {
@@ -8701,6 +8843,53 @@ mod tests {
             }
             assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
         }
+    }
+
+    #[test]
+    fn a_column_the_edge_cuts_through_is_left_out_whole() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let head = |app: &App, w: u16| -> String {
+            app.row_lines(&app.rows, &app.visible, None, 0, 40, w)
+                .iter()
+                .map(ToString::to_string)
+                .find(|l| l.contains("title"))
+                .expect("the table names its columns")
+        };
+        let wide = head(&app, 400);
+        let at = wide.find("age").expect("the age column is on by default");
+        // The edge lands one character into the age column's name.
+        let cut = (at + 2) as u16;
+        assert_eq!(
+            head(&app, cut).trim_end(),
+            wide[..at].trim_end(),
+            "the table ends on the last column that fits"
+        );
+        app.data.whole_columns = false;
+        assert_eq!(
+            head(&app, cut),
+            wide,
+            "without the setting the row keeps every column and the edge cuts through one"
+        );
+    }
+
+    #[test]
+    fn the_pane_takes_the_share_of_the_frame_its_ratio_names() {
+        let d = dir();
+        let mut app = app(d.path());
+        let frame = Rect::new(0, 0, 200, 30);
+        let [list, rule, pane] = app.split_areas(frame);
+        assert_eq!((list.width, rule.width, pane.width), (100, 1, 99), "half");
+        app.data.pane.ratio = 70;
+        let [list, rule, pane] = app.split_areas(frame);
+        assert_eq!((list.width, rule.width, pane.width), (60, 1, 139));
+        app.data.pane.at = "bottom".into();
+        let [top, rule, bottom] = app.split_areas(frame);
+        assert_eq!((top.height, rule.height, bottom.height), (9, 1, 20));
+        app.data.pane.ratio = 30;
+        assert_eq!(app.split_areas(frame)[0].height, 21);
     }
 
     fn split_setup(

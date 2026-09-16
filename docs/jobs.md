@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` contains `version: 2`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
+`jobs.yaml` contains `version: 2`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `whole_columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
 
 An older file is migrated on the first read: cones renames what the version it declares called a setting, bumps the version line and writes the file back, keeping comments and layout. Version 1 called the activity column and its block `sparkline`. A file cones cannot rewrite still loads, and the next save migrates it instead.
 
@@ -18,8 +18,10 @@ defaults:
   daily_budget_usd: 10.00
   write: false
 columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see dashboard.md
-pane:                 # which side the viewer pane sits on, see dashboard.md
+whole_columns: true   # leave out a column the list's right edge would cut through
+pane:                 # where the viewer pane sits and how much of the frame it takes
   at: right
+  ratio: 50
 start:                # what a new cones terminal comes up with, see dashboard.md
   harness: claude
   pane: true

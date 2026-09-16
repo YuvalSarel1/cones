@@ -51,6 +51,12 @@ The pane shows live viewers only. Use `cones logs` for recorded output; the dash
 
 `age` counts from the session start and never resets. Claude's start comes from its transcript; Codex process rows and pi rows use process start, while detached Codex thread rows use rollout metadata or their saved launch record. Cost appears on run rows, not as a configurable session column.
 
+```yaml
+whole_columns: true
+```
+
+A column the list's right edge would cut through is left out, so the table ends on a column that fits. `whole_columns: false` draws as much of it as there is room for. The mark, harness, state and title are drawn either way, so a row names itself however narrow the list is. Cells keep the width of the widest value on screen, so a wide value can drop the column after it.
+
 `ctrl+t` arranges columns against the live table. The strip lists visible columns first, then a separator and hidden ones. `← →` select a column, `space` shows or hides it, and `[` `]` reorder visible columns. `enter` saves `columns:`; `esc` restores the original set. The jobs screen uses its own fixed columns.
 
 ### Pane
@@ -58,14 +64,15 @@ The pane shows live viewers only. Use `cones logs` for recorded output; the dash
 ```yaml
 pane:
   at: right
+  ratio: 50
 ```
 
 | `at` | Layout |
 | --- | --- |
-| `right` | List on the left at half the width, capped at 100 columns; viewer uses the remaining width after a divider. |
-| `bottom` | List above at half the height; viewer uses the remaining height after a divider. |
+| `right` | List on the left, viewer on the right; a divider between them. |
+| `bottom` | List above, viewer below; a divider between them. |
 
-The default is `right`. There is no minimum terminal size for a split. `ctrl+\` changes the layout during use; [start](#start) controls whether the pane opens initially.
+`ratio` is the percent of the frame the viewer takes, 30 to 70. The list keeps the rest, less the divider. The defaults are `right` and `50`. There is no minimum terminal size for a split. `ctrl+\` changes the layout during use; [start](#start) controls whether the pane opens initially.
 
 ### Start
 

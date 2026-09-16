@@ -60,34 +60,35 @@
 <text x="555.5" y="110" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">+ new job</text>
 <text x="631.4" y="110" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#7d8590"> · a task once or on a schedule</text>
 <text x="521.8" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="150" xml:space="preserve" textLength="514.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                          conte│</text>
+<text x="16.0" y="150" xml:space="preserve" textLength="463.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               state    title                          </text>
+<text x="521.8" y="150" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
 <text x="521.8" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="190" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the harness table in the docs  </text>
-<text x="479.6" y="190" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">120k/│</text>
+<text x="142.4" y="190" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the harness table in the docs       </text>
+<text x="521.8" y="190" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="210" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇  </text>
 <text x="58.1" y="210" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="210" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">input    </text>
-<text x="218.3" y="210" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sparkline bounds               </text>
-<text x="479.6" y="210" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">86k/1│</text>
+<text x="218.3" y="210" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">sparkline bounds                    </text>
+<text x="521.8" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
 <text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="230" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the ledger&#x27;s write path        </text>
-<text x="479.6" y="230" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">56k/1│</text>
+<text x="142.4" y="230" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the ledger&#x27;s write path             </text>
+<text x="521.8" y="230" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="250" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="270" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/work</text>
 <text x="521.8" y="270" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="290" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
 <text x="58.1" y="290" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="290" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">done     </text>
-<text x="218.3" y="290" xml:space="preserve" textLength="261.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">the invoice export endpoint    </text>
-<text x="479.6" y="290" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">41k/1│</text>
+<text x="218.3" y="290" xml:space="preserve" textLength="303.5" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">the invoice export endpoint         </text>
+<text x="521.8" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▇  </text>
 <text x="58.1" y="310" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
-<text x="142.4" y="310" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the flaky checkout test        </text>
-<text x="479.6" y="310" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">67k/1│</text>
+<text x="142.4" y="310" xml:space="preserve" textLength="379.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the flaky checkout test             </text>
+<text x="521.8" y="310" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="521.8" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>

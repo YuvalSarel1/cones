@@ -153,7 +153,12 @@ pub struct JobsFile {
     /// Confirmation timeout in seconds; zero waits until the next key.
     #[serde(default)]
     pub confirm_secs: Option<f64>,
+    /// Leave out a table column the list's right edge would cut through.
+    #[serde(default)]
+    pub whole_columns: Option<bool>,
 }
+
+pub const WHOLE_COLUMNS: bool = true;
 
 pub const CONFIRM_SECS: f64 = 2.0;
 
@@ -211,13 +216,22 @@ pub const BOUNDS: [&str; 3] = ["fleet", "row", "log"];
 pub struct Pane {
     #[serde(default = "right")]
     pub at: String,
+    /// Percent of the frame the viewer pane takes; the list keeps the rest.
+    #[serde(default = "fifty")]
+    pub ratio: u16,
 }
 
 fn right() -> String {
     "right".into()
 }
 
+fn fifty() -> u16 {
+    50
+}
+
 pub const SIDES: [&str; 2] = ["right", "bottom"];
+/// The pane's share of the frame, as offered by the config editor.
+pub const RATIOS: [&str; 5] = ["30", "40", "50", "60", "70"];
 
 /// Initial dashboard state; runtime toggles do not write it back.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -254,7 +268,10 @@ impl Start {
 
 impl Default for Pane {
     fn default() -> Self {
-        Self { at: right() }
+        Self {
+            at: right(),
+            ratio: fifty(),
+        }
     }
 }
 
@@ -266,11 +283,20 @@ impl Pane {
             self.at,
             SIDES.join(", ")
         );
+        ensure!(
+            (30..=70).contains(&self.ratio),
+            "pane ratio {}: 30 to 70 percent of the frame",
+            self.ratio
+        );
         Ok(())
     }
 
     pub fn lines(&self) -> Vec<String> {
-        vec!["pane:".to_owned(), format!("  at: {}", self.at)]
+        vec![
+            "pane:".to_owned(),
+            format!("  at: {}", self.at),
+            format!("  ratio: {}", self.ratio),
+        ]
     }
 }
 
@@ -458,6 +484,16 @@ pub fn file_confirm_secs(path: &Path) -> Option<f64> {
     parse(path).ok().and_then(|d| d.confirm_secs)
 }
 
+/// Read the whole-columns toggle, falling back to the built-in if missing or invalid.
+pub fn whole_columns(path: &Path) -> bool {
+    file_whole_columns(path).unwrap_or(WHOLE_COLUMNS)
+}
+
+/// Read without applying defaults; missing or invalid files return `None`.
+pub fn file_whole_columns(path: &Path) -> Option<bool> {
+    parse(path).ok().and_then(|d| d.whole_columns)
+}
+
 /// Read columns, falling back to built-ins if missing or invalid.
 pub fn columns(path: &Path) -> Vec<String> {
     parse(path)
@@ -618,6 +654,8 @@ fn top_level(lines: &[&str], key: &str) -> Option<(usize, usize)> {
 
 /// Validate and replace dashboard settings and defaults while preserving job blocks.
 /// Create a missing file with `jobs: []`; validate defaults even when no jobs exist.
+/// One argument per top-level setting, since each is written on its own.
+#[allow(clippy::too_many_arguments)]
 pub fn write_config(
     path: &Path,
     d: &Policy,
@@ -626,6 +664,7 @@ pub fn write_config(
     pane: Option<&Pane>,
     start: Option<&Start>,
     confirm_secs: Option<f64>,
+    whole_columns: Option<bool>,
 ) -> Result<()> {
     let base = path
         .parent()
@@ -650,10 +689,14 @@ pub fn write_config(
     let mark = confirm_secs
         .map(|s| vec![format!("confirm_secs: {s}")])
         .unwrap_or_default();
+    let whole = whole_columns
+        .map(|w| vec![format!("whole_columns: {w}")])
+        .unwrap_or_default();
     // Replace blocks in reverse order to keep offsets valid; insert missing ones after their predecessor.
     let order = [
         "defaults:",
         "columns:",
+        "whole_columns:",
         "activity:",
         "pane:",
         "start:",
@@ -664,6 +707,7 @@ pub fn write_config(
         ("start:", start),
         ("pane:", pane),
         ("activity:", spark),
+        ("whole_columns:", whole),
         ("columns:", cols),
         ("defaults:", block),
     ] {
@@ -1119,7 +1163,7 @@ mod tests {
             aws_region: None,
         };
         let cols = ["state".to_owned(), "age".to_owned()];
-        write_config(&p, &d, Some(&cols), None, None, None, None).unwrap();
+        write_config(&p, &d, Some(&cols), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 2\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
@@ -1137,7 +1181,7 @@ mod tests {
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
         assert!(read_jobs(&p).unwrap()[0].write);
 
-        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 2\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
@@ -1145,27 +1189,46 @@ mod tests {
             notify: Some(true),
             ..Default::default()
         };
-        write_config(&p, &d, Some(&[]), None, None, None, None).unwrap();
+        write_config(&p, &d, Some(&[]), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 2\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
-        write_config(&p, &Policy::default(), Some(&cols), None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            Some(&cols),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 2\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
-        let err = write_config(&p, &d, Some(&["speed".to_owned()]), None, None, None, None)
-            .unwrap_err()
-            .to_string();
+        let err = write_config(
+            &p,
+            &d,
+            Some(&["speed".to_owned()]),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("unknown column"), "{err}");
         assert_eq!(file_columns(&p).as_deref(), Some(&cols[..]), "untouched");
 
         let missing = p.with_file_name("new.yaml");
-        write_config(&missing, &d, None, None, None, None, None).unwrap();
+        write_config(&missing, &d, None, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 2\ndefaults:\n  notify: true\njobs: []\n"
@@ -1175,7 +1238,7 @@ mod tests {
             daily_budget_usd: Some(1.0),
             ..Default::default()
         };
-        let err = write_config(&missing, &bad, None, None, None, None, None)
+        let err = write_config(&missing, &bad, None, None, None, None, None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("daily_budget_usd must cover"), "{err}");
@@ -1211,6 +1274,7 @@ mod tests {
             &Policy::default(),
             None,
             keep.as_ref(),
+            None,
             None,
             None,
             None,
@@ -1271,6 +1335,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1313,13 +1378,22 @@ mod tests {
                 "activity bound",
             ),
         ] {
-            let err = write_config(&p, &Policy::default(), None, Some(&bad), None, None, None)
-                .unwrap_err()
-                .to_string();
+            let err = write_config(
+                &p,
+                &Policy::default(),
+                None,
+                Some(&bad),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
             assert!(err.contains(msg), "{err}");
             assert_eq!(activity(&p), sp, "untouched after {msg}");
         }
-        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("activity"));
         assert_eq!(confirm_secs(&p), CONFIRM_SECS, "built-in without a line");
         write_config(
@@ -1330,6 +1404,7 @@ mod tests {
             None,
             None,
             Some(3.5),
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1338,12 +1413,21 @@ mod tests {
             "the line follows the block: {text}"
         );
         assert_eq!((confirm_secs(&p), file_confirm_secs(&p)), (3.5, Some(3.5)));
-        let err = write_config(&p, &Policy::default(), None, None, None, None, Some(-1.0))
-            .unwrap_err()
-            .to_string();
+        let err = write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            Some(-1.0),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("confirm_secs -1"), "{err}");
         assert_eq!(confirm_secs(&p), 3.5, "untouched after a refused value");
-        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("confirm_secs"));
         let (_d, p) = file("version: 1\nactivity:\n  metric: tokens\njobs: []\n");
         assert_eq!(
@@ -1387,6 +1471,7 @@ mod tests {
             None,
             Some(&st),
             Some(2.0),
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1406,12 +1491,43 @@ mod tests {
     }
 
     #[test]
+    fn the_whole_columns_toggle_is_read_and_written_beside_the_column_list() {
+        let (_d, p) = file(FILE);
+        assert!(whole_columns(&p), "the built-in without a line");
+        assert_eq!(file_whole_columns(&p), None);
+        write_config(
+            &p,
+            &Policy::default(),
+            Some(&["state".to_owned()]),
+            None,
+            None,
+            None,
+            None,
+            Some(false),
+        )
+        .unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("columns: [state]\nwhole_columns: false\n"),
+            "the line follows the column list: {text}"
+        );
+        assert_eq!(
+            (whole_columns(&p), file_whole_columns(&p)),
+            (false, Some(false))
+        );
+        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("whole_columns"));
+        assert!(whole_columns(&p));
+    }
+
+    #[test]
     fn the_pane_block_is_read_checked_and_written() {
         let (_d, p) = file(FILE);
         assert_eq!(pane(&p), Pane::default(), "built-in without a block");
         assert_eq!(file_pane(&p), None);
         let pn = Pane {
             at: "bottom".into(),
+            ratio: 30,
         };
         let sp = Activity::default();
         write_config(
@@ -1422,28 +1538,49 @@ mod tests {
             Some(&pn),
             None,
             Some(2.0),
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("  bound: fleet\npane:\n  at: bottom\nconfirm_secs: 2\n"),
+            text.contains("  bound: fleet\npane:\n  at: bottom\n  ratio: 30\nconfirm_secs: 2\n"),
             "the block sits between activity and confirm_secs: {text}"
         );
         assert_eq!((pane(&p), file_pane(&p)), (pn.clone(), Some(pn.clone())));
-        let bad = Pane { at: "left".into() };
-        let err = write_config(&p, &Policy::default(), None, None, Some(&bad), None, None)
-            .unwrap_err()
-            .to_string();
+        let bad = Pane {
+            at: "left".into(),
+            ratio: 50,
+        };
+        let err = write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            Some(&bad),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("pane at \"left\""), "{err}");
         assert_eq!(pane(&p), pn, "untouched after a side that is not a side");
-        write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
+        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("pane"));
         let (_d, p) = file("version: 1\npane:\n  at: bottom\njobs: []\n");
         assert_eq!(
             pane(&p),
             Pane {
-                at: "bottom".into()
-            }
+                at: "bottom".into(),
+                ratio: 50
+            },
+            "an omitted ratio is the built-in half"
+        );
+        let (_d, p) = file("version: 2\npane:\n  at: right\n  ratio: 80\njobs: []\n");
+        assert_eq!(
+            pane(&p),
+            Pane::default(),
+            "a share outside 30 to 70 fails validation and the built-ins stand"
         );
     }
 
@@ -1465,7 +1602,7 @@ mod tests {
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();
         let d = defaults(&p);
-        write_config(&p, &d, None, None, None, None, None).unwrap();
+        write_config(&p, &d, None, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
             text,
