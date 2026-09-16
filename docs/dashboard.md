@@ -8,7 +8,7 @@ Back to the [README](../README.md). See [harness.md](harness.md) for session sou
 
 | Area | Contents |
 | --- | --- |
-| Summary | Counts of working, input, idle and done sessions, plus jobs and runs. |
+| Summary | Counts of working, input, idle and done sessions, plus jobs and runs. `! stale` in front of them means the last read failed and the counts and rows are the read before it, with the reason in the composer's result line; it stays until a read succeeds. |
 | Menu | `folder`, `jobs`, `config`, `help`. |
 | Sessions | Activity icon, harness mark, optional harness name and state, title, then the configured [columns](#columns). |
 | Jobs | A separate screen with enabled marker, harness, last run status and schedule, name, model, last run age and directory. A `new job` row opens the wizard. |

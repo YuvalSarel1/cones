@@ -3782,6 +3782,8 @@ struct App {
     refreshed: Instant,
     loading: Option<mpsc::Receiver<Result<Data>>>,
     loading_started: Option<Instant>,
+    /// The last read failed, so every count and row on screen is the read before it.
+    stale: bool,
     /// A transition happened after the current read started. Discard that read and run again.
     reload_pending: bool,
     /// Harness commands can take seconds. Keep input and drawing alive while they finish.
@@ -3974,6 +3976,7 @@ impl App {
             refreshed: Instant::now(),
             loading: None,
             loading_started: None,
+            stale: false,
             reload_pending: false,
             stopping: Vec::new(),
             removed_sessions: HashSet::new(),
@@ -4129,19 +4132,40 @@ impl App {
             Ok(Ok(data)) => self.apply(data),
             Ok(Err(e)) => {
                 self.status = format!("reload failed: {e:#}");
+                self.stale = true;
                 self.refreshed = Instant::now();
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.status = "reload failed: worker disconnected".into();
+                self.stale = true;
                 self.refreshed = Instant::now();
             }
         }
+    }
+
+    /// The counts, marked when they are the last good read rather than a current one. The status
+    /// line carries the reason and the next action overwrites it; this stays until a read succeeds.
+    fn header_summary(&self) -> Line<'static> {
+        let summary = self.data.summary(spinner_frame(self.tick));
+        if !self.stale {
+            return summary;
+        }
+        // First, not last: a narrow header clips its tail, and the warning outranks the counts.
+        let mut spans = vec![Span::styled(
+            "! stale  ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(summary.spans);
+        Line::from(spans)
     }
 
     fn apply(&mut self, mut data: Data) {
         if self.status.starts_with("reload failed:") {
             self.status.clear();
         }
+        self.stale = false;
         self.removed_sessions
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
@@ -6570,10 +6594,7 @@ impl App {
         ])
         .areas(area);
         frame.render_widget(
-            Paragraph::new(header_lines(
-                self.data.summary(spinner_frame(self.tick)),
-                head.width as usize,
-            )),
+            Paragraph::new(header_lines(self.header_summary(), head.width as usize)),
             head,
         );
         if in_pane && self.jobs_view {
@@ -8376,6 +8397,42 @@ mod tests {
         assert_eq!(app.text, "fix the lag");
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains("codex in ~/src failed: no daemon"), "{text}");
+    }
+
+    /// A read that fails leaves the previous rows on screen, so the header says they are the
+    /// previous ones. The status line cannot carry that: the next keypress overwrites it.
+    #[test]
+    fn a_failed_read_marks_the_header_stale_until_one_succeeds() {
+        let d = dir();
+        let mut app = app(d.path());
+        let good = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let text = |app: &App| {
+            app.header_summary()
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert!(!text(&app).contains("stale"), "a good read says nothing");
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        tx.send(Err(anyhow::anyhow!(
+            "reading the process table with /bin/ps: no such file"
+        )))
+        .unwrap();
+        app.poll();
+        assert!(app.stale);
+        assert!(text(&app).contains("! stale"), "{}", text(&app));
+        assert!(app.status.contains("/bin/ps"), "{}", app.status);
+        // A keypress takes the status line; the header keeps the mark.
+        app.status = "opening codex".into();
+        assert!(text(&app).contains("! stale"));
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        tx.send(Ok(good)).unwrap();
+        app.poll();
+        assert!(!app.stale, "a good read clears it");
+        assert!(!text(&app).contains("stale"));
     }
 
     #[test]

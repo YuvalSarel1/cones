@@ -596,7 +596,8 @@ pub fn claude_version_tested(output: &str) -> Option<bool> {
     Some((major, minor) >= (2, 1) && major < 3)
 }
 
-/// Compiled switches before the prompt delimiter, used by doctor's flag probes.
+/// Compiled switches before the prompt delimiter, for the flag probes of the dashboard's
+/// doctor panel; the `cones doctor` command they were written for is gone.
 pub fn compiled_flags(args: &[String]) -> Vec<&str> {
     args.iter()
         .take_while(|a| *a != "--")
