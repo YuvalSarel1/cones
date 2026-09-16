@@ -11,7 +11,7 @@ cones coordinator start ~/src/app
 
 The command first checks for a live coordinator record for the folder. If found, it prints the record and exits. Otherwise it writes the embedded plugin to `~/.cones/coordinator/plugin` (under `--state-dir` when set), then launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` in that directory. The skill also guards against duplicates. Nothing is installed into the user's plugin directory.
 
-The skill writes `~/.claude/orchestrator/<sha1 of the absolute folder>.json` each sweep, naming its pid, cwd and peers. The dashboard matches both pid and cwd to mark the coordinator's title orange. Without a state column, it also labels the row `orchestrator`, with `own terminal` for an interactive coordinator. JSON session output includes `coordinator: true`.
+The skill writes `~/.claude/orchestrator/<sha1 of the absolute folder>.json` each sweep, naming its pid, cwd and peers. The dashboard matches both pid and cwd to mark the coordinator's title orange and put a `★` before it; the table never spells the word out, and an interactive coordinator says `own terminal` like any other. JSON session output includes `coordinator: true`.
 
 `claude attach <short id>` opens a background coordinator. Telling it "stop orchestrator" ends its coordination role and removes the status record; its background session remains until separately stopped.
 
