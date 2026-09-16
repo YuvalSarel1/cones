@@ -5085,17 +5085,11 @@ impl App {
             };
             finished = true;
             self.status = match result {
+                // The row leaving the list says it; the hint line goes back to the keys.
                 Ok(true) if matches!(action.verb, "delete" | "forget") => {
                     self.removed_sessions.insert(action.id.clone());
                     self.data.sessions.retain(|s| s.session_id != action.id);
-                    if action.verb == "delete" {
-                        format!("deleted {} · claude --resume still has it", action.label)
-                    } else {
-                        format!(
-                            "forgot {} · hidden for good · codex resume still has it",
-                            action.label
-                        )
-                    }
+                    String::new()
                 }
                 Ok(true) => "stop requested".into(),
                 Ok(false) => "already finished".into(),
@@ -7222,6 +7216,22 @@ mod tests {
             app.data.sessions.is_empty(),
             "the stale row cannot reappear"
         );
+    }
+
+    #[test]
+    fn a_deleted_row_leaves_no_note_behind() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.queue_stop(A.into(), "delete", || Ok(true));
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        assert!(
+            app.status.is_empty(),
+            "the row leaving the list is the answer"
+        );
+        assert!(app.rows.iter().all(|r| r.kind.key() != Some(A)));
+        poll_until(&mut app, |a| a.loading.is_none());
     }
 
     #[test]

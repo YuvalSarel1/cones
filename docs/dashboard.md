@@ -138,6 +138,8 @@ The first `ctrl+x` marks the row red. Another key cancels it, as does inactivity
 | Job without a run in flight | Delete it from jobs.yaml and reinstall schedules. |
 | Pinned empty folder | Remove the pin; leave the directory alone. |
 
+A removed row leaves the dashboard, not the harness. A deleted Claude session is still in `claude --resume`, and a forgotten Codex thread is still in `codex resume`. The hint line says nothing on success; the row leaving the list is the confirmation.
+
 ### Text editing
 
 Any key that is not an action types into the composer. Text prompts share these editing keys:
