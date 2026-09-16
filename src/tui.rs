@@ -2319,7 +2319,7 @@ const FIELDS: [Field; 27] = [
         sub: "",
         name: "columns",
         short: "session columns",
-        long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key; ctrl+t does the same from the dashboard.",
+        long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key.",
         builtin: "harness, state, context, activity, model, age, last",
         input: Answer::Columns,
     },
@@ -3567,17 +3567,14 @@ fn built_columns() -> Vec<String> {
 enum Arranged {
     Stay,
     Shown(Vec<String>),
-    Keep(Vec<String>),
-    Cancel(Vec<String>),
 }
 
-/// `order[..shown]` is the visible column set; `before` restores it on escape.
+/// `order[..shown]` is the visible column set.
 #[derive(Debug, Clone, PartialEq)]
 struct ColumnForm {
     order: Vec<String>,
     shown: usize,
     at: usize,
-    before: Vec<String>,
 }
 
 impl ColumnForm {
@@ -3592,7 +3589,6 @@ impl ColumnForm {
         Self {
             shown: columns.len(),
             at: 0,
-            before: columns.to_vec(),
             order,
         }
     }
@@ -3633,31 +3629,8 @@ impl ColumnForm {
                 self.at += 1;
                 Arranged::Shown(self.chosen())
             }
-            KeyCode::Enter => Arranged::Keep(self.chosen()),
-            KeyCode::Esc => Arranged::Cancel(self.before.clone()),
             _ => Arranged::Stay,
         }
-    }
-
-    fn line(&self) -> Line<'static> {
-        let mut spans = vec![Span::styled("columns › ", Style::default().fg(ORANGE))];
-        for (i, c) in self.order.iter().enumerate() {
-            if i == self.shown {
-                spans.push(Span::styled("· ", dim()));
-            }
-            spans.push(Span::styled(
-                format!(" {c} "),
-                if i == self.at {
-                    pressed()
-                } else if i < self.shown {
-                    plain()
-                } else {
-                    dim()
-                },
-            ));
-            spans.push(Span::raw(" "));
-        }
-        Line::from(spans)
     }
 }
 
@@ -3670,7 +3643,6 @@ enum Mode {
     Rename(Input),
     /// Wrapped line offset in the usage guide.
     Guide(usize),
-    Columns(Box<ColumnForm>),
 }
 
 /// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
@@ -3701,10 +3673,6 @@ const GUIDE: &[(&str, &str)] = &[
         "pin the selected row's folder: it keeps a row after the last session there leaves",
     ),
     ("ctrl+s", "regroup sessions by state or by directory"),
-    (
-        "ctrl+t",
-        "arrange the session columns with the table live under them: ← → pick a column, space shows or hides it, [ ] move it, enter keeps it in jobs.yaml",
-    ),
     (
         "ctrl+f",
         "filter rows by text; enter keeps the filter, esc clears it",
@@ -4155,10 +4123,6 @@ impl App {
         if self.status.starts_with("reload failed:") {
             self.status.clear();
         }
-        // Preserve an in-progress column arrangement when a reload arrives.
-        if let Mode::Columns(form) = &self.mode {
-            data.columns = form.chosen();
-        }
         self.removed_sessions
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
@@ -4560,6 +4524,17 @@ impl App {
             .visible
             .iter()
             .position(|&i| self.rows[i].kind == Kind::Menu)
+        {
+            self.cursor = i;
+        }
+    }
+
+    /// Leaving a screen lands on the first session instead of the menu row it was opened from.
+    fn select_first_session(&mut self) {
+        if let Some(i) = self
+            .visible
+            .iter()
+            .position(|&i| matches!(self.rows[i].kind, Kind::Session(..)))
         {
             self.cursor = i;
         }
@@ -5607,28 +5582,6 @@ impl App {
         };
     }
 
-    /// Read current settings before writing so only `columns:` changes.
-    fn save_columns(&mut self, cols: &[String]) {
-        let path = self.jobs_path.clone();
-        let wrote = config::write_config(
-            &path,
-            &config::defaults(&path),
-            Some(cols),
-            config::file_activity(&path).as_ref(),
-            config::file_pane(&path).as_ref(),
-            config::file_start(&path).as_ref(),
-            config::file_confirm_secs(&path),
-            config::file_whole_columns(&path),
-        );
-        self.status = match wrote {
-            Ok(()) => {
-                self.invalidate();
-                format!("columns saved to {}", fleet::tilde(&path))
-            }
-            Err(e) => format!("{e:#}"),
-        };
-    }
-
     fn save_folders(&self) -> Result<()> {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
@@ -5824,13 +5777,6 @@ impl App {
                 hints(&keys)
             }
             Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
-            Mode::Columns(f) => hints(&[
-                ("← →", "column"),
-                ("space", if f.at < f.shown { "hide" } else { "show" }),
-                ("[ ]", "move"),
-                ("enter", "keep"),
-                ("esc", "cancel"),
-            ]),
             Mode::Folder(_) => hints(&[
                 ("enter", "add"),
                 ("tab", "complete"),
@@ -5859,10 +5805,6 @@ impl App {
                     keys.push(("tab", "pane"));
                 }
                 keys.push(("shift+tab", "harness"));
-                // Drop setup hints before the harness picker when space is tight.
-                if !self.jobs_view {
-                    keys.push(("ctrl+t", "columns"));
-                }
                 keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
                 let room = (self.hint_width() as usize).saturating_sub(taken);
                 let mut line = hints(&keys);
@@ -6134,25 +6076,6 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            Mode::Columns(form) => match form.key(code) {
-                Arranged::Stay => {}
-                Arranged::Shown(cols) => {
-                    self.data.columns = cols;
-                    self.rebuild();
-                }
-                Arranged::Cancel(cols) => {
-                    self.data.columns = cols;
-                    self.mode = Mode::Normal;
-                    self.rebuild();
-                    self.status = "columns as they were".into();
-                }
-                Arranged::Keep(cols) => {
-                    self.data.columns = cols.clone();
-                    self.mode = Mode::Normal;
-                    self.rebuild();
-                    self.save_columns(&cols);
-                }
-            },
             Mode::Guide(top) => {
                 let top = *top;
                 match code {
@@ -6247,7 +6170,10 @@ impl App {
             },
             Mode::Config(form) => match form.key(code, mods) {
                 ConfigAction::Stay => {}
-                ConfigAction::Cancel => self.mode = Mode::Normal,
+                ConfigAction::Cancel => {
+                    self.mode = Mode::Normal;
+                    self.select_first_session();
+                }
                 ConfigAction::Save(policy, columns, spark, pane, start, mark, whole) => {
                     self.data.columns = if columns.is_empty() {
                         built_columns()
@@ -6368,14 +6294,6 @@ impl App {
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
-                    KeyCode::Char('t') if ctrl => {
-                        if self.jobs_view {
-                            self.status = "the session columns; esc leaves the jobs screen".into();
-                        } else {
-                            self.mode =
-                                Mode::Columns(Box::new(ColumnForm::new(&self.data.columns)));
-                        }
-                    }
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
                         self.invalidate();
@@ -6487,7 +6405,6 @@ impl App {
                 Span::styled("guide › ", Style::default().fg(ORANGE)),
                 Span::styled("the keys and what they do", dim()),
             ]),
-            Mode::Columns(f) => f.line(),
             Mode::Normal => self.composer(),
         }
     }
@@ -6608,8 +6525,7 @@ impl App {
     }
 
     fn draw_dashboard(&mut self, frame: &mut Frame, area: Rect) {
-        let in_pane =
-            self.split_active() && self.panel().is_some() && !matches!(self.mode, Mode::Columns(_));
+        let in_pane = self.split_active() && self.panel().is_some();
         let mut line = if in_pane {
             self.composer()
         } else {
@@ -8835,9 +8751,7 @@ mod tests {
         );
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with(
-                "enter add folder · ← → pick · shift+tab harness · ctrl+t columns · esc quit"
-            ),
+            hint.starts_with("enter add folder · ← → pick · shift+tab harness · esc quit"),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.text = "fix the tests".into();
@@ -10046,7 +9960,7 @@ mod tests {
         app.size = (30, 130);
         app.split = false;
         let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("ctrl+t columns · esc quit"), "{wide}");
+        assert!(wide.ends_with("shift+tab harness · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
         app.size = (30, 140);
         app.split = true;
@@ -10574,6 +10488,9 @@ mod tests {
         assert!(s.contains("no sandbox"), "{s}");
         assert!(s.contains("alias or model id"), "{s}");
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
         app.enter().unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let s = (0..60)
@@ -10711,6 +10628,14 @@ mod tests {
 
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "{}", app.status);
+        assert!(
+            matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(id, _)) if id == A),
+            "esc lands on the first session, not the button it came from"
+        );
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+        }
+        assert!(app.menu_is("config"));
         app.enter().unwrap();
         match &app.mode {
             Mode::Config(f) => assert_eq!(
@@ -10802,7 +10727,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_arranges_the_columns_on_the_table_and_keeps_them_in_jobs_yaml() {
+    fn the_columns_row_arranges_the_table_and_keeps_the_order_in_jobs_yaml() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "active", 1);
         let jobs = d.path().join("none.yaml");
@@ -10813,12 +10738,6 @@ mod tests {
         .unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        let text = |l: Line| {
-            l.spans
-                .iter()
-                .map(|s| s.content.to_string())
-                .collect::<String>()
-        };
         let names = |app: &App| {
             app.rows
                 .iter()
@@ -10833,71 +10752,28 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(names(&app), ["state", "title", "model", "context"]);
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Columns(_)));
-        let line = text(app.mode_line());
-        assert!(
-            line.starts_with("columns ›  state   model   context  ·  harness   age "),
-            "{line}"
-        );
-        let hint = text(app.hint_line());
-        assert!(
-            hint.contains("space hide") && hint.contains("[ ] move"),
-            "{hint}"
-        );
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
-        assert_eq!(names(&app), ["state", "title", "context", "model"]);
-        assert_eq!(
-            config::columns(&jobs),
-            ["state", "model", "context"],
-            "the file is untouched until enter"
-        );
-        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
-        assert_eq!(names(&app), ["state", "title", "context"]);
-        app.refresh().unwrap();
-        assert_eq!(names(&app), ["state", "title", "context"]);
-        assert!(
-            text(app.hint_line()).contains("space show"),
-            "under the cursor is off now"
-        );
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.status.starts_with("columns saved"), "{}", app.status);
-        let text_file = fs::read_to_string(&jobs).unwrap();
-        assert!(
-            text_file.contains("columns: [state, context]")
-                && text_file.contains("confirm_secs: 3"),
-            "{text_file}"
-        );
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
-        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
-        assert_eq!(names(&app), ["title", "context"]);
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(names(&app), ["state", "title", "context"]);
-        assert_eq!(app.status, "columns as they were");
-        assert_eq!(config::columns(&jobs), ["state", "context"]);
-        app.size = (30, 200);
-        app.split = true;
-        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
-        t.draw(|f| app.draw(f)).unwrap();
-        let frame = (0..30).map(|y| cells(&t, y, 0..100)).collect::<Vec<_>>();
+        for _ in 0..2 {
+            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        }
+        app.enter().unwrap();
+        while let Mode::Config(f) = &app.mode
+            && f.row != field_at("columns")
+        {
+            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
+        assert_eq!(names(&app), ["state", "title", "context", "model"]);
+        assert_eq!(config::columns(&jobs), ["state", "context", "model"]);
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert_eq!(names(&app), ["state", "title", "context"]);
+        let text = fs::read_to_string(&jobs).unwrap();
         assert!(
-            frame.iter().any(|l| l.contains("columns ›")),
-            "the strip is on the list side: {frame:#?}"
-        );
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        app.jobs_view = true;
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Normal), "no arranging from there");
-        assert!(
-            app.status.starts_with("the session columns"),
-            "{}",
-            app.status
+            text.contains("columns: [state, context]") && text.contains("confirm_secs: 3"),
+            "{text}"
         );
     }
 

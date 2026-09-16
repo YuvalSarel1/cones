@@ -57,7 +57,7 @@ whole_columns: true
 
 A column the list's right edge would cut through is left out, so the table ends on a column that fits. `whole_columns: false` draws as much of it as there is room for. The mark, harness, state and title are drawn either way, so a row names itself however narrow the list is. Cells keep the width of the widest value on screen, so a wide value can drop the column after it.
 
-`ctrl+t` arranges columns against the live table. The strip lists visible columns first, then a separator and hidden ones. `← →` select a column, `space` shows or hides it, and `[` `]` reorder visible columns. `enter` saves `columns:`; `esc` restores the original set. The jobs screen uses its own fixed columns.
+The `columns` row in the config editor arranges them against the live table. The row lists visible columns first, then a separator and hidden ones. `← →` select a column, `space` shows or hides it, and `[` `]` reorder visible columns; every change saves `columns:`. The jobs screen uses its own fixed columns.
 
 ### Pane
 
@@ -122,7 +122,6 @@ These keys apply to the dashboard. A focused viewer receives its own input as de
 | `ctrl+p` | Pin the selected row's folder, or the dashboard's cwd from the menu. |
 | `ctrl+e` | Edit a selected job when the composer is empty; otherwise move to the instruction's end. |
 | `ctrl+s` | Group sessions by state or directory. |
-| `ctrl+t` | Arrange session columns. |
 | `ctrl+f` | Filter rows; `enter` keeps the filter, `esc` clears it. |
 | `ctrl+n` | Rename a Claude session by appending its native `custom-title` transcript record. A live session may later overwrite it from memory. |
 | `ctrl+r` | Reload now. |
@@ -243,15 +242,15 @@ Each row displays its control and current value. `↑ ↓` select a field; `← 
 
 | Control | Fields and behavior |
 | --- | --- |
-| Choices | Harness, provider, write, overlap, notify, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
+| Choices | Harness, provider, write, overlap, notify, whole columns, pane settings, metric and chart scale. Arrows cycle; an initial letter selects a matching option. An unset field brackets the built-in's own word, such as `[claude]`, so the effective value is on the row; `default` appears only where the built-in is the harness's own. |
 | Choices or text | Claude model, Codex model, AWS region and bucket. An empty slot follows the words; arrows step onto it or typing starts in it, and a value the words do not offer stays there. Stepping back onto a word drops it. The Claude words carry `opus[1m]` and `sonnet[1m]` beside the bare aliases: the suffix asks for the million-token window, which `opus` alone does not get. |
 | Numbers | `confirm_secs`, bar count, turn cap and daily budget step by 1; timeout by 5 minutes; per-run budget by 0.25 USD. Steps stay on their grid and never go below zero; validation can reject zero. Non-numeric built-ins step from zero. |
 | Text | AWS profile, and the names of the shell variables every run imports, separated by commas. |
-| Columns | Arrows select, space shows/hides, brackets reorder, backspace restores defaults. Each change saves immediately; `ctrl+t` offers the same arrangement on the table. |
+| Columns | Arrows select, space shows/hides, brackets reorder, backspace restores defaults. Each change saves immediately and the table redraws under it. |
 
 Empty values omit overrides and use built-ins. Harness-owned fields pass no override when empty. Bedrock requires both an explicit AWS profile and region, including in the temporary session form. Codex settings can be saved for native sessions, but supervised Codex jobs are unavailable.
 
-Saving replaces only `defaults`, `columns`, `activity`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The editor does not run `cones install`; reinstall when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured at installation.
+Saving replaces only `defaults`, `columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, retaining job blocks. A missing file is created with `jobs: []`. The editor does not run `cones install`; reinstall when changing environment settings that scheduled jobs must receive, since launchd retains the environment captured at installation.
 
 ## Polling
 
