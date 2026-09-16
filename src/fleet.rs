@@ -855,6 +855,41 @@ fn short(n: u64) -> String {
     }
 }
 
+/// Name a Claude model the way it is presented: `claude-fable-5-1` is Fable 5.1,
+/// `claude-opus-5[1m]` is Opus 5 (1M). Ids from other providers, and aliases a
+/// job writes by hand, pass through verbatim.
+pub fn model(id: &str) -> String {
+    let (base, window) = id
+        .split_once("[1m]")
+        .map_or((id, ""), |(b, _)| (b, " (1M)"));
+    // Bedrock and Vertex carry the same id behind a prefix and a `-v1:0` tail.
+    let Some(base) = base.rfind("claude").map(|i| &base[i..]) else {
+        return id.into();
+    };
+    let mut family = None;
+    let mut version = Vec::new();
+    for word in base.split(['-', '.']).skip(1) {
+        match word {
+            "fable" => family = Some("Fable"),
+            "opus" => family = Some("Opus"),
+            "sonnet" => family = Some("Sonnet"),
+            "haiku" => family = Some("Haiku"),
+            // A release date is not a version number.
+            _ if word.len() < 3 && word.chars().all(|c| c.is_ascii_digit()) => version.push(word),
+            _ => {}
+        }
+    }
+    let Some(family) = family else {
+        return id.into();
+    };
+    let mut out = family.to_owned();
+    if !version.is_empty() {
+        out.push(' ');
+        out.push_str(&version.join("."));
+    }
+    out + window
+}
+
 pub fn tilde(path: &Path) -> String {
     dirs::home_dir()
         .and_then(|h| path.strip_prefix(h).ok())
@@ -867,6 +902,24 @@ pub fn tilde(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_model_id_is_shown_under_the_name_it_is_presented_by() {
+        for (id, shown) in [
+            ("claude-fable-5-1", "Fable 5.1"),
+            ("claude-opus-5", "Opus 5"),
+            ("claude-opus-5[1m]", "Opus 5 (1M)"),
+            ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+            ("claude-3-5-sonnet-20241022", "Sonnet 3.5"),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "Sonnet 4.5"),
+            // Nothing to look up: the harness's own word for it stands.
+            ("gpt-5-codex", "gpt-5-codex"),
+            ("us.openai.gpt-5.6-sol", "us.openai.gpt-5.6-sol"),
+            ("sonnet", "sonnet"),
+        ] {
+            assert_eq!(model(id), shown, "{id}");
+        }
+    }
 
     #[test]
     fn the_sparkline_counts_what_the_transcript_wrote_and_scales_to_its_bound() {

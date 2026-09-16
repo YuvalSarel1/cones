@@ -601,7 +601,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "✻ claude  ",
         "idle  ",
         "fix the widget",
-        "claude-fable-5-1",
+        "Fable 5.1",
         "100k  ",
         "Running the tests",
     ] {
@@ -666,7 +666,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         pane[0] == "~/src/repo"
             && [
                 "idle interactive",
-                "claude-fable-5-1",
+                "Fable 5.1",
                 "started 09-12 10:56:35",
                 "last activity 09-12 10:56:35",
                 "100k context",

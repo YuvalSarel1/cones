@@ -537,7 +537,7 @@ impl Data {
                         label(&s.state),
                         s.kind.as_deref().unwrap_or(""),
                         if s.coordinator { " orchestrator" } else { "" },
-                        s.model.as_deref().unwrap_or("-"),
+                        s.model.as_deref().map_or_else(|| "-".into(), fleet::model),
                         stamp(s.started),
                         stamp(s.last_activity),
                         fleet::context(s),
@@ -851,7 +851,10 @@ fn job_cell(
     match column {
         "state" if !j.enabled => ("off".into(), dim()),
         "state" => (status.to_owned(), color(status)),
-        "model" => (j.model.clone().unwrap_or_else(|| "-".into()), dim()),
+        "model" => (
+            j.model.as_deref().map_or_else(|| "-".into(), fleet::model),
+            dim(),
+        ),
         "age" => (
             last.and_then(|r| r.started.fired_at)
                 .map_or_else(|| "-".into(), fleet::age),
@@ -872,7 +875,10 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
             let quiet = bars.chars().all(|c| c == '▁');
             (bars, if quiet { dim() } else { plain() })
         }
-        "model" => (s.model.clone().unwrap_or_else(|| "-".into()), dim()),
+        "model" => (
+            s.model.as_deref().map_or_else(|| "-".into(), fleet::model),
+            dim(),
+        ),
         "age" => (since(s.started), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
