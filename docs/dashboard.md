@@ -13,6 +13,7 @@ Back to the [README](../README.md). See [harness.md](harness.md) for session sou
 | Sessions | Activity icon, harness mark, optional harness name and state, title, then the configured [columns](#columns). |
 | Jobs | A separate screen with enabled marker, harness, last run status and schedule, name, model, last run age and directory. A `new job` row opens the wizard. |
 | Runs | Newest 200 visible runs: icon, job, status, fired time, duration, dollars and reason. |
+| History | `ctrl+h` shows resumable sessions below the main list, newest recorded activity first. More rows load as you scroll. |
 | Viewer | A live terminal screen for the focused or selected session. |
 | Composer | Instruction for a new session, followed by context-sensitive key hints or the last action's result. |
 
@@ -123,6 +124,7 @@ These keys apply to the dashboard. A focused viewer receives its own input as de
 | `ctrl+e` | Edit a selected job when the composer is empty; otherwise move to the instruction's end. |
 | `ctrl+s` | Group sessions by state or directory. |
 | `ctrl+f` | Filter rows; `enter` keeps the filter, `esc` clears it. |
+| `ctrl+h` | Show or hide session history below the main list. With an empty composer, opening history selects its first row when loaded. |
 | `ctrl+n` | Rename a Claude session by appending its native `custom-title` transcript record. A live session may later overwrite it from memory. |
 | `ctrl+r` | Reload now. |
 | `ctrl+\` | Toggle the pane from the list; switch between split and full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
@@ -145,6 +147,14 @@ The first `ctrl+x` marks the row red. Another key cancels it, as does inactivity
 | Pinned empty folder | Remove the pin; leave the directory alone. |
 
 A removed row leaves the dashboard, not the harness. A deleted Claude session is still in `claude --resume`, and a forgotten Codex thread is still in `codex resume`. The hint line says nothing on success; the row leaving the list is the confirmation.
+
+### Session history
+
+History includes Claude transcripts, Codex rollouts, including archived threads, and pi session files. Live sessions and identified Claude ledger sessions are excluded. Rows use the configured session columns; state and activity are `-`, and other unavailable values stay `-`. History always sorts by the latest recorded activity, regardless of the live list's grouping. Its `last` column shows the last recorded reply.
+
+The list loads pages of 50. Arrows, page-up/down and the wheel over the list reach older rows without wrapping at the end. Filtering searches indexed history beyond the loaded pages. A separate worker indexes metadata and loads detailed columns only for visible rows. `ctrl+r`, or hiding and reopening history, refreshes its snapshot; the live fleet's one-second refresh does not scan history.
+
+With an empty composer, `enter` resumes the selected conversation in its recorded directory and native home. Archived Codex threads are unarchived by Codex when opened. The same viewer is reused when the resumed session appears in the live list. History offers no delete action. A history row's pane stays blank until its viewer is opened and paints; browsing history starts no harness clients.
 
 ### Text editing
 
@@ -178,7 +188,7 @@ Text pastes preserve bracketed-paste mode when requested. An empty paste, which 
 
 Resting on a joinable Claude row opens a speculative viewer after 50 ms in split view or 400 ms otherwise. Finished runs and Codex clients are opened only on request because opening them can change the session or fleet. A speculative viewer says `attach` until first entered; an entered live viewer says `return`.
 
-The live pool targets three viewers. Making room closes the least recently focused Claude attach of a listed session. Codex clients and resumed runs cannot be reopened speculatively, so they are retained and may exceed the cap. Two speculative viewers have a separate pool, oldest evicted first. A viewer left in Claude's own agent list is closed to avoid displaying that list under a session's name.
+The live pool targets three viewers. Making room closes the least recently focused Claude attach of a listed session. Codex clients, resumed runs and viewers opened from history cannot be reopened speculatively, so they are retained and may exceed the cap. Two speculative viewers have a separate pool, oldest evicted first. A viewer left in Claude's own agent list is closed to avoid displaying that list under a session's name.
 
 All viewers close with the dashboard. Closing a viewer leaves its daemon-owned agent running; confirming a stop or removal is a separate action. A composer pi ends with its viewer. Identified Codex threads are recorded after a reported turn for later resume. Returning to the list before the thread appears does not end discovery or claim that it has been recorded. Startup prepares Codex and pi commands on a background thread; `esc` cancels a pending opening.
 

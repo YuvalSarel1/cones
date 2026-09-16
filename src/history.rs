@@ -94,6 +94,8 @@ pub struct Query {
     pub refresh: bool,
     /// Request separately for the visible page after its lightweight rows have arrived.
     pub hydrate: bool,
+    /// When set, hydrate only these entries within the requested page.
+    pub hydrate_keys: Option<HashSet<Key>>,
 }
 
 impl Default for Query {
@@ -106,6 +108,7 @@ impl Default for Query {
             include_archived: false,
             refresh: false,
             hydrate: false,
+            hydrate_keys: None,
         }
     }
 }
@@ -126,6 +129,8 @@ pub struct Page {
     pub total: usize,
     pub generation: u64,
     pub stats: Stats,
+    /// Native home aliases resolved by the worker, for matching live rows without UI file IO.
+    pub homes: HashMap<PathBuf, PathBuf>,
 }
 
 /// One outstanding request, with no queue of obsolete scroll positions or refreshes.
@@ -138,11 +143,37 @@ pub struct Reader {
 
 impl Reader {
     pub fn new(sources: Vec<Source>) -> std::io::Result<Self> {
+        Self::with_sources(move || sources)
+    }
+
+    /// Discover configured native homes on the worker, never on the dashboard input thread.
+    pub fn discover(claude: PathBuf) -> std::io::Result<Self> {
+        Self::with_sources(move || {
+            let mut sources = vec![Source {
+                harness: HarnessKind::Claude,
+                home: claude.clone(),
+            }];
+            sources.extend(codex::homes(&claude).into_iter().map(|home| Source {
+                harness: HarnessKind::Codex,
+                home,
+            }));
+            sources.push(Source {
+                harness: HarnessKind::Pi,
+                home: pi::home(&claude),
+            });
+            sources
+        })
+    }
+
+    fn with_sources(
+        sources: impl FnOnce() -> Vec<Source> + Send + 'static,
+    ) -> std::io::Result<Self> {
         let (requests, rx) = mpsc::channel();
         let (tx, results) = mpsc::channel();
         std::thread::Builder::new()
             .name("cones-history".into())
             .spawn(move || {
+                let sources = sources();
                 let mut cache = Cache::default();
                 while let Ok(query) = rx.recv() {
                     if tx.send(cache.page(&sources, query)).is_err() {
@@ -231,6 +262,7 @@ struct Cache {
     native: HashMap<PathBuf, NativeIndex>,
     columns: HashMap<PathBuf, Hydrated>,
     used: u64,
+    homes: HashMap<PathBuf, PathBuf>,
 }
 
 impl Cache {
@@ -249,13 +281,23 @@ impl Cache {
                 "history changed; restart pagination"
             );
         }
+        let excluded: HashSet<Key> = query
+            .excluded
+            .into_iter()
+            .map(|mut key| {
+                if let Some(home) = self.homes.get(&key.home) {
+                    key.home = home.clone();
+                }
+                key
+            })
+            .collect();
         let needle = query.filter.to_lowercase();
         let matched: Vec<&Entry> = self
             .entries
             .iter()
             .filter(|e| {
                 (query.include_archived || !e.archived)
-                    && !query.excluded.contains(&e.key)
+                    && !excluded.contains(&e.key)
                     && (needle.is_empty()
                         || e.title
                             .as_deref()
@@ -285,6 +327,13 @@ impl Cache {
             });
         if query.hydrate {
             for entry in &mut entries {
+                if query
+                    .hydrate_keys
+                    .as_ref()
+                    .is_some_and(|keys| !keys.contains(&entry.key))
+                {
+                    continue;
+                }
                 let columns = self.hydrate(entry, &mut stats)?;
                 // Native Codex names outrank transcript prompts, including cached hydration.
                 if entry.key.harness != "codex" || entry.title.is_none() {
@@ -300,6 +349,7 @@ impl Cache {
             total,
             generation: self.generation,
             stats,
+            homes: self.homes.clone(),
         })
     }
 
@@ -307,12 +357,14 @@ impl Cache {
         let mut files = HashMap::new();
         let mut native_titles = HashMap::new();
         let mut roots = HashSet::new();
+        let mut homes = HashMap::new();
         for source in sources {
             let home = match fs::canonicalize(&source.home) {
                 Ok(home) => home,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e).context("reading history home"),
             };
+            homes.insert(source.home.clone(), home.clone());
             if !roots.insert((source.harness.to_string(), home.clone())) {
                 continue;
             }
@@ -379,6 +431,7 @@ impl Cache {
         self.columns
             .retain(|p, c| self.files.get(p).is_some_and(|f| f.stamp == c.stamp));
         self.initialized = true;
+        self.homes = homes;
         Ok(())
     }
 

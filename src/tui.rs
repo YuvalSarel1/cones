@@ -6,7 +6,7 @@ use crate::{
     config::{self, HarnessKind, ResolvedJob},
     fleet::{self, Session},
     harness::{self, Start},
-    launchd,
+    history, launchd,
     ledger::{Ledger, Run},
     output, runner,
     viewer::{self, Viewer},
@@ -104,6 +104,9 @@ pub enum Kind {
     Job(String),
     /// Session id and state.
     Session(String, String),
+    /// A historical session's key includes its harness and native home.
+    History(String),
+    HistoryStatus,
     /// Run id and status.
     Run(String, String),
     /// Inserted by `App::rebuild`, outside `Data::rows`.
@@ -115,7 +118,10 @@ pub enum Kind {
 
 impl Kind {
     fn selectable(&self) -> bool {
-        !matches!(self, Kind::Header | Kind::Columns | Kind::Blank)
+        !matches!(
+            self,
+            Kind::Header | Kind::Columns | Kind::Blank | Kind::HistoryStatus
+        )
     }
 
     /// Exclude state so a row keeps its identity across reloads.
@@ -123,6 +129,7 @@ impl Kind {
         match self {
             Kind::Job(name) => Some(name),
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
+            Kind::History(key) => Some(key),
             Kind::Menu => Some("menu"),
             Kind::Folder(dir) => Some(dir),
             Kind::NewJob => Some("new job"),
@@ -353,31 +360,12 @@ impl Data {
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
             .map(|(_, e)| match e {
                 Entry::Folder(_) => vec![],
-                Entry::Session(s) => {
-                    let mut row = vec![
-                        (icon(&s.state).into(), color(&s.state)),
-                        (harness(&s.harness), brand(&s.harness)),
-                    ];
-                    if has_state {
-                        row.push(cell("state", s, by_state, None));
-                    }
-                    // A long title would push every metric column off a 120-column screen.
-                    let title = clip(
-                        &s.title
-                            .clone()
-                            .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
-                        40,
-                    );
-                    // The coordinator is a mark and a colour, never a word in the table.
-                    row.push(if s.coordinator {
-                        (format!("{COORDINATOR} {title}"), lit())
-                    } else {
-                        (title, plain())
-                    });
-                    let spark = sparks.get(&s.session_id).map(String::as_str);
-                    row.extend(cols.iter().map(|c| cell(c, s, by_state, spark)));
-                    row
-                }
+                Entry::Session(s) => session_cells(
+                    s,
+                    &self.columns,
+                    by_state,
+                    sparks.get(&s.session_id).map(String::as_str),
+                ),
                 Entry::Job(j) => {
                     let last = self
                         .runs
@@ -617,9 +605,12 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     }
     for row in data.rows(false) {
         let (key, aux) = match &row.kind {
-            Kind::Header | Kind::Columns | Kind::Blank => ("hdr".to_owned(), "-".to_owned()),
+            Kind::Header | Kind::Columns | Kind::Blank | Kind::HistoryStatus => {
+                ("hdr".to_owned(), "-".to_owned())
+            }
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
+            Kind::History(key) => (key.clone(), "-".into()),
             Kind::Menu => ("menu".to_owned(), "-".to_owned()),
             Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
             Kind::NewJob => ("new job".to_owned(), "-".to_owned()),
@@ -685,6 +676,7 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
         Some(Kind::Job(_)) => "start job",
         Some(Kind::Run(_, s)) if s == "started" => "follow log",
         Some(Kind::Session(..) | Kind::Run(..)) => "attach",
+        Some(Kind::History(_)) => "resume",
         Some(Kind::Menu) => MENU[menu].1,
         Some(Kind::Folder(_)) => "start here",
         Some(Kind::NewJob) => "new job",
@@ -893,13 +885,50 @@ fn job_cell(
 }
 
 /// `spark` is scaled once for the fleet so rows share a bound.
+fn session_cells(
+    s: &Session,
+    set: &[String],
+    by_state: bool,
+    spark: Option<&str>,
+) -> Vec<(String, Style)> {
+    let harness = if set.iter().any(|c| c == "harness") {
+        logo(&s.harness)
+    } else {
+        mark(&s.harness).into()
+    };
+    let mut row = vec![
+        (icon(&s.state).into(), color(&s.state)),
+        (harness, brand(&s.harness)),
+    ];
+    if set.iter().any(|c| c == "state") {
+        row.push(cell("state", s, by_state, None));
+    }
+    let title = clip(
+        &s.title
+            .clone()
+            .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
+        40,
+    );
+    row.push(if s.coordinator {
+        (format!("{COORDINATOR} {title}"), lit())
+    } else {
+        (title, plain())
+    });
+    row.extend(
+        set.iter()
+            .filter(|c| *c != "state" && *c != "harness")
+            .map(|c| cell(c, s, by_state, spark)),
+    );
+    row
+}
+
 fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match column {
         "state" => (label(&s.state).into(), color(&s.state)),
         "activity" => {
             let bars = spark.unwrap_or_default().to_owned();
-            let quiet = bars.chars().all(|c| c == '▁');
+            let quiet = bars == "-" || bars.chars().all(|c| c == '▁');
             (bars, if quiet { dim() } else { plain() })
         }
         "model" => (
@@ -3688,6 +3717,10 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     ("ctrl+s", "regroup sessions by state or by directory"),
     (
+        "ctrl+h",
+        "show or hide session history below the main list; scroll for older sessions and enter to resume",
+    ),
+    (
         "ctrl+f",
         "filter rows by text; enter keeps the filter, esc clears it",
     ),
@@ -3733,7 +3766,10 @@ const GUIDE: &[(&str, &str)] = &[
         "ctrl+\\",
         "from the list, the pane on or off; inside a viewer, beside the list or over the whole frame",
     ),
-    ("wheel", "scrolls the pane's viewer back, focused or not"),
+    (
+        "wheel",
+        "scrolls the pane's viewer back, focused or not; over the list with history open, moves through its rows",
+    ),
     ("", "Leaving"),
     (
         "esc",
@@ -3742,6 +3778,229 @@ const GUIDE: &[(&str, &str)] = &[
     ("ctrl+c twice", "quit"),
     ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
 ];
+
+const HISTORY_PAGE: usize = 50;
+const HISTORY_PREFETCH: usize = 10;
+
+struct HistoryRow {
+    key: String,
+    entry: history::Entry,
+}
+
+struct HistoryBatch {
+    after: Option<history::Cursor>,
+    keys: HashSet<history::Key>,
+}
+
+struct HistoryFetch {
+    revision: u64,
+    after: Option<history::Cursor>,
+    hydrate: bool,
+}
+
+#[derive(Default)]
+struct HistoryView {
+    visible: bool,
+    reader: Option<history::Reader>,
+    rows: Vec<HistoryRow>,
+    batches: Vec<HistoryBatch>,
+    next: Option<history::Cursor>,
+    fetch: Option<HistoryFetch>,
+    revision: u64,
+    first: bool,
+    refresh: bool,
+    ready: bool,
+    filter: String,
+    filter_rest: Option<Instant>,
+    error: Option<String>,
+    select_first: bool,
+    return_to: Option<String>,
+    homes: HashMap<PathBuf, PathBuf>,
+    widths: Widths,
+    /// Retained independently of loaded pages so a resumed viewer survives hiding history.
+    opened: HashMap<String, history::Entry>,
+}
+
+fn history_key(key: &history::Key) -> String {
+    format!("history:{}:{:?}:{}", key.harness, key.home, key.session_id)
+}
+
+/// Reuse column formatting without putting history into the live fleet or its counters.
+fn history_session(entry: &history::Entry) -> Session {
+    let c = entry.columns.clone().unwrap_or_default();
+    Session {
+        session_id: entry.key.session_id.clone(),
+        harness: entry.key.harness.clone(),
+        kind: None,
+        cwd: entry.cwd.clone(),
+        state: "-".into(),
+        started: entry.started,
+        last_activity: entry.last_activity,
+        model: c.model,
+        pid: None,
+        transcript_path: Some(entry.transcript.clone()),
+        tokens_in: c.tokens_in,
+        tokens_out: c.tokens_out,
+        context_tokens: c.context_tokens,
+        context_window: c.context_window,
+        cost_usd: c.cost_usd,
+        title: entry.title.clone(),
+        last: Some(c.last.unwrap_or_else(|| "-".into())),
+        coordinator: false,
+        activity: Vec::new(),
+    }
+}
+
+/// Build native resume commands on the preparation thread; opening history alone does nothing.
+fn history_command(entry: &history::Entry) -> Result<Command> {
+    anyhow::ensure!(
+        entry.cwd.is_dir(),
+        "session directory no longer exists: {}",
+        entry.cwd.display()
+    );
+    anyhow::ensure!(
+        entry.transcript.is_file(),
+        "session transcript no longer exists; reload history"
+    );
+    match entry.key.harness.as_str() {
+        "claude" => {
+            let mut command =
+                harness::adapter(HarnessKind::Claude)?.resume(&entry.key.session_id, &entry.cwd)?;
+            command.env("CLAUDE_CONFIG_DIR", &entry.key.home);
+            Ok(command)
+        }
+        "codex" => {
+            let command =
+                harness::codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd)?;
+            Ok(if entry.archived {
+                unarchive_before_resume(command, &entry.key.session_id)
+            } else {
+                command
+            })
+        }
+        "pi" => {
+            let path =
+                harness::executable("pi", &harness::launch_path()).context("pi not found")?;
+            let mut command = Command::new(path);
+            command
+                .env("PI_CODING_AGENT_DIR", &entry.key.home)
+                .arg("--session")
+                .arg(&entry.transcript)
+                .current_dir(&entry.cwd);
+            Ok(command)
+        }
+        _ => anyhow::bail!("unknown history harness"),
+    }
+}
+
+/// Unarchive only after the user opens the viewer, under the saved thread's native home.
+fn unarchive_before_resume(command: Command, id: &str) -> Command {
+    let mut wrapped = Command::new("/bin/sh");
+    wrapped
+        .arg("-c")
+        .arg(r#""$0" unarchive -- "$1" >/dev/null && shift && exec "$0" "$@""#)
+        .arg(command.get_program())
+        .arg(id)
+        .args(command.get_args());
+    if let Some(cwd) = command.get_current_dir() {
+        wrapped.current_dir(cwd);
+    }
+    for (key, value) in command.get_envs() {
+        if let Some(value) = value {
+            wrapped.env(key, value);
+        } else {
+            wrapped.env_remove(key);
+        }
+    }
+    wrapped
+}
+
+impl HistoryView {
+    fn reset(&mut self, filter: &str, refresh: bool) {
+        self.revision += 1;
+        self.rows.clear();
+        self.batches.clear();
+        self.next = None;
+        self.first = true;
+        self.refresh |= refresh;
+        self.ready = false;
+        self.error = None;
+        self.filter = filter.to_owned();
+        self.filter_rest = Some(Instant::now());
+    }
+
+    fn row(&self, key: &str) -> Option<&history::Entry> {
+        self.rows
+            .iter()
+            .find(|r| r.key == key)
+            .map(|r| &r.entry)
+            .or_else(|| self.opened.get(key))
+    }
+
+    fn table(&mut self, data: &Data, excluded: &HashSet<history::Key>) -> Vec<Row> {
+        if !self.visible {
+            return Vec::new();
+        }
+        let mut rows = vec![
+            Row {
+                kind: Kind::Blank,
+                cells: vec![],
+            },
+            Row {
+                kind: Kind::Header,
+                cells: vec![("history".into(), bold())],
+            },
+        ];
+        let shown: Vec<&HistoryRow> = self
+            .rows
+            .iter()
+            .filter(|r| !excluded.contains(&r.entry.key))
+            .collect();
+        if !shown.is_empty() {
+            let mut names = vec!["", ""];
+            if data.columns.iter().any(|c| c == "state") {
+                names.push("state");
+            }
+            names.push("title");
+            names.extend(
+                data.columns
+                    .iter()
+                    .filter(|c| *c != "state" && *c != "harness")
+                    .map(|c| match c.as_str() {
+                        "tokens" => "tokens in/out",
+                        "last" => "last",
+                        c => c,
+                    }),
+            );
+            let cells = shown
+                .iter()
+                .map(|r| session_cells(&history_session(&r.entry), &data.columns, false, Some("-")))
+                .collect();
+            let (head, cells) = columns(&names, cells, &mut self.widths);
+            rows.push(head);
+            rows.extend(shown.iter().zip(cells).map(|(r, cells)| Row {
+                kind: Kind::History(r.key.clone()),
+                cells,
+            }));
+        }
+        let status = if let Some(error) = &self.error {
+            Some(format!("history unavailable: {error} · ctrl+r retries"))
+        } else if !self.ready || self.fetch.as_ref().is_some_and(|f| !f.hydrate) {
+            Some("loading history".into())
+        } else if shown.is_empty() {
+            Some("no matching history".into())
+        } else {
+            None
+        };
+        if let Some(status) = status {
+            rows.push(Row {
+                kind: Kind::HistoryStatus,
+                cells: vec![(status, dim())],
+            });
+        }
+        rows
+    }
+}
 
 struct App {
     exe: PathBuf,
@@ -3764,6 +4023,7 @@ struct App {
     jobs_view: bool,
     widths: Widths,
     filter: Input,
+    history: HistoryView,
     mode: Mode,
     status: String,
     /// Composer text; `caret` is a byte offset.
@@ -3969,6 +4229,7 @@ impl App {
             other: vec![],
             widths: Widths::new(),
             filter: Input::default(),
+            history: HistoryView::default(),
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
@@ -4070,6 +4331,285 @@ impl App {
         }
     }
 
+    fn session_history_key(&self, s: &Session) -> Option<history::Key> {
+        let home = match s.harness.as_str() {
+            "claude" => self.claude.clone(),
+            "codex" => s
+                .transcript_path
+                .as_deref()
+                .and_then(codex::home_of)
+                .map_or_else(|| codex::home(&self.claude), Path::to_path_buf),
+            "pi" => crate::pi::home(&self.claude),
+            _ => return None,
+        };
+        Some(history::Key {
+            harness: s.harness.clone(),
+            home: self.history.homes.get(&home).cloned().unwrap_or(home),
+            session_id: s.session_id.clone(),
+        })
+    }
+
+    fn history_excluded(&self) -> HashSet<history::Key> {
+        let mut keys: HashSet<_> = self
+            .data
+            .sessions
+            .iter()
+            .filter_map(|s| self.session_history_key(s))
+            .collect();
+        for (key, entry) in &self.history.opened {
+            if self
+                .data
+                .sessions
+                .iter()
+                .any(|s| self.history_matches(key, s))
+            {
+                keys.insert(entry.key.clone());
+            }
+        }
+        for run in &self.data.runs {
+            if let (Some(HarnessKind::Claude), Some(id)) =
+                (run.started.harness, &run.started.session_id)
+            {
+                keys.insert(history::Key {
+                    harness: "claude".into(),
+                    home: self
+                        .history
+                        .homes
+                        .get(&self.claude)
+                        .cloned()
+                        .unwrap_or_else(|| self.claude.clone()),
+                    session_id: id.clone(),
+                });
+            }
+        }
+        keys
+    }
+
+    fn history_matches(&self, key: &str, s: &Session) -> bool {
+        let Some(entry) = self.history.opened.get(key) else {
+            return false;
+        };
+        if entry.key.harness != s.harness {
+            return false;
+        }
+        if s.harness == "pi" {
+            return self
+                .viewer_index(key)
+                .is_some_and(|i| Some(self.viewers[i].viewer.pid()) == s.pid);
+        }
+        self.session_history_key(s).as_ref() == Some(&entry.key)
+    }
+
+    fn toggle_history(&mut self) {
+        let from_history = matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
+        self.history.visible = !self.history.visible;
+        if self.history.visible {
+            self.history.return_to = self
+                .selected()
+                .and_then(|r| r.kind.key().map(str::to_owned));
+            self.history.select_first = self.text.is_empty();
+            self.history.reset(&self.filter.text, true);
+        } else {
+            self.history.revision += 1;
+            self.history.select_first = false;
+        }
+        self.rebuild();
+        if !self.history.visible
+            && from_history
+            && let Some(key) = &self.history.return_to
+            && let Some(i) = self
+                .visible
+                .iter()
+                .position(|&i| self.rows[i].kind.key() == Some(key.as_str()))
+        {
+            self.cursor = i;
+            self.settle();
+        }
+    }
+
+    fn history_viewport(&self) -> HashSet<history::Key> {
+        self.visible
+            .iter()
+            .skip(self.scroll)
+            .take(usize::from(self.list_area.height.max(1)))
+            .filter_map(|&i| match &self.rows[i].kind {
+                Kind::History(key) => self.history.row(key).map(|e| e.key.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Poll and queue the separate reader. No discovery or transcript IO runs here.
+    fn history_tick(&mut self) {
+        self.history.opened.retain(|key, _| {
+            self.viewers.iter().any(|o| &o.key == key)
+                || self.opening.as_ref().is_some_and(|o| &o.key == key)
+        });
+        if let Some(result) = self.history.reader.as_mut().and_then(history::Reader::poll) {
+            let fetch = self.history.fetch.take();
+            if let Some(fetch) = fetch
+                && fetch.revision == self.history.revision
+                && self.history.visible
+            {
+                match result {
+                    Ok(page) => {
+                        self.history.homes = page.homes;
+                        if fetch.hydrate {
+                            for entry in page.entries.into_iter().filter(|e| e.columns.is_some()) {
+                                if let Some(row) = self
+                                    .history
+                                    .rows
+                                    .iter_mut()
+                                    .find(|r| r.entry.key == entry.key)
+                                {
+                                    row.entry = entry;
+                                }
+                            }
+                            // Keep columns near the viewport; metadata remains for scrolling back.
+                            let visible = self.history_viewport();
+                            let mut count = self
+                                .history
+                                .rows
+                                .iter()
+                                .filter(|r| r.entry.columns.is_some())
+                                .count();
+                            for row in &mut self.history.rows {
+                                if count > 128
+                                    && !visible.contains(&row.entry.key)
+                                    && row.entry.columns.take().is_some()
+                                {
+                                    count -= 1;
+                                }
+                            }
+                        } else {
+                            self.history.batches.push(HistoryBatch {
+                                after: fetch.after,
+                                keys: page.entries.iter().map(|e| e.key.clone()).collect(),
+                            });
+                            for entry in page.entries {
+                                if !self.history.rows.iter().any(|r| r.entry.key == entry.key) {
+                                    self.history.rows.push(HistoryRow {
+                                        key: history_key(&entry.key),
+                                        entry,
+                                    });
+                                }
+                            }
+                            self.history.next = page.next;
+                            self.history.ready = true;
+                        }
+                        self.history.error = None;
+                    }
+                    Err(error) => self.history.error = Some(format!("{error:#}")),
+                }
+                self.rebuild();
+                if self.history.select_first
+                    && self.focus.is_none()
+                    && self.text.is_empty()
+                    && let Some(i) = self
+                        .visible
+                        .iter()
+                        .position(|&i| matches!(self.rows[i].kind, Kind::History(_)))
+                {
+                    self.cursor = i;
+                    self.settle();
+                    self.history.select_first = false;
+                }
+                self.feedback = Some(("history_to_draw", Instant::now()));
+            }
+        }
+        if !self.history.visible
+            || self.jobs_view
+            || (self.pane_focused() && !self.split_active())
+            || self.history.fetch.is_some()
+            || self.history.error.is_some()
+        {
+            return;
+        }
+        if matches!(self.mode, Mode::Filter)
+            && self
+                .history
+                .filter_rest
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(150))
+        {
+            return;
+        }
+        if self.history.reader.is_none() {
+            match history::Reader::discover(self.claude.clone()) {
+                Ok(reader) => self.history.reader = Some(reader),
+                Err(error) => {
+                    self.history.error = Some(error.to_string());
+                    self.rebuild();
+                    return;
+                }
+            }
+        }
+        let visible = self.history_viewport();
+        let last_shown = self
+            .visible
+            .iter()
+            .rev()
+            .find_map(|&i| match &self.rows[i].kind {
+                Kind::History(key) => self.history.row(key).map(|e| &e.key),
+                _ => None,
+            });
+        let near_end = (!self.history.rows.is_empty() && last_shown.is_none())
+            || last_shown.is_some_and(|key| visible.contains(key))
+            || self.history.rows.iter().enumerate().any(|(i, r)| {
+                visible.contains(&r.entry.key) && i + HISTORY_PREFETCH >= self.history.rows.len()
+            });
+        let hydrate_keys: HashSet<_> = self
+            .history
+            .rows
+            .iter()
+            .filter(|r| r.entry.columns.is_none() && visible.contains(&r.entry.key))
+            .map(|r| r.entry.key.clone())
+            .collect();
+        let (after, hydrate) = if self.history.first {
+            (None, false)
+        } else if near_end && self.history.next.is_some() {
+            (self.history.next.clone(), false)
+        } else if let Some(batch) = self
+            .history
+            .batches
+            .iter()
+            .find(|b| !b.keys.is_disjoint(&hydrate_keys))
+        {
+            (batch.after.clone(), true)
+        } else {
+            return;
+        };
+        let query = history::Query {
+            after: after.clone(),
+            limit: HISTORY_PAGE,
+            filter: self.history.filter.clone(),
+            excluded: self.history_excluded(),
+            refresh: self.history.refresh,
+            hydrate,
+            hydrate_keys: hydrate.then_some(hydrate_keys),
+            include_archived: true,
+        };
+        match self.history.reader.as_mut().unwrap().request(query) {
+            Ok(true) => {
+                self.history.fetch = Some(HistoryFetch {
+                    revision: self.history.revision,
+                    after,
+                    hydrate,
+                });
+                self.history.first = false;
+                self.history.refresh = false;
+                if !hydrate {
+                    self.rebuild();
+                    self.feedback = Some(("history_request_to_draw", Instant::now()));
+                }
+            }
+            Ok(false) => {}
+            Err(error) => {
+                self.history.error = Some(error.to_string());
+                self.rebuild();
+            }
+        }
+    }
+
     fn poll(&mut self) {
         self.poll_stops();
         let mut launched = false;
@@ -4168,6 +4708,11 @@ impl App {
     }
 
     fn apply(&mut self, mut data: Data) {
+        let history_browsing = self.history.select_first
+            || matches!(
+                self.selected().map(|r| &r.kind),
+                Some(Kind::History(_) | Kind::HistoryStatus)
+            );
         if self.status.starts_with("reload failed:") {
             self.status.clear();
         }
@@ -4179,7 +4724,27 @@ impl App {
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        let replaced = self.reconcile_launches(&mut data);
+        let mut replaced = self.reconcile_launches(&mut data);
+        for key in self.history.opened.keys() {
+            if let Some(session) = data
+                .sessions
+                .iter_mut()
+                .find(|s| self.history_matches(key, s))
+            {
+                if session.title.is_none() {
+                    session.title = self.history.opened.get(key).and_then(|e| e.title.clone());
+                }
+                replaced.insert(key.clone(), session.session_id.clone());
+                for previous in self
+                    .data
+                    .sessions
+                    .iter()
+                    .filter(|s| self.history_matches(key, s))
+                {
+                    replaced.insert(previous.session_id.clone(), session.session_id.clone());
+                }
+            }
+        }
         self.pending.retain(|p| {
             !replaced.contains_key(&p.session.session_id)
                 && (p.at.elapsed() < PENDING_TTL
@@ -4219,7 +4784,7 @@ impl App {
                 self.cursor = i;
                 self.settle();
             }
-        } else if let Some(id) = arrived {
+        } else if !history_browsing && let Some(id) = arrived {
             self.select_new(&id);
         }
         self.refreshed = Instant::now();
@@ -4395,6 +4960,13 @@ impl App {
             &deleting,
             &mut self.widths,
         ));
+        let excluded = self.history_excluded();
+        let history = self.history.table(&self.data, &excluded);
+        if self.jobs_view {
+            self.other.extend(history);
+        } else {
+            self.rows.extend(history);
+        }
         self.apply_filter();
         if let Some(k) = &keep
             && let Some(i) = self
@@ -4422,6 +4994,7 @@ impl App {
         let matched: Vec<usize> = (0..rows.len())
             .filter(|&i| {
                 needle.is_empty()
+                    || matches!(rows[i].kind, Kind::History(_) | Kind::HistoryStatus)
                     || (!rows[i].kind.selectable() && rows[i].kind != Kind::Columns)
                     || rows[i].text().to_lowercase().contains(&needle)
             })
@@ -4435,10 +5008,11 @@ impl App {
             .enumerate()
             .filter(|&(n, &i)| {
                 rows[i].kind.selectable()
+                    || rows[i].kind == Kind::HistoryStatus
                     || (rows[i].kind == Kind::Header
-                        && matched
-                            .get(n + 1)
-                            .is_some_and(|&j| rows[j].kind.selectable()))
+                        && matched.get(n + 1).is_some_and(|&j| {
+                            rows[j].kind.selectable() || rows[j].kind == Kind::HistoryStatus
+                        }))
             })
             .map(|(_, &i)| i)
             .collect();
@@ -4461,12 +5035,17 @@ impl App {
     }
 
     fn step(&mut self, delta: isize) {
+        self.history.select_first = false;
         let n = self.visible.len() as isize;
         if n == 0 {
             return;
         }
         let mut i = self.cursor as isize;
         for _ in 0..n {
+            if self.history.visible && (i + delta >= n || i + delta < 0) {
+                // Stay at the end while the next page arrives; history never wraps to the menu.
+                break;
+            }
             i = (i + delta).rem_euclid(n);
             if self.rows[self.visible[i as usize]].kind.selectable() {
                 break;
@@ -4503,6 +5082,7 @@ impl App {
                 .iter()
                 .find(|s| &s.session_id == id)
                 .map(|s| s.cwd.clone()),
+            Kind::History(key) => self.history.row(key).map(|e| e.cwd.clone()),
             Kind::Run(id, _) => self
                 .data
                 .runs
@@ -4541,6 +5121,7 @@ impl App {
         match kind {
             Kind::Session(id, _) => Some(id.clone()),
             Kind::Run(id, _) => Some(format!("run:{id}")),
+            Kind::History(key) => Some(key.clone()),
             _ => None,
         }
     }
@@ -4562,6 +5143,13 @@ impl App {
             return None;
         };
         let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+        if let Some(i) = self
+            .viewers
+            .iter()
+            .position(|o| self.history_matches(&o.key, s))
+        {
+            return Some(i);
+        }
         let (pid, launched) = (s.pid?, format!("{}:start:", s.harness));
         self.viewers
             .iter()
@@ -4629,7 +5217,12 @@ impl App {
             return None;
         }
         let own = self.selected().and_then(|r| self.viewer_of(&r.kind));
-        if own.is_some() || matches!(self.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
+        if own.is_some()
+            || matches!(
+                self.selected().map(|r| &r.kind),
+                Some(Kind::Session(..) | Kind::History(_) | Kind::HistoryStatus)
+            )
+        {
             return own;
         }
         self.most_recently_focused()
@@ -4843,6 +5436,7 @@ impl App {
                     && Some(*i) != keep
                     && o.what == "attach"
                     && !o.key.starts_with("run:")
+                    && !o.key.starts_with("history:")
             })
             .min_by_key(|(_, o)| o.last_focused)
             .map(|(i, _)| i)
@@ -4869,6 +5463,7 @@ impl App {
         if !matches!(self.mode, Mode::Normal)
             || self.focus.is_some()
             || self.opening.is_some()
+            || self.history.select_first
             || !self.text.trim().is_empty()
         {
             return None;
@@ -5128,8 +5723,14 @@ impl App {
                 self.data
                     .sessions
                     .iter()
-                    .find(|s| s.session_id == open.key)
+                    .find(|s| s.session_id == open.key || self.history_matches(&open.key, s))
                     .and_then(|s| s.title.clone())
+            })
+            .or_else(|| {
+                self.history
+                    .opened
+                    .get(&open.key)
+                    .and_then(|e| e.title.clone())
             })
             .unwrap_or_else(|| open.what.clone());
         let mut middle = vec![
@@ -5144,7 +5745,12 @@ impl App {
             .data
             .sessions
             .iter()
-            .filter(|s| has_id && s.state == "blocked" && s.session_id != open.key)
+            .filter(|s| {
+                has_id
+                    && s.state == "blocked"
+                    && s.session_id != open.key
+                    && !self.history_matches(&open.key, s)
+            })
             .max_by_key(|s| s.last_activity)
             .map(|s| {
                 let title = s
@@ -5202,7 +5808,7 @@ impl App {
 
     /// Clients without mouse reporting leave wheel scrolling to our emulator.
     fn wants_mouse(&self) -> bool {
-        self.split_active() || self.focus.is_some()
+        self.split_active() || self.focus.is_some() || self.history.visible
     }
 
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
@@ -5263,6 +5869,36 @@ impl App {
     /// Clamp drags and releases outside the pane so the viewer sees buttons released.
     /// Shift-wheel or clients without mouse reporting scroll the emulator.
     fn mouse(&mut self, ev: MouseEvent) {
+        let list = self.list_area;
+        if self.history.visible
+            && !self.jobs_view
+            && matches!(self.mode, Mode::Normal | Mode::Filter)
+            && (self.split_active() || !self.pane_focused())
+            && (list.left()..list.right()).contains(&ev.column)
+            && (list.top()..list.bottom()).contains(&ev.row)
+        {
+            if matches!(
+                ev.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+            ) {
+                if self.focus.is_some() {
+                    self.unfocus();
+                }
+                let delta = if ev.kind == MouseEventKind::ScrollDown {
+                    1
+                } else {
+                    -1
+                };
+                for _ in 0..WHEEL_LINES {
+                    self.step(delta);
+                }
+                return;
+            }
+            if ev.kind == MouseEventKind::Down(MouseButton::Left) {
+                self.click(ev);
+                return;
+            }
+        }
         if self.split_active() && !self.click(ev) {
             return;
         }
@@ -5316,9 +5952,11 @@ impl App {
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return true;
         }
+        self.history.select_first = false;
         let p = self.pane;
-        let on_pane =
-            (p.left()..p.right()).contains(&ev.column) && (p.top()..p.bottom()).contains(&ev.row);
+        let on_pane = (self.split_active() || self.pane_focused())
+            && (p.left()..p.right()).contains(&ev.column)
+            && (p.top()..p.bottom()).contains(&ev.row);
         if on_pane {
             match self.panel() {
                 None => {
@@ -5474,12 +6112,11 @@ impl App {
 
     /// Record only this viewer's identified thread after a reported turn.
     fn record_codex(&mut self, id: &str) -> bool {
-        let Some(s) = self
-            .data
-            .sessions
-            .iter()
-            .find(|s| s.session_id == id && s.harness == "codex" && s.state != "-")
-        else {
+        let Some(s) = self.data.sessions.iter().find(|s| {
+            (s.session_id == id || self.history_matches(id, s))
+                && s.harness == "codex"
+                && s.state != "-"
+        }) else {
             return false;
         };
         let (Some(started), Some(rollout)) = (s.started, &s.transcript_path) else {
@@ -5488,7 +6125,7 @@ impl App {
         match codex::remember(
             &self.state,
             codex::Thread {
-                id: id.to_owned(),
+                id: s.session_id.clone(),
                 cwd: s.cwd.clone(),
                 started,
                 rollout: rollout.clone(),
@@ -5532,6 +6169,7 @@ impl App {
     }
 
     fn enter(&mut self) -> Result<()> {
+        self.history.select_first = false;
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return Ok(());
         };
@@ -5605,6 +6243,29 @@ impl App {
                 let mut c = self.me();
                 c.args(["__attach", &id]);
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
+            }
+            Kind::History(key) => {
+                let Some(entry) = self.history.row(&key).cloned() else {
+                    return Ok(());
+                };
+                if self.history_excluded().contains(&entry.key) {
+                    self.status = "session is already in the main list".into();
+                    self.rebuild();
+                    return Ok(());
+                }
+                let what = match entry.key.harness.as_str() {
+                    "claude" => "attach",
+                    "codex" => "codex",
+                    _ => "pi",
+                };
+                let record = (entry.key.harness == "codex")
+                    .then_some(entry.started)
+                    .flatten()
+                    .map(|at| (entry.cwd.clone(), at));
+                self.history.opened.insert(key.clone(), entry.clone());
+                self.prepare_viewer(what.into(), key, record, None, move || {
+                    history_command(&entry)
+                });
             }
             Kind::Menu => self.open_menu(),
             Kind::Folder(dir) => {
@@ -5720,6 +6381,7 @@ impl App {
     }
 
     fn launch_row(&mut self, kind: HarnessKind, dir: &Path, prompt: &str) -> String {
+        self.history.select_first = false;
         let nonce = uuid::Uuid::new_v4();
         let id = match kind {
             HarnessKind::Claude => format!("starting:{nonce}"),
@@ -6061,6 +6723,16 @@ impl App {
                 if self.selected().is_some() {
                     keys.push(("enter", self.enter_label()));
                 }
+                if !self.jobs_view {
+                    keys.push((
+                        "ctrl+h",
+                        if self.history.visible {
+                            "hide history"
+                        } else {
+                            "history"
+                        },
+                    ));
+                }
                 if self.menu_is(MENU[self.menu].0) {
                     keys.push(("← →", "pick"));
                 }
@@ -6356,6 +7028,12 @@ impl App {
                         self.filter.key(code, mods);
                     }
                 }
+                if self.history.visible && self.history.filter != self.filter.text {
+                    self.history.select_first =
+                        matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
+                    self.history.reset(&self.filter.text, false);
+                    self.rebuild();
+                }
                 self.apply_filter();
                 self.settle();
             }
@@ -6539,6 +7217,12 @@ impl App {
                     }
                     KeyCode::Up => self.step(-1),
                     KeyCode::Down => self.step(1),
+                    KeyCode::PageUp | KeyCode::PageDown if self.history.visible => {
+                        let delta = if code == KeyCode::PageDown { 1 } else { -1 };
+                        for _ in 0..self.list_area.height.saturating_sub(1).max(1) {
+                            self.step(delta);
+                        }
+                    }
                     KeyCode::Tab => match self.shown() {
                         Some(i) => self.focus(i),
                         None if self.jobs_view => self.leave_jobs(),
@@ -6577,8 +7261,15 @@ impl App {
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
+                    KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
+                        if self.history.visible {
+                            self.history.select_first =
+                                matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
+                            self.history.reset(&self.filter.text, true);
+                            self.rebuild();
+                        }
                         self.invalidate();
                         self.status = "refresh requested".into();
                     }
@@ -6969,7 +7660,11 @@ impl App {
                 // Only a table has columns; a menu or hint row keeps every cell it has.
                 let tabular = matches!(
                     row.kind,
-                    Kind::Session(..) | Kind::Job(_) | Kind::Run(..) | Kind::Columns
+                    Kind::Session(..)
+                        | Kind::History(_)
+                        | Kind::Job(_)
+                        | Kind::Run(..)
+                        | Kind::Columns
                 );
                 spans.extend(if self.data.whole_columns && tabular {
                     whole_cells(
@@ -7042,6 +7737,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                 app.reload();
             }
             app.poll();
+            app.history_tick();
             let dirty = app.pump();
             app.prespawn_tick();
             app.expire();
@@ -8399,6 +9095,480 @@ mod tests {
         );
     }
 
+    fn history_fixture(
+        count: usize,
+    ) -> (
+        tempfile::TempDir,
+        App,
+        Terminal<ratatui::backend::TestBackend>,
+    ) {
+        let d = dir();
+        let project = d.path().join("projects/history");
+        fs::create_dir_all(&project).unwrap();
+        for n in 0..count {
+            let id = format!("{n:08x}-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            let at = chrono::DateTime::parse_from_rfc3339("2026-09-10T12:00:00Z").unwrap()
+                + chrono::Duration::seconds(n as i64);
+            let records = [
+                serde_json::json!({"type":"user","cwd":d.path(),"timestamp":"2026-09-09T12:00:00Z","message":{"content":format!("old session {n:03}")}}),
+                serde_json::json!({"type":"assistant","timestamp":at.to_rfc3339(),"message":{"id":"m","model":"fixture-model","usage":{"input_tokens":20,"output_tokens":4},"content":[{"type":"text","text":format!("reply {n}")}]}}),
+            ];
+            fs::write(
+                project.join(format!("{id}.jsonl")),
+                records.iter().map(|v| format!("{v}\n")).collect::<String>(),
+            )
+            .unwrap();
+        }
+        let mut app = app(d.path());
+        app.rebuild();
+        app.history.reader = Some(
+            history::Reader::new(vec![history::Source {
+                harness: HarnessKind::Claude,
+                home: d.path().to_owned(),
+            }])
+            .unwrap(),
+        );
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        (d, app, terminal)
+    }
+
+    fn history_until(
+        app: &mut App,
+        terminal: &mut Terminal<ratatui::backend::TestBackend>,
+        done: impl Fn(&App) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            app.history_tick();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            if done(app) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "history did not settle: {:?}",
+                app.history.error
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn ctrl_h_loads_history_below_the_main_list_without_changing_live_counts() {
+        let (d, mut app, mut terminal) = history_fixture(4);
+        let mut live = session(A, "idle", "live session", 0);
+        live.cwd = d.path().to_owned();
+        app.data.sessions.push(live);
+        app.rebuild();
+        let before = app.data.summary(0).to_string();
+        assert!(app.history.rows.is_empty());
+        assert!(app.hint_line().to_string().contains("ctrl+h"));
+        app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.rows.iter().any(|r| r.entry.columns.is_some())
+        });
+        assert_eq!(app.history.rows.len(), 4);
+        assert_eq!(app.data.summary(0).to_string(), before);
+        assert_eq!(app.data.sessions.len(), 1);
+        assert!(app.viewers.is_empty());
+        assert!(app.opening.is_none());
+        assert_eq!(app.selected_cwd().as_deref(), Some(d.path()));
+        let live_at = app
+            .rows
+            .iter()
+            .position(|r| matches!(&r.kind, Kind::Session(id, _) if id == A))
+            .unwrap();
+        let history_at = app
+            .rows
+            .iter()
+            .position(|r| matches!(r.kind, Kind::History(_)))
+            .unwrap();
+        assert!(history_at > live_at);
+        assert_eq!(
+            app.history.rows[0].entry.title.as_deref(),
+            Some("old session 003")
+        );
+        assert_eq!(app.enter_label(), "resume");
+        let historical = &app.rows[history_at];
+        assert!(historical.text().contains("fixture-model"));
+        assert!(!historical.working());
+        assert_eq!(historical.cells[2].0.trim(), "-");
+        assert!(historical.cells.iter().any(|c| c.0.trim() == "20"));
+        app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
+        assert_eq!(app.data.summary(0).to_string(), before);
+    }
+
+    #[test]
+    fn history_prefetches_older_pages_and_does_not_wrap_while_scrolling_down() {
+        let (_d, mut app, mut terminal) = history_fixture(120);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.rows.len(), HISTORY_PAGE);
+        assert!(
+            app.history
+                .rows
+                .iter()
+                .filter(|r| r.entry.columns.is_some())
+                .count()
+                < HISTORY_PAGE
+        );
+        for expected in [100, 120] {
+            let last = app
+                .visible
+                .iter()
+                .rposition(|&i| matches!(app.rows[i].kind, Kind::History(_)))
+                .unwrap();
+            app.cursor = last;
+            for _ in 0..5 {
+                app.step(1);
+            }
+            assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+            terminal.draw(|f| app.draw(f)).unwrap();
+            history_until(&mut app, &mut terminal, |a| {
+                a.history.rows.len() >= expected && a.history.fetch.is_none()
+            });
+        }
+        assert!(app.history.next.is_none());
+        assert_eq!(
+            app.history.rows.last().unwrap().entry.title.as_deref(),
+            Some("old session 000")
+        );
+        let keys: HashSet<_> = app.history.rows.iter().map(|r| &r.key).collect();
+        assert_eq!(keys.len(), 120);
+        assert!(
+            app.history
+                .rows
+                .windows(2)
+                .all(|r| r[0].entry.last_activity >= r[1].entry.last_activity)
+        );
+    }
+
+    #[test]
+    fn history_filter_searches_unloaded_pages_and_discards_an_obsolete_request() {
+        let (_d, mut app, mut terminal) = history_fixture(120);
+        app.toggle_history();
+        app.history_tick();
+        assert!(app.history.fetch.is_some());
+        app.key(KeyCode::Char('f'), KeyModifiers::CONTROL).unwrap();
+        for c in "old session 005".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.rows.len(), 1);
+        assert_eq!(
+            app.history.rows[0].entry.title.as_deref(),
+            Some("old session 005")
+        );
+        assert!(
+            app.rows
+                .iter()
+                .filter(|r| matches!(r.kind, Kind::History(_)))
+                .all(|r| r.text().contains("old session 005"))
+        );
+        app.key(KeyCode::Char('f'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.rows.len() == HISTORY_PAGE
+        });
+    }
+
+    #[test]
+    fn hiding_history_discards_an_inflight_page_and_a_live_arrival_does_not_steal_history_selection()
+     {
+        let (d, mut app, mut terminal) = history_fixture(4);
+        app.toggle_history();
+        app.history_tick();
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.fetch.is_none());
+        assert!(!app.history.visible);
+        assert!(app.history.rows.is_empty());
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        let selected = key(&app);
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let mut live = session(A, "active", "new live arrival", 0);
+        live.cwd = d.path().to_owned();
+        data.sessions.push(live);
+        app.apply(data);
+        assert_eq!(key(&app), selected);
+        let launch = app.launch_row(HarnessKind::Claude, d.path(), "new instruction");
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(launch.as_str()),
+            "an explicit launch still takes selection"
+        );
+    }
+
+    #[test]
+    fn a_history_selection_clears_another_viewer_and_never_speculatively_resumes() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.viewers.push(viewer_open(A, "attach", "OTHER VIEWER"));
+        wait_paint(&mut app, 0, "OTHER VIEWER");
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && matches!(a.selected().map(|r| &r.kind), Some(Kind::History(_)))
+        });
+        assert_eq!(app.shown(), None);
+        let selected = key(&app).unwrap();
+        rested(&mut app, &selected, Duration::from_secs(2));
+        assert_eq!(app.prespawn_target(), None);
+        assert_eq!(app.viewers.len(), 1);
+        assert!(
+            !rows(&terminal, 160)
+                .iter()
+                .any(|l| l.contains("OTHER VIEWER"))
+        );
+    }
+
+    #[test]
+    fn history_live_exclusions_follow_native_homes_and_known_ledger_sessions() {
+        let (_d, mut app, mut terminal) = history_fixture(4);
+        let id = "00000003-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let mut live = session(id, "idle", "already live", 0);
+        live.cwd = app.claude.clone();
+        app.data.sessions.push(live);
+        let mut record = crate::ledger::Record::new("run".into(), crate::ledger::Status::Ok);
+        record.harness = Some(HarnessKind::Claude);
+        record.session_id = Some("00000002-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into());
+        app.data.runs.push(Run {
+            started: record,
+            terminal: None,
+        });
+        app.rebuild();
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        assert_eq!(app.history.rows.len(), 2);
+        assert!(
+            app.history
+                .rows
+                .iter()
+                .all(|r| r.entry.key.session_id != id)
+        );
+    }
+
+    #[test]
+    fn resumed_history_viewers_follow_all_three_harnesses_into_live_rows() {
+        for harness in ["claude", "codex", "pi"] {
+            let (d, mut app, mut terminal) = history_fixture(1);
+            app.toggle_history();
+            history_until(&mut app, &mut terminal, |a| a.history.ready);
+            let mut entry = app.history.rows[0].entry.clone();
+            entry.key.harness = harness.into();
+            entry.key.home = match harness {
+                "codex" => codex::home(&app.claude),
+                "pi" => crate::pi::home(&app.claude),
+                _ => entry.key.home.clone(),
+            };
+            entry.transcript = entry.key.home.join("sessions/2026/09/10/rollout.jsonl");
+            let viewer_key = history_key(&entry.key);
+            app.history.rows = vec![HistoryRow {
+                key: viewer_key.clone(),
+                entry: entry.clone(),
+            }];
+            app.history.opened.insert(viewer_key.clone(), entry.clone());
+            app.viewers
+                .push(viewer_open(&viewer_key, harness, "RESUMED"));
+            let pid = app.viewers[0].viewer.pid();
+            app.rebuild();
+            app.cursor = app
+                .visible
+                .iter()
+                .position(|&i| matches!(app.rows[i].kind, Kind::History(_)))
+                .unwrap();
+            app.focus = Some(0);
+            let mut native = history_session(&entry);
+            native.cwd = d.path().to_owned();
+            native.pid = Some(pid);
+            native.state = "idle".into();
+            native.kind = match harness {
+                "claude" => Some("bg".into()),
+                "codex" => Some("daemon".into()),
+                _ => None,
+            };
+            if harness == "pi" {
+                native.session_id = format!("pi-{pid}");
+                native.title = None;
+            }
+            let first_id = native.session_id.clone();
+            let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+            data.sessions.push(native);
+            app.apply(data);
+            assert_eq!(key(&app).as_deref(), Some(first_id.as_str()), "{harness}");
+            assert_eq!(app.focus, Some(0));
+            assert_eq!(app.viewer_of(&app.selected().unwrap().kind), Some(0));
+            assert_eq!(app.enter_label(), "return");
+            app.enter().unwrap();
+            assert_eq!(app.viewers.len(), 1);
+            assert_eq!(app.viewers[0].viewer.pid(), pid);
+            assert!(!app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
+            if harness == "pi" {
+                assert_eq!(app.data.sessions[0].title, entry.title);
+                let mut reported = app.data.sessions[0].clone();
+                reported.session_id = entry.key.session_id.clone();
+                let mut other = session(B, "idle", "another pi", 0);
+                other.harness = "pi".into();
+                other.cwd = PathBuf::from("/aaa");
+                let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+                data.sessions = vec![other, reported];
+                app.apply(data);
+                assert_eq!(key(&app).as_deref(), Some(entry.key.session_id.as_str()));
+                assert_eq!(app.viewer_of(&app.selected().unwrap().kind), Some(0));
+                assert_eq!(app.viewers.len(), 1);
+            }
+            app.focus = None;
+            app.toggle_history();
+            assert_eq!(app.viewer_of(&app.selected().unwrap().kind), Some(0));
+        }
+    }
+
+    #[test]
+    fn history_viewers_do_not_match_the_same_thread_id_in_another_codex_home() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let mut entry = app.history.rows[0].entry.clone();
+        entry.key.harness = "codex".into();
+        entry.key.home = app.claude.join("one");
+        let viewer_key = history_key(&entry.key);
+        app.history.opened.insert(viewer_key.clone(), entry.clone());
+        app.viewers.push(viewer_open(&viewer_key, "codex", "ONE"));
+        let mut other = history_session(&entry);
+        other.transcript_path = Some(app.claude.join("two/sessions/rollout.jsonl"));
+        app.data.sessions.push(other);
+        assert_eq!(
+            app.viewer_of(&Kind::Session(entry.key.session_id.clone(), "-".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn history_paging_continues_when_every_loaded_row_becomes_live() {
+        let (_d, mut app, mut terminal) = history_fixture(60);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.rows.len(), HISTORY_PAGE);
+        let live: Vec<_> = app
+            .history
+            .rows
+            .iter()
+            .map(|r| history_session(&r.entry))
+            .collect();
+        app.data.sessions = live;
+        app.rebuild();
+        assert!(!app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
+        history_until(&mut app, &mut terminal, |a| a.history.rows.len() == 60);
+        assert!(app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
+    }
+
+    #[test]
+    fn history_wheel_and_page_keys_scroll_the_list_with_the_pane_closed() {
+        let (_d, mut app, mut terminal) = history_fixture(40);
+        app.split = false;
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        assert!(app.wants_mouse());
+        let before = app.cursor;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: app.list_area.x + 1,
+            row: app.list_area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.cursor > before);
+        let before = app.cursor;
+        app.key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
+        assert!(app.cursor > before);
+        assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+    }
+
+    #[test]
+    fn history_unarchive_uses_native_argv_and_failure_prevents_resume() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let program = d.path().join("fake codex");
+        fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CAPTURE\"\nprintf 'home=%s\\n' \"$CODEX_HOME\" >> \"$CAPTURE\"\nif [ \"$1\" = unarchive ]; then exit \"$FAIL_UNARCHIVE\"; fi\n").unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        for fail in ["0", "7"] {
+            let capture = d.path().join(format!("capture{fail}"));
+            let mut command = Command::new(&program);
+            command
+                .args(["--remote", "unix:///socket with spaces", "resume", "--", A])
+                .env("CODEX_HOME", d.path())
+                .env("CAPTURE", &capture)
+                .env("FAIL_UNARCHIVE", fail)
+                .current_dir(d.path());
+            let result = unarchive_before_resume(command, A).output().unwrap();
+            assert_eq!(result.status.success(), fail == "0");
+            let captured = fs::read_to_string(capture).unwrap();
+            assert!(captured.starts_with(&format!("unarchive\n--\n{A}\n")));
+            assert_eq!(
+                captured.contains("--remote\nunix:///socket with spaces\nresume\n--\n"),
+                fail == "0"
+            );
+        }
+    }
+
+    #[test]
+    fn history_resume_refuses_missing_files_before_preparing_a_harness() {
+        let (d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let mut entry = app.history.rows[0].entry.clone();
+        entry.cwd = d.path().join("gone");
+        assert!(
+            history_command(&entry)
+                .unwrap_err()
+                .to_string()
+                .contains("directory")
+        );
+        entry.cwd = d.path().to_owned();
+        fs::remove_file(&entry.transcript).unwrap();
+        assert!(
+            history_command(&entry)
+                .unwrap_err()
+                .to_string()
+                .contains("transcript")
+        );
+    }
+
+    #[test]
+    fn history_key_belongs_to_a_focused_client_and_history_rows_offer_no_delete() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.viewers.push(viewer_open(A, "attach", "CLIENT"));
+        app.focus = Some(0);
+        app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.history.visible, "a focused client keeps ctrl+h");
+        app.focus = None;
+        app.toggle_history();
+        app.split = false;
+        app.focus = Some(0);
+        app.history_tick();
+        assert!(
+            app.history.fetch.is_none(),
+            "a full-frame viewer hides the history viewport"
+        );
+        app.focus = None;
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let transcript = app.history.rows[0].entry.transcript.clone();
+        let before = fs::read(&transcript).unwrap();
+        assert_eq!(app.stop_verb(), None);
+        app.key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.stopping.is_empty());
+        assert_eq!(fs::read(transcript).unwrap(), before);
+    }
+
     fn app(dir: &Path) -> App {
         App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
     }
@@ -9495,7 +10665,10 @@ mod tests {
         );
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter add folder · ← → pick · shift+tab harness · esc quit"),
+            hint.starts_with("enter add folder")
+                && hint.contains("ctrl+h history")
+                && hint.contains("← → pick")
+                && hint.ends_with("esc quit"),
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.text = "fix the tests".into();

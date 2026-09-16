@@ -936,3 +936,42 @@ fn measure_local_claude_archive() {
         );
     }
 }
+
+#[test]
+fn viewport_hydration_reads_only_requested_keys_and_live_exclusions_accept_home_aliases() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("native");
+    let alias = dir.path().join("alias");
+    claude(&home, A, "2026-09-10T13:00:00Z");
+    claude(&home, B, "2026-09-10T12:00:00Z");
+    symlink(&home, &alias).unwrap();
+    let mut reader = Reader::new(vec![source(&alias, HarnessKind::Claude)]).unwrap();
+    let indexed = page(&mut reader, Query::default()).unwrap();
+    assert_eq!(
+        indexed.homes.get(&alias),
+        Some(&home.canonicalize().unwrap())
+    );
+    let hydrated = page(
+        &mut reader,
+        Query {
+            hydrate: true,
+            hydrate_keys: Some([indexed.entries[1].key.clone()].into_iter().collect()),
+            ..Query::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(hydrated.stats.hydrated_files, 1);
+    assert!(hydrated.entries[0].columns.is_none());
+    assert!(hydrated.entries[1].columns.is_some());
+    let mut live = indexed.entries[0].key.clone();
+    live.home = alias;
+    let excluded = page(
+        &mut reader,
+        Query {
+            excluded: [live].into_iter().collect(),
+            ..Query::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&excluded), [B]);
+}
