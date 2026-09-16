@@ -5213,7 +5213,10 @@ impl App {
                 );
             }
             Err(error) => {
-                self.status = format!("{} failed: {error:#}", opening.what);
+                // A start that never opens leaves no row, so the log is the only record of why.
+                let failed = format!("{} failed: {error:#}", opening.what);
+                self.debug(|| failed.clone());
+                self.status = failed;
                 if self.text.is_empty()
                     && let Some(prompt) = opening.prompt
                 {
@@ -8288,6 +8291,29 @@ mod tests {
         assert_eq!(app.text, "fix the lag");
         assert!(app.opening.is_none());
         release.send(()).unwrap();
+    }
+
+    #[test]
+    fn a_start_that_never_opens_says_why_in_the_log() {
+        let d = dir();
+        let mut app = app(d.path());
+        let log = d.path().join("tui-debug.log");
+        app.log = Some(log.clone());
+        app.prepare_viewer(
+            "codex in ~/src".into(),
+            "codex:test".into(),
+            None,
+            Some("fix the lag".into()),
+            || anyhow::bail!("no daemon"),
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.poll_opening() {
+            assert!(Instant::now() < deadline, "preparation did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(app.text, "fix the lag");
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("codex in ~/src failed: no daemon"), "{text}");
     }
 
     #[test]
