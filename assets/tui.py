@@ -5,8 +5,12 @@ Run from the repo root with a built binary: python3 assets/tui.py [path/to/cones
 The capture runs against a home of its own, with a fixture `claude` on its PATH: the dashboard
 attaches to the selected row through it, so the pane peeks into a running agent, and no session
 of this machine's, no model call and no key of its own is in reach."""
-import html, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, uuid
+import html, json, os, re, shutil, subprocess, sys, tempfile, time, uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from tui_fixture import child_process
 
 # Wide enough for the context column and the whole keys row, tall enough for both tables and the
 # agent's screen in the pane, with no band of empty rows under them.
@@ -141,12 +145,18 @@ session = f"conescap-{uuid.uuid4().hex[:8]}"
 # CLAUDE_CONFIG_DIR and keeps its runs in --state-dir, so all three come from the fixture home;
 # CODEX_HOME goes with it, or the machine's own Codex threads land in the asset. The example job
 # is the jobs file, so no job row has a run of this machine's in flight.
-tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), f"env -u NO_COLOR -u CODEX_HOME HOME={shlex.quote(HOME)} CLAUDE_CONFIG_DIR={shlex.quote(claude)} {shlex.quote(BIN)} --jobs {shlex.quote(JOBS)} --state-dir {shlex.quote(state)}", check=True)
 try:
-    # The dashboard selects the first row and spawns its viewer, which needs a moment to attach
-    # and paint before the pane holds an agent's screen rather than an empty frame.
-    time.sleep(8)
-    lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
+    # tmux holds the terminal; this script owns the dashboard and waits for it.
+    tmux("new-session", "-d", "-s", session, "-c", CWD, "-x", str(COLS), "-y", str(ROWS), "exec /bin/sleep 3600", check=True)
+    tty = tmux("display-message", "-p", "-t", session, "#{pane_tty}", check=True).stdout.strip()
+    command = ["env", "-u", "NO_COLOR", "-u", "CODEX_HOME", "-u", "PI_CODING_AGENT_DIR",
+               "TERM=xterm-256color", f"HOME={HOME}", f"CLAUDE_CONFIG_DIR={claude}",
+               BIN, "--jobs", JOBS, "--state-dir", state]
+    with open(tty, "r+b", buffering=0) as terminal:
+        with child_process(command, cwd=CWD, stdin=terminal, stdout=terminal, stderr=terminal):
+            # Give the selected fixture viewer time to attach and paint.
+            time.sleep(8)
+            lines = tmux("capture-pane", "-p", "-e", "-t", session, check=True).stdout.rstrip("\n").split("\n")
 finally:
     tmux("kill-session", "-t", session)
     shutil.rmtree(HOME, ignore_errors=True)
