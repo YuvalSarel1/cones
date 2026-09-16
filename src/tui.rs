@@ -5124,6 +5124,19 @@ impl App {
         }
     }
 
+    /// A ctrl+c press: true when it is the second within the confirmation window.
+    fn quit_press(&mut self) -> bool {
+        if self
+            .quit_armed
+            .replace(Instant::now())
+            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM)
+        {
+            return true;
+        }
+        self.status = QUIT_HINT.into();
+        false
+    }
+
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
@@ -5150,6 +5163,12 @@ impl App {
             if ctrl && matches!(code, KeyCode::Char('\\' | '4')) {
                 self.toggle_split();
                 return Ok(false);
+            }
+            // ctrl+c never reaches the client: Claude Code, Codex and pi all quit on two of
+            // them, and Claude Code's first one drops to the agents list. It is the
+            // dashboard's quit key here as it is from the list; esc interrupts the client.
+            if ctrl && code == KeyCode::Char('c') {
+                return Ok(self.quit_press());
             }
             if mods.contains(KeyModifiers::SHIFT)
                 && matches!(code, KeyCode::PageUp | KeyCode::PageDown)
@@ -5381,14 +5400,9 @@ impl App {
                 }
                 match code {
                     KeyCode::Char('c') if ctrl => {
-                        if self
-                            .quit_armed
-                            .replace(Instant::now())
-                            .is_some_and(|at| at.elapsed() < QUIT_CONFIRM)
-                        {
+                        if self.quit_press() {
                             return Ok(true);
                         }
-                        self.status = QUIT_HINT.into();
                     }
                     KeyCode::Char('x') if ctrl => {
                         self.armed = armed;
@@ -8005,6 +8019,29 @@ mod tests {
             .chunks(width)
             .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
             .collect()
+    }
+
+    #[test]
+    fn a_focused_viewer_keeps_ctrl_c_from_the_client() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open("run:r1", "attach", "VIEW"));
+        app.focus = Some(0);
+        let before = app.viewers[0].viewer.pid();
+        assert!(!app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap());
+        assert_eq!(app.focus, Some(0), "the viewer stays focused");
+        assert_eq!(app.status, QUIT_HINT, "it arms quit as from the list");
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            app.viewers[0].viewer.exited().is_none() && app.viewers[0].viewer.pid() == before,
+            "the client never saw the byte"
+        );
+        assert!(
+            app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap(),
+            "the second press quits"
+        );
     }
 
     #[test]

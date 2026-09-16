@@ -124,7 +124,7 @@ These keys apply to the dashboard. A focused viewer receives its own input as de
 | `ctrl+g` | Open this guide; `↑ ↓` scroll, `esc`, `enter` or `ctrl+g` close it. |
 | `ctrl+z` | Return from a viewer or menu screen. Viewers keep running. |
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, then dashboard. Forms cancel their current edit or close. |
-| `ctrl+c twice` | Quit within a 1.5-second confirmation window. |
+| `ctrl+c twice` | Quit within a 1.5-second confirmation window, from the list or a focused viewer. Viewers never receive it. |
 
 The first `ctrl+x` marks the row red. Another key cancels it, as does inactivity for `confirm_secs` seconds, default 2. Set `confirm_secs: 0` to wait until a key; valid values are 0 to 600.
 
@@ -164,7 +164,7 @@ The pane shows the focused viewer, otherwise the selected session's viewer. A se
 
 `enter`, `tab` or a pane click gives a viewer focus. `tab` or `ctrl+z` returns to the list while it continues parsing output. Clicking a list row selects it and takes focus back. `ctrl+\` changes split/full-frame layout persistently; `shift+enter` supplies a temporary full-frame view. A split viewer keeps the same dimensions across focus changes, and its hints go in the dashboard's own hint row so the harness keeps its bottom status row, permission mode and all. A full-frame viewer reserves its last row for a strip showing its title, fleet counts, input requests elsewhere and return keys.
 
-Inside a viewer, plain `tab`, `ctrl+z` and `ctrl+\` are dashboard keys, and so is `←` while the client's composer is empty: the cones emulator sees a caret sitting behind nothing but box art and a prompt marker, so the key has nowhere to go in the client and returns to the list instead. Shift-page-up/down scroll the emulator. Other keys, including `esc`, `ctrl+c` and `shift+tab`, go to the viewer. The wheel scrolls the viewer under it, focused or not: clients that request mouse events receive them; otherwise the emulator scrolls its history. Shift-wheel always uses emulator history. Typing returns to the live screen. Terminal text selection may require the terminal's modifier, such as option-drag in iTerm2.
+Inside a viewer, plain `tab`, `ctrl+z` and `ctrl+\` are dashboard keys, and so is `←` while the client's composer is empty: the cones emulator sees a caret sitting behind nothing but box art and a prompt marker, so the key has nowhere to go in the client and returns to the list instead. Shift-page-up/down scroll the emulator. `ctrl+c` is also the dashboard's, and quits on the second press as it does from the list: Claude Code, Codex and pi all read two of them as quit, and Claude Code's first one drops to the agents list, so it never reaches the client; `esc` interrupts a turn. Other keys, including `esc` and `shift+tab`, go to the viewer. The wheel scrolls the viewer under it, focused or not: clients that request mouse events receive them; otherwise the emulator scrolls its history. Shift-wheel always uses emulator history. Typing returns to the live screen. Terminal text selection may require the terminal's modifier, such as option-drag in iTerm2.
 
 Text pastes preserve bracketed-paste mode when requested. An empty paste, which VS Code sends for a clipboard image, becomes the harness's ctrl+v. The composer saves images as temporary PNGs and shows `[Image #n]` markers, each deleted as one character and expanded to its path at launch. Image clipboard access uses macOS `osascript`.
 
