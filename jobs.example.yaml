@@ -1,4 +1,4 @@
-version: 1
+version: 2
 defaults:
   timeout_min: 5
   budget_usd: 0.25

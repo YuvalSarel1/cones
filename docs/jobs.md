@@ -2,14 +2,16 @@
 
 Back to the [README](../README.md). The dashboard is in [dashboard.md](dashboard.md), commands in [cli.md](cli.md), what each flag asks of the harness in [harness.md](harness.md#trigger).
 
-`jobs.yaml` contains `version: 1`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
+`jobs.yaml` contains `version: 2`, optional policy `defaults`, and `jobs`. Dashboard settings (`columns`, `activity`, `pane`, `start`, `confirm_secs`) are described in [dashboard.md](dashboard.md#columns). Unknown fields are rejected.
+
+An older file is migrated on the first read: cones renames what the version it declares called a setting, bumps the version line and writes the file back, keeping comments and layout. Version 1 called the activity column and its block `sparkline`. A file cones cannot rewrite still loads, and the next save migrates it instead.
 
 Jobs override policy defaults individually. Claude uses `defaults.model` and `max_turns`; Codex uses `defaults.codex_model` and `codex_full_access`, though Codex execution is currently unavailable. A job's own `model` is its override. The composer shares model and provider defaults but starts on `start.harness`; jobs inherit `defaults.harness`.
 
 The dashboard's `config` button edits defaults and dashboard settings. The `jobs` screen adds jobs through `new job`, edits with `ctrl+e`, and deletes with `ctrl+x twice`; see [the wizard](dashboard.md#the-wizard).
 
 ```yaml
-version: 1
+version: 2
 defaults:
   timeout_min: 30
   budget_usd: 2.00

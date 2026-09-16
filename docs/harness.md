@@ -129,7 +129,7 @@ Tests spend no model tokens, so they prove that cones builds the right flags and
 Write a jobs file in a scratch directory, one job per model alias and provider:
 
 ```yaml
-version: 1
+version: 2
 jobs:
   - name: sonnet-bedrock          # repeat for fable, opus, haiku, and for bedrock: false
     schedule: "0 9 * * *"

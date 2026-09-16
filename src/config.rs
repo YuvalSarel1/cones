@@ -339,12 +339,61 @@ impl Activity {
     }
 }
 
+/// The schema `cones` writes and reads. Older files are migrated on the first read.
+pub const VERSION: u32 = 2;
+
+/// What each earlier version called a setting the current one renamed: `(version, was, is)`,
+/// oldest first. A rename is the only migration a text rewrite can do, which is all the
+/// versions so far have needed; a change of meaning would need its own step here.
+const RENAMES: [(u32, &str, &str); 1] = [(1, "sparkline", "activity")];
+
+/// Read the version alone. The whole file cannot be deserialized before migrating it,
+/// since a renamed key is an unknown field.
+#[derive(Deserialize)]
+struct Version {
+    version: u32,
+}
+
+/// Rename the keys an older file uses, in its own text, so comments and layout survive.
+/// Only a top-level key and the `columns` line are touched, so the same word in a prompt is
+/// the user's and stays. A trailing comment on the `columns` line is renamed with it, which
+/// is what a comment about that line should say anyway.
+fn migrated(text: &str, from: u32) -> String {
+    let renames: Vec<_> = RENAMES.iter().filter(|(v, ..)| *v >= from).collect();
+    let out: Vec<String> = text
+        .lines()
+        .map(|l| {
+            if l.starts_with("version:") {
+                return format!("version: {VERSION}");
+            }
+            let mut line = l.to_owned();
+            for (_, was, is) in &renames {
+                if line.trim_end() == format!("{was}:") {
+                    line = format!("{is}:");
+                } else if line.starts_with("columns:") {
+                    line = line.replace(was, is);
+                }
+            }
+            line
+        })
+        .collect();
+    out.join("\n") + "\n"
+}
+
 fn parse(path: &Path) -> Result<JobsFile> {
-    let doc: JobsFile =
-        serde_yaml::from_str(&fs::read_to_string(path)?).context("invalid jobs.yaml")?;
+    let mut text = fs::read_to_string(path)?;
+    let found: Version = serde_yaml::from_str(&text).context("invalid jobs.yaml")?;
+    if found.version < VERSION {
+        text = migrated(&text, found.version);
+        // Write it back so the file says what it means, but a file cones cannot rewrite
+        // still loads: every writer migrates the text it edits, so the old words never
+        // end up beside the new ones.
+        let _ = save(path, text.clone());
+    }
+    let doc: JobsFile = serde_yaml::from_str(&text).context("invalid jobs.yaml")?;
     ensure!(
-        doc.version == 1,
-        "unsupported jobs version {}; expected 1",
+        doc.version == VERSION,
+        "unsupported jobs version {}; expected {VERSION}",
         doc.version
     );
     if let Some(bad) = doc
@@ -469,6 +518,7 @@ fn job_blocks(lines: &[&str], jobs_at: usize) -> (usize, Vec<(String, usize, usi
 /// file before replacing it; the caller must reinstall launchd jobs.
 pub fn write_job(path: &Path, old: Option<&str>, job: Option<&Job>) -> Result<()> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let text = migrated(&text, 1);
     let lines: Vec<&str> = text.lines().collect();
     let jobs_at = lines
         .iter()
@@ -582,12 +632,11 @@ pub fn write_config(
         .filter(|p| !p.as_os_str().is_empty())
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
     resolve(Job::new("defaults", "0 9 * * *", &base, "check"), d, &base)?;
-    let text = fs::read_to_string(path).unwrap_or_else(|_| {
-        "version: 1
-jobs: []
-"
-        .to_owned()
-    });
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|_| format!("version: {VERSION}\njobs: []\n"));
+    // Migrating the text every writer edits is what lets a file cones failed to rewrite on
+    // read keep working: the old word is renamed here rather than joined by the new one.
+    let text = migrated(&text, 1);
     let mut out: Vec<String> = text.lines().map(str::to_owned).collect();
     let block = defaults_lines(d);
     let block = if block.len() == 1 { vec![] } else { block };
@@ -983,12 +1032,12 @@ mod tests {
 
     #[test]
     fn write_job_handles_an_empty_list_both_ways() {
-        let (_d, p) = file("version: 1\njobs: []\n");
+        let (_d, p) = file("version: 2\njobs: []\n");
         let one = Job::new("one", "0 9 * * *", Path::new("."), "first");
         write_job(&p, None, Some(&one)).unwrap();
         assert_eq!(raw_jobs(&p).unwrap().len(), 1);
         write_job(&p, Some("one"), None).unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 1\njobs: []\n");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 2\njobs: []\n");
     }
 
     #[test]
@@ -1073,7 +1122,7 @@ mod tests {
         write_config(&p, &d, Some(&cols), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 1\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
+            text.starts_with("version: 2\ndefaults:\n  timeout_min: 5\n  budget_usd: 0.25\n  daily_budget_usd: 2\n  write: true\n  max_turns: 3\n  overlap: replace\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert!(
@@ -1090,7 +1139,7 @@ mod tests {
 
         write_config(&p, &Policy::default(), None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.starts_with("version: 1\njobs:\n"), "{text}");
+        assert!(text.starts_with("version: 2\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
         let d = Policy {
             notify: Some(true),
@@ -1099,14 +1148,14 @@ mod tests {
         write_config(&p, &d, Some(&[]), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 1\ndefaults:\n  notify: true\njobs:\n"),
+            text.starts_with("version: 2\ndefaults:\n  notify: true\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), None);
         write_config(&p, &Policy::default(), Some(&cols), None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 1\ncolumns: [state, age]\njobs:\n"),
+            text.starts_with("version: 2\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
         let err = write_config(&p, &d, Some(&["speed".to_owned()]), None, None, None, None)
@@ -1119,7 +1168,7 @@ mod tests {
         write_config(&missing, &d, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
-            "version: 1\ndefaults:\n  notify: true\njobs: []\n"
+            "version: 2\ndefaults:\n  notify: true\njobs: []\n"
         );
         let bad = Policy {
             budget_usd: Some(3.0),
@@ -1137,6 +1186,66 @@ mod tests {
             "untouched"
         );
         assert!(!missing.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn a_version_1_file_is_migrated_in_place_on_the_first_read() {
+        let (_d, p) = file(
+            "version: 1\ncolumns: [context, sparkline, model]   # mine\nsparkline:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
+        );
+        assert_eq!(activity(&p).metric, "tokens", "the old block is read");
+        assert_eq!(
+            columns(&p),
+            ["context", "activity", "model"],
+            "and the old column name with it"
+        );
+        let text = fs::read_to_string(&p).unwrap();
+        assert_eq!(
+            text,
+            "version: 2\ncolumns: [context, activity, model]   # mine\nactivity:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
+            "the file says what it means, keeping its comment and the word in the prompt: {text}"
+        );
+        let keep = file_activity(&p);
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            keep.as_ref(),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            file_activity(&p).map(|a| a.bound),
+            Some("row".to_owned()),
+            "and a save leaves one block, not the old one beside the new"
+        );
+
+        // A file cones cannot rewrite still loads, and a save migrates it instead.
+        let (_d, p) = file("version: 1\nsparkline:\n  metric: tools\njobs: []\n");
+        let mode = |m| {
+            fs::set_permissions(_d.path(), std::os::unix::fs::PermissionsExt::from_mode(m)).unwrap()
+        };
+        mode(0o500);
+        assert_eq!(
+            activity(&p).metric,
+            "tools",
+            "read from the text as written"
+        );
+        mode(0o700);
+        assert!(fs::read_to_string(&p).unwrap().contains("sparkline:"));
+        write_job(
+            &p,
+            None,
+            Some(&Job::new("one", "0 9 * * *", Path::new("."), "go")),
+        )
+        .unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.starts_with("version: 2\nactivity:\n  metric: tools\n"),
+            "the writer migrates what the read could not: {text}"
+        );
     }
 
     #[test]
