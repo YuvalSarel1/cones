@@ -240,8 +240,22 @@ fn no_codex_home_means_no_process_scan() {
     if std::env::var_os("CODEX_HOME").is_none_or(|d| d.is_empty()) {
         assert_eq!(home(&claude), dir.path().join(".codex"));
     }
-    assert!(sessions(&dir.path().join(".codex")).is_empty());
+    assert!(sessions(&dir.path().join(".codex")).unwrap().is_empty());
     assert!(cones::fleet::all(&claude).unwrap().is_empty());
+}
+
+/// A process table that cannot be read means unknown, not "no Codex or pi client is running":
+/// swallowing it dropped every native row for that read, so the rows flickered.
+#[test]
+fn an_unreadable_process_table_is_an_error_not_an_empty_fleet() {
+    let dir = tempfile::tempdir().unwrap();
+    let codex = dir.path().join(".codex");
+    std::fs::create_dir_all(codex.join("sessions")).unwrap();
+    let pi = dir.path().join(".pi");
+    std::fs::create_dir_all(&pi).unwrap();
+    assert!(cones::codex::sessions_from("/no/such/ps", &codex).is_err());
+    assert!(cones::pi::sessions_from("/no/such/ps", &pi).is_err());
+    assert!(cones::codex::sessions_from("/bin/ps", &codex).is_ok());
 }
 
 #[test]

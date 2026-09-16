@@ -56,20 +56,19 @@ pub struct Tail {
 }
 
 /// Skip process discovery when the pi home is absent.
-pub fn sessions(pi: &Path) -> Vec<Session> {
+pub fn sessions(pi: &Path) -> anyhow::Result<Vec<Session>> {
+    sessions_from("/bin/ps", pi)
+}
+
+/// `sessions` against a named `ps`, so a test can point it at one that cannot run.
+pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
     if !pi.is_dir() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let ps = Command::new("/bin/ps")
-        .env("TZ", "UTC")
-        .args(["-axww", "-o", "pid=,lstart=,command="])
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let ps = crate::fleet::process_table(ps)?;
     let mut procs = processes(&ps);
     if procs.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     #[cfg(target_os = "macos")]
     for p in &mut procs {
@@ -98,7 +97,7 @@ pub fn sessions(pi: &Path) -> Vec<Session> {
             p.cwd = cwds.get(&p.pid).cloned();
         }
     }
-    rows(pi, &procs)
+    Ok(rows(pi, &procs))
 }
 
 /// Parse pi's process title. It erases subcommands, so sessions and updates look alike;

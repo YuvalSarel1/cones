@@ -220,6 +220,22 @@ fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
         .collect()
 }
 
+/// The whole process table, which is how Codex and pi clients are discovered at all.
+///
+/// An unreadable table is an error, never an empty one: an empty table means the harness has
+/// no client running, so swallowing the failure drops every native row for that read and the
+/// rows flicker back on the next one. `ps` is a parameter so a test can point it at one that
+/// cannot run.
+pub fn process_table(ps: &str) -> Result<String> {
+    let out = Command::new(ps)
+        .env("TZ", "UTC")
+        .args(["-axww", "-o", "pid=,lstart=,command="])
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("reading the process table with {ps}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Batch process start times in Claude's UTC format to reject reused pids.
 ///
 /// An unreadable process table is an error, never an empty map: every liveness check reads
@@ -706,8 +722,8 @@ pub fn alive(pid: u32) -> bool {
 
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
     let mut out = sessions(claude)?;
-    out.extend(crate::codex::sessions(&crate::codex::home(claude)));
-    out.extend(crate::pi::sessions(&crate::pi::home(claude)));
+    out.extend(crate::codex::sessions(&crate::codex::home(claude))?);
+    out.extend(crate::pi::sessions(&crate::pi::home(claude))?);
     sort(&mut out);
     Ok(out)
 }
@@ -752,9 +768,9 @@ fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    Ok(crate::codex::sessions(&crate::codex::home(claude))
+    Ok(crate::codex::sessions(&crate::codex::home(claude))?
         .into_iter()
-        .chain(crate::pi::sessions(&crate::pi::home(claude)))
+        .chain(crate::pi::sessions(&crate::pi::home(claude))?)
         .find(|s| s.session_id == session_id))
 }
 
