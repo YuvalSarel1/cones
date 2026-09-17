@@ -1,0 +1,5 @@
+{"type":"session","id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","cwd":"/fixture","timestamp":"2026-09-16T10:00:00Z"}
+{"type":"message","timestamp":"2026-09-16T10:00:01Z","message":{"role":"user","content":[{"type":"text","text":"Inspect the fixture"}]}}
+{"type":"session_info","name":"Named pi"}
+{"type":"message","timestamp":"2026-09-16T10:00:02Z","message":{"role":"assistant","model":"fixture-pi","stopReason":"toolUse","content":[{"type":"text","text":"Reading"},{"type":"toolCall","name":"read"}],"usage":{"input":3,"cacheRead":4,"cacheWrite":5,"output":2,"cost":{"total":0.003}}}}
+{"type":"message","timestamp":"2026-09-16T10:00:03Z","message":{"role":"assistant","model":"fixture-pi","stopReason":"stop","content":[{"type":"text","text":"Earlier text"},{"type":"text","text":"Done"}],"usage":{"output":1}}}

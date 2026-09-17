@@ -2,7 +2,7 @@
 //! files are matched by cwd and write time; multiple processes in one cwd are ambiguous.
 //! pi supports neither attach nor supervised cones jobs.
 use crate::fleet::{Activity, Session};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -14,10 +14,9 @@ use std::{
 
 /// Honor `PI_CODING_AGENT_DIR`, otherwise use `.pi/agent` beside the Claude directory.
 pub fn home(claude: &Path) -> PathBuf {
-    match std::env::var_os("PI_CODING_AGENT_DIR").filter(|d| !d.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => claude.with_file_name(".pi").join("agent"),
-    }
+    crate::harness::spec(crate::config::HarnessKind::Pi)
+        .home
+        .resolve(claude)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,23 +102,14 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
 /// Parse pi's process title. It erases subcommands, so sessions and updates look alike;
 /// `pi-rpc` is excluded.
 pub fn processes(ps: &str) -> Vec<Process> {
-    ps.lines()
-        .filter_map(|line| {
-            let (pid, rest) = line.trim_start().split_once(' ')?;
-            let rest = rest.trim_start();
-            // `lstart` is fixed width: `Sun Sep 13 15:19:19 2026`, the day padded with a space.
-            let (start, command) = rest.split_at_checked(24)?;
-            let program = Path::new(command.split_whitespace().next()?).file_name()?;
-            if program != "pi" {
-                return None;
-            }
-            Some(Process {
-                pid: pid.parse().ok()?,
-                started: NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
-                    .ok()?
-                    .and_utc(),
-                cwd: None,
-            })
+    crate::harness::spec(crate::config::HarnessKind::Pi)
+        .discovery
+        .processes(ps)
+        .into_iter()
+        .map(|line| Process {
+            pid: line.pid,
+            started: line.started,
+            cwd: None,
         })
         .collect()
 }
@@ -130,7 +120,12 @@ pub fn session_dir(pi: &Path, cwd: &Path) -> PathBuf {
         .to_string_lossy()
         .trim_start_matches('/')
         .replace(['/', ':'], "-");
-    pi.join("sessions").join(format!("--{name}--"))
+    pi.join(
+        crate::harness::spec(crate::config::HarnessKind::Pi)
+            .transcript
+            .live_root(),
+    )
+    .join(format!("--{name}--"))
 }
 
 pub fn meta(line: &str) -> Option<Meta> {
@@ -163,6 +158,16 @@ pub fn tail(lines: &str) -> Tail {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        let spec = crate::harness::spec(crate::config::HarnessKind::Pi);
+        if let Some(state) = spec.state.read(&v) {
+            t.state = Some(state);
+        }
+        if t.prompt.is_none() {
+            t.prompt = spec.transcript.messages.user.headline(&v);
+        }
+        if let Some(last) = spec.transcript.messages.assistant.headline(&v) {
+            t.last = Some(last);
+        }
         let at = v["timestamp"]
             .as_str()
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
@@ -183,53 +188,25 @@ pub fn tail(lines: &str) -> Tail {
             continue;
         }
         let m = &v["message"];
-        let texts = |kind: &'static str| {
-            m["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(move |b| b["type"] == kind)
-                .filter_map(|b| b["text"].as_str())
-        };
-        match m["role"].as_str() {
-            Some("user") => {
-                t.state = Some("active");
-                if t.prompt.is_none() {
-                    t.prompt = texts("text").find_map(crate::fleet::headline);
-                }
+        if m["role"] == "assistant" {
+            if let Some(model) = m["model"].as_str() {
+                t.model = Some(model.to_owned());
             }
-            Some("toolResult") => t.state = Some("active"),
-            Some("assistant") => {
-                t.state = Some(match m["stopReason"].as_str() {
-                    Some("toolUse") => "active",
-                    Some("stop") => "idle",
-                    Some("aborted") => "stopped",
-                    Some("error") => "failed",
-                    _ => "-",
-                });
-                if let Some(last) = texts("text").filter_map(crate::fleet::headline).next_back() {
-                    t.last = Some(last);
-                }
-                if let Some(model) = m["model"].as_str() {
-                    t.model = Some(model.to_owned());
-                }
-                let u = &m["usage"];
-                let n = |k: &str| u[k].as_u64().unwrap_or(0);
-                let prompt = n("input") + n("cacheRead") + n("cacheWrite");
-                t.tokens_in += prompt;
-                t.tokens_out += n("output");
-                t.context_tokens = Some(prompt);
-                t.cost_usd += u["cost"]["total"].as_f64().unwrap_or(0.0);
-                if let Some(a) = t.activity.last_mut() {
-                    a.messages += 1;
-                    a.tokens_out += n("output");
-                    a.tools += m["content"]
-                        .as_array()
-                        .map_or(0, |c| c.iter().filter(|b| b["type"] == "toolCall").count())
-                        as u64;
-                }
+            let u = &m["usage"];
+            let n = |k: &str| u[k].as_u64().unwrap_or(0);
+            let prompt = n("input") + n("cacheRead") + n("cacheWrite");
+            t.tokens_in += prompt;
+            t.tokens_out += n("output");
+            t.context_tokens = Some(prompt);
+            t.cost_usd += u["cost"]["total"].as_f64().unwrap_or(0.0);
+            if let Some(a) = t.activity.last_mut() {
+                a.messages += 1;
+                a.tokens_out += n("output");
+                a.tools += m["content"]
+                    .as_array()
+                    .map_or(0, |c| c.iter().filter(|b| b["type"] == "toolCall").count())
+                    as u64;
             }
-            _ => {}
         }
     }
     t

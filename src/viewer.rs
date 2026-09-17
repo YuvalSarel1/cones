@@ -637,7 +637,10 @@ fn modifier_param(mods: KeyModifiers) -> u8 {
 /// True when the caret sits at an empty prompt: nothing to its left on that row
 /// but box art, a prompt marker and blanks. A client with text typed, or drawing
 /// a full-screen view, fails the test and keeps the key.
-pub fn at_empty_prompt(screen: &vt100::Screen) -> bool {
+pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Input) -> bool {
+    if input.empty_prompt == crate::harness::spec::EmptyPrompt::Bordered {
+        return at_empty_bordered_prompt(screen);
+    }
     if screen.hide_cursor() {
         return false;
     }
@@ -647,12 +650,58 @@ pub fn at_empty_prompt(screen: &vt100::Screen) -> bool {
     // can land between the marker and the caret, so they count as blanks.
     let mut marks = left
         .chars()
-        .filter(|c| !c.is_whitespace() && !('\u{2800}'..='\u{28ff}').contains(c))
+        .filter(|c| {
+            !c.is_whitespace() && !(input.ignore_braille && ('\u{2800}'..='\u{28ff}').contains(c))
+        })
         .peekable();
     // ponytail: a marker has to be there, so a full-screen client parking the caret
     // on blank space keeps its key. Add a client's marker here when one is missing.
-    marks.peek().is_some()
-        && marks.all(|c| "|>$#\u{2502}\u{250a}\u{2503}\u{2590}\u{203a}\u{276f}".contains(c))
+    marks.peek().is_some() && marks.all(|c| input.markers.contains(c))
+}
+
+/// A definition owns which native keys return to cones and the screen condition for each.
+pub fn returns_to_list(
+    screen: &vt100::Screen,
+    input: &crate::harness::spec::Input,
+    code: KeyCode,
+    mods: KeyModifiers,
+) -> bool {
+    use crate::harness::spec::{ReturnKey, ReturnWhen};
+    input.return_to_list.iter().any(|binding| {
+        let matches = match binding.key {
+            ReturnKey::CtrlZ => code == KeyCode::Char('z') && mods == KeyModifiers::CONTROL,
+            ReturnKey::Tab => code == KeyCode::Tab && mods.is_empty(),
+            ReturnKey::Left => code == KeyCode::Left && mods.is_empty(),
+        };
+        matches
+            && match binding.when {
+                ReturnWhen::Always => true,
+                ReturnWhen::EmptyPrompt => at_empty_prompt(screen, input),
+            }
+    })
+}
+
+/// pi's standard editor has horizontal borders, no prompt marker, and an inverse-video
+/// software caret. Its terminal cursor is positioned there even when hidden.
+fn at_empty_bordered_prompt(screen: &vt100::Screen) -> bool {
+    let (row, col) = screen.cursor_position();
+    let (height, width) = screen.size();
+    if screen.scrollback() != 0 || row == 0 || row + 1 >= height {
+        return false;
+    }
+    let line = |r| screen.contents_between(r, 0, r, width);
+    let top = line(row - 1);
+    let bottom = line(row + 1);
+    // One empty editor line only. A wrapped/multiline draft, completion menu or another
+    // component keeps Left; a hidden hardware caret alone is not an input report.
+    top.starts_with("──")
+        && top.ends_with('─')
+        && bottom.chars().count() == usize::from(width)
+        && bottom.chars().all(|c| c == '─')
+        && line(row).trim().is_empty()
+        && screen
+            .cell(row, col)
+            .is_some_and(|c| c.inverse() && c.contents().trim().is_empty())
 }
 
 /// Classic xterm encoding. DECCKM selects SS3 arrows/Home/End; control digits follow
@@ -1170,7 +1219,10 @@ mod tests {
         let at = |bytes: &[u8]| {
             let mut p = vt100::Parser::new(3, 20, 0);
             p.process(bytes);
-            at_empty_prompt(p.screen())
+            at_empty_prompt(
+                p.screen(),
+                &crate::harness::spec(crate::config::HarnessKind::Claude).input,
+            )
         };
         assert!(at("\u{2502} > ".as_bytes()));
         assert!(at(b"$ "));
@@ -1181,6 +1233,116 @@ mod tests {
         assert!(!at(b"> hi\x1b[H"));
         // A full-screen client parks the caret mid-screen, not behind a marker.
         assert!(!at(b"\x1b[2J\x1b[Hlines here\x1b[2;4H"));
+    }
+
+    #[test]
+    fn pi_empty_editor_uses_its_software_cursor_and_borders() {
+        let input = &crate::harness::spec(crate::config::HarnessKind::Pi).input;
+        // pi-tui Editor.render: full-width horizontal rules, no marker or side borders,
+        // inverse space at the caret. MainScreenTUI positions a usually-hidden hardware cursor.
+        let rule = "─".repeat(20);
+        let at = |text: &str, col: u16, hidden: bool| {
+            let mut p = vt100::Parser::new(8, 20, 0);
+            p.process(
+                format!(
+                    "\x1b[2;1H{rule}\x1b[3;1H{text}\x1b[4;1H{rule}\x1b[3;{col}H{}",
+                    if hidden { "\x1b[?25l" } else { "\x1b[?25h" }
+                )
+                .as_bytes(),
+            );
+            at_empty_prompt(p.screen(), input)
+        };
+        assert!(at("\x1b[7m \x1b[0m", 1, true));
+        assert!(at(" \x1b[7m \x1b[0m", 2, true), "editor padding");
+        assert!(at(" \x1b[7m \x1b[0m", 2, false), "hardware cursor enabled");
+        assert!(
+            !at(" \x1b[7mx\x1b[0m", 2, true),
+            "cursor at start of a draft"
+        );
+        assert!(
+            !at(" hello\x1b[7m \x1b[0m", 7, true),
+            "cursor at end of a draft"
+        );
+        assert!(
+            !at(" \x1b[7m \x1b[0m hidden text", 2, true),
+            "text after cursor"
+        );
+        assert!(!at("  ", 2, true), "blank content without the native caret");
+
+        let mut p = vt100::Parser::new(8, 20, 0);
+        p.process(
+            format!(
+                "\x1b[2;1H{rule}\x1b[3;1Hdraft\x1b[4;1H\x1b[7m \x1b[0m\x1b[5;1H{rule}\x1b[4;1H"
+            )
+            .as_bytes(),
+        );
+        assert!(
+            !at_empty_prompt(p.screen(), input),
+            "multiline draft keeps Left"
+        );
+        p.process(b"\x1b[2J\x1b[4;1H\x1b[7m \x1b[0m\x1b[4;1H");
+        assert!(
+            !at_empty_prompt(p.screen(), input),
+            "a fullscreen view is not an editor"
+        );
+    }
+
+    #[test]
+    fn return_keys_and_their_conditions_come_from_the_harness_definition() {
+        use crate::harness::spec::{HarnessSpec, ReturnKey, ReturnWhen};
+        let mut definition =
+            HarnessSpec::parse(include_str!("../assets/harnesses/claude.yaml")).unwrap();
+        let mut screen = vt100::Parser::new(3, 40, 0);
+        screen.process(b"> draft");
+        let check = |input: &crate::harness::spec::Input, code, mods| {
+            returns_to_list(screen.screen(), input, code, mods)
+        };
+        assert!(check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(check(
+            &definition.input,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL
+        ));
+        assert!(!check(&definition.input, KeyCode::Left, KeyModifiers::NONE));
+        // Let this harness use Tab itself while its input is populated.
+        definition
+            .input
+            .return_to_list
+            .iter_mut()
+            .find(|b| b.key == ReturnKey::Tab)
+            .unwrap()
+            .when = ReturnWhen::EmptyPrompt;
+        definition.validate().unwrap();
+        assert!(!check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(check(
+            &definition.input,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL
+        ));
+        // Omitting a key leaves it to the client even on an otherwise-recognized prompt.
+        definition
+            .input
+            .return_to_list
+            .retain(|b| b.key != ReturnKey::Left);
+        screen.process(b"\x1b[2J\x1b[H> ");
+        assert!(!returns_to_list(
+            screen.screen(),
+            &definition.input,
+            KeyCode::Left,
+            KeyModifiers::NONE
+        ));
+        assert!(returns_to_list(
+            screen.screen(),
+            &definition.input,
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
+        assert!(!returns_to_list(
+            screen.screen(),
+            &definition.input,
+            KeyCode::BackTab,
+            KeyModifiers::SHIFT
+        ));
     }
 
     #[test]

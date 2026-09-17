@@ -1,0 +1,9 @@
+{"type":"session_meta","timestamp":"2026-09-16T10:00:00Z","payload":{"id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","cwd":"/fixture","timestamp":"2026-09-16T10:00:00Z"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Injected instructions, not the user's title"}]}}
+{"type":"event_msg","payload":{"item":{"type":"UserMessage","content":[{"text":"Inspect the fixture"}]}}}
+{"type":"event_msg","timestamp":"2026-09-16T10:00:01Z","payload":{"type":"task_started"}}
+{"type":"turn_context","payload":{"model":"fixture-codex"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"output_tokens":6},"last_token_usage":{"total_tokens":9},"model_context_window":2000}}}
+{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40}}}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Done"},{"type":"output_text","text":"Additional detail"}]}}
+{"type":"event_msg","timestamp":"2026-09-16T10:00:03Z","payload":{"type":"task_complete"}}

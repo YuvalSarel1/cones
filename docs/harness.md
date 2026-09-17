@@ -4,6 +4,8 @@ Back to the [README](../README.md). What the dashboard shows is in [dashboard.md
 
 cones reads harness and operating-system reports without installing session instrumentation. State and usage come from those reports; missing values stay absent. Transcript paths and process-to-session matching have the limitations listed below. This file records sources; the other guides describe controls and configuration.
 
+Built-in integration data lives in one YAML definition per harness. [Harness definitions](harness-definitions.md) describes the schema, typed native handlers, shared fixtures and viewer input contract.
+
 | Word | Meaning |
 | --- | --- |
 | reported | The harness or operating system states it; the source is named. |

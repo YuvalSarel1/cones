@@ -1,7 +1,7 @@
 //! Codex fleet discovery from processes, writer locks, the thread database and rollouts.
 //! This module observes native sessions; it does not execute supervised jobs.
 use crate::fleet::Session;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -16,48 +16,26 @@ use std::{
 /// Honor `CODEX_HOME`, otherwise use `.codex` beside the Claude directory.
 /// The sibling default keeps fixture homes isolated.
 pub fn home(claude: &Path) -> PathBuf {
-    match std::env::var_os("CODEX_HOME").filter(|d| !d.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
-        None => claude.with_file_name(".codex"),
-    }
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .home
+        .resolve(claude)
 }
 
 /// Every Codex home to read. `CODEX_HOME` pins one; otherwise the default home and
 /// its `.codex-*` siblings, because a daemon serves one provider region and a model
 /// in another region needs a home of its own to be seen and joined here.
 pub fn homes(claude: &Path) -> Vec<PathBuf> {
-    let base = home(claude);
-    if std::env::var_os("CODEX_HOME").is_some_and(|d| !d.is_empty()) {
-        return vec![base];
-    }
-    // ponytail: siblings by name; a configured list if homes ever live elsewhere.
-    let mut extra: Vec<PathBuf> = base
-        .parent()
-        .and_then(|p| fs::read_dir(p).ok())
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(".codex-"))
-                && p.join("config.toml").is_file()
-        })
-        .collect();
-    extra.sort();
-    let mut out = vec![base];
-    out.extend(extra);
-    out
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .home
+        .all(claude)
 }
 
 /// The home a rollout lives in: the parent of the `sessions` directory holding it.
 /// A row carries its rollout, so a join resumes against the daemon that owns it.
 pub fn home_of(rollout: &Path) -> Option<&Path> {
-    rollout
-        .ancestors()
-        .find(|a| a.file_name() == Some(std::ffi::OsStr::new("sessions")))?
-        .parent()
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .transcript
+        .home_of(rollout)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,58 +125,22 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
     Ok(rows(codex, &procs))
 }
 
-/// Subcommands that do not create sessions.
-const NOT_SESSIONS: [&str; 24] = [
-    "agents",
-    "login",
-    "logout",
-    "mcp",
-    "mcp-server",
-    "plugin",
-    "app-server",
-    "remote-control",
-    "app",
-    "completion",
-    "update",
-    "doctor",
-    "sandbox",
-    "debug",
-    "apply",
-    "a",
-    "queue",
-    "archive",
-    "delete",
-    "migrate-rollouts",
-    "unarchive",
-    "cloud",
-    "exec-server",
-    "features",
-];
-
 /// Parse `TZ=UTC ps -axww -o pid=,lstart=,command=`; `cwd` is filled from lsof.
 pub fn processes(ps: &str) -> Vec<Process> {
-    ps.lines()
-        .filter_map(|line| {
-            let (pid, rest) = line.trim_start().split_once(' ')?;
-            let rest = rest.trim_start();
-            // `lstart` is fixed width: `Sun Sep 13 15:19:19 2026`, the day padded with a space.
-            let (start, command) = rest.split_at_checked(24)?;
-            let mut words = command.split_whitespace();
-            let program = Path::new(words.next()?).file_name()?;
-            if program != "codex" || words.next().is_some_and(|a| NOT_SESSIONS.contains(&a)) {
-                return None;
-            }
-            let (remote, thread, prompt) = client_options(command.split_whitespace().skip(1));
-            Some(Process {
-                pid: pid.parse().ok()?,
-                started: NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
-                    .ok()?
-                    .and_utc(),
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .discovery
+        .processes(ps)
+        .into_iter()
+        .map(|line| {
+            let (remote, thread, prompt) = client_options(line.command.split_whitespace().skip(1));
+            Process {
+                pid: line.pid,
+                started: line.started,
                 cwd: None,
                 thread,
                 remote,
                 prompt,
-            })
+            }
         })
         .collect()
 }
@@ -316,16 +258,12 @@ pub fn meta(line: &str) -> Option<Meta> {
 }
 
 pub fn assistant_texts(v: &Value) -> impl Iterator<Item = &str> {
-    let p = &v["payload"];
-    let message =
-        v["type"] == "response_item" && p["type"] == "message" && p["role"] == "assistant";
-    p["content"]
-        .as_array()
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .transcript
+        .messages
+        .assistant
+        .parts(v, false)
         .into_iter()
-        .flatten()
-        .filter(move |_| message)
-        .filter(|b| b["type"] == "output_text")
-        .filter_map(|b| b["text"].as_str())
 }
 
 /// Ignore malformed JSON, including a partially written last line.
@@ -367,7 +305,12 @@ impl Tail {
                         .unwrap_or(0);
                 }
             }
-            if let Some(first) = assistant_texts(&v).find_map(crate::fleet::headline) {
+            if let Some(first) = crate::harness::spec(crate::config::HarnessKind::Codex)
+                .transcript
+                .messages
+                .assistant
+                .headline(&v)
+            {
                 t.last = Some(first);
             }
             if v["type"] == "turn_context"
@@ -375,24 +318,21 @@ impl Tail {
             {
                 t.model = Some(model.to_owned());
             }
-            if v["type"] == "event_msg" {
-                match v["payload"]["type"].as_str() {
-                    Some("task_started") => t.state = Some("active"),
-                    Some("task_complete") => t.state = Some("done"),
-                    Some("turn_aborted") => t.state = Some("stopped"),
-                    Some("token_count") => {
-                        let info = &v["payload"]["info"];
-                        let total = &info["total_token_usage"];
-                        t.tokens_in = total["input_tokens"].as_u64().or(t.tokens_in);
-                        t.tokens_out = total["output_tokens"].as_u64().or(t.tokens_out);
-                        t.context_tokens = info["last_token_usage"]["total_tokens"]
-                            .as_u64()
-                            .or(t.context_tokens);
-                        t.context_window =
-                            info["model_context_window"].as_u64().or(t.context_window);
-                    }
-                    _ => {}
-                }
+            if let Some(state) = crate::harness::spec(crate::config::HarnessKind::Codex)
+                .state
+                .read(&v)
+            {
+                t.state = Some(state);
+            }
+            if v["type"] == "event_msg" && payload["type"] == "token_count" {
+                let info = &payload["info"];
+                let total = &info["total_token_usage"];
+                t.tokens_in = total["input_tokens"].as_u64().or(t.tokens_in);
+                t.tokens_out = total["output_tokens"].as_u64().or(t.tokens_out);
+                t.context_tokens = info["last_token_usage"]["total_tokens"]
+                    .as_u64()
+                    .or(t.context_tokens);
+                t.context_window = info["model_context_window"].as_u64().or(t.context_window);
             }
         }
     }
@@ -574,7 +514,13 @@ fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
         return Some(path.clone());
     }
     let suffix = format!("-{id}.jsonl");
-    let mut stack = vec![codex.join("sessions")];
+    let mut stack = vec![
+        codex.join(
+            crate::harness::spec(crate::config::HarnessKind::Codex)
+                .transcript
+                .live_root(),
+        ),
+    ];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
@@ -820,7 +766,13 @@ pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session>
 /// Read rollout headers only from files modified since the earliest process start.
 fn rollouts(codex: &Path, since: DateTime<Utc>) -> Vec<(PathBuf, Meta)> {
     let mut out = Vec::new();
-    let mut stack = vec![codex.join("sessions")];
+    let mut stack = vec![
+        codex.join(
+            crate::harness::spec(crate::config::HarnessKind::Codex)
+                .transcript
+                .live_root(),
+        ),
+    ];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = entry.path();
@@ -878,22 +830,21 @@ pub(crate) fn prompt_of(path: &Path) -> Option<String> {
 
 pub fn prompt(line: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(line).ok()?;
-    user_texts(&v).find_map(crate::fleet::headline)
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .transcript
+        .messages
+        .user
+        .headline(&v)
 }
 
 /// The UI's actual user message, excluding model-history instructions and skills.
 pub fn user_texts(v: &Value) -> impl Iterator<Item = &str> {
-    let item = &v["payload"]["item"];
-    let legacy = (v["type"] == "event_msg" && v["payload"]["type"] == "user_message")
-        .then(|| v["payload"]["message"].as_str())
-        .flatten();
-    item["content"]
-        .as_array()
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .transcript
+        .messages
+        .user
+        .parts(v, false)
         .into_iter()
-        .flatten()
-        .filter(move |_| v["type"] == "event_msg" && item["type"] == "UserMessage")
-        .filter_map(|c| c["text"].as_str())
-        .chain(legacy)
 }
 
 /// Fold appended bytes after the first full read, retaining earlier state.

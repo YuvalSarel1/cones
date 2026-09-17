@@ -158,11 +158,9 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 impl Session {
     /// Only Claude background sessions and Codex daemon threads are joinable.
     pub fn own_terminal(&self) -> bool {
-        match (self.harness.as_str(), self.kind.as_deref()) {
-            ("claude", Some("interactive")) => true,
-            ("claude", _) | ("codex", Some("daemon")) => false,
-            _ => true,
-        }
+        crate::harness::by_name(&self.harness).is_none_or(|spec| {
+            spec.session(self.kind.as_deref()).join == crate::harness::spec::Join::Unavailable
+        })
     }
 }
 fn claude() -> String {
@@ -170,7 +168,13 @@ fn claude() -> String {
 }
 
 pub fn claude_dir() -> Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|d| !d.is_empty()) {
+    if let Some(dir) = std::env::var_os(
+        &crate::harness::spec(crate::config::HarnessKind::Claude)
+            .home
+            .env,
+    )
+    .filter(|d| !d.is_empty())
+    {
         return Ok(PathBuf::from(dir));
     }
     Ok(dirs::home_dir()
@@ -181,7 +185,15 @@ pub fn claude_dir() -> Result<PathBuf> {
 /// Live registry sessions, oldest first. Skip malformed entries and mismatched pid/start pairs.
 pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(claude.join("sessions")) else {
+    let Ok(entries) = fs::read_dir(
+        claude.join(
+            crate::harness::spec(crate::config::HarnessKind::Claude)
+                .discovery
+                .registry
+                .as_ref()
+                .expect("Claude registry"),
+        ),
+    ) else {
         return Ok(out);
     };
     let values: Vec<Value> = entries
@@ -240,6 +252,30 @@ pub fn process_table(ps: &str) -> Result<String> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Shared parser for the OS command above: pid, UTC lstart, then the complete argv.
+/// Column order and timestamp syntax belong to this OS adapter, not harness definitions.
+pub struct ProcessLine<'a> {
+    pub pid: u32,
+    pub started: DateTime<Utc>,
+    pub command: &'a str,
+}
+
+pub fn process_lines(ps: &str) -> Vec<ProcessLine<'_>> {
+    ps.lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(' ')?;
+            let (start, command) = rest.trim_start().split_at_checked(24)?;
+            Some(ProcessLine {
+                pid: pid.parse().ok()?,
+                started: chrono::NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
+                    .ok()?
+                    .and_utc(),
+                command,
+            })
+        })
+        .collect()
 }
 
 /// Batch process start times in Claude's UTC format to reject reused pids.
@@ -312,7 +348,11 @@ fn session(
         .unwrap_or_default();
     // Claude keeps transcripts under projects/<cwd with every non-alphanumeric byte as '-'>.
     let transcript = dir
-        .join("projects")
+        .join(
+            crate::harness::spec(crate::config::HarnessKind::Claude)
+                .transcript
+                .live_root(),
+        )
         .join(
             cwd.to_string_lossy()
                 .replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
@@ -395,8 +435,16 @@ fn state(job: &Value, status: &str) -> String {
 
 /// Read only the window saved by the user's statusLine command.
 fn statusline_window(claude: &Path, id: &str) -> Option<u64> {
-    let text = fs::read_to_string(claude.join("statusline").join(format!("{id}.json"))).ok()?;
-    serde_json::from_str::<Value>(&text).ok()?["context_window"]["context_window_size"].as_u64()
+    let source = crate::harness::spec(crate::config::HarnessKind::Claude)
+        .transcript
+        .statusline
+        .as_ref()?;
+    let text =
+        fs::read_to_string(claude.join(&source.directory).join(format!("{id}.json"))).ok()?;
+    serde_json::from_str::<Value>(&text)
+        .ok()?
+        .pointer(&source.window_pointer)?
+        .as_u64()
 }
 
 #[derive(Default, Clone)]
@@ -788,9 +836,17 @@ pub fn alive(pid: u32) -> bool {
 }
 
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
-    let mut out = sessions(claude)?;
-    out.extend(crate::codex::sessions(&crate::codex::home(claude))?);
-    out.extend(crate::pi::sessions(&crate::pi::home(claude))?);
+    let mut out = Vec::new();
+    for &kind in crate::harness::known() {
+        let spec = crate::harness::spec(kind);
+        // Live process discovery keeps its existing default-home scope. Saved daemon threads
+        // from additional homes are supplied separately by the dashboard.
+        out.extend(
+            spec.discovery
+                .handler
+                .sessions(&spec.home.resolve(claude))?,
+        );
+    }
     sort(&mut out);
     Ok(out)
 }
@@ -814,7 +870,15 @@ pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
 
 /// Validate current pid/start identity without loading every transcript.
 fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
-    match fs::read_dir(claude.join("sessions")) {
+    match fs::read_dir(
+        claude.join(
+            crate::harness::spec(crate::config::HarnessKind::Claude)
+                .discovery
+                .registry
+                .as_ref()
+                .expect("Claude registry"),
+        ),
+    ) {
         Ok(entries) => {
             for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
                 if path.extension().is_none_or(|e| e != "json") {
@@ -835,10 +899,22 @@ fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    Ok(crate::codex::sessions(&crate::codex::home(claude))?
-        .into_iter()
-        .chain(crate::pi::sessions(&crate::pi::home(claude))?)
-        .find(|s| s.session_id == session_id))
+    for &kind in crate::harness::known() {
+        let spec = crate::harness::spec(kind);
+        if spec.discovery.registry.is_some() {
+            continue;
+        }
+        if let Some(session) = spec
+            .discovery
+            .handler
+            .sessions(&spec.home.resolve(claude))?
+            .into_iter()
+            .find(|s| s.session_id == session_id)
+        {
+            return Ok(Some(session));
+        }
+    }
+    Ok(None)
 }
 
 /// Verify process identity before signalling; return false when already gone.
@@ -846,12 +922,16 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     let session = control_session(claude, session_id)?.context("no such run or session")?;
     // Use `claude rm`: the daemon respawns killed workers, and `stop` leaves a job record.
     // The transcript remains resumable.
-    if session.kind.as_deref() == Some("bg") {
-        let claude = crate::harness::executable("claude", &crate::harness::launch_path())
-            .context("claude not found")?;
+    let spec = crate::harness::by_name(&session.harness).context("unknown session harness")?;
+    if spec.session(session.kind.as_deref()).stop == crate::harness::spec::Stop::Remove {
+        let claude = crate::harness::executable(&spec.name, &crate::harness::launch_path())
+            .with_context(|| format!("{} not found", spec.name))?;
         let short = session_id.get(..8).context("invalid session id")?;
         let out = Command::new(claude)
-            .args(["rm", short])
+            .args(crate::harness::spec::args(
+                &spec.commands.remove,
+                &[("id", session_id.as_ref()), ("short_id", short.as_ref())],
+            )?)
             .stdin(Stdio::null())
             .output()?;
         ensure!(

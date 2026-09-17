@@ -1,0 +1,4 @@
+{"type":"user","sessionId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","cwd":"/fixture","timestamp":"2026-09-16T10:00:00Z","message":{"content":"Inspect the fixture"}}
+{"type":"assistant","timestamp":"2026-09-16T10:00:01Z","message":{"id":"m1","model":"fixture-claude","usage":{"input_tokens":12,"cache_read_input_tokens":2,"cache_creation_input_tokens":1,"output_tokens":5},"content":[{"type":"text","text":"Reading"}]}}
+{"type":"assistant","timestamp":"2026-09-16T10:00:02Z","message":{"id":"m1","model":"fixture-claude","usage":{"input_tokens":12,"cache_read_input_tokens":2,"cache_creation_input_tokens":1,"output_tokens":5},"content":[{"type":"text","text":"Done"}]}}
+{"type":"custom-title","customTitle":"Named Claude","timestamp":"2026-09-16T10:00:03Z"}

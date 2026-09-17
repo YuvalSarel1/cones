@@ -1,5 +1,8 @@
+pub mod spec;
+pub use spec::{by_name, known, spec};
+
 use crate::config::{HarnessKind, Policy, ResolvedJob};
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -28,15 +31,17 @@ pub trait Harness {
 
 pub struct Claude;
 pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
-    match kind {
-        HarnessKind::Claude => Ok(Box::new(Claude)),
+    match (
+        kind,
+        spec(kind).execution.enforcement,
+        spec(kind).execution.result,
+    ) {
+        (HarnessKind::Claude, spec::Support::Supported, spec::Support::Supported) => {
+            Ok(Box::new(Claude))
+        }
         _ => bail!("{kind} has no execution adapter in v0.1. Use harness: claude"),
     }
 }
-
-/// Composer harnesses, in the order shift+tab cycles them. How long a session
-/// outlives its viewer is the harness's own; `leave_and_return` states it.
-pub const KNOWN: [HarnessKind; 3] = [HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Pi];
 
 /// Native session launch with harness-owned permissions and lifetime.
 /// Background commands return after launch; foreground commands are daemon clients.
@@ -51,8 +56,8 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
     leave_and_return(kind)?;
-    Ok(match kind {
-        HarnessKind::Claude => {
+    Ok(match spec(kind).launch.handler {
+        spec::LaunchHandler::ClaudeBackground => {
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy))
                 .current_dir(dir);
@@ -76,7 +81,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             }
             Start::Background(c)
         }
-        HarnessKind::Codex => {
+        spec::LaunchHandler::CodexRemote => {
             let (path, remote) =
                 codex_remote(&path, &crate::codex::home(&crate::fleet::claude_dir()?))?;
             let mut c = std::process::Command::new(path);
@@ -84,7 +89,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
                 .current_dir(dir);
             Start::Foreground(c)
         }
-        HarnessKind::Pi => {
+        spec::LaunchHandler::Terminal => {
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy))
                 .current_dir(dir);
@@ -100,27 +105,30 @@ pub fn session_args(
     prompt: &str,
     policy: &Policy,
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = vec![];
-    match kind {
-        HarnessKind::Claude => {
-            args.push("--bg".into());
-            if let Some(m) = &policy.model {
-                args.extend(["--model".into(), m.into()]);
-            }
-            args.push("--".into());
-        }
-        HarnessKind::Codex => {
-            if let Some((remote, dir)) = remote {
-                args.extend(["--remote".into(), remote.into(), "-C".into(), dir.into()]);
-            }
-            if let Some(m) = &policy.codex_model {
-                args.extend(["-m".into(), m.into()]);
-            }
-            args.push("--".into());
-        }
-        HarnessKind::Pi => args.push("--".into()),
+    let launch = &spec(kind).launch;
+    let mut args: Vec<OsString> = launch.prefix.iter().map(OsString::from).collect();
+    if let Some((remote, dir)) = remote {
+        args.extend(
+            spec::args(
+                &launch.remote,
+                &[("remote", remote.as_ref()), ("cwd", dir.as_os_str())],
+            )
+            .expect("validated remote template"),
+        );
     }
-    args.push(prompt.into());
+    if let Some(model) = &launch.model {
+        let value = match model.source {
+            spec::ModelSource::Claude => &policy.model,
+            spec::ModelSource::Codex => &policy.codex_model,
+        };
+        if let Some(value) = value {
+            args.extend([OsString::from(&model.flag), value.into()]);
+        }
+    }
+    args.extend(
+        spec::args(&launch.prompt, &[("prompt", prompt.as_ref())])
+            .expect("validated prompt template"),
+    );
     args
 }
 
@@ -130,64 +138,174 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
-    let run = |args: &[&str]| {
-        std::process::Command::new(&path)
-            .args(args)
-            .output()
-            .map(|o| {
-                (
-                    o.status.success(),
-                    String::from_utf8_lossy(&o.stdout).into_owned(),
-                )
-            })
-            .map_err(|e| anyhow::anyhow!("{name} {}: {e}", args.join(" ")))
-    };
-    match kind {
-        HarnessKind::Claude => {
-            let (_, help) = run(&["--help"])?;
-            ensure!(
-                help.contains("--bg") && help.contains("attach"),
-                "this claude has no --bg or attach, so a session opened here could not be left running; update Claude Code"
-            );
-            Ok("claude: background sessions with a viewer (--bg, attach)".into())
-        }
-        HarnessKind::Codex => {
-            let (ok, json) = run(&["app-server", "daemon", "version"])?;
-            ensure!(
-                ok,
-                "this codex has no app-server daemon, so a session opened here could not be left running; Codex 0.154 or later has one"
-            );
-            let ver = json
-                .lines()
-                .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
-                .find_map(|v| v["cliVersion"].as_str().map(str::to_owned))
-                .unwrap_or_default();
-            Ok(format!(
-                "codex {ver}: threads behind the app-server daemon (experimental in Codex)"
-            ))
-        }
-        HarnessKind::Pi => {
-            let (ok, version) = run(&["--version"])?;
-            ensure!(ok, "this pi does not run, so no session could be started");
-            Ok(format!(
-                "pi {}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach",
-                version.trim()
-            ))
-        }
-    }
+    let probe = &spec(kind).probe;
+    let output = std::process::Command::new(&path)
+        .args(&probe.args)
+        .output()
+        .with_context(|| format!("{name} {}", probe.args.join(" ")))?;
+    probe.report(
+        output.status.success(),
+        &String::from_utf8_lossy(&output.stdout),
+    )
 }
 
 /// Resume a thread against the daemon of the home that holds it, not the ambient one:
 /// a home pinned to another provider region keeps its own daemon and its own socket.
 pub fn codex_resume(home: &Path, id: &str, cwd: &Path) -> Result<std::process::Command> {
+    codex_client(
+        home,
+        id,
+        cwd,
+        &spec(HarnessKind::Codex).commands.resume,
+        false,
+    )
+}
+
+fn codex_client(
+    home: &Path,
+    id: &str,
+    cwd: &Path,
+    template: &[String],
+    existing_only: bool,
+) -> Result<std::process::Command> {
     let path = executable("codex", &launch_path())
         .ok_or_else(|| anyhow::anyhow!("codex not found on the launch PATH"))?;
+    if existing_only {
+        // Preserve the native liveness guard used by hover before resolving its address.
+        ensure!(
+            crate::codex::daemon_pid(home).is_some(),
+            "Codex daemon is no longer running"
+        );
+    }
     let (path, remote) = codex_remote(&path, home)?;
     let mut c = std::process::Command::new(path);
-    c.env("CODEX_HOME", home);
-    c.args(["--remote", &remote, "resume", "--", id])
-        .current_dir(cwd);
+    let spec = spec(HarnessKind::Codex);
+    c.env(&spec.home.env, home);
+    c.args(spec::args(
+        template,
+        &[("remote", remote.as_ref()), ("id", id.as_ref())],
+    )?)
+    .current_dir(cwd);
     Ok(c)
+}
+
+/// One native join contract for Enter and hover. Hover is forbidden from launching a session.
+pub fn join(
+    session: &crate::fleet::Session,
+    home: &Path,
+    speculative: bool,
+) -> Result<std::process::Command> {
+    let spec = by_name(&session.harness).context("unknown session harness")?;
+    match spec.session(session.kind.as_deref()).join {
+        spec::Join::Unavailable => bail!(
+            "{} runs in its own terminal and cannot be joined from here",
+            spec.name
+        ),
+        spec::Join::Attach => Claude.attach(&session.session_id, &session.cwd),
+        spec::Join::CodexRemote => codex_client(
+            home,
+            &session.session_id,
+            &session.cwd,
+            &spec.commands.attach,
+            speculative,
+        ),
+    }
+}
+
+pub fn can_peek(session: &crate::fleet::Session, home: &Path) -> bool {
+    let Some(spec) = by_name(&session.harness) else {
+        return false;
+    };
+    if !spec.permits_peek(session) {
+        return false;
+    }
+    match spec.viewer.peek {
+        spec::Peek::Join => true,
+        spec::Peek::ExistingDaemon => crate::codex::daemon_pid(home).is_some(),
+        spec::Peek::Unavailable => false,
+    }
+}
+
+/// Historical resume always carries the entry's canonical native home.
+pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Command> {
+    ensure!(
+        entry.cwd.is_dir(),
+        "session directory no longer exists: {}",
+        entry.cwd.display()
+    );
+    ensure!(
+        entry.transcript.is_file(),
+        "session transcript no longer exists; reload history"
+    );
+    let spec = by_name(&entry.key.harness).context("unknown history harness")?;
+    let mut command = match spec.commands.resume_handler {
+        spec::Resume::BackgroundThenAttach => Claude.resume(&entry.key.session_id, &entry.cwd)?,
+        spec::Resume::CodexRemote => {
+            codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd)?
+        }
+        spec::Resume::Transcript => {
+            let path = executable(&spec.name, &launch_path())
+                .with_context(|| format!("{} not found", spec.name))?;
+            let mut c = std::process::Command::new(path);
+            c.args(spec::args(
+                &spec.commands.resume,
+                &[("transcript", entry.transcript.as_os_str())],
+            )?)
+            .current_dir(&entry.cwd);
+            c
+        }
+    };
+    command.env(&spec.home.env, &entry.key.home);
+    if entry.archived {
+        ensure!(
+            !spec.commands.unarchive.is_empty(),
+            "this harness cannot unarchive a session"
+        );
+        command = then_exec(
+            spec::args(
+                &spec.commands.unarchive,
+                &[("id", entry.key.session_id.as_ref())],
+            )?,
+            command,
+        );
+    }
+    Ok(command)
+}
+
+/// Sequence two invocations of one native program. Values are positional shell arguments.
+pub(crate) fn then_exec(
+    before: Vec<OsString>,
+    after: std::process::Command,
+) -> std::process::Command {
+    let first = before.len();
+    let second = after.get_args().len();
+    let refs = |from: usize, len: usize| {
+        (from..from + len)
+            .map(|i| format!("\"${{{i}}}\""))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let mut c = std::process::Command::new("/bin/sh");
+    c.arg("-c")
+        .arg(format!(
+            "\"$0\" {} >/dev/null && exec \"$0\" {}",
+            refs(1, first),
+            refs(first + 1, second)
+        ))
+        .arg(after.get_program())
+        .args(before)
+        .args(after.get_args());
+    if let Some(cwd) = after.get_current_dir() {
+        c.current_dir(cwd);
+    }
+    for (name, value) in after.get_envs() {
+        if let Some(value) = value {
+            c.env(name, value);
+        } else {
+            c.env_remove(name);
+        }
+    }
+    c
 }
 
 /// Start the daemon idempotently and read its `socketPath` response.
@@ -208,7 +326,7 @@ fn codex_remote(codex: &Path, home: &Path) -> Result<(PathBuf, String)> {
         return Ok((codex.to_owned(), remote));
     }
     let out = std::process::Command::new(codex)
-        .env("CODEX_HOME", home)
+        .env(&spec(HarnessKind::Codex).home.env, home)
         .args(["app-server", "daemon", "start"])
         .output()
         .map_err(|e| anyhow::anyhow!("codex app-server daemon start: {e}"))?;
@@ -453,17 +571,18 @@ impl Harness for Claude {
     }
     fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
         uuid::Uuid::parse_str(session_id)?;
-        let path = executable("claude", &launch_path())
-            .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
         // Resume in the background so ctrl+z detaches without suspending the agent.
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.arg("-c")
-            .arg(r#""$0" --bg --resume "$1" >/dev/null && exec "$0" attach "$2""#)
-            .arg(path)
-            .arg(session_id)
-            .arg(&session_id[..8])
-            .current_dir(cwd);
-        Ok(cmd)
+        let spec = spec(HarnessKind::Claude);
+        Ok(then_exec(
+            spec::args(
+                &spec.commands.resume,
+                &[
+                    ("id", session_id.as_ref()),
+                    ("short_id", session_id[..8].as_ref()),
+                ],
+            )?,
+            self.attach(session_id, cwd)?,
+        ))
     }
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
         uuid::Uuid::parse_str(session_id)?;
@@ -471,7 +590,14 @@ impl Harness for Claude {
             .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
         let mut cmd = std::process::Command::new(path);
         // `claude attach` takes the short id, the first block of the UUID.
-        cmd.args(["attach", &session_id[..8]]).current_dir(cwd);
+        cmd.args(spec::args(
+            &spec(HarnessKind::Claude).commands.attach,
+            &[
+                ("id", session_id.as_ref()),
+                ("short_id", session_id[..8].as_ref()),
+            ],
+        )?)
+        .current_dir(cwd);
         Ok(cmd)
     }
     fn transcript(&self, session_id: &str, cwd: &Path) -> Result<PathBuf> {
@@ -483,7 +609,8 @@ impl Harness for Claude {
             .collect();
         Ok(dirs::home_dir()
             .ok_or_else(|| anyhow::anyhow!("missing home directory"))?
-            .join(".claude/projects")
+            .join(".claude")
+            .join(spec(HarnessKind::Claude).transcript.live_root())
             .join(project)
             .join(format!("{session_id}.jsonl")))
     }
@@ -666,7 +793,7 @@ mod tests {
     #[test]
     fn the_composer_offers_every_harness_claude_first() {
         assert_eq!(
-            KNOWN.map(|k| k.to_string()),
+            known().iter().map(ToString::to_string).collect::<Vec<_>>(),
             ["claude", "codex", "pi"],
             "shift+tab cycles in this order and start.harness defaults to the first"
         );

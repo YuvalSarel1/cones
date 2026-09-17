@@ -1,0 +1,123 @@
+version: 1
+kind: codex
+name: codex
+icon: ">_"
+colour: null
+home:
+  env: CODEX_HOME
+  sibling: .codex
+  siblings: {prefix: .codex-, marker: config.toml}
+discovery:
+  handler: codex
+  registry: null
+  process: codex
+  exclude_subcommands:
+    - agents
+    - login
+    - logout
+    - mcp
+    - mcp-server
+    - plugin
+    - app-server
+    - remote-control
+    - app
+    - completion
+    - update
+    - doctor
+    - sandbox
+    - debug
+    - apply
+    - a
+    - queue
+    - archive
+    - delete
+    - migrate-rollouts
+    - unarchive
+    - cloud
+    - exec-server
+    - features
+state:
+  handler: event_map
+  rules:
+    - when: {"/type": event_msg}
+      field: /payload/type
+      values:
+        task_started: active
+        task_complete: done
+        turn_aborted: stopped
+      otherwise: null
+transcript:
+  handler: codex
+  messages:
+    user:
+      id: /payload/item/id
+      headline: first
+      sources:
+        - when: {"/type": event_msg, "/payload/item/type": UserMessage}
+          unless: []
+          path: /payload/item/content
+          shape: blocks
+          types: []
+          labels: {}
+        - when: {"/type": event_msg, "/payload/type": user_message}
+          unless: []
+          path: /payload/message
+          shape: string
+          types: []
+          labels: {}
+    assistant:
+      id: /payload/id
+      headline: first
+      sources:
+        - when: {"/type": response_item, "/payload/type": message, "/payload/role": assistant}
+          unless: []
+          path: /payload/content
+          shape: blocks
+          types: [output_text]
+          labels: {}
+  roots:
+    - {path: sessions, depth: null, archived: false}
+    - {path: archived_sessions, depth: null, archived: true}
+  statusline: null
+launch:
+  handler: codex_remote
+  identity: reported_thread
+  session_kind: daemon
+  prefix: []
+  remote: [--remote, "{remote}", -C, "{cwd}"]
+  model: {source: codex, flag: -m}
+  prompt: [--, "{prompt}"]
+probe:
+  args: [app-server, daemon, version]
+  require_success: true
+  contains: []
+  version: {format: json_lines, pointer: /cliVersion}
+  error: "this codex has no app-server daemon, so a session opened here could not be left running; Codex 0.154 or later has one"
+  description: "codex {version}: threads behind the app-server daemon (experimental in Codex)"
+default_session: {join: unavailable, stop: signal, lifetime: terminal}
+session_kinds:
+  daemon: {join: codex_remote, stop: forget_client, lifetime: daemon}
+commands:
+  attach: [--remote, "{remote}", resume, --, "{id}"]
+  resume: [--remote, "{remote}", resume, --, "{id}"]
+  remove: []
+  unarchive: [unarchive, --, "{id}"]
+  resume_handler: codex_remote
+  viewer: codex
+# No supervised adapter has verified these native guarantees.
+execution:
+  enforcement: unknown
+  result: unknown
+input:
+  return_to_list:
+    - {key: ctrl+z, when: always}
+    - {key: tab, when: always}
+    - {key: left, when: empty_prompt}
+  empty_prompt: marker
+  markers: "|>$#│┊┃▐›❯"
+  ignore_braille: true
+viewer:
+  peek: existing_daemon
+  peek_blocked_states: [failed, stopped]
+  retention: retain
+  input_alignment: fixed

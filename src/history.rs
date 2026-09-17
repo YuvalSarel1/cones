@@ -1,7 +1,13 @@
 //! Historical session discovery, separate from fleet polling and dashboard loading.
 //! `Reader` owns a worker and cache; requesting or polling a page performs no file IO.
-use crate::{codex, config::HarnessKind, fleet, pi};
-use anyhow::{Context, Result, bail, ensure};
+use crate::{
+    codex,
+    config::HarnessKind,
+    fleet,
+    harness::{self, spec::Native},
+    pi,
+};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
@@ -149,19 +155,19 @@ impl Reader {
     /// Discover configured native homes on the worker, never on the dashboard input thread.
     pub fn discover(claude: PathBuf) -> std::io::Result<Self> {
         Self::with_sources(move || {
-            let mut sources = vec![Source {
-                harness: HarnessKind::Claude,
-                home: claude.clone(),
-            }];
-            sources.extend(codex::homes(&claude).into_iter().map(|home| Source {
-                harness: HarnessKind::Codex,
-                home,
-            }));
-            sources.push(Source {
-                harness: HarnessKind::Pi,
-                home: pi::home(&claude),
-            });
-            sources
+            harness::known()
+                .iter()
+                .flat_map(|&kind| {
+                    harness::spec(kind)
+                        .home
+                        .all(&claude)
+                        .into_iter()
+                        .map(move |home| Source {
+                            harness: kind,
+                            home,
+                        })
+                })
+                .collect()
         })
     }
 
@@ -372,7 +378,7 @@ impl Cache {
                 harness: source.harness,
                 home,
             };
-            let titles = if source.harness == HarnessKind::Codex {
+            let titles = if harness::spec(source.harness).transcript.handler == Native::Codex {
                 self.native_titles(&source.home)?
             } else {
                 HashMap::new()
@@ -464,16 +470,14 @@ impl Cache {
                 .is_some_and(|f| f.stamp == current),
             "history changed; refresh before loading columns"
         );
-        let statusline = e
-            .key
-            .home
-            .join("statusline")
-            .join(format!("{}.json", e.key.session_id));
-        let status_stamp = if e.key.harness == "claude" {
-            stamp(&statusline).ok()
-        } else {
-            None
-        };
+        let spec = harness::by_name(&e.key.harness).context("unknown history harness")?;
+        let statusline = spec.transcript.statusline.as_ref().map(|source| {
+            e.key
+                .home
+                .join(&source.directory)
+                .join(format!("{}.json", e.key.session_id))
+        });
+        let status_stamp = statusline.as_deref().and_then(|path| stamp(path).ok());
         self.used += 1;
         if let Some(c) = self.columns.get_mut(&e.transcript)
             && c.stamp == current
@@ -482,20 +486,27 @@ impl Cache {
             c.used = self.used;
             return Ok(c.columns.clone());
         }
-        let mut columns = match e.key.harness.as_str() {
-            "claude" => fleet::history_columns(&e.transcript)?,
-            "codex" => codex_columns(&e.transcript)?,
-            "pi" => pi_columns(&e.transcript)?,
-            _ => bail!("unknown history harness"),
+        let mut columns = match spec.transcript.handler {
+            Native::Claude => fleet::history_columns(&e.transcript)?,
+            Native::Codex => codex_columns(&e.transcript)?,
+            Native::Pi => pi_columns(&e.transcript)?,
         };
         if status_stamp.is_some() {
             let mut bytes = Vec::new();
-            File::open(&statusline)?
+            File::open(statusline.as_ref().expect("stamped statusline"))?
                 .take(WINDOW)
                 .read_to_end(&mut bytes)?;
-            columns.context_window = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|v| v["context_window"]["context_window_size"].as_u64());
+            columns.context_window = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| {
+                v.pointer(
+                    &spec
+                        .transcript
+                        .statusline
+                        .as_ref()
+                        .expect("stamped source")
+                        .window_pointer,
+                )?
+                .as_u64()
+            });
         }
         ensure!(
             stamp(&e.transcript)? == current,
@@ -545,20 +556,18 @@ fn children(dir: &Path) -> Result<Vec<fs::DirEntry>> {
 
 fn discover(source: &Source) -> Result<Vec<(PathBuf, bool)>> {
     let mut out = Vec::new();
-    let mut stack = match source.harness {
-        HarnessKind::Claude => vec![(source.home.join("projects"), 0, false)],
-        HarnessKind::Codex => vec![
-            (source.home.join("sessions"), 0, false),
-            (source.home.join("archived_sessions"), 0, true),
-        ],
-        HarnessKind::Pi => vec![(source.home.join("sessions"), 0, false)],
-    };
-    while let Some((dir, depth, archived)) = stack.pop() {
+    let mut stack: Vec<_> = harness::spec(source.harness)
+        .transcript
+        .roots
+        .iter()
+        .map(|root| (source.home.join(&root.path), 0, root.depth, root.archived))
+        .collect();
+    while let Some((dir, depth, max_depth, archived)) = stack.pop() {
         for e in children(&dir)? {
             let ty = e.file_type()?;
             let p = e.path();
-            if ty.is_dir() && (source.harness == HarnessKind::Codex || depth == 0) {
-                stack.push((p, depth + 1, archived));
+            if ty.is_dir() && max_depth.is_none_or(|max| depth < max) {
+                stack.push((p, depth + 1, max_depth, archived));
             } else if ty.is_file() && p.extension().is_some_and(|e| e == "jsonl") {
                 out.push((p, archived));
             }
@@ -646,14 +655,14 @@ fn metadata(
         }
         size = (size * 4).min(len).min(MAX_WINDOW);
     };
-    let title = match source.harness {
-        HarnessKind::Claude => claude_title(&tail, true)
+    let title = match harness::spec(source.harness).transcript.handler {
+        Native::Claude => claude_title(&tail, true)
             .or_else(|| claude_title(&head, true))
             .or_else(|| claude_title(&tail, false))
             .or_else(|| claude_title(&head, false))
             .or_else(|| head.iter().find_map(claude_prompt)),
-        HarnessKind::Codex => head.iter().find_map(|v| codex::prompt(&v.to_string())),
-        HarnessKind::Pi => tail
+        Native::Codex => head.iter().find_map(|v| codex::prompt(&v.to_string())),
+        Native::Pi => tail
             .iter()
             .rev()
             .find(|v| v["type"] == "session_info")
@@ -684,8 +693,8 @@ fn metadata(
 type Identity = (String, PathBuf, Option<DateTime<Utc>>);
 
 fn identity(harness: HarnessKind, path: &Path, events: &[Value]) -> Option<Identity> {
-    match harness {
-        HarnessKind::Claude => {
+    match harness::spec(harness).transcript.handler {
+        Native::Claude => {
             let id = path.file_stem()?.to_str()?;
             uuid::Uuid::parse_str(id).ok()?;
             let cwd = events.iter().find_map(|v| v["cwd"].as_str())?;
@@ -694,11 +703,11 @@ fn identity(harness: HarnessKind, path: &Path, events: &[Value]) -> Option<Ident
             }
             Some((id.into(), cwd.into(), events.iter().find_map(timestamp)))
         }
-        HarnessKind::Codex => events
+        Native::Codex => events
             .iter()
             .find_map(|v| codex::meta(&v.to_string()))
             .map(|m| (m.session_id, m.cwd, Some(m.started))),
-        HarnessKind::Pi => events
+        Native::Pi => events
             .iter()
             .find_map(|v| pi::meta(&v.to_string()))
             .map(|m| (m.session_id, m.cwd, Some(m.started))),

@@ -1247,30 +1247,23 @@ fn icon(state: &str) -> &str {
 
 /// The harness's mark alone; an unknown harness has only its name.
 fn mark(harness: &str) -> &str {
-    match harness {
-        "claude" => "✻",
-        "codex" => ">_",
-        "pi" => "π",
-        other => other,
-    }
+    harness::by_name(harness).map_or(harness, |spec| spec.icon.as_str())
 }
 
 fn logo(harness: &str) -> String {
-    match harness {
-        "claude" | "codex" | "pi" => format!("{} {harness}", mark(harness)),
-        other => other.to_owned(),
-    }
+    harness::by_name(harness).map_or_else(
+        || harness.to_owned(),
+        |spec| format!("{} {harness}", spec.icon),
+    )
 }
 
 /// Prefix on the coordinator's title, which is also drawn in orange.
 const COORDINATOR: &str = "★";
 
 fn brand(harness: &str) -> Style {
-    match harness {
-        "claude" => Style::default().fg(Color::Rgb(215, 119, 87)),
-        "pi" => Style::default().fg(Color::Rgb(138, 190, 183)),
-        _ => dim(),
-    }
+    harness::by_name(harness)
+        .and_then(|spec| spec.colour)
+        .map_or_else(dim, |[r, g, b]| Style::default().fg(Color::Rgb(r, g, b)))
 }
 
 fn label(state: &str) -> &str {
@@ -1986,8 +1979,9 @@ impl JobForm {
             }
         };
         job.enabled = self.set("enabled") != "false";
-        job.harness = harness::KNOWN
-            .into_iter()
+        job.harness = harness::known()
+            .iter()
+            .copied()
             .find(|k| k.to_string() == self.set("harness"));
         job.model = text("model");
         job.timeout_min = num("timeout_min", "a number of minutes, as in 30")?;
@@ -3028,8 +3022,9 @@ impl ConfigForm {
             bedrock: flag("bedrock"),
             aws_profile: text("aws_profile"),
             aws_region: text("aws_region"),
-            harness: harness::KNOWN
-                .into_iter()
+            harness: harness::known()
+                .iter()
+                .copied()
                 .find(|k| k.to_string() == v("harness")),
         };
         // Session overrides bypass file resolution, so validate Bedrock credentials here too.
@@ -3109,8 +3104,9 @@ impl ConfigForm {
         } else {
             let built = config::Start::default();
             Some(config::Start {
-                harness: harness::KNOWN
-                    .into_iter()
+                harness: harness::known()
+                    .iter()
+                    .copied()
                     .find(|k| k.to_string() == v("start.harness"))
                     .unwrap_or(built.harness),
                 pane: flag("start.pane").unwrap_or(built.pane),
@@ -3995,66 +3991,7 @@ fn history_session(entry: &history::Entry) -> Session {
 
 /// Build native resume commands on the preparation thread; opening history alone does nothing.
 fn history_command(entry: &history::Entry) -> Result<Command> {
-    anyhow::ensure!(
-        entry.cwd.is_dir(),
-        "session directory no longer exists: {}",
-        entry.cwd.display()
-    );
-    anyhow::ensure!(
-        entry.transcript.is_file(),
-        "session transcript no longer exists; reload history"
-    );
-    match entry.key.harness.as_str() {
-        "claude" => {
-            let mut command =
-                harness::adapter(HarnessKind::Claude)?.resume(&entry.key.session_id, &entry.cwd)?;
-            command.env("CLAUDE_CONFIG_DIR", &entry.key.home);
-            Ok(command)
-        }
-        "codex" => {
-            let command =
-                harness::codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd)?;
-            Ok(if entry.archived {
-                unarchive_before_resume(command, &entry.key.session_id)
-            } else {
-                command
-            })
-        }
-        "pi" => {
-            let path =
-                harness::executable("pi", &harness::launch_path()).context("pi not found")?;
-            let mut command = Command::new(path);
-            command
-                .env("PI_CODING_AGENT_DIR", &entry.key.home)
-                .arg("--session")
-                .arg(&entry.transcript)
-                .current_dir(&entry.cwd);
-            Ok(command)
-        }
-        _ => anyhow::bail!("unknown history harness"),
-    }
-}
-
-/// Unarchive only after the user opens the viewer, under the saved thread's native home.
-fn unarchive_before_resume(command: Command, id: &str) -> Command {
-    let mut wrapped = Command::new("/bin/sh");
-    wrapped
-        .arg("-c")
-        .arg(r#""$0" unarchive -- "$1" >/dev/null && shift && exec "$0" "$@""#)
-        .arg(command.get_program())
-        .arg(id)
-        .args(command.get_args());
-    if let Some(cwd) = command.get_current_dir() {
-        wrapped.current_dir(cwd);
-    }
-    for (key, value) in command.get_envs() {
-        if let Some(value) = value {
-            wrapped.env(key, value);
-        } else {
-            wrapped.env_remove(key);
-        }
-    }
-    wrapped
+    harness::resume_history(entry)
 }
 
 impl HistoryView {
@@ -4174,7 +4111,7 @@ struct App {
     caret: usize,
     /// The PNGs pasted into the instruction, in the order their markers were typed.
     images: Vec<PathBuf>,
-    /// Index into `harness::KNOWN` for the next launch.
+    /// Index into `harness::known()` for the next launch.
     harness: usize,
     /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
@@ -4259,11 +4196,12 @@ impl Pending {
         s.harness == self.session.harness
             && s.cwd == self.session.cwd
             && (self.session.pid.is_some_and(|pid| s.pid == Some(pid))
-                || (s.harness == "claude"
-                    && self
-                        .short
-                        .as_deref()
-                        .is_some_and(|short| s.session_id.starts_with(short))))
+                || (harness::by_name(&s.harness).is_some_and(|spec| {
+                    spec.launch.identity == harness::spec::LaunchIdentity::BackgroundId
+                }) && self
+                    .short
+                    .as_deref()
+                    .is_some_and(|short| s.session_id.starts_with(short))))
     }
 }
 
@@ -4284,11 +4222,7 @@ fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session
     Session {
         session_id: id.to_owned(),
         harness: kind.to_string(),
-        kind: match kind {
-            HarnessKind::Claude => Some("bg".into()),
-            HarnessKind::Codex => Some("daemon".into()),
-            HarnessKind::Pi => None,
-        },
+        kind: harness::spec(kind).launch.session_kind.clone(),
         cwd: dir.to_owned(),
         state: "started".into(),
         started: Some(chrono::Utc::now()),
@@ -4313,6 +4247,8 @@ struct Open {
     key: String,
     /// `attach`, `codex`, `claude agents`, `logs`: the word in the status line.
     what: String,
+    /// Native input behavior follows the launch/session identity, never the viewer's title.
+    harness: Option<HarnessKind>,
     viewer: Viewer,
     /// A Codex thread to record from its rollout once the viewer is left or ends.
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
@@ -4475,21 +4411,8 @@ impl App {
         }
     }
 
-    /// The home whose daemon holds this thread, not the ambient one.
-    fn codex_home(&self, s: &Session) -> PathBuf {
-        s.transcript_path
-            .as_deref()
-            .and_then(codex::home_of)
-            .map_or_else(|| codex::home(&self.claude), Path::to_path_buf)
-    }
-
     fn session_history_key(&self, s: &Session) -> Option<history::Key> {
-        let home = match s.harness.as_str() {
-            "claude" => self.claude.clone(),
-            "codex" => self.codex_home(s),
-            "pi" => crate::pi::home(&self.claude),
-            _ => return None,
-        };
+        let home = harness::by_name(&s.harness)?.session_home(&self.claude, s);
         Some(history::Key {
             harness: s.harness.clone(),
             home: self.history.homes.get(&home).cloned().unwrap_or(home),
@@ -5067,7 +4990,8 @@ impl App {
                 .find(|s| s.session_id == old.session_id)
                 .or_else(|| {
                     data.sessions.iter().find(|s| {
-                        old.harness != "claude"
+                        harness::by_name(&old.harness)
+                            .is_some_and(|spec| spec.launch.identity.owns_client_pid())
                             && s.harness == old.harness
                             && s.cwd == old.cwd
                             && old.pid.is_some_and(|pid| s.pid == Some(pid))
@@ -5081,6 +5005,11 @@ impl App {
         // process row with a daemon row. Pair only a unique new thread and unique launch;
         // simultaneous launches in one folder must not steal each other's viewers.
         let candidates = |open: &Open| -> Vec<&Session> {
+            let Some(spec) = open.harness.map(harness::spec).filter(|spec| {
+                spec.launch.identity == harness::spec::LaunchIdentity::ReportedThread
+            }) else {
+                return vec![];
+            };
             let Some((dir, since)) = &open.record else {
                 return vec![];
             };
@@ -5093,16 +5022,18 @@ impl App {
             else {
                 return vec![];
             };
-            if !(open.key.starts_with("codex:start:")
-                || open.key == format!("codex-{}", open.viewer.pid()))
+            if !spec
+                .launch
+                .identity
+                .unresolved_key(&spec.name, &open.key, open.viewer.pid())
             {
                 return vec![];
             }
             data.sessions
                 .iter()
                 .filter(|s| {
-                    s.harness == "codex"
-                        && s.kind.as_deref() == Some("daemon")
+                    s.harness == spec.name
+                        && s.kind == spec.launch.session_kind
                         && s.cwd == *dir
                         && s.started.is_some_and(|at| at >= *since)
                         && !self.viewers.iter().any(|o| o.key == s.session_id)
@@ -5138,7 +5069,9 @@ impl App {
                     } else {
                         s.title.clone().or(original)
                     };
-                    if matches!(s.harness.as_str(), "codex" | "pi") {
+                    if harness::by_name(&s.harness)
+                        .is_some_and(|spec| spec.launch.identity.owns_client_pid())
+                    {
                         s.pid = Some(open.viewer.pid());
                     }
                     if open.record.is_some()
@@ -5165,13 +5098,15 @@ impl App {
         }
         // The live client is still our row while discovery has no certain native identity.
         for open in &self.viewers {
-            if (open.key.starts_with("codex:start:")
-                || open.key == format!("codex-{}", open.viewer.pid())
-                || open.key.starts_with("pi:start:"))
-                && !self
-                    .pending
-                    .iter()
-                    .any(|p| p.session.session_id == open.key)
+            if open.harness.is_some_and(|kind| {
+                let spec = harness::spec(kind);
+                spec.launch
+                    .identity
+                    .unresolved_key(&spec.name, &open.key, open.viewer.pid())
+            }) && !self
+                .pending
+                .iter()
+                .any(|p| p.session.session_id == open.key)
                 && !data.sessions.iter().any(|s| s.session_id == open.key)
                 && let Some(old) = self.data.sessions.iter().find(|s| s.session_id == open.key)
             {
@@ -5652,7 +5587,8 @@ impl App {
                     p.session.pid = Some(viewer.pid());
                 }
                 if let Some(s) = self.data.sessions.iter_mut().find(|s| s.session_id == key)
-                    && matches!(s.harness.as_str(), "codex" | "pi")
+                    && harness::by_name(&s.harness)
+                        .is_some_and(|spec| spec.launch.identity.owns_client_pid())
                 {
                     s.pid = Some(viewer.pid());
                 }
@@ -5663,9 +5599,11 @@ impl App {
                     };
                     self.close(oldest);
                 }
+                let harness = self.viewer_harness(&key);
                 self.viewers.push(Open {
                     key,
                     what: what.to_owned(),
+                    harness,
                     viewer,
                     record,
                     recorded: false,
@@ -5689,6 +5627,22 @@ impl App {
         self.viewers.iter().filter(|o| !o.speculative).count()
     }
 
+    fn viewer_harness(&self, key: &str) -> Option<HarnessKind> {
+        if let Some(session) = self.data.sessions.iter().find(|s| s.session_id == key) {
+            return harness::by_name(&session.harness).map(|s| s.kind);
+        }
+        if let Some(entry) = self.history.opened.get(key) {
+            return harness::by_name(&entry.key.harness).map(|s| s.kind);
+        }
+        let run = key.strip_prefix("run:")?;
+        self.data
+            .runs
+            .iter()
+            .find(|r| r.started.run_id == run && r.status() != "started")?
+            .started
+            .harness
+    }
+
     /// Only a listed session's Claude attach makes room; a Codex client the user entered is theirs,
     /// unsent composer text and all, however cheaply a peek could reopen it. See
     /// `MAX_FOCUSED_VIEWERS`.
@@ -5699,7 +5653,9 @@ impl App {
             .filter(|(i, o)| {
                 !o.speculative
                     && Some(*i) != keep
-                    && o.what == "attach"
+                    && o.harness.is_some_and(|kind| {
+                        harness::spec(kind).viewer.retention == harness::spec::Retention::EvictLive
+                    })
                     && !o.key.starts_with("run:")
                     && !o.key.starts_with("history:")
             })
@@ -5754,9 +5710,8 @@ impl App {
         if !Self::joinable(s) {
             return None;
         }
-        // A peek joins what already runs. A saved thread row outlives its daemon, and resuming it
-        // would start one, so a row whose daemon is gone waits for enter.
-        if s.harness == "codex" && codex::daemon_pid(&self.codex_home(s)).is_none() {
+        let home = harness::by_name(&s.harness)?.session_home(&self.claude, s);
+        if !harness::can_peek(s, &home) {
             return None;
         }
         Some((id.clone(), s.cwd.clone()))
@@ -5765,26 +5720,21 @@ impl App {
     /// Done Claude background jobs still have a worker; failed or stopped jobs do not. A Codex
     /// thread is joinable only behind the daemon, which `own_terminal` already decides.
     fn joinable(s: &Session) -> bool {
-        matches!(s.harness.as_str(), "claude" | "codex")
-            && !s.own_terminal()
-            && !matches!(s.state.as_str(), "failed" | "stopped")
+        harness::by_name(&s.harness).is_some_and(|spec| spec.permits_peek(s))
     }
 
-    fn prespawn(&mut self, id: String, cwd: PathBuf) {
+    fn prespawn(&mut self, id: String, _cwd: PathBuf) {
         self.prespawned = Some(id.clone());
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
-        let codex = self
-            .data
-            .sessions
-            .iter()
-            .find(|s| s.session_id == id && s.harness == "codex")
-            .map(|s| self.codex_home(s));
-        let viewer = match &codex {
-            // The daemon is already up for a thread it holds, so this only reads its socket.
-            Some(home) => harness::codex_resume(home, &id, &cwd),
-            None => harness::adapter(HarnessKind::Claude).and_then(|h| h.attach(&id, &cwd)),
-        }
-        .and_then(|c| {
+        let Some(session) = self.data.sessions.iter().find(|s| s.session_id == id) else {
+            return;
+        };
+        let Some(spec) = harness::by_name(&session.harness) else {
+            return;
+        };
+        let home = spec.session_home(&self.claude, session);
+        let what = spec.commands.viewer.clone();
+        let viewer = harness::join(session, &home, true).and_then(|c| {
             let line = format!("{c:?}");
             Viewer::spawn(
                 c,
@@ -5805,7 +5755,8 @@ impl App {
         };
         self.viewers.push(Open {
             key: id,
-            what: if codex.is_some() { "codex" } else { "attach" }.into(),
+            what,
+            harness: Some(spec.kind),
             viewer,
             record: None,
             recorded: false,
@@ -6514,8 +6465,7 @@ impl App {
                 let Some(s) = self.data.sessions.iter().find(|s| s.session_id == id) else {
                     return Ok(());
                 };
-                let (harness, cwd, own_terminal) =
-                    (s.harness.clone(), s.cwd.clone(), s.own_terminal());
+                let (harness, own_terminal) = (s.harness.clone(), s.own_terminal());
                 // Interactive clients in other terminals cannot be joined.
                 if own_terminal {
                     self.status = format!(
@@ -6523,17 +6473,18 @@ impl App {
                     );
                     return Ok(());
                 }
-                if harness == "codex" {
-                    let key = id.clone();
-                    let home = self.codex_home(s);
-                    self.prepare_viewer("codex".into(), key, None, None, move || {
-                        harness::codex_resume(&home, &id, &cwd)
+                let spec = harness::by_name(&harness).context("unknown session harness")?;
+                let home = spec.session_home(&self.claude, s);
+                if spec.session(s.kind.as_deref()).join == harness::spec::Join::CodexRemote {
+                    let session = s.clone();
+                    self.prepare_viewer(spec.commands.viewer.clone(), id, None, None, move || {
+                        harness::join(&session, &home, false)
                     });
                     return Ok(());
                 }
-                match harness::adapter(HarnessKind::Claude)?.attach(&id, &cwd) {
+                match harness::join(s, &home, false) {
                     Ok(c) => {
-                        self.open(self.size, c, "attach", id, None);
+                        self.open(self.size, c, &spec.commands.viewer, id, None);
                     }
                     Err(e) => self.status = format!("attach failed: {e:#}"),
                 }
@@ -6552,19 +6503,17 @@ impl App {
                     self.rebuild();
                     return Ok(());
                 }
-                let what = match entry.key.harness.as_str() {
-                    "claude" => "attach",
-                    "codex" => "codex",
-                    _ => "pi",
-                };
+                let what = harness::by_name(&entry.key.harness)
+                    .context("unknown history harness")?
+                    .commands
+                    .viewer
+                    .clone();
                 let record = (entry.key.harness == "codex")
                     .then_some(entry.started)
                     .flatten()
                     .map(|at| (entry.cwd.clone(), at));
                 self.history.opened.insert(key.clone(), entry.clone());
-                self.prepare_viewer(what.into(), key, record, None, move || {
-                    history_command(&entry)
-                });
+                self.prepare_viewer(what, key, record, None, move || history_command(&entry));
             }
             Kind::Menu => self.open_menu(),
             Kind::Folder(dir) => {
@@ -6613,7 +6562,7 @@ impl App {
     }
 
     fn harness_at(kind: Option<HarnessKind>) -> usize {
-        harness::KNOWN
+        harness::known()
             .iter()
             .position(|k| Some(*k) == kind)
             .unwrap_or(0)
@@ -6629,7 +6578,7 @@ impl App {
             return;
         }
         let dir = self.target_dir();
-        let kind = harness::KNOWN[self.harness];
+        let kind = harness::known()[self.harness];
         let policy = self.session_policy();
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
@@ -6637,8 +6586,10 @@ impl App {
         self.debug(|| format!("start {what}: {prompt:?}"));
         let id = self.launch_row(kind, &dir, &prompt);
         // Codex and pi run as the dashboard's own client; only Claude is launched and left.
-        if kind != HarnessKind::Claude {
-            let record = (kind == HarnessKind::Codex).then(|| (dir.clone(), since));
+        if harness::spec(kind).launch.handler != harness::spec::LaunchHandler::ClaudeBackground {
+            let record = (harness::spec(kind).launch.identity
+                == harness::spec::LaunchIdentity::ReportedThread)
+                .then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
             // Use a temporary launch key until the harness reports the session's own id.
             self.prepare_viewer(what, id, record, retry, move || {
@@ -6867,10 +6818,11 @@ impl App {
             .sessions
             .iter()
             .find(|s| s.session_id == id)
-            .and_then(|s| s.kind.as_deref())
-        {
-            Some("daemon") => "forget",
-            Some("bg") => "delete",
+            .and_then(|s| {
+                harness::by_name(&s.harness).map(|spec| spec.session(s.kind.as_deref()).stop)
+            }) {
+            Some(harness::spec::Stop::ForgetClient) => "forget",
+            Some(harness::spec::Stop::Remove) => "delete",
             _ => "stop",
         }
     }
@@ -6903,7 +6855,7 @@ impl App {
         if self.on_button() {
             return Line::default();
         }
-        let kind = harness::KNOWN[self.harness].to_string();
+        let kind = harness::known()[self.harness].to_string();
         let mut spans = vec![Span::styled(
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
@@ -6956,7 +6908,7 @@ impl App {
         } else {
             format!(
                 "start {} in {}",
-                harness::KNOWN[self.harness],
+                harness::known()[self.harness],
                 fleet::tilde(&self.target_dir())
             )
         };
@@ -7110,7 +7062,9 @@ impl App {
                 let local = self.selected().and_then(|r| self.viewer_of(&r.kind));
                 let ended_with_viewer = local.is_some()
                     && self.data.sessions.iter().any(|s| {
-                        s.session_id == id && matches!(s.harness.as_str(), "codex" | "pi")
+                        s.session_id == id
+                            && harness::by_name(&s.harness)
+                                .is_some_and(|spec| spec.launch.identity.owns_client_pid())
                     });
                 // Capture the native pid before closing can remove a launch placeholder.
                 let client = self
@@ -7249,21 +7203,21 @@ impl App {
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
-            if ctrl && code == KeyCode::Char('z') {
-                self.unfocus();
-                return Ok(false);
-            }
-            // Plain tab returns to the list; shift+tab remains the client's mode switch.
-            if code == KeyCode::Tab && mods.is_empty() {
-                self.unfocus();
-                return Ok(false);
-            }
-            // Left at an empty composer has nowhere to go in the client, so it returns
-            // to the list the way tab does.
-            if code == KeyCode::Left
-                && mods.is_empty()
-                && viewer::at_empty_prompt(open.viewer.screen())
-            {
+            let return_to_list = open.harness.map_or_else(
+                || {
+                    (ctrl && code == KeyCode::Char('z'))
+                        || (code == KeyCode::Tab && mods.is_empty())
+                },
+                |kind| {
+                    viewer::returns_to_list(
+                        open.viewer.screen(),
+                        &harness::spec(kind).input,
+                        code,
+                        mods,
+                    )
+                },
+            );
+            if return_to_list {
                 self.unfocus();
                 return Ok(false);
             }
@@ -7580,7 +7534,7 @@ impl App {
                         None => self.status = "nothing in the pane".into(),
                     },
                     KeyCode::BackTab => {
-                        self.harness = (self.harness + 1) % harness::KNOWN.len();
+                        self.harness = (self.harness + 1) % harness::known().len();
                     }
                     // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
                     KeyCode::Enter
@@ -7904,7 +7858,9 @@ impl App {
         let Some(i) = self.shown() else { return 1 };
         let open = &self.viewers[i];
         // Codex's composer is not a bottom-anchored input box; logs have no input box.
-        if !(open.what == "attach" || open.what == "pi" || open.what.starts_with("pi in ")) {
+        if open.harness.is_none_or(|kind| {
+            harness::spec(kind).viewer.input_alignment != harness::spec::InputAlignment::BottomRule
+        }) {
             return 1;
         }
         let screen = self.viewers[i].viewer.screen();
@@ -9933,7 +9889,16 @@ mod tests {
                 .env("CAPTURE", &capture)
                 .env("FAIL_UNARCHIVE", fail)
                 .current_dir(d.path());
-            let result = unarchive_before_resume(command, A).output().unwrap();
+            let result = harness::then_exec(
+                harness::spec::args(
+                    &harness::spec(HarnessKind::Codex).commands.unarchive,
+                    &[("id", A.as_ref())],
+                )
+                .unwrap(),
+                command,
+            )
+            .output()
+            .unwrap();
             assert_eq!(result.status.success(), fail == "0");
             let captured = fs::read_to_string(capture).unwrap();
             assert!(captured.starts_with(&format!("unarchive\n--\n{A}\n")));
@@ -10420,7 +10385,7 @@ mod tests {
 
     #[test]
     fn every_harness_selects_its_launch_before_discovery_and_keeps_it_during_a_slow_read() {
-        for kind in harness::KNOWN {
+        for &kind in harness::known() {
             let d = dir();
             registry(d.path(), A, d.path().to_str().unwrap(), "idle", 1);
             let mut app = app(d.path());
@@ -11750,6 +11715,10 @@ mod tests {
         Open {
             key: key.into(),
             what: what.into(),
+            harness: Some(
+                harness::by_name(what.split_whitespace().next().unwrap_or(""))
+                    .map_or(HarnessKind::Claude, |s| s.kind),
+            ),
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
@@ -11967,6 +11936,89 @@ mod tests {
         assert_eq!(app.enter_label(), "own terminal");
         app.enter().unwrap();
         assert!(app.status.contains("cannot be joined"), "{}", app.status);
+    }
+
+    #[test]
+    fn each_harness_returns_from_empty_input_and_reenters_the_same_viewer() {
+        for &kind in harness::known() {
+            let d = dir();
+            let mut app = app(d.path());
+            let spec = harness::spec(kind);
+            let mut row = placeholder(kind, A, d.path(), "fixture");
+            row.state = "idle".into();
+            app.data.sessions.push(row);
+            app.rebuild();
+            app.select_new(A);
+            let rule = "─".repeat(80);
+            let screen = if kind == HarnessKind::Pi {
+                // The native Pi editor paints no prompt marker and hides the hardware caret.
+                format!(
+                    "VIEW\\033[2;1H{rule}\\033[3;1H \\033[7m \\033[0m\\033[4;1H{rule}\\033[3;2H\\033[?25l"
+                )
+            } else {
+                "VIEW\\033[3;1H> \\033[?25h".into()
+            };
+            let mut open = viewer_open(A, &spec.commands.viewer, &screen);
+            open.harness = Some(kind);
+            app.data.sessions[0].pid = Some(open.viewer.pid());
+            let pid = open.viewer.pid();
+            app.viewers.push(open);
+            wait_paint(&mut app, 0, "VIEW");
+            app.focus = Some(0);
+            for modifier in [
+                KeyModifiers::ALT,
+                KeyModifiers::SHIFT,
+                KeyModifiers::CONTROL,
+            ] {
+                assert!(!app.key(KeyCode::Left, modifier).unwrap());
+                assert_eq!(
+                    app.focus,
+                    Some(0),
+                    "{kind}: modified arrows belong to the client"
+                );
+            }
+            assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+            assert_eq!(app.focus, None, "{kind}: Left returns to cones");
+            assert_eq!(app.viewers.len(), 1);
+            app.enter().unwrap();
+            assert_eq!(
+                app.focus,
+                Some(0),
+                "{kind}: Enter returns to the existing viewer"
+            );
+            assert_eq!(app.viewers[0].viewer.pid(), pid);
+            for (key, modifier) in [
+                (KeyCode::Tab, KeyModifiers::NONE),
+                (KeyCode::Char('z'), KeyModifiers::CONTROL),
+            ] {
+                app.key(key, modifier).unwrap();
+                assert_eq!(app.focus, None, "{kind}");
+                app.enter().unwrap();
+                assert_eq!(app.focus, Some(0), "{kind}");
+                assert_eq!(
+                    app.viewers[0].viewer.pid(),
+                    pid,
+                    "returning starts no replacement client"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pi_left_with_a_draft_stays_in_the_native_editor() {
+        let d = dir();
+        let mut app = app(d.path());
+        let rule = "─".repeat(80);
+        let screen = format!(
+            "VIEW\\033[2;1H{rule}\\033[3;1H \\033[7mk\\033[0meep this draft\\033[4;1H{rule}\\033[3;2H\\033[?25l"
+        );
+        app.viewers.push(viewer_open(A, "pi", &screen));
+        wait_paint(&mut app, 0, "VIEW");
+        app.focus = Some(0);
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        assert_eq!(app.focus, Some(0));
+        assert!(!app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap());
+        assert_eq!(app.focus, Some(0), "the native mode switch stays native");
     }
 
     fn session(id: &str, state: &str, title: &str, secs: i64) -> Session {
@@ -12239,6 +12291,7 @@ mod tests {
         app.viewers.push(Open {
             key: A.into(),
             what: "attach".into(),
+            harness: Some(HarnessKind::Claude),
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
@@ -12325,6 +12378,7 @@ mod tests {
         }
         for what in ["pi", "pi in /x"] {
             app.viewers[0].what = what.into();
+            app.viewers[0].harness = Some(HarnessKind::Pi);
             assert_eq!(
                 app.foot_rows(),
                 2,
@@ -12333,6 +12387,7 @@ mod tests {
         }
         for what in ["codex", "codex in /x", "logs"] {
             app.viewers[0].what = what.into();
+            app.viewers[0].harness = (what != "logs").then_some(HarnessKind::Codex);
             for focus in [None, Some(0)] {
                 app.focus = focus;
                 assert_eq!(app.foot_rows(), 1, "{what} does not move the composer");
@@ -13902,6 +13957,7 @@ mod tests {
         Open {
             key: key.into(),
             what: "attach".into(),
+            harness: Some(HarnessKind::Claude),
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
@@ -14145,6 +14201,12 @@ mod tests {
         app.viewers[0].last_focused = Instant::now() - Duration::from_secs(60);
         let mut c = Command::new("/bin/sleep");
         c.arg("5");
+        app.data.sessions.push(placeholder(
+            HarnessKind::Claude,
+            "four",
+            d.path(),
+            "fixture",
+        ));
         app.open((12, 80), c, "attach", "four".into(), None);
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
         assert_eq!(keys, vec!["two", "three", A, "four"], "{keys:?}");
@@ -14196,6 +14258,7 @@ mod tests {
         app.refresh().unwrap();
         let mut codex = silent_open("codex-1");
         codex.what = "codex".into();
+        codex.harness = Some(HarnessKind::Codex);
         codex.last_focused = Instant::now() - Duration::from_secs(60);
         app.viewers.push(codex);
         for k in ["one", "two"] {
@@ -14204,6 +14267,12 @@ mod tests {
         }
         let mut c = Command::new("/bin/sleep");
         c.arg("5");
+        app.data.sessions.push(placeholder(
+            HarnessKind::Claude,
+            "four",
+            d.path(),
+            "fixture",
+        ));
         app.open((12, 80), c, "attach", "four".into(), None);
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();
         assert_eq!(keys, vec!["codex-1", "two", "four"], "{keys:?}");
@@ -14213,6 +14282,14 @@ mod tests {
             let mut c = Command::new("/bin/sleep");
             c.arg("5");
             let what = if k == "five" { "attach" } else { "codex" };
+            let kind = if k == "five" {
+                HarnessKind::Claude
+            } else {
+                HarnessKind::Codex
+            };
+            app.data
+                .sessions
+                .push(placeholder(kind, k, d.path(), "fixture"));
             app.open((12, 80), c, what, k.into(), None);
         }
         let keys: Vec<&str> = app.viewers.iter().map(|o| o.key.as_str()).collect();

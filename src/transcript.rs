@@ -1,5 +1,5 @@
 //! Bounded, read-only conversation previews. No harness clients or shared fleet caches.
-use crate::codex;
+use crate::harness;
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -262,70 +262,26 @@ fn trim_text(text: &mut String) -> bool {
 }
 
 fn message(harness: &str, v: &Value) -> Option<Message> {
-    let content = &v["message"]["content"];
-    let (role, text, id) = match harness {
-        "claude" if v["isMeta"] != true && v["isSidechain"] != true => match v["type"].as_str()? {
-            "user" => (Role::User, text(content), v["uuid"].as_str()),
-            "assistant" => (Role::Assistant, text(content), v["message"]["id"].as_str()),
-            _ => return None,
-        },
-        "codex" => {
-            let users: Vec<&str> = codex::user_texts(v).collect();
-            if !users.is_empty() {
-                (
-                    Role::User,
-                    users.join("\n"),
-                    v["payload"]["item"]["id"].as_str(),
-                )
-            } else {
-                let replies: Vec<&str> = codex::assistant_texts(v).collect();
-                if replies.is_empty() {
-                    return None;
-                }
-                (
-                    Role::Assistant,
-                    replies.join("\n"),
-                    v["payload"]["id"].as_str(),
-                )
-            }
+    let spec = harness::by_name(harness)?;
+    for (role, source) in [
+        (Role::User, &spec.transcript.messages.user),
+        (Role::Assistant, &spec.transcript.messages.assistant),
+    ] {
+        let parts = source.parts(v, true);
+        if parts.is_empty() {
+            continue;
         }
-        "pi" if v["type"] == "message" => {
-            let role = match v["message"]["role"].as_str()? {
-                "user" => Role::User,
-                "assistant" => Role::Assistant,
-                _ => return None,
-            };
-            (role, text(content), v["id"].as_str())
-        }
-        _ => return None,
-    };
-    Some(Message {
-        role,
-        text,
-        id: id.map(str::to_owned),
-        at: v["timestamp"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(Into::into),
-    })
-}
-
-fn text(content: &Value) -> String {
-    if let Some(text) = content.as_str() {
-        return text.to_owned();
+        return Some(Message {
+            role,
+            text: parts.join("\n"),
+            id: source.id(v).map(str::to_owned),
+            at: v["timestamp"]
+                .as_str()
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(Into::into),
+        });
     }
-    content
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|block| match block["type"].as_str()? {
-            "text" => block["text"].as_str(),
-            "image" | "input_image" => Some("[image]"),
-            "document" => Some("[document]"),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    None
 }
 
 /// Transcripts are data, never terminal commands. Strip CSI/OSC/DCS and other controls.
