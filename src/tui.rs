@@ -1367,8 +1367,13 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
         .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect();
     // Detached daemon threads have no client in the process table; include their saved records.
+    // A forgotten thread stays forgotten while the daemon still holds its writer lock. Resuming it
+    // records the thread again after its first turn, which un-forgets the row.
+    let hidden = Ledger::new(state)?.hidden()?;
+    let saved: HashSet<String> = codex::threads(state).into_iter().map(|t| t.id).collect();
     for home in codex::homes(claude) {
-        let rows = codex::thread_rows(&home, state, &out);
+        let mut rows = codex::thread_rows(&home, state, &out);
+        rows.retain(|s| saved.contains(&s.session_id) || !hidden.contains(&s.session_id));
         out.extend(rows);
     }
     fleet::sort(&mut out);
@@ -7087,6 +7092,9 @@ impl App {
                 self.queue_stop(id, verb, move || {
                     if verb == "forget" {
                         codex::forget(&state, &target)?;
+                        // The daemon keeps the thread's writer lock for minutes after the client
+                        // goes, so dropping the record alone lets the row return on the next start.
+                        Ledger::new(&state)?.hide(&target)?;
                         if !ended_with_viewer && let Some(pid) = client {
                             fleet::terminate(pid, "codex")?;
                         }
@@ -9429,6 +9437,67 @@ mod tests {
             .map(|s| s.session_id)
             .collect();
         assert_eq!(ids, [A], "a forgotten thread has no row");
+    }
+
+    /// Forgetting drops the saved record, but the daemon keeps the thread's writer lock for minutes
+    /// after the client goes, and that lock is a second source of rows. Hiding the id is what makes
+    /// the removal outlive the process; recording a turn on the thread again undoes it.
+    #[test]
+    fn forgetting_a_thread_the_daemon_still_holds_survives_a_restart() {
+        let d = tempfile::tempdir().unwrap();
+        let (claude, state) = (d.path().join(".claude"), d.path().join("state"));
+        let (cwd, codex) = (d.path().to_str().unwrap(), d.path().join(".codex"));
+        registry(&claude, A, cwd, "idle", 1_789_000_000_000);
+        let sessions = codex.join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let rollout = sessions.join("rollout-dddd.jsonl");
+        fs::write(
+            &rollout,
+            format!(
+                r#"{{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{{"id":"dddd","timestamp":"2026-09-01T00:00:00Z","cwd":{}}}}}"#,
+                serde_json::to_string(cwd).unwrap()
+            ) + "\n",
+        )
+        .unwrap();
+        // Stand in for the daemon: this process holds the lock and its pid is the recorded one.
+        let daemon = codex.join("app-server-daemon");
+        fs::create_dir_all(&daemon).unwrap();
+        fs::write(
+            daemon.join("app-server.pid"),
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
+        fs::create_dir_all(codex.join("thread-writer-locks")).unwrap();
+        let held = fs::File::create(codex.join("thread-writer-locks").join("dddd.lock")).unwrap();
+        let ids = || -> Vec<String> {
+            fleet_rows(&claude, &state, &[])
+                .unwrap()
+                .into_iter()
+                .map(|s| s.session_id)
+                .collect()
+        };
+        assert_eq!(ids(), ["dddd", A], "the held thread has a row");
+        codex::forget(&state, "dddd").unwrap();
+        assert_eq!(
+            ids(),
+            ["dddd", A],
+            "dropping the record alone leaves the lock's row"
+        );
+        Ledger::new(&state).unwrap().hide("dddd").unwrap();
+        assert_eq!(ids(), [A], "a forgotten thread stays gone on a restart");
+        // A resume records the thread after its first turn, which brings the row back.
+        codex::remember(
+            &state,
+            codex::Thread {
+                id: "dddd".into(),
+                cwd: d.path().to_path_buf(),
+                started: "2026-09-01T00:00:00Z".parse().unwrap(),
+                rollout,
+            },
+        )
+        .unwrap();
+        assert_eq!(ids(), ["dddd", A], "recording it again un-forgets the row");
+        drop(held);
     }
 
     #[test]
