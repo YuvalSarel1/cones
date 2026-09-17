@@ -15,7 +15,10 @@ cmd="$1"; pid="$2"; shift 2 || true
 DB=$(ls -t ~/.codex/state_*.sqlite | head -1)
 thread() {
   local id cwd
-  id=$(ps -o command= -p "$pid" | sed -n 's/.* resume \([0-9a-f-]\{36\}\).*/\1/p')
+  # `resume -- <id>` puts the separator between the subcommand and the operand, so a key that
+  # expects the uuid right after `resume` never matches and the pid falls through to "newest in
+  # cwd" - which can name another agent's thread and send a ruling to the wrong writer.
+  id=$(ps -o command= -p "$pid" | sed -n 's/.* resume \(-- \)\{0,1\}\([0-9a-f-]\{36\}\).*/\2/p')
   if [ -z "$id" ]; then
     cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | sed "s/'/''/g")
     # A thread's title is its first prompt, and a client started with a prompt carries it in argv
