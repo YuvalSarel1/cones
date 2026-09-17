@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fs,
     io::{BufRead, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -28,6 +28,15 @@ pub fn homes(claude: &Path) -> Vec<PathBuf> {
     crate::harness::spec(crate::config::HarnessKind::Codex)
         .home
         .all(claude)
+}
+
+/// The daemon's pid file and lock directory, as the definition names them.
+fn daemon_files() -> &'static crate::harness::spec::Daemon {
+    crate::harness::spec(crate::config::HarnessKind::Codex)
+        .discovery
+        .daemon
+        .as_ref()
+        .expect("validated codex daemon paths")
 }
 
 /// The home a rollout lives in: the parent of the `sessions` directory holding it.
@@ -411,7 +420,7 @@ pub fn locks(codex: &Path, pids: &[u32]) -> HashMap<String, u32> {
     if pids.is_empty() {
         return HashMap::new();
     }
-    let files: Vec<PathBuf> = fs::read_dir(codex.join("thread-writer-locks"))
+    let files: Vec<PathBuf> = fs::read_dir(codex.join(&daemon_files().locks))
         .into_iter()
         .flatten()
         .flatten()
@@ -495,7 +504,7 @@ pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
 }
 
 pub fn daemon_pid(codex: &Path) -> Option<u32> {
-    let text = fs::read_to_string(codex.join("app-server-daemon/app-server.pid")).ok()?;
+    let text = fs::read_to_string(codex.join(&daemon_files().pid)).ok()?;
     let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
     Command::new("/bin/kill")
         .args(["-0", &pid.to_string()])
@@ -699,15 +708,24 @@ pub fn launched(codex: &Path, dir: &Path, since: DateTime<Utc>) -> Option<Thread
         })
 }
 
-/// List daemon-held threads and saved launches without live client rows.
-/// Omit threads whose rollout is missing.
-pub fn thread_rows(codex: &Path, state: &Path, live: &[Session]) -> Vec<Session> {
+/// List daemon-held threads and saved launches without live client rows. Omit threads whose
+/// rollout is missing, and threads in `removed`, which the dashboard forgot. Two sources produce a
+/// row and forgetting drops only the record, so without `removed` the daemon's lock, which it keeps
+/// for minutes after the client goes, hands the row back on the next start. A saved record is the
+/// un-forget: `remember` writes one after a reported turn, so a resumed thread returns by itself.
+pub fn thread_rows(
+    codex: &Path,
+    state: &Path,
+    live: &[Session],
+    removed: &BTreeSet<String>,
+) -> Vec<Session> {
     let index = index(codex);
     let daemon = daemon_pid(codex);
     let mut ids: Vec<(String, Option<Thread>)> =
         locks(codex, &daemon.into_iter().collect::<Vec<_>>())
             .into_iter()
             .filter(|(_, pid)| Some(*pid) == daemon)
+            .filter(|(id, _)| !removed.contains(id))
             .map(|(id, _)| (id, None))
             .collect();
     for t in threads(state) {
@@ -1079,7 +1097,7 @@ mod tests {
         }
         let fleet = |procs: &[Process]| {
             let mut live = rows(&home, procs);
-            live.extend(thread_rows(&home, &state, &live));
+            live.extend(thread_rows(&home, &state, &live, &BTreeSet::new()));
             live.sort_by(|a, b| a.session_id.cmp(&b.session_id));
             live
         };
@@ -1215,7 +1233,9 @@ mod tests {
             "remembering twice keeps one entry"
         );
         assert_eq!(
-            thread_rows(&home, &state, &[])[0].title.as_deref(),
+            thread_rows(&home, &state, &[], &BTreeSet::new())[0]
+                .title
+                .as_deref(),
             Some("fix the flaky test"),
             "unnamed thread shows its first prompt, not AGENTS.md"
         );
@@ -1245,7 +1265,7 @@ mod tests {
                 Some("Green CI")
             );
         }
-        let rows = thread_rows(&home, &state, &[]);
+        let rows = thread_rows(&home, &state, &[], &BTreeSet::new());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind.as_deref(), Some("daemon"));
         assert_eq!(
@@ -1264,11 +1284,11 @@ mod tests {
         );
         let live = rows.clone();
         assert!(
-            thread_rows(&home, &state, &live).is_empty(),
+            thread_rows(&home, &state, &live, &BTreeSet::new()).is_empty(),
             "an attached client's row wins"
         );
         forget(&state, "dddd").unwrap();
         assert!(threads(&state).is_empty());
-        assert!(thread_rows(&home, &state, &[]).is_empty());
+        assert!(thread_rows(&home, &state, &[], &BTreeSet::new()).is_empty());
     }
 }

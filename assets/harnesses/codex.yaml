@@ -10,6 +10,7 @@ home:
 discovery:
   handler: codex
   registry: null
+  daemon: {pid: app-server-daemon/app-server.pid, locks: thread-writer-locks}
   process: codex
   exclude_subcommands:
     - agents

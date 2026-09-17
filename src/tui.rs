@@ -1367,13 +1367,9 @@ pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Sessi
         .filter(|s| !owned.contains(s.session_id.as_str()))
         .collect();
     // Detached daemon threads have no client in the process table; include their saved records.
-    // A forgotten thread stays forgotten while the daemon still holds its writer lock. Resuming it
-    // records the thread again after its first turn, which un-forgets the row.
-    let hidden = Ledger::new(state)?.hidden()?;
-    let saved: HashSet<String> = codex::threads(state).into_iter().map(|t| t.id).collect();
+    let removed = Ledger::new(state)?.hidden()?;
     for home in codex::homes(claude) {
-        let mut rows = codex::thread_rows(&home, state, &out);
-        rows.retain(|s| saved.contains(&s.session_id) || !hidden.contains(&s.session_id));
+        let rows = codex::thread_rows(&home, state, &out, &removed);
         out.extend(rows);
     }
     fleet::sort(&mut out);
@@ -9469,11 +9465,14 @@ mod tests {
         .unwrap();
         fs::create_dir_all(codex.join("thread-writer-locks")).unwrap();
         let held = fs::File::create(codex.join("thread-writer-locks").join("dddd.lock")).unwrap();
+        // A Codex home that exists lifts the `is_dir` short circuit in native discovery, so this
+        // machine's own Codex clients reach the list. Keep only the ids the fixture owns.
         let ids = || -> Vec<String> {
             fleet_rows(&claude, &state, &[])
                 .unwrap()
                 .into_iter()
                 .map(|s| s.session_id)
+                .filter(|id| id == "dddd" || id == A)
                 .collect()
         };
         assert_eq!(ids(), ["dddd", A], "the held thread has a row");

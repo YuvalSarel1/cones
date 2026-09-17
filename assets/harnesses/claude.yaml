@@ -10,6 +10,7 @@ home:
 discovery:
   handler: claude
   registry: sessions
+  daemon: null
   exclude_subcommands: []
   process: null
 # Precedence across state, tempo, registry status and wake/routine flags stays native code.

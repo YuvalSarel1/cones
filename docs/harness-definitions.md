@@ -18,7 +18,7 @@ Two consequences hold throughout, so the sections below do not restate them. A d
 | `kind`, `name` | Registered harness identity and executable name. They must agree. |
 | `icon`, `colour` | The dashboard mark and optional RGB color. A null color uses the dashboard's dim style. |
 | `home` | Native home environment variable, sibling default relative to the caller's Claude directory, and optional discovery of sibling homes with a named marker file. |
-| `discovery` | Native discovery handler, registry location or process name, and process subcommands that are not sessions. pi erases its argv, so its subcommand list stays empty. |
+| `discovery` | Native discovery handler, registry location or process name, the pid and lock-directory paths of a daemon that holds threads with no client attached, and process subcommands that are not sessions. pi erases its argv, so its subcommand list stays empty. |
 | `state` | Ordered event guards, discriminator paths and state mappings, or the native Claude registry-precedence handler. Unknown values either preserve prior state or map explicitly to `-`. |
 | `transcript` | Native metadata/usage handler; live and history roots, recursion depth and archive status; user/assistant message sources, identifiers, text block types, attachment labels and headline order. Claude also declares its saved statusline window source. |
 | `launch` | Native launch handler, identity handover strategy, initial session kind, argument prefix, optional remote arguments, model source and prompt arguments. |

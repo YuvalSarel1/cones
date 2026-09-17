@@ -54,6 +54,15 @@ fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
         claude.replace("{short_id}", "prefix-{id}"),
         claude.replace("lifetime: daemon", "lifetime: terminal"),
         codex.replace("enforcement: unknown", "enforcement: supported"),
+        codex.replace(
+            "daemon: {pid: app-server-daemon/app-server.pid, locks: thread-writer-locks}",
+            "daemon: null",
+        ),
+        codex.replace(
+            "pid: app-server-daemon/app-server.pid",
+            "pid: /app-server.pid",
+        ),
+        claude.replace("daemon: null", "daemon: {pid: a.pid, locks: b}"),
         claude.replace("key: ctrl+z", "key: tab"),
         claude.replace("key: ctrl+z", "key: ctr+z"),
         claude.replace("when: always", "when: empty_prompt"),

@@ -97,8 +97,18 @@ pub struct Siblings {
 pub struct Discovery {
     pub handler: Native,
     pub registry: Option<PathBuf>,
+    pub daemon: Option<Daemon>,
     pub exclude_subcommands: Vec<String>,
     pub process: Option<String>,
+}
+
+/// A daemon that holds threads with no client attached, and the two files in the home that say
+/// which. Discovery reads both, so they belong beside the registry path rather than in the handler.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Daemon {
+    pub pid: PathBuf,
+    pub locks: PathBuf,
 }
 
 impl Discovery {
@@ -599,6 +609,14 @@ impl HarnessSpec {
         ensure!(
             (self.discovery.handler == Native::Claude) == self.discovery.registry.is_some(),
             "registry discovery requires a native registry path"
+        );
+        if let Some(daemon) = &self.discovery.daemon {
+            relative(&daemon.pid)?;
+            relative(&daemon.locks)?;
+        }
+        ensure!(
+            (self.discovery.handler == Native::Codex) == self.discovery.daemon.is_some(),
+            "a daemon holding threads with no client requires its pid and lock paths"
         );
         ensure!(
             (self.discovery.handler != Native::Claude) == self.discovery.process.is_some(),

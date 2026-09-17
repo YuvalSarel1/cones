@@ -10,6 +10,7 @@ home:
 discovery:
   handler: pi
   registry: null
+  daemon: null
   exclude_subcommands: []
   process: pi
 state:
