@@ -583,13 +583,8 @@ impl Data {
                 Entry::Folder(dir) => {
                     let mut cells = vec![];
                     if let Some(g) = self.git.get(*dir) {
-                        cells.push((format!("{g} · "), plain()));
+                        cells.push((g.clone(), plain()));
                     }
-                    cells.push((
-                        "nothing runs here · an instruction and enter start a session · ctrl+x removes the folder"
-                            .to_owned(),
-                        dim(),
-                    ));
                     Row {
                         kind: Kind::Folder(fleet::tilde(dir)),
                         cells,
@@ -1403,6 +1398,40 @@ fn button() -> Style {
 fn pressed() -> Style {
     Style::default().bg(ORANGE).fg(Color::Black)
 }
+
+fn tab_buttons(
+    labels: impl Iterator<Item = &'static str>,
+    selected: usize,
+    focused: bool,
+) -> Vec<Span<'static>> {
+    labels
+        .enumerate()
+        .flat_map(|(i, label)| {
+            [
+                Span::styled(
+                    format!(" {label} "),
+                    match (i == selected, focused) {
+                        (true, true) => pressed(),
+                        (true, false) => button().fg(ORANGE),
+                        _ => button(),
+                    },
+                ),
+                Span::raw(" "),
+            ]
+        })
+        .collect()
+}
+
+fn tab_key(code: KeyCode, selected: usize, count: usize) -> Option<usize> {
+    match code {
+        KeyCode::Left | KeyCode::Char('[') => Some((selected + count - 1) % count),
+        KeyCode::Right | KeyCode::Char(']') => Some((selected + 1) % count),
+        KeyCode::Home => Some(0),
+        KeyCode::End => Some(count - 1),
+        _ => None,
+    }
+}
+
 fn lit() -> Style {
     Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
@@ -4087,18 +4116,16 @@ impl ConfigForm {
         }
         // The tab row behaves like the dashboard's menu buttons: ←→ pick, ↓ enters the fields.
         if self.tabs && !self.open {
-            let n = GROUPS.len();
             let tab = match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
                 KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
                     self.tabs = false;
                     return ConfigAction::Stay;
                 }
-                KeyCode::Left | KeyCode::Char('[') => (self.tab() + n - 1) % n,
-                KeyCode::Right | KeyCode::Char(']') => (self.tab() + 1) % n,
-                KeyCode::Home => 0,
-                KeyCode::End => n - 1,
-                _ => return ConfigAction::Stay,
+                _ => match tab_key(code, self.tab(), GROUPS.len()) {
+                    Some(tab) => tab,
+                    None => return ConfigAction::Stay,
+                },
             };
             self.switch(tab);
             self.tabs = true;
@@ -4249,18 +4276,7 @@ impl ConfigForm {
     }
 
     fn tab_spans(&self) -> Vec<Span<'static>> {
-        let mut spans = vec![];
-        for (i, (name, _)) in GROUPS.iter().enumerate() {
-            spans.push(Span::styled(
-                format!(" {name} "),
-                match (i == self.tab(), self.tabs) {
-                    (true, true) => pressed(),
-                    (true, false) => button().fg(ORANGE),
-                    _ => button(),
-                },
-            ));
-            spans.push(Span::raw(" "));
-        }
+        let mut spans = tab_buttons(GROUPS.iter().map(|&(name, _)| name), self.tab(), self.tabs);
         spans.push(Span::styled(
             if self.tabs { " ←→ group" } else { "" },
             dim(),
@@ -4878,6 +4894,7 @@ enum ColumnAction {
 struct ColumnsPicker {
     sets: [ColumnForm; 4],
     tab: usize,
+    tabs: bool,
     return_config: Option<Box<ConfigForm>>,
     error: Option<String>,
     area: Rect,
@@ -4895,6 +4912,7 @@ impl ColumnsPicker {
         Self {
             sets: std::array::from_fn(|i| ColumnForm::new(COLUMN_SETS[i].0, values[i].as_deref())),
             tab: tab.min(3),
+            tabs: false,
             return_config: None,
             error: None,
             area: Rect::default(),
@@ -4916,8 +4934,21 @@ impl ColumnsPicker {
 
     fn key(&mut self, code: KeyCode) -> ColumnAction {
         self.error = None;
+        if self.tabs {
+            match code {
+                KeyCode::Esc => return ColumnAction::Close,
+                KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => self.tabs = false,
+                _ => {
+                    if let Some(tab) = tab_key(code, self.tab, COLUMN_SETS.len()) {
+                        self.tab = tab;
+                    }
+                }
+            }
+            return ColumnAction::Stay;
+        }
         match code {
             KeyCode::Esc => return ColumnAction::Close,
+            KeyCode::Up if self.current().at == 0 => self.tabs = true,
             KeyCode::Left => self.tab = self.tab.saturating_sub(1),
             KeyCode::Right => self.tab = (self.tab + 1).min(3),
             _ => {
@@ -4983,6 +5014,9 @@ impl ColumnsPicker {
     }
 
     fn hints(&self) -> Line<'static> {
+        if self.tabs {
+            return hints(&[("←→", "table"), ("↓", "columns"), ("esc", "back")]);
+        }
         let form = self.current();
         let mut keys = vec![(
             "space",
@@ -5008,19 +5042,19 @@ impl ColumnsPicker {
     }
 
     fn tab_spans(&self) -> Vec<Span<'static>> {
-        let mut spans = vec![Span::styled("← ", if self.tab > 0 { lit() } else { dim() })];
-        for (i, (_, label)) in COLUMN_SETS.iter().enumerate() {
-            spans.push(Span::styled(
-                format!(" {label} "),
-                if i == self.tab {
-                    lit().add_modifier(Modifier::UNDERLINED)
-                } else {
-                    plain()
-                },
-            ));
-            spans.push(Span::raw(" "));
-        }
-        spans.push(Span::styled("→", if self.tab < 3 { lit() } else { dim() }));
+        let mut spans = tab_buttons(
+            COLUMN_SETS.iter().map(|&(_, label)| label),
+            self.tab,
+            self.tabs,
+        );
+        spans.push(Span::styled(
+            if self.tabs {
+                " ←→ table"
+            } else {
+                " ↑ table"
+            },
+            dim(),
+        ));
         spans
     }
 
@@ -5057,7 +5091,7 @@ impl ColumnsPicker {
             lines.clear();
         }
         for (i, name) in form.order.iter().enumerate().skip(top).take(height) {
-            let selected = i == form.at;
+            let selected = i == form.at && !self.tabs;
             let on = form.shown.contains(name);
             let pos = chosen
                 .iter()
@@ -5107,24 +5141,20 @@ impl ColumnsPicker {
                 let y = ev.row.saturating_sub(self.area.y);
                 let header = self.header_rows();
                 if (header == 5 && y == 1) || (header == 2 && y == 0) {
-                    if x < 2 {
-                        return self.key(KeyCode::Left);
-                    }
-                    let mut left = 2;
+                    let mut left = 0;
                     for (i, (_, label)) in COLUMN_SETS.iter().enumerate() {
                         let right = left + label.len() as u16 + 2;
                         if (left..right).contains(&x) {
                             self.tab = i;
+                            self.tabs = true;
                             return ColumnAction::Stay;
                         }
                         left = right + 1;
                     }
-                    if x == left {
-                        return self.key(KeyCode::Right);
-                    }
                 } else if y >= header {
                     let at = self.top + (y - header) as usize;
                     if at < self.current().order.len() {
+                        self.tabs = false;
                         self.sets[self.tab].at = at;
                         if (2..5).contains(&x) {
                             return self.key(KeyCode::Char(' '));
@@ -5201,7 +5231,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("ctrl+s", "Group sessions by state or folder."),
     (
         "ctrl+h",
-        "Show or hide history. Type to search, scroll for older sessions, enter resumes.",
+        "Show or hide history. Type to search; enter resumes a saved session.",
     ),
     (
         "ctrl+f",
@@ -13881,8 +13911,8 @@ mod tests {
         );
         app.queue_stop(A.into(), "delete", || Ok(true));
         let text = row(&app).unwrap_or_default();
-        assert!(
-            text.starts_with("main · clean · nothing runs here"),
+        assert_eq!(
+            text, "main · clean",
             "the folder row is there with its git state before the next read: {text}"
         );
         assert!(
@@ -16806,7 +16836,7 @@ mod tests {
         app.refresh().unwrap();
         let row = &app.rows[app.visible[folder_row(&app).unwrap()]];
         assert!(
-            row.text().contains(" · 1 change · nothing runs here"),
+            row.text().ends_with(" · 1 change"),
             "the row leads with the branch and the tree state: {}",
             row.text()
         );
@@ -17190,6 +17220,11 @@ mod tests {
                 format!(
                     "VIEW\\033[2;1H{rule}\\033[3;1H \\033[7m \\033[0m\\033[4;1H{rule}\\033[3;2H\\033[?25l"
                 )
+            } else if kind == HarnessKind::Opencode {
+                let bottom = "▀".repeat(77);
+                format!(
+                    "VIEW\\033[2;3H┃\\033[3;3H┃\\033[4;3H┃\\033[5;3H┃  Build · Fixture\\033[6;3H╹{bottom}\\033[3;6H\\033[?25h"
+                )
             } else {
                 "VIEW\\033[3;1H> \\033[?25h".into()
             };
@@ -17201,26 +17236,24 @@ mod tests {
             wait_paint(&mut app, 0, "VIEW");
             app.focus = Some(0);
             if kind == HarnessKind::Opencode {
-                // OpenCode has no verified empty-editor detector.
-                for key in [KeyCode::Tab, KeyCode::Left] {
-                    app.key(key, KeyModifiers::NONE).unwrap();
-                    assert_eq!(app.focus, Some(0));
-                }
-                app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
-                assert_eq!(app.focus, None);
-                app.enter().unwrap();
+                app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
                 assert_eq!(app.focus, Some(0));
-                assert_eq!(app.viewers[0].viewer.pid(), pid);
-                continue;
             }
+            let back = if kind == HarnessKind::Opencode {
+                "←"
+            } else {
+                "tab"
+            };
             assert!(
-                app.hint_line().to_string().starts_with("tab back"),
+                app.hint_line()
+                    .to_string()
+                    .starts_with(&format!("{back} back")),
                 "{kind}"
             );
             assert!(
                 app.strip(0, 120)
                     .to_string()
-                    .ends_with("tab back · ctrl+\\ split"),
+                    .ends_with(&format!("{back} back · ctrl+\\ split")),
                 "{kind}"
             );
             for modifier in [
@@ -17249,6 +17282,9 @@ mod tests {
                 (KeyCode::Tab, KeyModifiers::NONE),
                 (KeyCode::Char('z'), KeyModifiers::CONTROL),
             ] {
+                if kind == HarnessKind::Opencode && key == KeyCode::Tab {
+                    continue;
+                }
                 app.key(key, modifier).unwrap();
                 assert_eq!(app.focus, None, "{kind}");
                 app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
@@ -17257,6 +17293,13 @@ mod tests {
                     app.viewers[0].viewer.pid(),
                     pid,
                     "returning starts no replacement client"
+                );
+            }
+            if kind == HarnessKind::Opencode {
+                app.close(0);
+                assert!(
+                    app.data.sessions.iter().all(|s| s.pid != Some(pid)),
+                    "closing the native client makes its conversation available to history"
                 );
             }
         }
@@ -18791,6 +18834,39 @@ mod tests {
         picker.key(KeyCode::Home);
         picker.key(KeyCode::Up);
         assert_eq!(picker.current().at, 0);
+        assert!(picker.tabs, "up past the first column reaches the buttons");
+        let before_tabs = picker.sets.clone();
+        for (key, tab) in [
+            (KeyCode::Right, 0),
+            (KeyCode::Left, 3),
+            (KeyCode::Home, 0),
+            (KeyCode::Char('['), 3),
+            (KeyCode::Char(']'), 0),
+            (KeyCode::Backspace, 0),
+            (KeyCode::End, 3),
+            (KeyCode::Home, 0),
+            (KeyCode::Right, 1),
+        ] {
+            assert!(matches!(picker.key(key), ColumnAction::Stay));
+            assert_eq!(picker.tab, tab);
+            assert!(picker.tabs, "switching tables keeps the buttons focused");
+            assert_eq!(picker.sets, before_tabs, "browsing never changes columns");
+        }
+        assert_eq!(picker.current().selected(), run);
+        assert!(picker.hints().to_string().contains("↓ columns"));
+        picker.key(KeyCode::Down);
+        assert!(!picker.tabs);
+        assert_eq!(picker.current().selected(), run, "down restores the cursor");
+        for enter in [KeyCode::Enter, KeyCode::Char(' ')] {
+            picker.key(KeyCode::Home);
+            picker.key(KeyCode::Up);
+            let before = picker.sets.clone();
+            assert!(matches!(picker.key(enter), ColumnAction::Stay));
+            assert!(!picker.tabs);
+            assert_eq!(picker.sets, before, "entering the columns saves nothing");
+        }
+        picker.key(KeyCode::Up);
+        assert!(matches!(picker.key(KeyCode::Esc), ColumnAction::Close));
     }
 
     #[test]
@@ -18890,6 +18966,22 @@ mod tests {
                 "{height} rows: {text}"
             );
             assert!(picker.hints().width() <= 60);
+            picker.key(KeyCode::Home);
+            picker.key(KeyCode::Up);
+            t.draw(|f| picker.draw(f, f.area())).unwrap();
+            assert!(
+                !(0..height).any(|y| cells(&t, y, 0..60).starts_with("› ")),
+                "the columns lose their focus marker when the buttons have focus"
+            );
+            if height >= 4 {
+                let y = if height < 8 { 0 } else { 1 };
+                let cell = t.backend().buffer().cell((1, y)).unwrap();
+                assert_eq!(cell.bg, ORANGE);
+                assert_eq!(cell.fg, Color::Black);
+                assert!(cells(&t, y, 0..60).contains("←→ table"));
+            }
+            picker.key(KeyCode::Enter);
+            picker.key(KeyCode::End);
         }
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
         t.draw(|f| picker.draw(f, f.area())).unwrap();
@@ -18911,6 +19003,20 @@ mod tests {
         assert_eq!(t.backend().buffer().cell((0, 5)).unwrap().fg, ORANGE);
         picker.mouse(click(14, 1));
         assert_eq!(picker.tab, 1, "the runs tab is clickable");
+        assert!(picker.tabs);
+        t.draw(|f| picker.draw(f, f.area())).unwrap();
+        assert_eq!(t.backend().buffer().cell((12, 1)).unwrap().bg, ORANGE);
+        assert_ne!(t.backend().buffer().cell((0, 5)).unwrap().symbol(), "›");
+        picker.mouse(click(10, 6));
+        assert!(!picker.tabs, "clicking a column returns focus to its row");
+        assert_eq!(picker.current().at, 1);
+        assert!(picker.current().default);
+        picker.mouse(click(1, 1));
+        assert_eq!(picker.tab, 0, "the first button has no arrow prefix");
+        assert!(picker.tabs);
+        assert!(matches!(picker.mouse(click(3, 5)), ColumnAction::Save(_)));
+        assert!(!picker.tabs, "a checkbox click both focuses and toggles");
+        assert!(picker.current().shown.contains(picker.current().selected()));
     }
 
     #[test]

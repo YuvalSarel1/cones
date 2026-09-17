@@ -58,12 +58,12 @@ Save validates the whole file and changes only the selected job block, preservin
 
 ### Columns
 
-`columns` opens a picker for Sessions, Runs, Jobs and History, starting on the table you came from. Config's `columns` link opens the same picker; `esc` returns to that link. The picker uses the existing pane or the full frame, like the other menu screens.
+`columns` opens a picker for Sessions, Runs, Jobs and History, starting on the table you came from. Its table tabs use the same button row as Config: `↑` past the first column reaches the buttons, `← →` switch tables and wrap around, and `↓`, `enter` or space returns to the columns. Each table remembers its selected column. Config's `columns` link opens the same picker; `esc` returns to that link. The picker uses the existing pane or the full frame, like the other menu screens.
 
 | Key | Action |
 | --- | --- |
-| `↑ ↓` | Select a column. Movement stops at the ends. |
-| `← →` | Switch tables. Each table remembers its cursor while the picker is open. |
+| `↑ ↓` | Select a column; `↑` past the first reaches the table buttons. Movement stops at the last column. |
+| `← →` | Switch tables. Wrap around when the table buttons have focus. |
 | `space` | Show or hide the selected column without moving its row. |
 | `[` `]` | Move a shown column earlier or later; the cursor follows it. |
 | `backspace` | Restore the current table's defaults. |
@@ -73,7 +73,7 @@ Save validates the whole file and changes only the selected job block, preservin
 
 The `›` marker and shaded row show keyboard focus; `[x]` and `[ ]` show visibility. The order number records a shown column's position in its saved set. State/status and the harness name retain their places beside the row's identity, as their descriptions explain. `defaults` or `custom` identifies where the selection comes from, independently of visibility.
 
-Click a row to select it, its checkbox to toggle it, or a table name to switch. The wheel moves through columns. The selected row stays visible when the pane is short.
+Click a row to select it, its checkbox to toggle it, or a table name to focus its button. The wheel moves through columns. The selected row stays visible when the pane is short.
 
 Every change validates and saves only that table's column setting in `jobs.yaml`, then updates the dashboard. Other settings and job blocks are preserved. A failed save keeps the previous selection and explains the error. An explicit empty selection hides every optional column; reset removes that override so defaults apply again.
 
