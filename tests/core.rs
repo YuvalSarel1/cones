@@ -8,6 +8,78 @@ use cones::{
 use std::{fs, io::Write};
 
 #[test]
+fn run_times_display_in_the_local_timezone_and_keep_utc_in_json() {
+    use cones::config::HarnessKind;
+    use std::process::Command;
+    let d = tempfile::tempdir().unwrap();
+    let jobs = d.path().join("jobs.yaml");
+    fs::write(
+        &jobs,
+        "version: 3\nrun_columns: [started, ended]\njobs: []\n",
+    )
+    .unwrap();
+    let ledger = Ledger::new(d.path()).unwrap();
+    for (id, at) in [
+        ("summer", "2026-09-17T22:30:00Z"),
+        ("winter", "2026-01-17T22:30:00Z"),
+    ] {
+        let mut record = Record::new(id.into(), Status::Started);
+        record.job = Some(id.into());
+        record.fired_at = Some(at.parse().unwrap());
+        record.harness = Some(HarnessKind::Claude);
+        ledger.append(&record).unwrap();
+        let mut end = Record::new(id.into(), Status::Ok);
+        end.ended_at = record.fired_at.map(|at| at + chrono::Duration::minutes(5));
+        ledger.append(&end).unwrap();
+    }
+    let run = |zone: &str, args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args([
+                "--jobs",
+                jobs.to_str().unwrap(),
+                "--state-dir",
+                d.path().to_str().unwrap(),
+            ])
+            .args(args)
+            .env("TZ", zone)
+            .env("HOME", d.path())
+            .env("CLAUDE_CONFIG_DIR", d.path().join("claude"))
+            .env("CODEX_HOME", d.path().join("missing-codex"))
+            .env("PI_CODING_AGENT_DIR", d.path().join("missing-pi"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let shown = run("Asia/Jerusalem", &["__list"]);
+    for time in [
+        "09-18 01:30:00",
+        "09-18 01:35:00",
+        "01-18 00:30:00",
+        "01-18 00:35:00",
+    ] {
+        assert!(shown.contains(time), "{time}: {shown}");
+    }
+    let utc = run("UTC", &["__list"]);
+    assert!(
+        utc.contains("09-17 22:30:00") && utc.contains("01-17 22:30:00"),
+        "{utc}"
+    );
+    let ls = run("Asia/Jerusalem", &["__ls"]);
+    assert!(ls.contains("2026-09-18T01:30:00+03:00"), "{ls}");
+    assert!(ls.contains("2026-01-18T00:30:00+02:00"), "{ls}");
+    let json = run("Asia/Jerusalem", &["__ls", "--json"]);
+    assert!(
+        json.contains("2026-09-17T22:30:00Z") && json.contains("2026-01-17T22:30:00Z"),
+        "{json}"
+    );
+}
+
+#[test]
 fn cron_preserves_day_or_weekday_semantics() {
     let rows = launchd::calendar_intervals("0 2 1 * 1").unwrap();
     assert_eq!(rows.len(), 1);
@@ -640,13 +712,19 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "grouping by state names the state"
     );
     let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()), 1);
+    let local = "2026-09-12T10:56:35Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%m-%d %H:%M:%S")
+        .to_string();
     assert!(
         pane[0] == "~/src/repo"
             && [
                 "idle interactive",
                 "Fable 5.1",
-                "started 09-12 10:56:35",
-                "last activity 09-12 10:56:35",
+                &format!("started {local}"),
+                &format!("last activity {local}"),
                 "100k context",
             ]
             .iter()

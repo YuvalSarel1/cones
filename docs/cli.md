@@ -63,7 +63,7 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 
 | Command | Purpose |
 | --- | --- |
-| `__ls [--job NAME] [--status S] [--json]` | Read runs and live sessions. JSON is one object per line: `status`, `started`, `terminal` for runs; `status`, `session` for sessions. Native model ids are preserved. |
+| `__ls [--job NAME] [--status S] [--json]` | Read runs and live sessions. Text timestamps use your local timezone and include its UTC offset. JSON keeps UTC timestamps and is one object per line: `status`, `started`, `terminal` for runs; `status`, `session` for sessions. Native model ids are preserved. |
 | `__logs ID [--follow] [--raw]` | Read captured output. The current session renderer does not handle pi message entries. |
 | `__attach ID [--print-command]` | Open a background session or resume a finished run. |
 | `__install [--dry-run]` | Compile and install schedules. Dry run prints plist XML, including imported credentials; stderr warns when a job imports values. |

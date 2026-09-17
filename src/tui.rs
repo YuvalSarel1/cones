@@ -164,6 +164,8 @@ pub struct Data {
     pub sessions: Vec<Session>,
     /// Session column names from jobs.yaml's `columns:`.
     pub columns: Vec<String>,
+    pub run_columns: Vec<String>,
+    run_reports: HashMap<String, history::Columns>,
     pub pane: config::Pane,
     /// Applied at startup only.
     pub start: config::Start,
@@ -187,6 +189,26 @@ impl Data {
         let mut runs = ledger.runs()?;
         runs.retain(|r| !hidden.contains(&r.started.run_id));
         let sessions = fleet_rows(claude, state, &runs)?;
+        let run_reports = runs
+            .iter()
+            .rev()
+            .take(200)
+            .filter_map(|r| {
+                if r.started.harness != Some(HarnessKind::Claude) {
+                    return None;
+                }
+                let path = r
+                    .started
+                    .output
+                    .as_deref()
+                    .filter(|p| p.is_file())
+                    .or_else(|| r.terminal.as_ref().and_then(|t| t.transcript.as_deref()));
+                Some((
+                    r.started.run_id.clone(),
+                    fleet::run_columns(path, claude, r.started.session_id.as_deref()),
+                ))
+            })
+            .collect();
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
         let folders = ledger.folders()?;
         let jobs = config::read_jobs(jobs_path).unwrap_or_default();
@@ -200,6 +222,8 @@ impl Data {
             runs,
             sessions,
             columns: config::columns(jobs_path),
+            run_columns: config::run_columns(jobs_path),
+            run_reports,
             pane: config::pane(jobs_path),
             start: config::start(jobs_path),
             spark: config::activity(jobs_path),
@@ -465,38 +489,50 @@ impl Data {
             header(&mut out, "runs");
             // Limit the run list to the newest 200 entries.
             let runs: Vec<&Run> = self.runs.iter().rev().take(200).collect();
+            let set = &self.run_columns;
+            let has_status = set.iter().any(|c| c == "status");
+            let cols: Vec<&str> = set
+                .iter()
+                .map(String::as_str)
+                .filter(|c| !matches!(*c, "harness" | "status"))
+                .collect();
+            let mut names = vec!["", ""];
+            if has_status {
+                names.push("status");
+            }
+            names.push("job");
+            names.extend(
+                cols.iter()
+                    .map(|c| if *c == "tokens" { "tokens in/out" } else { *c }),
+            );
             let cells = runs
                 .iter()
                 .map(|r| {
-                    let last = r.terminal.as_ref().unwrap_or(&r.started);
                     let status = r.status();
-                    vec![
-                        (icon(&status).into(), color(&status)),
-                        (r.started.job.clone().unwrap_or_else(|| "-".into()), plain()),
-                        (status.clone(), color(&status)),
-                        (
-                            r.started
-                                .fired_at
-                                .map(|t| t.format("%m-%d %H:%M:%S").to_string())
-                                .unwrap_or_default(),
-                            dim(),
-                        ),
-                        (
-                            last.duration_s
-                                .map(|d| format!("{d:.0}s"))
-                                .unwrap_or_default(),
-                            dim(),
-                        ),
-                        (last.cost_usd.map(fleet::cost).unwrap_or_default(), dim()),
-                        (last.reason.clone().unwrap_or_default(), dim()),
-                    ]
+                    let h = r.started.harness.map(|h| h.to_string()).unwrap_or_default();
+                    let harness = if h.is_empty() {
+                        "-".into()
+                    } else if set.iter().any(|c| c == "harness") {
+                        logo(&h)
+                    } else {
+                        mark(&h).into()
+                    };
+                    let mut row =
+                        vec![(icon(&status).into(), color(&status)), (harness, brand(&h))];
+                    if has_status {
+                        row.push((status.clone(), color(&status)));
+                    }
+                    row.push((r.started.job.clone().unwrap_or_else(|| "-".into()), plain()));
+                    let report = self
+                        .run_reports
+                        .get(&r.started.run_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    row.extend(cols.iter().map(|c| run_cell(c, r, &report)));
+                    row
                 })
                 .collect();
-            let (names, cells) = columns(
-                &["", "job", "status", "started", "took", "cost", "reason"],
-                cells,
-                widths,
-            );
+            let (names, cells) = columns(&names, cells, widths);
             out.push(names);
             for (r, cells) in runs.iter().zip(cells) {
                 out.push(Row {
@@ -537,9 +573,6 @@ impl Data {
                 let Some(s) = self.sessions.iter().find(|s| &s.session_id == id) else {
                     return vec![];
                 };
-                let stamp = |t: Option<chrono::DateTime<chrono::Utc>>| {
-                    t.map_or_else(|| "-".into(), |t| t.format("%m-%d %H:%M:%S").to_string())
-                };
                 let mut out = vec![
                     fleet::tilde(&s.cwd),
                     format!(
@@ -549,8 +582,8 @@ impl Data {
                         s.kind.as_deref().unwrap_or(""),
                         if s.coordinator { " orchestrator" } else { "" },
                         s.model.as_deref().map_or_else(|| "-".into(), fleet::model),
-                        stamp(s.started),
-                        stamp(s.last_activity),
+                        local_stamp(s.started),
+                        local_stamp(s.last_activity),
                         fleet::context(s),
                         fleet::tokens(s),
                         s.pid.map(|p| p.to_string()).unwrap_or_default(),
@@ -945,6 +978,62 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
         ),
         _ => ("?".into(), dim()),
     }
+}
+
+fn local_stamp(at: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    at.map(|t| {
+        t.with_timezone(&chrono::Local)
+            .format("%m-%d %H:%M:%S")
+            .to_string()
+    })
+    .unwrap_or_else(|| "-".into())
+}
+
+fn run_cell(column: &str, run: &Run, report: &history::Columns) -> (String, Style) {
+    let last = run.terminal.as_ref().unwrap_or(&run.started);
+    let text = match column {
+        "started" => local_stamp(run.started.fired_at),
+        "ended" => local_stamp(last.ended_at),
+        "took" => last
+            .duration_s
+            .or_else(|| {
+                (run.terminal.is_none() && run.status() == "started")
+                    .then(|| {
+                        run.started.fired_at.map(|at| {
+                            (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0
+                        })
+                    })
+                    .flatten()
+            })
+            .map(|d| format!("{d:.0}s"))
+            .unwrap_or_else(|| "-".into()),
+        "model" => report
+            .model
+            .as_deref()
+            .map(fleet::model)
+            .unwrap_or_else(|| "-".into()),
+        "context" => fleet::context_values(report.context_tokens, report.context_window),
+        "tokens" => fleet::token_values(
+            last.tokens_in.or(report.tokens_in),
+            last.tokens_out.or(report.tokens_out),
+        ),
+        "cost" => last.cost_usd.map(fleet::cost).unwrap_or_else(|| "-".into()),
+        "reason" => last.reason.clone().unwrap_or_else(|| "-".into()),
+        "dir" => run
+            .started
+            .cwd
+            .as_deref()
+            .map(fleet::tilde)
+            .unwrap_or_else(|| "-".into()),
+        "trigger" => run.started.trigger.clone().unwrap_or_else(|| "-".into()),
+        "last" => report
+            .last
+            .as_deref()
+            .map(|s| clip(s, 100))
+            .unwrap_or_else(|| "-".into()),
+        _ => "-".into(),
+    };
+    (text, dim())
 }
 
 fn columns(
@@ -2358,7 +2447,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 25] = [
+const FIELDS: [Field; 26] = [
     Field {
         group: "cones",
         sub: "",
@@ -2375,6 +2464,15 @@ const FIELDS: [Field; 25] = [
         short: "session columns",
         long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key.",
         builtin: "harness, state, context, activity, model, age, last",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "run_columns",
+        short: "run columns",
+        long: "Columns for supervised runs. The harness icon and job always show; harness adds the name and status sits before the job. Left and right select, space shows or hides, [ ] reorder, and backspace restores defaults. Times use your local timezone.",
+        builtin: "harness, status, started, took, context, model, cost, reason",
         input: Answer::Columns,
     },
     Field {
@@ -2838,6 +2936,7 @@ pub enum ConfigAction {
         Option<config::Start>,
         Option<f64>,
         Option<bool>,
+        Option<Vec<String>>,
     ),
 }
 
@@ -2859,9 +2958,11 @@ pub struct ConfigForm {
     /// The selection sits on that head rather than on the field it stands for, open or shut.
     on_head: bool,
     arrange: ColumnForm,
+    run_arrange: ColumnForm,
 }
 
 impl ConfigForm {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         d: &config::Policy,
         columns: Option<&[String]>,
@@ -2870,6 +2971,7 @@ impl ConfigForm {
         start: Option<&config::Start>,
         confirm_secs: Option<f64>,
         whole_columns: Option<bool>,
+        run_columns: Option<&[String]>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -2910,6 +3012,15 @@ impl ConfigForm {
                 "confirm_secs" => num(confirm_secs),
                 "whole_columns" => flag(whole_columns),
                 "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
+                "run_columns" => run_columns
+                    .map(|c| {
+                        if c.is_empty() {
+                            "[]".into()
+                        } else {
+                            c.join(", ")
+                        }
+                    })
+                    .unwrap_or_default(),
                 _ => spark(|s| s.bound.clone()),
             })
             .collect();
@@ -2922,7 +3033,11 @@ impl ConfigForm {
             cursor: usize::MAX,
             shut: true,
             on_head: false,
-            arrange: ColumnForm::new(columns.unwrap_or(&built_columns())),
+            arrange: ColumnForm::new(columns.unwrap_or(&built_columns()), &config::COLUMNS),
+            run_arrange: ColumnForm::new(
+                run_columns.unwrap_or(&built_run_columns()),
+                &config::RUN_COLUMNS,
+            ),
         }
     }
 
@@ -2967,6 +3082,7 @@ impl ConfigForm {
             Option<config::Start>,
             Option<f64>,
             Option<bool>,
+            Option<Vec<String>>,
         ),
         String,
     > {
@@ -2994,6 +3110,11 @@ impl ConfigForm {
                 .collect()
         };
         let columns = names("columns");
+        let run_columns = match v("run_columns") {
+            "" => None,
+            "[]" => Some(Vec::new()),
+            _ => Some(names("run_columns")),
+        };
         let env = names("env");
         // Refuse a name on the row: written into the file's flow sequence, one carrying YAML
         // punctuation would be read back as something other than a string.
@@ -3131,6 +3252,7 @@ impl ConfigForm {
             start,
             mark,
             flag("whole_columns"),
+            run_columns,
         ))
     }
 
@@ -3209,10 +3331,10 @@ impl ConfigForm {
                 self.error = Some(e);
                 ConfigAction::Stay
             }
-            Ok((p, c, s, pn, st, m, w)) => {
+            Ok((p, c, s, pn, st, m, w, rc)) => {
                 self.open = false;
                 if changed {
-                    ConfigAction::Save(Box::new(p), c, s, pn, st, m, w)
+                    ConfigAction::Save(Box::new(p), c, s, pn, st, m, w, rc)
                 } else {
                     ConfigAction::Stay
                 }
@@ -3244,8 +3366,18 @@ impl ConfigForm {
                     if matches!(self.field().input, Answer::Columns) =>
                 {
                     self.before = self.values[self.row].clone();
-                    if let Arranged::Shown(cols) = self.arrange.key(code) {
-                        self.values[self.row] = cols.join(", ");
+                    let runs = self.field().name == "run_columns";
+                    let arrange = if runs {
+                        &mut self.run_arrange
+                    } else {
+                        &mut self.arrange
+                    };
+                    if let Arranged::Shown(cols) = arrange.key(code) {
+                        self.values[self.row] = if runs && cols.is_empty() {
+                            "[]".into()
+                        } else {
+                            cols.join(", ")
+                        };
                         return self.commit();
                     }
                 }
@@ -3258,8 +3390,11 @@ impl ConfigForm {
                 KeyCode::Backspace if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
-                    if matches!(self.field().input, Answer::Columns) {
-                        self.arrange = ColumnForm::new(&built_columns());
+                    if self.field().name == "run_columns" {
+                        self.run_arrange =
+                            ColumnForm::new(&built_run_columns(), &config::RUN_COLUMNS);
+                    } else if matches!(self.field().input, Answer::Columns) {
+                        self.arrange = ColumnForm::new(&built_columns(), &config::COLUMNS);
                     }
                     return self.commit();
                 }
@@ -3494,18 +3629,23 @@ impl ConfigForm {
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
             let built = value.is_empty();
+            let arrange = if f.name == "run_columns" {
+                &self.run_arrange
+            } else {
+                &self.arrange
+            };
             let mut spans = vec![];
-            for (n, c) in self.arrange.order.iter().enumerate() {
-                if n == self.arrange.shown {
+            for (n, c) in arrange.order.iter().enumerate() {
+                if n == arrange.shown {
                     spans.push(Span::styled("· ", dim()));
                 }
                 // Pad inside the span so the cursor's block sits even around the
                 // name, and keep the gap to the next name outside it.
                 spans.push(Span::styled(
                     format!(" {c} "),
-                    if n == self.arrange.at && i == self.row {
+                    if n == arrange.at && i == self.row {
                         pressed()
-                    } else if n < self.arrange.shown && !built {
+                    } else if n < arrange.shown && !built {
                         bold()
                     } else {
                         dim()
@@ -3604,6 +3744,13 @@ fn built_columns() -> Vec<String> {
         .collect()
 }
 
+fn built_run_columns() -> Vec<String> {
+    config::DEFAULT_RUN_COLUMNS
+        .iter()
+        .map(|c| (*c).to_owned())
+        .collect()
+}
+
 enum Arranged {
     Stay,
     Shown(Vec<String>),
@@ -3618,10 +3765,10 @@ struct ColumnForm {
 }
 
 impl ColumnForm {
-    fn new(columns: &[String]) -> Self {
+    fn new(columns: &[String], choices: &[&str]) -> Self {
         let mut order = columns.to_vec();
         order.extend(
-            config::COLUMNS
+            choices
                 .iter()
                 .filter(|c| !columns.iter().any(|h| h == *c))
                 .map(|c| (*c).to_owned()),
@@ -5496,6 +5643,7 @@ impl App {
             config::file_start(&self.jobs_path).as_ref(),
             config::file_confirm_secs(&self.jobs_path),
             config::file_whole_columns(&self.jobs_path),
+            config::file_run_columns(&self.jobs_path).as_deref(),
         ))
     }
 
@@ -7441,12 +7589,22 @@ impl App {
                     self.mode = Mode::Normal;
                     self.select_first_session();
                 }
-                ConfigAction::Save(policy, columns, spark, pane, start, mark, whole) => {
+                ConfigAction::Save(
+                    policy,
+                    columns,
+                    spark,
+                    pane,
+                    start,
+                    mark,
+                    whole,
+                    run_columns,
+                ) => {
                     self.data.columns = if columns.is_empty() {
                         built_columns()
                     } else {
                         columns.clone()
                     };
+                    self.data.run_columns = run_columns.clone().unwrap_or_else(built_run_columns);
                     self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
                     self.rebuild();
                     match config::write_config(
@@ -7458,6 +7616,7 @@ impl App {
                         start.as_ref(),
                         mark,
                         whole,
+                        run_columns.as_deref(),
                     ) {
                         Ok(()) => {
                             self.status =
@@ -8268,6 +8427,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let none = KeyModifiers::NONE;
         let head = FIELDS.iter().position(|f| f.group == SHUT).unwrap();
@@ -8319,7 +8479,7 @@ mod tests {
             archive_transcript: Some(true),
             ..Default::default()
         };
-        let c = ConfigForm::new(&p, None, None, None, None, None, None);
+        let c = ConfigForm::new(&p, None, None, None, None, None, None, None);
         assert_eq!(c.values[field_at("env")], "FOO, BAR");
         assert_eq!(c.values[field_at("archive_transcript")], "true");
         let saved = c.config().unwrap().0;
@@ -8329,7 +8489,7 @@ mod tests {
             "a run field the file names comes back from its row unchanged"
         );
 
-        let mut c = ConfigForm::new(&p, None, None, None, None, None, None);
+        let mut c = ConfigForm::new(&p, None, None, None, None, None, None, None);
         c.go(field_at("env"));
         for bad in ["A: B", "1FOO", "PATH"] {
             c.values[c.row] = bad.to_owned();
@@ -8345,6 +8505,7 @@ mod tests {
     fn arrows_step_a_number_field_on_its_own_grid() {
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
             None,
             None,
             None,
@@ -8489,6 +8650,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let (lines, _) = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -8534,6 +8696,7 @@ mod tests {
     fn the_row_the_cursor_is_on_is_shaded_across_the_pane() {
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
             None,
             None,
             None,
@@ -8744,6 +8907,7 @@ mod tests {
 
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
             None,
             None,
             None,
@@ -13493,6 +13657,155 @@ mod tests {
         assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap());
         assert!(!app.split, "a narrow frame toggles too");
         assert!(app.needs_clear);
+    }
+
+    #[test]
+    fn run_columns_keep_icons_and_use_reported_values_for_live_and_finished_runs() {
+        use crate::ledger::{Record, Status};
+        let d = dir();
+        let jobs = d.path().join("none.yaml");
+        fs::write(
+            &jobs,
+            "version: 3\nrun_columns: [model, context, tokens, dir, trigger, last]\njobs: []\n",
+        )
+        .unwrap();
+        let output = d.path().join("events.jsonl");
+        fs::write(&output, concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fixture-model\"}\n",
+            "{\"type\":\"assistant\",\"message\":{\"id\":\"m1\",\"model\":\"fixture-model\",\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":2000,\"output_tokens\":7},\"content\":[{\"type\":\"text\",\"text\":\"Reported reply\"}]}}\n",
+        )).unwrap();
+        let mut record = Record::new(A.into(), Status::Started);
+        record.harness = Some(HarnessKind::Claude);
+        record.session_id = Some(B.into());
+        record.job = Some("fixture-job".into());
+        record.cwd = Some(d.path().into());
+        record.trigger = Some("manual".into());
+        record.fired_at = Some(chrono::Utc::now());
+        record.output = Some(output.clone());
+        record.policy = Some(serde_json::json!({"model":"unreported-config-model"}));
+        let ledger = Ledger::new(d.path()).unwrap();
+        ledger.append(&record).unwrap();
+        let row = |data: &Data| {
+            data.rows(false)
+                .into_iter()
+                .find(|r| matches!(r.kind, Kind::Run(..)))
+                .unwrap()
+        };
+        let load = || Data::load(&jobs, d.path(), d.path()).unwrap();
+        let mut data = load();
+        let live = row(&data);
+        let texts: Vec<&str> = live.cells.iter().map(|c| c.0.trim()).collect();
+        assert_eq!(
+            &texts[1..7],
+            [
+                "✻",
+                "fixture-job",
+                "fixture-model",
+                "2k",
+                "2k/7",
+                d.path().to_str().unwrap()
+            ]
+        );
+        assert_eq!(&texts[7..], ["manual", "Reported reply"]);
+        fs::create_dir(d.path().join("statusline")).unwrap();
+        fs::write(
+            d.path().join(format!("statusline/{B}.json")),
+            r#"{"context_window":{"context_window_size":200000}}"#,
+        )
+        .unwrap();
+        let mut terminal = Record::new(A.into(), Status::Ok);
+        terminal.tokens_in = Some(9000);
+        terminal.tokens_out = Some(40);
+        terminal.duration_s = Some(74.2);
+        terminal.cost_usd = Some(0.21);
+        terminal.transcript = Some(d.path().join("archived.jsonl"));
+        fs::rename(&output, terminal.transcript.as_ref().unwrap()).unwrap();
+        ledger.append(&terminal).unwrap();
+        data = load();
+        assert!(row(&data).text().contains("2k/200k"));
+        assert!(row(&data).text().contains("9k/40"));
+        data.run_columns = vec![
+            "harness".into(),
+            "status".into(),
+            "took".into(),
+            "cost".into(),
+        ];
+        let finished = row(&data);
+        let texts: Vec<&str> = finished.cells.iter().map(|c| c.0.trim()).collect();
+        assert_eq!(
+            &texts[1..],
+            ["✻ claude", "ok", "fixture-job", "74s", "$0.21"]
+        );
+        data.run_columns.clear();
+        assert_eq!(
+            row(&data).cells.len(),
+            3,
+            "only status icon, harness icon and job remain"
+        );
+        fs::remove_file(terminal.transcript.unwrap()).unwrap();
+        data = load();
+        assert!(row(&data).cells[3..5].iter().all(|c| c.0.trim() == "-"));
+        assert!(!row(&data).text().contains("unreported-config-model"));
+        data.runs[0].started.harness = None;
+        assert_eq!(
+            row(&data).cells[1].0.trim(),
+            "-",
+            "old records do not acquire an invented harness"
+        );
+    }
+
+    #[test]
+    fn run_column_picker_saves_reorders_and_resets_without_changing_session_columns() {
+        let d = dir();
+        fs::write(
+            d.path().join("none.yaml"),
+            "version: 3\ncolumns: [state, model]\nrun_columns: [model, context]\njobs: []\n",
+        )
+        .unwrap();
+        let mut app = app(d.path());
+        app.mode = Mode::Config(app.config_form());
+        let go = |app: &mut App, name: &str| {
+            if let Mode::Config(f) = &mut app.mode {
+                f.go(field_at(name));
+            }
+        };
+        go(&mut app, "run_columns");
+        if let Mode::Config(f) = &app.mode {
+            let session_control: String = f
+                .control(field_at("columns"), false)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let run_control: String = f
+                .control(field_at("run_columns"), false)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            assert!(session_control.contains("activity") && !session_control.contains("trigger"));
+            assert!(run_control.contains("trigger") && !run_control.contains("activity"));
+        }
+        app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
+        assert_eq!(config::run_columns(&app.jobs_path), ["context", "model"]);
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(config::run_columns(&app.jobs_path).is_empty());
+        assert!(app.data.run_columns.is_empty());
+        go(&mut app, "columns");
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(
+            config::run_columns(&app.jobs_path).is_empty(),
+            "saving another field preserves an empty run set"
+        );
+        go(&mut app, "run_columns");
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::run_columns(&app.jobs_path),
+            config::DEFAULT_RUN_COLUMNS
+        );
+        assert_eq!(app.data.run_columns, config::DEFAULT_RUN_COLUMNS);
+        assert_eq!(config::columns(&app.jobs_path), ["model"]);
+        assert_eq!(config::file_run_columns(&app.jobs_path), None);
     }
 
     #[test]

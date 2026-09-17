@@ -17,7 +17,7 @@
 <rect x="66.58" y="33" width="8.43" height="10.0" fill="#f1eadf"/>
 <rect x="75.01" y="43.0" width="8.43" height="10.0" fill="#ff8700"/>
 <text x="117.2" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▁ </text>
+<text x="125.6" y="50" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> ▃ </text>
 <text x="150.9" y="50" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">3</text>
 <text x="159.3" y="50" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> working  </text>
 <text x="243.6" y="50" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#d29922">▇ </text>
@@ -67,7 +67,7 @@
 <text x="16.0" y="170" xml:space="preserve" textLength="134.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">~/personal/cones</text>
 <text x="606.1" y="170" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="190" xml:space="preserve" textLength="16.9" lengthAdjust="spacingAndGlyphs" fill="#ff8700" font-weight="700">▌ </text>
-<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▁  </text>
+<text x="32.9" y="190" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">▃  </text>
 <text x="58.1" y="190" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757" font-weight="700">✻ claude  </text>
 <text x="142.4" y="190" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">working  the harness table in the docs  </text>
 <text x="479.6" y="190" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590" font-weight="700">120k/1.0M  </text>
@@ -83,7 +83,7 @@
 <text x="479.6" y="210" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">86k/1.0M   </text>
 <text x="606.1" y="210" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="631.4" y="210" xml:space="preserve" textLength="160.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">⎿  3 passed in 4.1s</text>
-<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
+<text x="32.9" y="230" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
 <text x="58.1" y="230" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="230" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the ledger&#x27;s write path        </text>
 <text x="479.6" y="230" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">56k/1.0M   </text>
@@ -102,7 +102,7 @@
 <text x="614.5" y="290" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#ff8700">✻</text>
 <text x="623.0" y="290" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> Working</text>
 <text x="690.4" y="290" xml:space="preserve" textLength="354.1" lengthAdjust="spacingAndGlyphs" fill="#7d8590">… (24s · ↑ 1.2k tokens · esc to interrupt)</text>
-<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▁  </text>
+<text x="32.9" y="310" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">▃  </text>
 <text x="58.1" y="310" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
 <text x="142.4" y="310" xml:space="preserve" textLength="337.2" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">working  the flaky checkout test        </text>
 <text x="479.6" y="310" xml:space="preserve" textLength="92.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">67k/1.0M   </text>
@@ -110,13 +110,13 @@
 <text x="606.1" y="330" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="16.0" y="350" xml:space="preserve" textLength="33.7" lengthAdjust="spacingAndGlyphs" fill="#e6edf3" font-weight="700">runs</text>
 <text x="606.1" y="350" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
-<text x="16.0" y="370" xml:space="preserve" textLength="522.7" lengthAdjust="spacingAndGlyphs" fill="#7d8590">     job           status  started         took  cost   reason</text>
+<text x="16.0" y="370" xml:space="preserve" textLength="573.2" lengthAdjust="spacingAndGlyphs" fill="#7d8590">               status  job           started         took  context  </text>
 <text x="606.1" y="370" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="32.9" y="390" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#3fb950">✓  </text>
-<text x="58.1" y="390" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
-<text x="176.2" y="390" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
-<text x="243.6" y="390" xml:space="preserve" textLength="244.5" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-16 13:50:19  74s   $0.21  </text>
-<text x="606.1" y="390" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
+<text x="58.1" y="390" xml:space="preserve" textLength="84.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻ claude  </text>
+<text x="142.4" y="390" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
+<text x="209.9" y="390" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
+<text x="327.9" y="390" xml:space="preserve" textLength="286.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-17 06:22:14  74s   -        - │</text>
 <text x="606.1" y="410" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="606.1" y="430" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="606.1" y="450" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>

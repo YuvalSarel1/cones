@@ -713,6 +713,39 @@ pub(crate) fn history_columns(transcript: &Path) -> Result<crate::history::Colum
     })
 }
 
+/// Run output uses Claude's native JSON messages. Cache scalar summaries separately
+/// from live activity, and read the context window only from the saved status line.
+pub(crate) fn run_columns(
+    transcript: Option<&Path>,
+    claude: &Path,
+    session_id: Option<&str>,
+) -> crate::history::Columns {
+    use std::os::unix::fs::MetadataExt;
+    type Cached = ((u64, u64, i64, i64), crate::history::Columns);
+    static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
+    let mut columns = crate::history::Columns::default();
+    if let Some(path) = transcript
+        && let Ok(meta) = fs::metadata(path)
+    {
+        let stamp = (meta.ino(), meta.len(), meta.mtime(), meta.mtime_nsec());
+        let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let cache = cache.get_or_insert_with(HashMap::new);
+        if let Some((seen, saved)) = cache.get(path)
+            && *seen == stamp
+        {
+            columns = saved.clone();
+        } else if let Ok(saved) = history_columns(path) {
+            if cache.len() >= 200 {
+                cache.clear();
+            }
+            cache.insert(path.to_owned(), (stamp, saved.clone()));
+            columns = saved;
+        }
+    }
+    columns.context_window = session_id.and_then(|id| statusline_window(claude, id));
+    columns
+}
+
 /// Count streaming usage once per message id; skip `<synthetic>` placeholder messages.
 fn report(transcript: &Path) -> Result<Report> {
     report_with_activity(transcript, true)
@@ -739,6 +772,9 @@ fn report_with_activity(transcript: &Path, activity: bool) -> Result<Report> {
             }
         }
         let message = &event["message"];
+        if event["type"] == "system" && event["subtype"] == "init" {
+            r.model = event["model"].as_str().map(Into::into).or(r.model);
+        }
         // Live discovery already has its tail scan; only history needs these
         // strings from the full pass, so it can find titles outside the tail window.
         if !activity {
@@ -1004,7 +1040,11 @@ pub fn cost(usd: f64) -> String {
 
 /// Show reported prompt/window sizes; omit the denominator when no window was reported.
 pub fn context(s: &Session) -> String {
-    match (s.context_tokens, s.context_window) {
+    context_values(s.context_tokens, s.context_window)
+}
+
+pub(crate) fn context_values(tokens: Option<u64>, window: Option<u64>) -> String {
+    match (tokens, window) {
         (Some(t), Some(w)) => format!("{}/{}", short(t), short(w)),
         (Some(t), None) => short(t),
         (None, _) => "-".into(),
@@ -1012,7 +1052,11 @@ pub fn context(s: &Session) -> String {
 }
 
 pub fn tokens(s: &Session) -> String {
-    match (s.tokens_in, s.tokens_out) {
+    token_values(s.tokens_in, s.tokens_out)
+}
+
+pub(crate) fn token_values(input: Option<u64>, output: Option<u64>) -> String {
+    match (input, output) {
         (None, None) => "-".into(),
         (i, o) => format!("{}/{}", short(i.unwrap_or(0)), short(o.unwrap_or(0))),
     }

@@ -151,6 +151,8 @@ pub struct JobsFile {
     #[serde(default)]
     pub columns: Option<Vec<String>>,
     #[serde(default)]
+    pub run_columns: Option<Vec<String>>,
+    #[serde(default)]
     pub activity: Option<Activity>,
     #[serde(default)]
     pub pane: Option<Pane>,
@@ -181,6 +183,13 @@ pub const COLUMNS: [&str; 8] = [
 ];
 pub const DEFAULT_COLUMNS: [&str; 7] = [
     "harness", "state", "context", "activity", "model", "age", "last",
+];
+pub const RUN_COLUMNS: [&str; 13] = [
+    "harness", "status", "started", "ended", "took", "context", "model", "tokens", "cost",
+    "reason", "dir", "trigger", "last",
+];
+pub const DEFAULT_RUN_COLUMNS: [&str; 8] = [
+    "harness", "status", "started", "took", "context", "model", "cost", "reason",
 ];
 
 /// Activity settings; omitted fields use built-ins. See docs/jobs.md.
@@ -459,6 +468,17 @@ fn parse(path: &Path) -> Result<JobsFile> {
     {
         bail!("unknown column {bad:?}; columns are {}", COLUMNS.join(", "));
     }
+    if let Some(bad) = doc
+        .run_columns
+        .iter()
+        .flatten()
+        .find(|c| !RUN_COLUMNS.contains(&c.as_str()))
+    {
+        bail!(
+            "unknown run column {bad:?}; run_columns are {}",
+            RUN_COLUMNS.join(", ")
+        );
+    }
     if let Some(sp) = &doc.activity {
         sp.check()?;
     }
@@ -534,6 +554,19 @@ pub fn columns(path: &Path) -> Vec<String> {
 /// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_columns(path: &Path) -> Option<Vec<String>> {
     parse(path).ok().and_then(|d| d.columns)
+}
+
+pub fn run_columns(path: &Path) -> Vec<String> {
+    file_run_columns(path).unwrap_or_else(|| {
+        DEFAULT_RUN_COLUMNS
+            .iter()
+            .map(|c| (*c).to_owned())
+            .collect()
+    })
+}
+
+pub fn file_run_columns(path: &Path) -> Option<Vec<String>> {
+    parse(path).ok().and_then(|d| d.run_columns)
 }
 
 /// The jobs as written, before defaults and path expansion: what the wizard edits.
@@ -724,6 +757,7 @@ pub fn write_config(
     start: Option<&Start>,
     confirm_secs: Option<f64>,
     whole_columns: Option<bool>,
+    run_columns: Option<&[String]>,
 ) -> Result<()> {
     let base = path
         .parent()
@@ -742,6 +776,9 @@ pub fn write_config(
         .filter(|c| !c.is_empty())
         .map(|c| vec![format!("columns: [{}]", c.join(", "))])
         .unwrap_or_default();
+    let run_cols = run_columns
+        .map(|c| vec![format!("run_columns: [{}]", c.join(", "))])
+        .unwrap_or_default();
     let spark = activity.map(Activity::lines).unwrap_or_default();
     let pane = pane.map(Pane::lines).unwrap_or_default();
     let start = start.map(Start::lines).unwrap_or_default();
@@ -755,6 +792,7 @@ pub fn write_config(
     let order = [
         "defaults:",
         "columns:",
+        "run_columns:",
         "whole_columns:",
         "activity:",
         "pane:",
@@ -767,6 +805,7 @@ pub fn write_config(
         ("pane:", pane),
         ("activity:", spark),
         ("whole_columns:", whole),
+        ("run_columns:", run_cols),
         ("columns:", cols),
         ("defaults:", block),
     ] {
@@ -1180,6 +1219,42 @@ mod tests {
     }
 
     #[test]
+    fn run_columns_save_independently_and_can_hide_every_optional_column() {
+        let (_d, p) = file(FILE);
+        let session = ["state".into()];
+        let runs = ["model".into(), "context".into(), "harness".into()];
+        let save = |columns: Option<&[String]>| {
+            write_config(
+                &p,
+                &Policy::default(),
+                Some(&session),
+                None,
+                None,
+                None,
+                None,
+                None,
+                columns,
+            )
+        };
+        assert_eq!(run_columns(&p), DEFAULT_RUN_COLUMNS);
+        save(Some(&runs)).unwrap();
+        assert_eq!(run_columns(&p), runs);
+        assert_eq!(columns(&p), session);
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains("  # two runs at night\n"));
+        let err = save(Some(&["activity".into()])).unwrap_err();
+        assert!(err.to_string().contains("unknown run column"), "{err}");
+        assert_eq!(fs::read_to_string(&p).unwrap(), text);
+        save(Some(&[])).unwrap();
+        assert!(run_columns(&p).is_empty());
+        assert_eq!(file_run_columns(&p), Some(Vec::new()));
+        save(None).unwrap();
+        assert_eq!(run_columns(&p), DEFAULT_RUN_COLUMNS);
+        assert!(!fs::read_to_string(&p).unwrap().contains("run_columns:"));
+        assert_eq!(columns(&p), session);
+    }
+
+    #[test]
     fn write_config_replaces_the_blocks_creates_them_and_checks_them() {
         let (_d, p) = file(FILE);
         let d = Policy {
@@ -1199,7 +1274,7 @@ mod tests {
             env: Some(vec!["FOO".to_owned()]),
         };
         let cols = ["state".to_owned(), "age".to_owned()];
-        write_config(&p, &d, Some(&cols), None, None, None, None, None).unwrap();
+        write_config(&p, &d, Some(&cols), None, None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
@@ -1224,7 +1299,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            write_config(&p, &bad, None, None, None, None, None, None).is_err(),
+            write_config(&p, &bad, None, None, None, None, None, None, None).is_err(),
             "a name YAML would read as a mapping is refused"
         );
         assert_eq!(
@@ -1233,7 +1308,18 @@ mod tests {
             "and nothing is written"
         );
 
-        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(text.starts_with("version: 3\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
@@ -1241,7 +1327,7 @@ mod tests {
             notify: Some(true),
             ..Default::default()
         };
-        write_config(&p, &d, Some(&[]), None, None, None, None, None).unwrap();
+        write_config(&p, &d, Some(&[]), None, None, None, None, None, None).unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
             text.starts_with("version: 3\ndefaults:\n  notify: true\njobs:\n"),
@@ -1252,6 +1338,7 @@ mod tests {
             &p,
             &Policy::default(),
             Some(&cols),
+            None,
             None,
             None,
             None,
@@ -1273,6 +1360,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap_err()
         .to_string();
@@ -1280,7 +1368,7 @@ mod tests {
         assert_eq!(file_columns(&p).as_deref(), Some(&cols[..]), "untouched");
 
         let missing = p.with_file_name("new.yaml");
-        write_config(&missing, &d, None, None, None, None, None, None).unwrap();
+        write_config(&missing, &d, None, None, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
             "version: 3\ndefaults:\n  notify: true\njobs: []\n"
@@ -1289,7 +1377,7 @@ mod tests {
             timeout_min: Some(0.0),
             ..Default::default()
         };
-        let err = write_config(&missing, &bad, None, None, None, None, None, None)
+        let err = write_config(&missing, &bad, None, None, None, None, None, None, None)
             .unwrap_err()
             .to_string();
         assert!(err.contains("timeout_min must be positive"), "{err}");
@@ -1325,6 +1413,7 @@ mod tests {
             &Policy::default(),
             None,
             keep.as_ref(),
+            None,
             None,
             None,
             None,
@@ -1387,6 +1476,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1438,13 +1528,25 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap_err()
             .to_string();
             assert!(err.contains(msg), "{err}");
             assert_eq!(activity(&p), sp, "untouched after {msg}");
         }
-        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("activity"));
         assert_eq!(confirm_secs(&p), CONFIRM_SECS, "built-in without a line");
         write_config(
@@ -1455,6 +1557,7 @@ mod tests {
             None,
             None,
             Some(3.5),
+            None,
             None,
         )
         .unwrap();
@@ -1473,12 +1576,24 @@ mod tests {
             None,
             Some(-1.0),
             None,
+            None,
         )
         .unwrap_err()
         .to_string();
         assert!(err.contains("confirm_secs -1"), "{err}");
         assert_eq!(confirm_secs(&p), 3.5, "untouched after a refused value");
-        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("confirm_secs"));
         let (_d, p) = file("version: 1\nactivity:\n  metric: tokens\njobs: []\n");
         assert_eq!(
@@ -1523,6 +1638,7 @@ mod tests {
             Some(&st),
             Some(2.0),
             None,
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1555,6 +1671,7 @@ mod tests {
             None,
             None,
             Some(false),
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1566,7 +1683,18 @@ mod tests {
             (whole_columns(&p), file_whole_columns(&p)),
             (false, Some(false))
         );
-        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("whole_columns"));
         assert!(whole_columns(&p));
     }
@@ -1590,6 +1718,7 @@ mod tests {
             None,
             Some(2.0),
             None,
+            None,
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
@@ -1611,12 +1740,24 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap_err()
         .to_string();
         assert!(err.contains("pane at \"left\""), "{err}");
         assert_eq!(pane(&p), pn, "untouched after a side that is not a side");
-        write_config(&p, &Policy::default(), None, None, None, None, None, None).unwrap();
+        write_config(
+            &p,
+            &Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("pane"));
         let (_d, p) = file("version: 1\npane:\n  at: bottom\njobs: []\n");
         assert_eq!(
@@ -1652,7 +1793,7 @@ mod tests {
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();
         let d = defaults(&p);
-        write_config(&p, &d, None, None, None, None, None, None).unwrap();
+        write_config(&p, &d, None, None, None, None, None, None, None).unwrap();
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
             text,

@@ -242,7 +242,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         run.status(),
                         run.started
                             .fired_at
-                            .map(|t| t.to_rfc3339())
+                            .map(|t| t.with_timezone(&chrono::Local).to_rfc3339())
                             .unwrap_or_else(|| "-".into()),
                         run.started
                             .harness
@@ -269,7 +269,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         cones::fleet::tilde(&s.cwd),
                         s.state,
                         s.started
-                            .map(|t| t.to_rfc3339())
+                            .map(|t| t.with_timezone(&chrono::Local).to_rfc3339())
                             .unwrap_or_else(|| "-".into()),
                         s.harness,
                         s.cost_usd

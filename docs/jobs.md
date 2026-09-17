@@ -24,7 +24,7 @@ jobs:
 | `version` | Schema version, currently `3`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
 | `pane` | [Viewer position and size](#pane). |
 | `start` | [Initial dashboard settings](#start). |
 | `activity` | [Activity chart settings](#activity). |
@@ -63,6 +63,7 @@ Bedrock profile and region must be explicit in the file, on the job or in `defau
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `columns` | `[harness, state, context, activity, model, age, last]` | Visible session columns. `harness` and `state` always sit before the title in that order; other columns follow it in list order. Unknown names are rejected. |
+| `run_columns` | `[harness, status, started, took, context, model, cost, reason]` | Visible run columns, independent of session columns. The harness icon and job always show; `harness` adds its name and `status` sits before the job. Other columns follow in list order. `[]` hides all optional columns. Unknown names are rejected. |
 | `whole_columns` | `true` | Omit a column that would cross the list's right edge. `false` draws its visible portion. The mark, harness, state and title are drawn either way so a narrow row still identifies itself. |
 | `confirm_secs` | `2` | Seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
 
@@ -77,7 +78,25 @@ Bedrock profile and region must be explicit in the file, on the job or in `defau
 | `last` | Latest reply or status text; directory instead when grouped by state. |
 | `tokens` | Session input/output totals, such as `49.2M/201k`. |
 
-Missing values show `-`. [Harness reports](harness.md#reports) define each source and model naming. Costs appear on run rows, with no configurable session column.
+Missing values show `-`. [Harness reports](harness.md#reports) define each source and model naming.
+
+Run columns:
+
+| Column | Value |
+| --- | --- |
+| `harness` | Name after the always visible harness icon. |
+| `status` | Recorded run outcome, or current supervision status. |
+| `started`, `ended` | Start and end time in your local timezone, including the date. |
+| `took` | Duration in seconds, or elapsed time while running. |
+| `context`, `model` | Latest reported prompt/window tokens and model, using the same formatting as sessions. |
+| `tokens` | Input/output totals from the terminal record, or reported usage while running. |
+| `cost` | Cost reported by the harness. |
+| `reason` | Failure, timeout or skip reason. |
+| `dir` | Run's working directory. |
+| `trigger` | `manual` or `schedule`. |
+| `last` | Latest recorded reply. |
+
+Claude run details come from saved run output, falling back to an archived transcript when the output is unavailable. Context windows come from the saved status line when available. Missing reports stay `-`; current job settings do not supply historical model or context values. Ledger timestamps remain UTC; displayed start and end times use the machine's local timezone, including daylight saving changes.
 
 ## Pane
 

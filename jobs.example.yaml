@@ -3,6 +3,7 @@ defaults:
   timeout_min: 5
   write: false
 columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see docs/jobs.md
+run_columns: [harness, status, started, took, context, model, cost, reason]
 jobs:
   - name: readme-check
     schedule: "0 9 * * 1-5"
