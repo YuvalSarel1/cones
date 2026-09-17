@@ -687,7 +687,7 @@ pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Inp
     if input.empty_prompt == crate::harness::spec::EmptyPrompt::Bordered {
         return at_empty_bordered_prompt(screen);
     }
-    if screen.hide_cursor() {
+    if screen.hide_cursor() || screen.scrollback() != 0 {
         return false;
     }
     let (row, col) = screen.cursor_position();
@@ -1298,6 +1298,16 @@ mod tests {
         assert!(!at(b"> hi\x1b[H"));
         // A full-screen client parks the caret mid-screen, not behind a marker.
         assert!(!at(b"\x1b[2J\x1b[Hlines here\x1b[2;4H"));
+
+        let input = &crate::harness::spec(crate::config::HarnessKind::Claude).input;
+        let mut p = vt100::Parser::new(3, 20, 10);
+        p.process(b"history\r\n> \r\n> \r\n> ");
+        assert!(at_empty_prompt(p.screen(), input));
+        p.screen_mut().set_scrollback(1);
+        assert!(
+            !at_empty_prompt(p.screen(), input),
+            "a historical prompt cannot return focus"
+        );
     }
 
     #[test]
@@ -1362,23 +1372,23 @@ mod tests {
         let check = |input: &crate::harness::spec::Input, code, mods| {
             returns_to_list(screen.screen(), input, code, mods)
         };
-        assert!(check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(!check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
         assert!(check(
             &definition.input,
             KeyCode::Char('z'),
             KeyModifiers::CONTROL
         ));
         assert!(!check(&definition.input, KeyCode::Left, KeyModifiers::NONE));
-        // Let this harness use Tab itself while its input is populated.
+        // A definition can opt into returning on Tab even while its input is populated.
         definition
             .input
             .return_to_list
             .iter_mut()
             .find(|b| b.key == ReturnKey::Tab)
             .unwrap()
-            .when = ReturnWhen::EmptyPrompt;
+            .when = ReturnWhen::Always;
         definition.validate().unwrap();
-        assert!(!check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
+        assert!(check(&definition.input, KeyCode::Tab, KeyModifiers::NONE));
         assert!(check(
             &definition.input,
             KeyCode::Char('z'),

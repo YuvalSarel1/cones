@@ -665,7 +665,7 @@ impl Default for Input {
                 },
                 ReturnBinding {
                     key: ReturnKey::Tab,
-                    when: ReturnWhen::Always,
+                    when: ReturnWhen::EmptyPrompt,
                 },
                 ReturnBinding {
                     key: ReturnKey::Left,

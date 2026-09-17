@@ -13,7 +13,7 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `↑ ↓` | Select rows; up past the first table reaches the menu. |
 | `enter` | With an empty composer, act on the selection: open a session or finished run, follow a running run, start a job, or open a menu screen. With text, submit the instruction. |
 | `shift+enter` | Open the selection over the whole frame once; returning restores the prior layout. With text, insert a line break. Terminals reporting alt+enter use the same action. |
-| `tab` | Move focus between the list and pane. In zsh, return from an empty command line; complete a typed command. Other shells and forms keep Tab for their own input. |
+| `tab` | Enter the pane from the list. Return when an agent's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells and forms keep Tab for their own input. |
 | `ctrl+z` | Return from a viewer or menu screen; the viewer keeps running. |
 | `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
@@ -133,7 +133,8 @@ All viewers close with the dashboard. Whether that also ends the session depends
 
 | Input in a native viewer | Behavior |
 | --- | --- |
-| `tab`, `ctrl+z`, `ctrl+\` | Dashboard navigation, as above. A zsh terminal keeps Tab for completion when a command is typed. Other shells always keep Tab. |
+| `tab` | Return when the harness's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells always keep Tab. |
+| `ctrl+z`, `ctrl+\` | Dashboard navigation, as above. Ctrl+Z returns even with an unfinished draft. |
 | `←` | Return when the harness's standard empty editor is recognized or zsh reports an empty command line; populated or multiline input keeps the arrow. Modified arrows stay native. |
 | `ctrl+c` | Dashboard quit confirmation in an agent viewer. These clients interpret two presses as quit, and Claude's first press leaves the conversation for its agents list. Use `esc` to interrupt a turn. In a terminal, Ctrl+C interrupts the shell's foreground command. |
 | Other keys, including `esc` and `shift+tab` | Pass to the native client. Classic terminal encoding means some modified keys, including shift+enter, cannot be distinguished there. |

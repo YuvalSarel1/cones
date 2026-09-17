@@ -4254,7 +4254,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; zsh returns on ← or tab with an empty command line and keeps them for editing otherwise; other shells use ctrl+z to return; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
+        "into the pane's viewer or a button's screen; from an agent, back to the list when its empty prompt is recognized, like ←; with text entered, tab completes in the agent; zsh returns on ← or tab with an empty command line and keeps them for editing otherwise; ctrl+z returns with a draft or from other shells; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
     ),
     (
         "ctrl+z",
@@ -4891,6 +4891,33 @@ struct Open {
 impl Open {
     fn is_terminal(&self) -> bool {
         self.key.starts_with("terminal:")
+    }
+
+    fn returns_to_list(&self, code: KeyCode, mods: KeyModifiers) -> bool {
+        self.harness.map_or_else(
+            || {
+                (mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('z'))
+                    || (!self.is_terminal() && code == KeyCode::Tab && mods.is_empty())
+            },
+            |kind| {
+                viewer::returns_to_list(
+                    self.viewer.screen(),
+                    &harness::spec(kind).input,
+                    code,
+                    mods,
+                )
+            },
+        )
+    }
+
+    fn return_key(&self) -> &'static str {
+        if self.returns_to_list(KeyCode::Tab, KeyModifiers::NONE) {
+            "tab"
+        } else if self.returns_to_list(KeyCode::Char('z'), KeyModifiers::CONTROL) {
+            "ctrl+z"
+        } else {
+            "←"
+        }
     }
 }
 
@@ -7378,11 +7405,9 @@ impl App {
             vec![
                 Span::styled(
                     if open.is_terminal() && open.what == "zsh" {
-                        "←/tab on empty · ctrl+z back"
-                    } else if open.is_terminal() {
-                        "ctrl+z back"
+                        "←/tab on empty · ctrl+z back".to_owned()
                     } else {
-                        "tab back"
+                        format!("{} back", open.return_key())
                     },
                     dim(),
                 ),
@@ -8472,8 +8497,11 @@ impl App {
                 ("ctrl+\\", "full screen"),
             ]);
             hints(&keys)
-        } else if self.focus.is_some() {
-            hints(&[("tab", "back"), ("ctrl+\\", "full screen")])
+        } else if let Some(i) = self.focus {
+            hints(&[
+                (self.viewers[i].return_key(), "back"),
+                ("ctrl+\\", "full screen"),
+            ])
         } else {
             self.mode_hints(prefix.as_ref().map_or(0, Span::width))
         };
@@ -8825,21 +8853,7 @@ impl App {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
             let terminal = open.is_terminal();
-            let return_to_list = open.harness.map_or_else(
-                || {
-                    (ctrl && code == KeyCode::Char('z'))
-                        || (!terminal && code == KeyCode::Tab && mods.is_empty())
-                },
-                |kind| {
-                    viewer::returns_to_list(
-                        open.viewer.screen(),
-                        &harness::spec(kind).input,
-                        code,
-                        mods,
-                    )
-                },
-            );
-            if return_to_list {
+            if open.returns_to_list(code, mods) {
                 self.unfocus();
                 return Ok(false);
             }
@@ -14317,7 +14331,7 @@ mod tests {
             "the fleet counts are on it: {strip:?}"
         );
         assert!(
-            strip.trim_end().ends_with("tab back · ctrl+\\ split"),
+            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "{strip:?}"
         );
         assert!(
@@ -14436,6 +14450,16 @@ mod tests {
             app.viewers.push(open);
             wait_paint(&mut app, 0, "VIEW");
             app.focus = Some(0);
+            assert!(
+                app.hint_line().to_string().starts_with("tab back"),
+                "{kind}"
+            );
+            assert!(
+                app.strip(0, 120)
+                    .to_string()
+                    .ends_with("tab back · ctrl+\\ split"),
+                "{kind}"
+            );
             for modifier in [
                 KeyModifiers::ALT,
                 KeyModifiers::SHIFT,
@@ -14464,7 +14488,7 @@ mod tests {
             ] {
                 app.key(key, modifier).unwrap();
                 assert_eq!(app.focus, None, "{kind}");
-                app.enter().unwrap();
+                app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
                 assert_eq!(app.focus, Some(0), "{kind}");
                 assert_eq!(
                     app.viewers[0].viewer.pid(),
@@ -14472,6 +14496,72 @@ mod tests {
                     "returning starts no replacement client"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn tab_reaches_each_harness_with_a_draft_and_ctrl_z_returns() {
+        for &kind in harness::known() {
+            let d = dir();
+            let mut app = app(d.path());
+            let received = d.path().join("received");
+            let rule = "─".repeat(80);
+            let screen = if kind == HarnessKind::Pi {
+                format!(
+                    "\x1b[HVIEW\x1b[2;1H{rule}\x1b[3;1H /com\x1b[7m \x1b[0m\x1b[4;1H{rule}\x1b[3;6H\x1b[?25l"
+                )
+            } else {
+                "\x1b[HVIEW\x1b[3;1H> /com\x1b[?25h".into()
+            };
+            let mut command = Command::new("/bin/sh");
+            command
+                .args([
+                    "-c",
+                    "stty raw -echo; printf '%s' \"$1\"; cat > \"$2\"",
+                    "viewer",
+                    &screen,
+                ])
+                .arg(&received);
+            app.viewers.push(Open {
+                key: A.into(),
+                what: kind.to_string(),
+                harness: Some(kind),
+                viewer: Viewer::spawn(command, 12, 80, None, viewer::Colors::default()).unwrap(),
+                record: None,
+                recorded: false,
+                first_paint_logged: false,
+                last_focused: Instant::now(),
+                speculative: false,
+                operation: None,
+            });
+            wait_paint(&mut app, 0, "VIEW");
+            app.focus = Some(0);
+            let pid = app.viewers[0].viewer.pid();
+            assert!(
+                app.hint_line().to_string().starts_with("ctrl+z back"),
+                "{kind}"
+            );
+            assert!(
+                app.strip(0, 120)
+                    .to_string()
+                    .ends_with("ctrl+z back · ctrl+\\ split"),
+                "{kind}"
+            );
+            for (key, modifiers) in [
+                (KeyCode::Tab, KeyModifiers::NONE),
+                (KeyCode::BackTab, KeyModifiers::SHIFT),
+                (KeyCode::Tab, KeyModifiers::ALT),
+            ] {
+                assert!(!app.key(key, modifiers).unwrap());
+                assert_eq!(app.focus, Some(0), "{kind}: completion keeps focus");
+            }
+            terminal_until(&mut app, |_| {
+                std::fs::read(&received).is_ok_and(|bytes| bytes == b"\t\x1b[Z\x1b\t")
+            });
+            assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
+            assert_eq!(app.focus, None, "{kind}: Ctrl+Z returns with a draft");
+            assert_eq!(app.viewers.len(), 1, "{kind}: the viewer stays alive");
+            assert_eq!(app.viewers[0].viewer.pid(), pid);
         }
     }
 
@@ -14555,7 +14645,7 @@ mod tests {
             .expect("the alert is its own span");
         assert_eq!(alert.style.fg, Some(Color::Yellow));
         assert!(
-            text.trim_end().ends_with("tab back · ctrl+\\ split"),
+            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "a frame wide enough for the split offers it: {text}"
         );
         assert_eq!(line.width(), 200, "padded to the width");
@@ -14564,13 +14654,13 @@ mod tests {
         assert!(!text.contains("needs"), "no partial note: {text}");
         assert!(text.starts_with("▲ cones · the one on screen"), "{text}");
         assert!(
-            text.trim_end().ends_with("tab back · ctrl+\\ split"),
+            text.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "{text}"
         );
         assert_eq!(app.strip(0, 60).width(), 60);
 
         let text = app.strip(0, 24).to_string();
-        assert!(text.trim_end().ends_with("tab back"), "{text}");
+        assert!(text.trim_end().ends_with("ctrl+z back"), "{text}");
         assert!(app.strip(0, 24).width() <= 24);
         let text = app.strip(0, 10).to_string();
         assert_eq!(text, "▲ cones   ", "{text}");
@@ -14814,7 +14904,7 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200);
         assert!(
-            cells(&t, 28, 0..100).starts_with("tab back"),
+            cells(&t, 28, 0..100).starts_with("ctrl+z back"),
             "focused, the keys are in the list's hint row: {screen:#?}"
         );
         assert!(
@@ -14967,7 +15057,7 @@ mod tests {
             "the pane starts right of the rule: {screen:#?}"
         );
         assert!(
-            !screen.iter().any(|r| r.contains("tab back")),
+            !screen.iter().any(|r| r.contains("ctrl+z back")),
             "unfocused, the row under the pane is clear: {screen:#?}"
         );
         // The viewer has the whole column, keys or no keys: its keys go in the list's hint row,
@@ -14990,7 +15080,9 @@ mod tests {
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(app.focus, Some(0));
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.focus, None, "tab in the viewer comes back to the list");
+        assert_eq!(app.focus, Some(0), "a screen without a prompt keeps tab");
+        app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.focus, None);
         app.status.clear();
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
@@ -15001,7 +15093,7 @@ mod tests {
         );
         t.draw(|f| app.draw(f)).unwrap();
         let hint = cells(&t, 29, 0..list);
-        assert!(hint.contains("tab back"), "{hint:?}");
+        assert!(hint.contains("ctrl+z back"), "{hint:?}");
         assert!(hint.contains("ctrl+\\ full screen"), "{hint:?}");
         assert!(!hint.contains("ctrl+]"), "{hint:?}");
         assert!(
@@ -15029,7 +15121,7 @@ mod tests {
         assert!(
             app.hint_line()
                 .to_string()
-                .starts_with("filter: one  tab back"),
+                .starts_with("filter: one  ctrl+z back"),
             "a kept filter stays on the focused hint line: {}",
             app.hint_line()
         );
@@ -15102,7 +15194,7 @@ mod tests {
         assert_eq!(app.viewers[0].viewer.screen().size(), (29, 200));
         let strip = cells(&t, 29, 0..200);
         assert!(
-            strip.trim_end().ends_with("tab back · ctrl+\\ split"),
+            strip.trim_end().ends_with("ctrl+z back · ctrl+\\ split"),
             "{strip:?}"
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
@@ -16726,7 +16818,9 @@ mod tests {
         let screen = rows(&t, 120);
         assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
         assert!(
-            screen[29].trim_end().ends_with("tab back · ctrl+\\ split"),
+            screen[29]
+                .trim_end()
+                .ends_with("ctrl+z back · ctrl+\\ split"),
             "the strip: {:?}",
             screen[29]
         );

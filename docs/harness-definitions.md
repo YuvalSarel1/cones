@@ -89,7 +89,7 @@ A probe declares its command, success requirement, required output strings, vers
 
 `viewer.retention` defaults to `retain`. Claude selects `evict_live` because its entered viewer can be rejoined; Codex retains entered viewers. Input alignment defaults to `bottom_rule`, with Codex selecting `fixed`. The viewer label defaults to the harness name; Claude uses `attach`. Pool sizes and historical-viewer retention remain dashboard invariants.
 
-Return bindings default to Ctrl+Z and Tab unconditionally, and Left when the native editor is empty. A definition can replace that list under `viewer.input.return_to_list`:
+Return bindings default to Ctrl+Z unconditionally, and Tab and Left when the native editor is empty. Tab passes through for completion with text entered or when the editor is not recognized. A definition can replace that list under `viewer.input.return_to_list`:
 
 ```yaml
 viewer:
@@ -102,7 +102,7 @@ viewer:
 
 Omitted keys pass through to the native client. Unknown keys, duplicate bindings and lists with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain dashboard controls; Shift+Tab and modified arrows remain native keys. An opened viewer records its harness identity, so input behavior does not depend on its title or the selected row.
 
-The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Left in pi. A custom editor can still return through Tab or Ctrl+Z.
+The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi. A custom editor can still return through Ctrl+Z.
 
 ## Changing or adding a harness
 
