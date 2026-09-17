@@ -4,7 +4,7 @@
 
 **A terminal workspace for coding agents.** Peek into sessions, return to past work, and start work in another project without leaving the dashboard.
 
-Works with Claude Code, Codex, pi and OpenCode, using their native interfaces.
+cones brings Claude Code, Codex, pi and OpenCode into one workspace while keeping their native terminal interfaces. Your conversations stay with each harness, so you can use its CLI directly whenever you prefer.
 
 <p align="center">
   <a href="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml"><img src="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -28,6 +28,14 @@ Works with Claude Code, Codex, pi and OpenCode, using their native interfaces.
 | Scheduled work | Create recurring Claude Code jobs and review their output and cost. |
 
 Each harness keeps its own tools and permissions. Available previews and controls follow its [native capabilities](docs/harness.md#native-actions).
+
+## Models, harnesses and interfaces
+
+| Tool | Choice it preserves |
+| --- | --- |
+| [OpenCode](https://opencode.ai/docs/providers/) / [pi](https://pi.dev) | Choose your model and provider while keeping one harness. |
+| [T3 Code](https://github.com/pingdotgg/t3code) | Choose your harness while keeping T3's common interface. |
+| cones | Keep your harnesses' native terminal interfaces while adding a shared workspace. |
 
 ## Install
 
