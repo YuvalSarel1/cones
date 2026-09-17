@@ -326,9 +326,12 @@ impl Data {
             d.phase("branches_and_schedule", branches_started);
         }
         let git_started = Instant::now();
+        // Every added folder, not just the ones standing empty right now: a deletion shows the
+        // folder's row before the registry drops the session, and a row that gains its branch on
+        // the next read reads as a flicker.
+        // ponytail: one git status per added folder per read; cache by mtime if a read drags.
         let git = folders
             .iter()
-            .filter(|f| !seen.contains(f) && !jobs.iter().any(|j| &j.cwd == *f))
             .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
             .collect();
         if let Some(d) = &mut diagnostics {
@@ -13100,35 +13103,64 @@ mod tests {
     }
 
     /// A pending delete already hides the row, so its pinned folder must take the same
-    /// frame; waiting for the next read made the row blink out and come back empty.
+    /// frame, complete: waiting for the next read made the row blink out, come back empty,
+    /// then gain its git state a second later.
     #[test]
     fn deleting_the_last_session_leaves_its_pinned_folder_in_the_same_frame() {
         let d = dir();
         let claude = d.path();
         let work = claude.join("work");
         fs::create_dir(&work).unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Fixture")
+                .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Fixture")
+                .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-b", "main"]);
+        git(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
         registry(claude, A, work.to_str().unwrap(), "idle", 1_757_682_871_000);
         let mut app = app(claude);
         app.refresh().unwrap();
         app.pin_folder(work.clone()).unwrap();
-        let folder = Kind::Folder(fleet::tilde(&work));
-        assert!(
-            !app.rows.iter().any(|r| r.kind == folder),
+        // As in use, the folder was added before the deletion, so a read has seen it.
+        app.refresh().unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        let name = fleet::tilde(&work);
+        let row = |app: &App| {
+            app.rows
+                .iter()
+                .find(|r| r.kind == Kind::Folder(name.clone()))
+                .map(Row::text)
+        };
+        assert_eq!(
+            row(&app),
+            None,
             "the session covers the folder while it lives"
         );
-        let (_tx, rx) = mpsc::channel();
-        app.stopping.push(PendingStop {
-            operation: None,
-            context: json!({}),
-            id: A.into(),
-            label: "aaaaaaaa".into(),
-            verb: "delete",
-            result: rx,
-        });
-        app.rebuild();
+        app.queue_stop(A.into(), "delete", || Ok(true));
+        let text = row(&app).unwrap_or_default();
         assert!(
-            app.rows.iter().any(|r| r.kind == folder),
-            "the folder row is there before the next read"
+            text.starts_with("main · clean · nothing runs here"),
+            "the folder row is there with its git state before the next read: {text}"
         );
         assert!(
             !app.rows
@@ -13136,6 +13168,10 @@ mod tests {
                 .any(|r| matches!(&r.kind, Kind::Session(id, _) if id == A)),
             "and the deleted session is gone"
         );
+        // The read that follows keeps the same row, so nothing moves a second later.
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(row(&app).unwrap_or_default(), text, "unchanged by the read");
     }
 
     fn history_fixture(
