@@ -533,7 +533,13 @@ pub fn stop(ledger: &Ledger, claude: &Path, id: &str) -> Result<bool> {
         return crate::fleet::stop(claude, id);
     };
     if run.terminal.is_some() || run.started.status == Status::Skipped {
-        return Ok(false);
+        // A finished run can leave the client it claimed alive and listed: Claude hands a
+        // headless run a background spare that outlives the run. Remove that session rather
+        // than report a row nothing can clear. An id the harness no longer lists is gone.
+        return match crate::fleet::control_session(claude, id)? {
+            Some(_) => crate::fleet::stop(claude, id),
+            None => Ok(false),
+        };
     }
     signal_run(&run.started, SIGTERM)?;
     Ok(true)

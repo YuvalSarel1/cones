@@ -1018,7 +1018,7 @@ pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
 }
 
 /// Validate current pid/start identity without loading every transcript.
-fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
+pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
     match fs::read_dir(
         claude.join(
             crate::harness::spec(crate::config::HarnessKind::Claude)

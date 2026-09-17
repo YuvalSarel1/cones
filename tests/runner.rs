@@ -520,6 +520,35 @@ fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     assert!(cones::runner::stop(&ledger, &claude, "real").is_err());
 }
 #[test]
+fn a_finished_run_still_removes_the_client_its_session_left_behind() {
+    let f = Fixture::new("success", 1.0);
+    assert!(f.output().status.success());
+    let run = f.ledger().runs().unwrap().remove(0);
+    let session = run.started.session_id.unwrap();
+    let claude = f.dir.path().join("dot-claude");
+    fs::create_dir_all(claude.join("sessions")).unwrap();
+    // Nothing lists the session: the finished run has nothing left to clear.
+    assert!(!cones::runner::stop(&f.ledger(), &claude, &session).unwrap());
+    // Name the fixture claude so `ps` reports the expected harness.
+    let fake = f.dir.path().join("claude");
+    fs::copy("/bin/sleep", &fake).unwrap();
+    let mut client = Command::new(&fake).arg("30").spawn().unwrap();
+    fs::write(
+        claude.join("sessions").join("live.json"),
+        serde_json::json!({"pid": client.id(), "sessionId": session, "cwd": f.dir.path(), "kind": "interactive", "status": "idle", "startedAt": 1i64}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        cones::runner::stop(&f.ledger(), &claude, &session).unwrap(),
+        "a live client under a finished run's session id is removable"
+    );
+    let until = Instant::now() + Duration::from_secs(3);
+    while client.try_wait().unwrap().is_none() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(client.try_wait().unwrap().is_some(), "client kept running");
+}
+#[test]
 fn version_flag_prints_the_crate_version() {
     let out = Command::new(env!("CARGO_BIN_EXE_cones"))
         .arg("--version")
