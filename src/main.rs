@@ -261,9 +261,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
             // Append unowned fleet sessions using the run table's columns.
-            for s in cones::tui::fleet_rows(&claude, &state, &ledger.runs()?)?
-                .into_iter()
-                .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
+            for s in cones::tui::fleet_rows(
+                &claude,
+                &state,
+                &ledger.runs()?,
+                &config::defaults(&jobs_path),
+            )?
+            .into_iter()
+            .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
             {
                 if json {
                     println!("{}", serde_json::json!({"status":s.state,"session":s}));

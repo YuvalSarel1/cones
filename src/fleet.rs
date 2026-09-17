@@ -977,16 +977,22 @@ pub fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
 }
 
+/// Every harness, for callers with no configuration to consult.
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
-    all_observed(claude, |_, _, _, _| {})
+    all_observed(claude, &crate::config::Policy::default(), |_, _, _, _| {})
 }
 
+/// A harness config does not offer is not scanned at all, so its native home is never read.
 pub(crate) fn all_observed(
     claude: &Path,
+    offered: &crate::config::Policy,
     mut observe: impl FnMut(&str, &Path, std::time::Duration, &Result<Vec<Session>>),
 ) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     for &kind in crate::harness::known() {
+        if !offered.enabled_for(kind) {
+            continue;
+        }
         let spec = crate::harness::spec(kind);
         // Live process discovery keeps its existing default-home scope. Saved daemon threads
         // from additional homes are supplied separately by the dashboard.

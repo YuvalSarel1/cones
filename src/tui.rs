@@ -242,9 +242,19 @@ impl Data {
         let hidden = phase!("ledger.hidden", ledger.hidden());
         let mut runs = phase!("ledger.runs", ledger.runs());
         runs.retain(|r| !hidden.contains(&r.started.run_id));
+        // Read before discovery: the harnesses config offers decide what is scanned.
+        let offered = config::defaults(jobs_path);
         let sessions = phase!(
             "discovery",
-            fleet_rows_observed(claude, state, &runs, diagnostics.as_mut(), log, operation,)
+            fleet_rows_observed(
+                claude,
+                state,
+                &runs,
+                &offered,
+                diagnostics.as_mut(),
+                log,
+                operation,
+            )
         );
         let reports_started = Instant::now();
         let run_reports = runs
@@ -1620,15 +1630,22 @@ fn named_cell(rows: &[Row], i: usize) -> usize {
 }
 
 /// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
-/// to a ledger run collapse into that run's row.
-pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
-    fleet_rows_observed(claude, state, runs, None, None, None)
+/// to a ledger run collapse into that run's row. A harness config does not offer is not scanned.
+pub fn fleet_rows(
+    claude: &Path,
+    state: &Path,
+    runs: &[Run],
+    offered: &config::Policy,
+) -> Result<Vec<Session>> {
+    fleet_rows_observed(claude, state, runs, offered, None, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fleet_rows_observed(
     claude: &Path,
     state: &Path,
     runs: &[Run],
+    offered: &config::Policy,
     mut diagnostics: Option<&mut LoadDiagnostics>,
     log: Option<&Diagnostics>,
     operation: Option<&DiagnosticOperation>,
@@ -1637,7 +1654,7 @@ fn fleet_rows_observed(
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    let live = fleet::all_observed(claude, |harness, home, elapsed, result| {
+    let live = fleet::all_observed(claude, offered, |harness, home, elapsed, result| {
         if let Some(d) = &mut diagnostics {
             d.phases.insert(
                 format!("discovery.{harness}"),
@@ -1688,7 +1705,11 @@ fn fleet_rows_observed(
         d.excluded
             .extend(removed.iter().cloned().map(|id| (id, "hidden")));
     }
-    for home in codex::homes(claude) {
+    let codex_homes = match offered.enabled_for(HarnessKind::Codex) {
+        true => codex::homes(claude),
+        false => vec![],
+    };
+    for home in codex_homes {
         let started = Instant::now();
         let rows = codex::thread_rows_observed(&home, state, &out, &removed, |id, source| {
             if let Some(d) = &mut diagnostics {
@@ -12748,7 +12769,7 @@ mod tests {
             },
         )
         .unwrap();
-        let ids: Vec<String> = fleet_rows(&claude, &state, &[])
+        let ids: Vec<String> = fleet_rows(&claude, &state, &[], &config::Policy::default())
             .unwrap()
             .into_iter()
             .map(|s| s.session_id)
@@ -12757,12 +12778,72 @@ mod tests {
         // Forgetting drops the record, and the row goes with it; a thread the daemon still
         // holds keeps its row, because a live thread is worth seeing.
         codex::forget(&state, "dddd").unwrap();
-        let ids: Vec<String> = fleet_rows(&claude, &state, &[])
+        let ids: Vec<String> = fleet_rows(&claude, &state, &[], &config::Policy::default())
             .unwrap()
             .into_iter()
             .map(|s| s.session_id)
             .collect();
         assert_eq!(ids, [A], "a forgotten thread has no row");
+    }
+
+    #[test]
+    fn a_harness_config_does_not_offer_is_left_out_of_discovery() {
+        let d = tempfile::tempdir().unwrap();
+        let (claude, state) = (d.path().join(".claude"), d.path().join("state"));
+        let cwd = d.path().to_str().unwrap();
+        registry(&claude, A, cwd, "idle", 1_789_000_000_000);
+        let rollout = d.path().join("rollout.jsonl");
+        fs::write(
+            &rollout,
+            format!(
+                r#"{{"timestamp":"2026-09-01T00:00:00Z","type":"session_meta","payload":{{"id":"dddd","timestamp":"2026-09-01T00:00:00Z","cwd":{}}}}}"#,
+                serde_json::to_string(cwd).unwrap()
+            ) + "\n",
+        )
+        .unwrap();
+        codex::remember(
+            &state,
+            codex::Thread {
+                id: "dddd".into(),
+                cwd: d.path().to_path_buf(),
+                started: "2026-09-01T00:00:00Z".parse().unwrap(),
+                rollout,
+            },
+        )
+        .unwrap();
+        let ids = |offered: &config::Policy| -> Vec<String> {
+            fleet_rows(&claude, &state, &[], offered)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.session_id)
+                .collect()
+        };
+        assert_eq!(ids(&config::Policy::default()), ["dddd", A]);
+        let off = |policy: config::Policy| ids(&policy);
+        assert_eq!(
+            off(config::Policy {
+                claude_enabled: Some(false),
+                ..Default::default()
+            }),
+            ["dddd"],
+            "the registry of a harness config does not offer is never read"
+        );
+        assert_eq!(
+            off(config::Policy {
+                codex_enabled: Some(false),
+                ..Default::default()
+            }),
+            [A],
+            "neither are its saved threads"
+        );
+        assert!(
+            off(config::Policy {
+                claude_enabled: Some(false),
+                codex_enabled: Some(false),
+                ..Default::default()
+            })
+            .is_empty()
+        );
     }
 
     /// Forgetting drops the saved record, but the daemon keeps the thread's writer lock for minutes
@@ -12798,7 +12879,7 @@ mod tests {
         // A Codex home that exists lifts the `is_dir` short circuit in native discovery, so this
         // machine's own Codex clients reach the list. Keep only the ids the fixture owns.
         let ids = || -> Vec<String> {
-            fleet_rows(&claude, &state, &[])
+            fleet_rows(&claude, &state, &[], &config::Policy::default())
                 .unwrap()
                 .into_iter()
                 .map(|s| s.session_id)

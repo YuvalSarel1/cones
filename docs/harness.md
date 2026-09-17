@@ -13,7 +13,7 @@ cones discovers sessions, reads their reports and chooses native launch and cont
 | pi | `$PI_CODING_AGENT_DIR`, otherwise `.pi/agent` beside the Claude home | Process table and session files. |
 | OpenCode | `$XDG_DATA_HOME/opencode`, otherwise `~/.local/share/opencode` | Process table; explicit session arguments can identify SQLite conversations. |
 
-A missing native home skips that harness's discovery. Codex, pi and OpenCode processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
+A missing native home skips that harness's discovery, and so does [`<harness>_enabled: false`](jobs.md#job-fields-and-defaults): the home is never read and the harness's sessions leave the list. Codex, pi and OpenCode processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
 
 ### Claude Code
 
