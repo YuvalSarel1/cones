@@ -29,11 +29,15 @@ fn target(path: &Path) -> Target {
 }
 
 fn read(reader: &mut Reader, target: Target) -> anyhow::Result<Arc<Transcript>> {
+    read_response(reader, target)?.result
+}
+
+fn read_response(reader: &mut Reader, target: Target) -> anyhow::Result<transcript::Response> {
     assert!(reader.request(target)?);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(response) = reader.poll() {
-            return response?.result;
+            return response;
         }
         assert!(Instant::now() < deadline, "preview worker did not respond");
         std::thread::sleep(Duration::from_millis(1));
@@ -156,11 +160,21 @@ fn sparse_large_files_use_tail_windows_and_unchanged_previews_reuse_the_cache() 
     ]))
     .unwrap();
     let mut reader = Reader::new().unwrap();
-    let first = read(&mut reader, target(&path)).unwrap();
+    let response = read_response(&mut reader, target(&path)).unwrap();
+    assert!(!response.cache_hit);
+    assert!(response.bytes_read > 0);
+    assert!(response.elapsed_ms >= 0.0);
+    let first = response.result.unwrap();
     assert_eq!(first.messages.len(), 2);
     assert!(first.earlier);
     assert!(first.bytes_read <= 256 * 1024 + 1);
-    let again = read(&mut reader, target(&path)).unwrap();
+    let response = read_response(&mut reader, target(&path)).unwrap();
+    assert!(response.cache_hit);
+    assert_eq!(
+        response.bytes_read, 0,
+        "cached snapshots do not report their original IO twice"
+    );
+    let again = response.result.unwrap();
     assert!(Arc::ptr_eq(&first, &again));
 }
 

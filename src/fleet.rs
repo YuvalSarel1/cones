@@ -886,16 +886,23 @@ pub fn alive(pid: u32) -> bool {
 }
 
 pub fn all(claude: &Path) -> Result<Vec<Session>> {
+    all_observed(claude, |_, _, _, _| {})
+}
+
+pub(crate) fn all_observed(
+    claude: &Path,
+    mut observe: impl FnMut(&str, &Path, std::time::Duration, &Result<Vec<Session>>),
+) -> Result<Vec<Session>> {
     let mut out = Vec::new();
     for &kind in crate::harness::known() {
         let spec = crate::harness::spec(kind);
         // Live process discovery keeps its existing default-home scope. Saved daemon threads
         // from additional homes are supplied separately by the dashboard.
-        out.extend(
-            spec.discovery
-                .handler
-                .sessions(&spec.home.resolve(claude))?,
-        );
+        let home = spec.home.resolve(claude);
+        let started = std::time::Instant::now();
+        let result = spec.discovery.handler.sessions(&home);
+        observe(&spec.name, &home, started.elapsed(), &result);
+        out.extend(result?);
     }
     sort(&mut out);
     Ok(out)

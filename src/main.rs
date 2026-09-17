@@ -21,9 +21,12 @@ struct Cli {
     jobs: PathBuf,
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
-    /// Log terminal hand-offs, input events and transition timings to STATE_DIR/tui-debug.log.
+    /// Log dashboard transitions, errors and timing summaries to STATE_DIR/tui-debug.log.
     #[arg(long, global = true)]
     debug: bool,
+    /// Include input text and every timing sample in dashboard diagnostics.
+    #[arg(long, global = true)]
+    trace: bool,
     /// The dashboard, with no subcommand at all.
     #[command(subcommand)]
     command: Option<Action>,
@@ -129,6 +132,7 @@ fn execute(cli: Cli) -> Result<i32> {
             &state,
             &claude,
             cli.debug,
+            cli.trace,
         );
     };
     match command {

@@ -61,6 +61,9 @@ pub struct Transcript {
 pub struct Response {
     pub target: Target,
     pub result: Result<Arc<Transcript>>,
+    pub elapsed_ms: f64,
+    pub cache_hit: bool,
+    pub bytes_read: u64,
 }
 
 /// One outstanding request. The UI can replace its desired target while the worker finishes.
@@ -79,8 +82,24 @@ impl Reader {
             .spawn(move || {
                 let mut cache = Cache::default();
                 while let Ok(target) = input.recv() {
-                    let result = cache.read(&target);
-                    if output.send(Response { target, result }).is_err() {
+                    let started = std::time::Instant::now();
+                    let mut cache_hit = false;
+                    let result = cache.read(&target, &mut cache_hit);
+                    let bytes_read = if cache_hit {
+                        0
+                    } else {
+                        result.as_ref().map_or(0, |document| document.bytes_read)
+                    };
+                    if output
+                        .send(Response {
+                            target,
+                            result,
+                            cache_hit,
+                            bytes_read,
+                            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -148,13 +167,14 @@ struct Cache {
 }
 
 impl Cache {
-    fn read(&mut self, target: &Target) -> Result<Arc<Transcript>> {
+    fn read(&mut self, target: &Target, cache_hit: &mut bool) -> Result<Arc<Transcript>> {
         let stamp = Stamp::of(target)?;
         if let Some(i) = self
             .entries
             .iter()
             .position(|(t, s, _)| t == target && *s == stamp)
         {
+            *cache_hit = true;
             let cached = self.entries.remove(i).unwrap();
             let result = Arc::clone(&cached.2);
             self.entries.push_back(cached);

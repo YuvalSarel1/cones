@@ -664,6 +664,9 @@ fn a_gibibyte_of_transcripts_is_indexed_from_bounded_windows_and_cached() {
     .unwrap();
     assert_eq!(warm.stats.metadata_reads, 0);
     assert_eq!(warm.stats.metadata_bytes, 0);
+    assert_eq!(warm.stats.metadata_cache_hits, 26);
+    assert!(warm.stats.index_ms > 0.0);
+    assert!(warm.stats.worker_ms >= warm.stats.index_ms);
 }
 
 #[test]
@@ -915,6 +918,7 @@ fn new_files_wait_for_refresh_and_old_column_summaries_are_evicted() {
     )
     .unwrap();
     assert_eq!(cached.stats.hydrated_files, 0);
+    assert_eq!(cached.stats.column_cache_hits, 1);
     let refresh = page(
         &mut reader,
         Query {

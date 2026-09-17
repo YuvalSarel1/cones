@@ -11,6 +11,7 @@ Plain `cones` opens the dashboard. `run` starts supervised work from the shell o
 | `--jobs PATH` | `jobs.yaml` | Configuration file. |
 | `--state-dir PATH` | `~/.cones` | Relocate cones state, including stored runs and dashboard records. |
 | `--debug` | off | Append [diagnostics](#diagnostics) to the state directory. |
+| `--trace` | off | Enable debug diagnostics plus input text, commands and individual timing samples. |
 
 ## Commands
 
@@ -47,15 +48,30 @@ The embedded copy is under `assets/coordinator/`. Updates from the upstream orch
 
 ## Diagnostics
 
-`--debug` writes `STATE_DIR/tui-debug.log`. Use it to distinguish a slow read, viewer startup and dashboard drawing.
+`--debug` writes JSONL records to `STATE_DIR/tui-debug.log`. Each record has `v`, a UTC `timestamp`, `pid`, `dashboard_id`, `level`, `event` and `data`. The dashboard ID separates simultaneous dashboards and restarts. Related operations carry an `operation_id`; row events include the row kind, native identity, harness and discovery source when known.
 
-| Records | Contents |
+| Events | Contents |
 | --- | --- |
-| Terminal and input | Initial terminal state and every input event. |
-| Viewer lifetime | Open command and pid, focus, leave, close and exit. `prespawn` marks a viewer opened while the cursor rested; its end includes the last stderr line. |
-| Viewer startup | `viewer_first_paint`: spawn to first text; `viewer_prespawn_hit`: age of a speculative viewer when entered. |
-| Commands and reads | Command durations, refresh reads and discarded snapshots. |
-| Drawing | `startup_to_draw`, `input_to_draw`, `action_result_to_draw`, `opening_result_to_draw`, `return_to_draw`; `slow_draw` for frames taking at least 16 ms. |
+| `dashboard.started`, `dashboard.stopped` | Executable path, version and SHA-256 fingerprint; terminal state, configuration path and exit reason. |
+| `row.*`, `view.changed` | Added, removed and changed rows, native identity replacement, selection, focus and status changes. Sources distinguish registry rows, process rows, saved launches, daemon locks, history and the ledger. |
+| `input.key`, `input.paste`, `terminal.*` | Navigation and shortcut keys with modifiers and their input route; paste size and whether it was empty; terminal size and colors. Ordinary typed characters and mouse movement require trace. |
+| `viewer.*` | Preparation, spawn, first text, focus, leave, close, exit and refusal reasons, with row identity and viewer pid. First-text timing starts at spawn; operation timing also covers preparation. A prespawn hit records the viewer's age separately. |
+| `launch.*`, `action.*` | Requests and outcomes for launches, stops, deletes and forgets, including native errors and elapsed time. |
+| `refresh.*`, `load.failed`, `discovery.failed`, `configuration.*` | Read outcomes, discarded snapshots, retained stale rows and recovery. Configuration errors are recorded when they change. |
+| `history.*`, `transcript.*` | Request and worker durations, indexing and hydration timings, file/read counts, bytes read, cache hits, errors and discarded results. A cached transcript reports zero bytes read for that request. |
+| `timing`, `timing.summary` | Slow individual operations and periodic counts, mean and maximum durations per phase. Normal samples are summarized every 30 seconds and on exit. Drawing, input-to-draw and viewer pumping are slow at 16 ms; other measured phases at 250 ms. |
+
+`--trace` includes every timing sample, ordinary input text, mouse events and viewer commands. It implies `--debug`; it does not change harness execution or permissions. Both flags affect dashboard diagnostics only.
+
+The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
+
+Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off. These recovery records contain the launch operation ID, harness, folder and submitted prompt, so a launch that fails before creating a native session can still be recovered. This file uses the same 10 MiB bound. Debug events reference the operation ID without repeating the prompt.
+
+Older text records can remain in the retained log tail. For example, this prints failures from the structured records and skips older lines:
+
+```sh
+jq -R 'fromjson? | select(.level == "error")' ~/.cones/tui-debug.log
+```
 
 ## Internal commands
 

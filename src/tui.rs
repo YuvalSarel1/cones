@@ -28,7 +28,9 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
+use serde_json::{Value, json};
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -117,6 +119,22 @@ pub enum Kind {
 }
 
 impl Kind {
+    fn diagnostic_name(&self) -> &'static str {
+        match self {
+            Self::Header => "header",
+            Self::Columns => "columns",
+            Self::Blank => "blank",
+            Self::Job(_) => "job",
+            Self::Session(..) => "session",
+            Self::History(_) => "history",
+            Self::HistoryStatus => "history_status",
+            Self::Run(..) => "run",
+            Self::Menu => "menu",
+            Self::Folder(_) => "folder",
+            Self::NewJob => "new_job",
+        }
+    }
+
     fn selectable(&self) -> bool {
         !matches!(
             self,
@@ -185,15 +203,46 @@ pub struct Data {
     pub recent: Vec<PathBuf>,
     /// Git state for pinned folders without sessions.
     pub git: BTreeMap<PathBuf, String>,
+    diagnostics: Option<LoadDiagnostics>,
 }
 
 impl Data {
     pub fn load(jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
-        let ledger = Ledger::new(state)?;
-        let hidden = ledger.hidden()?;
-        let mut runs = ledger.runs()?;
+        Self::load_observed(jobs_path, state, claude, None, None)
+    }
+
+    fn load_observed(
+        jobs_path: &Path,
+        state: &Path,
+        claude: &Path,
+        log: Option<&Diagnostics>,
+        operation: Option<&DiagnosticOperation>,
+    ) -> Result<Self> {
+        let mut diagnostics = log.map(|_| LoadDiagnostics::default());
+        macro_rules! phase {
+            ($name:expr, $read:expr) => {{
+                let started = Instant::now();
+                let result: Result<_> = $read;
+                if let Some(d) = &mut diagnostics { d.phase($name, started); }
+                if let (Some(log), Err(error)) = (log, &result) {
+                    log.event("error", "load.failed", json!({
+                        "operation_id": operation.map(|o| &o.id),
+                        "phase": $name, "error": format!("{error:#}"),
+                        "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+                    }));
+                }
+                result?
+            }};
+        }
+        let ledger = phase!("ledger.open", Ledger::new(state));
+        let hidden = phase!("ledger.hidden", ledger.hidden());
+        let mut runs = phase!("ledger.runs", ledger.runs());
         runs.retain(|r| !hidden.contains(&r.started.run_id));
-        let sessions = fleet_rows(claude, state, &runs)?;
+        let sessions = phase!(
+            "discovery",
+            fleet_rows_observed(claude, state, &runs, diagnostics.as_mut(), log, operation,)
+        );
+        let reports_started = Instant::now();
         let run_reports = runs
             .iter()
             .rev()
@@ -214,11 +263,37 @@ impl Data {
                 ))
             })
             .collect();
+        if let Some(d) = &mut diagnostics {
+            d.phase("run_reports", reports_started);
+        }
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
-        let folders = ledger.folders()?;
-        let jobs = config::read_jobs(jobs_path).unwrap_or_default();
+        let folders = phase!("ledger.folders", ledger.folders());
+        let config_started = Instant::now();
+        let jobs = match config::read_jobs(jobs_path) {
+            Ok(jobs) => jobs,
+            Err(error) => {
+                if jobs_path.exists()
+                    && let Some(d) = &mut diagnostics
+                {
+                    d.warnings.push(format!("configuration: {error:#}"));
+                }
+                Vec::new()
+            }
+        };
         let columns = config::columns(jobs_path);
+        let columns_default = config::file_columns(jobs_path).is_none();
         let job_columns = config::job_columns(jobs_path);
+        let history_columns = config::history_columns(jobs_path);
+        let run_columns = config::run_columns(jobs_path);
+        let pane = config::pane(jobs_path);
+        let start = config::start(jobs_path);
+        let spark = config::activity(jobs_path);
+        let confirm_secs = config::confirm_secs(jobs_path);
+        let whole_columns = config::whole_columns(jobs_path);
+        if let Some(d) = &mut diagnostics {
+            d.phase("configuration", config_started);
+        }
+        let branches_started = Instant::now();
         let branches = if columns.iter().any(|c| c == "branch") {
             seen.iter()
                 .collect::<std::collections::BTreeSet<_>>()
@@ -233,31 +308,40 @@ impl Data {
         } else {
             BTreeMap::new()
         };
+        if let Some(d) = &mut diagnostics {
+            d.phase("branches_and_schedule", branches_started);
+        }
+        let git_started = Instant::now();
         let git = folders
             .iter()
             .filter(|f| !seen.contains(f) && !jobs.iter().any(|j| &j.cwd == *f))
             .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
             .collect();
+        if let Some(d) = &mut diagnostics {
+            d.phase("git", git_started);
+        }
+        let recent = phase!("ledger.recent", ledger.recent(&seen));
         Ok(Self {
             jobs,
             runs,
             sessions,
             columns,
-            columns_default: config::file_columns(jobs_path).is_none(),
-            run_columns: config::run_columns(jobs_path),
+            columns_default,
+            run_columns,
             job_columns,
-            history_columns: config::history_columns(jobs_path),
+            history_columns,
             branches,
             next_runs,
             run_reports,
-            pane: config::pane(jobs_path),
-            start: config::start(jobs_path),
-            spark: config::activity(jobs_path),
-            confirm_secs: config::confirm_secs(jobs_path),
-            whole_columns: config::whole_columns(jobs_path),
+            pane,
+            start,
+            spark,
+            confirm_secs,
+            whole_columns,
             folders,
-            recent: ledger.recent(&seen)?,
+            recent,
             git,
+            diagnostics,
         })
     }
 
@@ -1526,18 +1610,89 @@ fn named_cell(rows: &[Row], i: usize) -> usize {
 /// Sessions from Claude's registry and Codex's process table, oldest first. Sessions belonging
 /// to a ledger run collapse into that run's row.
 pub fn fleet_rows(claude: &Path, state: &Path, runs: &[Run]) -> Result<Vec<Session>> {
+    fleet_rows_observed(claude, state, runs, None, None, None)
+}
+
+fn fleet_rows_observed(
+    claude: &Path,
+    state: &Path,
+    runs: &[Run],
+    mut diagnostics: Option<&mut LoadDiagnostics>,
+    log: Option<&Diagnostics>,
+    operation: Option<&DiagnosticOperation>,
+) -> Result<Vec<Session>> {
     let owned: HashSet<&str> = runs
         .iter()
         .filter_map(|r| r.started.session_id.as_deref())
         .collect();
-    let mut out: Vec<Session> = fleet::all(claude)?
-        .into_iter()
-        .filter(|s| !owned.contains(s.session_id.as_str()))
-        .collect();
+    let live = fleet::all_observed(claude, |harness, home, elapsed, result| {
+        if let Some(d) = &mut diagnostics {
+            d.phases.insert(
+                format!("discovery.{harness}"),
+                elapsed.as_secs_f64() * 1000.0,
+            );
+            if let Ok(rows) = result {
+                let source =
+                    if harness::by_name(harness).is_some_and(|s| s.discovery.registry.is_some()) {
+                        "registry"
+                    } else {
+                        "process_table"
+                    };
+                for row in rows {
+                    d.sources.insert(
+                        format!("{harness}:{}", row.session_id),
+                        json!({
+                            "reader": source, "native_home": home.to_string_lossy(),
+                        }),
+                    );
+                }
+            }
+        }
+        if let (Some(log), Err(error)) = (log, result) {
+            log.event(
+                "error",
+                "discovery.failed",
+                json!({
+                    "operation_id": operation.map(|o| &o.id),
+                    "harness": harness, "native_home": home.to_string_lossy(), "error": format!("{error:#}"),
+                }),
+            );
+        }
+    })?;
+    let mut out = Vec::new();
+    for s in live {
+        if owned.contains(s.session_id.as_str()) {
+            if let Some(d) = &mut diagnostics {
+                d.excluded
+                    .insert(s.session_id.clone(), "represented_by_ledger_run");
+            }
+        } else {
+            out.push(s);
+        }
+    }
     // Detached daemon threads have no client in the process table; include their saved records.
     let removed = Ledger::new(state)?.hidden()?;
+    if let Some(d) = &mut diagnostics {
+        d.excluded
+            .extend(removed.iter().cloned().map(|id| (id, "hidden")));
+    }
     for home in codex::homes(claude) {
-        let rows = codex::thread_rows(&home, state, &out, &removed);
+        let started = Instant::now();
+        let rows = codex::thread_rows_observed(&home, state, &out, &removed, |id, source| {
+            if let Some(d) = &mut diagnostics {
+                d.sources.insert(
+                    format!("codex:{id}"),
+                    json!({
+                        "reader": source, "native_home": home.to_string_lossy(),
+                    }),
+                );
+            }
+        });
+        if let Some(d) = &mut diagnostics {
+            *d.phases
+                .entry("discovery.codex_threads".into())
+                .or_default() += started.elapsed().as_secs_f64() * 1000.0;
+        }
         out.extend(rows);
     }
     fleet::sort(&mut out);
@@ -4142,6 +4297,7 @@ struct HistoryFetch {
     revision: u64,
     after: Option<history::Cursor>,
     hydrate: bool,
+    operation: Option<DiagnosticOperation>,
 }
 
 #[derive(Default)]
@@ -4158,6 +4314,7 @@ struct TranscriptView {
     height: usize,
     scroll: usize,
     bottom: bool,
+    operation: Option<(DiagnosticOperation, transcript::Target)>,
 }
 
 impl TranscriptView {
@@ -4432,6 +4589,107 @@ impl HistoryView {
     }
 }
 
+#[derive(Clone)]
+struct Diagnostics {
+    path: PathBuf,
+    dashboard_id: String,
+    trace: bool,
+}
+
+impl Diagnostics {
+    fn new(path: PathBuf, trace: bool) -> Self {
+        Self {
+            path,
+            dashboard_id: uuid::Uuid::new_v4().to_string(),
+            trace,
+        }
+    }
+
+    fn event(&self, level: &str, event: &str, mut data: Value) {
+        let context = data
+            .get("row")
+            .or_else(|| data.get("viewer"))
+            .or_else(|| data.get("after"))
+            .or_else(|| data.get("before"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        for field in [
+            "operation_id",
+            "row_kind",
+            "row_id",
+            "harness",
+            "session_id",
+            "viewer_pid",
+            "source",
+        ] {
+            if data.get(field).is_none_or(Value::is_null)
+                && let Some(value) = context.get(field)
+            {
+                data[field] = value.clone();
+            }
+        }
+        let _ = debug_line(
+            &self.path,
+            json!({
+                "v": 1,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+                "pid": std::process::id(),
+                "dashboard_id": self.dashboard_id,
+                "level": level,
+                "event": event,
+                "data": data,
+            }),
+        );
+    }
+
+    fn trace(&self, event: &str, data: impl FnOnce() -> Value) {
+        if self.trace {
+            self.event("trace", event, data());
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DiagnosticOperation {
+    id: String,
+    started: Instant,
+}
+
+impl DiagnosticOperation {
+    fn new() -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            started: Instant::now(),
+        }
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        self.started.elapsed().as_secs_f64() * 1000.0
+    }
+}
+
+#[derive(Default)]
+struct TimingSummary {
+    count: u64,
+    total_ms: f64,
+    max_ms: f64,
+}
+
+#[derive(Default)]
+struct LoadDiagnostics {
+    phases: BTreeMap<String, f64>,
+    sources: HashMap<String, Value>,
+    excluded: HashMap<String, &'static str>,
+    warnings: Vec<String>,
+}
+
+impl LoadDiagnostics {
+    fn phase(&mut self, name: &str, started: Instant) {
+        self.phases
+            .insert(name.to_owned(), started.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+
 struct App {
     exe: PathBuf,
     jobs_path: PathBuf,
@@ -4491,7 +4749,16 @@ struct App {
     armed_at: Instant,
     /// Require a second ctrl+c so an interrupt aimed at a closing viewer cannot quit the dashboard.
     quit_armed: Option<Instant>,
-    log: Option<PathBuf>,
+    log: Option<Diagnostics>,
+    dashboard_id: String,
+    timing_summary: RefCell<BTreeMap<String, TimingSummary>>,
+    summary_at: Instant,
+    diagnostic_view: Option<Value>,
+    diagnostic_peek: Option<Value>,
+    diagnostic_rows: HashMap<String, Value>,
+    diagnostic_warnings: Vec<String>,
+    loading_operation: Option<DiagnosticOperation>,
+    input_operation: Option<(DiagnosticOperation, Value)>,
     viewers: Vec<Open>,
     /// The viewer that has the pane and the keys; an index into `viewers`.
     focus: Option<usize>,
@@ -4618,6 +4885,7 @@ struct Open {
     last_focused: Instant,
     /// Unfocused attaches use the separate speculative pool until first focus.
     speculative: bool,
+    operation: Option<DiagnosticOperation>,
 }
 
 impl Open {
@@ -4631,6 +4899,8 @@ struct PendingStop {
     label: String,
     verb: &'static str,
     result: mpsc::Receiver<Result<bool>>,
+    operation: Option<DiagnosticOperation>,
+    context: Value,
 }
 
 struct Opening {
@@ -4639,6 +4909,7 @@ struct Opening {
     command: mpsc::Receiver<Result<Command>>,
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     prompt: Option<String>,
+    operation: Option<DiagnosticOperation>,
 }
 
 impl PendingStop {
@@ -4653,9 +4924,25 @@ impl PendingStop {
 }
 
 impl App {
+    #[cfg(test)]
     fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
-        let data = Data::load(jobs_path, state, claude)?;
+        Self::new_logged(exe, jobs_path, state, claude, None)
+    }
+
+    fn new_logged(
+        exe: &Path,
+        jobs_path: &Path,
+        state: &Path,
+        claude: &Path,
+        log: Option<Diagnostics>,
+    ) -> Result<Self> {
+        let operation = log.as_ref().map(|_| DiagnosticOperation::new());
+        let data = Data::load_observed(jobs_path, state, claude, log.as_ref(), operation.as_ref())?;
         let start = data.start;
+        let dashboard_id = log
+            .as_ref()
+            .map(|l| l.dashboard_id.clone())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         Ok(Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
@@ -4700,7 +4987,16 @@ impl App {
             armed: None,
             armed_at: Instant::now(),
             quit_armed: None,
-            log: None,
+            log,
+            dashboard_id,
+            timing_summary: RefCell::new(BTreeMap::new()),
+            summary_at: Instant::now(),
+            diagnostic_view: None,
+            diagnostic_peek: None,
+            diagnostic_rows: HashMap::new(),
+            diagnostic_warnings: Vec::new(),
+            loading_operation: operation,
+            input_operation: None,
             viewers: Vec::new(),
             focus: None,
             colors: viewer::Colors::default(),
@@ -4716,18 +5012,285 @@ impl App {
     }
 
     fn debug(&self, msg: impl FnOnce() -> String) {
-        if let Some(path) = &self.log {
-            debug_line(path, msg());
+        self.event("debug", "message", || json!({"message": msg()}));
+    }
+
+    fn event(&self, level: &str, event: &str, data: impl FnOnce() -> Value) {
+        if let Some(log) = &self.log {
+            log.event(level, event, data());
         }
     }
 
     fn timing(&self, phase: &str, started: Instant) {
-        self.debug(|| {
-            format!(
-                "timing {phase} ms={:.3}",
-                started.elapsed().as_secs_f64() * 1000.0
-            )
-        });
+        self.measured(
+            phase,
+            started.elapsed().as_secs_f64() * 1000.0,
+            || json!({}),
+        );
+    }
+
+    fn measured(&self, phase: &str, ms: f64, context: impl FnOnce() -> Value) {
+        let Some(log) = &self.log else { return };
+        let mut summary = self.timing_summary.borrow_mut();
+        let entry = summary.entry(phase.to_owned()).or_default();
+        entry.count += 1;
+        entry.total_ms += ms;
+        entry.max_ms = entry.max_ms.max(ms);
+        drop(summary);
+        let limit = if phase.contains("draw") || phase == "viewer_pump" {
+            16.0
+        } else {
+            250.0
+        };
+        if log.trace || ms >= limit {
+            let mut data = context();
+            data["phase"] = json!(phase);
+            data["duration_ms"] = json!(ms);
+            data["slow"] = json!(ms >= limit);
+            log.event(if ms >= limit { "debug" } else { "trace" }, "timing", data);
+        }
+    }
+
+    fn summarize_timings(&mut self, force: bool) {
+        if self.log.is_none() || (!force && self.summary_at.elapsed() < Duration::from_secs(30)) {
+            return;
+        }
+        let phases: BTreeMap<_, _> = std::mem::take(&mut *self.timing_summary.borrow_mut())
+            .into_iter()
+            .map(|(name, s)| {
+                (name, json!({"count": s.count, "mean_ms": s.total_ms / s.count as f64, "max_ms": s.max_ms}))
+            })
+            .collect();
+        if !phases.is_empty() {
+            self.event("debug", "timing.summary", || {
+                json!({
+                    "interval_ms": self.summary_at.elapsed().as_secs_f64() * 1000.0,
+                    "phases": phases,
+                })
+            });
+        }
+        self.summary_at = Instant::now();
+    }
+
+    fn row_context(&self, kind: &Kind) -> Value {
+        let mut data = json!({"row_kind": kind.diagnostic_name(), "row_id": kind.key()});
+        match kind {
+            Kind::Session(id, state) => {
+                data["state"] = json!(state);
+                if let Some(s) = self.data.sessions.iter().find(|s| &s.session_id == id) {
+                    data["harness"] = json!(s.harness);
+                    data["session_id"] = json!(s.session_id);
+                    data["native_kind"] = json!(s.kind);
+                    data["pid"] = json!(s.pid);
+                    data["source"] = if self.terminals.iter().any(|t| t.session_id == *id) {
+                        json!({"reader": "owned_terminal"})
+                    } else {
+                        self.data
+                            .diagnostics
+                            .as_ref()
+                            .and_then(|d| d.sources.get(&format!("{}:{}", s.harness, id)))
+                            .cloned()
+                            .unwrap_or(Value::Null)
+                    };
+                }
+            }
+            Kind::Run(id, state) => {
+                data["state"] = json!(state);
+                data["source"] = json!("ledger");
+                if let Some(r) = self.data.runs.iter().find(|r| &r.started.run_id == id) {
+                    data["harness"] = json!(r.started.harness);
+                    data["session_id"] = json!(r.started.session_id);
+                }
+            }
+            Kind::History(key) => {
+                data["source"] = json!("history");
+                if let Some(r) = self.history.row(key) {
+                    return Self::history_context(key, r);
+                }
+            }
+            Kind::Job(name) => {
+                data["source"] = json!("jobs");
+                if let Some(job) = self.data.jobs.iter().find(|j| &j.name == name) {
+                    data["harness"] = json!(job.harness);
+                }
+            }
+            Kind::Folder(_) => data["source"] = json!("pinned_folder"),
+            _ => {}
+        }
+        data
+    }
+
+    fn history_context(key: &str, entry: &history::Entry) -> Value {
+        json!({
+            "row_kind": "history", "row_id": key, "source": "history",
+            "harness": entry.key.harness, "session_id": entry.key.session_id,
+            "native_home": entry.key.home.to_string_lossy(), "archived": entry.archived,
+        })
+    }
+
+    fn key_context(&self, key: &str) -> Value {
+        self.rows
+            .iter()
+            .chain(&self.other)
+            .find(|r| r.kind.key() == Some(key))
+            .map(|r| self.row_context(&r.kind))
+            .unwrap_or_else(|| json!({"row_id": key}))
+    }
+
+    fn view_context(&self) -> Value {
+        let mode = match self.mode {
+            Mode::Normal => "normal",
+            Mode::Filter => "filter",
+            Mode::Job(_) => "job",
+            Mode::Config(_) => "config",
+            Mode::Folder(_) => "folder",
+            Mode::Rename(_) => "rename",
+            Mode::Guide(_) => "guide",
+        };
+        json!({
+            "mode": mode,
+            "selected": self.selected().map(|r| self.row_context(&r.kind)),
+            "viewer_pid": self.focus.map(|i| self.viewers[i].viewer.pid()),
+            "viewer_key": self.focus.map(|i| &self.viewers[i].key),
+            "transcript_focused": self.transcript.focused,
+            "split": self.split,
+            "full": self.full,
+            "jobs_view": self.jobs_view,
+            "cursor": self.cursor,
+            "scroll": self.scroll,
+            "status": self.status,
+        })
+    }
+
+    fn report_view(&mut self, reason: &str) {
+        if self.log.is_none() {
+            return;
+        }
+        let after = self.view_context();
+        if self.diagnostic_view.as_ref() != Some(&after) {
+            self.event("debug", "view.changed", || {
+                json!({
+                    "reason": reason, "before": self.diagnostic_view, "after": after,
+                })
+            });
+            self.diagnostic_view = Some(after);
+        }
+    }
+
+    fn report_rows(&mut self, reason: &str) {
+        if self.log.is_none() {
+            return;
+        }
+        let visible: HashSet<_> = self.visible.iter().copied().collect();
+        let history: HashMap<_, _> = self
+            .history
+            .opened
+            .iter()
+            .map(|(key, entry)| (key.as_str(), entry))
+            .chain(self.history.rows.iter().map(|r| (r.key.as_str(), &r.entry)))
+            .collect();
+        let mut next = HashMap::new();
+        for (active, rows) in [(true, &self.rows), (false, &self.other)] {
+            for (i, row) in rows.iter().enumerate() {
+                let Some(key) = row.kind.key() else { continue };
+                let mut context = match &row.kind {
+                    Kind::History(key) if history.contains_key(key.as_str()) => {
+                        Self::history_context(key, history[key.as_str()])
+                    }
+                    _ => self.row_context(&row.kind),
+                };
+                context["visible"] = json!(active && visible.contains(&i));
+                next.insert(format!("{}:{key}", row.kind.diagnostic_name()), context);
+            }
+        }
+        for (key, after) in &next {
+            let before = self.diagnostic_rows.get(key);
+            if before != Some(after) {
+                self.event(
+                    "debug",
+                    if before.is_some() {
+                        "row.changed"
+                    } else {
+                        "row.added"
+                    },
+                    || {
+                        json!({
+                            "reason": reason, "before": before, "after": after,
+                            "operation_id": if matches!(reason, "refresh" | "startup") {
+                                self.loading_operation.as_ref().map(|o| &o.id)
+                            } else {
+                                self.input_operation.as_ref().map(|(o, _)| &o.id)
+                            },
+                        })
+                    },
+                );
+            }
+        }
+        for (key, before) in &self.diagnostic_rows {
+            if !next.contains_key(key) {
+                let detail = before["session_id"]
+                    .as_str()
+                    .and_then(|id| self.data.diagnostics.as_ref()?.excluded.get(id))
+                    .copied()
+                    .unwrap_or(reason);
+                self.event(
+                    "debug",
+                    "row.removed",
+                    || json!({"reason": detail, "before": before}),
+                );
+            }
+        }
+        self.diagnostic_rows = next;
+    }
+
+    fn log_input(&mut self, event: &Event) {
+        let Some(log) = &self.log else { return };
+        let operation = DiagnosticOperation::new();
+        let context = self.view_context();
+        let mut data = json!({"operation_id": operation.id, "route": context});
+        match event {
+            Event::Key(k) => {
+                let plain_text = matches!(k.code, KeyCode::Char(_))
+                    && !k.modifiers.intersects(
+                        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                    );
+                if log.trace || !plain_text {
+                    data["key"] = json!(format!("{:?}", k.code));
+                    data["modifiers"] = json!(format!("{:?}", k.modifiers));
+                    data["kind"] = json!(format!("{:?}", k.kind));
+                    log.event(
+                        if plain_text { "trace" } else { "debug" },
+                        "input.key",
+                        data,
+                    );
+                }
+            }
+            Event::Paste(text) => {
+                data["bytes"] = json!(text.len());
+                data["empty"] = json!(text.is_empty());
+                if log.trace {
+                    data["text"] = json!(text);
+                }
+                log.event("debug", "input.paste", data);
+            }
+            Event::Mouse(m) => {
+                if log.trace || matches!(m.kind, MouseEventKind::Down(_)) {
+                    data["mouse"] = json!(format!("{m:?}"));
+                    log.event(
+                        if log.trace { "trace" } else { "debug" },
+                        "input.mouse",
+                        data,
+                    );
+                }
+            }
+            Event::Resize(width, height) => {
+                data["width"] = json!(width);
+                data["height"] = json!(height);
+                log.event("debug", "terminal.resize", data);
+            }
+            _ => log.trace("input.other", || json!({"event": format!("{event:?}")})),
+        }
+        self.input_operation = Some((operation, context));
     }
 
     fn selected(&self) -> Option<&Row> {
@@ -4753,22 +5316,47 @@ impl App {
         );
         let started = Instant::now();
         let log = self.log.clone();
-        self.debug(|| "refresh started".into());
+        let operation = log.as_ref().map(|_| DiagnosticOperation::new());
+        self.loading_operation = operation.clone();
+        if let Some(log) = &log {
+            log.trace(
+                "refresh.started",
+                || json!({"operation_id": operation.as_ref().map(|o| &o.id)}),
+            );
+        }
         std::thread::spawn(move || {
-            let data = Data::load(&jobs, &state, &claude);
-            if let Some(log) = log {
-                debug_line(
-                    &log,
-                    format!(
-                        "timing refresh_read ms={:.3}",
-                        started.elapsed().as_secs_f64() * 1000.0
-                    ),
-                );
-            }
+            let data =
+                Data::load_observed(&jobs, &state, &claude, log.as_ref(), operation.as_ref());
             let _ = tx.send(data);
         });
         self.loading = Some(rx);
         self.loading_started = Some(started);
+    }
+
+    fn report_load(&mut self) {
+        let Some(d) = &self.data.diagnostics else {
+            return;
+        };
+        for (phase, ms) in &d.phases {
+            self.measured(phase, *ms, || {
+                json!({
+                    "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                })
+            });
+        }
+        for warning in &d.warnings {
+            if !self.diagnostic_warnings.contains(warning) {
+                self.event(
+                    "error",
+                    "configuration.failed",
+                    || json!({"error": warning}),
+                );
+            }
+        }
+        if d.warnings.is_empty() && !self.diagnostic_warnings.is_empty() {
+            self.event("debug", "configuration.recovered", || json!({}));
+        }
+        self.diagnostic_warnings = d.warnings.clone();
     }
 
     /// Invalidate an in-flight read without starting a second reader.
@@ -4853,7 +5441,7 @@ impl App {
             self.history.revision += 1;
             self.history.select_first = false;
         }
-        self.rebuild();
+        self.rebuild_with_reason("history_visibility");
         if !self.history.visible
             && from_history
             && let Some(key) = &self.history.return_to
@@ -4934,6 +5522,36 @@ impl App {
             .as_mut()
             .and_then(transcript::Reader::poll)
         {
+            let operation = self.transcript.operation.take();
+            match &response {
+                Ok(response) => {
+                    let applied = self.transcript.target.as_ref() == Some(&response.target)
+                        && self.transcript.requested;
+                    self.event(if response.result.is_err() { "error" } else { "debug" }, "transcript.completed", || json!({
+                        "operation_id": operation.as_ref().map(|(o, _)| &o.id),
+                        "row_id": response.target.key, "harness": response.target.harness,
+                        "outcome": if !applied { "discarded" } else if response.result.is_ok() { "loaded" } else { "failed" },
+                        "worker_ms": response.elapsed_ms,
+                        "duration_ms": operation.as_ref().map(|(o, _)| o.elapsed_ms()),
+                        "cache_hit": response.cache_hit, "bytes_read": response.bytes_read,
+                        "messages": response.result.as_ref().ok().map(|d| d.messages.len()),
+                        "error": response.result.as_ref().err().map(|e| format!("{e:#}")),
+                    }));
+                    self.measured("transcript.read", response.elapsed_ms, || {
+                        json!({
+                            "operation_id": operation.as_ref().map(|(o, _)| &o.id),
+                            "row_id": response.target.key, "harness": response.target.harness,
+                        })
+                    });
+                }
+                Err(error) => self.event("error", "transcript.failed", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|(o, _)| &o.id),
+                        "row_id": operation.as_ref().map(|(_, target)| &target.key),
+                        "error": format!("{error:#}"), "phase": "worker",
+                    })
+                }),
+            }
             match response {
                 Ok(response)
                     if self.transcript.target.as_ref() == Some(&response.target)
@@ -4975,6 +5593,12 @@ impl App {
             match transcript::Reader::new() {
                 Ok(reader) => self.transcript.reader = Some(reader),
                 Err(error) => {
+                    self.event("error", "transcript.failed", || {
+                        json!({
+                            "row_id": target.key, "harness": target.harness,
+                            "phase": "reader_start", "error": error.to_string(),
+                        })
+                    });
                     self.transcript.error = Some(error.to_string());
                     self.transcript.requested = true;
                     self.transcript.width = 0;
@@ -4982,10 +5606,32 @@ impl App {
                 }
             }
         }
-        match self.transcript.reader.as_mut().unwrap().request(target) {
-            Ok(true) => self.transcript.requested = true,
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
+        match self
+            .transcript
+            .reader
+            .as_mut()
+            .unwrap()
+            .request(target.clone())
+        {
+            Ok(true) => {
+                self.event("debug", "transcript.requested", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "row_id": target.key, "harness": target.harness,
+                    })
+                });
+                self.transcript.operation = operation.map(|o| (o, target));
+                self.transcript.requested = true;
+            }
             Ok(false) => {}
             Err(error) => {
+                self.event("error", "transcript.failed", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "row_id": target.key, "phase": "request", "error": format!("{error:#}"),
+                    })
+                });
                 self.transcript.error = Some(format!("{error:#}"));
                 self.transcript.requested = true;
                 self.transcript.width = 0;
@@ -5001,6 +5647,37 @@ impl App {
         });
         if let Some(result) = self.history.reader.as_mut().and_then(history::Reader::poll) {
             let fetch = self.history.fetch.take();
+            let operation = fetch.as_ref().and_then(|f| f.operation.as_ref());
+            let current = fetch
+                .as_ref()
+                .is_some_and(|f| f.revision == self.history.revision)
+                && self.history.visible;
+            self.event(if result.is_err() { "error" } else { "debug" }, "history.completed", || json!({
+                "operation_id": operation.map(|o| &o.id),
+                "phase": if fetch.as_ref().is_some_and(|f| f.hydrate) { "hydrate" } else { "index_page" },
+                "outcome": if !current { "discarded" } else if result.is_ok() { "loaded" } else { "failed" },
+                "duration_ms": operation.map(DiagnosticOperation::elapsed_ms),
+                "entries": result.as_ref().ok().map(|p| p.entries.len()),
+                "total": result.as_ref().ok().map(|p| p.total),
+                "generation": result.as_ref().ok().map(|p| p.generation),
+                "stats": result.as_ref().ok().map(|p| &p.stats),
+                "error": result.as_ref().err().map(|e| format!("{e:#}")),
+            }));
+            if let Ok(page) = &result {
+                for (phase, ms) in [
+                    ("history.index", page.stats.index_ms),
+                    ("history.hydrate", page.stats.hydrate_ms),
+                    ("history.worker", page.stats.worker_ms),
+                ] {
+                    if ms > 0.0 {
+                        self.measured(
+                            phase,
+                            ms,
+                            || json!({"operation_id": operation.map(|o| &o.id)}),
+                        );
+                    }
+                }
+            }
             if let Some(fetch) = fetch
                 && fetch.revision == self.history.revision
                 && self.history.visible
@@ -5055,7 +5732,7 @@ impl App {
                     }
                     Err(error) => self.history.error = Some(format!("{error:#}")),
                 }
-                self.rebuild();
+                self.rebuild_with_reason("history");
                 if self.history.select_first
                     && self.focus.is_none()
                     && self.text.is_empty()
@@ -5091,8 +5768,13 @@ impl App {
             match history::Reader::discover(self.claude.clone()) {
                 Ok(reader) => self.history.reader = Some(reader),
                 Err(error) => {
+                    self.event("error", "history.failed", || {
+                        json!({
+                            "phase": "reader_start", "error": error.to_string(),
+                        })
+                    });
                     self.history.error = Some(error.to_string());
-                    self.rebuild();
+                    self.rebuild_with_reason("history");
                     return;
                 }
             }
@@ -5142,24 +5824,40 @@ impl App {
             hydrate_keys: hydrate.then_some(hydrate_keys),
             include_archived: true,
         };
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
         match self.history.reader.as_mut().unwrap().request(query) {
             Ok(true) => {
+                self.event("debug", "history.requested", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "phase": if hydrate { "hydrate" } else { "index_page" },
+                        "has_cursor": after.is_some(), "filter_bytes": self.history.filter.len(),
+                        "limit": HISTORY_PAGE, "refresh": self.history.refresh,
+                    })
+                });
                 self.history.fetch = Some(HistoryFetch {
                     revision: self.history.revision,
                     after,
                     hydrate,
+                    operation,
                 });
                 self.history.first = false;
                 self.history.refresh = false;
                 if !hydrate {
-                    self.rebuild();
+                    self.rebuild_with_reason("history");
                     self.feedback = Some(("history_request_to_draw", Instant::now()));
                 }
             }
             Ok(false) => {}
             Err(error) => {
+                self.event("error", "history.failed", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "phase": "request", "error": format!("{error:#}"),
+                    })
+                });
                 self.history.error = Some(error.to_string());
-                self.rebuild();
+                self.rebuild_with_reason("history");
             }
         }
     }
@@ -5170,6 +5868,13 @@ impl App {
         for (id, rx) in std::mem::take(&mut self.started) {
             match rx.try_recv() {
                 Ok((message, retry)) => {
+                    self.event(if retry.is_some() { "error" } else { "debug" }, "launch.applied", || json!({
+                        "operation_id": id,
+                        "outcome": if retry.is_some() { "failed" } else { "awaiting_discovery" },
+                        "error": retry.as_ref().map(|_| message.as_str()),
+                        "duration_ms": self.pending.iter().find(|p| p.session.session_id == id)
+                            .map(|p| p.at.elapsed().as_secs_f64() * 1000.0),
+                    }));
                     match retry {
                         Some(prompt) => {
                             self.pending.retain(|p| p.session.session_id != id);
@@ -5192,6 +5897,11 @@ impl App {
                 }
                 Err(mpsc::TryRecvError::Empty) => self.started.push((id, rx)),
                 Err(mpsc::TryRecvError::Disconnected) => {
+                    self.event("error", "launch.failed", || {
+                        json!({
+                            "operation_id": id, "error": "worker disconnected",
+                        })
+                    });
                     self.pending.retain(|p| p.session.session_id != id);
                     self.status = "session launch stopped unexpectedly".into();
                     launched = true;
@@ -5218,6 +5928,11 @@ impl App {
         }
         self.loading = None;
         if std::mem::take(&mut self.reload_pending) {
+            self.event("debug", "refresh.discarded", || json!({
+                "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                "reason": "invalidated_during_read",
+                "duration_ms": self.loading_operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+            }));
             if let Some(started) = self.loading_started.take() {
                 self.timing("refresh_discard", started);
             }
@@ -5231,16 +5946,29 @@ impl App {
             Err(mpsc::TryRecvError::Empty) => {}
             Ok(Ok(data)) => self.apply(data),
             Ok(Err(e)) => {
+                self.event("error", "refresh.failed", || {
+                    json!({
+                        "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                        "error": format!("{e:#}"), "retained_previous_rows": true,
+                    })
+                });
                 self.status = format!("reload failed: {e:#}");
                 self.stale = true;
                 self.refreshed = Instant::now();
             }
             Err(mpsc::TryRecvError::Disconnected) => {
+                self.event("error", "refresh.failed", || {
+                    json!({
+                        "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                        "error": "worker disconnected", "retained_previous_rows": true,
+                    })
+                });
                 self.status = "reload failed: worker disconnected".into();
                 self.stale = true;
                 self.refreshed = Instant::now();
             }
         }
+        self.loading_operation = None;
     }
 
     /// The counts, marked when they are the last good read rather than a current one. The status
@@ -5262,6 +5990,13 @@ impl App {
     }
 
     fn apply(&mut self, mut data: Data) {
+        if self.stale {
+            self.event("debug", "refresh.recovered", || {
+                json!({
+                    "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                })
+            });
+        }
         let history_browsing = self.history.select_first
             || matches!(
                 self.selected().map(|r| &r.kind),
@@ -5312,6 +6047,16 @@ impl App {
         });
         data.sessions
             .extend(self.pending.iter().map(|p| p.session.clone()));
+        if let Some(d) = &mut data.diagnostics {
+            for p in &self.pending {
+                d.sources.insert(
+                    format!("{}:{}", p.session.harness, p.session.session_id),
+                    json!({
+                        "reader": "pending_launch", "operation_id": p.session.session_id,
+                    }),
+                );
+            }
+        }
         let arrived = data
             .sessions
             .iter()
@@ -5325,8 +6070,28 @@ impl App {
             })
             .max_by_key(|s| s.started)
             .map(|s| s.session_id.clone());
+        for (old, new) in &replaced {
+            if old != new {
+                self.event("debug", "row.reidentified", || {
+                    json!({
+                        "operation_id": old,
+                        "before_id": old,
+                        "session_id": new,
+                        "reason": "native_identity_reported",
+                    })
+                });
+            }
+        }
         self.data = data;
-        self.rebuild();
+        self.report_load();
+        if let Some(log) = &self.log {
+            log.trace("refresh.completed", || json!({
+                "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
+                "duration_ms": self.loading_operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                "sessions": self.data.sessions.len(), "runs": self.data.runs.len(), "jobs": self.data.jobs.len(),
+            }));
+        }
+        self.rebuild_with_reason("refresh");
         if let Some(id) = on
             .as_ref()
             .and_then(|id| replaced.get(id).filter(|next| *next != id))
@@ -5344,6 +6109,7 @@ impl App {
             self.select_new(&id);
         }
         self.refreshed = Instant::now();
+        self.report_view("refresh");
     }
 
     /// Preserve row and viewer identity as process rows acquire native session ids.
@@ -5511,6 +6277,15 @@ impl App {
     }
 
     fn rebuild(&mut self) {
+        let reason = if matches!(self.mode, Mode::Filter) {
+            "filter"
+        } else {
+            "view_rebuild"
+        };
+        self.rebuild_with_reason(reason);
+    }
+
+    fn rebuild_with_reason(&mut self, reason: &str) {
         let started = Instant::now();
         let keep = self
             .selected()
@@ -5562,6 +6337,7 @@ impl App {
         }
         self.settle();
         self.timing("rebuild", started);
+        self.report_rows(reason);
     }
 
     /// Keep matching rows and their group headers. Exclude other unselectable kinds
@@ -5929,12 +6705,19 @@ impl App {
         self.transcript.focused = false;
         if std::mem::take(&mut self.viewers[i].speculative) {
             let spawned = self.viewers[i].last_focused;
-            self.timing("viewer_prespawn_hit", spawned);
+            self.event("debug", "viewer.prespawn_hit", || {
+                json!({
+                    "row_id": self.viewers[i].key,
+                    "viewer_pid": self.viewers[i].viewer.pid(),
+                    "operation_id": self.viewers[i].operation.as_ref().map(|o| &o.id),
+                    "age_ms": spawned.elapsed().as_secs_f64() * 1000.0,
+                })
+            });
             while self.live_viewers() > MAX_FOCUSED_VIEWERS {
                 let Some(oldest) = self.least_recently_focused(Some(i)) else {
                     break;
                 };
-                self.close(oldest);
+                self.close_for(oldest, "focused_viewer_capacity");
                 if oldest < i {
                     i -= 1;
                 }
@@ -5945,8 +6728,13 @@ impl App {
         let open = &mut self.viewers[i];
         open.last_focused = Instant::now();
         open.viewer.resize(pane.height, pane.width);
-        let line = format!("focus {} ({})", open.key, open.what);
-        self.debug(|| line);
+        let data = json!({
+            "row_id": open.key, "harness": open.harness,
+            "viewer_pid": open.viewer.pid(),
+            "operation_id": open.operation.as_ref().map(|o| &o.id),
+        });
+        self.event("debug", "viewer.focused", || data);
+        self.report_view("viewer_focus");
     }
 
     fn open(
@@ -5957,13 +6745,45 @@ impl App {
         key: String,
         record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     ) -> bool {
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
+        self.open_traced(terminal_size, c, what, key, record, operation)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_traced(
+        &mut self,
+        terminal_size: (u16, u16),
+        c: Command,
+        what: &str,
+        key: String,
+        record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
+        operation: Option<DiagnosticOperation>,
+    ) -> bool {
         self.size = terminal_size;
         self.pane = self.pane(self.frame());
         if let Some(i) = self.viewer_index(&key) {
             self.focus(i);
             return true;
         }
-        self.debug(|| format!("open {what} as {key}: {c:?}"));
+        let context = self.key_context(&key);
+        self.event("debug", "viewer.opening", || {
+            json!({
+                "operation_id": operation.as_ref().map(|o| &o.id),
+                "row": context, "row_id": key,
+                "harness": self.viewer_harness(&key),
+                "program": c.get_program().to_string_lossy(),
+                "width": self.pane.width, "height": self.pane.height,
+            })
+        });
+        if let Some(log) = &self.log {
+            log.trace("viewer.command", || {
+                json!({
+                    "operation_id": operation.as_ref().map(|o| &o.id),
+                    "command": format!("{c:?}"),
+                })
+            });
+        }
+        let spawning = Instant::now();
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
         let spawn = if key.starts_with("terminal:") {
             Viewer::spawn_terminal
@@ -5999,7 +6819,7 @@ impl App {
                     let Some(oldest) = self.least_recently_focused(None) else {
                         break;
                     };
-                    self.close(oldest);
+                    self.close_for(oldest, "focused_viewer_capacity");
                 }
                 let harness = self.viewer_harness(&key);
                 self.viewers.push(Open {
@@ -6012,13 +6832,29 @@ impl App {
                     first_paint_logged: false,
                     last_focused: Instant::now(),
                     speculative: false,
+                    operation,
                 });
-                let pid = self.viewers.last().unwrap().viewer.pid();
-                self.debug(|| format!("viewer pid {pid}; the dashboard keeps the terminal"));
+                let open = self.viewers.last().unwrap();
+                self.event("debug", "viewer.opened", || {
+                    json!({
+                        "operation_id": open.operation.as_ref().map(|o| &o.id),
+                        "row": context, "row_id": open.key, "harness": open.harness,
+                        "viewer_pid": open.viewer.pid(),
+                        "spawn_ms": spawning.elapsed().as_secs_f64() * 1000.0,
+                    })
+                });
                 self.focus(self.viewers.len() - 1);
                 true
             }
             Err(e) => {
+                self.event("error", "viewer.failed", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "row": context, "row_id": key, "phase": "spawn",
+                        "error": e.to_string(),
+                        "duration_ms": spawning.elapsed().as_secs_f64() * 1000.0,
+                    })
+                });
                 self.status = format!("{what} failed: {e}");
                 false
             }
@@ -6083,40 +6919,60 @@ impl App {
     /// Only pre-open joins of a live session: a Claude attach or a Codex resume against the
     /// daemon that holds the thread. Resuming a finished run or starting a session changes the
     /// fleet, so those still wait for enter. Done background jobs still have a joinable worker.
+    #[cfg(test)]
     fn prespawn_target(&self) -> Option<(String, PathBuf)> {
+        self.prespawn_decision().ok()
+    }
+
+    fn prespawn_decision(&self) -> std::result::Result<(String, PathBuf), &'static str> {
         if !matches!(self.mode, Mode::Normal)
             || self.focus.is_some()
             || self.opening.is_some()
             || self.history.select_first
             || !self.text.trim().is_empty()
         {
-            return None;
+            return Err("not_browsing_sessions");
         }
-        let (rested, since) = self.rest.as_ref()?;
-        if since.elapsed() < self.rest_for() || self.prespawned.as_deref() == Some(rested.as_str())
-        {
-            return None;
+        let (rested, since) = self.rest.as_ref().ok_or("no_viewer_target")?;
+        if since.elapsed() < self.rest_for() {
+            return Err("cursor_rest");
+        }
+        if self.prespawned.as_deref() == Some(rested.as_str()) {
+            return Err("already_attempted");
         }
         let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
-            return None;
+            return Err("explicit_open_required");
         };
-        if id != rested
-            || id.starts_with("starting:")
-            || self.viewer_index(id).is_some()
-            || self.stopping.iter().any(|a| &a.id == id)
-            || self.removed_sessions.contains(id)
-        {
-            return None;
+        if id != rested {
+            return Err("selection_changed");
         }
-        let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+        if id.starts_with("starting:") {
+            return Err("launch_pending");
+        }
+        if self.viewer_index(id).is_some() {
+            return Err("viewer_already_open");
+        }
+        if self.stopping.iter().any(|a| &a.id == id) {
+            return Err("action_pending");
+        }
+        if self.removed_sessions.contains(id) {
+            return Err("hidden");
+        }
+        let s = self
+            .data
+            .sessions
+            .iter()
+            .find(|s| &s.session_id == id)
+            .ok_or("session_not_in_snapshot")?;
         if !Self::joinable(s) {
-            return None;
+            return Err("native_kind_cannot_peek");
         }
-        let home = harness::by_name(&s.harness)?.session_home(&self.claude, s);
+        let spec = harness::by_name(&s.harness).ok_or("unknown_harness")?;
+        let home = spec.session_home(&self.claude, s);
         if !harness::can_peek(s, &home) {
-            return None;
+            return Err("native_viewer_unavailable");
         }
-        Some((id.clone(), s.cwd.clone()))
+        Ok((id.clone(), s.cwd.clone()))
     }
 
     /// Done Claude background jobs still have a worker; failed or stopped jobs do not. A Codex
@@ -6136,6 +6992,14 @@ impl App {
         };
         let home = spec.session_home(&self.claude, session);
         let what = spec.commands.viewer.clone();
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
+        let context = self.key_context(&id);
+        self.event("debug", "viewer.prespawn_started", || {
+            json!({
+                "operation_id": operation.as_ref().map(|o| &o.id),
+                "row": context, "row_id": id, "harness": spec.name,
+            })
+        });
         let viewer = harness::join(session, &home, true).and_then(|c| {
             let line = format!("{c:?}");
             Viewer::spawn(
@@ -6151,7 +7015,14 @@ impl App {
         let (viewer, command) = match viewer {
             Ok(viewer) => viewer,
             Err(e) => {
-                self.debug(|| format!("prespawn {id} failed: {e:#}"));
+                self.event("error", "viewer.failed", || {
+                    json!({
+                        "operation_id": operation.as_ref().map(|o| &o.id),
+                        "row": context, "row_id": id, "phase": "prespawn",
+                        "error": format!("{e:#}"),
+                        "duration_ms": operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                    })
+                });
                 return;
             }
         };
@@ -6165,11 +7036,25 @@ impl App {
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: true,
+            operation,
         });
         self.pool_speculative();
         let open = self.viewers.last().unwrap();
-        let line = format!("prespawn {} pid {}: {command}", open.key, open.viewer.pid());
-        self.debug(|| line);
+        self.event("debug", "viewer.prespawned", || {
+            json!({
+                "operation_id": open.operation.as_ref().map(|o| &o.id),
+                "row": context, "row_id": open.key, "harness": open.harness,
+                "viewer_pid": open.viewer.pid(),
+                "duration_ms": open.operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+            })
+        });
+        if let Some(log) = &self.log {
+            log.trace("viewer.command", || {
+                json!({
+                    "operation_id": open.operation.as_ref().map(|o| &o.id), "command": command,
+                })
+            });
+        }
     }
 
     /// Speculative viewers have their own cap, independent of the live pool.
@@ -6183,7 +7068,7 @@ impl App {
                 .min_by_key(|(_, o)| o.last_focused)
                 .map(|(i, _)| i)
                 .unwrap();
-            self.close(oldest);
+            self.close_for(oldest, "speculative_viewer_capacity");
         }
     }
 
@@ -6193,8 +7078,12 @@ impl App {
         });
         if let Some(i) = gone {
             let key = self.viewers[i].key.clone();
-            self.debug(|| format!("prespawn {key} dropped: its session left the list"));
-            self.close(i);
+            self.event(
+                "debug",
+                "viewer.orphaned",
+                || json!({"row_id": key, "reason": "session_left_discovery"}),
+            );
+            self.close_for(i, "session_left_discovery");
         }
     }
 
@@ -6202,13 +7091,40 @@ impl App {
     fn prespawn_tick(&mut self) {
         self.close_orphan_speculative();
         self.track_rest();
-        if let Some((id, cwd)) = self.prespawn_target() {
-            self.prespawn(id, cwd);
+        match self.prespawn_decision() {
+            Ok((id, cwd)) => {
+                self.diagnostic_peek = None;
+                self.prespawn(id, cwd);
+            }
+            Err(reason)
+                if self.log.is_some()
+                    && matches!(
+                        reason,
+                        "explicit_open_required"
+                            | "native_kind_cannot_peek"
+                            | "native_viewer_unavailable"
+                            | "action_pending"
+                            | "hidden"
+                            | "unknown_harness"
+                    ) =>
+            {
+                let data = json!({"row": self.selected().map(|r| self.row_context(&r.kind)), "reason": reason});
+                if self.diagnostic_peek.as_ref() != Some(&data) {
+                    self.event("debug", "viewer.peek_refused", || data.clone());
+                    self.diagnostic_peek = Some(data);
+                }
+            }
+            _ => {}
         }
     }
 
     /// Record new Codex threads before closing their viewers so their rows survive.
     fn close(&mut self, i: usize) {
+        self.close_for(i, "requested");
+    }
+
+    fn close_for(&mut self, i: usize, reason: &str) {
+        let closing = Instant::now();
         let had_frame = !self.split_active();
         let open = self.viewers.remove(i);
         self.remove_launch(&open.key);
@@ -6223,12 +7139,19 @@ impl App {
         if open.is_terminal() {
             self.terminals.retain(|s| s.session_id != open.key);
             self.data.sessions.retain(|s| s.session_id != open.key);
-            self.rebuild();
+            self.rebuild_with_reason("terminal_closed");
         }
-        self.debug(|| format!("close {} ({})", open.key, open.what));
+        let mut closed = json!({
+            "operation_id": open.operation.as_ref().map(|o| &o.id),
+            "row_id": open.key, "harness": open.harness,
+            "viewer_pid": open.viewer.pid(), "reason": reason,
+        });
         if open.record.is_some() && !open.recorded {
             self.record_codex(&open.key);
         }
+        drop(open);
+        closed["duration_ms"] = json!(closing.elapsed().as_secs_f64() * 1000.0);
+        self.event("debug", "viewer.closed", || closed);
     }
 
     fn unfocus(&mut self) {
@@ -6249,19 +7172,20 @@ impl App {
         }
         self.invalidate();
         let open = &self.viewers[i];
-        let line = format!(
-            "dashboard back from {}; viewer pid {} title {:?}",
-            open.what,
-            open.viewer.pid(),
-            open.viewer.title()
-        );
-        self.debug(|| line);
+        self.event("debug", "viewer.left", || {
+            json!({
+                "operation_id": open.operation.as_ref().map(|o| &o.id),
+                "row_id": open.key, "harness": open.harness,
+                "viewer_pid": open.viewer.pid(), "title": open.viewer.title(),
+            })
+        });
         // Drop viewers left in Claude's agent list so the row cannot show or attach another session.
         if !self.viewers[i].is_terminal()
             && self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE)
         {
-            self.close(i);
+            self.close_for(i, "viewer_showing_agent_list");
         }
+        self.report_view("viewer_leave");
     }
 
     fn pump(&mut self) -> bool {
@@ -6273,6 +7197,7 @@ impl App {
             let open = &mut self.viewers[i];
             let mut lines = Vec::new();
             let mut failed = None;
+            let pumping = Instant::now();
             match open.viewer.pump() {
                 Ok(changed) => dirty |= changed && on_view,
                 Err(e) => failed = Some(format!("{} failed: {e}", open.what)),
@@ -6281,16 +7206,29 @@ impl App {
                 && let Some(d) = open.viewer.first_paint()
             {
                 open.first_paint_logged = true;
-                lines.push(format!(
-                    "timing viewer_first_paint ms={:.3}",
-                    d.as_secs_f64() * 1000.0
-                ));
+                lines.push(json!({
+                    "operation_id": open.operation.as_ref().map(|o| &o.id),
+                    "row_id": open.key, "harness": open.harness,
+                    "viewer_pid": open.viewer.pid(),
+                    "spawn_to_first_text_ms": d.as_secs_f64() * 1000.0,
+                    "operation_ms": open.operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                    "speculative": open.speculative,
+                }));
             }
             let exited = open.viewer.exited();
             let speculative = open.speculative;
             let return_to_list = open.viewer.take_return_to_list() && open.is_terminal() && focused;
+            let context = json!({
+                "operation_id": open.operation.as_ref().map(|o| &o.id),
+                "row_id": open.key, "harness": open.harness, "viewer_pid": open.viewer.pid(),
+            });
+            self.measured(
+                "viewer_pump",
+                pumping.elapsed().as_secs_f64() * 1000.0,
+                || context.clone(),
+            );
             for line in lines {
-                self.debug(|| line);
+                self.event("debug", "viewer.first_paint", || line);
             }
             // Speculative failures go only to the debug log.
             if speculative && (failed.is_some() || exited.is_some()) {
@@ -6305,8 +7243,12 @@ impl App {
                     }
                     (None, None) => format!("exited with {}", exited.unwrap()),
                 };
-                self.debug(|| format!("prespawn {key} ended: {why}"));
-                self.close(i);
+                self.event("debug", "viewer.exited", || {
+                    json!({
+                        "viewer": context, "row_id": key, "reason": why, "speculative": true,
+                    })
+                });
+                self.close_for(i, "speculative_viewer_exit");
                 continue;
             }
             if let Some(message) = failed {
@@ -6314,9 +7256,13 @@ impl App {
                     self.feedback = Some(("return_to_draw", Instant::now()));
                 }
                 self.status = message;
-                self.close(i);
+                self.event("error", "viewer.failed", || {
+                    json!({
+                        "viewer": context, "phase": "pump", "error": self.status,
+                    })
+                });
+                self.close_for(i, "pump_failed");
                 self.invalidate();
-                self.debug(|| format!("viewer dropped: {}", self.status));
                 continue;
             }
             if return_to_list && exited.is_none() {
@@ -6343,9 +7289,18 @@ impl App {
             }
             // The exit message first: a Codex thread recorded in `close` replaces it.
             self.status = message;
-            self.close(i);
+            self.event(
+                if status.success() { "debug" } else { "error" },
+                "viewer.exited",
+                || {
+                    json!({
+                        "viewer": context, "exit_code": status.code(), "status": status.to_string(),
+                        "message": self.status,
+                    })
+                },
+            );
+            self.close_for(i, "native_exit");
             self.invalidate();
-            self.debug(|| format!("viewer exited: {}", self.status));
         }
         dirty
     }
@@ -6696,9 +7651,38 @@ impl App {
         prepare: impl FnOnce() -> Result<Command> + Send + 'static,
     ) {
         let (tx, rx) = mpsc::channel();
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation {
+            id: if self.pending.iter().any(|p| p.session.session_id == key) {
+                key.clone()
+            } else {
+                uuid::Uuid::new_v4().to_string()
+            },
+            started: Instant::now(),
+        });
+        let context = self.key_context(&key);
+        self.event("debug", "viewer.preparing", || {
+            json!({
+                "operation_id": operation.as_ref().map(|o| &o.id),
+                "parent_operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
+                "row": context, "row_id": key, "viewer": what,
+            })
+        });
         self.status = format!("opening {what} · esc cancels");
+        let log = self.log.clone();
+        let pending_operation = operation.clone();
+        let pending_key = key.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(prepare());
+            let result = prepare();
+            if let Some(log) = log {
+                log.event(if result.is_err() { "error" } else { "debug" }, "viewer.prepared", json!({
+                    "operation_id": pending_operation.as_ref().map(|o| &o.id),
+                    "row": context, "row_id": pending_key,
+                    "duration_ms": pending_operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                    "outcome": if result.is_ok() { "ready" } else { "failed" },
+                    "error": result.as_ref().err().map(|e| format!("{e:#}")),
+                }));
+            }
+            let _ = tx.send(result);
         });
         self.opening = Some(Opening {
             what,
@@ -6706,6 +7690,7 @@ impl App {
             command: rx,
             record,
             prompt,
+            operation,
         });
     }
 
@@ -6727,12 +7712,13 @@ impl App {
         let previous_focus = self.focus.map(|i| self.viewers[i].key.clone());
         match command {
             Ok(command) => {
-                if self.open(
+                if self.open_traced(
                     self.size,
                     command,
                     &opening.what,
                     opening.key,
                     opening.record,
+                    opening.operation,
                 ) {
                     if launching {
                         // Starting a session leaves the list selected, as Claude does.
@@ -6755,7 +7741,11 @@ impl App {
                 self.remove_launch(&key);
                 // A start that never opens leaves no row, so the log is the only record of why.
                 let failed = format!("{} failed: {error:#}", opening.what);
-                self.debug(|| failed.clone());
+                self.event("error", "viewer.failed", || json!({
+                    "operation_id": opening.operation.as_ref().map(|o| &o.id),
+                    "row_id": key, "phase": "prepare", "error": format!("{error:#}"),
+                    "duration_ms": opening.operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                }));
                 self.status = failed;
                 if self.text.is_empty()
                     && let Some(prompt) = opening.prompt
@@ -6772,6 +7762,10 @@ impl App {
         let Some(opening) = self.opening.take() else {
             return false;
         };
+        self.event("debug", "viewer.cancelled", || json!({
+            "operation_id": opening.operation.as_ref().map(|o| &o.id),
+            "row_id": opening.key, "duration_ms": opening.operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+        }));
         self.remove_launch(&opening.key);
         if self.text.is_empty()
             && let Some(prompt) = opening.prompt
@@ -6862,12 +7856,11 @@ impl App {
             self.status = action.message();
             return Ok(());
         }
-        self.debug(|| {
-            format!(
-                "enter on {:?}: {}",
-                kind.key(),
-                enter_verb(Some(&kind), self.menu)
-            )
+        self.event("debug", "row.entered", || {
+            json!({
+                "operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
+                "row": self.row_context(&kind), "action": enter_verb(Some(&kind), self.menu),
+            })
         });
         if let Some(i) = self.viewer_of(&kind) {
             self.focus(i);
@@ -6885,6 +7878,11 @@ impl App {
                 self.open(self.size, c, "logs", format!("run:{id}"), None);
             }
             Kind::Session(id, _) if self.pending.iter().any(|p| p.session.session_id == id) => {
+                self.event(
+                    "debug",
+                    "action.refused",
+                    || json!({"row_id": id, "reason": "launch_pending"}),
+                );
                 self.status =
                     "still starting · its row fills in when the harness reports it".into();
             }
@@ -6895,6 +7893,12 @@ impl App {
                 let (harness, own_terminal) = (s.harness.clone(), s.own_terminal());
                 // Interactive clients in other terminals cannot be joined.
                 if own_terminal {
+                    self.event("debug", "action.refused", || {
+                        json!({
+                            "row_id": id, "harness": harness, "reason": "own_terminal",
+                            "operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
+                        })
+                    });
                     self.status = format!(
                         "{harness} runs in its own terminal and cannot be joined from here"
                     );
@@ -6913,7 +7917,12 @@ impl App {
                     Ok(c) => {
                         self.open(self.size, c, &spec.commands.viewer, id, None);
                     }
-                    Err(e) => self.status = format!("attach failed: {e:#}"),
+                    Err(e) => {
+                        self.event("error", "viewer.failed", || json!({
+                            "row_id": id, "harness": harness, "phase": "join", "error": format!("{e:#}"),
+                        }));
+                        self.status = format!("attach failed: {e:#}");
+                    }
                 }
             }
             Kind::Run(id, _) => {
@@ -6926,6 +7935,10 @@ impl App {
                     return Ok(());
                 };
                 if self.history_excluded().contains(&entry.key) {
+                    self.event("debug", "action.refused", || json!({
+                        "row_id": key, "harness": entry.key.harness, "session_id": entry.key.session_id,
+                        "reason": "already_in_main_list",
+                    }));
                     self.status = "session is already in the main list".into();
                     self.rebuild();
                     return Ok(());
@@ -7014,7 +8027,6 @@ impl App {
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         let since = chrono::Utc::now();
-        self.debug(|| format!("start {what}: {prompt:?}"));
         let id = self.launch_row(kind, &dir, &prompt);
         // Codex and pi run as the dashboard's own client; only Claude is launched and left.
         let launch = harness::spec(kind)
@@ -7036,7 +8048,12 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         self.status = format!("starting {what}");
+        let log = self.log.clone();
+        let operation_id = id.clone();
+        let started = Instant::now();
         std::thread::spawn(move || {
+            let mut preparation_ms = None;
+            let mut command_ms = None;
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
                 let Start::Background(mut command) =
@@ -7044,7 +8061,11 @@ impl App {
                 else {
                     anyhow::bail!("expected a background Claude session");
                 };
-                let output = command.stdin(Stdio::null()).output()?;
+                preparation_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                let executing = Instant::now();
+                let output = command.stdin(Stdio::null()).output();
+                command_ms = Some(executing.elapsed().as_secs_f64() * 1000.0);
+                let output = output?;
                 anyhow::ensure!(
                     output.status.success(),
                     "{}",
@@ -7055,6 +8076,20 @@ impl App {
                     uncolored(String::from_utf8_lossy(&output.stdout).trim())
                 ))
             })();
+            if let Some(log) = log {
+                log.event(
+                    if result.is_err() { "error" } else { "debug" },
+                    "launch.result",
+                    json!({
+                        "operation_id": operation_id, "harness": kind,
+                        "outcome": if result.is_ok() { "started" } else { "failed" },
+                        "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+                        "preparation_ms": preparation_ms, "command_ms": command_ms,
+                        "native_id_prefix": result.as_ref().ok().and_then(|s| short_id(s)),
+                        "error": result.as_ref().err().map(|e| format!("{e:#}")),
+                    }),
+                );
+            }
             let feedback = match result {
                 Ok(message) => (message, None),
                 Err(error) => (format!("{what} failed: {error:#}"), Some(prompt)),
@@ -7139,14 +8174,41 @@ impl App {
             HarnessKind::Claude => format!("starting:{nonce}"),
             _ => format!("{kind}:start:{nonce}"),
         };
+        let recovery = self.state.join("launches.jsonl");
+        if let Err(error) = debug_line(
+            &recovery,
+            json!({
+                "v": 1, "timestamp": chrono::Utc::now().to_rfc3339(),
+                "pid": std::process::id(), "dashboard_id": self.dashboard_id,
+                "event": "launch.submitted", "level": "recovery",
+                "data": {"operation_id": id, "harness": kind, "cwd": dir.to_string_lossy(), "prompt": prompt},
+            }),
+        ) {
+            self.event("error", "recovery.failed", || {
+                json!({
+                    "operation_id": id, "path": recovery.to_string_lossy(), "error": error.to_string(),
+                })
+            });
+        }
+        self.event("debug", "launch.started", || json!({
+            "operation_id": id,
+            "parent_operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
+            "harness": kind, "cwd": dir.to_string_lossy(), "prompt_bytes": prompt.len(), "recovery_file": recovery.to_string_lossy(),
+        }));
         let session = placeholder(kind, &id, dir, prompt);
+        if let Some(d) = &mut self.data.diagnostics {
+            d.sources.insert(
+                format!("{kind}:{id}"),
+                json!({"reader": "pending_launch", "operation_id": id}),
+            );
+        }
         self.data.sessions.push(session.clone());
         self.pending.push(Pending {
             session,
             short: None,
             at: Instant::now(),
         });
-        self.rebuild();
+        self.rebuild_with_reason("launch_placeholder");
         self.select_new(&id);
         id
     }
@@ -7659,6 +8721,8 @@ impl App {
         work: impl FnOnce() -> Result<bool> + Send + 'static,
     ) {
         let (tx, rx) = mpsc::channel();
+        let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
+        let context = self.key_context(&id);
         let label = self
             .data
             .sessions
@@ -7672,26 +8736,34 @@ impl App {
             label,
             verb,
             result: rx,
+            operation: operation.clone(),
+            context: context.clone(),
         };
         self.status = action.message();
-        self.debug(|| self.status.clone());
+        self.event("debug", "action.started", || {
+            json!({
+                "operation_id": operation.as_ref().map(|o| &o.id),
+                "parent_operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
+                "action": verb, "row": context, "row_id": action.id,
+            })
+        });
         let log = self.log.clone();
         std::thread::spawn(move || {
             let started = Instant::now();
             let result = work();
             if let Some(log) = log {
-                debug_line(
-                    &log,
-                    format!(
-                        "timing command_{verb} ms={:.3}",
-                        started.elapsed().as_secs_f64() * 1000.0
-                    ),
-                );
+                log.event(if result.is_err() { "error" } else { "debug" }, "action.executed", json!({
+                    "operation_id": operation.as_ref().map(|o| &o.id),
+                    "action": verb, "row": context,
+                    "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+                    "outcome": match &result { Ok(true) => "applied", Ok(false) => "already_finished", Err(_) => "failed" },
+                    "error": result.as_ref().err().map(|e| format!("{e:#}")),
+                }));
             }
             let _ = tx.send(result);
         });
         self.stopping.push(action);
-        self.rebuild();
+        self.rebuild_with_reason("action_pending");
     }
 
     fn poll_stops(&mut self) {
@@ -7708,6 +8780,13 @@ impl App {
                 Ok(result) => result,
             };
             finished = true;
+            self.event(if result.is_err() { "error" } else { "debug" }, "action.completed", || json!({
+                "operation_id": action.operation.as_ref().map(|o| &o.id),
+                "action": action.verb, "row": action.context, "row_id": action.id,
+                "duration_ms": action.operation.as_ref().map(DiagnosticOperation::elapsed_ms),
+                "outcome": match &result { Ok(true) => "applied", Ok(false) => "already_finished", Err(_) => "failed" },
+                "error": result.as_ref().err().map(|e| format!("{e:#}")),
+            }));
             self.status = match result {
                 // The row leaving the list says it; the hint line goes back to the keys.
                 Ok(true) if matches!(action.verb, "delete" | "forget") => {
@@ -7719,10 +8798,9 @@ impl App {
                 Ok(false) => "already finished".into(),
                 Err(e) => format!("{} failed: {}: {e:#}", action.verb, action.label),
             };
-            self.debug(|| format!("{}: {}", action.id, self.status));
         }
         if finished {
-            self.rebuild();
+            self.rebuild_with_reason("action_result");
             self.feedback
                 .get_or_insert(("action_result_to_draw", Instant::now()));
             self.invalidate();
@@ -8629,22 +9707,39 @@ impl App {
     }
 }
 
-pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: bool) -> Result<i32> {
+pub fn run(
+    exe: &Path,
+    jobs_path: &Path,
+    state: &Path,
+    claude: &Path,
+    debug: bool,
+    trace: bool,
+) -> Result<i32> {
     let started = Instant::now();
-    let mut app = App::new(exe, jobs_path, state, claude)?;
-    if debug {
-        app.log = Some(state.join("tui-debug.log"));
-        app.debug(|| {
-            format!(
-                "dashboard start pid {}; {}",
-                std::process::id(),
-                term_state()
-            )
-        });
-    }
+    let log = if debug || trace {
+        std::fs::create_dir_all(state)?;
+        let log = Diagnostics::new(state.join("tui-debug.log"), trace);
+        log.event(
+            "debug",
+            "dashboard.started",
+            json!({
+                "build": executable_identity(exe), "jobs_path": jobs_path.to_string_lossy(),
+                "state_dir": state.to_string_lossy(), "native_home": claude.to_string_lossy(),
+                "terminal": term_state(), "trace": trace,
+                "terminal_size": ratatui::crossterm::terminal::size().ok(),
+            }),
+        );
+        Some(log)
+    } else {
+        None
+    };
+    let mut app = App::new_logged(exe, jobs_path, state, claude, log)?;
+    app.report_load();
     app.timing("startup_load", started);
     app.feedback = Some(("startup_to_draw", started));
     app.rebuild();
+    app.loading_operation = None;
+    app.report_view("startup");
     // Ctrl+Z changes dashboard focus instead of suspending it. Viewer children restore
     // their default signal handlers in `pre_exec`.
     unsafe {
@@ -8666,7 +9761,11 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
     }));
     // Before crossterm's first poll, so the replies do not land as keystrokes.
     app.colors = viewer::probe_colors(Duration::from_millis(150));
-    app.debug(|| format!("terminal colors {:?}", app.colors));
+    app.event(
+        "debug",
+        "terminal.colors",
+        || json!({"foreground": app.colors.fg, "background": app.colors.bg}),
+    );
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let result = (|| -> Result<()> {
         let animation = Instant::now();
@@ -8689,6 +9788,8 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             app.prespawn_tick();
             app.transcript_tick();
             app.expire();
+            app.report_view("event_loop");
+            app.summarize_timings(false);
             let wants_mouse = app.wants_mouse();
             if wants_mouse != app.mouse_capture {
                 if wants_mouse {
@@ -8716,11 +9817,35 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                     terminal.draw(|f| app.draw(f))?;
                     Ok(())
                 })??;
-                if let Some((phase, started)) = app.feedback.take() {
-                    app.timing("draw", drawing);
-                    app.timing(phase, started);
-                } else if drawing.elapsed() >= Duration::from_millis(16) {
-                    app.timing("slow_draw", drawing);
+                let drawn_at = Instant::now();
+                app.measured(
+                    "draw",
+                    drawn_at.duration_since(drawing).as_secs_f64() * 1000.0,
+                    || {
+                        json!({
+                            "width": app.size.1, "height": app.size.0,
+                        })
+                    },
+                );
+                if let Some((phase, started)) = app.feedback.take()
+                    && phase != "input_to_draw"
+                {
+                    app.measured(
+                        phase,
+                        drawn_at.duration_since(started).as_secs_f64() * 1000.0,
+                        || json!({}),
+                    );
+                }
+                if let Some((operation, route)) = app.input_operation.take() {
+                    app.measured(
+                        "input_to_draw",
+                        drawn_at.duration_since(operation.started).as_secs_f64() * 1000.0,
+                        || {
+                            json!({
+                                "operation_id": operation.id, "route": route,
+                            })
+                        },
+                    );
                 }
                 drawn_tick = app.tick;
                 drawn_refresh = app.refreshed;
@@ -8734,7 +9859,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             if event::poll(wait)? {
                 let e = event::read()?;
                 redraw = true;
-                app.debug(|| format!("event {e:?}"));
+                app.log_input(&e);
                 match e {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
                         app.feedback = Some(("input_to_draw", Instant::now()));
@@ -8746,71 +9871,127 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
                     Event::Mouse(m) => app.mouse(m),
                     _ => {}
                 }
+                app.report_view("input");
             }
         }
     })();
-    app.debug(|| format!("dashboard loop ended: {result:?}"));
     // Hand the terminal back before reaping. Viewers draw on their own ptys, so a slow
     // reap has nothing left to say to this screen, and quitting feels immediate.
     ratatui::restore();
     hand_back_tty();
     // Viewers die with the dashboard: their process groups, never the agents behind them.
     let reaping = Instant::now();
+    for open in &app.viewers {
+        app.event("debug", "viewer.closed", || {
+            json!({
+                "operation_id": open.operation.as_ref().map(|o| &o.id),
+                "row_id": open.key, "viewer_pid": open.viewer.pid(), "reason": "dashboard_exit",
+            })
+        });
+    }
     app.viewers.clear();
     app.timing("reap", reaping);
+    app.summarize_timings(true);
+    app.event(if result.is_err() { "error" } else { "debug" }, "dashboard.stopped", || json!({
+        "reason": if signalled.load(Ordering::Relaxed) { "signal" } else if result.is_err() { "error" } else { "quit" },
+        "error": result.as_ref().err().map(|e| format!("{e:#}")),
+        "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+    }));
     result.context("dashboard")?;
     Ok(0)
 }
 
-fn debug_line(path: &Path, msg: impl std::fmt::Display) {
+fn executable_identity(exe: &Path) -> Value {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let fingerprint = (|| -> std::io::Result<String> {
+        let mut file = std::fs::File::open(exe)?;
+        let mut hash = Sha256::new();
+        let mut bytes = [0u8; 64 * 1024];
+        loop {
+            let n = file.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            hash.update(&bytes[..n]);
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    })();
+    json!({
+        "version": env!("CARGO_PKG_VERSION"), "executable": exe.to_string_lossy(),
+        "sha256": fingerprint.as_ref().ok(),
+        "fingerprint_error": fingerprint.as_ref().err().map(ToString::to_string),
+    })
+}
+
+fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> {
     use fs2::FileExt;
     use std::io::{Read, Seek, SeekFrom, Write};
 
     const MAX_BYTES: usize = 10 * 1024 * 1024;
-    let mut record = format!(
-        "{} pid={} {msg}\n",
-        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-        std::process::id()
-    );
-    if record.len() > MAX_BYTES {
-        const END: &str = " [truncated]\n";
-        let mut end = MAX_BYTES - END.len();
-        while !record.is_char_boundary(end) {
+    let mut bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    if bytes.len() >= MAX_BYTES {
+        let mut preview = record["data"].to_string();
+        let mut end = preview.len().min(64 * 1024);
+        while !preview.is_char_boundary(end) {
             end -= 1;
         }
-        record.truncate(end);
-        record.push_str(END);
+        preview.truncate(end);
+        let mut truncated = json!({
+            "truncated": true,
+            "original_bytes": bytes.len(),
+            "preview": preview,
+        });
+        for field in [
+            "operation_id",
+            "parent_operation_id",
+            "row_id",
+            "row_kind",
+            "harness",
+            "session_id",
+        ] {
+            if let Some(value) = record["data"].get(field)
+                && value.to_string().len() < 4096
+            {
+                truncated[field] = value.clone();
+            }
+        }
+        record["data"] = truncated;
+        bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
     }
-    let _ = (|| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(path)?;
-        // Keep the inode so every dashboard locks the same file, including during compaction.
-        f.lock_exclusive()?;
-        let mut len = f.metadata()?.len();
-        if len.saturating_add(record.len() as u64) > MAX_BYTES as u64 {
-            // Retain recent complete lines, leaving room before the next compaction.
-            let keep = (MAX_BYTES / 2).min(MAX_BYTES - record.len()) as u64;
-            f.seek(SeekFrom::Start(len.saturating_sub(keep)))?;
-            let mut tail = Vec::with_capacity(keep as usize);
-            (&mut f).take(keep).read_to_end(&mut tail)?;
-            let start = tail
-                .iter()
-                .position(|&b| b == b'\n')
-                .map_or(tail.len(), |i| i + 1);
-            f.set_len(0)?;
-            f.write_all(&tail[start..])?;
-            len = (tail.len() - start) as u64;
-        }
-        // Formatting directly into File splits a record into several writes.
-        // Roll back a short append before another writer can follow its incomplete record.
-        if f.write(record.as_bytes())? != record.len() {
-            f.set_len(len)?;
-        }
-        Ok(())
-    })();
+    if bytes.len() >= MAX_BYTES {
+        return Err(std::io::Error::other(
+            "diagnostic metadata exceeds the log bound",
+        ));
+    }
+    bytes.push(b'\n');
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(path)?;
+    // Append needs one buffer; compaction additionally needs a lock shared by all writers.
+    // Keep the inode so another dashboard cannot append to a file we just rotated away.
+    f.lock_exclusive()?;
+    let mut len = f.metadata()?.len();
+    if len.saturating_add(bytes.len() as u64) > MAX_BYTES as u64 {
+        let keep = (MAX_BYTES / 2).min(MAX_BYTES - bytes.len()) as u64;
+        f.seek(SeekFrom::Start(len.saturating_sub(keep)))?;
+        let mut tail = Vec::with_capacity(keep as usize);
+        (&mut f).take(keep).read_to_end(&mut tail)?;
+        let start = tail
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(tail.len(), |i| i + 1);
+        f.set_len(0)?;
+        f.write_all(&tail[start..])?;
+        len = (tail.len() - start) as u64;
+    }
+    if let Err(error) = f.write_all(&bytes) {
+        let _ = f.set_len(len);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn term_state() -> String {
@@ -9417,14 +10598,384 @@ mod tests {
         let mut app = App::new(Path::new("cones"), &path, d.path(), d.path()).unwrap();
         app.debug(|| panic!("formatted without --debug"));
         assert!(!path.exists());
-        app.log = Some(path.clone());
+        app.log = Some(Diagnostics::new(path.clone(), false));
         app.debug(|| "one".into());
         app.debug(|| "two".into());
         let text = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<_> = text.lines().collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].ends_with(" one") && lines[1].ends_with(" two"));
+        let one: Value = serde_json::from_str(lines[0]).unwrap();
+        let two: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(one["data"]["message"], "one");
+        assert_eq!(two["data"]["message"], "two");
+        assert_eq!(one["dashboard_id"], two["dashboard_id"]);
         assert!(term_state().contains("pgrp="));
+    }
+
+    fn diagnostic_records(path: &Path) -> Vec<Value> {
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn debug_keeps_shortcuts_and_paste_shape_while_trace_keeps_input_text() {
+        use ratatui::crossterm::event::KeyEvent;
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut app = app(d.path());
+        app.log = Some(Diagnostics::new(path.clone(), false));
+        app.log_input(&Event::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )));
+        assert!(!path.exists(), "ordinary typing is trace-only");
+        app.log_input(&Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::ALT,
+        )));
+        app.log_input(&Event::Paste("private paste".into()));
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["event"], "input.key");
+        assert_eq!(rows[0]["data"]["key"], "Enter");
+        assert!(
+            rows[0]["data"]["modifiers"]
+                .as_str()
+                .unwrap()
+                .contains("ALT")
+        );
+        assert!(rows[0]["data"]["operation_id"].is_string());
+        assert_eq!(rows[0]["data"]["route"]["mode"], "normal");
+        assert_eq!(rows[1]["data"]["bytes"], 13);
+        assert!(rows[1]["data"].get("text").is_none());
+        app.log.as_mut().unwrap().trace = true;
+        app.log_input(&Event::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        )));
+        app.log_input(&Event::Paste("private paste".into()));
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows[2]["level"], "trace");
+        assert_eq!(rows[3]["data"]["text"], "private paste");
+    }
+
+    #[test]
+    fn routine_timings_are_summarized_and_slow_samples_keep_their_context() {
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut app = app(d.path());
+        app.log = Some(Diagnostics::new(path.clone(), false));
+        for _ in 0..100 {
+            app.measured("draw", 1.0, || panic!("formatted a suppressed sample"));
+        }
+        assert!(!path.exists());
+        app.summarize_timings(false);
+        assert!(!path.exists(), "the interval has not elapsed");
+        app.summarize_timings(true);
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event"], "timing.summary");
+        assert_eq!(rows[0]["data"]["phases"]["draw"]["count"], 100);
+        assert_eq!(rows[0]["data"]["phases"]["draw"]["mean_ms"], 1.0);
+        app.measured("draw", 20.0, || json!({"operation_id": "slow-operation"}));
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows[1]["data"]["operation_id"], "slow-operation");
+        assert_eq!(rows[1]["data"]["slow"], true);
+        app.log.as_mut().unwrap().trace = true;
+        app.measured("draw", 1.0, || json!({}));
+        assert_eq!(diagnostic_records(&path)[2]["level"], "trace");
+    }
+
+    #[test]
+    fn launch_recovery_keeps_one_submitted_prompt_with_debug_off() {
+        let d = dir();
+        let mut app = app(d.path());
+        let prompt = "first line\nsecond line 🚦";
+        let id = app.launch_row(HarnessKind::Claude, d.path(), prompt);
+        let rows = diagnostic_records(&d.path().join("launches.jsonl"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event"], "launch.submitted");
+        assert_eq!(rows[0]["data"]["operation_id"], id);
+        assert_eq!(rows[0]["data"]["prompt"], prompt);
+        assert_eq!(rows[0]["data"]["harness"], "claude");
+        assert!(!d.path().join("tui-debug.log").exists());
+    }
+
+    #[test]
+    fn recovery_does_not_break_a_launch_from_a_non_utf8_folder() {
+        use std::os::unix::ffi::OsStringExt;
+        let d = dir();
+        let folder = d
+            .path()
+            .join(std::ffi::OsString::from_vec(b"folder-\xff".to_vec()));
+        let mut app = app(d.path());
+        let id = app.launch_row(HarnessKind::Claude, &folder, "recover me");
+        let rows = diagnostic_records(&d.path().join("launches.jsonl"));
+        assert_eq!(rows[0]["data"]["operation_id"], id);
+        assert_eq!(rows[0]["data"]["cwd"], folder.to_string_lossy().as_ref());
+        assert_eq!(
+            app.pending[0].session.cwd, folder,
+            "diagnostics do not change the native path"
+        );
+    }
+
+    #[test]
+    fn row_diagnostics_report_native_source_state_changes_and_suppression() {
+        let d = dir();
+        registry(d.path(), A, "/fixture", "idle", 1);
+        let path = d.path().join("diagnostics.log");
+        let mut app = App::new_logged(
+            Path::new("cones"),
+            &d.path().join("none.yaml"),
+            d.path(),
+            d.path(),
+            Some(Diagnostics::new(path.clone(), false)),
+        )
+        .unwrap();
+        app.rebuild();
+        let rows = diagnostic_records(&path);
+        assert!(rows.iter().any(|r| r["event"] == "row.added"
+            && r["data"]["after"]["session_id"] == A
+            && r["data"]["after"]["source"]["reader"] == "registry"));
+        let before = rows.len();
+        app.rebuild();
+        assert_eq!(
+            diagnostic_records(&path).len(),
+            before,
+            "unchanged rows do not repeat"
+        );
+        registry(d.path(), A, "/fixture", "busy", 1);
+        let data = Data::load_observed(
+            &app.jobs_path,
+            &app.state,
+            &app.claude,
+            app.log.as_ref(),
+            None,
+        )
+        .unwrap();
+        app.apply(data);
+        let rows = diagnostic_records(&path);
+        assert!(rows.iter().any(|r| r["event"] == "row.changed"
+            && r["data"]["before"]["state"] == "idle"
+            && r["data"]["after"]["state"] == "active"));
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        let mut data = Data::load_observed(
+            &app.jobs_path,
+            &app.state,
+            &app.claude,
+            app.log.as_ref(),
+            None,
+        )
+        .unwrap();
+        data.diagnostics
+            .as_mut()
+            .unwrap()
+            .excluded
+            .insert(A.into(), "hidden");
+        app.apply(data);
+        assert!(
+            diagnostic_records(&path)
+                .iter()
+                .any(|r| r["event"] == "row.removed"
+                    && r["data"]["before"]["session_id"] == A
+                    && r["data"]["reason"] == "hidden")
+        );
+    }
+
+    #[test]
+    fn refresh_failure_is_logged_before_a_status_line_can_replace_it() {
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut app = app(d.path());
+        app.log = Some(Diagnostics::new(path.clone(), false));
+        let operation = DiagnosticOperation::new();
+        let id = operation.id.clone();
+        app.loading_operation = Some(operation);
+        let (tx, rx) = mpsc::channel();
+        app.loading = Some(rx);
+        tx.send(Err(anyhow::anyhow!("unreadable registry")))
+            .unwrap();
+        app.poll();
+        app.status = "another key".into();
+        let rows = diagnostic_records(&path);
+        assert!(rows.iter().any(|r| r["event"] == "refresh.failed"
+            && r["data"]["operation_id"] == id
+            && r["data"]["error"] == "unreadable registry"
+            && r["data"]["retained_previous_rows"] == true));
+    }
+
+    #[test]
+    fn action_results_keep_the_same_operation_and_actual_failure() {
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut app = app(d.path());
+        app.log = Some(Diagnostics::new(path.clone(), false));
+        app.queue_stop(A.into(), "delete", || anyhow::bail!("native refusal"));
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        let rows = diagnostic_records(&path);
+        let start = rows
+            .iter()
+            .find(|r| r["event"] == "action.started")
+            .unwrap();
+        let done = rows
+            .iter()
+            .find(|r| r["event"] == "action.completed")
+            .unwrap();
+        assert_eq!(start["data"]["operation_id"], done["data"]["operation_id"]);
+        assert_eq!(done["data"]["outcome"], "failed");
+        assert_eq!(done["data"]["error"], "native refusal");
+        assert_eq!(done["data"]["row_id"], A);
+    }
+
+    #[test]
+    fn executable_diagnostics_identify_the_binary_bytes() {
+        let d = dir();
+        let path = d.path().join("binary");
+        fs::write(&path, b"first build").unwrap();
+        let first = executable_identity(&path);
+        fs::write(&path, b"second build").unwrap();
+        let second = executable_identity(&path);
+        assert_eq!(first["executable"], path.to_str().unwrap());
+        assert_eq!(first["sha256"].as_str().unwrap().len(), 64);
+        assert_ne!(first["sha256"], second["sha256"]);
+        assert_eq!(first["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn diagnostic_records_stay_whole_across_threads() {
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                let path = &path;
+                let barrier = barrier.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    for sequence in 0..250 {
+                        debug_line(path, json!({"event":"fixture","data":{"worker":worker,"sequence":sequence,"payload":"x".repeat(256)}})).unwrap();
+                    }
+                });
+            }
+        });
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows.len(), 2000);
+        let identities: HashSet<_> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["data"]["worker"].as_u64().unwrap(),
+                    r["data"]["sequence"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(identities.len(), 2000);
+    }
+
+    #[test]
+    fn diagnostic_compaction_is_bounded_across_processes() {
+        const CAP: u64 = 10 * 1024 * 1024;
+        if let Some(path) = std::env::var_os("CONES_DIAGNOSTIC_TEST_LOG") {
+            let worker: u64 = std::env::var("CONES_DIAGNOSTIC_TEST_WORKER")
+                .unwrap()
+                .parse()
+                .unwrap();
+            for sequence in 0..600 {
+                debug_line(Path::new(&path), json!({
+                    "event":"fixture","data":{"worker":worker,"sequence":sequence,"payload":"x".repeat(4096)},
+                })).unwrap();
+            }
+            return;
+        }
+        struct Writer(std::process::Child);
+        impl Drop for Writer {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut writers: Vec<_> = (0..6)
+            .map(|worker| {
+                Writer(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "tui::tests::diagnostic_compaction_is_bounded_across_processes",
+                        ])
+                        .env("CONES_DIAGNOSTIC_TEST_LOG", &path)
+                        .env("CONES_DIAGNOSTIC_TEST_WORKER", worker.to_string())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                        .unwrap(),
+                )
+            })
+            .collect();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            assert!(Instant::now() < deadline, "diagnostic writer stalled");
+            if let Ok(metadata) = fs::metadata(&path) {
+                assert!(metadata.len() <= CAP);
+            }
+            let mut done = true;
+            for writer in &mut writers {
+                match writer.0.try_wait().unwrap() {
+                    Some(status) => assert!(status.success()),
+                    None => done = false,
+                }
+            }
+            if done {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let rows = diagnostic_records(&path);
+        assert!(!rows.is_empty());
+        assert!(fs::metadata(&path).unwrap().len() <= CAP);
+        let ids: HashSet<_> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["data"]["worker"].as_u64().unwrap(),
+                    r["data"]["sequence"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(ids.len(), rows.len());
+    }
+
+    #[test]
+    fn oversized_logs_keep_recent_lines_and_oversized_records_remain_json() {
+        use std::io::{Seek, SeekFrom, Write};
+        let d = dir();
+        let path = d.path().join("diagnostics.log");
+        let mut file = fs::File::create(&path).unwrap();
+        file.set_len(72 * 1024 * 1024).unwrap();
+        file.seek(SeekFrom::End(0)).unwrap();
+        writeln!(file, "\n{}", json!({"event":"recent"})).unwrap();
+        drop(file);
+        debug_line(&path, json!({"event":"next","data":{}})).unwrap();
+        let rows = diagnostic_records(&path);
+        assert_eq!(rows[0]["event"], "recent");
+        assert_eq!(rows[1]["event"], "next");
+        assert!(fs::metadata(&path).unwrap().len() <= 10 * 1024 * 1024);
+        let large = d.path().join("large.log");
+        debug_line(
+            &large,
+            json!({"event":"large","data":{"operation_id":"large-operation","harness":"claude","prompt":"🚦".repeat(3 * 1024 * 1024)}}),
+        )
+        .unwrap();
+        let rows = diagnostic_records(&large);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["event"], "large");
+        assert_eq!(rows[0]["data"]["truncated"], true);
+        assert_eq!(rows[0]["data"]["operation_id"], "large-operation");
+        assert!(fs::metadata(&large).unwrap().len() <= 10 * 1024 * 1024);
     }
 
     #[test]
@@ -11688,7 +13239,7 @@ mod tests {
         let d = dir();
         let mut app = app(d.path());
         let log = d.path().join("tui-debug.log");
-        app.log = Some(log.clone());
+        app.log = Some(Diagnostics::new(log.clone(), false));
         app.prepare_viewer(
             "codex in ~/src".into(),
             "codex:test".into(),
@@ -11703,7 +13254,16 @@ mod tests {
         }
         assert_eq!(app.text, "fix the lag");
         let text = std::fs::read_to_string(&log).unwrap();
-        assert!(text.contains("codex in ~/src failed: no daemon"), "{text}");
+        let records: Vec<Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(
+            records.iter().any(|r| r["event"] == "viewer.failed"
+                && r["data"]["error"] == "no daemon"
+                && r["data"]["row_id"] == "codex:test"),
+            "{text}"
+        );
     }
 
     /// A read that fails leaves the previous rows on screen, so the header says they are the
@@ -11824,6 +13384,8 @@ mod tests {
         app.loading = Some(data_rx);
         let (tx, rx) = mpsc::channel();
         app.stopping.push(PendingStop {
+            operation: None,
+            context: json!({}),
             id: A.into(),
             label: "aaaaaaaa".into(),
             verb: "delete",
@@ -11908,12 +13470,16 @@ mod tests {
         let (second_tx, second_rx) = mpsc::channel();
         app.stopping = vec![
             PendingStop {
+                operation: None,
+                context: json!({}),
                 id: A.into(),
                 label: "aaaaaaaa".into(),
                 verb: "delete",
                 result: first_rx,
             },
             PendingStop {
+                operation: None,
+                context: json!({}),
                 id: B.into(),
                 label: "bbbbbbbb".into(),
                 verb: "delete",
@@ -12629,6 +14195,7 @@ mod tests {
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
+            operation: None,
         }
     }
 
@@ -13202,6 +14769,7 @@ mod tests {
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
+            operation: None,
         });
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
@@ -15210,6 +16778,7 @@ mod tests {
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
+            operation: None,
         }
     }
 
@@ -15274,6 +16843,7 @@ mod tests {
         app.viewers.clear();
         let (_tx, rx) = mpsc::channel();
         app.opening = Some(Opening {
+            operation: None,
             what: "codex".into(),
             key: B.into(),
             command: rx,
@@ -15292,6 +16862,8 @@ mod tests {
         assert!(app.prespawn_target().is_some(), "the policy is back to yes");
         let (_tx, rx) = mpsc::channel();
         app.stopping.push(PendingStop {
+            operation: None,
+            context: json!({}),
             id: A.into(),
             label: "one".into(),
             verb: "delete",

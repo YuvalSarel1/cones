@@ -134,12 +134,17 @@ impl Default for Query {
 }
 
 /// Work done for this request, useful for fixtures and local measurements.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct Stats {
     pub indexed_files: usize,
     pub metadata_reads: usize,
     pub metadata_bytes: u64,
     pub hydrated_files: usize,
+    pub metadata_cache_hits: usize,
+    pub column_cache_hits: usize,
+    pub index_ms: f64,
+    pub hydrate_ms: f64,
+    pub worker_ms: f64,
 }
 
 #[derive(Debug)]
@@ -287,13 +292,16 @@ struct Cache {
 
 impl Cache {
     fn page(&mut self, sources: &[Source], query: Query) -> Result<Page> {
+        let started = std::time::Instant::now();
         ensure!(
             (1..=MAX_PAGE).contains(&query.limit),
             "history page size must be 1..={MAX_PAGE}"
         );
         let mut stats = Stats::default();
         if !self.initialized || query.refresh {
+            let indexing = std::time::Instant::now();
             self.scan(sources, &mut stats)?;
+            stats.index_ms = indexing.elapsed().as_secs_f64() * 1000.0;
         }
         if let Some(cursor) = &query.after {
             ensure!(
@@ -346,6 +354,7 @@ impl Cache {
                 key: e.key.clone(),
             });
         if query.hydrate {
+            let hydrating = std::time::Instant::now();
             for entry in &mut entries {
                 if query
                     .hydrate_keys
@@ -361,8 +370,10 @@ impl Cache {
                 }
                 entry.columns = Some(columns);
             }
+            stats.hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.0;
         }
         stats.indexed_files = self.files.len();
+        stats.worker_ms = started.elapsed().as_secs_f64() * 1000.0;
         Ok(Page {
             entries,
             next,
@@ -404,7 +415,10 @@ impl Cache {
                     Err(e) => return Err(e).context("reading history metadata"),
                 };
                 let cached = match self.files.get(&path).filter(|c| c.stamp == current) {
-                    Some(c) => c.clone(),
+                    Some(c) => {
+                        stats.metadata_cache_hits += 1;
+                        c.clone()
+                    }
                     None => {
                         let entry = metadata(&source, &path, archived, current.len, stats)?;
                         ensure!(
@@ -498,6 +512,7 @@ impl Cache {
             && c.statusline == status_stamp
         {
             c.used = self.used;
+            stats.column_cache_hits += 1;
             return Ok(c.columns.clone());
         }
         let mut columns = match spec.transcript.handler {

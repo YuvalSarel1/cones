@@ -717,6 +717,16 @@ pub fn thread_rows(
     live: &[Session],
     removed: &BTreeSet<String>,
 ) -> Vec<Session> {
+    thread_rows_observed(codex, state, live, removed, |_, _| {})
+}
+
+pub(crate) fn thread_rows_observed(
+    codex: &Path,
+    state: &Path,
+    live: &[Session],
+    removed: &BTreeSet<String>,
+    mut source: impl FnMut(&str, &str),
+) -> Vec<Session> {
     let index = index(codex);
     let daemon = daemon_pid(codex);
     let mut ids: Vec<(String, Option<Thread>)> =
@@ -742,6 +752,14 @@ pub fn thread_rows(
                 .or_else(|| rollout_for(codex, &index, &id))?;
             let meta = meta_of(&rollout);
             let tail = tail_of(&rollout);
+            source(
+                &id,
+                if record.is_some() {
+                    "saved_launch"
+                } else {
+                    "daemon_lock"
+                },
+            );
             Some(Session {
                 title: index
                     .titles
