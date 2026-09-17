@@ -120,12 +120,11 @@ pub fn session_dir(pi: &Path, cwd: &Path) -> PathBuf {
         .to_string_lossy()
         .trim_start_matches('/')
         .replace(['/', ':'], "-");
-    pi.join(
-        crate::harness::spec(crate::config::HarnessKind::Pi)
-            .transcript
-            .live_root(),
-    )
-    .join(format!("--{name}--"))
+    let transcript = &crate::harness::spec(crate::config::HarnessKind::Pi).transcript;
+    if let Some(directory) = transcript.live_scan_root().override_dir() {
+        return directory;
+    }
+    transcript.live_path(pi).join(format!("--{name}--"))
 }
 
 pub fn meta(line: &str) -> Option<Meta> {
@@ -163,7 +162,11 @@ pub fn tail(lines: &str) -> Tail {
             t.state = Some(state);
         }
         if t.prompt.is_none() {
-            t.prompt = spec.transcript.messages.user.headline(&v);
+            t.prompt = spec
+                .transcript
+                .messages
+                .user
+                .headline_with_attachments(&v, true);
         }
         if let Some(last) = spec.transcript.messages.assistant.headline(&v) {
             t.last = Some(last);

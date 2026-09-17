@@ -524,11 +524,9 @@ fn rollout_for(codex: &Path, index: &Index, id: &str) -> Option<PathBuf> {
     }
     let suffix = format!("-{id}.jsonl");
     let mut stack = vec![
-        codex.join(
-            crate::harness::spec(crate::config::HarnessKind::Codex)
-                .transcript
-                .live_root(),
-        ),
+        crate::harness::spec(crate::config::HarnessKind::Codex)
+            .transcript
+            .live_path(codex),
     ];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -785,11 +783,9 @@ pub fn thread_rows(
 fn rollouts(codex: &Path, since: DateTime<Utc>) -> Vec<(PathBuf, Meta)> {
     let mut out = Vec::new();
     let mut stack = vec![
-        codex.join(
-            crate::harness::spec(crate::config::HarnessKind::Codex)
-                .transcript
-                .live_root(),
-        ),
+        crate::harness::spec(crate::config::HarnessKind::Codex)
+            .transcript
+            .live_path(codex),
     ];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(dir).into_iter().flatten().flatten() {

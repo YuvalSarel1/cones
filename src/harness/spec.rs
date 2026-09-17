@@ -37,10 +37,21 @@ static SPECS: LazyLock<Vec<HarnessSpec>> = LazyLock::new(|| {
 });
 static KINDS: LazyLock<Vec<HarnessKind>> =
     LazyLock::new(|| BUILTINS.iter().map(|(kind, _)| *kind).collect());
+static LAUNCHABLE: LazyLock<Vec<HarnessKind>> = LazyLock::new(|| {
+    SPECS
+        .iter()
+        .filter(|spec| spec.operations.launch.is_some())
+        .map(|spec| spec.kind)
+        .collect()
+});
 
 /// Registration order is the composer's cycle order.
 pub fn known() -> &'static [HarnessKind] {
     &KINDS
+}
+
+pub fn launchable() -> &'static [HarnessKind] {
+    &LAUNCHABLE
 }
 
 pub fn spec(kind: HarnessKind) -> &'static HarnessSpec {
@@ -54,8 +65,7 @@ pub fn by_name(name: &str) -> Option<&'static HarnessSpec> {
     SPECS.iter().find(|s| s.name == name)
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct HarnessSpec {
     pub version: u32,
     pub kind: HarnessKind,
@@ -66,11 +76,11 @@ pub struct HarnessSpec {
     pub discovery: Discovery,
     pub state: State,
     pub transcript: Transcript,
-    pub launch: Launch,
-    pub probe: Probe,
+    pub launch: Option<Launch>,
     pub default_session: SessionKind,
     pub session_kinds: BTreeMap<String, SessionKind>,
     pub commands: Commands,
+    pub operations: Operations,
     pub execution: Execution,
     pub input: Input,
     pub viewer: Viewer,
@@ -78,11 +88,68 @@ pub struct HarnessSpec {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct Definition {
+    version: u32,
+    kind: HarnessKind,
+    icon: String,
+    colour: Option<[u8; 3]>,
+    home: Home,
+    discovery: Discovery,
+    #[serde(default)]
+    state: State,
+    transcript: Transcript,
+    #[serde(default)]
+    operations: Operations,
+    #[serde(default)]
+    execution: Execution,
+    #[serde(default)]
+    viewer: Viewer,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Operations {
+    pub launch: Option<Launch>,
+    pub attach: Option<Operation>,
+    pub resume: Option<Operation>,
+    pub remove: Option<Operation>,
+    pub unarchive: Option<Operation>,
+    #[serde(default)]
+    pub rename: bool,
+    #[serde(default)]
+    pub sessions: Sessions,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Operation {
+    pub args: Vec<String>,
+    pub probe: Option<Probe>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sessions {
+    #[serde(default)]
+    pub default: SessionKind,
+    #[serde(default)]
+    pub kinds: BTreeMap<String, SessionKind>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Home {
     pub env: String,
-    /// Claude receives an explicit root from its caller. Other defaults remain siblings of it.
-    pub sibling: Option<PathBuf>,
+    pub default: HomeDefault,
     pub siblings: Option<Siblings>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "base", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HomeDefault {
+    Provided,
+    ProvidedParent { path: PathBuf },
+    User { path: PathBuf },
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,9 +162,11 @@ pub struct Siblings {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Discovery {
+    #[serde(skip)]
     pub handler: Native,
     pub registry: Option<PathBuf>,
     pub daemon: Option<Daemon>,
+    #[serde(default)]
     pub exclude_subcommands: Vec<String>,
     pub process: Option<String>,
 }
@@ -135,17 +204,20 @@ impl Discovery {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
+    #[serde(skip)]
     pub handler: StateHandler,
+    #[serde(default)]
     pub rules: Vec<StateRule>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StateHandler {
     ClaudeRegistry,
+    #[default]
     EventMap,
 }
 
@@ -206,9 +278,10 @@ impl State {
 }
 
 /// Complex native report interpretation remains ordinary Rust.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Native {
+    #[default]
     Claude,
     Codex,
     Pi,
@@ -224,9 +297,26 @@ impl Native {
     }
 }
 
+fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {
+    match kind {
+        HarnessKind::Claude => (
+            Native::Claude,
+            LaunchHandler::ClaudeBackground,
+            Resume::BackgroundThenAttach,
+        ),
+        HarnessKind::Codex => (
+            Native::Codex,
+            LaunchHandler::CodexRemote,
+            Resume::CodexRemote,
+        ),
+        HarnessKind::Pi => (Native::Pi, LaunchHandler::Terminal, Resume::Transcript),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transcript {
+    #[serde(skip)]
     pub handler: Native,
     pub roots: Vec<ScanRoot>,
     pub statusline: Option<Statusline>,
@@ -244,13 +334,15 @@ pub struct Messages {
 #[serde(deny_unknown_fields)]
 pub struct MessageText {
     pub id: Option<String>,
+    #[serde(default)]
     pub headline: Headline,
     pub sources: Vec<TextSource>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Headline {
+    #[default]
     First,
     Last,
 }
@@ -259,10 +351,13 @@ pub enum Headline {
 #[serde(deny_unknown_fields)]
 pub struct TextSource {
     pub when: BTreeMap<String, String>,
+    #[serde(default)]
     pub unless: Vec<String>,
     pub path: String,
     pub shape: TextShape,
+    #[serde(default)]
     pub types: Vec<String>,
+    #[serde(default)]
     pub labels: BTreeMap<String, String>,
 }
 
@@ -313,8 +408,16 @@ impl MessageText {
     }
 
     pub fn headline(&self, event: &serde_json::Value) -> Option<String> {
+        self.headline_with_attachments(event, false)
+    }
+
+    pub fn headline_with_attachments(
+        &self,
+        event: &serde_json::Value,
+        attachments: bool,
+    ) -> Option<String> {
         let mut lines = self
-            .parts(event, false)
+            .parts(event, attachments)
             .into_iter()
             .filter_map(crate::fleet::headline);
         match self.headline {
@@ -329,6 +432,17 @@ impl MessageText {
 }
 
 impl Transcript {
+    pub fn live_scan_root(&self) -> &ScanRoot {
+        self.roots
+            .iter()
+            .find(|root| !root.archived)
+            .expect("validated live root")
+    }
+
+    pub fn live_path(&self, home: &Path) -> PathBuf {
+        self.live_scan_root().resolve(home)
+    }
+
     pub fn live_root(&self) -> &Path {
         &self
             .roots
@@ -347,13 +461,32 @@ impl Transcript {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScanRoot {
     pub path: PathBuf,
+    pub env: Option<String>,
     /// Number of directory levels below the root; null means recursive.
     pub depth: Option<usize>,
     pub archived: bool,
+}
+
+impl ScanRoot {
+    pub fn override_dir(&self) -> Option<PathBuf> {
+        std::env::var_os(self.env.as_ref()?)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    pub fn resolve(&self, home: &Path) -> PathBuf {
+        self.resolve_with(home, self.override_dir().as_deref())
+    }
+
+    pub fn resolve_with(&self, home: &Path, directory: Option<&Path>) -> PathBuf {
+        directory
+            .filter(|path| !path.as_os_str().is_empty())
+            .map_or_else(|| home.join(&self.path), Path::to_owned)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -363,16 +496,21 @@ pub struct Statusline {
     pub window_pointer: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Launch {
+    #[serde(skip)]
     pub handler: LaunchHandler,
     pub identity: LaunchIdentity,
     pub session_kind: Option<String>,
+    #[serde(default)]
     pub prefix: Vec<String>,
+    #[serde(default)]
     pub remote: Vec<String>,
-    pub model: Option<Model>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
     pub prompt: Vec<String>,
+    pub probe: Probe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -395,53 +533,57 @@ impl LaunchIdentity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LaunchHandler {
     ClaudeBackground,
     CodexRemote,
+    #[default]
     Terminal,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Model {
-    pub source: ModelSource,
-    pub flag: String,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelSource {
-    Claude,
-    Codex,
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Probe {
     pub args: Vec<String>,
+    #[serde(default = "yes")]
     pub require_success: bool,
+    #[serde(default)]
     pub contains: Vec<String>,
+    #[serde(default)]
     pub version: Version,
+    pub minimum_version: Option<String>,
     pub error: String,
     pub description: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Version {
+    #[default]
     None,
     Text,
-    JsonLines { pointer: String },
+    JsonLines {
+        pointer: String,
+    },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionKind {
     pub join: Join,
     pub stop: Stop,
     pub lifetime: Lifetime,
+}
+
+impl Default for SessionKind {
+    fn default() -> Self {
+        Self {
+            join: Join::Unavailable,
+            stop: Stop::Signal,
+            lifetime: Lifetime::Terminal,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -467,8 +609,7 @@ pub enum Lifetime {
     Daemon,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct Commands {
     pub attach: Vec<String>,
     pub resume: Vec<String>,
@@ -486,28 +627,55 @@ pub enum Resume {
     Transcript,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Execution {
+    #[serde(default)]
     pub enforcement: Support,
+    #[serde(default)]
     pub result: Support,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Support {
     Supported,
     Unsupported,
+    #[default]
     Unknown,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct Input {
     pub return_to_list: Vec<ReturnBinding>,
     pub empty_prompt: EmptyPrompt,
     pub markers: String,
     pub ignore_braille: bool,
+}
+
+impl Default for Input {
+    fn default() -> Self {
+        Self {
+            return_to_list: vec![
+                ReturnBinding {
+                    key: ReturnKey::CtrlZ,
+                    when: ReturnWhen::Always,
+                },
+                ReturnBinding {
+                    key: ReturnKey::Tab,
+                    when: ReturnWhen::Always,
+                },
+                ReturnBinding {
+                    key: ReturnKey::Left,
+                    when: ReturnWhen::EmptyPrompt,
+                },
+            ],
+            empty_prompt: EmptyPrompt::Marker,
+            markers: "|>$#│┊┃▐›❯".into(),
+            ignore_braille: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -535,12 +703,31 @@ pub enum ReturnWhen {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Viewer {
+    pub label: Option<String>,
+    pub input: Input,
     pub peek: Peek,
     pub peek_blocked_states: Vec<StateWord>,
     pub retention: Retention,
     pub input_alignment: InputAlignment,
+}
+
+impl Default for Viewer {
+    fn default() -> Self {
+        Self {
+            label: None,
+            input: Input::default(),
+            peek: Peek::Unavailable,
+            peek_blocked_states: vec![StateWord::Failed, StateWord::Stopped],
+            retention: Retention::Retain,
+            input_alignment: InputAlignment::BottomRule,
+        }
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -574,20 +761,60 @@ pub enum EmptyPrompt {
 
 impl HarnessSpec {
     pub fn parse(yaml: &str) -> Result<Self> {
-        let spec: Self = serde_yaml::from_str(yaml).context("reading harness definition")?;
+        let mut definition: Definition =
+            serde_yaml::from_str(yaml).context("reading harness definition")?;
+        let (native, launch, resume) = handlers(definition.kind);
+        definition.discovery.handler = native;
+        definition.transcript.handler = native;
+        definition.state.handler = if native == Native::Claude {
+            StateHandler::ClaudeRegistry
+        } else {
+            StateHandler::EventMap
+        };
+        if let Some(operation) = &mut definition.operations.launch {
+            operation.handler = launch;
+        }
+        let name = definition.kind.to_string();
+        let arguments = |operation: &Option<Operation>| {
+            operation
+                .as_ref()
+                .map_or_else(Vec::new, |op| op.args.clone())
+        };
+        let spec = Self {
+            version: definition.version,
+            kind: definition.kind,
+            name: name.clone(),
+            icon: definition.icon,
+            colour: definition.colour,
+            home: definition.home,
+            discovery: definition.discovery,
+            state: definition.state,
+            transcript: definition.transcript,
+            launch: definition.operations.launch.clone(),
+            default_session: definition.operations.sessions.default.clone(),
+            session_kinds: definition.operations.sessions.kinds.clone(),
+            commands: Commands {
+                attach: arguments(&definition.operations.attach),
+                resume: arguments(&definition.operations.resume),
+                remove: arguments(&definition.operations.remove),
+                unarchive: arguments(&definition.operations.unarchive),
+                resume_handler: resume,
+                viewer: definition.viewer.label.clone().unwrap_or(name),
+            },
+            operations: definition.operations,
+            execution: definition.execution,
+            input: definition.viewer.input.clone(),
+            viewer: definition.viewer,
+        };
         spec.validate()?;
         Ok(spec)
     }
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.version == 1,
+            self.version == 2,
             "unsupported harness definition version {}",
             self.version
-        );
-        ensure!(
-            self.name == self.kind.to_string(),
-            "harness name and kind disagree"
         );
         ensure!(!self.icon.trim().is_empty(), "harness icon is empty");
         ensure!(
@@ -600,8 +827,9 @@ impl HarnessSpec {
                 && !self.home.env.as_bytes()[0].is_ascii_digit(),
             "invalid home environment variable"
         );
-        if let Some(path) = &self.home.sibling {
-            relative(path)?;
+        match &self.home.default {
+            HomeDefault::Provided => {}
+            HomeDefault::ProvidedParent { path } | HomeDefault::User { path } => relative(path)?,
         }
         if let Some(path) = &self.discovery.registry {
             relative(path)?;
@@ -661,6 +889,9 @@ impl HarnessSpec {
         let mut roots = HashSet::new();
         for root in &self.transcript.roots {
             relative(&root.path)?;
+            if let Some(env) = &root.env {
+                environment_name(env)?;
+            }
             ensure!(roots.insert(&root.path), "duplicate transcript root");
         }
         if let Some(statusline) = &self.transcript.statusline {
@@ -690,31 +921,43 @@ impl HarnessSpec {
                 }
             }
         }
-        if let Version::JsonLines { pointer: path } = &self.probe.version {
-            pointer(path)?;
-        }
-        ensure!(!self.probe.args.is_empty(), "empty capability probe");
-        validate_args(&self.probe.args, &[])?;
-        validate_args(&self.launch.prefix, &[])?;
-        validate_args(&self.launch.remote, &["remote", "cwd"])?;
-        validate_args(&self.launch.prompt, &["prompt"])?;
-        ensure!(
-            self.launch.prompt.last().map(String::as_str) == Some("{prompt}")
-                && self
-                    .launch
-                    .prompt
-                    .iter()
-                    .filter(|a| *a == "{prompt}")
-                    .count()
-                    == 1
-                && self.launch.prompt.iter().any(|a| a == "--"),
-            "launch must pass one prompt after --"
-        );
-        if let Some(model) = &self.launch.model {
+        if let Some(launch) = &self.launch {
+            launch.probe.validate()?;
+            validate_args(&launch.prefix, &[])?;
+            validate_args(&launch.remote, &["remote", "cwd"])?;
+            validate_args(&launch.prompt, &["prompt"])?;
             ensure!(
-                model.flag.starts_with('-') && !model.flag.contains('{'),
-                "invalid model flag"
+                launch.prompt.last().map(String::as_str) == Some("{prompt}")
+                    && launch.prompt.iter().filter(|a| *a == "{prompt}").count() == 1
+                    && launch.prompt.iter().any(|a| a == "--"),
+                "launch must pass one prompt after --"
             );
+            for flag in [&launch.model, &launch.provider].into_iter().flatten() {
+                ensure!(
+                    flag.starts_with('-')
+                        && !flag.contains(['{', '\0'])
+                        && !flag.contains(char::is_whitespace),
+                    "invalid model or provider flag"
+                );
+            }
+            ensure!(
+                launch.provider.is_none() || self.kind == HarnessKind::Pi,
+                "provider selection requires a native provider adapter"
+            );
+        }
+        for operation in [
+            &self.operations.attach,
+            &self.operations.resume,
+            &self.operations.remove,
+            &self.operations.unarchive,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            ensure!(!operation.args.is_empty(), "empty operation command");
+            if let Some(probe) = &operation.probe {
+                probe.validate()?;
+            }
         }
         validate_args(&self.commands.attach, &["id", "short_id", "remote"])?;
         validate_args(
@@ -724,8 +967,8 @@ impl HarnessSpec {
         validate_args(&self.commands.remove, &["id", "short_id"])?;
         validate_args(&self.commands.unarchive, &["id"])?;
         ensure!(
-            !self.commands.resume.is_empty(),
-            "missing history resume command"
+            !self.operations.rename || self.kind == HarnessKind::Claude,
+            "rename requires a native rename adapter"
         );
         for kind in self.session_kinds.values().chain([&self.default_session]) {
             ensure!(
@@ -733,7 +976,7 @@ impl HarnessSpec {
                 "a terminal session cannot advertise a native join"
             );
             ensure!(
-                kind.join != Join::Attach || !self.commands.attach.is_empty(),
+                kind.join == Join::Unavailable || self.operations.attach.is_some(),
                 "missing attach command"
             );
             ensure!(
@@ -757,21 +1000,36 @@ impl HarnessSpec {
             Resume::BackgroundThenAttach => {
                 validate_args(&self.commands.attach, &["id", "short_id"])?;
                 validate_args(&self.commands.resume, &["id", "short_id"])?;
-                require_operand(&self.commands.attach, &["{id}", "{short_id}"])?;
-                require_operand(&self.commands.resume, &["{id}", "{short_id}"])?;
+                if self.operations.attach.is_some() {
+                    require_operand(&self.commands.attach, &["{id}", "{short_id}"])?;
+                }
+                if self.operations.resume.is_some() {
+                    ensure!(
+                        self.operations.attach.is_some(),
+                        "background resume requires attach"
+                    );
+                    require_operand(&self.commands.resume, &["{id}", "{short_id}"])?;
+                }
             }
             Resume::CodexRemote => {
-                for command in [&self.commands.attach, &self.commands.resume] {
-                    validate_args(command, &["id", "remote"])?;
-                    require_operand(command, &["{id}"])?;
-                    require_operand(command, &["{remote}"])?;
+                for operation in [&self.operations.attach, &self.operations.resume]
+                    .into_iter()
+                    .flatten()
+                {
+                    validate_args(&operation.args, &["id", "remote"])?;
+                    require_operand(&operation.args, &["{id}"])?;
+                    require_operand(&operation.args, &["{remote}"])?;
                 }
-                require_operand(&self.launch.remote, &["{remote}"])?;
-                require_operand(&self.launch.remote, &["{cwd}"])?;
+                if let Some(launch) = &self.launch {
+                    require_operand(&launch.remote, &["{remote}"])?;
+                    require_operand(&launch.remote, &["{cwd}"])?;
+                }
             }
             Resume::Transcript => {
                 validate_args(&self.commands.resume, &["transcript"])?;
-                require_operand(&self.commands.resume, &["{transcript}"])?;
+                if self.operations.resume.is_some() {
+                    require_operand(&self.commands.resume, &["{transcript}"])?;
+                }
                 ensure!(
                     self.commands.attach.is_empty(),
                     "a transcript resume is not a live attach"
@@ -782,6 +1040,10 @@ impl HarnessSpec {
             require_operand(&self.commands.remove, &["{id}", "{short_id}"])?;
         }
         if !self.commands.unarchive.is_empty() {
+            ensure!(
+                self.operations.resume.is_some(),
+                "unarchive requires resume"
+            );
             require_operand(&self.commands.unarchive, &["{id}"])?;
         }
         ensure!(
@@ -804,37 +1066,33 @@ impl HarnessSpec {
             "existing-daemon peek needs a native daemon probe"
         );
         ensure!(
+            self.viewer.peek == Peek::Unavailable || self.operations.attach.is_some(),
+            "viewer peek requires an attach operation"
+        );
+        ensure!(
             self.viewer.retention != Retention::EvictLive || self.viewer.peek != Peek::Unavailable,
             "only a rejoinable viewer can be evicted"
         );
-        ensure!(
-            (self.launch.identity == LaunchIdentity::BackgroundId)
-                == (self.launch.handler == LaunchHandler::ClaudeBackground),
-            "launch identity and native lifetime disagree"
-        );
-        ensure!(
-            self.launch.identity != LaunchIdentity::ReportedThread
-                || self.discovery.handler == Native::Codex,
-            "reported-thread handover requires a native thread handler"
-        );
-        // Each handler interprets a native protocol. A YAML claim cannot create an implementation.
-        let (native, launch, resume) = match self.kind {
-            HarnessKind::Claude => (
-                Native::Claude,
-                LaunchHandler::ClaudeBackground,
-                Resume::BackgroundThenAttach,
-            ),
-            HarnessKind::Codex => (
-                Native::Codex,
-                LaunchHandler::CodexRemote,
-                Resume::CodexRemote,
-            ),
-            HarnessKind::Pi => (Native::Pi, LaunchHandler::Terminal, Resume::Transcript),
-        };
+        if let Some(launch) = &self.launch {
+            ensure!(
+                (launch.identity == LaunchIdentity::BackgroundId)
+                    == (launch.handler == LaunchHandler::ClaudeBackground),
+                "launch identity and native lifetime disagree"
+            );
+            ensure!(
+                launch.identity != LaunchIdentity::ReportedThread
+                    || self.discovery.handler == Native::Codex,
+                "reported-thread handover requires a native thread handler"
+            );
+        }
+        let (native, launch, resume) = handlers(self.kind);
         ensure!(
             self.discovery.handler == native
                 && self.transcript.handler == native
-                && self.launch.handler == launch
+                && self
+                    .launch
+                    .as_ref()
+                    .is_none_or(|operation| operation.handler == launch)
                 && self.commands.resume_handler == resume,
             "native handler does not implement this harness"
         );
@@ -879,26 +1137,27 @@ impl HarnessSpec {
 impl Home {
     pub fn resolve(&self, claude: &Path) -> PathBuf {
         // An explicit Claude root is authoritative, including test roots.
-        if self.sibling.is_none() {
+        if matches!(self.default, HomeDefault::Provided) {
             return claude.to_owned();
         }
-        self.resolve_with(claude, std::env::var_os(&self.env).as_deref())
-            .expect("validated sibling default")
+        self.resolve_with(
+            claude,
+            &dirs::home_dir().unwrap_or_default(),
+            std::env::var_os(&self.env).as_deref(),
+        )
     }
 
-    /// Pure resolver for fixture checks; a relative or empty override keeps native semantics.
-    pub fn resolve_with(&self, claude: &Path, value: Option<&OsStr>) -> Option<PathBuf> {
+    /// Native overrides keep their path semantics; definitions state the default's base.
+    pub fn resolve_with(&self, provided: &Path, user: &Path, value: Option<&OsStr>) -> PathBuf {
         value
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
-            .or_else(|| {
-                self.sibling.as_ref().map(|p| {
-                    let mut parts = p.components();
-                    let first = parts.next().expect("validated sibling path");
-                    claude
-                        .with_file_name(first.as_os_str())
-                        .join(parts.as_path())
-                })
+            .unwrap_or_else(|| match &self.default {
+                HomeDefault::Provided => provided.to_owned(),
+                HomeDefault::ProvidedParent { path } => {
+                    provided.parent().unwrap_or(provided).join(path)
+                }
+                HomeDefault::User { path } => user.join(path),
             })
     }
 
@@ -932,6 +1191,24 @@ impl Home {
 }
 
 impl Probe {
+    fn validate(&self) -> Result<()> {
+        if let Version::JsonLines { pointer: path } = &self.version {
+            pointer(path)?;
+        }
+        ensure!(!self.args.is_empty(), "empty capability probe");
+        if let Some(minimum) = &self.minimum_version {
+            ensure!(
+                version_number(minimum).is_some(),
+                "invalid minimum native version"
+            );
+            ensure!(
+                !matches!(self.version, Version::None),
+                "minimum version requires version output"
+            );
+        }
+        validate_args(&self.args, &[])
+    }
+
     pub fn report(&self, success: bool, stdout: &str) -> Result<String> {
         ensure!(
             (!self.require_success || success) && self.contains.iter().all(|s| stdout.contains(s)),
@@ -947,8 +1224,34 @@ impl Probe {
                 .find_map(|v| v.pointer(pointer)?.as_str().map(str::to_owned))
                 .unwrap_or_default(),
         };
+        ensure!(
+            matches!(self.version, Version::None) || !version.is_empty(),
+            "{}: probe did not report a version",
+            self.error
+        );
+        if let Some(minimum) = &self.minimum_version {
+            ensure!(
+                version_number(&version)
+                    .zip(version_number(minimum))
+                    .is_some_and(|(got, required)| got >= required),
+                "{}: requires version {minimum} or later, reported {version}",
+                self.error
+            );
+        }
         Ok(self.description.replace("{version}", &version))
     }
+}
+
+fn version_number(value: &str) -> Option<[u64; 3]> {
+    let word = value.split_whitespace().next()?;
+    let mut parts = word.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = match parts.next() {
+        Some(part) => part.parse().ok()?,
+        None => 0,
+    };
+    parts.next().is_none().then_some([major, minor, patch])
 }
 
 /// Templates substitute complete argv entries, never shell fragments or lossy paths.
@@ -975,6 +1278,17 @@ fn relative(path: &Path) -> Result<()> {
             && path.components().all(|c| matches!(c, Component::Normal(_))),
         "expected a relative native path: {}",
         path.display()
+    );
+    Ok(())
+}
+
+fn environment_name(name: &str) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.bytes().enumerate().all(|(i, b)| {
+                b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+            }),
+        "invalid environment variable name"
     );
     Ok(())
 }

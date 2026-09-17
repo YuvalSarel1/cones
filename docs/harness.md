@@ -48,7 +48,7 @@ While the local daemon runs, a remote client with no explicit thread id has no s
 
 pi overwrites its argv with the process title `pi`, reporting no flags or session id. Consequently `pi install` and `pi update` also appear until they exit; filtering them would require guessing. A server titled `pi-rpc` does not match.
 
-The kernel cwd locates `sessions/--<cwd>--/` under the native home: drop the leading slash and replace `/` and `:` with `-`. With exactly one live pi in that cwd, choose its most recently written session file since process start. The file's first-line cwd must also match, because distinct paths can flatten to the same directory name. With multiple processes, attribution is omitted. The file's own start is insufficient because `--continue` appends to an older session.
+`PI_CODING_AGENT_SESSION_DIR`, when nonempty, supplies the complete session directory. Otherwise the kernel cwd locates `sessions/--<cwd>--/` under the native home: drop the leading slash and replace `/` and `:` with `-`. With exactly one live pi in that cwd, choose its most recently written session file since process start. The file's first-line cwd must also match, because distinct paths can flatten to the same directory name. With multiple processes, attribution is omitted. The file's own start is insufficient because `--continue` appends to an older session.
 
 The session id is the file's first-line `id`, otherwise `pi-<pid>`. A session file appears after the first turn. The row ends when the process exits.
 
@@ -60,7 +60,7 @@ History uses native transcript archives independently of live registries, proces
 | --- | --- |
 | Claude | `projects/*/*.jsonl`; exclude nested subagent transcripts and records marked `isSidechain`. |
 | Codex | Rollouts under `sessions/` and `archived_sessions/`; exclude sources identified as subagents. Database names precede the legacy index and transcript prompt. |
-| pi | `sessions/*/*.jsonl`. |
+| pi | `sessions/*/*.jsonl`, or the directory named by `PI_CODING_AGENT_SESSION_DIR`. |
 
 Identity is harness, canonical native home and session id. Aliases of a home collapse; separate homes stay distinct. Directory symlinks are not followed. Claude copies across project folders collapse to the copy with the latest recorded activity. Entries without a recorded cwd are omitted; missing activity remains absent and sorts last. No file mtime substitutes for a reported timestamp.
 
@@ -157,7 +157,7 @@ Historical resume uses the recorded cwd and native home. Claude background conve
 
 Codex's daemon start reports `socketPath` and is idempotent. Its remote client does not report an initial thread id, so prompt/cwd/start matching is an association limit. Ambiguous launches retain their own viewer rows; cones never chooses a thread merely because its rollout is newest. Returning to the list before discovery finishes keeps trying on later refreshes. Closing an unidentified client may leave no saved row.
 
-Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Native session permissions remain harness-owned.
+Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. Native session permissions remain harness-owned.
 
 ### Supervised execution
 

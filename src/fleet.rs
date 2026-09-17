@@ -347,12 +347,9 @@ fn session(
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
     // Claude keeps transcripts under projects/<cwd with every non-alphanumeric byte as '-'>.
-    let transcript = dir
-        .join(
-            crate::harness::spec(crate::config::HarnessKind::Claude)
-                .transcript
-                .live_root(),
-        )
+    let transcript = crate::harness::spec(crate::config::HarnessKind::Claude)
+        .transcript
+        .live_path(dir)
         .join(
             cwd.to_string_lossy()
                 .replace(|c: char| !c.is_ascii_alphanumeric(), "-"),
@@ -668,8 +665,8 @@ pub fn rename(session: &Session, name: &str) -> Result<()> {
     let name = name.trim();
     ensure!(!name.is_empty(), "a title is needed");
     ensure!(
-        session.harness == "claude",
-        "only Claude sessions can be renamed here"
+        crate::harness::by_name(&session.harness).is_some_and(|spec| spec.operations.rename),
+        "this harness has no rename operation"
     );
     let path = session
         .transcript_path
@@ -809,16 +806,12 @@ fn report_with_activity(transcript: &Path, activity: bool) -> Result<Report> {
         {
             a.tools += blocks.iter().filter(|b| b["type"] == "tool_use").count() as u64;
         }
-        if r.first_prompt.is_none() && event["type"] == "user" && event["isMeta"] != true {
-            r.first_prompt = match &message["content"] {
-                Value::String(text) => headline(text),
-                Value::Array(blocks) => blocks
-                    .iter()
-                    .filter(|b| b["type"] == "text")
-                    .filter_map(|b| b["text"].as_str())
-                    .find_map(headline),
-                _ => None,
-            };
+        if r.first_prompt.is_none() {
+            r.first_prompt = crate::harness::spec(crate::config::HarnessKind::Claude)
+                .transcript
+                .messages
+                .user
+                .headline_with_attachments(&event, true);
         }
         let Some(u) = message.get("usage").filter(|u| u.is_object()) else {
             continue;
@@ -960,6 +953,7 @@ pub fn stop(claude: &Path, session_id: &str) -> Result<bool> {
     // The transcript remains resumable.
     let spec = crate::harness::by_name(&session.harness).context("unknown session harness")?;
     if spec.session(session.kind.as_deref()).stop == crate::harness::spec::Stop::Remove {
+        crate::harness::check_operation(spec, &spec.operations.remove, "remove")?;
         let claude = crate::harness::executable(&spec.name, &crate::harness::launch_path())
             .with_context(|| format!("{} not found", spec.name))?;
         let short = session_id.get(..8).context("invalid session id")?;

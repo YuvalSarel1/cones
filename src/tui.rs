@@ -2447,7 +2447,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 26] = [
+const FIELDS: [Field; 28] = [
     Field {
         group: "cones",
         sub: "",
@@ -2489,7 +2489,7 @@ const FIELDS: [Field; 26] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
-        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and is started with the instruction alone: the model and provider defaults name claude and codex.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and uses the pi model and provider defaults below.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi"]),
     },
@@ -2561,7 +2561,7 @@ const FIELDS: [Field; 26] = [
         sub: "",
         name: "bedrock",
         short: "run on Bedrock",
-        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi starts with no provider switch. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
+        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi uses its own pi_provider setting. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
         builtin: SYSTEM,
         input: Answer::Pick(BOOL),
     },
@@ -2638,6 +2638,24 @@ const FIELDS: [Field; 26] = [
         long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
         builtin: "false",
         input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "pi",
+        name: "pi_model",
+        short: "model id",
+        long: "Passed to pi as --model for sessions the composer starts. Empty follows pi's own model configuration. Pi jobs are unavailable.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "pi",
+        name: "pi_provider",
+        short: "provider",
+        long: "Passed to pi as --provider for sessions the composer starts. Empty follows pi's own provider configuration.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
     },
     Field {
         group: "runs",
@@ -2995,6 +3013,8 @@ impl ConfigForm {
                 "model" => d.model.clone().unwrap_or_default(),
                 "harness" => d.harness.map(|h| h.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
+                "pi_model" => d.pi_model.clone().unwrap_or_default(),
+                "pi_provider" => d.pi_provider.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -3141,6 +3161,8 @@ impl ConfigForm {
             env: Some(env).filter(|e: &Vec<String>| !e.is_empty()),
             model: text("model"),
             codex_model: text("codex_model"),
+            pi_model: text("pi_model"),
+            pi_provider: text("pi_provider"),
             bedrock: flag("bedrock"),
             aws_profile: text("aws_profile"),
             aws_region: text("aws_region"),
@@ -4259,7 +4281,7 @@ struct App {
     caret: usize,
     /// The PNGs pasted into the instruction, in the order their markers were typed.
     images: Vec<PathBuf>,
-    /// Index into `harness::known()` for the next launch.
+    /// Index into `harness::launchable()` for the next launch.
     harness: usize,
     /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
@@ -4345,7 +4367,9 @@ impl Pending {
             && s.cwd == self.session.cwd
             && (self.session.pid.is_some_and(|pid| s.pid == Some(pid))
                 || (harness::by_name(&s.harness).is_some_and(|spec| {
-                    spec.launch.identity == harness::spec::LaunchIdentity::BackgroundId
+                    spec.launch.as_ref().is_some_and(|launch| {
+                        launch.identity == harness::spec::LaunchIdentity::BackgroundId
+                    })
                 }) && self
                     .short
                     .as_deref()
@@ -4370,7 +4394,10 @@ fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session
     Session {
         session_id: id.to_owned(),
         harness: kind.to_string(),
-        kind: harness::spec(kind).launch.session_kind.clone(),
+        kind: harness::spec(kind)
+            .launch
+            .as_ref()
+            .and_then(|launch| launch.session_kind.clone()),
         cwd: dir.to_owned(),
         state: "started".into(),
         started: Some(chrono::Utc::now()),
@@ -5138,9 +5165,11 @@ impl App {
                 .find(|s| s.session_id == old.session_id)
                 .or_else(|| {
                     data.sessions.iter().find(|s| {
-                        harness::by_name(&old.harness)
-                            .is_some_and(|spec| spec.launch.identity.owns_client_pid())
-                            && s.harness == old.harness
+                        harness::by_name(&old.harness).is_some_and(|spec| {
+                            spec.launch
+                                .as_ref()
+                                .is_some_and(|launch| launch.identity.owns_client_pid())
+                        }) && s.harness == old.harness
                             && s.cwd == old.cwd
                             && old.pid.is_some_and(|pid| s.pid == Some(pid))
                     })
@@ -5154,7 +5183,9 @@ impl App {
         // simultaneous launches in one folder must not steal each other's viewers.
         let candidates = |open: &Open| -> Vec<&Session> {
             let Some(spec) = open.harness.map(harness::spec).filter(|spec| {
-                spec.launch.identity == harness::spec::LaunchIdentity::ReportedThread
+                spec.launch.as_ref().is_some_and(|launch| {
+                    launch.identity == harness::spec::LaunchIdentity::ReportedThread
+                })
             }) else {
                 return vec![];
             };
@@ -5170,8 +5201,8 @@ impl App {
             else {
                 return vec![];
             };
-            if !spec
-                .launch
+            let launch = spec.launch.as_ref().expect("filtered launch identity");
+            if !launch
                 .identity
                 .unresolved_key(&spec.name, &open.key, open.viewer.pid())
             {
@@ -5181,7 +5212,7 @@ impl App {
                 .iter()
                 .filter(|s| {
                     s.harness == spec.name
-                        && s.kind == spec.launch.session_kind
+                        && s.kind == launch.session_kind
                         && s.cwd == *dir
                         && s.started.is_some_and(|at| at >= *since)
                         && !self.viewers.iter().any(|o| o.key == s.session_id)
@@ -5217,9 +5248,11 @@ impl App {
                     } else {
                         s.title.clone().or(original)
                     };
-                    if harness::by_name(&s.harness)
-                        .is_some_and(|spec| spec.launch.identity.owns_client_pid())
-                    {
+                    if harness::by_name(&s.harness).is_some_and(|spec| {
+                        spec.launch
+                            .as_ref()
+                            .is_some_and(|launch| launch.identity.owns_client_pid())
+                    }) {
                         s.pid = Some(open.viewer.pid());
                     }
                     if open.record.is_some()
@@ -5248,9 +5281,11 @@ impl App {
         for open in &self.viewers {
             if open.harness.is_some_and(|kind| {
                 let spec = harness::spec(kind);
-                spec.launch
-                    .identity
-                    .unresolved_key(&spec.name, &open.key, open.viewer.pid())
+                spec.launch.as_ref().is_some_and(|launch| {
+                    launch
+                        .identity
+                        .unresolved_key(&spec.name, &open.key, open.viewer.pid())
+                })
             }) && !self
                 .pending
                 .iter()
@@ -5582,10 +5617,13 @@ impl App {
 
     fn rename_selected(&mut self) {
         match self.selected_session() {
-            Some(s) if s.harness == "claude" && s.transcript_path.is_some() => {
+            Some(s)
+                if harness::by_name(&s.harness).is_some_and(|spec| spec.operations.rename)
+                    && s.transcript_path.is_some() =>
+            {
                 self.mode = Mode::Rename(Input::new(s.title.clone().unwrap_or_default()));
             }
-            Some(s) if s.harness == "claude" => {
+            Some(s) if harness::by_name(&s.harness).is_some_and(|spec| spec.operations.rename) => {
                 self.status = "this session has no transcript yet".into();
             }
             Some(_) => self.status = "only Claude sessions can be renamed here".into(),
@@ -5736,8 +5774,11 @@ impl App {
                     p.session.pid = Some(viewer.pid());
                 }
                 if let Some(s) = self.data.sessions.iter_mut().find(|s| s.session_id == key)
-                    && harness::by_name(&s.harness)
-                        .is_some_and(|spec| spec.launch.identity.owns_client_pid())
+                    && harness::by_name(&s.harness).is_some_and(|spec| {
+                        spec.launch
+                            .as_ref()
+                            .is_some_and(|launch| launch.identity.owns_client_pid())
+                    })
                 {
                     s.pid = Some(viewer.pid());
                 }
@@ -6711,7 +6752,7 @@ impl App {
     }
 
     fn harness_at(kind: Option<HarnessKind>) -> usize {
-        harness::known()
+        harness::launchable()
             .iter()
             .position(|k| Some(*k) == kind)
             .unwrap_or(0)
@@ -6727,7 +6768,7 @@ impl App {
             return;
         }
         let dir = self.target_dir();
-        let kind = harness::known()[self.harness];
+        let kind = harness::launchable()[self.harness];
         let policy = self.session_policy();
         let prompt = self.take_prompt();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
@@ -6735,9 +6776,12 @@ impl App {
         self.debug(|| format!("start {what}: {prompt:?}"));
         let id = self.launch_row(kind, &dir, &prompt);
         // Codex and pi run as the dashboard's own client; only Claude is launched and left.
-        if harness::spec(kind).launch.handler != harness::spec::LaunchHandler::ClaudeBackground {
-            let record = (harness::spec(kind).launch.identity
-                == harness::spec::LaunchIdentity::ReportedThread)
+        let launch = harness::spec(kind)
+            .launch
+            .as_ref()
+            .expect("composer launch operation");
+        if launch.handler != harness::spec::LaunchHandler::ClaudeBackground {
+            let record = (launch.identity == harness::spec::LaunchIdentity::ReportedThread)
                 .then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
             // Use a temporary launch key until the harness reports the session's own id.
@@ -7004,7 +7048,7 @@ impl App {
         if self.on_button() {
             return Line::default();
         }
-        let kind = harness::known()[self.harness].to_string();
+        let kind = harness::launchable()[self.harness].to_string();
         let mut spans = vec![Span::styled(
             format!("{} › ", logo(&kind)),
             brand(&kind).add_modifier(Modifier::BOLD),
@@ -7057,7 +7101,7 @@ impl App {
         } else {
             format!(
                 "start {} in {}",
-                harness::known()[self.harness],
+                harness::launchable()[self.harness],
                 fleet::tilde(&self.target_dir())
             )
         };
@@ -7212,8 +7256,11 @@ impl App {
                 let ended_with_viewer = local.is_some()
                     && self.data.sessions.iter().any(|s| {
                         s.session_id == id
-                            && harness::by_name(&s.harness)
-                                .is_some_and(|spec| spec.launch.identity.owns_client_pid())
+                            && harness::by_name(&s.harness).is_some_and(|spec| {
+                                spec.launch
+                                    .as_ref()
+                                    .is_some_and(|launch| launch.identity.owns_client_pid())
+                            })
                     });
                 // Capture the native pid before closing can remove a launch placeholder.
                 let client = self
@@ -7697,7 +7744,7 @@ impl App {
                         None => self.status = "nothing in the pane".into(),
                     },
                     KeyCode::BackTab => {
-                        self.harness = (self.harness + 1) % harness::known().len();
+                        self.harness = (self.harness + 1) % harness::launchable().len();
                     }
                     // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
                     KeyCode::Enter

@@ -1,30 +1,18 @@
-version: 1
+version: 2
 kind: claude
-name: claude
 icon: "✻"
 colour: [215, 119, 87]
 home:
   env: CLAUDE_CONFIG_DIR
-  sibling: null
-  siblings: null
+  default: {base: provided}
 discovery:
-  handler: claude
   registry: sessions
-  daemon: null
-  exclude_subcommands: []
-  process: null
-# Precedence across state, tempo, registry status and wake/routine flags stays native code.
-state:
-  handler: claude_registry
-  rules: []
 transcript:
-  handler: claude
   messages:
     user:
       id: /uuid
-      headline: first
       sources:
-        - when: {"/type": user}
+        - when: {/type: user}
           unless: [/isMeta, /isSidechain]
           path: /message/content
           shape: string_or_blocks
@@ -32,9 +20,8 @@ transcript:
           labels: {image: "[image]", input_image: "[image]", document: "[document]"}
     assistant:
       id: /message/id
-      headline: first
       sources:
-        - when: {"/type": assistant}
+        - when: {/type: assistant}
           unless: [/isMeta, /isSidechain]
           path: /message/content
           shape: string_or_blocks
@@ -45,46 +32,35 @@ transcript:
   statusline:
     directory: statusline
     window_pointer: /context_window/context_window_size
-launch:
-  handler: claude_background
-  identity: background_id
-  session_kind: bg
-  prefix: [--bg]
-  remote: []
-  model: {source: claude, flag: --model}
-  prompt: [--, "{prompt}"]
-probe:
-  args: [--help]
-  require_success: false
-  contains: [--bg, attach]
-  version: {format: none}
-  error: "this claude has no --bg or attach, so a session opened here could not be left running; update Claude Code"
-  description: "claude: background sessions with a viewer (--bg, attach)"
-# Unknown Claude kinds retain the existing registry behavior. Interactive is explicit.
-default_session: {join: attach, stop: signal, lifetime: daemon}
-session_kinds:
-  bg: {join: attach, stop: remove, lifetime: daemon}
-  interactive: {join: unavailable, stop: signal, lifetime: terminal}
-commands:
-  attach: [attach, "{short_id}"]
-  resume: [--bg, --resume, "{id}"]
-  remove: [rm, "{short_id}"]
-  unarchive: []
-  resume_handler: background_then_attach
-  viewer: attach
+operations:
+  launch:
+    identity: background_id
+    session_kind: bg
+    prefix: [--bg]
+    model: --model
+    prompt: [--, "{prompt}"]
+    probe:
+      args: [--help]
+      require_success: false
+      contains: [--bg, attach]
+      error: "this claude has no --bg or attach, so a session opened here could not be left running; update Claude Code"
+      description: "claude: background sessions with a viewer (--bg, attach)"
+  attach:
+    args: [attach, "{short_id}"]
+  resume:
+    args: [--bg, --resume, "{id}"]
+  remove:
+    args: [rm, "{short_id}"]
+  rename: true
+  sessions:
+    default: {join: attach, stop: signal, lifetime: daemon}
+    kinds:
+      bg: {join: attach, stop: remove, lifetime: daemon}
+      interactive: {join: unavailable, stop: signal, lifetime: terminal}
 execution:
   enforcement: supported
   result: supported
-input:
-  return_to_list:
-    - {key: ctrl+z, when: always}
-    - {key: tab, when: always}
-    - {key: left, when: empty_prompt}
-  empty_prompt: marker
-  markers: "|>$#│┊┃▐›❯"
-  ignore_braille: true
 viewer:
   peek: join
-  peek_blocked_states: [failed, stopped]
   retention: evict_live
-  input_alignment: bottom_rule
+  label: attach

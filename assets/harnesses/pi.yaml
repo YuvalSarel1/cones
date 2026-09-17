@@ -1,38 +1,27 @@
-version: 1
+version: 2
 kind: pi
-name: pi
 icon: "π"
 colour: [138, 190, 183]
 home:
   env: PI_CODING_AGENT_DIR
-  sibling: .pi/agent
-  siblings: null
+  default: {base: provided_parent, path: .pi/agent}
 discovery:
-  handler: pi
-  registry: null
-  daemon: null
-  exclude_subcommands: []
   process: pi
 state:
-  handler: event_map
   rules:
-    - when: {"/type": message}
+    - when: {/type: message}
       field: /message/role
       values: {user: active, toolResult: active}
-      otherwise: null
-    - when: {"/type": message, "/message/role": assistant}
+    - when: {/type: message, /message/role: assistant}
       field: /message/stopReason
       values: {toolUse: active, stop: idle, aborted: stopped, error: failed}
       otherwise: "-"
 transcript:
-  handler: pi
   messages:
     user:
       id: /id
-      headline: first
       sources:
-        - when: {"/type": message, "/message/role": user}
-          unless: []
+        - when: {/type: message, /message/role: user}
           path: /message/content
           shape: string_or_blocks
           types: [text]
@@ -41,52 +30,29 @@ transcript:
       id: /id
       headline: last
       sources:
-        - when: {"/type": message, "/message/role": assistant}
-          unless: []
+        - when: {/type: message, /message/role: assistant}
           path: /message/content
           shape: string_or_blocks
           types: [text]
           labels: {image: "[image]", input_image: "[image]", document: "[document]"}
   roots:
-    - {path: sessions, depth: 1, archived: false}
-  statusline: null
-launch:
-  handler: terminal
-  identity: client_pid
-  session_kind: null
-  prefix: []
-  remote: []
-  model: null
-  prompt: [--, "{prompt}"]
-probe:
-  args: [--version]
-  require_success: true
-  contains: []
-  version: {format: text}
-  error: "this pi does not run, so no session could be started"
-  description: "pi {version}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach"
-default_session: {join: unavailable, stop: signal, lifetime: terminal}
-session_kinds: {}
-commands:
-  attach: []
-  resume: [--session, "{transcript}"]
-  remove: []
-  unarchive: []
-  resume_handler: transcript
-  viewer: pi
+    - {path: sessions, env: PI_CODING_AGENT_SESSION_DIR, depth: 1, archived: false}
+operations:
+  launch:
+    identity: client_pid
+    model: --model
+    provider: --provider
+    prompt: [--, "{prompt}"]
+    probe:
+      args: [--version]
+      version: {format: text}
+      error: "this pi does not run, so no session could be started"
+      description: "pi {version}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach"
+  resume:
+    args: [--session, "{transcript}"]
 execution:
   enforcement: unsupported
-  result: unknown
-input:
-  return_to_list:
-    - {key: ctrl+z, when: always}
-    - {key: tab, when: always}
-    - {key: left, when: empty_prompt}
-  empty_prompt: bordered
-  markers: ""
-  ignore_braille: false
 viewer:
-  peek: unavailable
-  peek_blocked_states: []
-  retention: retain
-  input_alignment: bottom_rule
+  input:
+    empty_prompt: bordered
+    ignore_braille: false

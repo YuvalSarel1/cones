@@ -60,6 +60,8 @@ pub struct Policy {
     /// Per-harness model defaults; each job has a single `model` override.
     pub model: Option<String>,
     pub codex_model: Option<String>,
+    pub pi_model: Option<String>,
+    pub pi_provider: Option<String>,
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Both must be configured when `bedrock` is true; shell values do not satisfy validation.
@@ -67,6 +69,22 @@ pub struct Policy {
     pub aws_region: Option<String>,
     /// Default job harness; the composer starts on `Start::harness`.
     pub harness: Option<HarnessKind>,
+}
+
+impl Policy {
+    pub fn model_for(&self, kind: HarnessKind) -> Option<&str> {
+        match kind {
+            HarnessKind::Claude => self.model.as_deref(),
+            HarnessKind::Codex => self.codex_model.as_deref(),
+            HarnessKind::Pi => self.pi_model.as_deref(),
+        }
+    }
+
+    pub fn provider_for(&self, kind: HarnessKind) -> Option<&str> {
+        (kind == HarnessKind::Pi)
+            .then_some(self.pi_provider.as_deref())
+            .flatten()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -672,6 +690,8 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("write", d.write.map(|v| v.to_string()));
     put("model", d.model.clone());
     put("codex_model", d.codex_model.clone());
+    put("pi_model", d.pi_model.clone());
+    put("pi_provider", d.pi_provider.clone());
     put(
         "codex_full_access",
         d.codex_full_access.map(|v| v.to_string()),
@@ -1002,11 +1022,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: prompt must be nonempty and contain no NUL",
         j.name
     );
-    let model = j.model.or_else(|| match kind {
-        HarnessKind::Claude => d.model.clone(),
-        HarnessKind::Codex => d.codex_model.clone(),
-        HarnessKind::Pi => None,
-    });
+    let model = j.model.or_else(|| d.model_for(kind).map(str::to_owned));
     ensure!(
         model
             .as_ref()
@@ -1267,6 +1283,8 @@ mod tests {
             codex_full_access: None,
             model: None,
             codex_model: None,
+            pi_model: None,
+            pi_provider: None,
             bedrock: None,
             aws_profile: None,
             aws_region: None,
@@ -1799,5 +1817,27 @@ mod tests {
             text,
             "the block round-trips"
         );
+    }
+
+    #[test]
+    fn pi_launch_defaults_survive_config_edits_without_reaching_other_harnesses() {
+        let (_dir, path) = file("version: 3\njobs: []\n");
+        let policy = Policy {
+            pi_model: Some("pi-native-model".into()),
+            pi_provider: Some("pi-native-provider".into()),
+            ..Policy::default()
+        };
+        write_config(&path, &policy, None, None, None, None, None, None, None).unwrap();
+        let saved = defaults(&path);
+        assert_eq!(saved, policy);
+        assert_eq!(saved.model_for(HarnessKind::Pi), Some("pi-native-model"));
+        assert_eq!(
+            saved.provider_for(HarnessKind::Pi),
+            Some("pi-native-provider")
+        );
+        for kind in [HarnessKind::Claude, HarnessKind::Codex] {
+            assert_eq!(saved.model_for(kind), None);
+            assert_eq!(saved.provider_for(kind), None);
+        }
     }
 }

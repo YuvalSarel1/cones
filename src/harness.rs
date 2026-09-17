@@ -1,5 +1,5 @@
 pub mod spec;
-pub use spec::{by_name, known, spec};
+pub use spec::{by_name, known, launchable, spec};
 
 use crate::config::{HarnessKind, Policy, ResolvedJob};
 use anyhow::{Context, Result, bail, ensure};
@@ -52,14 +52,18 @@ pub enum Start {
 }
 
 pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Result<Start> {
+    let launch = spec(kind)
+        .launch
+        .as_ref()
+        .context("harness has no launch operation")?;
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
     leave_and_return(kind)?;
-    Ok(match spec(kind).launch.handler {
+    Ok(match launch.handler {
         spec::LaunchHandler::ClaudeBackground => {
             let mut c = std::process::Command::new(path);
-            c.args(session_args(kind, None, prompt, policy))
+            c.args(session_args(kind, None, prompt, policy)?)
                 .current_dir(dir);
             // Claude settings.json `env` can override this provider switch.
             match policy.bedrock {
@@ -85,13 +89,13 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             let (path, remote) =
                 codex_remote(&path, &crate::codex::home(&crate::fleet::claude_dir()?))?;
             let mut c = std::process::Command::new(path);
-            c.args(session_args(kind, Some((&remote, dir)), prompt, policy))
+            c.args(session_args(kind, Some((&remote, dir)), prompt, policy)?)
                 .current_dir(dir);
             Start::Foreground(c)
         }
         spec::LaunchHandler::Terminal => {
             let mut c = std::process::Command::new(path);
-            c.args(session_args(kind, None, prompt, policy))
+            c.args(session_args(kind, None, prompt, policy)?)
                 .current_dir(dir);
             Start::Foreground(c)
         }
@@ -104,8 +108,11 @@ pub fn session_args(
     remote: Option<(&str, &Path)>,
     prompt: &str,
     policy: &Policy,
-) -> Vec<OsString> {
-    let launch = &spec(kind).launch;
+) -> Result<Vec<OsString>> {
+    let launch = spec(kind)
+        .launch
+        .as_ref()
+        .context("harness has no launch operation")?;
     let mut args: Vec<OsString> = launch.prefix.iter().map(OsString::from).collect();
     if let Some((remote, dir)) = remote {
         args.extend(
@@ -116,20 +123,19 @@ pub fn session_args(
             .expect("validated remote template"),
         );
     }
-    if let Some(model) = &launch.model {
-        let value = match model.source {
-            spec::ModelSource::Claude => &policy.model,
-            spec::ModelSource::Codex => &policy.codex_model,
-        };
-        if let Some(value) = value {
-            args.extend([OsString::from(&model.flag), value.into()]);
+    for (flag, value) in [
+        (&launch.model, policy.model_for(kind)),
+        (&launch.provider, policy.provider_for(kind)),
+    ] {
+        if let (Some(flag), Some(value)) = (flag, value) {
+            args.extend([OsString::from(flag), value.into()]);
         }
     }
     args.extend(
         spec::args(&launch.prompt, &[("prompt", prompt.as_ref())])
             .expect("validated prompt template"),
     );
-    args
+    Ok(args)
 }
 
 /// Check that the installed harness can run a session the dashboard starts, and
@@ -137,10 +143,18 @@ pub fn session_args(
 /// Never add `--bg` to a Claude help probe: it takes precedence over `--help`
 /// and starts a real background session.
 pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
+    let probe = &spec(kind)
+        .launch
+        .as_ref()
+        .context("harness has no launch operation")?
+        .probe;
+    probe_harness(kind, probe)
+}
+
+fn probe_harness(kind: HarnessKind, probe: &spec::Probe) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
-    let probe = &spec(kind).probe;
     let output = std::process::Command::new(&path)
         .args(&probe.args)
         .output()
@@ -154,6 +168,8 @@ pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
 /// Resume a thread against the daemon of the home that holds it, not the ambient one:
 /// a home pinned to another provider region keeps its own daemon and its own socket.
 pub fn codex_resume(home: &Path, id: &str, cwd: &Path) -> Result<std::process::Command> {
+    let definition = spec(HarnessKind::Codex);
+    check_operation(definition, &definition.operations.resume, "resume")?;
     codex_client(
         home,
         id,
@@ -204,13 +220,16 @@ pub fn join(
             spec.name
         ),
         spec::Join::Attach => Claude.attach(&session.session_id, &session.cwd),
-        spec::Join::CodexRemote => codex_client(
-            home,
-            &session.session_id,
-            &session.cwd,
-            &spec.commands.attach,
-            speculative,
-        ),
+        spec::Join::CodexRemote => {
+            check_operation(spec, &spec.operations.attach, "attach")?;
+            codex_client(
+                home,
+                &session.session_id,
+                &session.cwd,
+                &spec.commands.attach,
+                speculative,
+            )
+        }
     }
 }
 
@@ -246,6 +265,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
             codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd)?
         }
         spec::Resume::Transcript => {
+            check_operation(spec, &spec.operations.resume, "resume")?;
             let path = executable(&spec.name, &launch_path())
                 .with_context(|| format!("{} not found", spec.name))?;
             let mut c = std::process::Command::new(path);
@@ -259,6 +279,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
     };
     command.env(&spec.home.env, &entry.key.home);
     if entry.archived {
+        check_operation(spec, &spec.operations.unarchive, "unarchive")?;
         ensure!(
             !spec.commands.unarchive.is_empty(),
             "this harness cannot unarchive a session"
@@ -272,6 +293,20 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
         );
     }
     Ok(command)
+}
+
+pub fn check_operation(
+    spec: &spec::HarnessSpec,
+    operation: &Option<spec::Operation>,
+    name: &str,
+) -> Result<()> {
+    let operation = operation
+        .as_ref()
+        .with_context(|| format!("{} has no {name} operation", spec.name))?;
+    if let Some(probe) = &operation.probe {
+        probe_harness(spec.kind, probe)?;
+    }
+    Ok(())
 }
 
 /// Sequence two invocations of one native program. Values are positional shell arguments.
@@ -579,6 +614,7 @@ impl Harness for Claude {
         uuid::Uuid::parse_str(session_id)?;
         // Resume in the background so ctrl+z detaches without suspending the agent.
         let spec = spec(HarnessKind::Claude);
+        check_operation(spec, &spec.operations.resume, "resume")?;
         Ok(then_exec(
             spec::args(
                 &spec.commands.resume,
@@ -592,6 +628,8 @@ impl Harness for Claude {
     }
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
         uuid::Uuid::parse_str(session_id)?;
+        let definition = spec(HarnessKind::Claude);
+        check_operation(definition, &definition.operations.attach, "attach")?;
         let path = executable("claude", &launch_path())
             .ok_or_else(|| anyhow::anyhow!("claude not found"))?;
         let mut cmd = std::process::Command::new(path);
@@ -613,10 +651,12 @@ impl Harness for Claude {
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect();
-        Ok(dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("missing home directory"))?
-            .join(".claude")
-            .join(spec(HarnessKind::Claude).transcript.live_root())
+        let home = dirs::home_dir()
+            .context("missing home directory")?
+            .join(".claude");
+        Ok(spec(HarnessKind::Claude)
+            .transcript
+            .live_path(&home)
             .join(project)
             .join(format!("{session_id}.jsonl")))
     }
@@ -752,7 +792,7 @@ mod tests {
             ..Policy::default()
         };
         assert_eq!(
-            session_args(HarnessKind::Claude, None, "fix it", &p),
+            session_args(HarnessKind::Claude, None, "fix it", &p).unwrap(),
             ["--bg", "--model", "opus", "--", "fix it"]
         );
         assert_eq!(
@@ -761,7 +801,8 @@ mod tests {
                 Some(("unix:///s.sock", Path::new("/repo"))),
                 "fix it",
                 &p
-            ),
+            )
+            .unwrap(),
             [
                 "--remote",
                 "unix:///s.sock",
@@ -774,7 +815,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            session_args(HarnessKind::Claude, None, "x", &Policy::default()),
+            session_args(HarnessKind::Claude, None, "x", &Policy::default()).unwrap(),
             ["--bg", "--", "x"]
         );
         // The app-server daemon keeps the provider it started with, so cones passes
@@ -785,14 +826,29 @@ mod tests {
             ..Policy::default()
         };
         assert_eq!(
-            session_args(HarnessKind::Codex, None, "x", &direct),
+            session_args(HarnessKind::Codex, None, "x", &direct).unwrap(),
             ["-m", "a-model", "--", "x"]
         );
-        // pi is started with the instruction alone: the model and provider defaults
-        // name claude and codex, and a Claude alias is not a pi model pattern.
+        // Each harness receives only its own configured model and provider.
         assert_eq!(
-            session_args(HarnessKind::Pi, None, "fix it", &p),
+            session_args(HarnessKind::Pi, None, "fix it", &p).unwrap(),
             ["--", "fix it"]
+        );
+        let pi = Policy {
+            pi_model: Some("native-model".into()),
+            pi_provider: Some("native-provider".into()),
+            ..p
+        };
+        assert_eq!(
+            session_args(HarnessKind::Pi, None, "fix it", &pi).unwrap(),
+            [
+                "--model",
+                "native-model",
+                "--provider",
+                "native-provider",
+                "--",
+                "fix it"
+            ]
         );
     }
 

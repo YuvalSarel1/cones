@@ -37,39 +37,58 @@ fn every_registered_harness_has_a_valid_definition_and_explicit_capabilities() {
 
 #[test]
 fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
-    let claude = BUILTINS[0].1;
-    let codex = BUILTINS[1].1;
-    for bad in [
-        format!("{claude}\nunknown: true\n"),
-        claude.replace("version: 1", "version: 2"),
-        claude.replace("name: claude", "name: another"),
-        claude.replace(
-            "env: CLAUDE_CONFIG_DIR",
-            "env: CLAUDE_CONFIG_DIR\n  typo: true",
+    use serde_json::json;
+    for (kind, pointer, value) in [
+        (0, "/unknown", json!(true)),
+        (0, "/version", json!(1)),
+        (0, "/name", json!("claude")),
+        (0, "/home/typo", json!(true)),
+        (0, "/home/env", json!("1INVALID")),
+        (0, "/transcript/roots/0/path", json!("../projects")),
+        (0, "/discovery/handler", json!("claude")),
+        (0, "/transcript/handler", json!("claude")),
+        (0, "/operations/launch/handler", json!("claude_background")),
+        (0, "/operations/launch/prompt", json!(["--", "{promtp}"])),
+        (
+            0,
+            "/operations/attach/args",
+            json!(["attach", "prefix-{id}"]),
         ),
-        claude.replace("env: CLAUDE_CONFIG_DIR", "env: 1INVALID"),
-        claude.replace("path: projects", "path: ../projects"),
-        claude.replace("handler: claude\n", "handler: pi\n"),
-        claude.replace("{prompt}", "{promtp}"),
-        claude.replace("{short_id}", "prefix-{id}"),
-        claude.replace("lifetime: daemon", "lifetime: terminal"),
-        codex.replace("enforcement: unknown", "enforcement: supported"),
-        codex.replace(
-            "daemon: {pid: app-server-daemon/app-server.pid, locks: thread-writer-locks}",
-            "daemon: null",
+        (
+            0,
+            "/operations/sessions/default/lifetime",
+            json!("terminal"),
         ),
-        codex.replace(
-            "pid: app-server-daemon/app-server.pid",
-            "pid: /app-server.pid",
+        (1, "/execution", json!({"enforcement":"supported"})),
+        (1, "/discovery/daemon", json!(null)),
+        (1, "/discovery/daemon/pid", json!("/app-server.pid")),
+        (0, "/discovery/daemon", json!({"pid":"a.pid", "locks":"b"})),
+        (
+            0,
+            "/viewer/input",
+            json!({"return_to_list":[{"key":"tab","when":"always"},{"key":"tab","when":"always"}]}),
         ),
-        claude.replace("daemon: null", "daemon: {pid: a.pid, locks: b}"),
-        claude.replace("key: ctrl+z", "key: tab"),
-        claude.replace("key: ctrl+z", "key: ctr+z"),
-        claude.replace("when: always", "when: empty_prompt"),
+        (
+            0,
+            "/viewer/input",
+            json!({"return_to_list":[{"key":"ctr+z","when":"always"}]}),
+        ),
+        (
+            0,
+            "/viewer/input",
+            json!({"return_to_list":[{"key":"left","when":"empty_prompt"}]}),
+        ),
+        (1, "/operations/rename", json!(true)),
+        (1, "/operations/attach", json!(null)),
+        (0, "/operations/launch/provider", json!("--provider")),
     ] {
+        let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[kind].1).unwrap();
+        let (parent, key) = pointer.rsplit_once('/').unwrap();
+        document.pointer_mut(parent).unwrap()[key] = value;
+        let yaml = serde_yaml::to_string(&document).unwrap();
         assert!(
-            HarnessSpec::parse(&bad).is_err(),
-            "accepted invalid definition:\n{bad}"
+            HarnessSpec::parse(&yaml).is_err(),
+            "accepted {pointer}:\n{yaml}"
         );
     }
 }
@@ -93,18 +112,18 @@ fn native_home_defaults_overrides_and_original_thread_homes_remain_distinct() {
     let pi = spec(HarnessKind::Pi);
     assert_eq!(spec(HarnessKind::Claude).home.resolve(root), root);
     assert_eq!(
-        codex.home.resolve_with(root, None).unwrap(),
+        codex.home.resolve_with(root, Path::new("/user"), None),
         Path::new("/isolated/.codex")
     );
     assert_eq!(
-        pi.home.resolve_with(root, Some(OsStr::new(""))).unwrap(),
+        pi.home
+            .resolve_with(root, Path::new("/user"), Some(OsStr::new(""))),
         Path::new("/isolated/.pi/agent")
     );
     assert_eq!(
         codex
             .home
-            .resolve_with(root, Some(OsStr::new("relative-home")))
-            .unwrap(),
+            .resolve_with(root, Path::new("/user"), Some(OsStr::new("relative-home"))),
         Path::new("relative-home")
     );
     let row: Session = serde_json::from_value(serde_json::json!({
@@ -120,11 +139,13 @@ fn native_home_defaults_overrides_and_original_thread_homes_remain_distinct() {
 
 #[test]
 fn probe_fixtures_preserve_success_requirements_and_reported_versions() {
-    let claude = &spec(HarnessKind::Claude).probe;
+    let claude = &spec(HarnessKind::Claude).launch.as_ref().unwrap().probe;
     assert!(claude.report(false, "supports --bg and attach").is_ok());
     assert!(claude.report(true, "supports --bg only").is_err());
-    let codex = &spec(HarnessKind::Codex).probe;
+    let codex = &spec(HarnessKind::Codex).launch.as_ref().unwrap().probe;
     assert!(codex.report(false, "{\"cliVersion\":\"0.154\"}").is_err());
+    assert!(codex.report(true, "{\"cliVersion\":\"0.153\"}").is_err());
+    assert!(codex.report(true, "no version").is_err());
     assert!(
         codex
             .report(true, "notice\n{\"cliVersion\":\"0.154\"}\n")
@@ -133,10 +154,85 @@ fn probe_fixtures_preserve_success_requirements_and_reported_versions() {
     );
     assert!(
         spec(HarnessKind::Pi)
+            .launch
+            .as_ref()
+            .unwrap()
             .probe
             .report(true, "0.85.1\n")
             .unwrap()
             .starts_with("pi 0.85.1:")
+    );
+}
+
+#[test]
+fn discovery_and_history_do_not_require_launch_or_control_operations() {
+    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[0].1).unwrap();
+    for field in ["operations", "viewer", "execution"] {
+        document.as_object_mut().unwrap().remove(field);
+    }
+    let definition = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
+    assert!(definition.launch.is_none());
+    assert!(definition.commands.resume.is_empty());
+    assert!(!definition.operations.rename);
+    assert_eq!(definition.session(None).join, Join::Unavailable);
+    assert_eq!(definition.execution.enforcement, Support::Unknown);
+    assert_eq!(definition.transcript.live_root(), Path::new("projects"));
+    assert!(
+        harness::check_operation(&definition, &definition.operations.resume, "resume").is_err()
+    );
+}
+
+#[test]
+fn independent_home_bases_and_operation_probes_are_validated() {
+    use serde_json::json;
+    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[1].1).unwrap();
+    document["home"]["default"] = json!({"base":"user", "path":".local/share/native"});
+    document["operations"]["resume"]["probe"] = document["operations"]["launch"]["probe"].clone();
+    let definition = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
+    assert_eq!(
+        definition
+            .home
+            .resolve_with(Path::new("/provided/claude"), Path::new("/user"), None),
+        Path::new("/user/.local/share/native")
+    );
+    assert_eq!(
+        definition.home.resolve_with(
+            Path::new("/provided/claude"),
+            Path::new("/user"),
+            Some(OsStr::new("/separate/config"))
+        ),
+        Path::new("/separate/config")
+    );
+    let probe = definition
+        .operations
+        .resume
+        .as_ref()
+        .unwrap()
+        .probe
+        .as_ref()
+        .unwrap();
+    assert!(probe.report(true, r#"{"cliVersion":"0.154.0"}"#).is_ok());
+    assert!(probe.report(true, r#"{"cliVersion":"0.153.9"}"#).is_err());
+    document["operations"]["resume"]["probe"]["args"] = json!([]);
+    assert!(HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).is_err());
+}
+
+#[test]
+fn transcript_storage_can_live_outside_the_native_config_home() {
+    let pi = spec(HarnessKind::Pi);
+    let root = pi.transcript.live_scan_root();
+    assert_eq!(root.env.as_deref(), Some("PI_CODING_AGENT_SESSION_DIR"));
+    assert_eq!(
+        root.resolve_with(Path::new("/config/pi"), None),
+        Path::new("/config/pi/sessions")
+    );
+    assert_eq!(
+        root.resolve_with(Path::new("/config/pi"), Some(Path::new("/data/sessions"))),
+        Path::new("/data/sessions")
+    );
+    assert_eq!(
+        root.resolve_with(Path::new("/config/pi"), Some(Path::new(""))),
+        Path::new("/config/pi/sessions")
     );
 }
 

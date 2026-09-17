@@ -33,7 +33,7 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts `codex_model`, the model for native Codex composer sessions and the fallback for a Codex job's `model`; Claude uses `defaults.model`, and pi takes its own model configuration. The composer's initial harness is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model` and `pi_provider`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi and Codex jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
 
 | Field | Default | Meaning |
 | --- | --- | --- |

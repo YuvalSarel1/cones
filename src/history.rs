@@ -574,7 +574,7 @@ fn discover(source: &Source) -> Result<Vec<(PathBuf, bool)>> {
         .transcript
         .roots
         .iter()
-        .map(|root| (source.home.join(&root.path), 0, root.depth, root.archived))
+        .map(|root| (root.resolve(&source.home), 0, root.depth, root.archived))
         .collect();
     while let Some((dir, depth, max_depth, archived)) = stack.pop() {
         for e in children(&dir)? {
@@ -669,12 +669,14 @@ fn metadata(
         }
         size = (size * 4).min(len).min(MAX_WINDOW);
     };
-    let title = match harness::spec(source.harness).transcript.handler {
+    let definition = harness::spec(source.harness);
+    let user = &definition.transcript.messages.user;
+    let title = match definition.transcript.handler {
         Native::Claude => claude_title(&tail, true)
             .or_else(|| claude_title(&head, true))
             .or_else(|| claude_title(&tail, false))
             .or_else(|| claude_title(&head, false))
-            .or_else(|| head.iter().find_map(claude_prompt)),
+            .or_else(|| user_title(user, &head)),
         Native::Codex => head.iter().find_map(|v| codex::prompt(&v.to_string())),
         Native::Pi => tail
             .iter()
@@ -682,11 +684,7 @@ fn metadata(
             .find(|v| v["type"] == "session_info")
             .and_then(|v| v["name"].as_str())
             .and_then(fleet::headline)
-            .or_else(|| {
-                head.iter()
-                    .find(|v| v["type"] == "message" && v["message"]["role"] == "user")
-                    .and_then(|v| text(&v["message"]["content"]))
-            }),
+            .or_else(|| user_title(user, &head)),
     };
     Ok(Some(Entry {
         key: Key {
@@ -728,21 +726,10 @@ fn identity(harness: HarnessKind, path: &Path, events: &[Value]) -> Option<Ident
     }
 }
 
-fn text(value: &Value) -> Option<String> {
-    value.as_str().and_then(fleet::headline).or_else(|| {
-        value
-            .as_array()?
-            .iter()
-            .filter(|b| b["type"] == "text")
-            .filter_map(|b| b["text"].as_str())
-            .find_map(fleet::headline)
-    })
-}
-
-fn claude_prompt(v: &Value) -> Option<String> {
-    (v["type"] == "user" && v["isMeta"] != true)
-        .then(|| text(&v["message"]["content"]))
-        .flatten()
+fn user_title(user: &harness::spec::MessageText, events: &[Value]) -> Option<String> {
+    events
+        .iter()
+        .find_map(|event| user.headline_with_attachments(event, true))
 }
 
 fn claude_title(events: &[Value], named: bool) -> Option<String> {
@@ -813,4 +800,134 @@ fn pi_columns(path: &Path) -> Result<Columns> {
     }
     out.title = name.or(out.title);
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn history_entry(harness: HarnessKind, records: &[Value]) -> Entry {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir
+            .path()
+            .join("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl");
+        let text: String = records.iter().map(|v| format!("{v}\n")).collect();
+        fs::write(&path, &text).unwrap();
+        metadata(
+            &Source {
+                harness,
+                home: dir.path().to_owned(),
+            },
+            &path,
+            false,
+            text.len() as u64,
+            &mut Stats::default(),
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    #[test]
+    fn history_titles_use_declared_user_content() {
+        for kind in [HarnessKind::Claude, HarnessKind::Pi] {
+            let header = json!({
+                "type": if kind == HarnessKind::Pi { "session" } else { "system" },
+                "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "cwd": "/fixture",
+                "timestamp": "2026-09-17T10:00:00Z",
+            });
+            let user = |content: Value| {
+                if kind == HarnessKind::Claude {
+                    json!({"type": "user", "message": {"content": content}})
+                } else {
+                    json!({"type": "message", "message": {"role": "user", "content": content}})
+                }
+            };
+            for (content, expected) in [
+                (json!([{"type": "image"}]), "[image]"),
+                (json!([{"type": "input_image"}]), "[image]"),
+                (json!([{"type": "document"}]), "[document]"),
+                (json!("String instruction"), "String instruction"),
+                (
+                    json!([{"type": "text", "text": "Block instruction\nMore detail"}]),
+                    "Block instruction",
+                ),
+            ] {
+                let mut records = vec![header.clone(), user(json!([]))];
+                if kind == HarnessKind::Claude {
+                    let mut hidden = user(json!("Injected instruction"));
+                    hidden["isMeta"] = json!(true);
+                    records.push(hidden);
+                }
+                records.push(user(content));
+                records.push(user(json!("Later instruction")));
+                assert_eq!(
+                    history_entry(kind, &records).title.as_deref(),
+                    Some(expected),
+                    "{kind}: skip empty or excluded messages and preserve attachment labels"
+                );
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join("transcript.jsonl");
+                fs::write(
+                    &path,
+                    records.iter().map(|v| format!("{v}\n")).collect::<String>(),
+                )
+                .unwrap();
+                let columns = if kind == HarnessKind::Claude {
+                    fleet::history_columns(&path).unwrap()
+                } else {
+                    pi_columns(&path).unwrap()
+                };
+                assert_eq!(
+                    columns.title.as_deref(),
+                    Some(expected),
+                    "{kind}: hydration preserves the selected user source"
+                );
+                records.push(if kind == HarnessKind::Claude {
+                    json!({"type": "custom-title", "customTitle": "Named session"})
+                } else {
+                    json!({"type": "session_info", "name": "Named session"})
+                });
+                assert_eq!(
+                    history_entry(kind, &records).title.as_deref(),
+                    Some("Named session"),
+                    "{kind}: a native title precedes the user-message fallback"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_titles_honor_selector_overrides() {
+        let mut user: harness::spec::MessageText = serde_yaml::from_str(
+            r#"
+headline: last
+sources:
+  - when: {"/kind": instruction}
+    unless: [/hidden]
+    path: /body
+    shape: blocks
+    types: [plain]
+    labels: {picture: "[picture]"}
+"#,
+        )
+        .unwrap();
+        let events = [
+            json!({"type":"user", "message":{"content":"Old path"}}),
+            json!({"kind":"instruction", "hidden":true, "body":[{"type":"plain","text":"Excluded"}]}),
+            json!({"kind":"instruction", "body":"Wrong shape"}),
+            json!({"kind":"instruction", "body":[{"type":"text","text":"Wrong block type"}]}),
+            json!({"kind":"instruction", "body":[
+                {"type":"picture"},
+                {"type":"plain","text":"First\nMore detail"},
+                {"type":"plain","text":"Last\nMore detail"},
+                {"type":"text","text":"Excluded block"}
+            ]}),
+        ];
+        assert_eq!(user_title(&user, &events[..4]), None);
+        assert_eq!(user_title(&user, &events).as_deref(), Some("Last"));
+        user.headline = harness::spec::Headline::First;
+        assert_eq!(user_title(&user, &events).as_deref(), Some("[picture]"));
+    }
 }
