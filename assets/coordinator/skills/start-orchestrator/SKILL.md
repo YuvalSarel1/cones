@@ -111,10 +111,13 @@ answer to something it asked.
 - Verify by reading the diff and the author's own check run, never by compiling or by prose. Never
   start a compile while an agent in the folder is building; the standing-order build runs once,
   when the roster is empty.
-- A gate citation names the commit whose tree it describes or it is worth less than none. On a
-  shared tree an un-isolated run compiles the other agents' uncommitted work and reports neither
-  their red nor the author's green, so a docs-only commit cites its parent's gate instead of
-  re-running one. Never hand an agent counts to cite: numbers it did not observe are decoration.
+- A gate citation names the commit whose tree it describes or it is worth less than none, so a
+  docs-only commit cites its parent's gate instead of re-running one. Never hand an agent counts to
+  cite: numbers it did not observe are decoration.
+- Ask for a worktree when a second writer is live and the change needs a gate: in the shared tree
+  the run compiles the other's uncommitted work, so neither their red nor this author's green is
+  reported, and staging by path sweeps their hunks. One live writer, or a change too small to gate,
+  stays in place - a worktree costs a cold target dir and a branch you have to land.
 - When you gate on an amendment, diff the old hash against the new before landing and confirm the
   delta is only what you asked for.
 
