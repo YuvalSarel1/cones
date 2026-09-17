@@ -24,7 +24,11 @@ done | awk -F'\t' -v wb="$WB" -v self="$SELF" '($1==wb || index($1, wb"/")==1) &
 for p in $(pgrep -x codex); do
   e=$(ps -o etime= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$e" ] || continue
   case "$e" in *-*|*:*:*) ;; *) IFS=: read -r m s <<<"$e"; [ $((10#$m*60+10#$s)) -ge 30 ] || continue;; esac
+  # A failed lsof and "not in this folder" both give an empty $c, so dropping the row on empty
+  # reports a live agent gone (seen 2026-09-17: two clients vanished and returned one cycle later).
+  # Carry the previous row instead; a dead pid leaves anyway, the ps check above drops it next sweep.
   c=$(lsof -a -p "$p" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+  if [ -z "$c" ]; then grep "^$p	CODEX:" "$D/roster.prev" 2>/dev/null; continue; fi
   case "$c" in "$WB"|"$WB"/*) echo "$p	CODEX:$c";; esac
 done >> "$D/roster.now"
 python3 "$(dirname "$0")/status.py" "$D" "$WB" "$SELF" "$JOB" >/dev/null
