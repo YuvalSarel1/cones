@@ -64,12 +64,10 @@ a new session whose prompt is "stop <id>". A stopped-but-alive session does not 
   app-server daemon holds keeps writing the tree with no roster row, so an unowned path with no
   live pid is checked against `~/.codex/sessions` rollouts whose cwd is `$WB` before being called
   orphaned. A client that reports itself finished keeps its process and its row.
-- Answers from agents that cannot SendMessage arrive in the folder inbox,
-  `~/.claude/orchestrator/<sha1 of cwd>/inbox.jsonl`, one JSON line each; `codex.sh send` appends
-  that instruction and `sweep.sh` prints new lines as `mail:`, so never poll a rollout for a reply.
-- A worktree an agent made under its own `$CLAUDE_JOB_DIR/tmp` vanishes with the job while the
-  branch stays. When such an agent exits before landing: `git worktree prune`, check the branch out
-  in a worktree of your own, rebase, run the checks, fast-forward.
+- Agents that cannot SendMessage reply in `~/.claude/orchestrator/<sha1 of cwd>/inbox.jsonl`, one
+  JSON line each, which `sweep.sh` prints as `mail:`. Never poll a rollout for a reply.
+- A worktree under an agent's own `$CLAUDE_JOB_DIR/tmp` dies with the job, its branch does not: on
+  an exit before landing, prune, check the branch out yourself, rebase, check, fast-forward.
 - Never message a spare: `spare: true` or `name == jobId` (bare 8-hex) in
   `~/.claude/sessions/<pid>.json`, re-read right before sending. The first message a spare receives
   becomes its prompt and materialises a ghost job. All bg Claude processes look like
@@ -79,13 +77,15 @@ a new session whose prompt is "stop <id>". A stopped-but-alive session does not 
 ## Talking to agents
 
 The agent's time is the scarce resource, not yours, and a message that confuses one or parks it
-waiting is worse than no message at all. One line, three per agent per swarm - greeting, ruling,
-gate - and each one says what the head is, what is owed and what is not.
+waiting is worse than no message at all. Two per agent per swarm, one line each - a ruling and a
+gate - and each says what the head is, what is owed and what is not.
 
-- Greeting: who you are, which files and functions it will edit, ping you before it commits,
-  `notify_when_idle`. No rules paragraph, no digest, no pointer unless it changes what this agent
-  does now. Never broadcast, treat an arrival as already editing, and never scold one that edited
-  first.
+- Do not greet an arrival. A roster row is not work: an agent with no path in the tree owes you
+  nothing, and an introduction spends its first turn on you. The trigger is an unattributed path.
+  Ask then, for functions rather than files, of the agent that owns it. Never broadcast, and never
+  scold one that edited before it announced.
+- Never repair a message with another message. A line naming another agent's files is self-evidently
+  not theirs and they say so unprompted, so a retraction is a second wrong message. Fix the router.
 - Every message is a work order, never a note. A queued Codex message arrives as a user turn
   indistinguishable from the owner's, so an idle agent, or one waiting on a reply, reads it as the
   signal to continue and spends a turn on the owner's account: an "awareness only" line buys work.
@@ -96,9 +96,8 @@ gate - and each one says what the head is, what is owed and what is not.
   hash goes stale while it sits in the queue: ask a live writer for the head of its branch, and name
   a hash only to land or hold one. Never hand out a queue position without cancelling it in the
   message that resolves it, or the agent parks waiting for a head that is not coming.
-- Relay a finding only to the agent that needs it, as a one-liner, and never hand one agent an API
-  that exists only on another's unlanded branch: the first writer commits against main, and
-  whoever changes a signature fixes the call sites when it rebases.
+- Never hand one agent an API that exists only on another's unlanded branch: the first writer
+  commits against main, and whoever changes a signature fixes the call sites when it rebases.
 
 ## Coordination
 
