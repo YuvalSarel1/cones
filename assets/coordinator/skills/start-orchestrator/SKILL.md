@@ -97,8 +97,7 @@ answer to something it asked.
   hash goes stale while it sits in the queue: ask a live writer for the head of its branch, and name
   a hash only to land or hold one. Never hand out a queue position without cancelling it in the
   message that resolves it, or the agent parks waiting for a head that is not coming.
-- Never hand one agent an API that exists only on another's unlanded branch: the first writer
-  commits against main, and whoever changes a signature fixes the call sites when it rebases.
+- Never hand one agent an API that exists only on another's unlanded branch.
 
 ## Coordination
 
@@ -106,6 +105,9 @@ answer to something it asked.
   you read the hash afterwards. No "go" round trip, no diff-stat paste. A commit stops at the
   agent's branch and you fast-forward main: landing is the last point at which a change can be
   held, and after it the delta between a held hash and its amendment can no longer be read.
+- An author never rebases. It commits on the base it gated and sends the hash; you rebase and
+  fast-forward, and hand the branch back only when the rebase conflicts in its own functions. Its
+  rebase costs a turn and a full suite rerun, yours costs nothing.
 - Verify by reading the diff and the author's own check run, never by compiling or by prose. Never
   start a compile while an agent in the folder is building; the standing-order build runs once,
   when the roster is empty.
@@ -127,8 +129,8 @@ reverting a landed feature, a change to the roadmap or the rules.
 - A verified fix from a single owner: commit it, report the hash.
 - Uncommitted edits whose owner is gone (off the roster, no live thread per the rollout check):
   `git diff FILE > $D/parked-<pid>-<file>.patch`, `git checkout FILE`, one line to the user.
-- Two commits ready on the same file: the one with real edits already in the tree lands first, the
-  other rebases. Order them, do not ask which.
+- Two commits ready on the same file: the one with real edits already in the tree lands first and
+  you rebase the other. Order them, do not ask which.
 - A subagent proposes work outside its brief: no by default, the brief stands. The owner widening
   that brief overrides your ranking of it; drop your recommendation rather than leave it standing.
 - A verdict the user gave earlier this swarm applies again: apply it, cite the time.
@@ -147,7 +149,7 @@ Resolve the moment you see it, not when someone reports done.
 2. Ask for functions, not files, at greeting time: per-function ownership lets two agents work one
    file in parallel, a file lock idles everyone behind the first writer.
 3. Same file, different hunks: name the owner of each function and land the first commit fast. When
-   the second agent already holds real edits there, it commits first and the other rebases;
+   the second agent already holds real edits there, it commits first and you rebase the other;
    hand-relaying hunks is slower and lossier.
 4. Two declared writers in the shared tree: staging by path sweeps the other's hunks even when both
    did as told. Commit as one chained command - `git diff FILE > p`, trim to your hunks,
