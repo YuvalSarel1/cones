@@ -25,8 +25,11 @@ thread() {
     # after `-C <cwd>`; three fresh threads in one cwd resolve by that prefix, newest as fallback.
     # argv is `... -C <cwd> -- <prompt>`; the title holds the prompt without the separator, so
     # leaving `-- ` on the key never matches and every pid falls through to the newest thread.
-    prompt=$(ps -o command= -p "$pid" | sed -n 's/.* -C [^ ]* \(-- \)\{0,1\}//p' | cut -c1-40 | sed "s/'/''/g")
-    [ -n "$prompt" ] && id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 and substr(title,1,40)='$prompt' order by created_at desc limit 1")
+    # `ps` renders a newline in the prompt as the four characters \012 while the title holds a real
+    # one, so a multi-line prompt never matched. Compare only the first line, and compare it to that
+    # many characters of the title rather than a fixed 40, since the line can be shorter.
+    prompt=$(ps -o command= -p "$pid" | sed -n 's/.* -C [^ ]* \(-- \)\{0,1\}//p' | sed 's/\\012.*//' | cut -c1-40 | sed "s/'/''/g")
+    [ -n "$prompt" ] && id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 and substr(title,1,length('$prompt'))='$prompt' order by created_at desc limit 1")
     if [ -z "$id" ]; then
       id=$(sqlite3 "$DB" "select id from threads where cwd='$cwd' and archived=0 order by updated_at desc limit 1")
       [ -n "$id" ] && echo "codex.sh: pid $pid matched no thread title; using newest in $cwd" >&2
