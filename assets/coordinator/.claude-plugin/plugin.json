@@ -1,1 +1,1 @@
-{"name": "cones", "description": "The coordinator cones starts per folder: the start-orchestrator skill.", "version": "0.1.0"}
+{"name": "cones", "description": "Workspace coordination for active tasks and their integration.", "version": "0.2.0"}

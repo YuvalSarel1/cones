@@ -33,7 +33,7 @@ The task runs in the current directory under the named job's policy, otherwise t
 
 ## Coordinator launch
 
-The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orchestrator/SKILL.md) coordinates agents sharing a folder. Its launcher is currently internal, hidden from `--help`, with no dashboard button:
+The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orchestrator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker. Its launcher is currently internal, hidden from `--help`, with no dashboard button:
 
 ```sh
 cones __coordinator
@@ -44,7 +44,9 @@ The default folder is the current directory. A live coordinator record for that 
 
 The coordinator appears as a native Claude session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`. This removes its status record, while its background session remains until separately stopped. Coordination rules belong to the skill.
 
-The embedded copy is under `assets/coordinator/`. Updates from the upstream orchestrator project must retain `__CONES_COORDINATOR_BIN__`; cones replaces it with the installed helper directory.
+The embedded copy is under `assets/coordinator/`. The upstream orchestrator's `bin/sync.py /path/to/cones` copies the skill and helpers, retaining `__CONES_COORDINATOR_BIN__` for cones to fill at launch; `--check` detects drift. Start a fresh coordinator after updating because an existing session retains its loaded instructions.
+
+Codex delivery requires a running local app-server with native queue add/list/delete support. Requests name an exact thread and an active task. Completion closes the task; the watcher withdraws expired pending requests. Already consumed requests cannot be recalled. The helper preserves owner messages and owner-edited queue entries. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
 
 ## Diagnostics
 

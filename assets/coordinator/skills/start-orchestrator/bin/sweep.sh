@@ -5,6 +5,15 @@
 # {"from":"codex:<thread>","text":"..."}. Read position lives in $D/inbox.pos.
 # usage: sweep.sh D WB SELF [JOBID]
 D="$1"; WB="$2"; SELF="$3"; JOB="$4"
+# Expiry runs in the watcher, including quiet periods. Surface a failure once until it changes.
+delivery_error=""
+cleanup=$(python3 -B "$(dirname "$0")/codex.py" --workspace "$WB" sweep 2>&1) || delivery_error="$cleanup"
+previous_error=$(cat "$D/delivery.error" 2>/dev/null)
+delivery_changed=0
+if [ "$delivery_error" != "$previous_error" ]; then
+  printf '%s' "$delivery_error" > "$D/delivery.error"
+  delivery_changed=1
+fi
 for f in ~/.claude/sessions/*.json; do
   p=$(basename "$f" .json); kill -0 "$p" 2>/dev/null || continue
   # Spares: an unprompted bg session registers with spare:true (authoritative) and name==jobId (bare 8-hex).
@@ -24,6 +33,13 @@ done | awk -F'\t' -v wb="$WB" -v self="$SELF" '($1==wb || index($1, wb"/")==1) &
 for p in $(pgrep -x codex); do
   e=$(ps -o etime= -p "$p" 2>/dev/null | tr -d ' '); [ -n "$e" ] || continue
   case "$e" in *-*|*:*:*) ;; *) IFS=: read -r m s <<<"$e"; [ $((10#$m*60+10#$s)) -ge 30 ] || continue;; esac
+  # Neither viewer is an agent: `app-server` is the daemon that holds every thread in this cwd, and
+  # `resume` under a cones parent is a peek the dashboard opened, which outlives the hover. Five such
+  # rows flapped this roster every 30 s on 2026-09-17 and cost the coordinator a turn each time.
+  a=$(ps -ww -o command= -p "$p" 2>/dev/null)
+  case "$a" in *" app-server"*) continue;; esac
+  case "$a" in *" resume "*) case "$(ps -o comm= -p "$(ps -o ppid= -p "$p" | tr -d ' ')" 2>/dev/null)" in
+    *cones*) continue;; esac;; esac
   # A failed lsof and "not in this folder" both give an empty $c, so dropping the row on empty
   # reports a live agent gone (seen 2026-09-17: two clients vanished and returned one cycle later).
   # Carry the previous row instead; a dead pid leaves anyway, the ps check above drops it next sweep.
@@ -38,8 +54,10 @@ mkdir -p "$(dirname "$INBOX")"; touch "$INBOX"
 have=$(wc -l < "$INBOX" | tr -d ' '); seen=$(cat "$D/inbox.pos" 2>/dev/null); seen=${seen:-0}
 mail=""; [ "$have" -gt "$seen" ] && mail=$(tail -n +"$((seen+1))" "$INBOX")
 if cmp -s <(cut -f1 "$D/roster.now" | sort) <(cut -f1 "$D/roster.prev" | sort); then roster=same; else roster=changed; fi
-if [ "$roster" = same ] && [ -z "$mail" ]; then echo same; else
-  echo changed; echo "new:"; comm -23 <(cut -f1 "$D/roster.now"|sort) <(cut -f1 "$D/roster.prev"|sort) | while read p; do grep "^$p	" "$D/roster.now"; done
+if [ "$roster" = same ] && [ -z "$mail" ] && [ "$delivery_changed" = 0 ]; then echo same; else
+  echo changed
+  if [ "$delivery_changed" = 1 ]; then printf 'delivery: %s\n' "${delivery_error:-recovered}"; fi
+  echo "new:"; comm -23 <(cut -f1 "$D/roster.now"|sort) <(cut -f1 "$D/roster.prev"|sort) | while read p; do grep "^$p	" "$D/roster.now"; done
   echo "gone:"; comm -13 <(cut -f1 "$D/roster.now"|sort) <(cut -f1 "$D/roster.prev"|sort) | while read p; do grep "^$p	" "$D/roster.prev"; done
   if [ -n "$mail" ]; then echo "mail:"; printf '%s\n' "$mail"; echo "$have" > "$D/inbox.pos"; fi
   cp "$D/roster.now" "$D/roster.prev"; fi

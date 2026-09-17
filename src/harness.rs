@@ -442,7 +442,7 @@ pub fn launch_path() -> String {
 
 /// Embedded coordinator plugin, loaded only for the session that starts it.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
-const COORDINATOR_FILES: [(&str, &str); 7] = [
+const COORDINATOR_FILES: [(&str, &str); 8] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
@@ -468,6 +468,10 @@ const COORDINATOR_FILES: [(&str, &str); 7] = [
         include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.sh"),
     ),
     (
+        "skills/start-orchestrator/bin/codex.py",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.py"),
+    ),
+    (
         "skills/start-orchestrator/bin/tick.sh",
         include_str!("../assets/coordinator/skills/start-orchestrator/bin/tick.sh"),
     ),
@@ -491,10 +495,13 @@ pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
     for (rel, text) in COORDINATOR_FILES {
         let path = plugin.join(rel);
         std::fs::create_dir_all(path.parent().unwrap())?;
+        // A coordinator may be reading a helper while another folder starts one.
+        let temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
         std::fs::write(
-            &path,
+            temporary.path(),
             text.replace("__CONES_COORDINATOR_BIN__", &bin.to_string_lossy()),
         )?;
+        temporary.persist(&path)?;
     }
     Ok(plugin)
 }
