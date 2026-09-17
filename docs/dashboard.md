@@ -24,7 +24,7 @@ Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click g
 
 ## Menu
 
-The menu has `folder`, `jobs`, `config` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
+The menu has `folder`, `jobs`, `config`, `columns` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
 
 ### Folder
 
@@ -55,6 +55,27 @@ A `once` task uses the first job's policy, or built-in policy when no template i
 
 Save validates the whole file and changes only the selected job block, preserving surrounding formatting and comments. Invalid values keep the form open on the relevant row. Save and delete then [install schedules](jobs.md#schedules); errors appear in the result line.
 
+### Columns
+
+`columns` opens a picker for Sessions, Runs, Jobs and History, starting on the table you came from. Config's `columns` link opens the same picker; `esc` returns to that link. The picker uses the existing pane or the full frame, like the other menu screens.
+
+| Key | Action |
+| --- | --- |
+| `↑ ↓` | Select a column. Movement stops at the ends. |
+| `← →` | Switch tables. Each table remembers its cursor while the picker is open. |
+| `space` | Show or hide the selected column without moving its row. |
+| `[` `]` | Move a shown column earlier or later; the cursor follows it. |
+| `backspace` | Restore the current table's defaults. |
+| `home`, `end`, `page up`, `page down` | Navigate longer lists and short panes. |
+| `esc` | Return to Config when opened there, otherwise close the picker. |
+| `tab`, `ctrl+z` | Return to the dashboard list. |
+
+The `›` marker and shaded row show keyboard focus; `[x]` and `[ ]` show visibility. The order number records a shown column's position in its saved set. State/status and the harness name retain their places beside the row's identity, as their descriptions explain. `defaults` or `custom` identifies where the selection comes from, independently of visibility.
+
+Click a row to select it, its checkbox to toggle it, or a table name to switch. The wheel moves through columns. The selected row stays visible when the pane is short.
+
+Every change validates and saves only that table's column setting in `jobs.yaml`, then updates the dashboard. Other settings and job blocks are preserved. A failed save keeps the previous selection and explains the error. An explicit empty selection hides every optional column; reset removes that override so defaults apply again.
+
 ### Config
 
 The editor has three groups: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. Subheadings name actual config blocks or harnesses. `runs` starts collapsed: `enter` or `→` opens it and `←` closes it.
@@ -67,7 +88,7 @@ Each row shows its control and value. `↑ ↓` select a field; `← →` change
 | Choices or text | Model, AWS region and bucket rows have an empty slot after the choices. Arrows reach it or typing fills it; returning to a listed choice drops custom text. |
 | Numbers | Confirmation time and bar count step by 1, timeout by 5 minutes. Steps stay on their grid and never go below zero; field validation may reject zero. Unset nonnumeric values step from zero. |
 | Text | Type a value; environment names use commas. Empty values omit overrides. |
-| Columns | Visible columns precede a separator and hidden columns. Arrows select, space shows/hides, `[` `]` reorder visible columns, and backspace restores defaults. The live table updates after each save. |
+| Columns | `enter`, `→` or space opens the [column picker](#columns). |
 
 Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
 
@@ -79,7 +100,7 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Pinned empty folders show their git branch and tree state. Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
 
-Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The `columns`, `run_columns`, `job_columns` and `history_columns` rows in config each support showing, hiding, reordering and restoring their own defaults. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
+Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The [column picker](#columns) edits `columns`, `run_columns`, `job_columns` and `history_columns` independently. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
 
 | State | Icon | Label | Color |
 | --- | --- | --- | --- |

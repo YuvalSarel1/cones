@@ -53,8 +53,10 @@
 <text x="108.7" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> jobs </text>
 <rect x="167.7" y="93" width="67.4" height="20" rx="3" fill="#3a3a3a"/>
 <text x="167.7" y="110" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> config </text>
-<rect x="243.6" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
-<text x="243.6" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> help </text>
+<rect x="243.6" y="93" width="75.9" height="20" rx="3" fill="#3a3a3a"/>
+<text x="243.6" y="110" xml:space="preserve" textLength="75.9" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> columns </text>
+<rect x="327.9" y="93" width="50.6" height="20" rx="3" fill="#3a3a3a"/>
+<text x="327.9" y="110" xml:space="preserve" textLength="50.6" lengthAdjust="spacingAndGlyphs" fill="#e6edf3"> help </text>
 <text x="606.1" y="110" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="606.1" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="614.5" y="130" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#ff8700">⏺</text>
@@ -115,7 +117,7 @@
 <text x="58.1" y="390" xml:space="preserve" textLength="25.3" lengthAdjust="spacingAndGlyphs" fill="#d77757">✻  </text>
 <text x="83.4" y="390" xml:space="preserve" textLength="67.4" lengthAdjust="spacingAndGlyphs" fill="#3fb950">ok      </text>
 <text x="150.9" y="390" xml:space="preserve" textLength="118.0" lengthAdjust="spacingAndGlyphs" fill="#e6edf3">readme-check  </text>
-<text x="268.9" y="390" xml:space="preserve" textLength="345.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-17 06:44:37  74s       -      $0.21  │</text>
+<text x="268.9" y="390" xml:space="preserve" textLength="345.6" lengthAdjust="spacingAndGlyphs" fill="#7d8590">09-17 08:27:50  74s       -      $0.21  │</text>
 <text x="606.1" y="410" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="606.1" y="430" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>
 <text x="606.1" y="450" xml:space="preserve" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#7d8590">│</text>

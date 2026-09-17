@@ -862,6 +862,52 @@ pub fn env_name(key: &str) -> Result<()> {
     Ok(())
 }
 
+/// Change only one column set, preserving the other settings and job blocks.
+/// `None` restores inheritance; an empty slice explicitly hides every optional column.
+pub fn write_column_set(path: &Path, key: &str, columns: Option<&[String]>) -> Result<()> {
+    ensure!(
+        matches!(
+            key,
+            "columns" | "run_columns" | "job_columns" | "history_columns"
+        ),
+        "unknown column set: {key}"
+    );
+    let names = columns.map(|cols| {
+        cols.iter()
+            .map(|c| column_name(c).to_owned())
+            .collect::<Vec<_>>()
+    });
+    if let Some(names) = &names {
+        for name in names {
+            ensure!(
+                column_set(key).0.contains(&name.as_str()),
+                "unknown {key} column: {name}"
+            );
+        }
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            format!("version: {VERSION}\njobs: []\n")
+        }
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    let text = migrated(&text, 1);
+    let mut out: Vec<String> = text.lines().map(str::to_owned).collect();
+    let lines: Vec<&str> = out.iter().map(String::as_str).collect();
+    let (start, mut end) = top_level(&lines, &format!("{key}:")).unwrap_or((out.len(), out.len()));
+    while end > start + 1
+        && (out[end - 1].trim().is_empty() || out[end - 1].trim_start().starts_with('#'))
+    {
+        end -= 1;
+    }
+    let replacement = names
+        .map(|names| vec![format!("{key}: [{}]", names.join(", "))])
+        .unwrap_or_default();
+    out.splice(start..end, replacement);
+    save(path, out.join("\n") + "\n")
+}
+
 /// Validate and replace dashboard settings and defaults while preserving job blocks.
 /// Create a missing file with `jobs: []`; validate defaults even when no jobs exist.
 /// One argument per top-level setting, since each is written on its own.
@@ -1211,6 +1257,44 @@ mod tests {
         let p = d.path().join("jobs.yaml");
         fs::write(&p, text).unwrap();
         (d, p)
+    }
+
+    #[test]
+    fn a_column_save_preserves_other_settings_comments_and_explicit_empty_sets() {
+        let text = "version: 3\ndefaults:\n  timeout_min: 7 # keep\ncolumns:\n  - state\n  - model\n# run preferences\nrun_columns: []\njob_columns: [schedule]\nhistory_columns: [folder]\nwhole_columns: false\njobs: []\n";
+        let (_d, p) = file(text);
+        write_column_set(&p, "columns", Some(&["context".into()])).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p).unwrap(),
+            text.replace("columns:\n  - state\n  - model\n", "columns: [context]\n")
+        );
+        write_column_set(&p, "columns", Some(&[])).unwrap();
+        assert_eq!(file_columns(&p), Some(vec![]));
+        assert_eq!(file_run_columns(&p), Some(vec![]));
+        write_column_set(&p, "columns", None).unwrap();
+        assert_eq!(file_columns(&p), None);
+        assert_eq!(columns(&p), DEFAULT_COLUMNS);
+        assert!(
+            fs::read_to_string(&p)
+                .unwrap()
+                .contains("# run preferences\nrun_columns: []")
+        );
+    }
+
+    #[test]
+    fn column_saves_validate_and_create_only_the_requested_set() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("new.yaml");
+        write_column_set(&p, "run_columns", Some(&["dir".into()])).unwrap();
+        assert_eq!(run_columns(&p), ["folder"]);
+        let before = fs::read_to_string(&p).unwrap();
+        assert!(write_column_set(&p, "defaults", Some(&[])).is_err());
+        assert!(write_column_set(&p, "columns", Some(&["made_up".into()])).is_err());
+        assert_eq!(fs::read_to_string(&p).unwrap(), before);
+        let directory = d.path().join("unreadable.yaml");
+        fs::create_dir(&directory).unwrap();
+        assert!(write_column_set(&directory, "columns", Some(&[])).is_err());
+        assert!(directory.is_dir());
     }
 
     #[test]

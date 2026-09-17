@@ -798,7 +798,7 @@ fn ansi(text: &str, style: Style) -> String {
 }
 
 /// Button name, action verb, explanation.
-const MENU: [(&str, &str, &str); 4] = [
+const MENU: [(&str, &str, &str); 5] = [
     (
         "folder",
         "add folder",
@@ -806,6 +806,11 @@ const MENU: [(&str, &str, &str); 4] = [
     ),
     ("jobs", "jobs", "the jobs: start, edit, add one"),
     ("config", "defaults", "job defaults and dashboard settings"),
+    (
+        "columns",
+        "columns",
+        "choose and order the columns in each table",
+    ),
     ("help", "guide", "the keys and what they do"),
 ];
 
@@ -2746,8 +2751,8 @@ const FIELDS: [Field; 30] = [
         group: "cones",
         sub: "",
         name: "columns",
-        short: "session columns",
-        long: "Agent columns. Folder appears when grouping by state; folder headings identify the normal groups. The default last reply hides while the preview pane is open; an explicit column set keeps your choice. Harness controls the name beside its permanent icon.",
+        short: "columns",
+        long: "Open the column picker for sessions, runs, jobs and history. Each table keeps its own visibility and order. Changes save immediately.",
         builtin: "state, context, activity, model, age, last_active, folder, last_reply",
         input: Answer::Columns,
     },
@@ -3248,6 +3253,7 @@ fn job_value(f: &Field, j: &config::Job) -> String {
 pub enum ConfigAction {
     Stay,
     Cancel,
+    Columns,
     /// Validated values to persist. Absent sets use defaults; empty sets hide optional columns.
     Save(
         Box<config::Policy>,
@@ -3280,7 +3286,6 @@ pub struct ConfigForm {
     shut: bool,
     /// The selection sits on that head rather than on the field it stands for, open or shut.
     on_head: bool,
-    arrange: HashMap<&'static str, ColumnForm>,
 }
 
 impl ConfigForm {
@@ -3374,19 +3379,6 @@ impl ConfigForm {
             cursor: usize::MAX,
             shut: true,
             on_head: false,
-            arrange: sets
-                .into_iter()
-                .map(|(key, set)| {
-                    let chosen = set
-                        .map(|set| {
-                            set.iter()
-                                .map(|c| config::column_name(c).to_owned())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_else(|| built_column_set(key));
-                    (key, ColumnForm::new(&chosen, config::column_set(key).0))
-                })
-                .collect(),
         }
     }
 
@@ -3397,6 +3389,11 @@ impl ConfigForm {
 
     /// A jump asks for the field itself, so it opens the group holding it.
     fn go(&mut self, row: usize) {
+        let row = if config_field_visible(row) {
+            row
+        } else {
+            field_at("columns")
+        };
         if FIELDS[row].group == SHUT {
             self.shut = false;
         }
@@ -3654,8 +3651,8 @@ impl ConfigForm {
     fn down(&mut self) {
         if self.on_head {
             self.on_head = self.shut;
-        } else if self.row + 1 < FIELDS.len() {
-            self.step(self.row + 1);
+        } else if let Some(row) = (self.row + 1..FIELDS.len()).find(|&i| config_field_visible(i)) {
+            self.step(row);
             self.on_head = self.row == fold_row();
         }
     }
@@ -3663,8 +3660,8 @@ impl ConfigForm {
     fn up(&mut self) {
         if !self.on_head && self.row == fold_row() {
             self.on_head = true;
-        } else if self.row > 0 {
-            self.step(self.row - 1);
+        } else if let Some(row) = (0..self.row).rev().find(|&i| config_field_visible(i)) {
+            self.step(row);
         }
     }
 
@@ -3716,23 +3713,12 @@ impl ConfigForm {
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
-                KeyCode::Left | KeyCode::Right | KeyCode::Char(' ' | '[' | ']')
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
                     if matches!(self.field().input, Answer::Columns) =>
                 {
-                    self.before = self.values[self.row].clone();
-                    let arrange = self
-                        .arrange
-                        .get_mut(self.field().name)
-                        .expect("column field");
-                    if let Arranged::Shown(cols) = arrange.key(code) {
-                        self.values[self.row] = if cols.is_empty() {
-                            "[]".into()
-                        } else {
-                            cols.join(", ")
-                        };
-                        return self.commit();
-                    }
+                    return ConfigAction::Columns;
                 }
+                KeyCode::Backspace if matches!(self.field().input, Answer::Columns) => {}
                 KeyCode::Left | KeyCode::Right => {
                     self.before = self.values[self.row].clone();
                     if self.turn(code == KeyCode::Left) {
@@ -3742,13 +3728,6 @@ impl ConfigForm {
                 KeyCode::Backspace if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
-                    if matches!(self.field().input, Answer::Columns) {
-                        let key = self.field().name;
-                        self.arrange.insert(
-                            key,
-                            ColumnForm::new(&built_column_set(key), config::column_set(key).0),
-                        );
-                    }
                     return self.commit();
                 }
                 KeyCode::Enter
@@ -3849,6 +3828,9 @@ impl ConfigForm {
         let mut head: Option<(&str, &str)> = None;
         let mut at = 0;
         for (i, f) in FIELDS.iter().enumerate() {
+            if !config_field_visible(i) {
+                continue;
+            }
             if head.map(|(g, _)| g) != Some(f.group) {
                 let (name, what) = GROUPS
                     .iter()
@@ -3981,28 +3963,10 @@ impl ConfigForm {
     fn control(&self, i: usize, open: bool) -> Vec<Span<'static>> {
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
-            let built = value.is_empty();
-            let arrange = &self.arrange[f.name];
-            let mut spans = vec![];
-            for (n, c) in arrange.order.iter().enumerate() {
-                if n == arrange.shown {
-                    spans.push(Span::styled("· ", dim()));
-                }
-                // Pad inside the span so the cursor's block sits even around the
-                // name, and keep the gap to the next name outside it.
-                spans.push(Span::styled(
-                    format!(" {c} "),
-                    if n == arrange.at && i == self.row {
-                        pressed()
-                    } else if n < arrange.shown && !built {
-                        bold()
-                    } else {
-                        dim()
-                    },
-                ));
-                spans.push(Span::raw(" "));
-            }
-            return spans;
+            return vec![Span::styled(
+                "open picker…  →",
+                if i == self.row { lit() } else { dim() },
+            )];
         }
         control(f, f.builtin, value, open, self.cursor, i == self.row)
     }
@@ -4036,9 +4000,7 @@ impl ConfigForm {
             "enter keeps it · esc reverts".to_owned()
         } else {
             match f.input {
-                Answer::Columns => {
-                    "space shows or hides · [ ] move it · bksp the built-in set".to_owned()
-                }
+                Answer::Columns => "enter opens the column picker".to_owned(),
                 Answer::Pick(_) => default,
                 Answer::PickOrType(_, what) => format!("or type {what} · enter next · {default}"),
                 _ => format!("enter types it · {default}"),
@@ -4086,6 +4048,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+fn config_field_visible(row: usize) -> bool {
+    !matches!(
+        FIELDS[row].name,
+        "run_columns" | "job_columns" | "history_columns"
+    )
+}
+
 fn built_column_set(key: &str) -> Vec<String> {
     config::column_set(key)
         .1
@@ -4108,73 +4077,394 @@ fn built_run_columns() -> Vec<String> {
         .collect()
 }
 
-enum Arranged {
-    Stay,
-    Shown(Vec<String>),
-}
+const COLUMN_SETS: [(&str, &str); 4] = [
+    ("columns", "sessions"),
+    ("run_columns", "runs"),
+    ("job_columns", "jobs"),
+    ("history_columns", "history"),
+];
 
-/// `order[..shown]` is the visible column set.
+/// Visibility is independent of row position, so toggling never moves the cursor.
 #[derive(Debug, Clone, PartialEq)]
 struct ColumnForm {
     order: Vec<String>,
-    shown: usize,
+    shown: HashSet<String>,
     at: usize,
+    default: bool,
 }
 
 impl ColumnForm {
-    fn new(columns: &[String], choices: &[&str]) -> Self {
-        let mut order = columns.to_vec();
+    fn new(key: &str, columns: Option<&[String]>) -> Self {
+        let chosen = columns.map_or_else(
+            || built_column_set(key),
+            |columns| {
+                columns
+                    .iter()
+                    .map(|c| config::column_name(c).to_owned())
+                    .collect()
+            },
+        );
+        let mut order = chosen.clone();
         order.extend(
-            choices
+            config::column_set(key)
+                .0
                 .iter()
-                .filter(|c| !columns.iter().any(|h| h == *c))
+                .filter(|c| !chosen.iter().any(|h| h == *c))
                 .map(|c| (*c).to_owned()),
         );
         Self {
-            shown: columns.len(),
+            shown: chosen.into_iter().collect(),
             at: 0,
             order,
+            default: columns.is_none(),
         }
     }
 
     fn chosen(&self) -> Vec<String> {
-        self.order[..self.shown].to_vec()
+        self.order
+            .iter()
+            .filter(|c| self.shown.contains(*c))
+            .cloned()
+            .collect()
     }
 
-    /// Hiding a column keeps the cursor on it, so space can immediately restore it.
-    fn key(&mut self, code: KeyCode) -> Arranged {
+    fn selected(&self) -> &str {
+        &self.order[self.at]
+    }
+
+    fn position(&self) -> Option<usize> {
+        self.chosen().iter().position(|c| c == self.selected())
+    }
+
+    fn key(&mut self, code: KeyCode) -> bool {
         match code {
-            KeyCode::Left | KeyCode::Right => {
-                let n = self.order.len();
-                self.at = (self.at + if code == KeyCode::Left { n - 1 } else { 1 }) % n;
-                Arranged::Stay
-            }
-            KeyCode::Char(' ') if self.at < self.shown => {
-                let c = self.order.remove(self.at);
-                self.shown -= 1;
-                self.order.insert(self.shown, c);
-                self.at = self.shown;
-                Arranged::Shown(self.chosen())
-            }
+            KeyCode::Up => self.at = self.at.saturating_sub(1),
+            KeyCode::Down => self.at = (self.at + 1).min(self.order.len() - 1),
+            KeyCode::Home => self.at = 0,
+            KeyCode::End => self.at = self.order.len() - 1,
             KeyCode::Char(' ') => {
-                let c = self.order.remove(self.at);
-                self.order.insert(self.shown, c);
-                self.shown += 1;
-                self.at = self.shown - 1;
-                Arranged::Shown(self.chosen())
+                let selected = self.selected().to_owned();
+                if !self.shown.remove(&selected) {
+                    self.shown.insert(selected);
+                }
+                self.default = false;
+                return true;
             }
-            KeyCode::Char('[') if self.at < self.shown && self.at > 0 => {
-                self.order.swap(self.at, self.at - 1);
-                self.at -= 1;
-                Arranged::Shown(self.chosen())
+            KeyCode::Char('[' | ']') if self.shown.contains(self.selected()) => {
+                let target = if code == KeyCode::Char('[') {
+                    (0..self.at)
+                        .rev()
+                        .find(|&i| self.shown.contains(&self.order[i]))
+                } else {
+                    (self.at + 1..self.order.len()).find(|&i| self.shown.contains(&self.order[i]))
+                };
+                if let Some(target) = target {
+                    self.order.swap(self.at, target);
+                    self.at = target;
+                    self.default = false;
+                    return true;
+                }
             }
-            KeyCode::Char(']') if self.at + 1 < self.shown => {
-                self.order.swap(self.at, self.at + 1);
-                self.at += 1;
-                Arranged::Shown(self.chosen())
-            }
-            _ => Arranged::Stay,
+            _ => {}
         }
+        false
+    }
+}
+
+enum ColumnAction {
+    Stay,
+    Close,
+    /// Restore this snapshot if validation or writing fails.
+    Save(ColumnForm),
+}
+
+struct ColumnsPicker {
+    sets: [ColumnForm; 4],
+    tab: usize,
+    return_config: Option<Box<ConfigForm>>,
+    error: Option<String>,
+    area: Rect,
+    top: usize,
+}
+
+impl ColumnsPicker {
+    fn new(path: &Path, tab: usize) -> Self {
+        let values = [
+            config::file_columns(path),
+            config::file_run_columns(path),
+            config::file_job_columns(path),
+            config::file_history_columns(path),
+        ];
+        Self {
+            sets: std::array::from_fn(|i| ColumnForm::new(COLUMN_SETS[i].0, values[i].as_deref())),
+            tab: tab.min(3),
+            return_config: None,
+            error: None,
+            area: Rect::default(),
+            top: 0,
+        }
+    }
+
+    fn current(&self) -> &ColumnForm {
+        &self.sets[self.tab]
+    }
+
+    fn header_rows(&self) -> u16 {
+        match self.area.height {
+            0..=3 => 0,
+            4..=7 => 2,
+            _ => 5,
+        }
+    }
+
+    fn key(&mut self, code: KeyCode) -> ColumnAction {
+        self.error = None;
+        match code {
+            KeyCode::Esc => return ColumnAction::Close,
+            KeyCode::Left => self.tab = self.tab.saturating_sub(1),
+            KeyCode::Right => self.tab = (self.tab + 1).min(3),
+            _ => {
+                let before = self.current().clone();
+                let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
+                let form = &mut self.sets[self.tab];
+                if code == KeyCode::Backspace && !form.default {
+                    let selected = form.selected().to_owned();
+                    *form = ColumnForm::new(COLUMN_SETS[self.tab].0, None);
+                    form.at = form.order.iter().position(|c| *c == selected).unwrap_or(0);
+                    return ColumnAction::Save(before);
+                }
+                let code = match code {
+                    KeyCode::PageUp => {
+                        form.at = form.at.saturating_sub(page);
+                        return ColumnAction::Stay;
+                    }
+                    KeyCode::PageDown => {
+                        form.at = (form.at + page).min(form.order.len() - 1);
+                        return ColumnAction::Stay;
+                    }
+                    c => c,
+                };
+                if form.key(code) {
+                    return ColumnAction::Save(before);
+                }
+            }
+        }
+        ColumnAction::Stay
+    }
+
+    fn line(&self) -> Line<'static> {
+        let form = self.current();
+        let state = form.position().map_or_else(
+            || "hidden".to_owned(),
+            |i| format!("shown · position {}", i + 1),
+        );
+        let mut spans = vec![
+            Span::styled(format!("{} › ", form.selected()), lit()),
+            Span::styled(state, dim()),
+            Span::raw(format!(" · {}", column_help(form.selected()))),
+        ];
+        if let Some(error) = &self.error {
+            spans = vec![Span::styled(error.clone(), Style::default().fg(Color::Red))];
+        }
+        Line::from(spans)
+    }
+
+    fn prompt_rows(&self, width: u16) -> u16 {
+        self.current()
+            .order
+            .iter()
+            .map(|name| {
+                let text = format!("{name} › shown · position 13 · {}", column_help(name));
+                (Paragraph::new(text)
+                    .wrap(Wrap { trim: false })
+                    .line_count(width)
+                    + 2)
+                .clamp(3, 10) as u16
+            })
+            .max()
+            .unwrap_or(3)
+    }
+
+    fn hints(&self) -> Line<'static> {
+        let form = self.current();
+        let mut keys = vec![(
+            "space",
+            if form.shown.contains(form.selected()) {
+                "hide"
+            } else {
+                "show"
+            },
+        )];
+        if let Some(pos) = form.position() {
+            if pos > 0 {
+                keys.push(("[", "earlier"));
+            }
+            if pos + 1 < form.shown.len() {
+                keys.push(("]", "later"));
+            }
+        }
+        if !form.default {
+            keys.push(("bksp", "reset"));
+        }
+        keys.push(("esc", "back"));
+        hints(&keys)
+    }
+
+    fn tab_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = vec![Span::styled("← ", if self.tab > 0 { lit() } else { dim() })];
+        for (i, (_, label)) in COLUMN_SETS.iter().enumerate() {
+            spans.push(Span::styled(
+                format!(" {label} "),
+                if i == self.tab {
+                    lit().add_modifier(Modifier::UNDERLINED)
+                } else {
+                    plain()
+                },
+            ));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled("→", if self.tab < 3 { lit() } else { dim() }));
+        spans
+    }
+
+    fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.area = area;
+        let form = self.current();
+        let header = self.header_rows();
+        let height = area.height.saturating_sub(header) as usize;
+        let top = form
+            .at
+            .saturating_sub(height.saturating_sub(1))
+            .min(form.order.len().saturating_sub(height));
+        let chosen = form.chosen();
+        let mut lines = vec![
+            Line::from(Span::styled("columns", lit())),
+            Line::from(self.tab_spans()),
+            Line::from(Span::styled(
+                format!(
+                    "{} of {} shown · {}    {} / {}",
+                    chosen.len(),
+                    form.order.len(),
+                    if form.default { "defaults" } else { "custom" },
+                    form.at + 1,
+                    form.order.len(),
+                ),
+                dim(),
+            )),
+            Line::default(),
+            Line::from(Span::styled("↑↓ show column          order", dim())),
+        ];
+        if header == 2 {
+            lines = vec![Line::from(self.tab_spans()), lines.pop().unwrap()];
+        } else if header == 0 {
+            lines.clear();
+        }
+        for (i, name) in form.order.iter().enumerate().skip(top).take(height) {
+            let selected = i == form.at;
+            let on = form.shown.contains(name);
+            let pos = chosen
+                .iter()
+                .position(|c| c == name)
+                .map(|n| format!("{:02}", n + 1))
+                .unwrap_or_default();
+            let mut row = Line::from(vec![
+                Span::styled(if selected { "› " } else { "  " }, lit()),
+                Span::styled(
+                    if on { "[x]   " } else { "[ ]   " },
+                    if on { plain() } else { dim() },
+                ),
+                Span::styled(
+                    format!("{name:<16}"),
+                    if selected { lit() } else { plain() },
+                ),
+                Span::styled(format!("{pos:<7}"), dim()),
+            ]);
+            if area.width > 48 {
+                row.spans.push(Span::styled(
+                    clip(column_help(name), area.width.saturating_sub(31) as usize),
+                    dim(),
+                ));
+            }
+            if selected {
+                on_row(std::slice::from_mut(&mut row), area.width);
+            }
+            lines.push(row);
+        }
+        self.top = top;
+        frame.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn mouse(&mut self, ev: MouseEvent) -> ColumnAction {
+        match ev.kind {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                for _ in 0..WHEEL_LINES {
+                    self.key(if ev.kind == MouseEventKind::ScrollUp {
+                        KeyCode::Up
+                    } else {
+                        KeyCode::Down
+                    });
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let x = ev.column.saturating_sub(self.area.x);
+                let y = ev.row.saturating_sub(self.area.y);
+                let header = self.header_rows();
+                if (header == 5 && y == 1) || (header == 2 && y == 0) {
+                    if x < 2 {
+                        return self.key(KeyCode::Left);
+                    }
+                    let mut left = 2;
+                    for (i, (_, label)) in COLUMN_SETS.iter().enumerate() {
+                        let right = left + label.len() as u16 + 2;
+                        if (left..right).contains(&x) {
+                            self.tab = i;
+                            return ColumnAction::Stay;
+                        }
+                        left = right + 1;
+                    }
+                    if x == left {
+                        return self.key(KeyCode::Right);
+                    }
+                } else if y >= header {
+                    let at = self.top + (y - header) as usize;
+                    if at < self.current().order.len() {
+                        self.sets[self.tab].at = at;
+                        if (2..5).contains(&x) {
+                            return self.key(KeyCode::Char(' '));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        ColumnAction::Stay
+    }
+}
+
+fn column_help(name: &str) -> &'static str {
+    match name {
+        "state" => "Session state, before the title.",
+        "status" => "Status, before the job name.",
+        "harness" => "Harness name beside its permanent icon.",
+        "model" => "Model reported by the harness.",
+        "context" => "Reported context usage and window.",
+        "tokens" => "Reported input and output tokens.",
+        "cost" => "Session or run cost; ~ marks an estimate.",
+        "age" => "Time since the session started.",
+        "last_active" => "Time since the latest activity.",
+        "last_reply" => "Latest reply; an explicit choice keeps it beside the pane.",
+        "activity" => "Activity over the configured chart window.",
+        "folder" => "Working directory; sessions show it when grouped by state.",
+        "branch" => "Current Git branch.",
+        "started" => "Run start time, in local time.",
+        "ended" => "Run end time, in local time.",
+        "duration" => "Elapsed run time.",
+        "reason" => "Why the run ended.",
+        "trigger" => "How the run was started.",
+        "schedule" => "Configured job schedule.",
+        "next_run" => "Next scheduled local time.",
+        "last_run" => "Most recent job run.",
+        _ => "",
     }
 }
 
@@ -4183,6 +4473,7 @@ enum Mode {
     Filter,
     Job(Box<JobForm>),
     Config(Box<ConfigForm>),
+    Columns(Box<ColumnsPicker>),
     Folder(Input),
     Rename(Input),
     /// Wrapped line offset in the usage guide.
@@ -4198,7 +4489,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, give the picked button's screen the keys in the pane: add folder, jobs, defaults, help; on the jobs screen's last row, the wizard on a new job",
+        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, give the picked button's screen the keys in the pane: add folder, jobs, defaults, columns, help; on the jobs screen's last row, the wizard on a new job",
     ),
     (
         "shift+enter",
@@ -4281,6 +4572,27 @@ const GUIDE: &[(&str, &str)] = &[
         "quit from the list or an agent viewer; a terminal keeps ctrl+c to interrupt commands",
     ),
     ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
+    ("", "Columns"),
+    (
+        "↑ ↓",
+        "select a column; home, end, page up and page down navigate a short pane",
+    ),
+    (
+        "← →",
+        "switch sessions, runs, jobs and history; each table remembers its cursor",
+    ),
+    (
+        "space",
+        "show or hide the column without moving its row; changes save immediately",
+    ),
+    (
+        "[ ]",
+        "move a shown column earlier or later; the cursor follows it",
+    ),
+    (
+        "backspace",
+        "restore this table's defaults; esc returns to Config when opened there",
+    ),
 ];
 
 const HISTORY_PAGE: usize = 50;
@@ -4703,6 +5015,8 @@ struct App {
     cwd: PathBuf,
     /// Index into `MENU`.
     menu: usize,
+    /// Last table visited before moving onto the menu.
+    column_context: usize,
     data: Data,
     rows: Vec<Row>,
     /// Inactive list: jobs for menu previews, or main rows beside the jobs pane.
@@ -4983,6 +5297,7 @@ impl App {
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
             menu: 0,
+            column_context: 0,
             split: start.pane,
             data,
             rows: vec![],
@@ -5177,6 +5492,7 @@ impl App {
             Mode::Filter => "filter",
             Mode::Job(_) => "job",
             Mode::Config(_) => "config",
+            Mode::Columns(_) => "columns",
             Mode::Folder(_) => "folder",
             Mode::Rename(_) => "rename",
             Mode::Guide(_) => "guide",
@@ -6423,6 +6739,7 @@ impl App {
     }
 
     fn step(&mut self, delta: isize) {
+        self.column_context = self.columns_tab();
         self.history.select_first = false;
         let n = self.visible.len() as isize;
         if n == 0 {
@@ -6662,6 +6979,7 @@ impl App {
         let open = match self.mode {
             Mode::Guide(_) => Some("help"),
             Mode::Config(_) => Some("config"),
+            Mode::Columns(_) => Some("columns"),
             Mode::Job(_) => Some("jobs"),
             Mode::Folder(_) => Some("folder"),
             _ => self.jobs_view.then_some("jobs"),
@@ -6679,12 +6997,90 @@ impl App {
         self.jobs_view
             || matches!(
                 self.mode,
-                Mode::Guide(_) | Mode::Config(_) | Mode::Job(_) | Mode::Folder(_)
+                Mode::Guide(_)
+                    | Mode::Config(_)
+                    | Mode::Columns(_)
+                    | Mode::Job(_)
+                    | Mode::Folder(_)
             )
     }
 
     fn pane_focused(&self) -> bool {
         self.focus.is_some() || self.transcript.focused || self.panel_focused()
+    }
+
+    fn columns_tab(&self) -> usize {
+        if self.jobs_view {
+            return 2;
+        }
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::Session(..)) => 0,
+            Some(Kind::Run(..)) => 1,
+            Some(Kind::Job(_) | Kind::NewJob) => 2,
+            Some(Kind::History(_) | Kind::HistoryStatus) => 3,
+            _ => self.column_context,
+        }
+    }
+
+    fn open_columns(&mut self, return_config: Option<Box<ConfigForm>>) {
+        let mut form = ColumnsPicker::new(&self.jobs_path, self.columns_tab());
+        form.return_config = return_config;
+        self.mode = Mode::Columns(Box::new(form));
+        self.needs_clear = true;
+    }
+
+    fn column_action(&mut self, action: ColumnAction) {
+        match action {
+            ColumnAction::Stay => {}
+            ColumnAction::Close => {
+                let Mode::Columns(mut picker) = std::mem::replace(&mut self.mode, Mode::Normal)
+                else {
+                    return;
+                };
+                if let Some(mut form) = picker.return_config.take() {
+                    let fresh = self.config_form();
+                    for (key, _) in COLUMN_SETS {
+                        let i = field_at(key);
+                        form.values[i] = fresh.values[i].clone();
+                    }
+                    self.mode = Mode::Config(form);
+                } else if !self.jobs_view {
+                    self.select_first_session();
+                }
+                self.needs_clear = true;
+            }
+            ColumnAction::Save(before) => {
+                let Mode::Columns(picker) = &mut self.mode else {
+                    return;
+                };
+                let tab = picker.tab;
+                let form = picker.current();
+                let key = COLUMN_SETS[tab].0;
+                let chosen = form.chosen();
+                let default = form.default;
+                if let Err(e) = config::write_column_set(
+                    &self.jobs_path,
+                    key,
+                    (!default).then_some(chosen.as_slice()),
+                ) {
+                    picker.sets[tab] = before;
+                    picker.error = Some(format!("{e:#}"));
+                    return;
+                }
+                match tab {
+                    0 => {
+                        self.data.columns = chosen;
+                        self.data.columns_default = default;
+                    }
+                    1 => self.data.run_columns = chosen,
+                    2 => self.data.job_columns = chosen,
+                    _ => self.data.history_columns = chosen,
+                }
+                self.rebuild();
+                self.invalidate();
+                self.status = format!("{key} saved");
+            }
+        }
     }
 
     fn config_form(&self) -> Box<ConfigForm> {
@@ -7450,7 +7846,10 @@ impl App {
 
     /// Clients without mouse reporting leave wheel scrolling to our emulator.
     fn wants_mouse(&self) -> bool {
-        self.split_active() || self.focus.is_some() || self.history.visible
+        self.split_active()
+            || self.focus.is_some()
+            || self.history.visible
+            || matches!(self.mode, Mode::Columns(_))
     }
 
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
@@ -7515,6 +7914,14 @@ impl App {
     /// Clamp drags and releases outside the pane so the viewer sees buttons released.
     /// Shift-wheel or clients without mouse reporting scroll the emulator.
     fn mouse(&mut self, ev: MouseEvent) {
+        if let Mode::Columns(form) = &mut self.mode
+            && (form.area.left()..form.area.right()).contains(&ev.column)
+            && (form.area.top()..form.area.bottom()).contains(&ev.row)
+        {
+            let action = form.mouse(ev);
+            self.column_action(action);
+            return;
+        }
         let list = self.list_area;
         if self.history.visible
             && !self.jobs_view
@@ -7608,6 +8015,7 @@ impl App {
 
     /// Handle list clicks and focus changes; return whether the viewer should receive the event.
     fn click(&mut self, ev: MouseEvent) -> bool {
+        self.column_context = self.columns_tab();
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return true;
         }
@@ -7998,6 +8406,7 @@ impl App {
             "folder" => self.mode = Mode::Folder(Input::default()),
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
+            "columns" => self.open_columns(None),
             _ => self.mode = Mode::Guide(0),
         }
     }
@@ -8579,6 +8988,7 @@ impl App {
                 keys.push(("esc", "cancel"));
                 hints(&keys)
             }
+            Mode::Columns(form) => form.hints(),
             Mode::Config(form) if form.open => hints(&[("enter", "keep"), ("esc", "back")]),
             Mode::Config(form) if form.head() => {
                 hints(&[("↑", "field"), ("enter →", "open"), ("esc", "done")])
@@ -8587,10 +8997,7 @@ impl App {
                 let f = form.field();
                 let mut keys = vec![("↑ ↓", "field")];
                 if matches!(f.input, Answer::Columns) {
-                    let a = &form.arrange[f.name];
-                    keys.push(("← →", "column"));
-                    keys.push(("space", if a.at < a.shown { "hide" } else { "show" }));
-                    keys.push(("[ ]", "move"));
+                    keys.push(("enter →", "open picker"));
                 } else if f.picks().is_some() {
                     keys.push(("← →", "change"));
                 } else if f.step().is_some() {
@@ -8599,7 +9006,7 @@ impl App {
                 if f.typed() {
                     keys.push(("enter", "type"));
                 }
-                if !form.values[form.row].is_empty() {
+                if !form.values[form.row].is_empty() && !matches!(f.input, Answer::Columns) {
                     keys.push(("bksp", "reset"));
                 }
                 keys.push(("esc", "done"));
@@ -8971,7 +9378,7 @@ impl App {
             && mods.is_empty()
             && match &self.mode {
                 Mode::Config(form) => !form.open,
-                Mode::Guide(_) => true,
+                Mode::Guide(_) | Mode::Columns(_) => true,
                 _ => false,
             };
         if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
@@ -9101,7 +9508,19 @@ impl App {
                     }
                 }
             },
+            Mode::Columns(form) => {
+                if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                    let action = form.key(code);
+                    self.column_action(action);
+                }
+            }
             Mode::Config(form) => match form.key(code, mods) {
+                ConfigAction::Columns => {
+                    let Mode::Config(form) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+                        unreachable!()
+                    };
+                    self.open_columns(Some(form));
+                }
                 ConfigAction::Stay => {}
                 ConfigAction::Cancel => {
                     self.mode = Mode::Normal;
@@ -9442,6 +9861,7 @@ impl App {
             }
             Mode::Job(f) => f.line(),
             Mode::Config(f) => f.line(),
+            Mode::Columns(f) => f.line(),
             Mode::Folder(input) => {
                 let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
                 spans.extend(input.spans(&fleet::tilde(&self.cwd)));
@@ -9470,7 +9890,11 @@ impl App {
             });
         let input = Paragraph::new(line).wrap(Wrap { trim: false }).block(rules);
         // line_count already counts the two rules, so this is the whole framed box.
-        let rows = input.line_count(width).clamp(3, 10) as u16;
+        let mut rows = input.line_count(width).clamp(3, 10) as u16;
+        if let Mode::Columns(form) = &self.mode {
+            // Keep the table's height when a checkbox or its description changes.
+            rows = rows.max(form.prompt_rows(width));
+        }
         (input, rows)
     }
 
@@ -9502,7 +9926,8 @@ impl App {
             Constraint::Length(1),
         ])
         .areas(pane);
-        match (&self.mode, name) {
+        match (&mut self.mode, name) {
+            (Mode::Columns(form), _) => form.draw(frame, body),
             (Mode::Job(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Config(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Guide(top), _) => frame.render_widget(guide(*top, body.width), body),
@@ -9510,6 +9935,9 @@ impl App {
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
             (_, "config") => frame.render_widget(self.config_form().paragraph(body), body),
+            (_, "columns") => {
+                ColumnsPicker::new(&self.jobs_path, self.columns_tab()).draw(frame, body)
+            }
             (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
             (_, "jobs") => {
                 let all: Vec<usize> = (0..self.other.len()).collect();
@@ -9622,6 +10050,8 @@ impl App {
             frame.render_widget(form.paragraph(list), list);
         } else if let Mode::Config(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
+        } else if let Mode::Columns(form) = &mut self.mode {
+            form.draw(frame, list);
         } else {
             self.draw_list(frame, list);
         }
@@ -10247,27 +10677,29 @@ mod tests {
         );
 
         c.go(field_at("columns"));
-        assert!(
-            matches!(c.key(KeyCode::Right, none), ConfigAction::Stay),
-            "moving the cursor along the row writes nothing"
-        );
-        let shown = match c.key(KeyCode::Char(' '), none) {
-            ConfigAction::Save(_, Some(cols), ..) => cols,
-            other => panic!("space on the columns row writes the line, got {other:?}"),
-        };
-        assert_eq!(
-            shown.len(),
-            config::DEFAULT_COLUMNS.len() - 1,
-            "the column under the cursor left the set"
-        );
-        assert_eq!(value(&c), shown.join(", "), "and the row reads the line");
-        assert!(
-            matches!(
-                c.key(KeyCode::Backspace, none),
-                ConfigAction::Save(_, None, ..)
-            ),
-            "backspace leaves the line out, so the built-in set applies"
-        );
+        let before = c.values.clone();
+        assert_eq!(c.key(KeyCode::Right, none), ConfigAction::Columns);
+        assert_eq!(c.values, before, "the link changes no settings");
+        c.key(KeyCode::Down, none);
+        assert_eq!(c.field().name, "whole_columns");
+        c.key(KeyCode::Up, none);
+        assert_eq!(c.field().name, "columns");
+        let text = c
+            .lines(60)
+            .0
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("open picker"));
+        for old in [
+            "session columns",
+            "run columns",
+            "job columns",
+            "history columns",
+        ] {
+            assert!(!text.contains(old), "{old} moved into the picker");
+        }
 
         let span = |t: &str| Span::raw(t.to_owned());
         let wide = flow(vec![span("ab"), span("cd"), span("ef")], 2, 4);
@@ -10390,7 +10822,7 @@ mod tests {
             None,
             None,
         );
-        c.row = 2;
+        c.go(field_at("model"));
         let (lines, at) = c.lines(48);
         let shaded: Vec<usize> = lines
             .iter()
@@ -15496,7 +15928,7 @@ mod tests {
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
-        for _ in 0..3 {
+        while !app.menu_is("help") {
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
         assert!(app.menu_is("help"));
@@ -15561,7 +15993,7 @@ mod tests {
         );
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
         assert!(
-            left(&t).contains("jobs   config   help   the jobs: start"),
+            left(&t).contains("jobs   config   columns   help   the jobs: start"),
             "{}",
             left(&t)
         );
@@ -16085,7 +16517,10 @@ mod tests {
             rows(t, 160).join("\n")
         };
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(" folder   jobs   config   help "), "{s}");
+        assert!(
+            s.contains(" folder   jobs   config   columns   help "),
+            "{s}"
+        );
         assert!(
             s.contains("a row for a folder") && !s.contains("start, edit, add one"),
             "{s}"
@@ -16257,6 +16692,217 @@ mod tests {
     }
 
     #[test]
+    fn columns_picker_keeps_focus_on_toggle_and_remembers_each_table() {
+        let d = dir();
+        let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), 0);
+        picker.key(KeyCode::Down);
+        let before = picker.current().clone();
+        assert!(matches!(
+            picker.key(KeyCode::Char(' ')),
+            ColumnAction::Save(_)
+        ));
+        assert_eq!(picker.current().at, before.at);
+        assert_eq!(picker.current().order, before.order);
+        assert!(!picker.current().shown.contains(before.selected()));
+        picker.key(KeyCode::Char(' '));
+        assert_eq!(picker.current().chosen(), before.chosen());
+        picker.key(KeyCode::Char(']'));
+        assert_eq!(picker.current().selected(), before.selected());
+        assert_eq!(picker.current().position(), Some(2));
+        picker.key(KeyCode::Right);
+        picker.key(KeyCode::End);
+        let run = picker.current().selected().to_owned();
+        picker.key(KeyCode::Down);
+        assert_eq!(picker.current().selected(), run);
+        picker.key(KeyCode::Left);
+        assert_eq!(picker.current().selected(), before.selected());
+        picker.key(KeyCode::Left);
+        assert_eq!(picker.tab, 0);
+        picker.key(KeyCode::Right);
+        assert_eq!(picker.current().selected(), run);
+        for _ in 0..8 {
+            picker.key(KeyCode::Right);
+        }
+        assert_eq!(picker.tab, 3);
+        picker.key(KeyCode::Home);
+        picker.key(KeyCode::Up);
+        assert_eq!(picker.current().at, 0);
+    }
+
+    #[test]
+    fn columns_menu_uses_the_table_we_left_and_config_returns_to_its_link() {
+        let d = dir();
+        let mut app = app(d.path());
+        for (kind, tab) in [
+            (Kind::Session(A.into(), "idle".into()), 0),
+            (Kind::Run(A.into(), "ok".into()), 1),
+            (Kind::Job("test".into()), 2),
+            (Kind::History("test".into()), 3),
+        ] {
+            app.mode = Mode::Normal;
+            app.rows = vec![
+                Row {
+                    kind: Kind::Menu,
+                    cells: vec![],
+                },
+                Row {
+                    kind,
+                    cells: vec![],
+                },
+            ];
+            app.visible = vec![0, 1];
+            app.cursor = 1;
+            app.step(-1);
+            app.menu = MENU
+                .iter()
+                .position(|(name, ..)| *name == "columns")
+                .unwrap();
+            app.open_menu();
+            assert!(matches!(&app.mode, Mode::Columns(p) if p.tab == tab));
+            assert_eq!(app.panel(), Some("columns"));
+            assert!(app.panel_focused());
+        }
+        fs::write(&app.jobs_path, "version: 3\ncolumns: [state]\njobs: []\n").unwrap();
+        app.column_context = 0;
+        let mut config = app.config_form();
+        config.go(field_at("columns"));
+        app.mode = Mode::Config(config);
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert_eq!(config::file_columns(&app.jobs_path), Some(vec![]));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("columns")));
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::file_columns(&app.jobs_path),
+            Some(vec![]),
+            "another config save keeps the picker change"
+        );
+    }
+
+    #[test]
+    fn columns_picker_failed_save_restores_the_checkmark_and_live_table() {
+        let d = dir();
+        let mut app = app(d.path());
+        let valid = "version: 3\ncolumns: [context, model]\njobs: []\n";
+        fs::write(&app.jobs_path, valid).unwrap();
+        app.refresh().unwrap();
+        app.open_columns(None);
+        let before = match &app.mode {
+            Mode::Columns(f) => f.current().clone(),
+            _ => unreachable!(),
+        };
+        let columns = app.data.columns.clone();
+        let invalid = "version: 3\njobs: [\n";
+        fs::write(&app.jobs_path, invalid).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Columns(f) if f.error.is_some() && *f.current() == before)
+        );
+        assert_eq!(app.data.columns, columns);
+        assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), invalid);
+        fs::write(&app.jobs_path, valid).unwrap();
+        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Columns(f) if f.error.is_none()));
+        assert_eq!(app.data.columns, ["model"]);
+    }
+
+    #[test]
+    fn columns_picker_scrolling_mouse_and_indicators_work_in_short_panes() {
+        let d = dir();
+        let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), 0);
+        picker.key(KeyCode::End);
+        let last = picker.current().selected().to_owned();
+        for height in [1, 3, 4, 7, 8, 20] {
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(60, height)).unwrap();
+            t.draw(|f| picker.draw(f, f.area())).unwrap();
+            let text = (0..height)
+                .map(|y| cells(&t, y, 0..60))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains(&format!("› [ ]   {last}")),
+                "{height} rows: {text}"
+            );
+            assert!(picker.hints().width() <= 60);
+        }
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(60, 20)).unwrap();
+        t.draw(|f| picker.draw(f, f.area())).unwrap();
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(matches!(picker.mouse(click(10, 5)), ColumnAction::Stay));
+        assert_eq!(picker.current().at, 0);
+        assert!(picker.current().default, "clicking the name only focuses");
+        assert!(matches!(picker.mouse(click(3, 5)), ColumnAction::Save(_)));
+        assert_eq!(picker.current().at, 0);
+        assert!(!picker.current().shown.contains(picker.current().selected()));
+        t.draw(|f| picker.draw(f, f.area())).unwrap();
+        assert_eq!(t.backend().buffer().cell((0, 5)).unwrap().symbol(), "›");
+        assert_eq!(cells(&t, 5, 2..5), "[ ]");
+        assert_eq!(t.backend().buffer().cell((0, 5)).unwrap().fg, ORANGE);
+        picker.mouse(click(14, 1));
+        assert_eq!(picker.tab, 1, "the runs tab is clickable");
+    }
+
+    #[test]
+    fn columns_picker_mouse_focus_and_table_height_survive_toggles_in_both_layouts() {
+        let d = dir();
+        let mut app = app(d.path());
+        for split in [true, false] {
+            fs::write(
+                &app.jobs_path,
+                "version: 3\ncolumns: [context, model]\njobs: []\n",
+            )
+            .unwrap();
+            app.refresh().unwrap();
+            app.split = split;
+            app.open_columns(None);
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            assert!(app.wants_mouse());
+            let area = match &app.mode {
+                Mode::Columns(f) => f.area,
+                _ => unreachable!(),
+            };
+            let click = |x| MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x + x,
+                row: area.y + 6,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.mouse(click(10));
+            assert!(matches!(&app.mode, Mode::Columns(f) if f.current().selected() == "model"));
+            assert_eq!(config::columns(&app.jobs_path), ["context", "model"]);
+            app.mouse(click(3));
+            assert_eq!(config::columns(&app.jobs_path), ["context"]);
+            assert!(matches!(&app.mode, Mode::Columns(f) if f.current().selected() == "model"));
+            for at in 0..config::COLUMNS.len() {
+                if let Mode::Columns(f) = &mut app.mode {
+                    f.sets[0].at = at;
+                }
+                t.draw(|f| app.draw(f)).unwrap();
+                let row = |app: &App| match &app.mode {
+                    Mode::Columns(f) => {
+                        f.area.y + f.header_rows() + (f.current().at - f.top) as u16
+                    }
+                    _ => unreachable!(),
+                };
+                let before = row(&app);
+                app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+                t.draw(|f| app.draw(f)).unwrap();
+                assert_eq!(row(&app), before, "toggle moves row {at}, split={split}");
+            }
+            app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+            assert!(matches!(app.mode, Mode::Normal));
+        }
+    }
+
+    #[test]
     fn run_column_picker_saves_reorders_and_resets_without_changing_session_columns() {
         let d = dir();
         fs::write(
@@ -16265,31 +16911,26 @@ mod tests {
         )
         .unwrap();
         let mut app = app(d.path());
-        app.mode = Mode::Config(app.config_form());
+        app.open_columns(None);
         let go = |app: &mut App, name: &str| {
-            if let Mode::Config(f) = &mut app.mode {
-                f.go(field_at(name));
+            if let Mode::Columns(f) = &mut app.mode {
+                f.tab = COLUMN_SETS
+                    .iter()
+                    .position(|(key, _)| *key == name)
+                    .unwrap();
             }
         };
         go(&mut app, "run_columns");
-        if let Mode::Config(f) = &app.mode {
-            let session_control: String = f
-                .control(field_at("columns"), false)
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            let run_control: String = f
-                .control(field_at("run_columns"), false)
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect();
-            assert!(session_control.contains("activity") && !session_control.contains("trigger"));
-            assert!(run_control.contains("trigger") && !run_control.contains("activity"));
+        if let Mode::Columns(f) = &app.mode {
+            assert!(f.sets[0].order.iter().any(|c| c == "activity"));
+            assert!(!f.sets[0].order.iter().any(|c| c == "trigger"));
+            assert!(f.sets[1].order.iter().any(|c| c == "trigger"));
+            assert!(!f.sets[1].order.iter().any(|c| c == "activity"));
         }
         app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
         assert_eq!(config::run_columns(&app.jobs_path), ["context", "model"]);
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(config::run_columns(&app.jobs_path).is_empty());
         assert!(app.data.run_columns.is_empty());
@@ -16369,13 +17010,16 @@ mod tests {
         let d = dir();
         fs::write(d.path().join("none.yaml"), "version: 3\ncolumns: [state]\nrun_columns: [cost]\njob_columns: [schedule, next_run]\nhistory_columns: [folder, last_active]\njobs: []\n").unwrap();
         let mut app = app(d.path());
-        app.mode = Mode::Config(app.config_form());
+        app.open_columns(None);
         for (key, first, second) in [
             ("job_columns", "schedule", "next_run"),
             ("history_columns", "folder", "last_active"),
         ] {
-            if let Mode::Config(form) = &mut app.mode {
-                form.go(field_at(key));
+            if let Mode::Columns(form) = &mut app.mode {
+                form.tab = COLUMN_SETS
+                    .iter()
+                    .position(|(name, _)| *name == key)
+                    .unwrap();
             }
             app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
             let saved = || {
@@ -16387,7 +17031,7 @@ mod tests {
             };
             assert_eq!(saved(), [second, first]);
             app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
-            app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+            app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
             app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
             assert!(if key == "job_columns" {
                 app.data.job_columns.is_empty()
@@ -16490,7 +17134,7 @@ mod tests {
     }
 
     #[test]
-    fn the_columns_row_arranges_the_table_and_keeps_the_order_in_jobs_yaml() {
+    fn the_columns_picker_arranges_the_table_and_keeps_the_order_in_jobs_yaml() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "active", 1);
         let jobs = d.path().join("none.yaml");
@@ -16527,7 +17171,8 @@ mod tests {
         {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
-        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
         assert_eq!(names(&app), ["state", "title", "context", "model"]);
         assert_eq!(config::columns(&jobs), ["state", "context", "model"]);
