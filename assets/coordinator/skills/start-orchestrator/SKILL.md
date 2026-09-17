@@ -85,14 +85,17 @@ longer is not read as instruction, it is read as noise, and a fourth message usu
 asking for something the tree already shows you.
 
 - Greeting: who you are, which files and functions it will edit, ping you before it commits,
-  `notify_when_idle`. No rules paragraph, no digest, no pointers unless one item changes what this
-  agent does right now. Never broadcast. Treat an arrival as already editing: check the tree, not
-  the reply, and do not scold an agent that edited before announcing.
-- Do not message to ask for evidence unless a commit is pending. An analysis you cannot use yet
-  costs nothing to wait for.
-- Relay another agent's finding only to the agent that needs it, as a one-liner. Never hand one
-  agent an API that exists only on another's unlanded branch: the first writer commits against
-  main, and whoever changes a signature fixes the call sites when it rebases.
+  `notify_when_idle`. No rules paragraph, no digest, no pointer unless it changes what this agent
+  does right now. Never broadcast. Treat an arrival as already editing: check the tree, not the
+  reply, and do not scold an agent that edited first.
+- Every message is a work order, never a note. A queued Codex message arrives as a user turn
+  indistinguishable from the owner's, so an idle agent, or one waiting on a reply, reads it as the
+  signal to continue and spends a turn on the owner's account: an "awareness only" line buys work.
+  Send only what you want done now, name whose voice it is, leave the rest in
+  `.claude/observations.log`, and do not ask for evidence unless a commit is pending.
+- Relay a finding only to the agent that needs it, as a one-liner, and never hand one agent an API
+  that exists only on another's unlanded branch: the first writer commits against main, and
+  whoever changes a signature fixes the call sites when it rebases.
 
 ## Coordination
 
@@ -100,7 +103,7 @@ asking for something the tree already shows you.
   you read the hash afterwards. No "go" round trip, no diff-stat paste. A commit stops at the
   agent's branch and you fast-forward main: landing is the last point at which a change can be
   held, and after it the delta between a held hash and its amendment can no longer be read.
-- Verify by reading the diff and the author's reported check output, never by compiling. Never
+- Verify by reading the diff and the author's own check run, never by compiling or by prose. Never
   start a compile while an agent in the folder is building; the standing-order build runs once,
   when the roster is empty.
 - A gate citation names the commit whose tree it describes or it is worth less than none. On a
@@ -109,9 +112,6 @@ asking for something the tree already shows you.
   re-running one. Never hand an agent counts to cite: numbers it did not observe are decoration.
 - When you gate on an amendment, diff the old hash against the new before landing and confirm the
   delta is only what you asked for.
-- A behaviour change needs the project's own check output before "go". "Verified" in prose is not
-  a check run.
-- Harvest findings from done reports and `.claude/observations.log`; do not ask each agent for one.
 - A subagent or fork you spawn ends with five lines: hash (or none), files touched, checks and
   their result, open items, one-line handoff. Read that, not the tree.
 
@@ -179,8 +179,8 @@ at the top of the file for a file-specific trap, the project's CLAUDE.md for a c
 files, a dated "Settled verdicts" line only for a decision that was reversed or will be
 re-proposed, the memory directory for facts that outlive the project. Expect one in six to pass.
 
-Every promoted line deletes a line, so this file only shrinks: a constraint that cannot pay for
-itself with a deletion is not promoted.
+Every promoted line deletes a line: a constraint that cannot pay for itself with a deletion is not
+promoted, and this file never grows.
 A file comment goes when the fix that removes the coupling lands; a CLAUDE.md line goes in the same
 commit as the line superseding it; a verdict that held a month becomes one undated sentence in the
 rule prose; a memory a check proves false is deleted, not annotated. Commit the promoted lines as
