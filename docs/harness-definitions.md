@@ -12,6 +12,8 @@ A definition supplies paths, mappings, conditions and native arguments. Registra
 
 Identity checks remain native code. Reported-thread handover requires a unique new thread matching the launch's prompt, cwd and start time, with no competing launch. YAML cannot substitute a title for identity or weaken native permission enforcement.
 
+Native accounting passes reported costs through, or supplies disjoint request usage to the shared cost calculator. Provider/model prices live in a separate cached catalog, outside these definitions. Calculated dollars carry their source and coverage; see [cost estimates](harness.md#cost-estimates).
+
 ## Fields
 
 | Field | Meaning |

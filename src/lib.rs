@@ -1,5 +1,6 @@
 pub mod codex;
 pub mod config;
+pub mod cost;
 pub mod fleet;
 pub mod harness;
 pub mod history;

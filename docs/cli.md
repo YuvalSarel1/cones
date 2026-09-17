@@ -86,3 +86,5 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 | `__coordinator [DIR]` | [Launch the bundled coordinator](#coordinator-launch). |
 | `__list` | Render dashboard rows for a subprocess caller. |
 | `__worker --run-id ID` | Run the supervised worker. |
+
+Session JSON includes `cost_info` when cost was reported or estimation was attempted. It identifies the source and coverage of `cost_usd`, including pricing snapshot metadata for calculated estimates. See [cost estimates](harness.md#cost-estimates).

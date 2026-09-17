@@ -73,6 +73,8 @@ pub struct Columns {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_info: Option<crate::cost::Info>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
 }
 
@@ -268,6 +270,7 @@ struct Cached {
 struct Hydrated {
     stamp: Stamp,
     statusline: Option<Stamp>,
+    pricing: Option<crate::cost::CatalogStamp>,
     columns: Columns,
     used: u64,
 }
@@ -506,10 +509,13 @@ impl Cache {
                 .join(format!("{}.json", e.key.session_id))
         });
         let status_stamp = statusline.as_deref().and_then(|path| stamp(path).ok());
+        let catalog = crate::cost::snapshot();
+        let pricing = catalog.as_ref().map(|c| c.stamp.clone());
         self.used += 1;
         if let Some(c) = self.columns.get_mut(&e.transcript)
             && c.stamp == current
             && c.statusline == status_stamp
+            && (e.key.harness != "codex" || c.pricing == pricing)
         {
             c.used = self.used;
             stats.column_cache_hits += 1;
@@ -517,7 +523,7 @@ impl Cache {
         }
         let mut columns = match spec.transcript.handler {
             Native::Claude => fleet::history_columns(&e.transcript)?,
-            Native::Codex => codex_columns(&e.transcript)?,
+            Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Pi => pi_columns(&e.transcript)?,
         };
         if status_stamp.is_some() {
@@ -528,7 +534,10 @@ impl Cache {
             let source = spec.transcript.statusline.as_ref().expect("stamped source");
             if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
                 columns.context_window = v.pointer(&source.window_pointer).and_then(Value::as_u64);
-                columns.cost_usd = fleet::statusline_cost(source, &v).or(columns.cost_usd);
+                if let Some(cost) = fleet::statusline_cost(source, &v) {
+                    columns.cost_usd = Some(cost);
+                    columns.cost_info = Some(crate::cost::Info::reported());
+                }
             }
         }
         ensure!(
@@ -541,6 +550,7 @@ impl Cache {
             Hydrated {
                 stamp: current,
                 statusline: status_stamp,
+                pricing,
                 columns: columns.clone(),
                 used: self.used,
             },
@@ -750,7 +760,7 @@ fn claude_title(events: &[Value], named: bool) -> Option<String> {
     })
 }
 
-fn codex_columns(path: &Path) -> Result<Columns> {
+fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Columns> {
     let mut tail = codex::Tail::default();
     let mut title = None;
     for line in BufReader::new(File::open(path)?).lines() {
@@ -758,10 +768,11 @@ fn codex_columns(path: &Path) -> Result<Columns> {
         if title.is_none() {
             title = codex::prompt(&line);
         }
-        tail.fold(&line);
+        tail.fold_priced(&line, catalog);
         // History keeps scalars, not one activity allocation per line ever written.
         tail.activity.clear();
     }
+    let (cost_usd, cost_info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
     Ok(Columns {
         title,
         model: tail.model,
@@ -769,19 +780,23 @@ fn codex_columns(path: &Path) -> Result<Columns> {
         tokens_out: tail.tokens_out,
         context_tokens: tail.context_tokens,
         context_window: tail.context_window,
+        cost_usd,
+        cost_info,
         last: tail.last,
-        ..Columns::default()
     })
 }
 
 fn pi_columns(path: &Path) -> Result<Columns> {
     let mut out = Columns::default();
     let mut name = None;
+    let mut costs = crate::cost::Total::default();
+    let mut cost_ids = HashSet::new();
     for line in BufReader::new(File::open(path)?).lines() {
         let line = line?;
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        pi::observe_cost(&mut costs, &mut cost_ids, &v);
         let tail = pi::tail(&line);
         name = tail.name.or(name);
         out.title = out.title.or(tail.prompt);
@@ -802,11 +817,9 @@ fn pi_columns(path: &Path) -> Result<Columns> {
             if usage["output"].is_u64() {
                 out.tokens_out = Some(out.tokens_out.unwrap_or(0) + tail.tokens_out);
             }
-            if v["message"]["usage"]["cost"]["total"].is_number() {
-                out.cost_usd = Some(out.cost_usd.unwrap_or(0.0) + tail.cost_usd);
-            }
         }
     }
+    (out.cost_usd, out.cost_info) = costs.report(crate::cost::Source::Harness);
     out.title = name.or(out.title);
     Ok(out)
 }
@@ -815,6 +828,52 @@ fn pi_columns(path: &Path) -> Result<Columns> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cost_history_and_live_use_the_same_pricing_and_pi_unknowns() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let text = [
+            json!({"type":"session_meta","payload":{"model_provider":"provider"}}),
+            json!({"type":"turn_context","payload":{"model":"model"}}),
+            json!({"type":"event_msg","payload":{"type":"token_count","info":{
+                "total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":30,"output_tokens":10},
+                "last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":30,"output_tokens":10}
+            }}}),
+        ].iter().map(|v| format!("{v}\n")).collect::<String>();
+        fs::write(&path, &text).unwrap();
+        let catalog = crate::cost::tests::fixture();
+        let history = codex_columns_priced(&path, Some(&catalog)).unwrap();
+        let mut live = codex::Tail::default();
+        live.fold_priced(&text, Some(&catalog));
+        assert_eq!(
+            (history.cost_usd, history.cost_info),
+            live.accounting.total.report(crate::cost::Source::ModelsDev)
+        );
+
+        let message = |id: &str, cost: f64| {
+            json!({"type":"message","id":id,"message":{
+                "role":"assistant","usage":{"input":2,"output":1,"cost":{"total":cost}}
+            }})
+        };
+        let priced = message("one", 0.2);
+        let unpriced = message("two", 0.0);
+        let text = format!("{priced}\n{priced}\n{unpriced}\n");
+        fs::write(&path, &text).unwrap();
+        let history = pi_columns(&path).unwrap();
+        let live = pi::tail(&text);
+        assert_eq!(history.cost_usd, Some(0.2));
+        assert_eq!(
+            history.cost_info.as_ref().unwrap().coverage,
+            crate::cost::Coverage::Partial
+        );
+        assert_eq!(
+            (history.cost_usd, history.cost_info),
+            live.costs.report(crate::cost::Source::Harness)
+        );
+        fs::write(&path, format!("{unpriced}\n")).unwrap();
+        assert!(pi_columns(&path).unwrap().cost_usd.is_none());
+    }
 
     fn history_entry(harness: HarnessKind, records: &[Value]) -> Entry {
         let dir = tempfile::tempdir().unwrap();

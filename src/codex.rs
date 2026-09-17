@@ -70,7 +70,7 @@ pub struct Meta {
     pub started: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Tail {
     pub last: Option<String>,
     /// Latest turn: `active` after `task_started`, `done` after `task_complete`,
@@ -85,8 +85,132 @@ pub struct Tail {
     pub context_tokens: Option<u64>,
     /// `token_count.info.model_context_window` on that event.
     pub context_window: Option<u64>,
+    pub(crate) accounting: Accounting,
     /// Timestamped rollout activity for sparklines; see docs/harness.md for event mappings.
     pub activity: Vec<crate::fleet::Activity>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Accounting {
+    provider: Option<String>,
+    model: Option<String>,
+    unsupported_tier: bool,
+    previous: Option<Counters>,
+    pub total: crate::cost::Total,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Counters {
+    input: u64,
+    cached: u64,
+    written: u64,
+    output: u64,
+}
+
+impl Counters {
+    fn read(value: &Value, bedrock: bool) -> Option<Self> {
+        Some(Self {
+            input: value["input_tokens"].as_u64()?,
+            cached: value["cached_input_tokens"].as_u64()?,
+            // Older providers do not report cache writes. Bedrock requires this counter.
+            written: if bedrock {
+                value["cache_write_input_tokens"].as_u64()?
+            } else {
+                value["cache_write_input_tokens"].as_u64().unwrap_or(0)
+            },
+            output: value["output_tokens"].as_u64()?,
+        })
+    }
+
+    fn since(self, previous: Self) -> Option<Self> {
+        Some(Self {
+            input: self.input.checked_sub(previous.input)?,
+            cached: self.cached.checked_sub(previous.cached)?,
+            written: self.written.checked_sub(previous.written)?,
+            output: self.output.checked_sub(previous.output)?,
+        })
+    }
+}
+
+impl Accounting {
+    fn observe(&mut self, event: &Value, catalog: Option<&crate::cost::Catalog>) {
+        let payload = &event["payload"];
+        if event["type"] == "session_meta" {
+            self.provider = payload["model_provider"].as_str().map(str::to_owned);
+        }
+        if event["type"] == "turn_context" {
+            self.model = payload["model"].as_str().map(str::to_owned);
+            self.unsupported_tier = !matches!(
+                payload["service_tier"].as_str(),
+                None | Some("default" | "auto")
+            );
+        }
+        if event["type"] != "event_msg" {
+            return;
+        }
+        if payload["type"] == "model_rerouted" {
+            // A reroute must identify the actual model before it can be priced.
+            self.model = payload["to_model"].as_str().map(str::to_owned);
+        }
+        if payload["type"] != "token_count" || !payload["info"].is_object() {
+            return;
+        }
+        let info = &payload["info"];
+        let bedrock = self.provider.as_deref() == Some("amazon-bedrock");
+        let Some(current) = Counters::read(&info["total_token_usage"], bedrock) else {
+            self.total.unknown("missing_counters");
+            return;
+        };
+        if self.previous == Some(current) {
+            // Rate-limit/usage updates may repeat the last completed request.
+            return;
+        }
+        let previous = self.previous.replace(current).unwrap_or_default();
+        let Some(delta) = current.since(previous) else {
+            self.total.unknown("counter_reset");
+            return;
+        };
+        let Some(last) = Counters::read(&info["last_token_usage"], bedrock) else {
+            self.total.unknown("missing_request_usage");
+            return;
+        };
+        if delta != last {
+            // A cumulative jump can cover requests whose model/tier is no longer recoverable.
+            self.total.unknown("unobserved_usage");
+            if delta.since(last).is_none() {
+                return;
+            }
+        }
+        if self.unsupported_tier {
+            self.total.unknown("unsupported_service_tier");
+            return;
+        }
+        let (Some(provider), Some(model)) = (self.provider.as_deref(), self.model.as_deref())
+        else {
+            self.total.unknown("missing_provider_or_model");
+            return;
+        };
+        let Some(input) = last
+            .input
+            .checked_sub(last.cached)
+            .and_then(|n| n.checked_sub(last.written))
+        else {
+            self.total.unknown("invalid_usage");
+            return;
+        };
+        self.total.estimate(
+            &crate::cost::Usage {
+                provider,
+                model,
+                input,
+                cache_read: last.cached,
+                cache_write: last.written,
+                // Reasoning is already included in output_tokens.
+                output: last.output,
+            },
+            catalog,
+        );
+    }
 }
 
 /// Skip discovery when the Codex home is absent, including in isolated tests.
@@ -285,6 +409,10 @@ pub fn tail(lines: &str) -> Tail {
 impl Tail {
     /// Fold new events into prior state so long tool output does not hide an earlier turn start.
     pub fn fold(&mut self, lines: &str) {
+        self.fold_priced(lines, None);
+    }
+
+    pub(crate) fn fold_priced(&mut self, lines: &str, catalog: Option<&crate::cost::Catalog>) {
         let t = self;
         for line in lines.lines() {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
@@ -298,6 +426,7 @@ impl Tail {
                 t.activity.push(crate::fleet::Activity::at(ts.into()));
             }
             let payload = &v["payload"];
+            t.accounting.observe(&v, catalog);
             if let Some(a) = t.activity.last_mut() {
                 if v["type"] == "response_item" {
                     match payload["type"].as_str() {
@@ -620,6 +749,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
             let kind = (daemon.is_some() && locks.get(&id) == daemon.as_ref())
                 .then(|| "daemon".to_owned());
+            let (cost_usd, cost_info) = t.accounting.total.report(crate::cost::Source::ModelsDev);
             Session {
                 title: index
                     .titles
@@ -641,7 +771,8 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 tokens_out: t.tokens_out,
                 context_tokens: t.context_tokens,
                 context_window: t.context_window,
-                cost_usd: None,
+                cost_usd,
+                cost_info,
                 last: t.last,
                 coordinator: false,
                 activity: t.activity,
@@ -760,6 +891,8 @@ pub(crate) fn thread_rows_observed(
                     "daemon_lock"
                 },
             );
+            let (cost_usd, cost_info) =
+                tail.accounting.total.report(crate::cost::Source::ModelsDev);
             Some(Session {
                 title: index
                     .titles
@@ -787,7 +920,8 @@ pub(crate) fn thread_rows_observed(
                 tokens_out: tail.tokens_out,
                 context_tokens: tail.context_tokens,
                 context_window: tail.context_window,
-                cost_usd: None,
+                cost_usd,
+                cost_info,
                 last: tail.last,
                 coordinator: false,
                 activity: tail.activity,
@@ -882,14 +1016,22 @@ pub fn user_texts(v: &Value) -> impl Iterator<Item = &str> {
 /// Fold appended bytes after the first full read, retaining earlier state.
 /// Leave a partial final line for the next read.
 fn tail_of(path: &Path) -> Tail {
-    static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
+    let catalog = crate::cost::snapshot();
+    tail_of_priced(path, catalog.as_deref())
+}
+
+fn tail_of_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Tail {
+    type CachedTail = (u64, Tail, Option<crate::cost::CatalogStamp>);
+    static CACHE: Mutex<Option<HashMap<PathBuf, CachedTail>>> = Mutex::new(None);
+    let stamp = catalog.map(|c| c.stamp.clone());
     let len = fs::metadata(path).map_or(0, |m| m.len());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
-    let (seen, t) = cache.entry(path.to_owned()).or_default();
-    if *seen > len {
+    let (seen, t, priced_with) = cache.entry(path.to_owned()).or_default();
+    if *seen > len || *priced_with != stamp {
         // Truncated or replaced: start over.
         (*seen, *t) = (0, Tail::default());
+        *priced_with = stamp;
     }
     if *seen == len {
         return t.clone();
@@ -902,7 +1044,7 @@ fn tail_of(path: &Path) -> Tail {
         && file.take(len - *seen).read_to_end(&mut data).is_ok()
         && let Some(end) = data.iter().rposition(|b| *b == b'\n')
     {
-        t.fold(&String::from_utf8_lossy(&data[..=end]));
+        t.fold_priced(&String::from_utf8_lossy(&data[..=end]), catalog);
         *seen += end as u64 + 1;
     }
     t.clone()
@@ -911,6 +1053,147 @@ fn tail_of(path: &Path) -> Tail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cost_header(model: &str) -> String {
+        format!(
+            "{}\n{}\n",
+            serde_json::json!({"type":"session_meta","payload":{"model_provider":"provider"}}),
+            serde_json::json!({"type":"turn_context","payload":{"model":model}})
+        )
+    }
+
+    fn cost_event(total: [u64; 4], last: [u64; 4]) -> String {
+        let usage = |n: [u64; 4]| {
+            serde_json::json!({
+                "input_tokens":n[0], "cached_input_tokens":n[1],
+                "cache_write_input_tokens":n[2], "output_tokens":n[3],
+                "reasoning_output_tokens": n[3].saturating_sub(1),
+            })
+        };
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type":"event_msg", "payload":{"type":"token_count","info":{
+                    "total_token_usage":usage(total), "last_token_usage":usage(last)
+                }}
+            })
+        )
+    }
+
+    #[test]
+    fn cost_counts_each_response_once_at_its_reported_model_and_cache_rates() {
+        let catalog = crate::cost::tests::fixture();
+        let first = cost_event([100, 40, 30, 10], [100, 40, 30, 10]);
+        let mut tail = Tail::default();
+        tail.fold_priced(&(cost_header("model") + &first + &first), Some(&catalog));
+        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        assert!((usd.unwrap() - 0.00025).abs() < 1e-12);
+        assert_eq!(
+            info.unwrap().priced_records,
+            1,
+            "duplicate updates do not spend twice"
+        );
+        let second = cost_event([120, 50, 30, 12], [20, 10, 0, 2]);
+        tail.fold_priced(&(cost_header("other_model") + &second), Some(&catalog));
+        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        assert!(
+            (usd.unwrap() - 0.0002665).abs() < 1e-12,
+            "price the first request at its own model"
+        );
+        let info = info.unwrap();
+        assert_eq!(info.coverage, crate::cost::Coverage::Complete);
+        assert_eq!(info.priced_records, 2);
+        assert_eq!(info.catalog, Some(catalog.stamp.clone()));
+        assert!(crate::cost::display(usd, Some(&info)).starts_with("~$"));
+    }
+
+    #[test]
+    fn cost_missing_requests_models_tiers_and_counters_never_look_complete() {
+        let catalog = crate::cost::tests::fixture();
+        let good = cost_event([100, 40, 30, 10], [100, 40, 30, 10]);
+        let mut tail = Tail::default();
+        tail.fold_priced(&(cost_header("model") + &good), Some(&catalog));
+        tail.fold_priced(
+            &(cost_header("not-in-catalog") + &cost_event([200, 80, 60, 20], [100, 40, 30, 10])),
+            Some(&catalog),
+        );
+        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        assert_eq!(
+            info.as_ref().unwrap().coverage,
+            crate::cost::Coverage::Partial
+        );
+        assert!(crate::cost::display(usd, info.as_ref()).ends_with(" partial"));
+
+        for (header, event, reason) in [
+            (
+                cost_header("model"),
+                cost_event([300, 120, 90, 30], [100, 40, 30, 10]),
+                "unobserved_usage",
+            ),
+            (
+                cost_header("model"),
+                cost_event([10, 11, 0, 1], [10, 11, 0, 1]),
+                "invalid_usage",
+            ),
+            (
+                format!(
+                    "{}{}\n",
+                    cost_header("model"),
+                    serde_json::json!({"type":"turn_context","payload":{"model":"model","service_tier":"priority"}})
+                ),
+                good.clone(),
+                "unsupported_service_tier",
+            ),
+            (
+                cost_header("model").replace("\"provider\"", "\"amazon-bedrock\""),
+                good.replace("\"cache_write_input_tokens\":30,", ""),
+                "missing_counters",
+            ),
+        ] {
+            let mut tail = Tail::default();
+            tail.fold_priced(&(header + &event), Some(&catalog));
+            let (_, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+            assert!(
+                info.as_ref().unwrap().unpriced_reasons.contains_key(reason),
+                "{reason}: {info:?}"
+            );
+            assert_ne!(info.unwrap().coverage, crate::cost::Coverage::Complete);
+        }
+    }
+
+    #[test]
+    fn cost_replays_a_cached_rollout_when_a_catalog_becomes_available() {
+        let catalog = crate::cost::tests::fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let text = cost_header("model") + &cost_event([101, 40, 30, 10], [101, 40, 30, 10]);
+        fs::write(&path, text).unwrap();
+        let absent = tail_of_priced(&path, None)
+            .accounting
+            .total
+            .report(crate::cost::Source::ModelsDev);
+        assert!(absent.0.is_none());
+        let priced = tail_of_priced(&path, Some(&catalog))
+            .accounting
+            .total
+            .report(crate::cost::Source::ModelsDev);
+        assert!((priced.0.unwrap() - 0.000464).abs() < 1e-12);
+        assert_eq!(
+            priced,
+            tail_of_priced(&path, Some(&catalog))
+                .accounting
+                .total
+                .report(crate::cost::Source::ModelsDev)
+        );
+        assert!(
+            tail_of_priced(&path, None)
+                .accounting
+                .total
+                .report(crate::cost::Source::ModelsDev)
+                .0
+                .is_none()
+        );
+    }
 
     #[test]
     fn a_process_states_its_thread_by_lock_or_resume_argument() {

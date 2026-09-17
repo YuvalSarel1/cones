@@ -83,7 +83,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `model` | All | Reported model; jobs show their configured model. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
 | `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
-| `cost` | Agents, runs, history | Reported dollars only. Claude's saved status line supplies live/session totals; finished runs use their terminal record. No token-price estimates are calculated. |
+| `cost` | Agents, runs, history | Native dollars, or `~$…` for a Codex estimate from reported usage and cached prices. `partial` marks gaps; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
 | `activity` | Agents | Counts over time under the [activity settings](#activity). |
 | `age` | Agents, history | Time since session start. |
 | `last_active` | Agents, history | Time since the latest recorded activity. |
@@ -226,6 +226,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | Path under the state directory | Contents |
 | --- | --- |
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
+| `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |

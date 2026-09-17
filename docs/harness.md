@@ -82,11 +82,23 @@ The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each s
 | Context tokens | Last real message's input + cache creation + cache read, the same usage fields as statusLine. | Latest `token_count.info.last_token_usage.total_tokens`. | Those same three input counters on the last assistant message, as in pi's status line. |
 | Context window | Saved statusLine payload, described below. | Latest `token_count.info.model_context_window`. | Absent; the catalog's model window is not written in session files. |
 | Model | Last message with usage, `message.model`. | Latest `turn_context.model`. | Last assistant message's `model`; `model_change` entries are not used. |
-| Session cost | Saved statusLine `cost.total_cost_usd`, when present, including reported zero. Finished supervised run cost comes from the [result event](jobs.md#results). | Absent: rollouts contain tokens without prices. | Sum `usage.cost.total`; zero shows `-`. pi writes zero for models it has not priced, including its Bedrock models. |
+| Session cost | Saved statusLine `cost.total_cost_usd`, including reported zero. Finished supervised runs use the [result event](jobs.md#results). | [Calculated estimate](#cost-estimates) from reported usage and cached provider/model prices, prefixed `~`. | Sum valid `usage.cost.total` once per message id. Zero with consumed or unreported tokens is unpriced; explicitly empty responses may report zero. Gaps make the total `partial`. |
 
 Claude's `<synthetic>` messages are skipped: they represent turns without a model answer and contain zero usage. Before a harness reports usage, counters stay absent. An absent last-activity timestamp is never replaced by process start.
 
 Model names come from the provider catalog recorded by `aws bedrock list-foundation-models`, normalized across regions and revisions. The display drops the redundant Claude prefix: `claude-fable-5-1` becomes Fable 5.1. Known families absent from the catalog are spelled from their ids; unknown families and bare aliases remain verbatim. The [catalog and naming code](../src/fleet.rs) define the mapping.
+
+### Cost estimates
+
+Agent and history rows share accounting. Claude's saved total is used directly; pi's per-response totals are summed. These are harness estimates. A finished run retains its terminal ledger cost when the native session later resumes.
+
+Codex's native reader uses the reported provider, model and request usage. It separates ordinary input, cache reads, cache writes and output; reasoning is already included in output. Requests are priced at their own model and input size before summing. Repeated cumulative updates count once. Missing requests, counters, models or rates make the estimate incomplete. Reported nonstandard service tiers stay unpriced.
+
+The calculator matches exact provider/model keys in a cached models.dev catalog. Rates are USD per million tokens, with context tiers applied to the whole request. All-zero tables are treated as unpriced. Estimates use standard cache-write rates; unreported cache retention, discounts, subscriptions and additional fees are not reconciled. Historical sessions use the selected snapshot's rates, not reconstructed invoice prices.
+
+The dashboard refreshes the public catalog asynchronously after 24 hours. Failed downloads retain the previous valid snapshot and retry no sooner than an hour later. Snapshots older than seven days become unavailable. Validated data atomically replaces `STATE_DIR/prices.json`; rendering performs no downloads. Internal CLI listings use the existing cache without fetching.
+
+Calculated costs show `~$…`; known subtotals with gaps also show `partial`. When nothing can be priced, the cell stays `-`. Session details and JSON `cost_info` identify source, coverage, priced/unpriced records, reasons for gaps, and catalog fetch time and checksum. The fetch date identifies snapshot age, not verified provider billing.
 
 ### State
 

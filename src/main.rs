@@ -226,6 +226,7 @@ fn execute(cli: Cli) -> Result<i32> {
             })
         }
         Action::Ls { job, status, json } => {
+            cones::cost::init(&state, false);
             let ledger = Ledger::new(&state)?;
             for run in ledger.runs()?.into_iter().rev().filter(|r| {
                 job.as_ref()
@@ -276,9 +277,7 @@ fn execute(cli: Cli) -> Result<i32> {
                             .map(|t| t.with_timezone(&chrono::Local).to_rfc3339())
                             .unwrap_or_else(|| "-".into()),
                         s.harness,
-                        s.cost_usd
-                            .map(cones::fleet::cost)
-                            .unwrap_or_else(|| "-".into()),
+                        cones::cost::display(s.cost_usd, s.cost_info.as_ref()),
                         cones::fleet::tokens(&s)
                     );
                 }
@@ -286,6 +285,7 @@ fn execute(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Action::List => {
+            cones::cost::init(&state, false);
             print!("{}", cones::tui::list(&jobs_path, &state, &claude)?);
             Ok(0)
         }

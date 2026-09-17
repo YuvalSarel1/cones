@@ -693,6 +693,9 @@ impl Data {
                     ),
                     String::new(),
                 ];
+                if let Some(cost) = crate::cost::describe(s.cost_usd, s.cost_info.as_ref()) {
+                    out.insert(2, cost);
+                }
                 if let Some(t) = &s.transcript_path {
                     out.extend(fleet::exchanges(t, exchanges));
                 }
@@ -1107,7 +1110,7 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
         "folder" => (fleet::tilde(&s.cwd), dim()),
         "last_active" => (since(s.last_activity), dim()),
         "cost" => (
-            s.cost_usd.map(fleet::cost).unwrap_or_else(|| "-".into()),
+            crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
             dim(),
         ),
         "last_reply" => (
@@ -4489,6 +4492,7 @@ fn history_session(entry: &history::Entry) -> Session {
         context_tokens: c.context_tokens,
         context_window: c.context_window,
         cost_usd: c.cost_usd,
+        cost_info: c.cost_info,
         title: entry.title.clone(),
         last: Some(c.last.unwrap_or_else(|| "-".into())),
         coordinator: false,
@@ -4862,6 +4866,7 @@ fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session
         context_tokens: None,
         context_window: None,
         cost_usd: None,
+        cost_info: None,
         title: fleet::headline(prompt),
         last: Some("starting".into()),
         coordinator: false,
@@ -8171,6 +8176,7 @@ impl App {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: Some(name),
             last: None,
             coordinator: false,
@@ -9730,6 +9736,7 @@ pub fn run(
     trace: bool,
 ) -> Result<i32> {
     let started = Instant::now();
+    crate::cost::init(state, true);
     let log = if debug || trace {
         std::fs::create_dir_all(state)?;
         let log = Diagnostics::new(state.join("tui-debug.log"), trace);
@@ -11019,6 +11026,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -11051,6 +11059,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -11104,6 +11113,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: Some("sweep".into()),
             last: None,
             coordinator,
@@ -11171,6 +11181,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -11206,6 +11217,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -14599,6 +14611,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: Some(title.into()),
             last: None,
             coordinator: false,
@@ -15284,6 +15297,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -16737,6 +16751,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,
@@ -17016,6 +17031,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: None,
             last: None,
             coordinator: false,

@@ -49,6 +49,8 @@ pub struct Session {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_info: Option<crate::cost::Info>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -383,6 +385,7 @@ fn session(
         context_tokens: d.report.context,
         context_window: window,
         cost_usd: cost,
+        cost_info: cost.map(|_| crate::cost::Info::reported()),
         title: d
             .title
             .or_else(|| {
@@ -760,6 +763,7 @@ pub(crate) fn run_columns(
         let (window, cost) = statusline_values(claude, id);
         columns.context_window = window;
         columns.cost_usd = cost;
+        columns.cost_info = cost.map(|_| crate::cost::Info::reported());
     }
     columns
 }
@@ -1631,6 +1635,7 @@ mod tests {
             context_tokens: None,
             context_window: None,
             cost_usd: None,
+            cost_info: None,
             title: Some("Mine".into()),
             last: None,
             coordinator: false,

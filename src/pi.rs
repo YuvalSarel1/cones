@@ -5,7 +5,7 @@ use crate::fleet::{Activity, Session};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -47,6 +47,7 @@ pub struct Tail {
     pub context_tokens: Option<u64>,
     /// `usage.cost.total` summed. pi writes 0 for a model it has no price for.
     pub cost_usd: f64,
+    pub(crate) costs: crate::cost::Total,
     /// The name `--name` or `/name` set, from the last `session_info` entry.
     pub name: Option<String>,
     pub prompt: Option<String>,
@@ -153,6 +154,7 @@ pub fn meta(line: &str) -> Option<Meta> {
 /// Ignore malformed JSON, including a partially written last line.
 pub fn tail(lines: &str) -> Tail {
     let mut t = Tail::default();
+    let mut cost_ids = HashSet::new();
     for line in lines.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
@@ -192,6 +194,7 @@ pub fn tail(lines: &str) -> Tail {
         }
         let m = &v["message"];
         if m["role"] == "assistant" {
+            observe_cost(&mut t.costs, &mut cost_ids, &v);
             if let Some(model) = m["model"].as_str() {
                 t.model = Some(model.to_owned());
             }
@@ -201,7 +204,11 @@ pub fn tail(lines: &str) -> Tail {
             t.tokens_in += prompt;
             t.tokens_out += n("output");
             t.context_tokens = Some(prompt);
-            t.cost_usd += u["cost"]["total"].as_f64().unwrap_or(0.0);
+            t.cost_usd = t
+                .costs
+                .report(crate::cost::Source::Harness)
+                .0
+                .unwrap_or(0.0);
             if let Some(a) = t.activity.last_mut() {
                 a.messages += 1;
                 a.tokens_out += n("output");
@@ -213,6 +220,27 @@ pub fn tail(lines: &str) -> Tail {
         }
     }
     t
+}
+
+/// Pi writes zero for unpriced models as well as empty responses. Do not claim those tokens were free.
+pub(crate) fn observe_cost(
+    costs: &mut crate::cost::Total,
+    seen: &mut HashSet<String>,
+    event: &Value,
+) {
+    if event["type"] != "message" || event["message"]["role"] != "assistant" {
+        return;
+    }
+    if let Some(id) = event["id"].as_str()
+        && !seen.insert(id.into())
+    {
+        return;
+    }
+    let usage = &event["message"]["usage"];
+    let empty = ["input", "output", "cacheRead", "cacheWrite"]
+        .iter()
+        .all(|k| usage[k].as_u64() == Some(0));
+    costs.reported(usage["cost"]["total"].as_f64(), !empty);
 }
 
 pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
@@ -232,6 +260,7 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
                 .as_ref()
                 .map(|(path, _)| tail_of(path))
                 .unwrap_or_default();
+            let (cost_usd, cost_info) = t.costs.report(crate::cost::Source::Harness);
             Session {
                 title: t.name.or(t.prompt),
                 session_id: file
@@ -250,7 +279,8 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
                 tokens_out: (t.tokens_out > 0).then_some(t.tokens_out),
                 context_tokens: t.context_tokens,
                 context_window: None,
-                cost_usd: (t.cost_usd > 0.0).then_some(t.cost_usd),
+                cost_usd,
+                cost_info,
                 last: t.last,
                 coordinator: false,
                 activity: t.activity,
