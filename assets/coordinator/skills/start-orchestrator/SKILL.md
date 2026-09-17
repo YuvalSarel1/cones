@@ -94,6 +94,11 @@ for editing before announcing; record the owner and move on.
 ## Coordination
 
 - Relay another agent's finding only to the agent that needs it, as a one-liner.
+- Never hand one agent an API that exists only on another's unlanded branch. The first writer
+  commits against main; whoever changes a signature resolves the call sites when it rebases.
+  Relaying it inverts the order and blocks the commit you sequenced first, however helpful it feels.
+- When you gate a commit on an amendment, diff the old hash against the new one before landing and
+  confirm the delta is only what you asked for.
 - Harvest findings from done reports and `.claude/observations.log`; do not ask each agent
   for one.
 - Gate only shared files. An agent whose files nobody else touches commits on its own green
@@ -152,6 +157,9 @@ Agents break protocol silently. On every wake and every incoming message: `git s
 attribute each path, act on the unattributed ones first.
 
 ## Swarm end: keep insights, shed slop
+
+A Codex client that reports itself finished keeps its process and its roster row, so the roster
+does not empty on its own. Judge the end by landed work and declared completion, not by a count.
 
 When the roster empties, run one promotion pass over the ledger and the observations log.
 Ask of each finding: would a fresh agent repeat the mistake without this? No: drop it.
