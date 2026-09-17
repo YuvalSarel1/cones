@@ -126,6 +126,7 @@ pub(crate) struct Replies {
     pub(crate) out: Vec<u8>,
     colors: Colors,
     title: Option<String>,
+    return_to_list: bool,
     /// Pre-update screen held until synchronized output ends or times out.
     frozen: Option<(Instant, vt100::Screen)>,
 }
@@ -136,6 +137,7 @@ impl Replies {
             out: Vec::new(),
             colors,
             title: None,
+            return_to_list: false,
             frozen: None,
         }
     }
@@ -179,6 +181,10 @@ impl vt100::Callbacks for Replies {
 
     fn unhandled_osc(&mut self, _: &mut vt100::Screen, params: &[&[u8]]) {
         let reply = match params {
+            [b"777", b"cones", b"return"] => {
+                self.return_to_list = true;
+                return;
+            }
             [b"10", b"?"] => format!("\x1b]10;{}\x1b\\", self.colors.fg),
             [b"11", b"?"] => format!("\x1b]11;{}\x1b\\", self.colors.bg),
             _ => return,
@@ -450,6 +456,11 @@ impl Viewer {
         self.parser.screen_mut().set_scrollback(0);
         self.pending_input.extend_from_slice(bytes);
         self.flush();
+    }
+
+    /// A shell widget requests navigation only after checking its live editor buffer.
+    pub fn take_return_to_list(&mut self) -> bool {
+        std::mem::take(&mut self.parser.callbacks_mut().return_to_list)
     }
 
     /// Write queued input, and stop a viewer that has let it pile past `INPUT_CAP`,

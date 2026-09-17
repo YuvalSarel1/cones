@@ -4099,7 +4099,7 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; terminals keep tab for completion and use ctrl+z to return; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
+        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; zsh returns on ← or tab with an empty command line and keeps them for editing otherwise; other shells use ctrl+z to return; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
     ),
     (
         "ctrl+z",
@@ -4465,6 +4465,7 @@ struct App {
     /// Index into `harness::launchable()`, followed by the terminal option.
     harness: usize,
     shell: PathBuf,
+    shell_startup: Option<tempfile::TempDir>,
     /// Shell rows belong to this dashboard and have no harness registry.
     terminals: Vec<Session>,
     /// Background launches keyed by placeholder row id.
@@ -4682,6 +4683,7 @@ impl App {
             images: Vec::new(),
             harness: Self::harness_at(Some(start.harness)),
             shell: terminal::default_shell(),
+            shell_startup: None,
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
@@ -5804,6 +5806,13 @@ impl App {
         self.most_recently_focused()
     }
 
+    /// The selected row's viewer can take focus even when the split pane is hidden.
+    fn focusable_viewer(&self) -> Option<usize> {
+        self.selected()
+            .and_then(|r| self.viewer_of(&r.kind))
+            .or_else(|| self.shown())
+    }
+
     fn selected_session(&self) -> Option<&fleet::Session> {
         let Some(Kind::Session(id, _)) = self.selected().map(|r| &r.kind) else {
             return None;
@@ -6279,6 +6288,7 @@ impl App {
             }
             let exited = open.viewer.exited();
             let speculative = open.speculative;
+            let return_to_list = open.viewer.take_return_to_list() && open.is_terminal() && focused;
             for line in lines {
                 self.debug(|| line);
             }
@@ -6308,6 +6318,10 @@ impl App {
                 self.invalidate();
                 self.debug(|| format!("viewer dropped: {}", self.status));
                 continue;
+            }
+            if return_to_list && exited.is_none() {
+                self.unfocus();
+                dirty = true;
             }
             let Some(status) = exited else {
                 i += 1;
@@ -6408,7 +6422,9 @@ impl App {
         } else {
             vec![
                 Span::styled(
-                    if open.is_terminal() {
+                    if open.is_terminal() && open.what == "zsh" {
+                        "←/tab on empty · ctrl+z back"
+                    } else if open.is_terminal() {
                         "ctrl+z back"
                     } else {
                         "tab back"
@@ -7062,6 +7078,13 @@ impl App {
 
     fn start_terminal(&mut self) {
         let dir = self.target_dir();
+        let command = match terminal::command(&self.shell, &dir, &mut self.shell_startup) {
+            Ok(command) => command,
+            Err(e) => {
+                self.status = format!("terminal failed: {e}");
+                return;
+            }
+        };
         let name = self
             .shell
             .file_name()
@@ -7069,13 +7092,7 @@ impl App {
             .to_string_lossy()
             .into_owned();
         let id = format!("terminal:{}", uuid::Uuid::new_v4());
-        if !self.open(
-            self.size,
-            terminal::command(&self.shell, &dir),
-            &name,
-            id.clone(),
-            None,
-        ) {
+        if !self.open(self.size, command, &name, id.clone(), None) {
             return;
         }
         let session = Session {
@@ -7383,11 +7400,16 @@ impl App {
         let prefix = (!self.filter.text.is_empty())
             .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
         let mut line = if self.focus.is_some_and(|i| self.viewers[i].is_terminal()) {
-            hints(&[
+            let mut keys = vec![];
+            if self.viewers[self.focus.unwrap()].what == "zsh" {
+                keys.push(("←/tab", "back on empty"));
+            }
+            keys.extend([
                 ("ctrl+z", "back"),
                 ("ctrl+c", "interrupt"),
                 ("ctrl+\\", "full screen"),
-            ])
+            ]);
+            hints(&keys)
         } else if self.focus.is_some() {
             hints(&[("tab", "back"), ("ctrl+\\", "full screen")])
         } else {
@@ -7469,7 +7491,7 @@ impl App {
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if self.terminal_selected() => {
                 let mut keys = vec![("enter", start.as_str())];
-                if self.shown().is_some() {
+                if self.focusable_viewer().is_some() {
                     keys.push(("tab", "pane"));
                 }
                 if let Some(verb) = self.stop_verb() {
@@ -7506,7 +7528,7 @@ impl App {
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                if self.shown().is_some()
+                if self.focusable_viewer().is_some()
                     || self.panel_shown()
                     || self.transcript_target().is_some()
                 {
@@ -8067,7 +8089,7 @@ impl App {
                             self.step(delta);
                         }
                     }
-                    KeyCode::Tab => match self.shown() {
+                    KeyCode::Tab => match self.focusable_viewer() {
                         Some(i) => self.focus(i),
                         None if self.transcript_target().is_some() => self.focus_transcript(),
                         None if self.jobs_view => self.leave_jobs(),
@@ -11115,6 +11137,70 @@ mod tests {
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.terminal_selected());
         assert_eq!(app.text, "an unfinished agent instruction");
+    }
+
+    #[test]
+    fn a_terminal_can_be_reopened_with_tab_in_either_layout() {
+        for split in [false, true] {
+            let d = dir();
+            let mut app = app(d.path());
+            app.refresh().unwrap();
+            app.cwd = d.path().into();
+            app.shell = "/bin/sh".into();
+            app.harness = harness::launchable().len();
+            app.split = split;
+            app.fill("keep this agent instruction".into());
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            let id = key(&app).unwrap();
+            let pid = app.viewers[app.focus.unwrap()].viewer.pid();
+            for _ in 0..2 {
+                app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+                assert_eq!(app.focus, None);
+                app.refresh().unwrap();
+                assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+                app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.focus, Some(0), "Tab must return with split={split}");
+                assert_eq!(app.viewers[0].viewer.pid(), pid);
+                assert_eq!(app.terminals.len(), 1, "returning must reuse the shell");
+                assert_eq!(app.split, split, "returning preserves the layout");
+                assert_eq!(app.text, "keep this agent instruction");
+            }
+            app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+            assert!(app.hint_line().to_string().contains("tab pane"));
+        }
+    }
+
+    #[test]
+    fn only_the_focused_terminal_can_request_a_return_from_its_shell() {
+        for terminal in [false, true] {
+            for focused in [false, true] {
+                let d = dir();
+                let mut app = app(d.path());
+                let key = if terminal {
+                    "terminal:test"
+                } else {
+                    "agent:test"
+                };
+                app.viewers.push(viewer_open(
+                    key,
+                    "shell",
+                    r"\033]777;cones;return\007SHELL-READY",
+                ));
+                app.focus = focused.then_some(0);
+                terminal_until(&mut app, |a| {
+                    a.viewers[0]
+                        .viewer
+                        .screen()
+                        .contents()
+                        .contains("SHELL-READY")
+                });
+                assert_eq!(app.focus, (focused && !terminal).then_some(0));
+                assert_eq!(app.viewers.len(), 1, "returning keeps the shell alive");
+                app.focus(0);
+                app.pump();
+                assert_eq!(app.focus, Some(0), "old requests must not steal focus");
+            }
+        }
     }
 
     #[test]

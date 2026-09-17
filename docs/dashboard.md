@@ -13,7 +13,7 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `↑ ↓` | Select rows; up past the first table reaches the menu. |
 | `enter` | With an empty composer, act on the selection: open a session or finished run, follow a running run, start a job, or open a menu screen. With text, submit the instruction. |
 | `shift+enter` | Open the selection over the whole frame once; returning restores the prior layout. With text, insert a line break. Terminals reporting alt+enter use the same action. |
-| `tab` | Move focus between the list and pane. Forms and terminals keep tab for their own input. |
+| `tab` | Move focus between the list and pane. In zsh, return from an empty command line; complete a typed command. Other shells and forms keep Tab for their own input. |
 | `ctrl+z` | Return from a viewer or menu screen; the viewer keeps running. |
 | `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
@@ -133,8 +133,8 @@ All viewers close with the dashboard. Whether that also ends the session depends
 
 | Input in a native viewer | Behavior |
 | --- | --- |
-| `tab`, `ctrl+z`, `ctrl+\` | Dashboard navigation, as above. A terminal keeps Tab for completion. |
-| `←` | Return when the harness's standard empty editor is recognized; populated or multiline input keeps the arrow. Modified arrows stay native. |
+| `tab`, `ctrl+z`, `ctrl+\` | Dashboard navigation, as above. A zsh terminal keeps Tab for completion when a command is typed. Other shells always keep Tab. |
+| `←` | Return when the harness's standard empty editor is recognized or zsh reports an empty command line; populated or multiline input keeps the arrow. Modified arrows stay native. |
 | `ctrl+c` | Dashboard quit confirmation in an agent viewer. These clients interpret two presses as quit, and Claude's first press leaves the conversation for its agents list. Use `esc` to interrupt a turn. In a terminal, Ctrl+C interrupts the shell's foreground command. |
 | Other keys, including `esc` and `shift+tab` | Pass to the native client. Classic terminal encoding means some modified keys, including shift+enter, cannot be distinguished there. |
 | Shift-page-up/down | Scroll emulator history. |
@@ -147,7 +147,9 @@ Typing returns to the live screen. Terminal text selection may need the terminal
 
 Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi and terminal; the prefix names the selection, and each started agent row reports its model in the list.
 
-On `terminal`, `enter` opens an interactive shell in that directory and focuses its pane. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. Tab completes in the shell, Ctrl+C interrupts commands, and Ctrl+Z returns to the list. From the list, Tab returns to the selected terminal; Enter with `terminal` selected opens another one. Shell rows survive dashboard refreshes and end when the shell exits, you close their viewer with Ctrl+X twice, or the dashboard closes. The terminal selection preserves any drafted agent instruction; Escape returns to the default harness.
+On `terminal`, `enter` opens an interactive shell in that directory and focuses its pane. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
+
+From the list, Tab returns to the selected terminal in either split or full-screen layout; Enter with `terminal` selected opens another one. Shell rows survive dashboard refreshes and end when the shell exits, you close their viewer with Ctrl+X twice, or the dashboard closes. The terminal selection preserves any drafted agent instruction; Escape returns to the default harness.
 
 The instruction wraps to at most eight text rows. In a side-by-side pane it aligns with Claude or pi's input box when that box is near the bottom; Codex and log viewers keep the composer at its normal position. Scrolling history does not move it.
 
