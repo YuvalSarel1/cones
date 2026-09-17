@@ -1,5 +1,7 @@
 //! README capture using the same App::draw and native Viewer as the dashboard.
 //! The ignored entry point is driven by assets/tui.py; ordinary tests never start a harness.
+//! src/tui.rs includes this file with #[path] under cfg(test), so an unformatted line here fails
+//! `cargo fmt --check` for the whole crate and rustfmt reports it against src/tui.rs.
 use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 

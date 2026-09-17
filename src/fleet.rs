@@ -270,6 +270,10 @@ pub fn process_table(ps: &str) -> Result<String> {
 /// several times larger and every refresh would read it. macOS prints no environment for a
 /// platform binary or another user's process, and a pid can go between the reads: an unreadable
 /// environment keeps the pid, because a hidden environment must never empty the fleet.
+///
+/// This still finds the machine's real clients, so a test that asserts a whole row set must
+/// exclude ids it did not create: a live harness process fails such a test for reasons that have
+/// nothing to do with the change under test, and no environment override hides it.
 pub fn own_home_processes(
     ps: &str,
     kind: crate::config::HarnessKind,
