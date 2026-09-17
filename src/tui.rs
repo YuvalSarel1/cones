@@ -4093,8 +4093,8 @@ const AGENT_VIEW_TITLE: &str = "claude agents";
 /// prespawned pool sits outside it and the ceiling is `MAX_FOCUSED_VIEWERS + SPECULATIVE_VIEWERS`,
 /// each client its own process at roughly 165MB. Five is deliberate rather than a bug to fix: the
 /// two prespawned clients are what make peek instant, and that is worth their 330MB on a machine
-/// with memory to spare. Evict only listed-session Claude attaches, which can be reopened
-/// speculatively; other clients stay alive and may exceed this cap too.
+/// with memory to spare. Evict only listed-session Claude attaches; a Codex client is peeked the
+/// same way but stays once entered, and other clients may exceed this cap too.
 const MAX_FOCUSED_VIEWERS: usize = 3;
 
 /// Two speculative slots avoid reattaching when moving between adjacent rows. They are held on top
@@ -4331,14 +4331,18 @@ impl App {
         }
     }
 
+    /// The home whose daemon holds this thread, not the ambient one.
+    fn codex_home(&self, s: &Session) -> PathBuf {
+        s.transcript_path
+            .as_deref()
+            .and_then(codex::home_of)
+            .map_or_else(|| codex::home(&self.claude), Path::to_path_buf)
+    }
+
     fn session_history_key(&self, s: &Session) -> Option<history::Key> {
         let home = match s.harness.as_str() {
             "claude" => self.claude.clone(),
-            "codex" => s
-                .transcript_path
-                .as_deref()
-                .and_then(codex::home_of)
-                .map_or_else(|| codex::home(&self.claude), Path::to_path_buf),
+            "codex" => self.codex_home(s),
             "pi" => crate::pi::home(&self.claude),
             _ => return None,
         };
@@ -5426,7 +5430,9 @@ impl App {
         self.viewers.iter().filter(|o| !o.speculative).count()
     }
 
-    /// Only listed-session Claude attaches can be reopened quietly; see `MAX_FOCUSED_VIEWERS`.
+    /// Only a listed session's Claude attach makes room; a Codex client the user entered is theirs,
+    /// unsent composer text and all, however cheaply a peek could reopen it. See
+    /// `MAX_FOCUSED_VIEWERS`.
     fn least_recently_focused(&self, keep: Option<usize>) -> Option<usize> {
         self.viewers
             .iter()
@@ -5457,8 +5463,9 @@ impl App {
         }
     }
 
-    /// Only pre-open Claude attaches: resuming a finished run or starting a Codex client
-    /// changes the session or fleet. Done background jobs still have a joinable worker.
+    /// Only pre-open joins of a live session: a Claude attach or a Codex resume against the
+    /// daemon that holds the thread. Resuming a finished run or starting a session changes the
+    /// fleet, so those still wait for enter. Done background jobs still have a joinable worker.
     fn prespawn_target(&self) -> Option<(String, PathBuf)> {
         if !matches!(self.mode, Mode::Normal)
             || self.focus.is_some()
@@ -5491,9 +5498,10 @@ impl App {
         Some((id.clone(), s.cwd.clone()))
     }
 
-    /// Done Claude background jobs still have a worker; failed or stopped jobs do not.
+    /// Done Claude background jobs still have a worker; failed or stopped jobs do not. A Codex
+    /// thread is joinable only behind the daemon, which `own_terminal` already decides.
     fn joinable(s: &Session) -> bool {
-        s.harness == "claude"
+        matches!(s.harness.as_str(), "claude" | "codex")
             && !s.own_terminal()
             && !matches!(s.state.as_str(), "failed" | "stopped")
     }
@@ -5501,20 +5509,29 @@ impl App {
     fn prespawn(&mut self, id: String, cwd: PathBuf) {
         self.prespawned = Some(id.clone());
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
-        let viewer = harness::adapter(HarnessKind::Claude)
-            .and_then(|h| h.attach(&id, &cwd))
-            .and_then(|c| {
-                let line = format!("{c:?}");
-                Viewer::spawn(
-                    c,
-                    self.pane.height,
-                    self.pane.width,
-                    normal,
-                    self.colors.clone(),
-                )
-                .map(|v| (v, line))
-                .map_err(Into::into)
-            });
+        let codex = self
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id && s.harness == "codex")
+            .map(|s| self.codex_home(s));
+        let viewer = match &codex {
+            // The daemon is already up for a thread it holds, so this only reads its socket.
+            Some(home) => harness::codex_resume(home, &id, &cwd),
+            None => harness::adapter(HarnessKind::Claude).and_then(|h| h.attach(&id, &cwd)),
+        }
+        .and_then(|c| {
+            let line = format!("{c:?}");
+            Viewer::spawn(
+                c,
+                self.pane.height,
+                self.pane.width,
+                normal,
+                self.colors.clone(),
+            )
+            .map(|v| (v, line))
+            .map_err(Into::into)
+        });
         let (viewer, command) = match viewer {
             Ok(viewer) => viewer,
             Err(e) => {
@@ -5524,7 +5541,7 @@ impl App {
         };
         self.viewers.push(Open {
             key: id,
-            what: "attach".into(),
+            what: if codex.is_some() { "codex" } else { "attach" }.into(),
             viewer,
             record: None,
             recorded: false,
@@ -6222,11 +6239,7 @@ impl App {
                 }
                 if harness == "codex" {
                     let key = id.clone();
-                    let home = s
-                        .transcript_path
-                        .as_deref()
-                        .and_then(codex::home_of)
-                        .map_or_else(|| codex::home(&self.claude), Path::to_path_buf);
+                    let home = self.codex_home(s);
                     self.prepare_viewer("codex".into(), key, None, None, move || {
                         harness::codex_resume(&home, &id, &cwd)
                     });
@@ -13356,6 +13369,47 @@ mod tests {
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
         rested(&mut app, A, OLD);
+        assert_eq!(app.prespawn_target(), None, "own terminal");
+    }
+
+    /// A thread the daemon holds is joined, not started, so peek pre-opens it like an attach.
+    /// A Codex client in its own terminal has no thread to join.
+    #[test]
+    fn a_rested_codex_thread_row_is_a_prespawn_target_and_its_own_terminal_is_not() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(Session {
+            session_id: B.into(),
+            harness: "codex".into(),
+            kind: Some("daemon".into()),
+            cwd: PathBuf::from("/src/two"),
+            state: "working".into(),
+            started: None,
+            last_activity: None,
+            model: None,
+            pid: None,
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: None,
+            last: None,
+            coordinator: false,
+            activity: Vec::new(),
+        });
+        app.apply(data);
+        app.settle();
+        assert_eq!(key(&app).as_deref(), Some(B));
+        rested(&mut app, B, OLD);
+        assert_eq!(
+            app.prespawn_target(),
+            Some((B.to_owned(), PathBuf::from("/src/two")))
+        );
+        app.data.sessions[0].kind = None;
         assert_eq!(app.prespawn_target(), None, "own terminal");
     }
 
