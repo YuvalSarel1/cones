@@ -261,9 +261,13 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
     out
 }
 
-/// Choose the latest file written since process start and verify its header cwd.
-/// `--continue` reopens old files, so their creation time cannot identify the process.
+/// Choose the latest file written since process start and verify its header cwd and start.
+/// `--continue` reopens old files, so their creation time cannot identify the process, but a
+/// header stamped after this process booted opened a later session, whose own process may
+/// already be gone: its file keeps the newest write time in the folder and would be stolen.
 fn session_file(pi: &Path, cwd: &Path, p: &Process) -> Option<(PathBuf, Meta)> {
+    // `ps` prints whole seconds and pi writes the header a moment after it starts.
+    let booted = p.started + chrono::Duration::seconds(5);
     let mut best: Option<(PathBuf, Meta, std::time::SystemTime)> = None;
     for entry in fs::read_dir(session_dir(pi, cwd))
         .into_iter()
@@ -283,7 +287,7 @@ fn session_file(pi: &Path, cwd: &Path, p: &Process) -> Option<(PathBuf, Meta)> {
         if best.as_ref().is_some_and(|(_, _, seen)| *seen >= written) {
             continue;
         }
-        if let Some(m) = meta_of(&path).filter(|m| m.cwd == cwd) {
+        if let Some(m) = meta_of(&path).filter(|m| m.cwd == cwd && m.started <= booted) {
             best = Some((path, m, written));
         }
     }
@@ -426,7 +430,8 @@ mod tests {
         fs::write(&path, SESSION).unwrap();
         let p = Process {
             pid: 7,
-            started: "2026-08-25T14:00:00Z".parse().unwrap(),
+            // `ps` truncates to the second, so the header lands just after the process start.
+            started: "2026-08-25T14:06:44Z".parse().unwrap(),
             cwd: Some(cwd.into()),
         };
         let one = rows(pi, std::slice::from_ref(&p));
@@ -452,5 +457,36 @@ mod tests {
             ..p
         };
         assert_eq!(rows(pi, &[later])[0].session_id, "pi-7");
+    }
+
+    #[test]
+    fn a_session_opened_after_the_process_is_never_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let pi = dir.path();
+        let cwd = Path::new("/src/one");
+        let folder = session_dir(pi, cwd);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("2026-08-25T14-06-44-035Z_01a0393e-ad43.jsonl"),
+            SESSION,
+        )
+        .unwrap();
+        // A second pi in the same folder, closed again: its file keeps the newest write time.
+        fs::write(
+            folder.join("2026-08-25T14-20-00-000Z_01a0393f-be54.jsonl"),
+            SESSION
+                .replace("01a0393e-ad43", "01a0393f-be54")
+                .replace("14:06:4", "14:20:0")
+                .replace("fix the flaky test", "rename the module"),
+        )
+        .unwrap();
+        let p = Process {
+            pid: 7,
+            started: "2026-08-25T14:06:44Z".parse().unwrap(),
+            cwd: Some(cwd.into()),
+        };
+        let row = &rows(pi, &[p])[0];
+        assert_eq!(row.session_id, "01a0393e-ad43");
+        assert_eq!(row.title.as_deref(), Some("fix the flaky test"));
     }
 }
