@@ -41,7 +41,12 @@ thread() {
 case "$cmd" in
   thread) thread ;;
   send) id=$(thread | cut -f1); inbox=~/.claude/orchestrator/$(printf '%s' "${WB:-$PWD}" | shasum -a 1 | cut -c1-40)/inbox.jsonl
-        codex queue --thread "$id" --message "$* 
+        # A queued message lands as a user turn, indistinguishable from the owner's own, so an idle
+        # agent reads any note as the signal to resume and spends a turn on it. Mark the voice so it
+        # is never mistaken for the owner, and flag the length: a ruling fits on a line, an
+        # explanation does not and buys work nobody asked for.
+        msg="$*"; [ ${#msg} -gt 400 ] && echo "codex.sh: ${#msg} chars - ruling, or explanation?" >&2
+        codex queue --thread "$id" --message "[orchestrator, not the owner] $msg 
 
 How to answer: you cannot message the orchestrator; it reads a file every 10 s. Reply by appending ONE JSON line, then carry on:
 printf '%s\\n' '{\"from\":\"codex:$id\",\"text\":\"<your answer, one paragraph>\"}' >> $inbox" ;;
