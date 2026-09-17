@@ -7360,6 +7360,17 @@ impl App {
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
+        for open in &self.viewers {
+            if open.harness == Some(HarnessKind::Opencode)
+                && let Some(report) = open.viewer.opencode_report()
+                && let Some(row) = data
+                    .sessions
+                    .iter_mut()
+                    .find(|row| row.harness == "opencode" && row.pid == Some(open.viewer.pid()))
+            {
+                report.apply(row);
+            }
+        }
         let mut replaced = self.reconcile_launches(&mut data);
         for key in self.history.opened.keys() {
             if let Some(session) = data

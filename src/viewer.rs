@@ -211,6 +211,7 @@ pub struct Viewer {
     spawned: Instant,
     first_paint: Option<Duration>,
     status: Option<ExitStatus>,
+    opencode: Option<crate::opencode::reporting::Reporter>,
 }
 
 fn nonblocking(fd: i32) -> io::Result<()> {
@@ -269,6 +270,7 @@ impl Viewer {
         colors: Colors,
         terminal: bool,
     ) -> io::Result<Viewer> {
+        let opencode = crate::opencode::reporting::Reporter::prepare(&mut command)?;
         let (mut master, mut slave) = (-1, -1);
         let mut size = winsize(rows, cols);
         let mut normal = normal.copied();
@@ -333,11 +335,16 @@ impl Viewer {
             spawned,
             first_paint: None,
             status: None,
+            opencode,
         })
     }
 
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    pub(crate) fn opencode_report(&self) -> Option<crate::opencode::reporting::Report> {
+        self.opencode.as_ref()?.read(self.pid())
     }
 
     fn kill(&mut self) {
@@ -684,8 +691,11 @@ fn modifier_param(mods: KeyModifiers) -> u8 {
 /// but box art, a prompt marker and blanks. A client with text typed, or drawing
 /// a full-screen view, fails the test and keeps the key.
 pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Input) -> bool {
-    if input.empty_prompt == crate::harness::spec::EmptyPrompt::Bordered {
-        return at_empty_bordered_prompt(screen);
+    use crate::harness::spec::EmptyPrompt;
+    match input.empty_prompt {
+        EmptyPrompt::Bordered => return at_empty_bordered_prompt(screen),
+        EmptyPrompt::Opencode => return at_empty_opencode_prompt(screen),
+        EmptyPrompt::Marker => {}
     }
     if screen.hide_cursor() || screen.scrollback() != 0 {
         return false;
@@ -703,6 +713,46 @@ pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Inp
     // ponytail: a marker has to be there, so a full-screen client parking the caret
     // on blank space keeps its key. Add a client's marker here when one is missing.
     marks.peek().is_some() && marks.all(|c| input.markers.contains(c))
+}
+
+/// OpenCode's standard session editor has a left bar, one padding row above and
+/// below the input, a model row, and a block underline. Check the whole input row
+/// so moving to the start of a draft cannot turn Left into dashboard navigation.
+fn at_empty_opencode_prompt(screen: &vt100::Screen) -> bool {
+    let (row, col) = screen.cursor_position();
+    let (height, width) = screen.size();
+    let Some(border) = col.checked_sub(3) else {
+        return false;
+    };
+    if screen.hide_cursor() || screen.scrollback() != 0 || row < 2 || row + 3 >= height {
+        return false;
+    }
+    let is = |r, c, text| {
+        screen
+            .cell(r, c)
+            .is_some_and(|cell| cell.contents() == text)
+    };
+    if is(row - 2, border, "┃") || !is(row + 3, border, "╹") {
+        return false;
+    }
+    let mut end = border + 1;
+    while end < width && is(row + 3, end, "▀") {
+        end += 1;
+    }
+    // Stop at the editor's edge when OpenCode also displays its native sidebar.
+    end > col + 2
+        && [row - 1, row, row + 1].into_iter().all(|r| {
+            is(r, border, "┃")
+                && screen
+                    .contents_between(r, border + 1, r, end)
+                    .trim()
+                    .is_empty()
+        })
+        && is(row + 2, border, "┃")
+        && !screen
+            .contents_between(row + 2, col, row + 2, end)
+            .trim()
+            .is_empty()
 }
 
 /// A definition owns which native keys return to cones and the screen condition for each.
@@ -1360,6 +1410,56 @@ mod tests {
             !at_empty_prompt(p.screen(), input),
             "a fullscreen view is not an editor"
         );
+    }
+
+    #[test]
+    fn opencode_left_requires_an_empty_native_session_editor() {
+        let input = &crate::harness::spec(crate::config::HarnessKind::Opencode).input;
+        // OpenCode 1.18.31's prompt: left bar, two columns of padding, one
+        // input row between padding rows, model metadata and a block underline.
+        let editor = |draft: &str, cursor: &str| {
+            let mut p = vt100::Parser::new(12, 80, 20);
+            let bottom = "▀".repeat(57);
+            p.process(format!(
+                "\x1b[2;3H┃\x1b[3;3H┃  {draft}\x1b[4;3H┃\x1b[5;3H┃  Build · Fixture\x1b[6;3H╹{bottom}\x1b[3;6H{cursor}\x1b[?25h"
+            ).as_bytes());
+            p
+        };
+        let left = |p: &vt100::Parser| {
+            returns_to_list(p.screen(), input, KeyCode::Left, KeyModifiers::NONE)
+        };
+        let mut empty = editor("", "");
+        assert!(left(&empty));
+        assert!(!returns_to_list(
+            empty.screen(),
+            input,
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        ));
+        for draft in ["draft", "  draft", "/models", "Ask anything… \"example\""] {
+            assert!(!left(&editor(draft, "")), "text after the caret: {draft}");
+            assert!(!left(&editor(draft, "\x1b[3;8H")), "caret inside a draft");
+        }
+        empty.process(b"\x1b[3;65Hsidebar\x1b[3;6H");
+        assert!(left(&empty), "the native sidebar is outside the editor");
+        empty.process(b"\x1b[?25l");
+        assert!(!left(&empty), "an unfocused editor keeps Left");
+
+        let mut multiline = editor("", "");
+        multiline.process("\x1b[1;3H┃  previous line\x1b[3;6H".as_bytes());
+        assert!(!left(&multiline), "a blank last line is still a draft");
+        multiline.process("\x1b[1;3H┃               \x1b[3;6H".as_bytes());
+        assert!(!left(&multiline), "blank multiline input keeps Left");
+
+        let mut menu = editor("", "");
+        menu.process(b"\x1b[1;20HSearch\x1b[1;20H");
+        assert!(!left(&menu), "native menu input keeps Left");
+        menu.process(b"\x1b[2J\x1b[3;6H");
+        assert!(!left(&menu), "a blank screen is not an editor");
+        let mut history = editor("", "");
+        history.process(b"\x1b[12;1H\r\n\r\n\x1b[2;6H");
+        history.screen_mut().set_scrollback(2);
+        assert!(!left(&history), "historical editors keep Left");
     }
 
     #[test]

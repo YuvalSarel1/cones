@@ -97,6 +97,9 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy)?)
                 .current_dir(dir);
+            if kind == HarnessKind::Opencode {
+                c.env(crate::opencode::reporting::ENABLE, "1");
+            }
             Start::Foreground(c)
         }
     })
@@ -296,6 +299,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
                 &[("id", entry.key.session_id.as_ref())],
             )?)
             .env("OPENCODE_DB", &entry.transcript)
+            .env(crate::opencode::reporting::ENABLE, "1")
             .current_dir(&entry.cwd);
             c
         }

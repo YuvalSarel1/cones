@@ -35,6 +35,9 @@ discovery:
 state:
   rules:
     - when: {/type: session.status}
+      field: /waiting
+      values: {permission: blocked, question: blocked}
+    - when: {/type: session.status}
       field: /status/type
       values: {busy: active, retry: active, idle: idle}
 transcript:
@@ -71,5 +74,7 @@ execution:
 viewer:
   input_alignment: fixed
   input:
+    empty_prompt: opencode
     return_to_list:
       - {key: ctrl+z, when: always}
+      - {key: left, when: empty_prompt}

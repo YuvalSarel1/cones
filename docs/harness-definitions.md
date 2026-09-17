@@ -104,7 +104,9 @@ viewer:
 
 Omitted keys pass through to the native client. Unknown keys, duplicate bindings and lists with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain dashboard controls; Shift+Tab and modified arrows remain native keys. An opened viewer records its harness identity, so input behavior does not depend on its title or the selected row.
 
-The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi. OpenCode declares only Ctrl+Z; Tab and Left remain native. A custom editor can still return through Ctrl+Z.
+The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi.
+
+OpenCode selects `opencode`, which checks its standard session editor's left border, padding, model row and block underline around an empty input row with a visible caret at its start. Left returns from that empty editor; Tab stays native. Drafts, multiline input, native menus and unrecognized editor layouts keep Left. Ctrl+Z remains unconditional, including with custom editors.
 
 ## Changing or adding a harness
 

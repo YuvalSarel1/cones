@@ -55,7 +55,11 @@ The session id is the file's first-line `id`, otherwise `pi-<pid>`. A session fi
 
 ### OpenCode
 
-The [definition](../assets/harnesses/opencode.yaml) excludes service and management commands. Terminal clients appear as `opencode-<pid>` until a leading `--session <id>`, `--session=<id>` or `-s <id>` identifies a saved conversation whose recorded directory matches the process cwd. Multiple clients naming the same session keep separate process rows. `run`, remote attachments, forks and prompt text do not identify local conversations. New composer sessions retain their prompt and viewer through the child pid; their native session id, usage and model remain absent.
+The [definition](../assets/harnesses/opencode.yaml) excludes service and management commands. Terminal clients appear as `opencode-<pid>` until a leading `--session <id>`, `--session=<id>` or `-s <id>` identifies a saved conversation whose recorded directory matches the process cwd. Multiple external clients naming the same session keep separate process rows. `run`, remote attachments, forks and prompt text do not identify local conversations.
+
+Viewers launched or resumed by the dashboard load a [native TUI reporter](../assets/harnesses/opencode-report.mjs). It reads OpenCode's current route and session state through its TUI plugin API, verified against 1.18.31. Reports identify the current conversation directly, including after a session switch, and supply its status, model, timestamps, tokens and cost. Pending native questions and permission requests show as input. The dashboard matches each private report to its owned child pid.
+
+The reporter uses a temporary TUI configuration and private report file, removed with the viewer. Existing global and project settings remain native; an explicit `OPENCODE_TUI_CONFIG` is copied alongside its original so relative paths retain their meaning. Its plugins remain in the list. The reporter registers no tools or input handlers and changes no execution permissions. Existing clients must be reopened to load it. External terminals and `cones ls` retain the process and SQLite sources described above.
 
 OpenCode's normal TUI uses an in-process backend. Joining an arbitrary terminal would require a reported server address, so those rows say `own terminal`. cones currently launches the standalone TUI; attaching through OpenCode's native server is not integrated.
 
@@ -72,7 +76,7 @@ cargo build
 python3 scripts/check-opencode.py target/debug/cones /path/to/opencode
 ```
 
-The script requires tmux and uses isolated homes with a loopback fixture provider. It exercises composer launch, native response rendering, focus changes, viewer reuse, stopping, transcript preview and resume of the original session id. It makes no real model calls and inherits no credentials. Screens and diagnostics remain in the printed temporary directory. The controller kills and reaps its dashboard and checks that its native viewers exit.
+The script requires tmux and uses isolated homes with a loopback fixture provider. It exercises composer launch, native response rendering and session columns, Left on empty input and within drafts and menus, viewer reuse, stopping, transcript preview and resume of the original session id. It makes no real model calls and inherits no credentials. Screens and diagnostics remain in the printed temporary directory. The controller kills and reaps its dashboard and checks that its native viewers exit.
 
 ### Historical sessions
 
@@ -139,7 +143,7 @@ Calculated costs show `~$…`; known subtotals with gaps also show `partial`. Wh
 | Claude background | The precedence table below, matching Claude Code 2.1.272's own listing. |
 | Codex | Rollout `event_msg`: `task_started` means working, `task_complete` done, `turn_aborted` stopped. New turns replace the prior turn state. Approval waits have no event and remain working; no rollout means `-`. |
 | pi | User or tool-result entry means working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown reasons and no turn give `-`. There is no approval prompt or input state. |
-| OpenCode | `-`. Live busy, retry and idle statuses belong to its backend; saved messages do not establish current state. |
+| OpenCode | Owned dashboard viewers use the native TUI's busy, retry and idle status and pending question or permission requests. External process rows remain `-`; saved messages do not establish current state. |
 
 Claude background state uses the first matching rule:
 

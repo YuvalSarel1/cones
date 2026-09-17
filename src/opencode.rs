@@ -1,5 +1,7 @@
 //! OpenCode's native SQLite reports and terminal clients. Reads never run OpenCode,
 //! migrate its database, change permissions, or infer a busy state from saved messages.
+pub(crate) mod reporting;
+
 use crate::{
     config::HarnessKind,
     cost::{Adapter, Reading, Response},

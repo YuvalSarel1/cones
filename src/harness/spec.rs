@@ -796,6 +796,7 @@ pub enum InputAlignment {
 pub enum EmptyPrompt {
     Marker,
     Bordered,
+    Opencode,
 }
 
 impl HarnessSpec {

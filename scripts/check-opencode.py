@@ -92,6 +92,8 @@ def main():
             if self.path != "/v1/chat/completions":
                 self.send_error(404)
                 return
+            # Keep the native busy state visible across a dashboard refresh.
+            time.sleep(2)
             common = {"id": "chatcmpl_fixture", "created": int(time.time()), "model": "fixture"}
             usage = {"prompt_tokens": 12, "completion_tokens": 4, "total_tokens": 16}
             if body.get("stream"):
@@ -150,7 +152,8 @@ def main():
     shim.parent.mkdir(parents=True)
     shim.symlink_to(native)
     jobs = root / "jobs.yaml"
-    jobs.write_text("version: 3\nstart:\n  harness: opencode\njobs: []\n")
+    jobs.write_text("version: 3\nstart:\n  harness: opencode\n"
+                    "columns: [state, model, last_active, cost]\njobs: []\n")
     state = root / "state"
     server = f"cones-opencode-{uuid.uuid4().hex[:10]}"
     child = None
@@ -207,7 +210,7 @@ def main():
             "command": [str(binary), "--jobs", str(jobs), "--state-dir", str(state), "--debug"],
             "env": env,
         }))
-        tmux("new-session", "-d", "-s", "check", "-x", "180", "-y", "44",
+        tmux("new-session", "-d", "-s", "check", "-x", "220", "-y", "44",
              sys.executable, str(Path(__file__).resolve()), "--worker", str(root))
         controller = int(tmux("display-message", "-p", "-t", "check", "#{pane_pid}").strip())
         deadline = time.monotonic() + 10
@@ -217,33 +220,67 @@ def main():
             time.sleep(0.05)
         child = Dashboard(root, controller)
         wait("dashboard ready", lambda: "folder" in screen())
+        def folder_menu():
+            if "← → pick" in screen().splitlines()[-1]:
+                return True
+            keys("Up")
+            return False
+        wait("folder menu selected", folder_menu)
         keys("Enter")
+        wait("folder input opened", lambda: "enter add" in screen().splitlines()[-1])
         keys("-l", str(root))
         keys("Enter")
         keys("-l", "Reply briefly without using any tools.")
         wait("OpenCode composer selected", lambda: "opencode" in screen())
         keys("Enter")
+        wait("native busy status shown", lambda: "1 working" in screen())
         wait("native response painted in dashboard", lambda: REPLY in screen() and bool(requests))
         initial = wait("one native OpenCode viewer", lambda: next(iter(pids())) if len(pids()) == 1 else None)
+        wait("native status model activity and cost shown",
+             lambda: any(REPLY in line[:110] and "idle" in line[:110]
+                         and "fixture" in line[:110] and "$0" in line[:110]
+                         for line in screen().splitlines()))
         keys("Enter")
-        wait("native viewer focused", lambda: "ctrl+z back" in screen())
-        keys("C-z")
-        wait("returned to list", lambda: "enter" in screen().splitlines()[-1])
+        wait("empty native viewer focused", lambda: "← back" in screen())
+        keys("Left")
+        wait("Left returned to list", lambda: "enter" in screen().splitlines()[-1])
         keys("Enter")
-        wait("same viewer reopened", lambda: "ctrl+z back" in screen() and pids() == {initial})
+        wait("same viewer reopened", lambda: "← back" in screen() and pids() == {initial})
+        keys("Tab")
+        wait("Tab stays in the native editor", lambda: "← back" in screen())
+        keys("-l", "left draft")
+        wait("draft keeps native input", lambda: "left draft" in screen() and "ctrl+z back" in screen())
+        keys("Left")
+        keys("-l", "X")
+        wait("Left moves within a draft", lambda: "left drafXt" in screen() and "ctrl+z back" in screen())
+        keys(*(["Left"] * 20))
+        keys("-l", "Y")
+        wait("Left at the start keeps the draft", lambda: "Yleft drafXt" in screen() and "ctrl+z back" in screen())
+        keys(*(["Right"] * 20), "C-u")
+        wait("cleared editor recognized", lambda: "← back" in screen())
+        keys("C-p")
+        wait("native menu focused", lambda: "Commands" in screen() and "ctrl+z back" in screen())
+        keys("Left")
+        keys("-l", "Switch")
+        wait("Left stays in the native menu", lambda: "Switch" in screen() and "ctrl+z back" in screen())
+        keys("Escape")
+        wait("empty editor refocused", lambda: "← back" in screen())
         keys("C-z")
+        wait("Ctrl+Z returned to list", lambda: "enter" in screen().splitlines()[-1])
         keys("C-x", "C-x")
         wait("native viewer stopped", lambda: not pids())
         keys("C-h")
-        wait("saved transcript preview", lambda: REPLY in screen() and "history" in screen().lower())
+        wait("saved transcript preview", lambda: REPLY in screen() and "history · read only" in screen())
         db = root / "data/opencode/opencode.db"
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
             ids = [row[0] for row in connection.execute("SELECT id FROM session WHERE parent_id IS NULL")]
+            directories = [row[0] for row in connection.execute("SELECT directory FROM session WHERE parent_id IS NULL")]
         assert len(ids) == 1, ids
+        assert directories == [str(root)], directories
         keys("Enter")
         resumed = wait("history opened a new native viewer",
                        lambda: next(iter(pids())) if len(pids()) == 1 and initial not in pids() else None)
-        wait("resumed conversation painted", lambda: REPLY in screen() and "ctrl+z back" in screen())
+        wait("resumed conversation painted", lambda: REPLY in screen() and "← back" in screen())
         command = subprocess.check_output(
             ["/bin/ps", "-ww", "-p", str(resumed), "-o", "command="], text=True)
         assert f"--session {ids[0]}" in command, command
