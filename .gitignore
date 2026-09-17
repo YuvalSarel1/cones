@@ -4,3 +4,4 @@
 /docs/roadmap.md
 .DS_Store
 /.claude/
+/assets/__pycache__/

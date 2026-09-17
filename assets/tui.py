@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Generate assets/tui.svg with the dashboard renderer and a real Claude Code viewer.
+"""Generate assets/tui.gif and tui.svg using cones and the installed native CLIs.
 
-Run from the checkout: python3 assets/tui.py [--claude /path/to/claude]
+Run: python3 assets/tui.py [--claude /path/to/claude] [--codex /path/to/codex]
+Re-render saved cells without starting CLIs: python3 assets/tui.py --render-from /path/to/capture
+Requires Pillow (python3 -m pip install Pillow).
 
-The fixed CAST enters App at its session-data boundary. Its normal draw method and
-Viewer render every cell, without discovering this machine's agents. Claude Code
-reopens a sample transcript in an isolated home, with a dummy key and a closed
-loopback API endpoint. No prompt is submitted and no model call is made.
-The preview's command output comes from running the example project below.
+Native CLIs execute the example tasks in isolated homes against a loopback provider.
+Cones reads their real state and renders their live terminals. The recording browses
+three running sessions in a twelve-session fleet, answers a Claude question, then
+adds a folder and starts a new Codex session. Claude uses its native focus view with
+compact edit counts. No external model is called. See tui_demo.py for the sample tasks.
 """
 import argparse
-from datetime import datetime, timedelta, timezone
 import html
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -20,166 +22,77 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import uuid
+from tui_demo import prepare, provider
 
 
 REPO = Path(__file__).resolve().parent.parent
 COLS, ROWS = 146, 33
-BG, FG = "#0d1117", "#e6edf3"
-CW, LH, PAD, FS = 8.43, 20, 16, 14
-
-# folder, harness, state, title, reported context, reported window.
-# OpenCode has no native live-state report, so its rows retain "-".
-CAST = [
-    ("api", "claude", "idle", "Retry failed webhooks", 28_400, 200_000),
-    ("api", "codex", "active", "Deduplicate events", 61_200, 258_400),
-    ("api", "claude", "blocked", "Token expiry policy", 47_600, 200_000),
-    ("api", "opencode", "-", "Pagination cursors", 19_300, None),
-    ("web", "codex", "active", "Settings page", 73_900, 258_400),
-    ("web", "claude", "active", "Keyboard navigation", 35_100, 200_000),
-    ("web", "pi", "idle", "Dark mode contrast", 22_800, None),
-    ("web", "opencode", "-", "Table virtualization", 42_700, None),
-    ("infra", "claude", "blocked", "Database failover", 83_200, 200_000),
-    ("infra", "codex", "done", "CI cache keys", 31_500, 258_400),
-    ("infra", "pi", "active", "Container health checks", 16_900, None),
-]
-
-BEFORE = '''def retry_delay(attempt):
-    return 2
-'''
-AFTER = '''def retry_delay(attempt):
-    return min(2 ** attempt, 60)
-'''
-TESTS = '''from retry import retry_delay
-
-cases = [
-    ("first retry waits 1 second", 0, 1),
-    ("delay doubles each attempt", 3, 8),
-    ("backoff is capped at 60s", 6, 60),
-    ("cap holds after 10 retries", 10, 60),
-]
-for name, attempt, expected in cases:
-    actual = retry_delay(attempt)
-    assert actual == expected, f"{name}: {actual} != {expected}"
-    print(f"PASS  {name}")
-print("\\n4 passed")
-'''
-
-
-def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-
-
-def prepare(root, native):
-    cwd = root / "projects/api"
-    cwd.mkdir(parents=True)
-    (cwd / "retry.py").write_text(AFTER)
-    (cwd / "test_retry.py").write_text(TESTS)
-    result = subprocess.run(
-        ["python3", "test_retry.py"], cwd=cwd, check=True,
-        capture_output=True, text=True,
-    ).stdout.rstrip()
-    now = datetime.now(timezone.utc)
-    stamp = lambda at: at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    sessions = []
-    for i, (folder, harness, state, title, context, window) in enumerate(CAST):
-        directory = root / "projects" / folder
-        directory.mkdir(exist_ok=True)
-        sessions.append({
-            "session_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"cones-readme/{title}")),
-            "harness": harness, "kind": "bg" if harness == "claude" else None,
-            "cwd": str(directory), "state": state, "title": title,
-            "started": stamp(now - timedelta(minutes=45 - i * 3)),
-            "last_activity": stamp(now - timedelta(seconds=10 + i * 19)),
-            "context_tokens": context, "context_window": window,
-        })
-    selected = sessions[0]["session_id"]
-    config = root / ".claude"
-    project = config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
-    project.mkdir(parents=True)
-    transcript = project / f"{selected}.jsonl"
-    records, parent = [], None
-
-    def message(kind, content, **extra):
-        nonlocal parent
-        uid = str(uuid.uuid4())
-        records.append({
-            "parentUuid": parent, "isSidechain": False, "userType": "external",
-            "cwd": str(cwd), "sessionId": selected, "version": "2.1.274",
-            "gitBranch": "main", "type": kind, "message": content, "uuid": uid,
-            "timestamp": stamp(now - timedelta(seconds=40 - len(records))),
-            **extra,
-        })
-        parent = uid
-
-    def assistant(content):
-        message("assistant", {
-            "id": f"msg_{len(records)}", "type": "message", "role": "assistant",
-            "model": "claude-sonnet-4-6", "content": content,
-            "stop_reason": "tool_use" if content[-1]["type"] == "tool_use" else "end_turn",
-            "usage": {"input_tokens": 28_400, "output_tokens": 145},
-        })
-
-    message("user", {"role": "user", "content": "Add exponential backoff to webhook retries.\nCap the delay at 60 seconds and test it."})
-    assistant([{"type": "tool_use", "id": "edit_retry", "name": "Edit", "input": {
-        "file_path": "retry.py", "old_string": BEFORE, "new_string": AFTER,
-    }}])
-    message("user", {"role": "user", "content": [{
-        "type": "tool_result", "tool_use_id": "edit_retry",
-        "content": f"The file {cwd / 'retry.py'} has been updated successfully.",
-    }]}, toolUseResult={
-        "filePath": "retry.py", "oldString": BEFORE, "newString": AFTER,
-        "originalFile": BEFORE, "userModified": False, "replaceAll": False,
-        "structuredPatch": [{
-            "oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 2,
-            "lines": [" def retry_delay(attempt):", "-    return 2", "+    return min(2 ** attempt, 60)"],
-        }],
-    })
-    assistant([{"type": "tool_use", "id": "test_retry", "name": "Bash", "input": {
-        "command": "python3 test_retry.py", "description": "Check webhook retry delays",
-    }}])
-    message("user", {"role": "user", "content": [{
-        "type": "tool_result", "tool_use_id": "test_retry", "content": result,
-    }]}, toolUseResult={"stdout": result, "stderr": "", "interrupted": False, "isImage": False})
-    assistant([{"type": "text", "text": "All 4 tests passed. Retries now back off from\n1 second to a maximum of 60 seconds."}])
-    transcript.write_text("\n".join(json.dumps(r) for r in records) + "\n")
-    write_json(config / ".claude.json", {
-        "hasCompletedOnboarding": True, "theme": "dark",
-        "customApiKeyResponses": {"approved": ["fixture"], "rejected": []},
-        "projects": {str(cwd): {"hasTrustDialogAccepted": True}},
-    })
-    write_json(config / "settings.json", {"autoUpdatesChannel": "stable"})
-    env = {
-        "HOME": str(root), "CLAUDE_CONFIG_DIR": str(config),
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "TERM": "xterm-256color",
-        "LANG": "en_US.UTF-8", "ANTHROPIC_API_KEY": "fixture",
-        "ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
-        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
-    }
-    write_json(root / "capture.json", {
-        "cols": COLS, "rows": ROWS, "cwd": str(cwd), "sessions": sessions,
-        "selected": selected,
-        "command": [str(native), "--resume", str(transcript), "--model", "claude-sonnet-4-6", "--verbose"],
-        "env": env,
-    })
-    (root / "jobs.yaml").write_text(
-        "version: 3\ncolumns: [harness, state, context]\n"
-        "pane:\n  at: right\n  ratio: 47\njobs: []\n"
-    )
-    return sessions
-
+# Terminal background, text and muted colours from the owner's Claude Code reference.
+BG, FG = "#191a1b", "#cccccc"
+# Square half-block pixels keep terminal sprites at their native proportions.
+CW, LH, PAD, FS = 10, 20, 16, 16
 
 ANSI16 = [
-    "#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
-    "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff",
+    "#191a1b", "#b16e7a", "#56a366", "#ebcb8b", "#81a1c1", "#b4b9f5", "#88c0d0", "#cccccc",
+    "#999999", "#bf616a", "#a3be8c", "#ebcb8b", "#81a1c1", "#b4b9f5", "#8fbcbb", "#ffffff",
 ]
 NAMED = dict(zip(
     ["Black", "Red", "Green", "Yellow", "Blue", "Magenta", "Cyan", "Gray",
      "DarkGray", "LightRed", "LightGreen", "LightYellow", "LightBlue", "LightMagenta", "LightCyan", "White"],
     ANSI16,
 ))
+
+# Terminal graphics occupy the entire cell, regardless of font baseline or leading.
+QUADRANTS = {
+    "▀": 0b0011, "▄": 0b1100, "█": 0b1111, "▌": 0b0101, "▐": 0b1010,
+    "▖": 0b0100, "▗": 0b1000, "▘": 0b0001, "▙": 0b1101, "▚": 0b1001,
+    "▛": 0b0111, "▜": 0b1011, "▝": 0b0010, "▞": 0b0110, "▟": 0b1110,
+}
+BOX_LINES = {
+    "─": [(0, .5, 1, .5)], "│": [(.5, 0, .5, 1)],
+    "┌": [(.5, 1, .5, .5), (.5, .5, 1, .5)],
+    "┐": [(0, .5, .5, .5), (.5, .5, .5, 1)],
+    "└": [(.5, 0, .5, .5), (.5, .5, 1, .5)],
+    "┘": [(0, .5, .5, .5), (.5, .5, .5, 0)],
+    "├": [(.5, 0, .5, 1), (.5, .5, 1, .5)],
+    "┤": [(.5, 0, .5, 1), (0, .5, .5, .5)],
+    "┬": [(0, .5, 1, .5), (.5, .5, .5, 1)],
+    "┴": [(0, .5, 1, .5), (.5, .5, .5, 0)],
+    "┼": [(0, .5, 1, .5), (.5, 0, .5, 1)],
+}
+
+
+def block_rects(text):
+    """Normalized rectangles for Unicode block elements, including the crab's eyes."""
+    if text in QUADRANTS:
+        mask = QUADRANTS[text]
+        if mask == 15:
+            return [(0, 0, 1, 1)]
+        return [
+            ((bit % 2) / 2, (bit // 2) / 2, (bit % 2 + 1) / 2, (bit // 2 + 1) / 2)
+            for bit in range(4) if mask & (1 << bit)
+        ]
+    if len(text) == 1:
+        code = ord(text)
+        if 0x2581 <= code <= 0x2587:
+            return [(0, 1 - (code - 0x2580) / 8, 1, 1)]
+        if 0x2589 <= code <= 0x258F:
+            return [(0, 0, (0x2590 - code) / 8, 1)]
+        if text == "▔":
+            return [(0, 0, 1, .125)]
+        if text == "▕":
+            return [(.875, 0, 1, 1)]
+    return None
+
+
+def braille_dots(text):
+    """Braille pixels used by native terminal plots and Codex's subtle composer texture."""
+    if len(text) != 1 or not 0x2800 <= ord(text) <= 0x28FF:
+        return None
+    mask = ord(text) - 0x2800
+    positions = [(.25, .125), (.25, .375), (.25, .625), (.75, .125),
+                 (.75, .375), (.75, .625), (.25, .875), (.75, .875)]
+    return [position for bit, position in enumerate(positions) if mask & (1 << bit)]
 
 
 def colour(value, fallback):
@@ -206,8 +119,8 @@ def render(cells):
     width, height = int(COLS * CW + PAD * 2), ROWS * LH + PAD * 2
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" font-family="SFMono-Regular,Menlo,Consolas,monospace" font-size="{FS}" shape-rendering="crispEdges">',
-        '<title>cones: eleven sessions across Claude Code, Codex, pi and OpenCode</title>',
-        '<desc>Sample API, web and infrastructure projects with the native Claude Code terminal showing a retry fix and passing tests.</desc>',
+        '<title>cones: running Claude Code and Codex sessions</title>',
+        '<desc>Sample API and web projects with native terminals running tests and waiting for input.</desc>',
         f'<rect width="{width}" height="{height}" rx="8" fill="{BG}" shape-rendering="auto"/>',
     ]
     # Every cell and style comes from ratatui, including spaces in Claude's diff.
@@ -226,15 +139,125 @@ def render(cells):
         text = cell["text"]
         if not text.strip():
             continue
-        if text in ("▀", "▄", "█"):
-            top, tall = (y + LH / 2 if text == "▄" else y), LH if text == "█" else LH / 2
-            svg.append(f'<rect x="{x:.2f}" y="{top}" width="{CW}" height="{tall}" fill="{fg}"/>')
+        rectangles = block_rects(text)
+        dots = braille_dots(text)
+        if rectangles is not None:
+            for left, top, right, bottom in rectangles:
+                svg.append(
+                    f'<rect x="{x + left * CW:.2f}" y="{y + top * LH}" '
+                    f'width="{(right - left) * CW}" height="{(bottom - top) * LH}" fill="{fg}"/>'
+                )
+        elif dots is not None:
+            for dx, dy in dots:
+                svg.append(f'<circle cx="{x + dx * CW:.2f}" cy="{y + dy * LH}" r="1" fill="{fg}"/>')
+        elif text in BOX_LINES:
+            for x0, y0, x1, y1 in BOX_LINES[text]:
+                svg.append(
+                    f'<line x1="{x + x0 * CW:.2f}" y1="{y + y0 * LH}" '
+                    f'x2="{x + x1 * CW:.2f}" y2="{y + y1 * LH}" stroke="{fg}"/>'
+                )
         else:
             style = (' font-weight="700"' if cell["bold"] else "") + (
                 ' text-decoration="underline"' if cell["underline"] else "")
             svg.append(f'<text x="{x:.2f}" y="{y + FS + 1}" fill="{fg}"{style}>{html.escape(text)}</text>')
     svg.append("</svg>")
     return "\n".join(svg) + "\n"
+
+
+def rasterizer():
+    """Create a reusable cell painter for GIF frames and local image inspection."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    font_path = Path("/System/Library/Fonts/Menlo.ttc")
+    regular = ImageFont.truetype(str(font_path), FS, index=0)
+    bold = ImageFont.truetype(str(font_path), FS, index=1)
+    width, height = int(COLS * CW + PAD * 2), ROWS * LH + PAD * 2
+
+    @lru_cache(maxsize=8192)
+    def tile(text, fg, bg, is_bold, underline, cell_width):
+        image = Image.new("RGB", (cell_width, LH), bg)
+        draw = ImageDraw.Draw(image)
+        rectangles = block_rects(text)
+        dots = braille_dots(text)
+        if rectangles is not None:
+            for left, top, right, bottom in rectangles:
+                draw.rectangle((
+                    round(left * cell_width), round(top * LH),
+                    round(right * cell_width) - 1, round(bottom * LH) - 1,
+                ), fill=fg)
+        elif dots is not None:
+            for dx, dy in dots:
+                px, py = int(dx * cell_width), int(dy * LH)
+                draw.ellipse((px, py, px + 1, py + 1), fill=fg)
+        elif text in BOX_LINES:
+            for x0, y0, x1, y1 in BOX_LINES[text]:
+                draw.line((round(x0 * cell_width), round(y0 * LH),
+                           round(x1 * cell_width), round(y1 * LH)), fill=fg)
+        elif text == "⏺":
+            draw.ellipse((1, 6, 7, 12), fill=fg)
+        elif text == "⏸":
+            draw.rectangle((1, 5, 3, 13), fill=fg)
+            draw.rectangle((5, 5, 7, 13), fill=fg)
+        elif text == "⎿":
+            draw.line((2, 5, 2, 12, 7, 12), fill=fg)
+        elif text == "⏵":
+            draw.polygon(((1, 4), (7, 9), (1, 14)), fill=fg)
+        elif text.strip():
+            draw.text((0, FS + 1), text, font=bold if is_bold else regular, fill=fg, anchor="ls")
+            if underline:
+                draw.line((0, FS + 3, CW, FS + 3), fill=fg)
+        return image
+
+    def paint(cells):
+        image = Image.new("RGB", (width, height), BG)
+        for index, cell in enumerate(cells):
+            row, col = divmod(index, COLS)
+            fg, bg = colour(cell["fg"], FG), colour(cell["bg"], BG)
+            if cell["reverse"]:
+                fg, bg = bg, fg
+            if cell["dim"]:
+                fg = "#%02x%02x%02x" % tuple(
+                    (int(fg[n:n+2], 16) + int(bg[n:n+2], 16)) // 2 for n in (1, 3, 5)
+                )
+            left, right = round(col * CW), round((col + 1) * CW)
+            image.paste(
+                tile(cell["text"], fg, bg, cell["bold"], cell["underline"], right - left),
+                (PAD + left, PAD + row * LH),
+            )
+        return image
+    return paint
+
+
+def render_gif(root):
+    """Rasterize recorded cells, keeping terminal colours stable across frames."""
+    from PIL import Image
+
+    paint = rasterizer()
+    frames, durations = [], []
+    for path in sorted((root / "frames").glob("*.json")):
+        frame = json.loads(path.read_text())
+        text = "".join(cell["text"] for cell in frame["cells"])
+        for forbidden in ("Connection refused", "Retrying in", "no longer available", "/private/",
+                          "/Users/", "cones-readme-", "~/personal"):
+            assert forbidden not in text, f"{path.name}: unwanted capture content: {forbidden}"
+        frames.append(paint(frame["cells"]))
+        durations.append(frame["duration_ms"])
+    assert len(frames) > 1, "capture produced no animation"
+    # Sample every frame for one palette, avoiding colour flicker and large full-frame diffs.
+    width = frames[0].width
+    samples = Image.new("RGB", (width, 48 * len(frames)))
+    for i, frame in enumerate(frames):
+        samples.paste(frame.resize((width, 48), Image.Resampling.NEAREST), (0, i * 48))
+    palette = samples.quantize(colors=256)
+    indexed = [frame.quantize(palette=palette, dither=Image.Dither.NONE) for frame in frames]
+    output = REPO / "assets/tui.gif"
+    indexed[0].save(
+        output, save_all=True, append_images=indexed[1:], duration=durations,
+        loop=0, disposal=1, optimize=True,
+    )
+    with Image.open(output) as gif:
+        assert gif.n_frames > 1 and gif.info["loop"] == 0
+    print(f"assets/tui.gif: {sum(durations) / 1000:.1f}s, {output.stat().st_size / 1024:.0f} KiB")
 
 
 def run_capture(command, env):
@@ -269,42 +292,61 @@ def run_capture(command, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude", type=Path, default=shutil.which("claude"))
+    parser.add_argument("--codex", type=Path, default=shutil.which("codex"))
+    parser.add_argument("--render-from", type=Path, help="reuse a saved capture without starting any harness")
     args = parser.parse_args()
-    if args.claude is None or not args.claude.is_file():
-        parser.error("Claude Code must be installed; pass --claude /path/to/claude")
+    if args.render_from is not None:
+        export(args.render_from.resolve())
+        return
+    for name in ("claude", "codex"):
+        binary = getattr(args, name)
+        if binary is None or not binary.is_file():
+            parser.error(f"{name} must be installed; pass --{name} /path/to/{name}")
     original_home = Path.home()
-    root = Path(tempfile.mkdtemp(prefix="cones-readme-")).resolve()
+    # Codex's Unix-domain socket path must fit macOS's short sockaddr_un limit.
+    root = Path(tempfile.mkdtemp(prefix="cones-readme-", dir="/tmp")).resolve()
     print(f"Capture: {root}", flush=True)
-    sessions = prepare(root, args.claude.resolve())
-    env = os.environ.copy()
-    env.update({
-        "HOME": str(root),
-        "CARGO_HOME": os.environ.get("CARGO_HOME", str(original_home / ".cargo")),
-        "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(original_home / ".rustup")),
-        "CODEX_HOME": str(root / "discovery/missing-codex"),
-        "PI_CODING_AGENT_DIR": str(root / "discovery/missing-pi"),
-        "XDG_DATA_HOME": str(root / "discovery/missing-xdg"),
-        "CONES_README_FIXTURE": str(root),
-    })
-    run_capture(
-        [str(REPO / "scripts/check"), "test", "--lib", "tui::readme_capture::capture",
-         "--", "--ignored", "--exact", "--nocapture"],
-        env,
-    )
+    with provider(root) as api_url:
+        env = prepare(root, args.claude.resolve(), args.codex.resolve(), api_url, COLS, ROWS, FG, BG)
+        env.update({
+            "CARGO_HOME": os.environ.get("CARGO_HOME", str(original_home / ".cargo")),
+            "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(original_home / ".rustup")),
+            "PATH": os.environ["PATH"],
+            "CONES_README_FIXTURE": str(root),
+        })
+        try:
+            run_capture(
+                [str(REPO / "scripts/check"), "test", "--lib", "tui::readme_capture::capture",
+                 "--", "--ignored", "--exact", "--nocapture"],
+                env,
+            )
+        finally:
+            # Composer-created Codex threads belong to this isolated daemon.
+            (root / "rolling").touch()
+            subprocess.run([str(args.codex.resolve()), "app-server", "daemon", "stop"],
+                           env=env, cwd=root, capture_output=True, timeout=25, check=False)
+    export(root)
+
+
+def export(root):
+    metadata = json.loads((root / "capture.json").read_text())
+    assert (metadata["cols"], metadata["rows"]) == (COLS, ROWS), "capture dimensions do not match"
     cells = json.loads((root / "cells.json").read_text())
     assert len(cells) == COLS * ROWS
     text = "\n".join(
         "".join(c["text"] for c in cells[row * COLS:(row + 1) * COLS])
         for row in range(ROWS)
     )
-    for session in sessions:
-        assert session["title"] in text, f"session was clipped: {session['title']}"
-    for harness in ("claude", "codex", "pi", "opencode"):
+    for spec in metadata["viewers"]:
+        title = spec["title"]
+        assert title in text, f"session was clipped: {title}"
+    for harness in ("claude", "codex"):
         assert harness in text, f"harness label missing: {harness}"
     assert all(value not in text for value in ("~/personal", "readme-check", "/private/", "cones-readme-"))
     (root / "dashboard.txt").write_text(text + "\n")
     (REPO / "assets/tui.svg").write_text(render(cells))
-    print(f"assets/tui.svg: {COLS}x{ROWS} terminal cells; native preview and dashboard saved in {root}")
+    render_gif(root)
+    print(f"assets/tui.svg: {COLS}x{ROWS} terminal cells; recorded cells in {root}")
 
 
 if __name__ == "__main__":

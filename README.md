@@ -14,7 +14,7 @@ cones brings Claude Code, Codex, pi and OpenCode into one workspace while keepin
 
 [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
 
-<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="Eleven sessions across Claude Code, Codex, pi and OpenCode, grouped by project, with a native Claude Code preview showing a code change and passing tests" width="100%"></a></p>
+<p align="center"><a href="assets/tui.gif"><img src="assets/tui.gif" alt="Browse running Claude Code and Codex sessions, answer Claude's question, then add a folder and start a new session" width="100%"></a><br><sub>Recorded with native CLIs in sample projects. <a href="assets/tui.svg">Still image</a>.</sub></p>
 
 ## Work from one place
 
