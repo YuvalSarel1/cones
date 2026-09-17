@@ -281,6 +281,11 @@ struct NativeIndex {
     titles: HashMap<String, String>,
 }
 
+struct DatabaseIndex {
+    stamp: crate::opencode::Fingerprint,
+    entries: Vec<Entry>,
+}
+
 #[derive(Default)]
 struct Cache {
     initialized: bool,
@@ -291,6 +296,8 @@ struct Cache {
     columns: HashMap<PathBuf, Hydrated>,
     used: u64,
     homes: HashMap<PathBuf, PathBuf>,
+    databases: HashMap<PathBuf, DatabaseIndex>,
+    database_columns: HashMap<Key, (crate::opencode::Fingerprint, Columns, u64)>,
 }
 
 impl Cache {
@@ -375,7 +382,7 @@ impl Cache {
             }
             stats.hydrate_ms = hydrating.elapsed().as_secs_f64() * 1000.0;
         }
-        stats.indexed_files = self.files.len();
+        stats.indexed_files = self.files.len() + self.databases.len();
         stats.worker_ms = started.elapsed().as_secs_f64() * 1000.0;
         Ok(Page {
             entries,
@@ -389,6 +396,7 @@ impl Cache {
 
     fn scan(&mut self, sources: &[Source], stats: &mut Stats) -> Result<()> {
         let mut files = HashMap::new();
+        let mut databases = HashMap::new();
         let mut native_titles = HashMap::new();
         let mut roots = HashSet::new();
         let mut homes = HashMap::new();
@@ -406,6 +414,34 @@ impl Cache {
                 harness: source.harness,
                 home,
             };
+            if source.harness == HarnessKind::Opencode {
+                for db in crate::opencode::databases(&source.home)? {
+                    let current = crate::opencode::fingerprint(&db)?;
+                    let entries = match self.databases.get(&db).filter(|c| c.stamp == current) {
+                        Some(c) => {
+                            stats.metadata_cache_hits += 1;
+                            c.entries.clone()
+                        }
+                        None => {
+                            let entries = crate::opencode::history(&db, &source.home)?;
+                            ensure!(
+                                crate::opencode::fingerprint(&db)? == current,
+                                "OpenCode history changed while indexing; refresh again"
+                            );
+                            stats.metadata_reads += 1;
+                            entries
+                        }
+                    };
+                    databases.insert(
+                        db,
+                        DatabaseIndex {
+                            stamp: current,
+                            entries,
+                        },
+                    );
+                }
+                continue;
+            }
             let titles = if harness::spec(source.harness).transcript.handler == Native::Codex {
                 self.native_titles(&source.home)?
             } else {
@@ -445,7 +481,11 @@ impl Cache {
         // A Claude conversation can have copies under its original cwd and a worktree.
         // Keep the copy with the latest reported activity; path breaks equal-time ties.
         let mut unique: HashMap<Key, Entry> = HashMap::new();
-        for e in files.values().filter_map(|c| c.entry.as_ref()) {
+        for e in files
+            .values()
+            .filter_map(|c| c.entry.as_ref())
+            .chain(databases.values().flat_map(|db| &db.entries))
+        {
             let replace = unique.get(&e.key).is_none_or(|old| {
                 (e.last_activity, &e.transcript) > (old.last_activity, &old.transcript)
             });
@@ -465,6 +505,9 @@ impl Cache {
         }
         self.entries = entries;
         self.files = files;
+        self.databases = databases;
+        self.database_columns
+            .retain(|key, _| self.entries.iter().any(|entry| &entry.key == key));
         self.columns
             .retain(|p, c| self.files.get(p).is_some_and(|f| f.stamp == c.stamp));
         self.initialized = true;
@@ -494,6 +537,9 @@ impl Cache {
     }
 
     fn hydrate(&mut self, e: &Entry, stats: &mut Stats) -> Result<Columns> {
+        if e.key.harness == "opencode" {
+            return self.hydrate_database(e, stats);
+        }
         let current = stamp(&e.transcript)?;
         ensure!(
             self.files
@@ -525,6 +571,7 @@ impl Cache {
             Native::Claude => fleet::history_columns(&e.transcript)?,
             Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Pi => pi_columns(&e.transcript, catalog.as_deref())?,
+            Native::Opencode => unreachable!("database hydration handled above"),
         };
         if status_stamp.is_some() {
             let mut bytes = Vec::new();
@@ -563,6 +610,44 @@ impl Cache {
                 .map(|(p, _)| p.clone())
                 .unwrap();
             self.columns.remove(&oldest);
+        }
+        Ok(columns)
+    }
+
+    fn hydrate_database(&mut self, e: &Entry, stats: &mut Stats) -> Result<Columns> {
+        let current = crate::opencode::fingerprint(&e.transcript)?;
+        ensure!(
+            self.databases
+                .get(&e.transcript)
+                .is_some_and(|db| db.stamp == current),
+            "OpenCode history changed; refresh before loading columns"
+        );
+        self.used += 1;
+        if let Some((_, columns, used)) = self
+            .database_columns
+            .get_mut(&e.key)
+            .filter(|(stamp, _, _)| *stamp == current)
+        {
+            *used = self.used;
+            stats.column_cache_hits += 1;
+            return Ok(columns.clone());
+        }
+        let columns = crate::opencode::columns(&e.transcript, &e.key.session_id)?;
+        ensure!(
+            crate::opencode::fingerprint(&e.transcript)? == current,
+            "OpenCode history changed while loading columns; refresh again"
+        );
+        stats.hydrated_files += 1;
+        self.database_columns
+            .insert(e.key.clone(), (current, columns.clone(), self.used));
+        while self.database_columns.len() > COLUMN_CACHE {
+            let oldest = self
+                .database_columns
+                .iter()
+                .min_by_key(|(_, (_, _, used))| used)
+                .map(|(key, _)| key.clone())
+                .unwrap();
+            self.database_columns.remove(&oldest);
         }
         Ok(columns)
     }
@@ -704,6 +789,7 @@ fn metadata(
             .and_then(|v| v["name"].as_str())
             .and_then(fleet::headline)
             .or_else(|| user_title(user, &head)),
+        Native::Opencode => unreachable!("SQLite metadata uses its native reader"),
     };
     Ok(Some(Entry {
         key: Key {
@@ -742,6 +828,7 @@ fn identity(harness: HarnessKind, path: &Path, events: &[Value]) -> Option<Ident
             .iter()
             .find_map(|v| pi::meta(&v.to_string()))
             .map(|m| (m.session_id, m.cwd, Some(m.started))),
+        Native::Opencode => None,
     }
 }
 

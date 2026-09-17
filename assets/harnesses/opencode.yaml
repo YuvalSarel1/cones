@@ -1,0 +1,75 @@
+version: 2
+kind: opencode
+icon: "o"
+colour: [190, 190, 190]
+home:
+  env: XDG_DATA_HOME
+  default: {base: xdg_data, path: opencode}
+discovery:
+  process: opencode
+  exclude_subcommands:
+    - acp
+    - agent
+    - auth
+    - completion
+    - db
+    - debug
+    - export
+    - github
+    - import
+    - mcp
+    - models
+    - plugin
+    - plug
+    - providers
+    - serve
+    - session
+    - stats
+    - uninstall
+    - upgrade
+    - web
+    - --help
+    - -h
+    - --version
+    - -v
+state:
+  rules:
+    - when: {/type: session.status}
+      field: /status/type
+      values: {busy: active, retry: active, idle: idle}
+transcript:
+  roots:
+    - {path: opencode.db, env: OPENCODE_DB, depth: 0, archived: false}
+  messages:
+    user:
+      id: /id
+      sources:
+        - when: {/role: user}
+          path: /text
+          shape: string
+    assistant:
+      id: /id
+      sources:
+        - when: {/role: assistant}
+          path: /text
+          shape: string
+operations:
+  launch:
+    identity: client_pid
+    model: --model
+    prompt: [--prompt, "{prompt}"]
+    probe:
+      args: [--help]
+      output: stderr
+      contains: [--prompt, --session, --model]
+      error: "this OpenCode does not support native prompt and session flags"
+      description: "OpenCode runs in the dashboard's viewer and ends with it; saved conversations resume by session id"
+  resume:
+    args: [--session, "{id}"]
+execution:
+  enforcement: unsupported
+viewer:
+  input_alignment: fixed
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

@@ -150,7 +150,7 @@ The pane shows the focused viewer, otherwise the selected session's viewer. A li
 
 Resting on a joinable live row can prepare its viewer before entry. This never starts a new agent: finished runs require an explicit open, and a saved Codex thread waits for entry if its daemon has exited. A speculative viewer says `attach` until entered, then `return`. A preview may be closed to make room for another; entered Codex clients, resumed runs and historical viewers are retained. A Claude client left in its own agents list closes so that list cannot appear under a session's name.
 
-All viewers close with the dashboard. Whether that also ends the session depends on [native ownership](harness.md#native-actions); a composer pi ends with its viewer. Stopping or removing a row is a separate action.
+All viewers close with the dashboard. Whether that also ends the session depends on [native ownership](harness.md#native-actions); composer pi and OpenCode sessions end with their viewers. Stopping or removing a row is a separate action.
 
 | Input in a native viewer | Behavior |
 | --- | --- |
@@ -163,11 +163,13 @@ All viewers close with the dashboard. Whether that also ends the session depends
 | Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. |
 | Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
 
+OpenCode keeps Tab and Left for its native controls; Ctrl+Z returns to the list. Its empty-editor shape is not assumed.
+
 Typing returns to the live screen. Terminal text selection may need the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
 
 ## Composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi and terminal; the prefix names the selection, and each started agent row reports its model in the list.
+Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi, OpenCode and terminal; the prefix names the selection. Identified agent rows show their reported model.
 
 On `terminal`, type or paste a command and press `enter` to run it in a new interactive shell in that directory and focus its pane. An empty command opens the shell at its prompt. The command field supports the composer's editing keys and `shift+enter` for a new line. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
 

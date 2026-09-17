@@ -23,6 +23,10 @@ const BUILTINS: &[(HarnessKind, &str)] = &[
         HarnessKind::Pi,
         include_str!("../../assets/harnesses/pi.yaml"),
     ),
+    (
+        HarnessKind::Opencode,
+        include_str!("../../assets/harnesses/opencode.yaml"),
+    ),
 ];
 
 static SPECS: LazyLock<Vec<HarnessSpec>> = LazyLock::new(|| {
@@ -148,8 +152,16 @@ pub struct Home {
 #[serde(tag = "base", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HomeDefault {
     Provided,
-    ProvidedParent { path: PathBuf },
-    User { path: PathBuf },
+    ProvidedParent {
+        path: PathBuf,
+    },
+    User {
+        path: PathBuf,
+    },
+    /// The environment value is the XDG data base, with the application path appended.
+    XdgData {
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -285,6 +297,7 @@ pub enum Native {
     Claude,
     Codex,
     Pi,
+    Opencode,
 }
 
 impl Native {
@@ -293,6 +306,7 @@ impl Native {
             Self::Claude => crate::fleet::sessions(home),
             Self::Codex => crate::codex::sessions(home),
             Self::Pi => crate::pi::sessions(home),
+            Self::Opencode => crate::opencode::sessions(home),
         }
     }
 }
@@ -310,6 +324,7 @@ fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {
             Resume::CodexRemote,
         ),
         HarnessKind::Pi => (Native::Pi, LaunchHandler::Terminal, Resume::Transcript),
+        HarnessKind::Opencode => (Native::Opencode, LaunchHandler::Terminal, Resume::SessionId),
     }
 }
 
@@ -547,6 +562,8 @@ pub enum LaunchHandler {
 #[serde(deny_unknown_fields)]
 pub struct Probe {
     pub args: Vec<String>,
+    #[serde(default)]
+    pub output: ProbeOutput,
     #[serde(default = "yes")]
     pub require_success: bool,
     #[serde(default)]
@@ -556,6 +573,14 @@ pub struct Probe {
     pub minimum_version: Option<String>,
     pub error: String,
     pub description: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeOutput {
+    #[default]
+    Stdout,
+    Stderr,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -626,6 +651,7 @@ pub enum Resume {
     BackgroundThenAttach,
     CodexRemote,
     Transcript,
+    SessionId,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -830,7 +856,9 @@ impl HarnessSpec {
         );
         match &self.home.default {
             HomeDefault::Provided => {}
-            HomeDefault::ProvidedParent { path } | HomeDefault::User { path } => relative(path)?,
+            HomeDefault::ProvidedParent { path }
+            | HomeDefault::User { path }
+            | HomeDefault::XdgData { path } => relative(path)?,
         }
         if let Some(path) = &self.discovery.registry {
             relative(path)?;
@@ -930,11 +958,13 @@ impl HarnessSpec {
             validate_args(&launch.prefix, &[])?;
             validate_args(&launch.remote, &["remote", "cwd"])?;
             validate_args(&launch.prompt, &["prompt"])?;
+            let named_prompt =
+                self.kind == HarnessKind::Opencode && launch.prompt == ["--prompt", "{prompt}"];
             ensure!(
                 launch.prompt.last().map(String::as_str) == Some("{prompt}")
                     && launch.prompt.iter().filter(|a| *a == "{prompt}").count() == 1
-                    && launch.prompt.iter().any(|a| a == "--"),
-                "launch must pass one prompt after --"
+                    && (launch.prompt.iter().any(|a| a == "--") || named_prompt),
+                "launch must pass one prompt after --, or OpenCode's --prompt"
             );
             for flag in [&launch.model, &launch.provider].into_iter().flatten() {
                 ensure!(
@@ -1037,6 +1067,16 @@ impl HarnessSpec {
                 ensure!(
                     self.commands.attach.is_empty(),
                     "a transcript resume is not a live attach"
+                );
+            }
+            Resume::SessionId => {
+                validate_args(&self.commands.resume, &["id"])?;
+                if self.operations.resume.is_some() {
+                    require_operand(&self.commands.resume, &["{id}"])?;
+                }
+                ensure!(
+                    self.commands.attach.is_empty(),
+                    "session resume is not a live attach"
                 );
             }
         }
@@ -1153,6 +1193,12 @@ impl Home {
 
     /// Native overrides keep their path semantics; definitions state the default's base.
     pub fn resolve_with(&self, provided: &Path, user: &Path, value: Option<&OsStr>) -> PathBuf {
+        if let HomeDefault::XdgData { path } = &self.default {
+            return value
+                .filter(|v| !v.is_empty())
+                .map_or_else(|| user.join(".local/share"), PathBuf::from)
+                .join(path);
+        }
         value
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -1162,7 +1208,20 @@ impl Home {
                     provided.parent().unwrap_or(provided).join(path)
                 }
                 HomeDefault::User { path } => user.join(path),
+                HomeDefault::XdgData { .. } => unreachable!(),
             })
+    }
+
+    /// Preserve the native meaning of home overrides when resuming a saved session.
+    pub fn set_command_home(&self, command: &mut std::process::Command, home: &Path) {
+        let value = match &self.default {
+            HomeDefault::XdgData { path } => home
+                .ancestors()
+                .nth(path.components().count())
+                .unwrap_or(home),
+            _ => home,
+        };
+        command.env(&self.env, value);
     }
 
     pub fn all(&self, claude: &Path) -> Vec<PathBuf> {

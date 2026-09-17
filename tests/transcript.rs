@@ -22,6 +22,7 @@ fn claude(role: &str, text: &str) -> Value {
 
 fn target(path: &Path) -> Target {
     Target {
+        session_id: None,
         key: path.display().to_string(),
         path: path.to_owned(),
         harness: "claude".into(),

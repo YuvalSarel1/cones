@@ -34,6 +34,8 @@ pub struct Target {
     pub key: String,
     pub harness: String,
     pub path: PathBuf,
+    /// Database-backed conversations share one path and require a native session id.
+    pub session_id: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +148,7 @@ struct Stamp {
     len: u64,
     device: u64,
     inode: u64,
+    database: Option<crate::opencode::Fingerprint>,
 }
 
 impl Stamp {
@@ -157,6 +160,9 @@ impl Stamp {
             len: m.len(),
             device: m.dev(),
             inode: m.ino(),
+            database: (target.harness == "opencode")
+                .then(|| crate::opencode::fingerprint(&target.path))
+                .transpose()?,
         })
     }
 }
@@ -179,6 +185,18 @@ impl Cache {
             let result = Arc::clone(&cached.2);
             self.entries.push_back(cached);
             return Ok(result);
+        }
+        if target.harness == "opencode" {
+            let id = target
+                .session_id
+                .as_deref()
+                .context("missing OpenCode session id")?;
+            let document = crate::opencode::preview(&target.path, id)?;
+            ensure!(
+                Stamp::of(target)? == stamp,
+                "OpenCode transcript changed while reading; reload history"
+            );
+            return Ok(self.remember(target, stamp, document));
         }
         let mut file = File::open(&target.path).context("opening transcript")?;
         let mut size = WINDOW.min(stamp.len);
@@ -215,6 +233,10 @@ impl Cache {
             Stamp::of(target)? == stamp,
             "transcript changed while reading; reload history"
         );
+        Ok(self.remember(target, stamp, document))
+    }
+
+    fn remember(&mut self, target: &Target, stamp: Stamp, document: Transcript) -> Arc<Transcript> {
         let document = Arc::new(document);
         self.entries.retain(|(t, _, _)| t != target);
         self.entries
@@ -222,7 +244,7 @@ impl Cache {
         while self.entries.len() > CACHE_SIZE {
             self.entries.pop_front();
         }
-        Ok(document)
+        document
     }
 }
 

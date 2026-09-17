@@ -2,7 +2,7 @@
 
 Back to [harness behavior and sources](harness.md).
 
-Each built-in harness has one definition under `assets/harnesses/`: `claude.yaml`, `codex.yaml` or `pi.yaml`. The binary embeds them, so editing one takes effect after rebuilding cones; no definitions or overrides are read from disk. The definitions describe discovery, reports, native operations and viewer behavior. User choices, including model and provider defaults, belong in `jobs.yaml`.
+Each built-in harness has one definition under `assets/harnesses/`: `claude.yaml`, `codex.yaml`, `pi.yaml` or `opencode.yaml`. The binary embeds them, so editing one takes effect after rebuilding cones; no definitions or overrides are read from disk. The definitions describe discovery, reports, native operations and viewer behavior. User choices, including model and provider defaults, belong in `jobs.yaml`.
 
 ## The line between YAML and code
 
@@ -41,7 +41,7 @@ home:
   default: {base: user, path: .local/share/native}
 ```
 
-A nonempty native environment override takes precedence, including a relative one; an empty override keeps the default. A `provided` root is already resolved by its caller and remains authoritative. `home.siblings` can identify additional homes by a directory prefix and marker file.
+A nonempty native environment override takes precedence, including a relative one; an empty override keeps the default. `xdg_data` appends its application `path` to the environment value or `~/.local/share`; OpenCode uses `XDG_DATA_HOME` and `path: opencode`. Resume restores the base directory in that environment variable. A `provided` root is already resolved by its caller and remains authoritative. `home.siblings` can identify additional homes by a directory prefix and marker file.
 
 A transcript root can declare its own `env`. This override names the complete directory, separately from the native configuration home. Pi uses `PI_CODING_AGENT_SESSION_DIR`; without it, pi uses the declared `sessions` root and its native cwd subdirectory. History and live discovery use the same resolved storage location.
 
@@ -77,13 +77,13 @@ An omitted launch or resume operation is unavailable. Discovery and history can 
 
 `stop: signal`, `remove` and `forget_client` describe different effects. They terminate a verified client, invoke native removal, or forget a thread's saved row and close its client respectively. Forgetting a Codex row does not terminate its daemon thread. Rename availability selects the existing native rename adapter; the definition supplies no file-writing program.
 
-Command templates are argument arrays, and a placeholder occupies a whole argument. Accepted placeholders depend on the operation: `prompt`, `remote`, `cwd`, `id`, `short_id` and `transcript`. Unknown placeholders and missing operands are errors. Substitution preserves spaces, newlines and native path bytes and performs no shell expansion. Launch passes one prompt after `--`.
+Command templates are argument arrays, and a placeholder occupies a whole argument. Accepted placeholders depend on the operation: `prompt`, `remote`, `cwd`, `id`, `short_id` and `transcript`. Unknown placeholders and missing operands are errors. Substitution preserves spaces, newlines and native path bytes and performs no shell expansion. Launch passes one prompt after `--`, except OpenCode: its native adapter compiles `[--prompt, "{prompt}"]` into one `--prompt=<instruction>` argument because its positional argument is a project directory.
 
-Launching, joining and resuming history remain separate operations. Native handlers sequence Claude's background resume then attach, and Codex's unarchive then resume. A failed first command prevents the second. Pi has no live attach and resumes history through `--session <transcript>`.
+Launching, joining and resuming history remain separate operations. Native handlers sequence Claude's background resume then attach, and Codex's unarchive then resume. A failed first command prevents the second. Pi has no live attach and resumes history through `--session <transcript>`. OpenCode resumes by `--session <id>`, with the original database pinned through `OPENCODE_DB`; an arbitrary external terminal is not attachable.
 
-A probe declares its command, success requirement, required output strings, version format and diagnostic text. Launch requires a probe; attach, resume, remove and unarchive may each have one. A declared probe runs before that operation. `require_success` defaults to `true`; output without a declared text or JSON version is an error. `minimum_version` accepts a numeric major/minor version with an optional patch and requires a version-bearing probe. Codex launch requires `0.154.0` or later. This is separate from definition schema versioning and supervised execution validation.
+A probe declares its command, success requirement, required output strings, version format and diagnostic text. `output` selects `stdout` by default or `stderr`, where OpenCode writes help. Launch requires a probe; attach, resume, remove and unarchive may each have one. A declared probe runs before that operation. `require_success` defaults to `true`; output without a declared text or JSON version is an error. `minimum_version` accepts a numeric major/minor version with an optional patch and requires a version-bearing probe. Codex launch requires `0.154.0` or later. This is separate from definition schema versioning and supervised execution validation.
 
-`operations.launch.model` and `provider` name native flags. Their values come from the selected harness's configuration: Claude uses `defaults.model`, Codex uses `defaults.codex_model`, and pi uses `defaults.pi_model` and `defaults.pi_provider`. Unset values pass no flag. Claude's Bedrock environment and Codex's daemon provider remain native adapter behavior; a pi provider binding cannot be claimed for those adapters.
+`operations.launch.model` and `provider` name native flags. Their values come from the selected harness's configuration: Claude uses `defaults.model`, Codex uses `defaults.codex_model`, pi uses `defaults.pi_model` and `defaults.pi_provider`, and OpenCode uses `defaults.opencode_model`. Unset values pass no flag. Claude's Bedrock environment and Codex's daemon provider remain native adapter behavior; a pi provider binding cannot be claimed for those adapters.
 
 ## Viewers and input
 
@@ -104,7 +104,7 @@ viewer:
 
 Omitted keys pass through to the native client. Unknown keys, duplicate bindings and lists with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain dashboard controls; Shift+Tab and modified arrows remain native keys. An opened viewer records its harness identity, so input behavior does not depend on its title or the selected row.
 
-The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi. A custom editor can still return through Ctrl+Z.
+The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi. OpenCode declares only Ctrl+Z; Tab and Left remain native. A custom editor can still return through Ctrl+Z.
 
 ## Changing or adding a harness
 

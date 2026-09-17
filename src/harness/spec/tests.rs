@@ -12,7 +12,12 @@ const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 fn every_registered_harness_has_a_valid_definition_and_explicit_capabilities() {
     assert_eq!(
         known(),
-        [HarnessKind::Claude, HarnessKind::Codex, HarnessKind::Pi]
+        [
+            HarnessKind::Claude,
+            HarnessKind::Codex,
+            HarnessKind::Pi,
+            HarnessKind::Opencode,
+        ]
     );
     for &(kind, yaml) in BUILTINS {
         let definition = HarnessSpec::parse(yaml).unwrap();
@@ -357,6 +362,7 @@ fn all_native_transcript_fixtures_pass_through_the_same_history_contract() {
             HarnessKind::Claude => "Reading\n\nDone",
             HarnessKind::Codex => "Done\nAdditional detail",
             HarnessKind::Pi => "Earlier text\nDone",
+            HarnessKind::Opencode => unreachable!("SQLite fixtures have their own tests"),
         };
         assert_eq!(
             preview.messages.last().unwrap().text,

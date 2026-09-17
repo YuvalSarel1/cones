@@ -4,7 +4,7 @@
 
 **A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.
 
-Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude Code.
+Supports Claude Code, Codex, pi and OpenCode sessions. Scheduled jobs currently use Claude Code.
 
 <p align="center">
   <a href="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml"><img src="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -25,7 +25,7 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 
 ## Install
 
-Requires macOS and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later. pi sessions need nothing: any pi running in a terminal is a row.
+Requires macOS and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later. pi sessions need nothing: any pi running in a terminal is a row. OpenCode uses its native CLI and SQLite session history; see [harness support](docs/harness.md#opencode).
 
 ```sh
 brew tap YuvalSarel1/cones https://github.com/YuvalSarel1/cones
@@ -49,7 +49,7 @@ Open the dashboard. Existing sessions appear automatically; no jobs file is need
 cones
 ```
 
-To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Shift+Tab` cycles Claude Code, Codex and pi.
+To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Shift+Tab` cycles Claude Code, Codex, pi, OpenCode and terminal.
 
 Press `Enter` again to open your new session. `Ctrl+Z` returns to the list. The [dashboard guide](docs/dashboard.md) covers previews, stopping sessions and other controls.
 

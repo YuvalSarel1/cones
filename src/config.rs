@@ -13,6 +13,7 @@ pub enum HarnessKind {
     Claude,
     Codex,
     Pi,
+    Opencode,
 }
 
 impl std::fmt::Display for HarnessKind {
@@ -21,6 +22,7 @@ impl std::fmt::Display for HarnessKind {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Opencode => "opencode",
         })
     }
 }
@@ -62,6 +64,7 @@ pub struct Policy {
     pub codex_model: Option<String>,
     pub pi_model: Option<String>,
     pub pi_provider: Option<String>,
+    pub opencode_model: Option<String>,
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Both must be configured when `bedrock` is true; shell values do not satisfy validation.
@@ -77,6 +80,7 @@ impl Policy {
             HarnessKind::Claude => self.model.as_deref(),
             HarnessKind::Codex => self.codex_model.as_deref(),
             HarnessKind::Pi => self.pi_model.as_deref(),
+            HarnessKind::Opencode => self.opencode_model.as_deref(),
         }
     }
 
@@ -790,6 +794,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("codex_model", d.codex_model.clone());
     put("pi_model", d.pi_model.clone());
     put("pi_provider", d.pi_provider.clone());
+    put("opencode_model", d.opencode_model.clone());
     put(
         "codex_full_access",
         d.codex_full_access.map(|v| v.to_string()),
@@ -1531,6 +1536,7 @@ mod tests {
             codex_model: None,
             pi_model: None,
             pi_provider: None,
+            opencode_model: None,
             bedrock: None,
             aws_profile: None,
             aws_region: None,
@@ -2132,11 +2138,12 @@ mod tests {
     }
 
     #[test]
-    fn pi_launch_defaults_survive_config_edits_without_reaching_other_harnesses() {
+    fn native_launch_defaults_survive_config_edits_without_reaching_other_harnesses() {
         let (_dir, path) = file("version: 3\njobs: []\n");
         let policy = Policy {
             pi_model: Some("pi-native-model".into()),
             pi_provider: Some("pi-native-provider".into()),
+            opencode_model: Some("opencode-provider/native-model".into()),
             ..Policy::default()
         };
         write_config(
@@ -2150,6 +2157,11 @@ mod tests {
             saved.provider_for(HarnessKind::Pi),
             Some("pi-native-provider")
         );
+        assert_eq!(
+            saved.model_for(HarnessKind::Opencode),
+            Some("opencode-provider/native-model")
+        );
+        assert_eq!(saved.provider_for(HarnessKind::Opencode), None);
         for kind in [HarnessKind::Claude, HarnessKind::Codex] {
             assert_eq!(saved.model_for(kind), None);
             assert_eq!(saved.provider_for(kind), None);

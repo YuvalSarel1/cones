@@ -131,10 +131,16 @@ pub fn session_args(
             args.extend([OsString::from(flag), value.into()]);
         }
     }
-    args.extend(
-        spec::args(&launch.prompt, &[("prompt", prompt.as_ref())])
-            .expect("validated prompt template"),
-    );
+    if kind == HarnessKind::Opencode {
+        // OpenCode's positional argument is a project. Assignment also keeps a
+        // prompt beginning with "--" from being interpreted as another option.
+        args.push(format!("--prompt={prompt}").into());
+    } else {
+        args.extend(
+            spec::args(&launch.prompt, &[("prompt", prompt.as_ref())])
+                .expect("validated prompt template"),
+        );
+    }
     Ok(args)
 }
 
@@ -161,7 +167,10 @@ fn probe_harness(kind: HarnessKind, probe: &spec::Probe) -> Result<String> {
         .with_context(|| format!("{name} {}", probe.args.join(" ")))?;
     probe.report(
         output.status.success(),
-        &String::from_utf8_lossy(&output.stdout),
+        &String::from_utf8_lossy(match probe.output {
+            spec::ProbeOutput::Stdout => &output.stdout,
+            spec::ProbeOutput::Stderr => &output.stderr,
+        }),
     )
 }
 
@@ -276,9 +285,23 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
             .current_dir(&entry.cwd);
             c
         }
+        spec::Resume::SessionId => {
+            check_operation(spec, &spec.operations.resume, "resume")?;
+            crate::opencode::require_session(&entry.transcript, &entry.key.session_id)?;
+            let path = executable(&spec.name, &launch_path())
+                .with_context(|| format!("{} not found", spec.name))?;
+            let mut c = std::process::Command::new(path);
+            c.args(spec::args(
+                &spec.commands.resume,
+                &[("id", entry.key.session_id.as_ref())],
+            )?)
+            .env("OPENCODE_DB", &entry.transcript)
+            .current_dir(&entry.cwd);
+            c
+        }
     };
-    command.env(&spec.home.env, &entry.key.home);
-    if entry.archived {
+    spec.home.set_command_home(&mut command, &entry.key.home);
+    if entry.archived && spec.commands.resume_handler != spec::Resume::SessionId {
         check_operation(spec, &spec.operations.unarchive, "unarchive")?;
         ensure!(
             !spec.commands.unarchive.is_empty(),
@@ -403,6 +426,7 @@ pub fn launch_path() -> String {
     [
         home.join(".local/bin"),
         home.join(".cargo/bin"),
+        home.join(".opencode/bin"),
         PathBuf::from("/opt/homebrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
@@ -856,7 +880,7 @@ mod tests {
     fn the_composer_offers_every_harness_claude_first() {
         assert_eq!(
             known().iter().map(ToString::to_string).collect::<Vec<_>>(),
-            ["claude", "codex", "pi"],
+            ["claude", "codex", "pi", "opencode"],
             "shift+tab cycles in this order and start.harness defaults to the first"
         );
     }

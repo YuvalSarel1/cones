@@ -33,7 +33,7 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model` and `pi_provider`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi and Codex jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider` and `opencode_model`. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ A job's policy fields override `defaults` individually. The Default column below
 | `cwd` | required | Existing working directory. `~/` expands; relative paths resolve against the jobs file's directory. |
 | `prompt` | required | Nonempty task, passed as the final command-line argument after `--`. |
 | `enabled` | `true` | Saving a disabled job removes its LaunchAgent; attempts to run it record `skipped` / `disabled`. |
-| `harness` | `claude` | `claude`, `codex` or `pi`. Only Claude currently has a supervised execution adapter; [native support](harness.md#supervised-execution) determines which jobs validate. |
+| `harness` | `claude` | `claude`, `codex`, `pi` or `opencode`. Only Claude currently has a supervised execution adapter; [native support](harness.md#supervised-execution) determines which jobs validate. |
 | `model` | harness's own | Overrides the per-harness default. Must be nonempty and contain no NUL. |
 | `timeout_min` | `30` | Positive number of minutes, at most `10080` (one week). This is the only run limit; there is no dollar or turn cap. |
 | `write` | `false` | `false` permits Read, Grep and Glob. `true` adds Edit, Write and sandboxed Bash. No per-tool rules: Claude treats a scoped `Bash(pattern)` as pre-approval, so cones cannot enforce it as an exclusive allowlist. |
@@ -52,7 +52,7 @@ A job's policy fields override `defaults` individually. The Default column below
 | `archive_transcript` | `false` | Copy the native transcript into the [run's state directory](#stored-files) when it ends. |
 | `env` | `[]` | Shell variable names to import. A job's nonempty list replaces the default list; an empty list inherits it, so opting out requires removing the name from `defaults.env`. See [environment](#environment). |
 | `codex_full_access` | `false` | Codex option; defaults reach only Codex jobs. `true` is rejected on Claude. |
-| `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Rejected on Codex jobs because the daemon keeps its configured provider and ignores a thread's override. Native pi composer sessions ignore this field. |
+| `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Rejected on Codex jobs because the daemon keeps its configured provider and ignores a thread's override. Native pi and OpenCode composer sessions ignore this field. |
 | `aws_profile` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_PROFILE` over any imported shell value. |
 | `aws_region` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_REGION`; the chosen region must serve the model. |
 
@@ -111,7 +111,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `start.harness` | `claude` | Initially selected composer harness: `claude`, `codex` or `pi`. |
+| `start.harness` | `claude` | Initially selected composer harness: `claude`, `codex`, `pi` or `opencode`. |
 | `start.pane` | `true` | Open the viewer pane at dashboard startup. |
 
 These values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves settings for future dashboards.

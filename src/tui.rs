@@ -2716,7 +2716,7 @@ const SYSTEM: &str = "system default";
 
 const GROUPS: [(&str, &str); 3] = [
     ("cones", "the dashboard itself"),
-    ("harnesses", "how claude and codex are run"),
+    ("harnesses", "models and providers"),
     ("runs", "what a run starts with"),
 ];
 
@@ -2737,7 +2737,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 30] = [
+const FIELDS: [Field; 31] = [
     Field {
         group: "cones",
         sub: "",
@@ -2797,9 +2797,9 @@ const FIELDS: [Field; 30] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
-        long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and uses the pi model and provider defaults below.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex, pi and OpenCode sessions start; their jobs remain unavailable. Pi and OpenCode run in the dashboard's own viewer and end with it. Model and provider defaults are below.",
         builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex", "pi"]),
+        input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
     },
     Field {
         group: "cones",
@@ -2966,13 +2966,22 @@ const FIELDS: [Field; 30] = [
         input: Answer::Typed,
     },
     Field {
+        group: "harnesses",
+        sub: "opencode",
+        name: "opencode_model",
+        short: "provider/model",
+        long: "Passed to OpenCode as --model for sessions the composer starts. Use provider/model, as listed by opencode models. Empty follows OpenCode's own configuration. OpenCode jobs are unavailable.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
         group: "runs",
         sub: "",
         name: "harness",
         short: "harness",
-        long: "The harness a run starts under, unless the job names one of its own. What the composer comes up on is start.harness above. Codex and pi jobs are still unavailable.",
+        long: "The harness a run starts under, unless the job names one of its own. What the composer comes up on is start.harness above. Codex, pi and OpenCode jobs are unavailable.",
         builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex", "pi"]),
+        input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
     },
     Field {
         group: "runs",
@@ -3348,6 +3357,7 @@ impl ConfigForm {
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "pi_model" => d.pi_model.clone().unwrap_or_default(),
                 "pi_provider" => d.pi_provider.clone().unwrap_or_default(),
+                "opencode_model" => d.opencode_model.clone().unwrap_or_default(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -3490,6 +3500,7 @@ impl ConfigForm {
             codex_model: text("codex_model"),
             pi_model: text("pi_model"),
             pi_provider: text("pi_provider"),
+            opencode_model: text("opencode_model"),
             bedrock: flag("bedrock"),
             aws_profile: text("aws_profile"),
             aws_region: text("aws_region"),
@@ -4531,7 +4542,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+tab",
-        "cycle Claude Code, Codex, pi and terminal; type a terminal command and enter to run it, or enter empty to open a shell; ctrl+z returns to the list",
+        "cycle Claude Code, Codex, pi, OpenCode and terminal; type a terminal command and enter to run it, or enter empty to open a shell; ctrl+z returns to the list",
     ),
     (
         "ctrl+v",
@@ -5833,6 +5844,7 @@ impl App {
             key: key.clone(),
             harness: entry.key.harness.clone(),
             path: entry.transcript.clone(),
+            session_id: Some(entry.key.session_id.clone()),
         })
     }
 
@@ -8466,7 +8478,7 @@ impl App {
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         let since = chrono::Utc::now();
         let id = self.launch_row(kind, &dir, &prompt);
-        // Codex and pi run as the dashboard's own client; only Claude is launched and left.
+        // Foreground harnesses run as the dashboard's own client.
         let launch = harness::spec(kind)
             .launch
             .as_ref()
@@ -12464,8 +12476,8 @@ mod tests {
     }
 
     #[test]
-    fn resumed_history_viewers_follow_all_three_harnesses_into_live_rows() {
-        for harness in ["claude", "codex", "pi"] {
+    fn resumed_history_viewers_follow_every_harness_into_live_rows() {
+        for harness in ["claude", "codex", "pi", "opencode"] {
             let (d, mut app, mut terminal) = history_fixture(1);
             app.toggle_history();
             history_until(&mut app, &mut terminal, |a| a.history.ready);
@@ -12474,6 +12486,7 @@ mod tests {
             entry.key.home = match harness {
                 "codex" => codex::home(&app.claude),
                 "pi" => crate::pi::home(&app.claude),
+                "opencode" => crate::opencode::home(&app.claude),
                 _ => entry.key.home.clone(),
             };
             entry.transcript = entry.key.home.join("sessions/2026/09/10/rollout.jsonl");
@@ -13173,7 +13186,7 @@ mod tests {
         app.pin_folder(folder.clone()).unwrap();
         app.shell = "/bin/sh".into();
         app.fill("an unfinished agent instruction".into());
-        for _ in 0..3 {
+        for _ in harness::launchable() {
             app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         }
         assert!(app.terminal_selected());
@@ -13440,7 +13453,7 @@ mod tests {
 
     #[test]
     fn foreground_launches_keep_selection_and_reuse_their_viewer_when_the_id_changes() {
-        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi, HarnessKind::Opencode] {
             for moved in [false, true] {
                 let d = dir();
                 registry(d.path(), A, d.path().to_str().unwrap(), "idle", 1);
@@ -13526,7 +13539,7 @@ mod tests {
 
     #[test]
     fn stopping_an_owned_foreground_session_closes_its_viewer_before_and_after_native_identity() {
-        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi, HarnessKind::Opencode] {
             for native in [false, true] {
                 let d = dir();
                 let mut app = app(d.path());
@@ -13721,7 +13734,7 @@ mod tests {
 
     #[test]
     fn cancelling_or_failing_a_foreground_launch_removes_its_row_and_restores_the_prompt() {
-        for kind in [HarnessKind::Codex, HarnessKind::Pi] {
+        for kind in [HarnessKind::Codex, HarnessKind::Pi, HarnessKind::Opencode] {
             for failure in ["cancel", "prepare", "spawn"] {
                 let d = dir();
                 let mut app = app(d.path());
@@ -14382,6 +14395,7 @@ mod tests {
         for (prefix, name) in [
             (">_ codex", "codex"),
             ("\u{3c0} pi", "pi"),
+            ("o opencode", "opencode"),
             ("terminal (sh)", "terminal"),
             ("\u{273b} claude", "claude"),
         ] {
@@ -15036,6 +15050,19 @@ mod tests {
             app.viewers.push(open);
             wait_paint(&mut app, 0, "VIEW");
             app.focus = Some(0);
+            if kind == HarnessKind::Opencode {
+                // OpenCode has no verified empty-editor detector.
+                for key in [KeyCode::Tab, KeyCode::Left] {
+                    app.key(key, KeyModifiers::NONE).unwrap();
+                    assert_eq!(app.focus, Some(0));
+                }
+                app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+                assert_eq!(app.focus, None);
+                app.enter().unwrap();
+                assert_eq!(app.focus, Some(0));
+                assert_eq!(app.viewers[0].viewer.pid(), pid);
+                continue;
+            }
             assert!(
                 app.hint_line().to_string().starts_with("tab back"),
                 "{kind}"
@@ -16377,8 +16404,8 @@ mod tests {
                 && at("\n  pane") < at("    pane side")
                 && at("    pane side") < at("\n  activity")
                 && at("\n  activity") < at("    bar count")
-                && at("    bar count") < at("\nharnesses  how claude and codex are run")
-                && at("\nharnesses  how claude and codex are run") < at("    run on Bedrock")
+                && at("    bar count") < at("\nharnesses  models and providers")
+                && at("\nharnesses  models and providers") < at("    run on Bedrock")
                 && at("    run on Bedrock") < at("\n  claude")
                 && at("\n  claude") < at("    alias or model id")
                 && at("    alias or model id") < at("\n  codex ")

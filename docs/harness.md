@@ -11,8 +11,9 @@ cones discovers sessions, reads their reports and chooses native launch and cont
 | Claude Code | `$CLAUDE_CONFIG_DIR`, otherwise `~/.claude` | `sessions/<pid>.json`, maintained by Claude for interactive and background sessions. |
 | Codex | `$CODEX_HOME`, otherwise `.codex` beside the Claude home | Process table, thread writer locks and saved composer threads. Sibling `.codex-*` homes with `config.toml` also supply daemon/history records. |
 | pi | `$PI_CODING_AGENT_DIR`, otherwise `.pi/agent` beside the Claude home | Process table and session files. |
+| OpenCode | `$XDG_DATA_HOME/opencode`, otherwise `~/.local/share/opencode` | Process table; explicit session arguments can identify SQLite conversations. |
 
-A missing native home skips that harness's discovery. Codex and pi processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
+A missing native home skips that harness's discovery. Codex, pi and OpenCode processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
 
 ### Claude Code
 
@@ -52,6 +53,27 @@ pi overwrites its argv with the process title `pi`, reporting no flags or sessio
 
 The session id is the file's first-line `id`, otherwise `pi-<pid>`. A session file appears after the first turn. The row ends when the process exits.
 
+### OpenCode
+
+The [definition](../assets/harnesses/opencode.yaml) excludes service and management commands. Terminal clients appear as `opencode-<pid>` until a leading `--session <id>`, `--session=<id>` or `-s <id>` identifies a saved conversation whose recorded directory matches the process cwd. Multiple clients naming the same session keep separate process rows. `run`, remote attachments, forks and prompt text do not identify local conversations. New composer sessions retain their prompt and viewer through the child pid; their native session id, usage and model remain absent.
+
+OpenCode's normal TUI uses an in-process backend. Joining an arbitrary terminal would require a reported server address, so those rows say `own terminal`. cones does not start a server or install reporting plugins.
+
+The reader uses the standard CLI's `session`, `message` and `part` SQLite tables, verified against OpenCode 1.18.31. It scans `opencode.db` and `opencode-*.db` under the native home. `OPENCODE_DB` selects one database: absolute paths are used directly, relative paths resolve under that home, and `:memory:` has no disk history. Legacy JSON storage is not scanned.
+
+Reads use `sqlite3 -readonly`. Caches include the main database and WAL fingerprints; a write confined to the WAL invalidates them. A checkpointed WAL database with no WAL file is opened as an immutable snapshot, with before/after checks rejecting a concurrent writer. Browsing starts no OpenCode process and performs no migrations.
+
+The native contracts come from the [CLI](https://opencode.ai/docs/cli/), [table schema](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/core/src/session/sql.ts), [database paths](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/core/src/database/database.ts) and [context sidebar](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/tui/src/feature-plugins/sidebar/context.tsx). Tests use the [SQLite fixture](../assets/harnesses/fixtures/opencode.sql) and spend no model tokens.
+
+For an end-to-end check with the real OpenCode binary:
+
+```sh
+cargo build
+python3 scripts/check-opencode.py target/debug/cones /path/to/opencode
+```
+
+The script requires tmux and uses isolated homes with a loopback fixture provider. It exercises composer launch, native response rendering, focus changes, viewer reuse, stopping, transcript preview and resume of the original session id. It makes no real model calls and inherits no credentials. Screens and diagnostics remain in the printed temporary directory. The controller kills and reaps its dashboard and checks that its native viewers exit.
+
 ### Historical sessions
 
 History uses native transcript archives independently of live registries, processes and writer locks.
@@ -61,10 +83,11 @@ History uses native transcript archives independently of live registries, proces
 | Claude | `projects/*/*.jsonl`; exclude nested subagent transcripts and records marked `isSidechain`. |
 | Codex | Rollouts under `sessions/` and `archived_sessions/`; exclude sources identified as subagents. Database names precede the legacy index and transcript prompt. |
 | pi | `sessions/*/*.jsonl`, or the directory named by `PI_CODING_AGENT_SESSION_DIR`. |
+| OpenCode | SQLite sessions with no `parent_id` and a recorded directory. `time_archived` controls archive visibility. |
 
 Identity is harness, canonical native home and session id. Aliases of a home collapse; separate homes stay distinct. Directory symlinks are not followed. Claude copies across project folders collapse to the copy with the latest recorded activity. Entries without a recorded cwd are omitted; missing activity remains absent and sorts last. No file mtime substitutes for a reported timestamp.
 
-Previews select user and assistant text in file order. Claude uses native message content; Codex uses UI `UserMessage` events or legacy `user_message` records plus assistant `response_item` text; pi uses its user/assistant messages. Tool results, thinking and injected instructions are excluded, and terminal control sequences are stripped before display.
+Previews select user and assistant text in native order. Claude uses native message content; Codex uses UI `UserMessage` events or legacy `user_message` records plus assistant `response_item` text; pi uses its user/assistant messages. OpenCode orders messages by creation time and id, and text parts by id, excluding synthetic and ignored parts. Tool results, thinking and injected instructions are excluded, and terminal control sequences are stripped before display.
 
 ### Coordinator identity
 
@@ -85,6 +108,8 @@ The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each s
 | Session cost | Saved statusLine `cost.total_cost_usd`, including reported zero. Finished supervised runs use the [result event](jobs.md#results). | [Calculated estimate](#cost-estimates) from reported usage and cached provider/model prices, prefixed `~`. | Sum valid `usage.cost.total` once per message id, falling back to a [calculated estimate](#cost-estimates) for unpriced responses. Explicitly empty responses may report zero. Gaps make the total `partial`. |
 
 Claude's `<synthetic>` messages are skipped: they represent turns without a model answer and contain zero usage. Before a harness reports usage, counters stay absent. An absent last-activity timestamp is never replaced by process start.
+
+OpenCode uses `session.title` and `session.time_updated` for title and activity. Input sums assistant `tokens.input`, `tokens.cache.read` and `tokens.cache.write`; output sums `tokens.output`. Model is the last assistant's `providerID/modelID`. Context follows the native sidebar: input, output, reasoning and both cache counters on the latest assistant with output. No context window is recorded in these tables. Cost uses `session.cost` when the schema provides it, otherwise per-message costs with gaps marked partial. Last reply is the first line of the latest visible assistant text.
 
 Model names come from the provider catalog recorded by `aws bedrock list-foundation-models`, normalized across regions and revisions. The display drops the redundant Claude prefix: `claude-fable-5-1` becomes Fable 5.1. Known families absent from the catalog are spelled from their ids; unknown families and bare aliases remain verbatim. The [catalog and naming code](../src/fleet.rs) define the mapping.
 
@@ -110,6 +135,7 @@ Calculated costs show `~$…`; known subtotals with gaps also show `partial`. Wh
 | Claude background | The precedence table below, matching Claude Code 2.1.272's own listing. |
 | Codex | Rollout `event_msg`: `task_started` means working, `task_complete` done, `turn_aborted` stopped. New turns replace the prior turn state. Approval waits have no event and remain working; no rollout means `-`. |
 | pi | User or tool-result entry means working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown reasons and no turn give `-`. There is no approval prompt or input state. |
+| OpenCode | `-`. Live busy, retry and idle statuses belong to its backend; saved messages do not establish current state. |
 
 Claude background state uses the first matching rule:
 
@@ -144,6 +170,8 @@ Each timestamped transcript/rollout line contributes one `lines` count. The othe
 | `tools` | `tool_use` blocks. | `function_call`, `custom_tool_call`, `local_shell_call` items. | `toolCall` blocks. |
 | `tokens` | Assistant `output_tokens`. | `last_token_usage.output_tokens` on `token_count` events. | Assistant `usage.output`. |
 
+OpenCode activity charts remain empty; its mutable database rows are not an append-only activity stream.
+
 ## Native actions
 
 A daemon-owned session supports clients that can join and leave without ending the agent. An interactive terminal elsewhere has no such protocol, so cones reports `own terminal`; it neither takes over that tty nor tries a background attach on it. Before signaling an interactive process, cones verifies its program name and native identity.
@@ -151,13 +179,14 @@ A daemon-owned session supports clients that can join and leave without ending t
 | Session or run | Open | What survives viewer closure | Stop or removal |
 | --- | --- | --- | --- |
 | Claude background | `claude attach <short id>` in its cwd. | The daemon-owned session. | `claude rm <short id>` removes the job record but preserves the transcript. A signal alone lets the daemon respawn it; `claude stop` leaves a stopped record. |
-| Claude interactive, standalone Codex, external pi | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
+| Claude interactive, standalone Codex, external pi or OpenCode | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
 | Codex daemon thread | `codex --remote unix://<socket> resume <thread id>`, even with another client attached. | The thread in its daemon. | Forget the saved record, hide the id and close or signal any client on the row. A detached thread has no native stop; it remains resumable. Hiding prevents its held lock from restoring the row after restart. |
 | pi from the composer | Return to its existing viewer; there is no live attach. | Nothing; pi owns that viewer's terminal and ends with it. | Close the owned viewer. |
 | Supervised run in flight | Follow captured output. | The supervised process. | [Terminate its process group](jobs.md#run-lifecycle). |
 | Finished Claude run or Claude history | `claude --bg --resume <session>`, then attach. | A new background session, also visible live. | The original finished-run row can be hidden without deleting its output. History offers no deletion. |
 | Codex history | Unarchive if needed, then native remote resume. | The thread in its daemon. | History offers no deletion. |
 | pi history | `pi --session <transcript>`. | Nothing; its resumed client owns the terminal. | History offers no deletion. |
+| OpenCode composer or history | Return to the owned viewer, or resume history with `opencode --session <id>`. | Nothing; its native client ends with the viewer. | Close the owned viewer. History offers no deletion. |
 
 Historical resume uses the recorded cwd and native home. Claude background conversations remain available in `claude --resume` after removal; forgotten Codex conversations remain in `codex resume`. For shell use, invoke the native binary directly: a Claude alias that appends flags can turn `claude stop <id>` into a new prompt instead of a subcommand.
 
@@ -168,10 +197,11 @@ Historical resume uses the recorded cwd and native home. Claude background conve
 | Claude | `claude --bg -- <instruction>` in the chosen cwd. | Returned short id matched to registry id and folder. An unreported launch expires after 90 seconds. |
 | Codex | Start or find the app-server daemon, then open its remote client with the instruction. | Child pid first. A daemon thread replaces it only when exactly one new thread matches folder, start time and first prompt, with no competing unresolved launch. |
 | pi | `pi -- <instruction>` in the viewer terminal. | Child pid, harness and folder match the process row. A later session-file id preserves that viewer association. |
+| OpenCode | `opencode --prompt=<instruction>` in the viewer terminal. | Child pid, harness and folder match the process row. Saved history remains independently available. |
 
 Codex's daemon start reports `socketPath` and is idempotent. Its remote client does not report an initial thread id, so prompt/cwd/start matching is an association limit. Ambiguous launches retain their own viewer rows; cones never chooses a thread merely because its rollout is newest. Returning to the list before discovery finishes keeps trying on later refreshes. Closing an unidentified client may leave no saved row.
 
-Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. Native session permissions remain harness-owned.
+Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. OpenCode receives `defaults.opencode_model` through `--model`. Native session permissions remain harness-owned.
 
 ### Supervised execution
 
@@ -180,5 +210,6 @@ Model and provider overrides follow [configuration](jobs.md#job-fields-and-defau
 | Claude Code | Execution adapter verifies version `>=2.1, <3` and the compiled flags against native help, then uses the [run contract](jobs.md#what-the-harness-is-told). |
 | Codex | No execution adapter: native enforcement and terminal result reporting remain unverified. |
 | pi | No execution adapter: pi offers no sandbox for the required write policy; terminal result reporting is unverified. |
+| OpenCode | No execution adapter: permission rules do not provide the filesystem and network isolation required by the write policy. Native composer and history sessions keep OpenCode's own permissions. |
 
 Unsupported jobs parse but fail execution validation, including installation. A direct run records the validation failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).
