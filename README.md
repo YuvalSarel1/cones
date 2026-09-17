@@ -21,7 +21,7 @@ Supports Claude Code, Codex and pi sessions. Scheduled jobs currently use Claude
 * **See what is running.** Find sessions grouped by folder, including ones cones did not start. See their state, recent activity and token usage as each harness reports them.
 * **Move between sessions.** Preview output, open supported sessions and return to the dashboard while they keep working.
 * **Schedule recurring work.** Run Claude Code jobs with timeouts and tool permissions, then review their output and cost.
-* **Coordinate agents.** Start the bundled coordinator in a folder to help agents share findings and coordinate changes. It appears alongside the other sessions.
+* **Coordinate agents.** [Start the bundled coordinator](docs/cli.md#coordinator-launch) in a folder to help agents share findings and coordinate changes.
 
 ## Install
 
@@ -51,15 +51,7 @@ cones
 
 To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Shift+Tab` cycles Claude Code, Codex and pi.
 
-| Key | Action |
-| --- | --- |
-| `↑` `↓` | Select a row. |
-| `Enter` | With no instruction typed, open a session, start a job or follow a run's output. |
-| `Tab` | Bounce between the dashboard and the session in the pane. |
-| `Ctrl+Z` | Return from an opened session while it keeps working. |
-| `Esc` | Clear the instruction, or quit the dashboard when it is empty. |
-
-Sessions marked `own terminal` stay in their original terminal. See the [dashboard guide](docs/dashboard.md) for stopping sessions, previews and other controls.
+Press `Enter` again to open your new session. `Ctrl+Z` returns to the list. The [dashboard guide](docs/dashboard.md) covers previews, stopping sessions and other controls.
 
 ### Run a task from the shell
 
@@ -67,7 +59,7 @@ Sessions marked `own terminal` stay in their original terminal. See the [dashboa
 cones run --prompt "Read this repo and summarize its TODOs."
 ```
 
-This runs a supervised Claude Code task in the current directory. With no jobs file, its default policy allows reading only. With a valid jobs file, it uses the first job's policy.
+This runs a supervised Claude Code task in the current directory. See [one-off tasks](docs/cli.md#one-off-tasks) for policy selection.
 
 ### Schedule a task
 
@@ -77,9 +69,14 @@ Adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, setting `cwd` and
 cones run readme-check
 ```
 
-Then open `jobs` in the dashboard menu and save the job. Saving validates the whole file and installs the job's schedule as a launchd LaunchAgent. The [jobs guide](docs/jobs.md) covers timeouts, permissions and what happens when a previous run is still going.
+Then open `jobs` in the dashboard menu and save the job to install its schedule.
 
 ## Documentation
 
-[Dashboard controls](docs/dashboard.md) · [Job configuration](docs/jobs.md) · [Coordinator](docs/coordinator.md) · [Harness support](docs/harness.md) · [CLI reference](docs/cli.md)
-
+| Guide | Contents |
+| --- | --- |
+| [Dashboard](docs/dashboard.md) | Controls and interactions, in screen order. |
+| [Configuration and runs](docs/jobs.md) | All `jobs.yaml` fields, scheduling and run lifecycle. |
+| [Commands](docs/cli.md) | CLI flags, one-off tasks and coordinator launch. |
+| [Harness support](docs/harness.md) | Native sources, reports and capabilities. |
+| [Harness definitions](docs/harness-definitions.md) | The built-in integration schema. |

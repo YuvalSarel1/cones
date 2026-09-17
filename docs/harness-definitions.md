@@ -78,8 +78,6 @@ The `marker` profile recognizes Claude and Codex's prompt marker before a visibl
 
 Start with the reported behavior in [harness.md](harness.md). Change a definition when a command, capability, source location or input profile changes; change its typed handler when the native protocol needs different interpretation. Keep the native report fixtures under `assets/harnesses/fixtures/` and the expected behavior in `src/harness/spec/tests.rs` current together.
 
-A new built-in also needs a `HarnessKind` and a registration in `spec.rs`. Reuse an existing typed strategy where one fits and add a handler for a new protocol; the native-handler validation names the three supported integrations explicitly, so extending it takes evidence and tests for the fourth. User-installed packages are future work, and these embedded definitions are the contract such a package would have to satisfy.
-
-Contract tests cover definition rejection, capabilities, event mappings, process filters, probes, argument boundaries, command sequencing, native-home resolution and all three transcript formats through both history readers, along with canonical aliases, separate homes, partial records, bounded reads, missing counters and ambiguous launches. Viewer and dashboard tests cover empty pi input, populated and multiline drafts, configurable return conditions, modified keys, and return and re-entry with the same process.
+A new built-in also needs a `HarnessKind` and a registration in `spec.rs`. Reuse an existing typed strategy where one fits and add a handler for a new protocol; the native-handler validation names the three supported integrations explicitly, so extending it takes evidence and tests for the fourth.
 
 Give a worktree its own `CARGO_TARGET_DIR` while another checkout is building. A shared target directory can serve a test binary built from that other checkout, so a suite count you read here can come from code you are not looking at.

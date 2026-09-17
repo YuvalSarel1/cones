@@ -1,5 +1,10 @@
 //! PTY-backed viewers rendered through vt100 into the dashboard. Viewer output never
-//! reaches the real terminal directly. See docs/dashboard.md for terminal behavior.
+//! reaches the real terminal directly.
+//!
+//! The vendored vt100 patch lets a scroll region beginning at row zero contribute
+//! history while a fixed prompt occupies the rows below it. Interior regions and
+//! alternate screens add no history. Unscrolled cell access also lets dashboard
+//! layout inspect the live input box without moving the user's history view.
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind},

@@ -134,6 +134,8 @@ pub fn session_args(
 
 /// Check that the installed harness can run a session the dashboard starts, and
 /// say how long that session lives once its viewer is gone.
+/// Never add `--bg` to a Claude help probe: it takes precedence over `--help`
+/// and starts a real background session.
 pub fn leave_and_return(kind: HarnessKind) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())

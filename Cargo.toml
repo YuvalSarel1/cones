@@ -24,7 +24,7 @@ ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 vt100 = "0.16"
 
 [patch.crates-io]
-# Preserve history above fixed prompts and inspect live cells while scrolling. See docs/dashboard.md.
+# Preserve history above fixed prompts and inspect live cells while scrolling. See src/viewer.rs.
 vt100 = { path = "vendor/vt100" }
 
 [dev-dependencies]

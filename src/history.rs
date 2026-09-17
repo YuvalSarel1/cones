@@ -1,5 +1,17 @@
 //! Historical session discovery, separate from fleet polling and dashboard loading.
 //! `Reader` owns a worker and cache; requesting or polling a page performs no file IO.
+//!
+//! Submit a [`Query`] and poll for one [`Page`] at a time. The first request builds
+//! the metadata index; later scans require `refresh`. Snapshot cursors must restart
+//! when a refresh changes the rows. Filtering and exclusions precede pagination.
+//! Native-home aliases return with the page so callers need no path resolution in
+//! their input loop. File mtime, length and inode invalidate cached metadata but
+//! never supply activity timestamps.
+//!
+//! Metadata reads use bounded head and tail windows. Hydration is a separate
+//! request for visible entries: it streams one transcript at a time and caches
+//! only scalar summaries, without per-session activity vectors. This keeps
+//! browsing a large archive independent of full transcript size.
 use crate::{
     codex,
     config::HarnessKind,
@@ -21,7 +33,9 @@ use std::{
     time::SystemTime,
 };
 
+/// Initial head and tail windows, grown independently when identity or activity is missing.
 const WINDOW: u64 = 64 * 1024;
+/// Widening this ceiling recovers metadata at the cost of more IO on each uncached file.
 const MAX_WINDOW: u64 = 1024 * 1024;
 const COLUMN_CACHE: usize = 128;
 pub const MAX_PAGE: usize = 100;

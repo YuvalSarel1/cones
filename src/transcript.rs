@@ -1,4 +1,14 @@
 //! Bounded, read-only conversation previews. No harness clients or shared fleet caches.
+//!
+//! [`Reader`] owns a separate worker and a small snapshot cache invalidated by file
+//! mtime, length and inode. Selection reads a tail window and widens it only when
+//! no conversation text was found. The bounded retries and retained text keep
+//! selection independent of transcript size. Earlier omitted text is marked in
+//! [`Transcript::earlier`].
+//!
+//! Native message selection comes from harness definitions. Codex shares its
+//! user-message extractor without taking the live prompt cache lock. Control
+//! sequences are stripped before text is returned for drawing.
 use crate::harness;
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};

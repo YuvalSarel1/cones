@@ -1,199 +1,170 @@
-# What cones needs from a harness
+# Harness sources and capabilities
 
-Back to the [README](../README.md). What the dashboard shows is in [dashboard.md](dashboard.md), the compiled run in [jobs.md](jobs.md#what-the-harness-is-told), commands in [cli.md](cli.md).
+[README](../README.md) · [Dashboard controls](dashboard.md) · [Configuration and runs](jobs.md) · [Harness definitions](harness-definitions.md)
 
-cones reads harness and operating-system reports without installing session instrumentation. State and usage come from those reports; missing values stay absent. Transcript paths and process-to-session matching have the limitations listed below. This file records sources; the other guides describe controls and configuration.
+cones discovers sessions, reads their reports and chooses native launch and control operations. This guide follows those operations. Missing reports stay absent; state and usage are never estimated from elapsed time or a model name. cones installs no hooks, watchers or background instrumentation inside harness sessions.
 
-Built-in integration data lives in one YAML definition per harness. [Harness definitions](harness-definitions.md) describes the schema, typed native handlers, shared fixtures and viewer input contract.
+## Discovery
 
-| Word | Meaning |
-| --- | --- |
-| reported | The harness or operating system states it; the source is named. |
-| deduced | cones derives it from a rule of thumb. Works today, breaks silently. Listed under [Open](#open). |
-| `-` | Not reported. The column shows `-`, the feature is off. |
-| unknown | Not yet checked for this harness. |
-
-No hooks or background instrumentation are installed in the harnesses. Claude Code keeps a registry of its own sessions, one `~/.claude/sessions/<pid>.json` per live session, interactive or background, written and updated by Claude itself; every dashboard refresh reads that directory, or `$CLAUDE_CONFIG_DIR/sessions` when that variable is set, and fills the rest of the row from the session's transcript under `~/.claude/projects`. No hook runs inside the session and `~/.claude/settings.json` is untouched; if an earlier cones put its hook there, delete the entries whose command ends in ` hook $PPID`, since the binary no longer has that command. Codex keeps no registry: a Codex row is assembled from the process table, the writer lock a process or the app-server daemon holds on a thread, and the rollout file Codex writes under its home once a thread has had its first turn. The dashboard can start and join native Codex sessions; supervised Codex jobs are unavailable. pi keeps no registry either, and states even less: it overwrites its own argv with its process title, so a pi row is the live process plus the session file pi wrote in that process's directory. pi sessions are listed and can be stopped; the composer can start one, which then runs in the dashboard's own viewer, and no pi started anywhere else can be joined.
-
-## Observe
-
-What the dashboard shows for every live session. A value the harness did not write is absent: `-` in a cell, omitted from `cones __ls --json`, never estimated. State and usage are not inferred from settings, model names or elapsed time. File mtimes are used only to narrow transcript attribution scans. A reported model id is shown under the name its provider presents it by, whatever the harness: `claude-fable-5-1` is Fable 5.1, `openai.gpt-6-astra` is GPT-6 Astra, `meta.llama3-3-70b-instruct-v1:0` is Llama 3.3 70B Instruct. The names come from `aws bedrock list-foundation-models`, in the `NAMES` table in `src/fleet.rs`, keyed so that one row answers for every region and revision of an id; regenerate it when a provider ships a model cones should name. A row is kept only when its name beats the id: the vendor word the column already shows is dropped from a Claude name, and a name longer than the id it replaces, or one that spells the id against itself, is left out so the id stands. An id the table does not carry is spelled from its own words when it names a family cones knows, and shown verbatim otherwise, which is where an alias a job writes by hand stays exactly as written. `cones __ls --json` reports the id verbatim.
-
-| Need | Claude Code | Codex | pi |
-| --- | --- | --- | --- |
-| Discover live sessions | reported: `~/.claude/sessions/<pid>.json`, one per session, bg or interactive. `$CLAUDE_CONFIG_DIR` relocates it. | reported: no registry; the process table plus Codex's writer locks. `TZ=UTC ps -axww -o pid=,lstart=,command=` names every live process whose program is `codex` and whose first argument is not a subcommand that runs no session (`app-server`, `mcp-server`, `login`, `update`, `doctor` and the like); the word `codex` inside another command's text is not a process. A thread the app-server daemon holds with no client attached is a `thread-writer-locks/<thread id>.lock` under the Codex home, flocked by the daemon for as long as the thread is loaded; the open files of the daemon and the clients (`proc_pidinfo` per known pid, `lsof` on those files for a pid that refuses it; a whole-system `lsof` cost every refresh hundreds of milliseconds) name the holder, and the daemon's pid is `app-server-daemon/app-server.pid`, counted only while that process runs. Codex before 0.154 has no lock directory; then only threads cones launched itself are known, from `~/.cones/codex-threads.json`. The Codex home is `$CODEX_HOME`, else `.codex` beside the Claude dir; no Codex home means Codex is not installed and the process table is not read. | reported: no registry; the process table alone. `TZ=UTC ps -axww -o pid=,lstart=,command=` names every live process whose program is `pi`. pi sets its process title, so the whole command is that one word and states nothing else: no subcommand, no session id, no flags. A `pi install` or `pi update` is therefore a row until it exits, and the rpc server, which titles itself `pi-rpc`, is not one. The agent home is `$PI_CODING_AGENT_DIR`, else `.pi/agent` beside the Claude dir; no home means pi is not installed and the process table is not read. |
-| Liveness proof | reported: registry `pid` and `procStart`, the process start time as `ps -o lstart` prints it under UTC. cones compares that text with the live process table, so a reused pid is not a session and a gone pid is a crashed one, skipped. An entry marked `spare` is a warm worker Claude's daemon keeps for the next `claude --bg`, not a session anyone started; skipped, as `claude agents` skips it. There is no exited state: when a session ends Claude removes its entry and the row leaves. | reported: the row is the live process; nothing to reconcile. A daemon thread is live while its lock is open in the daemon's file table; a lock file whose holder died is not listed and is not a row, and the file's existence or mtime is never read. | reported: the row is the live process; nothing to reconcile. |
-| Working directory | reported: registry `cwd`. A background job's `cwd` is the launch directory from `~/.claude/jobs/<jobId>/state.json`, the folder `claude agents` files it under; the registry `cwd` follows the session into a worktree when it runs EnterWorktree, and the transcript path follows it too. | reported: the kernel's cwd for each pid (`proc_pidinfo`, what `lsof -d cwd` reads), `lsof` for a pid that refuses it. A lock-held thread with no client: `cwd` in the `threads` table, else the rollout's `session_meta.cwd`. | reported: the kernel's cwd for each pid (`proc_pidinfo`), `lsof` for a pid that refuses it. It also ties a process to its session: pi keeps a directory's sessions under `sessions/--<the path, its leading slash dropped and every `/` and `:` written as `-`>--`. |
-| Session id | reported: registry `sessionId` | reported: the thread id from an explicit `resume <thread id>` argument, else a held writer lock, else the rollout's `session_meta.session_id`; `codex-<pid>` for a process with no thread, so `logs` and `stop` can still name the row. | reported: `id` on the session file's first line, else `pi-<pid>` for a process whose file is not known, so `logs` and `stop` can still name the row. |
-| Kind (background or interactive) | reported: registry `kind`, `bg` for a session Claude's daemon owns and `interactive` otherwise | reported: `daemon` when the thread's writer lock is held by the app-server daemon's pid; a process-table row is `daemon` too when the thread it shows is held by the daemon, else it has no kind and runs in its own terminal. The `source` column of the `threads` table (`vscode`, `cli`, `exec`) names the client that opened it; not shown. | `-`: pi has no daemon and no background mode, so every session is the terminal it was typed in. |
-| State (working, idle, input, done, failed, stopped) | reported, in the order `claude agents --json` derives it for its own rows, read out of Claude Code 2.1.272: a registry `status` of `busy` or `shell` is working, since a new prompt flips the registry at once while a finished job's state.json is rewritten tens of seconds later; then a background job that has stopped taking turns, its state.json `state` of done, failed or stopped with a `tempo` no longer `active` and, for a job that finished well, no `routine`, `selfWake` or `session_cron` in flight to bring it back; then a `tempo` of blocked or a `status` of `waiting`, input. Every other job is working: Claude's own listing never calls a live background job idle. A row with no job of its own, an interactive session, is its registry `status` instead, `idle` between turns; the four words Claude writes there are `busy`, `shell`, `idle` and `waiting`, `shell` counting as working because Claude's own listing prints anything but `idle` and `waiting` as busy, and any other value renders as the word itself rather than the busy that assumes. A row that disagrees with `claude agents` is a drift from 2.1.272 to check. Open: a background job that ended its turn at the prompt and then ran a local command such as `/compact` can sit with state.json `state` working, `tempo` idle, nothing in flight and a registry `status` of idle; `claude agents` calls it working and so does cones, though the pane shows a finished turn (seen 2026-09-16 on 2.1.272). Deciding idle from that combination would be a deduction the lag case above forbids. | reported: the rollout's `event_msg` turn events, `task_started` for working, `task_complete` for done, `turn_aborted` for stopped. These describe the latest turn; the thread remains resumable, and a new turn returns to working. No needs-input event is written there; a turn waiting on an approval reads as working. `-` with no rollout. | reported, from the last message entry: a user ask or a tool result means the model has the turn, so the state is working; an assistant message carries its own `stopReason`, `toolUse` for working, `stop` for idle, `aborted` for stopped, `error` for failed. pi has no approval prompt, so no state reads as input. `-` before the first turn. |
-| Session start | reported: the `timestamp` on the first transcript line that carries one. The registry `startedAt` is not read. | reported: the process start as `ps -o lstart` prints it under UTC. Detached daemon thread rows use `session_meta.timestamp`, falling back to their saved launch time. | reported: the process start as `ps -o lstart` prints it under UTC. The session file's own `timestamp` is not the row's start, since `--continue` reopens an older file. |
-| Last activity | reported: the `timestamp` on the last transcript line that carries one. The registry `updatedAt`, the job's `updatedAt` and file mtimes are not read. | reported: the `timestamp` on the rollout's last line. `-` with no rollout; the process start is not substituted. | reported: the `timestamp` on the file's last entry. `-` with no file; the process start is not substituted. |
-| Activity over time (the `activity` column) | reported: one count per transcript line by its `timestamp`; `messages` are assistant lines with `usage`, once per message id; `tools` are `tool_use` blocks on them; `tokens` their `output_tokens`. A chart of what was written when, never a state. | reported: one count per rollout line by its `timestamp`; `messages` are `response_item` messages with the assistant role, `tools` the `function_call`, `custom_tool_call` and `local_shell_call` items, `tokens` the `last_token_usage.output_tokens` on each `token_count` event. | reported: one count per entry by its `timestamp`; `messages` are assistant entries, `tools` the `toolCall` blocks on them, `tokens` their `usage.output`. |
-| Transcript path | deduced: `projects/<cwd with every non-alphanumeric byte as '-'>/<sessionId>.jsonl`, Claude's internal layout, or the job's `linkScanPath` from state.json when that file is missing. Background jobs report `linkScanPath`; interactive sessions report nothing. | reported, then matched: `~/.codex/sessions/YYYY/MM/DD/rollout-<local start>-<id>.jsonl`, created on the thread's first turn, so a Codex started and not yet asked anything has none. A process states its thread when it holds the thread's writer lock or was started with `resume <thread id>`; that thread's rollout is the `rollout_path` in the `threads` table of `state_*.sqlite`, else the file under `sessions/` whose name ends in `-<id>.jsonl`. Only a process that states neither falls back to the match: the rollout's `session_meta` records `cwd` and a start `timestamp` and no pid, and it is tied to the only live Codex in that cwd that started at or before it, the newest such rollout since `/new` opens another; with two Codex processes in one directory the file could be either's, so neither takes it, and `-` stands. Only rollouts modified since the oldest live Codex started are opened; that mtime prunes the scan and is shown nowhere. | reported, then matched: `<agent dir>/sessions/--<cwd>--/<start>_<id>.jsonl`, created on the first turn, so a pi started and not yet asked anything has none. The process states nothing about its session, so the file is the most recently written one in that process's own directory since the process started, and only while it is the one live pi there; with two the file could be either's, so neither takes it and `-` stands. The file's first line records the directory pi ran in, which must be the process's, since two directories can flatten to one folder name (`/a/b:c` and `/a/b/c`). |
-| Title | reported: transcript `custom-title` (the resume picker's ctrl+r, or `ctrl+n` in `cones`) or a user-set `agent-name` (`/rename`), else `ai-title`, read from the tail; then the job's `name` in state.json, the title `claude agents` shows, or the registry `name`, unless either is just the job's 8-hex id or the session id, which Claude uses until it has a title; then the first line of the user's first instruction in the transcript, so a fresh session is named by what it was asked. | reported: `name`, else `title` (the first prompt), for the id in the `threads` table of `~/.codex/state_*.sqlite` (Codex 0.154; read with `sqlite3`), else `thread_name` in the legacy `session_index.jsonl`, for threads older than Codex's move to sqlite, else the rollout's first `UserMessage`. | reported: `name` on the last `session_info` entry, what `--name` or `/name` set, else the first line of the user's first ask, so a session nobody named is named by what it was asked. |
-| Last reply | reported: state.json `detail` for background jobs, else the first line of the transcript's last assistant text | reported: the rollout's last assistant `response_item` message, its `output_text`. | reported: the last `text` block of the last assistant message. |
-| Tokens in and out | reported: transcript `message.usage`, summed once per message id and recounted when the file grows; input includes cache reads and cache creation. Absent until the first such message. | reported: `token_count.info.total_token_usage` on the rollout's last such event, `input_tokens` (cache reads included, as Codex counts them) and `output_tokens`. Codex reports no cost, so no dollar figure follows. | reported: `usage` on each assistant message, summed. pi keeps the prompt in three counters, `input`, `cacheRead` and `cacheWrite`, and in is their sum; out is `output`. `totalTokens` is not read. |
-| Context tokens at the last turn | reported: the last message's `input_tokens` plus cache creation and cache read, the fields Claude's statusLine `current_usage` carries, on the same message `model` comes from. A message whose model is `<synthetic>` is Claude's placeholder for a turn no model answered (all-zero usage) and is skipped. | reported: `token_count.info.last_token_usage.total_tokens` on the rollout's last such event. | reported: those same three counters on the last assistant message, the figure pi's own status line shows as `W`. |
-| Context window size | reported: `context_window.context_window_size` in the statusLine stdin JSON, the only channel that carries it (transcript, registry, hook payloads and `claude agents --json` have none). That JSON reaches only your statusLine command, so cones reads it from `~/.claude/statusline/<session_id>.json` when that command saves it; add `mkdir -p ~/.claude/statusline && printf '%s' "$input" > ~/.claude/statusline/$(jq -r .session_id <<<"$input").json` after the `input=$(cat)` line. `-` without it, and the cell shows the prompt alone. | reported: `token_count.info.model_context_window` in the rollout. | `-`: pi has each model's window in its catalog and writes it nowhere in the session file. |
-| Cost | `-` for sessions, the transcript records tokens and no price. Reported for cones runs from the result event `total_cost_usd`. | `-`: the rollout records tokens and no price. | reported: `usage.cost.total` summed. pi prices each turn itself and writes 0 for a model it has no price for, every Bedrock model among them; a total of zero shows `-`. |
-| Model | reported: `message.model` on the last transcript message with usage, the bare API id such as `claude-fable-5-1`. | reported: `turn_context.model` on the rollout's last turn, such as `openai.gpt-6-astra`. | reported: `model` on the last assistant message, such as `us.openai.gpt-5.6-sol`. The `model_change` entries are not read. |
-
-## Historical session reader
-
-`history::Reader` reads old sessions independently of the live fleet and `Data::load`. Callers pass explicit Claude, Codex and pi homes, or use `Reader::discover` to resolve the dashboard's homes on the worker, submit a `Query`, and poll for a page. One worker owns the index and cache; submitting and polling perform no filesystem reads. Only one request can be outstanding. The first query indexes the sources; subsequent scans require `refresh: true`. Pages report resolved home aliases so the dashboard can match live identities without resolving paths in its input loop.
-
-Claude discovery reads `projects/*/*.jsonl`, excluding nested subagent files and records marked `isSidechain`. Codex reads rollouts under `sessions` and `archived_sessions`, excluding records whose source is a subagent; database names take precedence over transcript prompts, with the legacy index as a fallback. pi reads `sessions/*/*.jsonl`. Root aliases are canonicalized and directory symlinks are not followed. Identity includes harness, native home and session id, so separate provider homes cannot be confused. Copies of one Claude session under several project folders collapse to the copy with the latest reported activity.
-
-Metadata uses 64 KiB head and tail windows, growing separately to at most 1 MiB when identity or the last timestamp is missing. An identity without a recorded cwd is omitted; an unavailable last timestamp stays absent and sorts last. File mtime, length and inode invalidate cached reads; they never supply activity timestamps. Ordering is newest recorded activity first, then identity for ties. Pages contain at most 100 rows. Cursors belong to a snapshot, and a refresh that changes its rows requires pagination to restart. Filtering and caller-supplied exclusions apply before pagination. The caller supplies live session identities; the reader never reads registries, processes or writer locks.
-
-Measured on this Mac on 2026-09-16 after fixture cleanup: three runs indexed 571 Claude transcripts totaling 1,341,828,202 bytes, about 1.25 GiB. Each fresh reader index read 73,181,556 transcript bytes, about 73.2 MB, and took 996.5 to 1,479.0 ms, with a median of 999.1 ms. Cached refreshes took 7.3 to 7.6 ms, with a median of 7.5 ms, and read zero transcript bytes. These are default debug test build timings, with optimization level 0. Checks before and after each run found no orphaned dashboards or competing compilers; CPU idle samples ranged from 90.2 to 93.2 percent before and 87.9 to 93.3 percent after the runs. The reader cache started empty for each first index; operating-system caches were retained. When widening the windows, weigh the extra metadata recovered against transcript reads; this baseline reads 73.2 MB from 1.25 GiB.
-
-Column hydration is a separate query option. `hydrate_keys` restricts it to viewport entries within a page; only those transcripts are read in full, one at a time, and up to 128 scalar summaries are retained. Claude and Codex reuse their usage parsers; pi uses its per-entry parser. Streaming Claude usage is counted once per message id, synthetic messages are skipped, and unreported counters remain absent. Saved Claude statusline windows are read when available. History retains no per-session activity vectors, does not report live state, and starts no harness clients. Codex archives are excluded by default in the reader API; the dashboard sets `include_archived` and uses the returned `archived` flag to run native unarchive on Enter.
-
-`tests/history.rs` exercises the reader worker over fixture directories without launching a dashboard, including 1.27 GiB of sparse transcript files to check bounded reads. Its ignored `measure_local_claude_archive` test accepts an explicit `CONES_HISTORY_CLAUDE_HOME` and reports the debug-assertion setting, counts, bytes and elapsed time for a fresh reader and cached refresh.
-
-Dashboard fixture controllers use `child_process` in `assets/tui.py`: the controller owns the dashboard as a direct subprocess in a separate process group, sends SIGKILL and waits for it before closing the terminal, on failure and on success. Closing tmux or sending SIGTERM is insufficient after a dashboard loses its controlling terminal. Sweep for orphaned dashboard binaries with parent PID 1 before and after fixture runs; a cargo-only process check misses them. Benchmark only after removing fixture orphans and waiting for competing builds to finish.
-
-Historical selection has an explicitly approved transcript preview. `transcript::Reader` uses a separate worker and a cache of three snapshots, invalidated by file mtime, length and inode. It begins with a 256 KiB tail and grows to at most 4 MiB if that window contains no conversation text; retries can read at most 5.25 MiB plus boundary bytes. The preview retains at most 40 messages and 128 KiB of text and marks omitted earlier text. These limits keep selection independent of full transcript size and of live fleet reads.
-
-The preview reads Claude user/assistant text, Codex UI `UserMessage` events (or the older `user_message` records) and assistant `response_item` text, and pi user/assistant messages, in file order. Codex shares the existing user-message extractor, without taking `prompt_of`'s global cache lock. Tool results, thinking and injected instruction records are not conversation text. Terminal control sequences are stripped before drawing. The preview opens no harness clients and writes no transcripts. Live rows and native viewers during startup keep their viewer-only behavior.
-
-## Kinds
-
-Every row in the dashboard is one of a few kinds of agent. The kind decides four things: whether the row is shown at all, whether `enter` opens it here, whether leaving it keeps it working, and how `ctrl+x` stops it. Each of those is decided by one fact the harness reports, never by a guess, and where the fact says no, cones refuses with the reason in the status line rather than running a command that will fail. The failure that fixed this rule: `enter` on an interactive Claude ran `claude attach`, which knows background jobs only, and Claude answered `No job matching`.
-
-The dashboard opens an agent only when leaving it keeps it working. An agent that is owned by a daemon (Claude's background daemon, Codex's app-server) can be joined and left: the viewer is a client the dashboard keeps running off-screen when Ctrl+Z leaves it, quitting the dashboard closes the client, and the agent goes on either way. An agent that owns a terminal somewhere else (an interactive `claude`, a plain `codex` TUI, a pi started in another terminal) has no client protocol; joining it would mean stealing its tty or stopping it, and a stopped agent does no work, so cones does not open it. pi is the one harness with no daemon, no background mode and no attach at all, so the terminal a composer pi owns is the dashboard's own viewer: Ctrl+Z leaves it working off-screen like the other clients, and since it has nowhere else to live it ends when that viewer or the dashboard does. That is the limit to know before starting one. Every other pi row is somebody else's terminal and `enter` says so. A headless run has no terminal at all; while it runs you follow its log, and once it has finished its session can be resumed as a background session and joined.
-
-Codex 0.154 has an experimental app-server daemon (`codex app-server daemon start`, idempotent, printing its `socketPath`), and its TUI can run as a client of it (`codex --remote unix://<socket> -C <dir>`). The thread then lives in the daemon: leaving the client keeps the thread working, and `codex --remote unix://<socket> resume <thread id>` opens it again. That is how the dashboard's composer starts Codex, so a Codex opened from the dashboard can be left and re-entered like a Claude background session, and a thread the daemon holds is a row whoever opened it. cones also keeps identified composer threads in `~/.cones/codex-threads.json` after a reported turn. Existing saved records remain readable without writer locks. An unidentified launch is not recorded by choosing the newest rollout in its folder.
-
-| Kind | Reported by | Shown | `enter` | Leaving it | `ctrl+x` | Row leaves when |
-| --- | --- | --- | --- | --- | --- | --- |
-| Claude background | registry entry, `kind: bg`; `claude --bg`, `claude agents`, the coordinator, a session started from the dashboard composer | sessions table | `claude attach <short id>` in its cwd | Ctrl+Z leaves the client running inside the dashboard and `enter` returns to it; the client closes when a fourth viewer opens or the dashboard quits, the session keeps working either way | `claude rm <short id>`; a signal is not enough, the daemon respawns a killed worker, and `claude stop` leaves a stopped record in `claude agents` | Claude removes the entry; `claude rm` drops the job record too, the transcript stays, so `claude --resume <session>` still has the conversation |
-| Claude interactive | registry entry, `kind: interactive`; a `claude` typed in a terminal | sessions table, row and footer say `own terminal` | refused: "runs in its own terminal and cannot be joined from here" | n/a | SIGTERM on the registry pid, after `ps` confirms the pid still runs a `claude` binary | Claude removes the entry, or the pid is gone or reused |
-| Claude spare | registry entry, `spare: true`; a warm worker the daemon keeps for the next `--bg` | no, as `claude agents` hides it | | | | |
-| Claude crashed | registry entry whose pid is gone, or whose `ps` start time differs from the entry's `procStart` | no | | | | |
-| Claude headless run, in flight | the cones ledger, `cones run`, status `started` | runs table | follows its log; Ctrl+Z returns to the list | n/a, nothing to leave | SIGTERM to the run's process group; the worker ends its tree the way the timeout does, SIGKILL after a grace period | it finishes |
-| Claude headless run, finished | the cones ledger, a terminal status | runs table | `claude --bg --resume <session>` then `claude attach`, so the resumed session is a Claude background session and appears in the sessions table | Ctrl+Z leaves the client running inside the dashboard and `enter` returns to it; the client closes with `ctrl+x` or the dashboard, never for a fourth viewer, the session keeps working either way | twice hides the row for good, the first press marks the row; the ledger, output and transcript stay, and the run is still in `~/.cones/runs.jsonl` | hidden with `ctrl+x`; its id is a line in `~/.cones/hidden`, delete the line to bring it back |
-| Codex TUI | the process table: a live `codex` whose first argument is not a session-less subcommand. A `--remote … resume <thread id>` client whose thread the daemon does not hold is this kind too; the `resume` argument names its thread, so the row carries that thread's title, state and tokens | sessions table, row and footer say `own terminal` | refused, same message | n/a | SIGTERM on the pid, after `ps` confirms it still runs a `codex` binary | the process exits |
-| Codex daemon thread | `~/.codex/thread-writer-locks/<thread id>.lock` open, per the kernel's file table, in the pid named by `~/.codex/app-server-daemon/app-server.pid`, whoever opened the thread: the dashboard composer, the VS Code extension, another terminal's `--remote`. For a Codex without lock files (before 0.154), `~/.cones/codex-threads.json`, written after a composer thread is identified and reports a turn. `kind: daemon` either way, including a live `--remote … resume <thread id>` client of it, in any terminal: Codex lets several clients share one thread | sessions table, once per thread; a client that explicitly resumes its id can supply the pid | `codex --remote unix://<socket> resume <thread id>` | Ctrl+Z leaves the client running inside the dashboard and `enter` returns to it; the client closes with `ctrl+x` or the dashboard, never for a fourth viewer, and the thread keeps working in the daemon | forgets the record when there is one and closes the dashboard's client; for a client in another terminal it sends SIGTERM to the row's reported pid, so the daemon lets the thread go; the daemon itself has no stop and `codex resume` still has the thread. `ctrl+x` can signal a listed client pid, but nothing stops a detached thread with no client | the daemon releases the lock (the thread is closed or archived) or exits; a recorded thread also leaves when its rollout is gone; a forgotten one comes back only while the daemon still holds it |
-| pi TUI | the process table: a live process whose program is `pi`. pi rewrites its argv with its title, so its subcommands cannot be told apart and a `pi update` is a row until it exits | sessions table, row and footer say `own terminal` | refused, same message | n/a | SIGTERM on the pid, after `ps` confirms it still runs a `pi` binary | the process exits |
-| pi from the composer | an immediate launch row, replaced by the process-table row using the viewer's child pid, harness and folder. Later session-file ids replace the process id without changing the viewer | sessions table, one row through handover | `enter` returns to the viewer cones already holds; pi has no attach, so there is nothing else to open, and once that viewer is closed the row is refused like any other pi | Ctrl+Z leaves the client running inside the dashboard and `enter` returns to it; the client closes with `ctrl+x` or the dashboard, and the pi ends with it | closes its owned viewer; the pi ends with that terminal | the process exits, which quitting the dashboard causes |
-| Codex service processes | `codex app-server`, `mcp-server`, `login`, `update`, `doctor` and the like | no; they run no session | | | | |
-| Subagents | the Agent tool inside a session | no; they run inside their parent's process and the registry has one entry per pid | | | | part of the parent row |
-| Pinned folder | `~/.cones/folders`, one path per line, written when the menu's `folder` prompt takes a directory | sessions table, as its own directory group with one dim row while nothing runs there; a session in the folder takes the group over and the row returns when it leaves | explains: type an instruction, `enter` starts a session there | n/a, nothing runs | twice removes the folder from the dashboard, the first press marks the row; the directory itself is untouched | removed with `ctrl+x`; its line leaves `~/.cones/folders` |
-
-The folder's coordinator is one of the Claude kinds above: background when `cones __coordinator` launched it, interactive when `/start-orchestrator` was typed in a terminal. Its row is marked because the skill's status file names its pid and folder (see [coordinator.md](coordinator.md)); everything else about it follows its kind's row.
-
-`enter` follows the same table: an in-flight run opens its log, a finished run resumes, a Claude background session attaches and a Codex daemon thread opens a remote client. A row with an owned viewer returns to it, including a composer pi. Other interactive terminals are refused.
-
-| Decision | The fact | Not used |
+| Harness | Native home | Live session source |
 | --- | --- | --- |
-| Claude: join or refuse | registry `kind`, `bg` or `interactive` | whether the pid has a controlling tty, the parent process, the entry's `name` |
-| Claude: `claude rm` or SIGTERM | registry `kind`; `bg` belongs to the daemon | the pid alone; a killed daemon worker is respawned |
-| Claude: live or crashed | the pid runs and its `ps` start time equals `procStart` | the entry's `updatedAt`, the transcript's mtime |
-| Codex: join or refuse | the thread's writer lock is held by the daemon's pid, or the thread is one cones recorded | the process command line; a `--remote` client shown in another terminal is joined, not refused, as the daemon takes a second client |
-| Codex: which thread a process runs | its `resume <thread id>` argument, else a held writer lock | the cwd-and-start match, used only for a standalone process that states neither and a rollout with no known writer |
-| Codex: daemon thread live or gone | the lock is open in the daemon's file table | the lock file's existence or mtime, the rollout's mtime, `updated_at` in the threads table |
-| pi: join or refuse | the row's pid is the child pid of a viewer the dashboard launched as pi; that viewer is the join. pi reports no background mode, no daemon and no attach, so every other pi is refused | the pid's tty, and the viewer's title or working directory; a pi in any other terminal cannot be joined |
-| pi: which session a process wrote | the file in the process's own directory written since the process started, while it is the only live pi there | the file's own start, since `--continue` appends to an older file; the folder name alone, since two directories can share one |
-| Run: follow or resume | the ledger's terminal record | the registry; a headless run is not looked up there |
+| Claude Code | `$CLAUDE_CONFIG_DIR`, otherwise `~/.claude` | `sessions/<pid>.json`, maintained by Claude for interactive and background sessions. |
+| Codex | `$CODEX_HOME`, otherwise `.codex` beside the Claude home | Process table, thread writer locks and saved composer threads. Sibling `.codex-*` homes with `config.toml` also supply daemon/history records. |
+| pi | `$PI_CODING_AGENT_DIR`, otherwise `.pi/agent` beside the Claude home | Process table and session files. |
 
-## Composer launches and identity
+A missing native home skips that harness's discovery. Codex and pi processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
 
-The dashboard knows a launch's harness, folder and instruction before the harness reports a session. All three harnesses therefore get an immediate selected row. Its `started` state describes the local launch request; it supplies no estimated model, token count, context or cost. Native reports replace those initial values as they arrive. Command preparation runs off the input thread, and a discovery read started before the launch cannot erase its row.
+### Claude Code
 
-| Behavior | Claude Code | Codex | pi |
+| Fact | Source or rule |
+| --- | --- |
+| Session id and kind | Registry `sessionId` and `kind`: `bg` or `interactive`. |
+| Liveness | Registry `pid` must be alive and its UTC `ps` start must equal `procStart`, preventing pid reuse from identifying a different process. Gone or reused pids are omitted. |
+| Warm workers | `spare: true` entries are omitted, as in Claude's own listing; they are workers awaiting a session. |
+| Directory | Registry `cwd` for interactive sessions. Background rows use `jobs/<jobId>/state.json`'s launch cwd; the registry cwd follows later worktrees and still locates the transcript. |
+| Transcript | `projects/<cwd with non-alphanumeric bytes replaced by '-'>/<sessionId>.jsonl`, then the job's `linkScanPath` if that path is missing. The constructed path depends on Claude's internal layout; interactive sessions supply no native path. |
+| Exit | Claude removes the registry entry. There is no retained exited row. |
+
+Subagents run inside their parent's process and do not get separate registry rows.
+
+### Codex
+
+Codex has no registry. A live `codex` process is a candidate unless its first argument is a service or management subcommand, such as `app-server`, `mcp-server`, `login`, `update` or `doctor`. The [built-in definition](../assets/harnesses/codex.yaml) owns the exclusion list.
+
+| Fact | Source or rule |
+| --- | --- |
+| Thread id | Explicit `resume <thread id>` argument, then a held writer lock, then an unambiguous rollout match. Before identification, the row uses `codex-<pid>`. |
+| Daemon ownership | `thread-writer-locks/<id>.lock` open in the live pid named by `app-server-daemon/app-server.pid`. A client of that thread also has kind `daemon`; several clients share one row. |
+| Daemon liveness | The kernel's open-file table, not a lock file's existence or mtime. Codex before 0.154 lacks writer locks, leaving only cones's saved composer records for detached threads. |
+| Directory | Kernel cwd for a process. Detached threads use `threads.cwd` in `state_*.sqlite`, then rollout `session_meta.cwd`. |
+| Rollout | `threads.rollout_path` in the database, otherwise a file under `sessions/` ending in `-<id>.jsonl`. Rollouts are created on the first turn, so an unused client may have none. |
+| Saved threads | Identified composer threads with a reported turn are recorded in `STATE_DIR/codex-threads.json`, allowing resume after daemon exit. A missing rollout removes the saved row. |
+
+A process that states no thread can take the newest rollout in its cwd that started at or after the process, only when exactly one live Codex process could have written it and no known writer owns it. With two candidates the attribution is omitted. Rollout mtimes only prune the scan; they never supply session activity.
+
+While the local daemon runs, a remote client with no explicit thread id has no separate process row. Its thread appears through the writer lock or saved record. Remote clients never receive a rollout through cwd/start matching.
+
+### pi
+
+pi overwrites its argv with the process title `pi`, reporting no flags or session id. Consequently `pi install` and `pi update` also appear until they exit; filtering them would require guessing. A server titled `pi-rpc` does not match.
+
+The kernel cwd locates `sessions/--<cwd>--/` under the native home: drop the leading slash and replace `/` and `:` with `-`. With exactly one live pi in that cwd, choose its most recently written session file since process start. The file's first-line cwd must also match, because distinct paths can flatten to the same directory name. With multiple processes, attribution is omitted. The file's own start is insufficient because `--continue` appends to an older session.
+
+The session id is the file's first-line `id`, otherwise `pi-<pid>`. A session file appears after the first turn. The row ends when the process exits.
+
+### Historical sessions
+
+History uses native transcript archives independently of live registries, processes and writer locks.
+
+| Harness | Files and exclusions |
+| --- | --- |
+| Claude | `projects/*/*.jsonl`; exclude nested subagent transcripts and records marked `isSidechain`. |
+| Codex | Rollouts under `sessions/` and `archived_sessions/`; exclude sources identified as subagents. Database names precede the legacy index and transcript prompt. |
+| pi | `sessions/*/*.jsonl`. |
+
+Identity is harness, canonical native home and session id. Aliases of a home collapse; separate homes stay distinct. Directory symlinks are not followed. Claude copies across project folders collapse to the copy with the latest recorded activity. Entries without a recorded cwd are omitted; missing activity remains absent and sorts last. No file mtime substitutes for a reported timestamp.
+
+Previews select user and assistant text in file order. Claude uses native message content; Codex uses UI `UserMessage` events or legacy `user_message` records plus assistant `response_item` text; pi uses its user/assistant messages. Tool results, thinking and injected instructions are excluded, and terminal control sequences are stripped before display.
+
+### Coordinator identity
+
+The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each sweep with pid, cwd and peers. Matching both pid and cwd sets `coordinator: true` in session JSON. The title is not used for identification. The [launcher](cli.md#coordinator-launch) starts a background Claude session; a hand-started coordinator can be interactive, and all other behavior follows that native kind.
+
+## Reports
+
+| Value | Claude Code | Codex | pi |
 | --- | --- | --- | --- |
-| Selection and focus | Select the launch row immediately; keep list focus | Same | Same |
-| First identity | Short id returned by `claude --bg`, matched to the registry id and folder | The owned viewer's child pid, matched to a process row when present | The owned viewer's child pid, matched to a process row |
-| Native id handover | Registry row replaces the launch row | A daemon thread may replace the process row without carrying its client pid. The dashboard associates it only when exactly one newly reported daemon thread in the launch folder started after the launch, its rollout first prompt matches the instruction, and exactly one unresolved owned launch matches it | The session-file id can replace `pi-<pid>`; the live viewer remains paired by harness, folder and child pid |
-| Returning to the row | Reuse the existing viewer | Reuse the existing viewer after handover; do not open another remote client | Reuse the existing viewer; no attach protocol exists |
-| No native report yet | Retain the launch row while waiting; expire an unreported background launch after 90 seconds | Keep the row while preparation or its viewer is alive | Same |
-| Input alignment beside the list | Align to the live input's lower rule near the bottom | Keep the dashboard composer at its normal bottom position | Align to the standard editor's lower rule near the bottom; leave the composer in place during a short regular-mode screen |
+| Session start | First transcript timestamp; registry `startedAt` is not read. | Process start; detached threads use rollout `session_meta.timestamp`, then saved launch time. | Process start, since continuing an older file does not start a new process at that file's timestamp. |
+| Last activity | Last transcript timestamp; registry/job `updatedAt` is not used. | Timestamp on the last rollout line. | Timestamp on the last session entry. |
+| Title | Transcript `custom-title` or user-set `agent-name`, then `ai-title`; otherwise background job `name`, registry `name`, then first instruction line. Bare job/session ids do not count as names. Dashboard rename appends `custom-title`. | `threads.name`, then `threads.title` in `state_*.sqlite`, then legacy `session_index.jsonl`'s `thread_name`, then first rollout `UserMessage`. Database reads use `sqlite3`. | Last `session_info.name`, otherwise first instruction line. |
+| Last reply | Background job `detail`, otherwise first line of last assistant text. | Last assistant `response_item` message's `output_text`. | Last `text` block of the last assistant message. |
+| Input/output totals | Transcript `message.usage`, counted once per message id. Input includes cache reads and creation. | Latest `token_count.info.total_token_usage.input_tokens` and `output_tokens`; input includes cache reads. | Sum assistant `usage`: input + cacheRead + cacheWrite for input, output for output. `totalTokens` is not used. |
+| Context tokens | Last real message's input + cache creation + cache read, the same usage fields as statusLine. | Latest `token_count.info.last_token_usage.total_tokens`. | Those same three input counters on the last assistant message, as in pi's status line. |
+| Context window | Saved statusLine payload, described below. | Latest `token_count.info.model_context_window`. | Absent; the catalog's model window is not written in session files. |
+| Model | Last message with usage, `message.model`. | Latest `turn_context.model`. | Last assistant message's `model`; `model_change` entries are not used. |
+| Session cost | Absent: transcripts contain tokens without prices. Supervised run cost comes from the [result event](jobs.md#results). | Absent: rollouts contain tokens without prices. | Sum `usage.cost.total`; zero shows `-`. pi writes zero for models it has not priced, including its Bedrock models. |
 
-Handover preserves the same selected session even when its viewer is focused. It does not select a launch again after the user moves away. Unrelated arrivals still respect typing and viewer focus. Cancellation, preparation failure and spawn failure remove the launch row and restore the original instruction unless the user has started another one.
+Claude's `<synthetic>` messages are skipped: they represent turns without a model answer and contain zero usage. Before a harness reports usage, counters stay absent. An absent last-activity timestamp is never replaced by process start.
 
-Codex's remote client reports no initial thread id. Matching a new daemon row by first prompt, folder and start time is an association limit, not a native client-to-thread identifier. Ambiguous launches retain their own viewer rows rather than choosing the newest thread. A return before discovery completes keeps trying on later refreshes. Only an identified thread with a reported turn is saved; a client closed before identification may leave no saved row.
+Model names come from the provider catalog recorded by `aws bedrock list-foundation-models`, normalized across regions and revisions. The display drops the redundant Claude prefix: `claude-fable-5-1` becomes Fable 5.1. Known families absent from the catalog are spelled from their ids; unknown families and bare aliases remain verbatim. The [catalog and naming code](../src/fleet.rs) define the mapping.
 
-The input alignment distinction follows the clients' layouts. Codex can begin its composer near the top of its screen, so scanning its horizontal rules must not move the dashboard input upward. pi 0.85.1's installed `CustomEditor` extends the bordered editor, and `FooterComponent.render` returns the folder and statistics rows below it, with an optional extension status row. Its default `tuiMode: regular` can also begin high; the experimental fullscreen renderer reserves the editor and footer below the transcript. Alignment therefore considers only the last seven screen rows for Claude and pi. A distant border leaves the composer at the bottom. It reads the emulator's unscrolled cells, so viewing history does not move the input.
+### State
 
-The remaining launch differences follow native capabilities: Claude starts a background session and later attaches; Codex needs a live remote client while connecting to its daemon; pi runs inside the owned terminal and ends with it. External interactive terminals cannot be joined, speculative opening covers a Claude background attach and a resume of a thread the Codex daemon holds, and model, provider, permission and telemetry support remain as documented in the tables here. These differences do not require different row creation, selection or viewer reuse.
+| Harness | State mapping |
+| --- | --- |
+| Claude interactive | Registry `busy` or `shell` means working, `waiting` means input, `idle` means idle. Other words are preserved. |
+| Claude background | The precedence table below, matching Claude Code 2.1.272's own listing. |
+| Codex | Rollout `event_msg`: `task_started` means working, `task_complete` done, `turn_aborted` stopped. New turns replace the prior turn state. Approval waits have no event and remain working; no rollout means `-`. |
+| pi | User or tool-result entry means working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown reasons and no turn give `-`. There is no approval prompt or input state. |
 
-## Control
+Claude background state uses the first matching rule:
 
-What `stop`, `attach`, `logs` and the timeout need.
+| Order | Native report | State and reason |
+| --- | --- | --- |
+| 1 | Registry status `busy` or `shell` | Working. The registry updates for a new prompt before the previous job result catches up. |
+| 2 | Job state `done`, `failed` or `stopped`, with tempo no longer `active` | That terminal state; `done` also requires no routine, self-wake or in-flight `session_cron` that could restart it. |
+| 3 | Tempo `blocked` or registry status `waiting` | Input. |
+| 4 | Any other background job | Working. Claude's listing never labels a live background job idle. |
 
-| Need | Claude Code | Codex | pi |
-| --- | --- | --- | --- |
-| Stop an interactive session | reported: the registry pid. cones checks the process name with `ps` before SIGTERM. cones calls the `claude` binary by path, so a shell alias such as `claude='claude --dangerously-skip-permissions'` does not reach it; typing `claude stop <id>` yourself under that alias turns into a prompt. | reported: the process table pid, checked the same way before SIGTERM. | reported: the process table pid, checked the same way before SIGTERM. |
-| Stop a background session | reported: `claude rm <id>`. The daemon respawns a killed worker, so a signal is not enough; `claude stop` ends the process but `claude agents` keeps the stopped record until `claude rm`. | `-` for a thread the app-server daemon holds: Codex has no stop for it, so `ctrl+x` forgets cones's record, signals a live client on the row and `codex resume` still has the thread. A plain TUI is stopped as an interactive session, above. | `-`: pi has none. Every pi is stopped as an interactive session, above. |
-| Kill a run at the timeout | cones owns it: SIGTERM to the process group, SIGKILL two seconds later | unknown | unknown |
-| Attach to a session | reported: `claude attach <id>` in its cwd, for registry kind `bg`; an `interactive` session is refused, `claude attach` takes background jobs only. Once the process is gone, `claude --bg --resume <session>` then `claude attach`, so Ctrl+Z leaves it and the session keeps running until it is exited or stopped. | reported: `codex --remote unix://<socket> resume <thread id>` for a thread the daemon holds (`kind: daemon`); Codex lets several clients share one thread, so one shown in another terminal is joined too. A plain TUI is refused, it owns its terminal. The dashboard opens the remote client. | `-`: pi has no attach and no client protocol, so the row says `own terminal` and `enter` explains. A composer pi returns to its existing viewer. |
-| Read a session's output | reported: the transcript, see Observe | reported: the rollout, when matched; `cones __logs` reads it. | reported: the matched session file is exposed as `transcript_path`. The current `cones __logs` renderer does not handle pi message entries. |
+A completed turn followed by a local command such as `/compact` may still satisfy rule 4. Treating the pane's quiet prompt as idle would override the native report and misclassify the lag case in rule 1.
 
-## Trigger
+### Context window for Claude
 
-What `cones run` and the coordinator need to launch a harness. The compiled argv is in [jobs.md](jobs.md#what-the-harness-is-told).
+Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
 
-| Need | Claude Code | Codex | pi |
-| --- | --- | --- | --- |
-| Headless run with a prompt | reported: `--print -- <prompt>` | unknown | reported: `--print -- <prompt>` |
-| Streamed events | reported: `--output-format stream-json --verbose`, one JSON object per line | unknown | reported: `--mode json`, one JSON object per line |
-| Result event with cost, usage and session id | reported: the `result` event. A missing `total_cost_usd` fails the run as `missing_cost`. | unknown | unknown: pi prices every turn in its session file, and whether the JSON mode ends with one such record has not been checked |
-| Permission denial as an event | reported: `permission_denials` on the result and a `system` event with subtype `permission_denied`. A sandboxed command the OS refuses raises no event; the sandbox blocks it and the run goes on. | unknown | `-`: pi has no approval prompt to deny |
-| No prompts ever | reported: `--permission-mode dontAsk --permission-prompts none` | unknown | `-`: nothing to turn off |
-| Tool allowlist | reported: `--tools`, `--allowedTools` | unknown | reported: `--tools`, and `--exclude-tools` for a denylist |
-| Read-only or workspace-write sandbox | reported: `--settings` with `sandbox.enabled` and `failIfUnavailable` | unknown | `-` |
-| Turn cap | reported: `--max-turns`, hidden from `--help` and probed by parsing an invalid value. No cones job passes it | unknown | `-` |
-| Dollar budget | reported: `--max-budget-usd`. No cones job passes it: a run is capped by the clock alone, and a cap only one harness could take is a setting the other two would have to refuse | unknown | `-` |
-| Model select | reported: `--model` | unknown | reported: `--model`, with `--provider` for the endpoint |
-| Pinned session id | reported: `--session-id`. A different id in any event ends the run as `session_mismatch`. | unknown | reported: `--session-id` |
-| Session name | reported: `--name` | unknown | reported: `--name` |
-| No user or project settings, no MCP, no slash commands | reported: `--setting-sources ""`, `--strict-mcp-config --mcp-config`, `--disable-slash-commands` | unknown | reported: `--no-extensions --no-skills --no-context-files --no-prompt-templates` |
-| Version and flag probe | reported: `claude --version` against `>=2.1, <3`; every compiled flag against `claude --help` | unknown | reported: `pi --version`, and every flag above is in `pi --help`; no tested range yet |
-| Background session with a skill | reported: `claude --bg --plugin-dir <dir> /<skill>` | unknown | `-`: pi has no background mode |
-| Session in a directory with a first instruction (the dashboard's composer) | reported: `claude --bg` with the instruction in that cwd, resolved from the launch PATH; `--model` from `defaults.model` and `CLAUDE_CODE_USE_BEDROCK` in its environment from `defaults.bedrock` | reported: `codex --remote` with the instruction in that cwd, as a client of the daemon; `-m` from `defaults.codex_model`, and no provider of its own: the daemon keeps the provider of the Codex configuration it started with | reported: `pi` with the instruction after `--` in that cwd, resolved from the launch PATH, as the dashboard's own client. No switch of its own: `defaults.model` is a Claude alias and `bedrock` reaches Claude only, so a composer pi starts on its own configured model. The session lives exactly as long as that viewer, since pi has no daemon and no attach to leave it behind in |
-
-## Open
-
-Claude interactive transcript paths still depend on its internal project-directory layout. Codex and pi also need process-to-file matching when no explicit thread identity is available; ambiguous matches are omitted. These are compatibility limits, covered by fixtures rather than native attribution guarantees.
-
-Supervised Codex execution is unavailable. Its Observe and Control rows were checked against Codex CLI 0.154: a rollout from a real session, a TUI started without a prompt (which writes no rollout until the first turn), `ps` and `lsof` on that process. A process's rollout is the thread it states, the writer lock it holds or its `resume` argument; only a standalone process that states neither is matched by cwd and start time, using rollouts with no known writer, and `-` stands wherever that match is not certain. The Trigger column stays unknown until a real headless run is checked; Codex jobs are parsed and refused at validation ([jobs.md](jobs.md#codex-and-pi)), and the adapter lands when no row is unknown.
-
-Supervised pi execution is unavailable. Its Observe and Control rows were checked against pi 0.85.1: a real session started in a scratch directory, `cones __ls --json` read while it was live, and `ps` on that process. Two of its rows are matched rather than stated, because pi tells the process table nothing: which session file a process wrote, and therefore everything read out of that file. The match holds while one pi runs in a directory and gives up when two do. A pi subcommand that runs no session, `pi install` or `pi update`, cannot be told from a session either, so it is a row with `-` until it exits; a filter would have to guess. The Trigger column names what `pi --help` lists, checked by no cones run, and the `-` row there for a sandbox is why no pi job can be compiled.
-
-While the local app-server daemon runs, a `--remote` viewer with no explicit thread id gets no separate process row. Its session appears through the daemon's writer lock or a saved launch record, so two launches in the same folder produce two rows and closing a viewer leaves its thread visible. Multiple clients explicitly resuming the same id share one row. Remote viewers never receive a rollout by cwd and start time.
-
-## Checking against the live harness
-
-Tests spend no model tokens, so they prove that cones builds the right flags and environment, not that the harness honors them. When a change touches what reaches the harness (a flag, an environment variable, the provider), run the matrix below once, with the owner's go, since it costs money: eight Claude runs came to about 0.23 USD on 2026-09-15.
-
-Write a jobs file in a scratch directory, one job per model alias and provider:
-
-```yaml
-version: 2
-jobs:
-  - name: sonnet-bedrock          # repeat for fable, opus, haiku, and for bedrock: false
-    schedule: "0 9 * * *"
-    harness: claude
-    cwd: .
-    prompt: "Reply with the single word ok and nothing else."
-    model: sonnet
-    bedrock: true
-    aws_profile: claude          # bedrock: true is refused without these two
-    aws_region: us-east-1
-    timeout_min: 3
+```sh
+claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+mkdir -p "$claude_dir/statusline"
+printf '%s' "$input" > "$claude_dir/statusline/$(jq -r .session_id <<<"$input").json"
 ```
 
-The profile and region are the job's own, so nothing has to be exported first; the run still inherits every other `AWS_` variable for the credentials themselves, which for an SSO profile means `aws sso login --profile <name>` has already opened a session. Run each job with `cones run --jobs jobs.yaml --state-dir state <name>`. The proof is in `state/output/<run id>/events.jsonl`: the `init` event's `model` is the id Claude actually started on, a `us.anthropic.` id means Bedrock and a bare `claude-` id means the direct API, and the `result` event carries `total_cost_usd`. `state/runs.jsonl` records the exact arguments and the environment names each run got, so `--model` and `CLAUDE_CODE_USE_BEDROCK` can be read there. On 2026-09-15 every alias answered `ok` on both providers; on Bedrock the `sonnet` alias resolved to Sonnet 4.5 where the direct API gave Sonnet 5, which is Claude Code's mapping, not cones's.
+Without that saved payload, the context cell shows prompt tokens alone. cones does not modify the statusLine command or Claude settings itself.
 
-Codex has no provider switch here. `-c model_provider=` reaches a `codex exec` but not a thread behind the app-server daemon, which is how cones starts every Codex session, so `bedrock` is refused on a Codex job rather than passed and ignored. A Codex model in another region needs a Codex home of its own, whose threads the dashboard lists and joins beside the default home's.
+### Activity
 
-pi is checked the same way, for about a tenth of a cent: start `pi --no-extensions --no-skills --no-context-files` in a scratch directory, ask it to reply with one word, and read `cones __ls --json` while it is still up. The row's `session_id`, `title`, `last`, `model` and tokens must match the session file under `~/.pi/agent/sessions`, and its `state` must be `idle` once the answer lands. On 2026-09-15 it did, on Bedrock, and `cost_usd` was absent because pi priced that model at zero.
+Each timestamped transcript/rollout line contributes one `lines` count. The other [chart metrics](jobs.md#activity) use these events:
 
-Do not probe Claude's flags with `claude --bg <flags> --help`: `--bg` wins and a real idle background session starts. Remove one with `claude rm <id>`.
+| Metric | Claude Code | Codex | pi |
+| --- | --- | --- | --- |
+| `messages` | Assistant lines with usage, once per message id. | Assistant `response_item` messages. | Assistant message entries. |
+| `tools` | `tool_use` blocks. | `function_call`, `custom_tool_call`, `local_shell_call` items. | `toolCall` blocks. |
+| `tokens` | Assistant `output_tokens`. | `last_token_usage.output_tokens` on `token_count` events. | Assistant `usage.output`. |
 
-## Adding a kind or a harness
+## Native actions
 
-A new kind (a Claude worktree agent, a Codex `exec` run, a pi job, another harness) needs an answer in every column of the kinds table before it is a row, and a new harness needs every Observe and Control row `reported` or `-`. Each answer names a reported fact or is `-`. If the harness offers no way to join and leave the agent, the row is shown with `own terminal` and `enter` explains; if the harness offers no safe stop, `ctrl+x` says so. A best-effort join that sometimes works is not an option: it is the failure the Kinds section opened with.
+A daemon-owned session supports clients that can join and leave without ending the agent. An interactive terminal elsewhere has no such protocol, so cones reports `own terminal`; it neither takes over that tty nor tries a background attach on it. Before signaling an interactive process, cones verifies its program name and native identity.
+
+| Session or run | Open | What survives viewer closure | Stop or removal |
+| --- | --- | --- | --- |
+| Claude background | `claude attach <short id>` in its cwd. | The daemon-owned session. | `claude rm <short id>` removes the job record but preserves the transcript. A signal alone lets the daemon respawn it; `claude stop` leaves a stopped record. |
+| Claude interactive, standalone Codex, external pi | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
+| Codex daemon thread | `codex --remote unix://<socket> resume <thread id>`, even with another client attached. | The thread in its daemon. | Forget the saved record, hide the id and close or signal any client on the row. A detached thread has no native stop; it remains resumable. Hiding prevents its held lock from restoring the row after restart. |
+| pi from the composer | Return to its existing viewer; there is no live attach. | Nothing; pi owns that viewer's terminal and ends with it. | Close the owned viewer. |
+| Supervised run in flight | Follow captured output. | The supervised process. | [Terminate its process group](jobs.md#run-lifecycle). |
+| Finished Claude run or Claude history | `claude --bg --resume <session>`, then attach. | A new background session, also visible live. | The original finished-run row can be hidden without deleting its output. History offers no deletion. |
+| Codex history | Unarchive if needed, then native remote resume. | The thread in its daemon. | History offers no deletion. |
+| pi history | `pi --session <transcript>`. | Nothing; its resumed client owns the terminal. | History offers no deletion. |
+
+Historical resume uses the recorded cwd and native home. Claude background conversations remain available in `claude --resume` after removal; forgotten Codex conversations remain in `codex resume`. For shell use, invoke the native binary directly: a Claude alias that appends flags can turn `claude stop <id>` into a new prompt instead of a subcommand.
+
+### Composer identity
+
+| Harness | Launch | Native identity handover |
+| --- | --- | --- |
+| Claude | `claude --bg -- <instruction>` in the chosen cwd. | Returned short id matched to registry id and folder. An unreported launch expires after 90 seconds. |
+| Codex | Start or find the app-server daemon, then open its remote client with the instruction. | Child pid first. A daemon thread replaces it only when exactly one new thread matches folder, start time and first prompt, with no competing unresolved launch. |
+| pi | `pi -- <instruction>` in the viewer terminal. | Child pid, harness and folder match the process row. A later session-file id preserves that viewer association. |
+
+Codex's daemon start reports `socketPath` and is idempotent. Its remote client does not report an initial thread id, so prompt/cwd/start matching is an association limit. Ambiguous launches retain their own viewer rows; cones never chooses a thread merely because its rollout is newest. Returning to the list before discovery finishes keeps trying on later refreshes. Closing an unidentified client may leave no saved row.
+
+Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Native session permissions remain harness-owned.
+
+### Supervised execution
+
+| Harness | Support and reason |
+| --- | --- |
+| Claude Code | Execution adapter verifies version `>=2.1, <3` and the compiled flags against native help, then uses the [run contract](jobs.md#what-the-harness-is-told). |
+| Codex | No execution adapter: native enforcement and terminal result reporting remain unverified. |
+| pi | No execution adapter: pi offers no sandbox for the required write policy; terminal result reporting is unverified. |
+
+Unsupported jobs parse but fail execution validation, including installation. A direct run records the validation failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).

@@ -57,7 +57,7 @@ enum Action {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Runs and live sessions as rows; the harness checks in docs/harness.md read this.
+    /// Runs and live sessions as rows; the JSON format is documented in docs/cli.md.
     #[command(name = "__ls", hide = true)]
     Ls {
         #[arg(long)]

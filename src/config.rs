@@ -183,7 +183,7 @@ pub const DEFAULT_COLUMNS: [&str; 7] = [
     "harness", "state", "context", "activity", "model", "age", "last",
 ];
 
-/// Activity settings; omitted fields use built-ins. See docs/dashboard.md.
+/// Activity settings; omitted fields use built-ins. See docs/jobs.md.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Activity {
