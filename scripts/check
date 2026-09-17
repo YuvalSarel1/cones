@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    echo 'Usage: scripts/check [all|fmt|clippy|test [cargo test arguments...]]'
+    echo 'Defaults to fmt, clippy, and all test targets. Full logs remain in TMPDIR.'
+}
+
+mode=${1:-all}
+if (( $# )); then shift; fi
+case "$mode" in
+    -h|--help) usage; exit 0 ;;
+    all|fmt|clippy)
+        if (( $# )); then usage >&2; exit 2; fi
+        ;;
+    test) ;;
+    *) usage >&2; exit 2 ;;
+esac
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+log_dir=$(mktemp -d "${TMPDIR:-/tmp}/cones-check.XXXXXX")
+export CARGO_TERM_COLOR=never
+printf 'Logs: %s\n' "$log_dir"
+
+run_check() {
+    local name=$1
+    shift
+    local log="$log_dir/$name.log"
+    if "$@" >"$log" 2>&1; then
+        printf '%s: ok\n' "$name"
+        if [[ $name == test ]]; then
+            awk '
+                /^[[:space:]]*Running / {
+                    suite = $0
+                    sub(/^[[:space:]]*Running /, "", suite)
+                    sub(/ \(.*/, "", suite)
+                }
+                /^test result:/ { print "  " suite ": " $0 }
+            ' "$log"
+        fi
+    else
+        local status=$?
+        printf '%s: FAILED (exit %s)\n' "$name" "$status" >&2
+        printf 'Last 80 lines, capped at 12000 bytes:\n' >&2
+        tail -n 80 "$log" | tail -c 12000 >&2
+        printf '\nFull log: %s\n' "$log" >&2
+        exit "$status"
+    fi
+}
+
+case "$mode" in
+    all)
+        run_check fmt cargo fmt --check
+        run_check clippy cargo clippy --all-targets -- -D warnings
+        run_check test cargo test --all-targets
+        ;;
+    fmt) run_check fmt cargo fmt --check ;;
+    clippy) run_check clippy cargo clippy --all-targets -- -D warnings ;;
+    test)
+        if (( $# == 0 )); then set -- --all-targets; fi
+        run_check test cargo test "$@"
+        ;;
+esac
