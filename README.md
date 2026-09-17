@@ -14,7 +14,7 @@ Works with Claude Code, Codex, pi and OpenCode, using their native interfaces.
 
 [Install](#install) · [Quick start](#quick-start) · [Documentation](#documentation)
 
-<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: live sessions grouped by folder, a finished run, and a peek into the selected agent in the pane" width="100%"></a></p>
+<p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="Eleven sessions across Claude Code, Codex, pi and OpenCode, grouped by project, with a native Claude Code preview showing a code change and passing tests" width="100%"></a></p>
 
 ## Work from one place
 

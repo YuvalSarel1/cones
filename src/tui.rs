@@ -1,6 +1,10 @@
 //! Native dashboard; user-facing behavior is documented in docs/dashboard.md.
 //! Run statuses must not reuse `active`, `idle`, `blocked` or `exited`;
 //! shared match arms would sort and render those runs as sessions.
+#[cfg(test)]
+#[path = "../assets/tui_capture.rs"]
+mod readme_capture;
+
 use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
