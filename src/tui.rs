@@ -8763,19 +8763,54 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
 }
 
 fn debug_line(path: &Path, msg: impl std::fmt::Display) {
-    use std::io::Write;
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(
-            f,
-            "{} pid={} {msg}",
-            chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
-            std::process::id()
-        );
+    use fs2::FileExt;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    const MAX_BYTES: usize = 10 * 1024 * 1024;
+    let mut record = format!(
+        "{} pid={} {msg}\n",
+        chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f"),
+        std::process::id()
+    );
+    if record.len() > MAX_BYTES {
+        const END: &str = " [truncated]\n";
+        let mut end = MAX_BYTES - END.len();
+        while !record.is_char_boundary(end) {
+            end -= 1;
+        }
+        record.truncate(end);
+        record.push_str(END);
     }
+    let _ = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)?;
+        // Keep the inode so every dashboard locks the same file, including during compaction.
+        f.lock_exclusive()?;
+        let mut len = f.metadata()?.len();
+        if len.saturating_add(record.len() as u64) > MAX_BYTES as u64 {
+            // Retain recent complete lines, leaving room before the next compaction.
+            let keep = (MAX_BYTES / 2).min(MAX_BYTES - record.len()) as u64;
+            f.seek(SeekFrom::Start(len.saturating_sub(keep)))?;
+            let mut tail = Vec::with_capacity(keep as usize);
+            (&mut f).take(keep).read_to_end(&mut tail)?;
+            let start = tail
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(tail.len(), |i| i + 1);
+            f.set_len(0)?;
+            f.write_all(&tail[start..])?;
+            len = (tail.len() - start) as u64;
+        }
+        // Formatting directly into File splits a record into several writes.
+        // Roll back a short append before another writer can follow its incomplete record.
+        if f.write(record.as_bytes())? != record.len() {
+            f.set_len(len)?;
+        }
+        Ok(())
+    })();
 }
 
 fn term_state() -> String {
