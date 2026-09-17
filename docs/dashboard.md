@@ -98,7 +98,7 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide. `↑ ↓` scroll; `esc`, `enter` or `ctrl+g` close it.
+`help` and `ctrl+g` open the built-in guide. What you type in its prompt narrows it to the keys whose name or description contain the text. `↑ ↓` scroll; `←`, `esc`, `enter` or `ctrl+g` close it.
 
 ## Sessions and runs
 

@@ -938,7 +938,31 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-fn guide(top: usize, columns: u16) -> Paragraph<'static> {
+/// The guide's rows whose key or text contain `find`, with each match's heading kept.
+fn guide_rows(find: &str) -> Vec<&'static (&'static str, &'static str)> {
+    let find = find.trim().to_lowercase();
+    if find.is_empty() {
+        return GUIDE.iter().collect();
+    }
+    let mut rows = vec![];
+    let mut head = None;
+    for entry in GUIDE {
+        let (key, what) = entry;
+        if key.is_empty() {
+            head = Some(entry);
+        } else if key.to_lowercase().contains(&find) || what.to_lowercase().contains(&find) {
+            rows.extend(head.take());
+            rows.push(entry);
+        }
+    }
+    rows
+}
+
+fn guide(top: usize, columns: u16, find: &str) -> Paragraph<'static> {
+    let rows = guide_rows(find);
+    if rows.is_empty() {
+        return Paragraph::new(Line::from(Span::styled("  no key matches", dim())));
+    }
     let width = GUIDE
         .iter()
         .map(|(key, _)| key.chars().count())
@@ -947,7 +971,7 @@ fn guide(top: usize, columns: u16) -> Paragraph<'static> {
     // Wrap what a key does under the key's column, not back at the frame's edge.
     let indent = 2 + width + 2;
     let mut lines = vec![];
-    for (key, what) in GUIDE {
+    for (key, what) in rows {
         if key.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
@@ -4800,8 +4824,8 @@ enum Mode {
     Columns(Box<ColumnsPicker>),
     Folder(Input),
     Rename(Input),
-    /// Wrapped line offset in the usage guide.
-    Guide(usize),
+    /// Wrapped line offset in the usage guide, and the text its rows must contain.
+    Guide(usize, Input),
 }
 
 /// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
@@ -4895,7 +4919,10 @@ const GUIDE: &[(&str, &str)] = &[
         "ctrl+c twice",
         "quit from the list or an agent viewer; a terminal keeps ctrl+c to interrupt commands",
     ),
-    ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
+    (
+        "ctrl+g",
+        "this guide; what you type narrows it to the keys that match, ↑ ↓ scroll, ← or esc closes it",
+    ),
     ("", "Columns"),
     (
         "↑ ↓",
@@ -6038,7 +6065,7 @@ impl App {
             Mode::Columns(_) => "columns",
             Mode::Folder(_) => "folder",
             Mode::Rename(_) => "rename",
-            Mode::Guide(_) => "guide",
+            Mode::Guide(..) => "guide",
         };
         json!({
             "mode": mode,
@@ -7591,7 +7618,7 @@ impl App {
             return None;
         }
         let open = match self.mode {
-            Mode::Guide(_) => Some("help"),
+            Mode::Guide(..) => Some("help"),
             Mode::Config(_) => Some("config"),
             Mode::Columns(_) => Some("columns"),
             Mode::Job(_) => Some("jobs"),
@@ -7611,7 +7638,7 @@ impl App {
         self.jobs_view
             || matches!(
                 self.mode,
-                Mode::Guide(_)
+                Mode::Guide(..)
                     | Mode::Config(_)
                     | Mode::Columns(_)
                     | Mode::Job(_)
@@ -9097,7 +9124,7 @@ impl App {
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
             "columns" => self.open_columns(None),
-            _ => self.mode = Mode::Guide(0),
+            _ => self.mode = Mode::Guide(0, Input::default()),
         }
     }
 
@@ -9694,7 +9721,7 @@ impl App {
             }
             Mode::Columns(form) => form.hints(),
             Mode::Config(form) => form.hints(),
-            Mode::Guide(_) => hints(&[("↑ ↓", "scroll"), ("esc", "back")]),
+            Mode::Guide(..) => hints(&[("↑ ↓", "scroll"), ("← esc", "back")]),
             Mode::Folder(_) => hints(&[
                 ("enter", "add"),
                 ("tab", "complete"),
@@ -10066,7 +10093,7 @@ impl App {
             && mods.is_empty()
             && match &self.mode {
                 Mode::Config(form) => !form.open,
-                Mode::Guide(_) | Mode::Columns(_) => true,
+                Mode::Guide(..) | Mode::Columns(_) => true,
                 _ => false,
             };
         if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
@@ -10104,17 +10131,21 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            Mode::Guide(top) => {
-                let top = *top;
-                match code {
-                    KeyCode::Esc | KeyCode::Enter => self.mode = Mode::Normal,
-                    KeyCode::Char('g') if ctrl => self.mode = Mode::Normal,
-                    KeyCode::Up => self.mode = Mode::Guide(top.saturating_sub(1)),
-                    // Scroll is clamped to entry count, not wrapped line count.
-                    KeyCode::Down => self.mode = Mode::Guide((top + 1).min(GUIDE.len() - 1)),
-                    _ => {}
+            Mode::Guide(top, find) => match code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Left => self.mode = Mode::Normal,
+                KeyCode::Char('g') if ctrl => self.mode = Mode::Normal,
+                KeyCode::Up => *top = top.saturating_sub(1),
+                // Scroll is clamped to entry count, not wrapped line count.
+                KeyCode::Down => {
+                    *top = (*top + 1).min(guide_rows(&find.text).len().saturating_sub(1))
                 }
-            }
+                _ => {
+                    // A narrowed guide starts at its first row again.
+                    if find.key(code, mods) {
+                        *top = 0;
+                    }
+                }
+            },
             Mode::Folder(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
@@ -10325,7 +10356,7 @@ impl App {
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
-                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0),
+                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0, Input::default()),
                     KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
@@ -10549,10 +10580,11 @@ impl App {
                 spans.extend(input.spans("a title for the session"));
                 Line::from(spans)
             }
-            Mode::Guide(_) => Line::from(vec![
-                Span::styled("guide › ", Style::default().fg(ORANGE)),
-                Span::styled("the keys and what they do", dim()),
-            ]),
+            Mode::Guide(_, find) => {
+                let mut spans = vec![Span::styled("guide › ", Style::default().fg(ORANGE))];
+                spans.extend(find.spans("words in a key or what it does"));
+                Line::from(spans)
+            }
             Mode::Normal => self.composer(),
         }
     }
@@ -10610,8 +10642,10 @@ impl App {
             (Mode::Columns(form), _) => form.draw(frame, body),
             (Mode::Job(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Config(form), _) => form.draw(frame, body),
-            (Mode::Guide(top), _) => frame.render_widget(guide(*top, body.width), body),
-            (_, "help") => frame.render_widget(guide(0, body.width), body),
+            (Mode::Guide(top, find), _) => {
+                frame.render_widget(guide(*top, body.width, &find.text), body)
+            }
+            (_, "help") => frame.render_widget(guide(0, body.width, ""), body),
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
             (_, "config") => self.config_form().draw(frame, body),
@@ -10724,8 +10758,8 @@ impl App {
             frame.render_widget(Paragraph::new(lines), list);
         } else if in_pane {
             self.draw_list(frame, list);
-        } else if let Mode::Guide(top) = self.mode {
-            frame.render_widget(guide(top, list.width), list);
+        } else if let Mode::Guide(top, find) = &self.mode {
+            frame.render_widget(guide(*top, list.width, &find.text), list);
         } else if let Mode::Job(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
         } else if let Mode::Config(form) = &mut self.mode {
@@ -11551,7 +11585,7 @@ mod tests {
         let mut app = app(d.path());
         app.split = false;
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(matches!(app.mode, Mode::Guide(0, _)));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = t
@@ -11565,10 +11599,36 @@ mod tests {
             text.contains("Viewers") && text.contains("this guide"),
             "{text}"
         );
-        assert!(text.contains("↑ ↓ scroll · esc back"), "{text}");
+        assert!(text.contains("↑ ↓ scroll · ← esc back"), "{text}");
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(1)));
+        assert!(matches!(app.mode, Mode::Guide(1, _)));
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn the_guides_prompt_narrows_it_and_left_closes_it() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
+        assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
+        for c in "clipboard".chars() {
+            assert!(!app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap());
+        }
+        assert!(matches!(app.mode, Mode::Guide(0, _)), "typing rewinds it");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(text.contains("clipboard"), "{text}");
+        assert!(!text.contains("move between rows"), "no other key: {text}");
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -17003,7 +17063,7 @@ mod tests {
         assert!(pane(&t).contains("guide › the keys"), "{}", pane(&t));
         assert!(left(&t).contains(&A[..8]), "the list stays: {}", left(&t));
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(matches!(app.mode, Mode::Guide(0, _)));
         assert!(app.split_active());
         t.draw(|f| app.draw(f)).unwrap();
         assert!(pane(&t).contains("move between rows"), "{}", pane(&t));
@@ -17014,7 +17074,7 @@ mod tests {
             left(&t)
         );
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(1)));
+        assert!(matches!(app.mode, Mode::Guide(1, _)));
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z leaves the guide");
         t.draw(|f| app.draw(f)).unwrap();
@@ -17024,7 +17084,7 @@ mod tests {
             pane(&t)
         );
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(matches!(app.mode, Mode::Guide(0, _)));
         assert!(!app.split_active(), "shift+enter takes the frame");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(!left(&t).contains(&A[..8]), "{}", left(&t));
@@ -17479,7 +17539,7 @@ mod tests {
         assert_eq!((MENU[app.menu].0, app.caret), ("help", 0));
         app.text.clear();
         app.enter().unwrap();
-        assert!(matches!(app.mode, Mode::Guide(0)));
+        assert!(matches!(app.mode, Mode::Guide(0, _)));
         app.mode = Mode::Normal;
         app.step(1);
         let s = screen(&mut app, &mut t);
