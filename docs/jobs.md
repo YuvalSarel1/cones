@@ -33,7 +33,7 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider` and `opencode_model`. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider`, `opencode_model` and one `<harness>_enabled` switch each. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -55,6 +55,8 @@ A job's policy fields override `defaults` individually. The Default column below
 | `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Rejected on Codex jobs because the daemon keeps its configured provider and ignores a thread's override. Native pi and OpenCode composer sessions ignore this field. |
 | `aws_profile` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_PROFILE` over any imported shell value. |
 | `aws_region` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_REGION`; the chosen region must serve the model. |
+
+`claude_enabled`, `codex_enabled`, `pi_enabled` and `opencode_enabled` are `defaults`-only and unset means offered. `false` takes that harness out of the composer's `shift+tab` cycle and out of the harness the dashboard comes up on, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed and a job that names it still runs it. The config editor's harnesses group carries the same switches and a connectivity row that runs the launch probe for every harness: it looks for the binary on cones's own launch PATH and checks that the installed version takes the flags a dashboard session needs.
 
 Bedrock profile and region must be explicit in the file, on the job or in `defaults`; shell values do not satisfy validation. Claude model aliases resolve through the selected provider, while a full model id must belong to that provider. `opus[1m]` and `sonnet[1m]` explicitly request the million-token window; the bare aliases do not.
 

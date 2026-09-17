@@ -65,6 +65,12 @@ pub struct Policy {
     pub pi_model: Option<String>,
     pub pi_provider: Option<String>,
     pub opencode_model: Option<String>,
+    /// Harnesses the composer offers. Unset is enabled; `false` takes the harness out of
+    /// the composer's cycle, and cones neither starts it nor probes it for a session.
+    pub claude_enabled: Option<bool>,
+    pub codex_enabled: Option<bool>,
+    pub pi_enabled: Option<bool>,
+    pub opencode_enabled: Option<bool>,
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Both must be configured when `bedrock` is true; shell values do not satisfy validation.
@@ -82,6 +88,17 @@ impl Policy {
             HarnessKind::Pi => self.pi_model.as_deref(),
             HarnessKind::Opencode => self.opencode_model.as_deref(),
         }
+    }
+
+    /// A harness no setting mentions is enabled, so an older file offers what it always did.
+    pub fn enabled_for(&self, kind: HarnessKind) -> bool {
+        match kind {
+            HarnessKind::Claude => self.claude_enabled,
+            HarnessKind::Codex => self.codex_enabled,
+            HarnessKind::Pi => self.pi_enabled,
+            HarnessKind::Opencode => self.opencode_enabled,
+        }
+        .unwrap_or(true)
     }
 
     pub fn provider_for(&self, kind: HarnessKind) -> Option<&str> {
@@ -795,6 +812,14 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("pi_model", d.pi_model.clone());
     put("pi_provider", d.pi_provider.clone());
     put("opencode_model", d.opencode_model.clone());
+    for (key, value) in [
+        ("claude_enabled", d.claude_enabled),
+        ("codex_enabled", d.codex_enabled),
+        ("pi_enabled", d.pi_enabled),
+        ("opencode_enabled", d.opencode_enabled),
+    ] {
+        put(key, value.map(|v| v.to_string()));
+    }
     put(
         "codex_full_access",
         d.codex_full_access.map(|v| v.to_string()),
@@ -1542,6 +1567,10 @@ mod tests {
             aws_region: None,
             archive_transcript: Some(true),
             env: Some(vec!["FOO".to_owned()]),
+            claude_enabled: None,
+            codex_enabled: None,
+            pi_enabled: None,
+            opencode_enabled: Some(false),
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(
@@ -1560,7 +1589,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
+            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  opencode_enabled: false\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
             "{text}"
         );
         assert!(
@@ -1573,6 +1602,12 @@ mod tests {
             "the rest is untouched"
         );
         assert_eq!(defaults(&p).overlap, Some(Overlap::Replace));
+        let written = defaults(&p);
+        assert!(!written.enabled_for(HarnessKind::Opencode));
+        assert!(
+            written.enabled_for(HarnessKind::Claude),
+            "unset stays offered"
+        );
         assert!(read_jobs(&p).unwrap()[0].write);
 
         // The defaults are resolved before the file is touched, so a name the sequence

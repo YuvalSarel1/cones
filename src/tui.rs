@@ -2110,7 +2110,7 @@ impl JobForm {
         match self.row {
             JobRow::Ask(Step::When) => true,
             JobRow::Set(i) => match run_field(i).input {
-                Answer::Typed | Answer::Columns => false,
+                Answer::Typed | Answer::Columns | Answer::Check => false,
                 Answer::Number(_) | Answer::Pick(_) => true,
                 Answer::PickOrType(..) => run_field(i).picked(&self.values[i]),
             },
@@ -2622,18 +2622,23 @@ enum Answer {
     Pick(&'static [&'static str]),
     PickOrType(&'static [&'static str], &'static str),
     Columns,
+    /// A row that runs something instead of holding a value.
+    Check,
 }
 
 impl Field {
     fn picks(&self) -> Option<&'static [&'static str]> {
         match self.input {
-            Answer::Typed | Answer::Number(_) | Answer::Columns => None,
+            Answer::Typed | Answer::Number(_) | Answer::Columns | Answer::Check => None,
             Answer::Pick(o) | Answer::PickOrType(o, _) => Some(o),
         }
     }
 
     fn typed(&self) -> bool {
-        !matches!(self.input, Answer::Pick(_) | Answer::Columns)
+        !matches!(
+            self.input,
+            Answer::Pick(_) | Answer::Columns | Answer::Check
+        )
     }
 
     fn step(&self) -> Option<f64> {
@@ -2725,7 +2730,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 31] = [
+const FIELDS: [Field; 36] = [
     Field {
         group: "cones",
         sub: "",
@@ -2855,6 +2860,15 @@ const FIELDS: [Field; 31] = [
     Field {
         group: "harnesses",
         sub: "",
+        name: "check",
+        short: "connectivity",
+        long: "Run the launch probe every harness is given before a session starts: it looks for the binary on cones's own launch PATH, then checks that the installed version takes the flags a dashboard session needs. The answer for each harness replaces this line. Nothing is written and no model is called.",
+        builtin: "",
+        input: Answer::Check,
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
         name: "bedrock",
         short: "run on Bedrock",
         long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi uses its own pi_provider setting. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
@@ -2891,6 +2905,15 @@ const FIELDS: [Field; 31] = [
     Field {
         group: "harnesses",
         sub: "claude",
+        name: "claude_enabled",
+        short: "offer this harness",
+        long: "true offers claude in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
         name: "model",
         short: "alias or model id",
         long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. A [1m] suffix asks for the million-token window, which the bare alias does not: opus starts on 200k. system default passes nothing and Claude's own settings decide.",
@@ -2907,6 +2930,15 @@ const FIELDS: [Field; 31] = [
             ],
             "a model id",
         ),
+    },
+    Field {
+        group: "harnesses",
+        sub: "codex",
+        name: "codex_enabled",
+        short: "offer this harness",
+        long: "true offers codex in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "harnesses",
@@ -2938,6 +2970,15 @@ const FIELDS: [Field; 31] = [
     Field {
         group: "harnesses",
         sub: "pi",
+        name: "pi_enabled",
+        short: "offer this harness",
+        long: "true offers pi in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "pi",
         name: "pi_model",
         short: "model id",
         long: "Passed to pi as --model for sessions the composer starts. Empty follows pi's own model configuration. Pi jobs are unavailable.",
@@ -2952,6 +2993,15 @@ const FIELDS: [Field; 31] = [
         long: "Passed to pi as --provider for sessions the composer starts. Empty follows pi's own provider configuration.",
         builtin: SYSTEM,
         input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "opencode",
+        name: "opencode_enabled",
+        short: "offer this harness",
+        long: "true offers opencode in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "harnesses",
@@ -3283,6 +3333,8 @@ pub struct ConfigForm {
     selected: [usize; 3],
     /// A choice list is separate from text editing; browsing never changes the value.
     choice: Option<usize>,
+    /// What a row that runs something reported, held until the next key.
+    note: Option<String>,
     area: Rect,
     top: usize,
     choice_top: usize,
@@ -3349,6 +3401,11 @@ impl ConfigForm {
                 "pi_model" => d.pi_model.clone().unwrap_or_default(),
                 "pi_provider" => d.pi_provider.clone().unwrap_or_default(),
                 "opencode_model" => d.opencode_model.clone().unwrap_or_default(),
+                "claude_enabled" => flag(d.claude_enabled),
+                "codex_enabled" => flag(d.codex_enabled),
+                "pi_enabled" => flag(d.pi_enabled),
+                "opencode_enabled" => flag(d.opencode_enabled),
+                "check" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -3382,6 +3439,7 @@ impl ConfigForm {
                 FIELDS.iter().position(|f| f.group == GROUPS[i].0).unwrap()
             }),
             choice: None,
+            note: None,
             area: Rect::default(),
             top: 0,
             choice_top: 0,
@@ -3502,6 +3560,10 @@ impl ConfigForm {
             pi_model: text("pi_model"),
             pi_provider: text("pi_provider"),
             opencode_model: text("opencode_model"),
+            claude_enabled: flag("claude_enabled"),
+            codex_enabled: flag("codex_enabled"),
+            pi_enabled: flag("pi_enabled"),
+            opencode_enabled: flag("opencode_enabled"),
             bedrock: flag("bedrock"),
             aws_profile: text("aws_profile"),
             aws_region: text("aws_region"),
@@ -3734,6 +3796,7 @@ impl ConfigForm {
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.error = None;
+        self.note = None;
         if let Some(at) = self.choice {
             let last = self.choices().len().saturating_sub(1);
             let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
@@ -3759,6 +3822,12 @@ impl ConfigForm {
                     return ConfigAction::Columns;
                 }
                 KeyCode::Backspace if matches!(self.field().input, Answer::Columns) => {}
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
+                    if matches!(self.field().input, Answer::Check) =>
+                {
+                    self.note = Some(connectivity());
+                }
+                KeyCode::Backspace if matches!(self.field().input, Answer::Check) => {}
                 KeyCode::Char('[') => self.switch(self.tab().saturating_sub(1)),
                 KeyCode::Char(']') => self.switch((self.tab() + 1).min(GROUPS.len() - 1)),
                 KeyCode::Enter if self.field().picks().is_some() => {
@@ -4045,6 +4114,9 @@ impl ConfigForm {
         if matches!(f.input, Answer::Columns) {
             return vec![Span::styled("open picker…  →", dim())];
         }
+        if matches!(f.input, Answer::Check) {
+            return vec![Span::styled("run the probe…  →", dim())];
+        }
         if i == self.row && self.open {
             let cursor = snap(value, self.cursor);
             let mut start = 0;
@@ -4089,7 +4161,17 @@ impl ConfigForm {
         if let Some(error) = &self.error {
             return Line::from(Span::styled(error.clone(), Style::default().fg(Color::Red)));
         }
+        if let Some(note) = &self.note {
+            return Line::from(Span::styled(note.clone(), plain()));
+        }
         let f = self.field();
+        // A row that runs something has no value, so it has no default to name either.
+        if matches!(f.input, Answer::Check) {
+            return Line::from(vec![
+                Span::styled(format!("{} › ", f.name), lit()),
+                Span::raw(f.long),
+            ]);
+        }
         let default = if f.builtin == SYSTEM {
             "harness default".to_owned()
         } else {
@@ -4130,6 +4212,8 @@ impl ConfigForm {
         let mut keys = vec![("↑↓", "field")];
         if matches!(f.input, Answer::Columns) {
             keys.push(("enter", "picker"));
+        } else if matches!(f.input, Answer::Check) {
+            keys.push(("enter", "run"));
         } else {
             if f.picks().is_some() || f.step().is_some() {
                 keys.push(("←→", "change"));
@@ -4246,6 +4330,25 @@ fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'sta
         lines.push(Line::from(row));
     }
     lines
+}
+
+/// The launch probe for every harness the composer can start, as one line. This is the
+/// check a launch makes, so a harness that answers here starts a session too.
+fn connectivity() -> String {
+    harness::launchable()
+        .iter()
+        .map(|&kind| {
+            let name = kind.to_string();
+            match harness::leave_and_return(kind) {
+                Ok(_) => format!("{name} ok"),
+                Err(e) => format!(
+                    "{name} {}",
+                    format!("{e:#}").trim_start_matches(&format!("{name} "))
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn config_field_visible(row: usize) -> bool {
@@ -5735,7 +5838,7 @@ impl App {
             text: String::new(),
             caret: 0,
             images: Vec::new(),
-            harness: Self::harness_at(Some(start.harness)),
+            harness: Self::harness_at(Some(start.harness), &config::defaults(jobs_path)),
             shell: terminal::default_shell(),
             shell_startup: None,
             terminal_input: Input::default(),
@@ -9005,11 +9108,25 @@ impl App {
             .unwrap_or_else(|| self.cwd.clone())
     }
 
-    fn harness_at(kind: Option<HarnessKind>) -> usize {
-        harness::launchable()
-            .iter()
-            .position(|k| Some(*k) == kind)
-            .unwrap_or(0)
+    /// The composer's slot for a harness, or the first one config still offers when that
+    /// harness is turned off. With none offered the composer comes up on the terminal.
+    fn harness_at(kind: Option<HarnessKind>, policy: &config::Policy) -> usize {
+        let all = harness::launchable();
+        all.iter()
+            .position(|k| Some(*k) == kind && policy.enabled_for(*k))
+            .or_else(|| all.iter().position(|k| policy.enabled_for(*k)))
+            .unwrap_or(all.len())
+    }
+
+    /// shift+tab visits the harnesses config offers and then the terminal, which is always
+    /// reachable even with every harness turned off.
+    fn cycle_harness(&mut self) {
+        let policy = self.session_policy();
+        let all = harness::launchable();
+        self.harness = (1..=all.len() + 1)
+            .map(|step| (self.harness + step) % (all.len() + 1))
+            .find(|&i| i == all.len() || policy.enabled_for(all[i]))
+            .unwrap_or(all.len());
     }
 
     fn session_policy(&self) -> config::Policy {
@@ -10122,7 +10239,10 @@ impl App {
                         } else if self.terminal_selected() && !self.terminal_input.text.is_empty() {
                             self.terminal_input = Input::default();
                         } else if self.terminal_selected() {
-                            self.harness = Self::harness_at(Some(self.data.start.harness));
+                            self.harness = Self::harness_at(
+                                Some(self.data.start.harness),
+                                &self.session_policy(),
+                            );
                         } else if !self.text.is_empty() {
                             self.text.clear();
                             self.images.clear();
@@ -10147,9 +10267,7 @@ impl App {
                         None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
                     },
-                    KeyCode::BackTab => {
-                        self.harness = (self.harness + 1) % (harness::launchable().len() + 1);
-                    }
+                    KeyCode::BackTab => self.cycle_harness(),
                     // With a draft, shift+enter adds a line for either launch type.
                     KeyCode::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
@@ -11083,12 +11201,12 @@ mod tests {
         c.key(KeyCode::Down, none);
         assert_eq!(c.field().name, "activity.bound");
         c.key(KeyCode::Char(']'), none);
-        assert_eq!(c.field().name, "bedrock");
+        assert_eq!(c.field().name, "check");
         c.key(KeyCode::Down, none);
         c.key(KeyCode::Char('['), none);
         assert_eq!(c.field().name, "activity.bound");
         c.key(KeyCode::Char(']'), none);
-        assert_eq!(c.field().name, "aws_profile");
+        assert_eq!(c.field().name, "bedrock");
         c.key(KeyCode::Char(']'), none);
         assert_eq!(c.field().name, "harness");
         c.key(KeyCode::Up, none);
@@ -13741,6 +13859,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_harness_row_turns_it_off_and_the_connectivity_row_answers_for_every_harness() {
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        let none = KeyModifiers::NONE;
+        c.go(field_at("opencode_enabled"));
+        assert!(
+            c.config().unwrap().0.enabled_for(HarnessKind::Opencode),
+            "an untouched row leaves the harness offered"
+        );
+        c.key(KeyCode::Left, none);
+        assert_eq!(c.values[field_at("opencode_enabled")], "false");
+        let saved = c.config().unwrap().0;
+        assert!(!saved.enabled_for(HarnessKind::Opencode));
+        assert!(
+            saved.enabled_for(HarnessKind::Claude),
+            "one harness turned off leaves the others alone"
+        );
+
+        c.go(field_at("check"));
+        assert!(c.line().to_string().contains("launch probe"));
+        c.key(KeyCode::Enter, none);
+        let answer = c.line().to_string();
+        for kind in harness::launchable() {
+            assert!(
+                answer.contains(&kind.to_string()),
+                "{kind} is missing from {answer}"
+            );
+        }
+        assert!(
+            c.values[field_at("check")].is_empty() && c.config().is_ok(),
+            "the probe writes nothing into the file"
+        );
+    }
+
     fn app(dir: &Path) -> App {
         App::new(Path::new("cones"), &dir.join("none.yaml"), dir, dir).unwrap()
     }
@@ -13934,6 +14097,32 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn the_composer_skips_a_harness_config_does_not_offer() {
+        let d = dir();
+        let jobs = d.path().join("jobs.yaml");
+        fs::write(
+            &jobs,
+            "version: 3\ndefaults:\n  claude_enabled: false\n  pi_enabled: false\njobs: []\n",
+        )
+        .unwrap();
+        let mut app = App::new(Path::new("cones"), &jobs, d.path(), d.path()).unwrap();
+        assert_eq!(
+            app.launch_name(),
+            "codex",
+            "start.harness defaults to a harness this file turns off"
+        );
+        let cycle = |app: &mut App| {
+            app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        };
+        cycle(&mut app);
+        assert_eq!(app.launch_name(), "opencode", "pi is skipped");
+        cycle(&mut app);
+        assert!(app.terminal_selected(), "the terminal stays reachable");
+        cycle(&mut app);
+        assert_eq!(app.launch_name(), "codex", "the cycle wraps");
     }
 
     #[test]

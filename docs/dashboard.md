@@ -90,6 +90,7 @@ Each setting occupies one row with its current value. The selected field's expla
 | Numbers | Confirmation time and bar count step by 1, timeout by 5 minutes. Steps stay on their grid and never go below zero; field validation may reject zero. Unset nonnumeric values step from zero. |
 | Text | `enter` or clicking the value starts editing; `enter` accepts and `esc` restores the previous value. Long values scroll within the row to keep the cursor visible. Environment names use commas. Empty values omit overrides. |
 | Columns | `enter`, `→` or space opens the [column picker](#columns). |
+| Connectivity | `enter`, `→` or space runs the launch probe for every harness and answers on the explanation line: the binary on cones's own launch PATH, and whether the installed version takes the flags a dashboard session needs. It writes nothing, and the next key clears the answer. |
 
 Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write restores the preceding value and shows the error.
 
@@ -178,7 +179,7 @@ Typing returns to the live screen. Terminal text selection may need the terminal
 
 ## Composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi, OpenCode and terminal; the prefix names the selection. Identified agent rows show their reported model.
+Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi, OpenCode and terminal; the prefix names the selection. A harness turned off by [`<harness>_enabled`](jobs.md#job-fields-and-defaults) is skipped, including as the harness the dashboard comes up on; the terminal stays reachable with every harness off. Identified agent rows show their reported model.
 
 On `terminal`, type or paste a command and press `enter` to run it in a new interactive shell in that directory and focus its pane. An empty command opens the shell at its prompt. The command field supports the composer's editing keys and `shift+enter` for a new line. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
 
