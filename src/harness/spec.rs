@@ -1190,7 +1190,25 @@ impl HarnessSpec {
     }
 }
 
+/// A variable in an environment as `ps` prints it. Read from the right, because the environment
+/// follows the command line: a prompt that names a variable cannot claim another home.
+fn env_value<'a>(env: &'a str, name: &str) -> Option<&'a str> {
+    env.rsplit(' ')
+        .find_map(|word| word.strip_prefix(name)?.strip_prefix('='))
+        .filter(|value| !value.is_empty())
+}
+
 impl Home {
+    /// The home a process runs against, read from its own environment as `ps` prints it:
+    /// space-separated `NAME=value` pairs after the command line. `None` when that environment
+    /// names no user home, which is how an unreadable environment arrives.
+    pub fn of_process(&self, env: &str) -> Option<PathBuf> {
+        let user = PathBuf::from(env_value(env, "HOME")?);
+        let provided = env_value(env, &spec(HarnessKind::Claude).home.env)
+            .map_or_else(|| user.join(crate::fleet::CLAUDE_DIR), PathBuf::from);
+        Some(self.resolve_with(&provided, &user, env_value(env, &self.env).map(OsStr::new)))
+    }
+
     pub fn resolve(&self, claude: &Path) -> PathBuf {
         // An explicit Claude root is authoritative, including test roots.
         if matches!(self.default, HomeDefault::Provided) {

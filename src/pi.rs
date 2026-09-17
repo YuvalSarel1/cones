@@ -68,11 +68,17 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
     if !pi.is_dir() {
         return Ok(Vec::new());
     }
-    let ps = crate::fleet::process_table(ps)?;
-    let mut procs = processes(&ps);
+    let table = crate::fleet::process_table(ps)?;
+    let mut procs = processes(&table);
     if procs.is_empty() {
         return Ok(Vec::new());
     }
+    let own = crate::fleet::own_home_processes(
+        ps,
+        crate::config::HarnessKind::Pi,
+        &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
+    );
+    procs.retain(|p| own.contains(&p.pid));
     #[cfg(target_os = "macos")]
     for p in &mut procs {
         p.cwd = crate::process_info::cwd(p.pid);

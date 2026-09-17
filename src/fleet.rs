@@ -170,6 +170,10 @@ fn claude() -> String {
     "claude".into()
 }
 
+/// Claude's home directory name under the user's home, which also says where a process with
+/// no override of its own keeps every harness home beside it.
+pub const CLAUDE_DIR: &str = ".claude";
+
 pub fn claude_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os(
         &crate::harness::spec(crate::config::HarnessKind::Claude)
@@ -182,7 +186,7 @@ pub fn claude_dir() -> Result<PathBuf> {
     }
     Ok(dirs::home_dir()
         .context("missing home directory")?
-        .join(".claude"))
+        .join(CLAUDE_DIR))
 }
 
 /// Live registry sessions, oldest first. Skip malformed entries and mismatched pid/start pairs.
@@ -255,6 +259,73 @@ pub fn process_table(ps: &str) -> Result<String> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The pids among `pids` running against a home this fleet reads. Process discovery names a
+/// harness by its program alone, so a client started against another home, such as a capture
+/// fixture's, otherwise arrives as a row with a command line and nothing else: its state, model
+/// and activity live in records under a home cones never opens.
+///
+/// Two `ps` reads cover the listed pids alone, because the whole table with environments is
+/// several times larger and every refresh would read it. macOS prints no environment for a
+/// platform binary or another user's process, and a pid can go between the reads: an unreadable
+/// environment keeps the pid, because a hidden environment must never empty the fleet.
+pub fn own_home_processes(
+    ps: &str,
+    kind: crate::config::HarnessKind,
+    pids: &[u32],
+) -> HashSet<u32> {
+    let home = &crate::harness::spec(kind).home;
+    let Ok(read) = claude_dir().map(|dir| home.all(&dir)) else {
+        return pids.iter().copied().collect();
+    };
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let argv = process_column(ps, &list, "-wwp");
+    let with_environment = process_column(ps, &list, "-wwEp");
+    pids.iter()
+        .copied()
+        .filter(|pid| {
+            with_environment
+                .get(pid)
+                .zip(argv.get(pid))
+                .and_then(|(full, argv)| environment(full, argv))
+                .and_then(|env| home.of_process(env))
+                .is_none_or(|used| read.contains(&used))
+        })
+        .collect()
+}
+
+/// `ps` prints the environment after the command line with no separator of its own, so the
+/// command line read without `-E` is what says where it ends. Reading the environment from the
+/// right of the whole line would let a prompt that names a home variable claim another home.
+fn environment<'a>(with_environment: &'a str, argv: &str) -> Option<&'a str> {
+    with_environment
+        .strip_prefix(argv)
+        .filter(|e| !e.is_empty())
+}
+
+/// pid to the printed column for the listed pids. `ps` exits nonzero when one pid has gone;
+/// the others are still printed, and a missing pid decides nothing.
+fn process_column(ps: &str, list: &str, flags: &str) -> HashMap<u32, String> {
+    if list.is_empty() {
+        return HashMap::new();
+    }
+    let out = Command::new(ps)
+        .args([flags, list, "-o", "pid=,command="])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(' ')?;
+            Some((pid.parse().ok()?, rest.to_owned()))
+        })
+        .collect()
 }
 
 /// Shared parser for the OS command above: pid, UTC lstart, then the complete argv.
@@ -1746,6 +1817,58 @@ mod tests {
             rename(&codex, "x").is_err(),
             "codex threads are named in codex"
         );
+    }
+
+    /// A client started against another home is another fleet's. The README capture starts
+    /// twelve of them, and without this they arrive as rows with a command line and nothing else:
+    /// no state, model or activity, because those records live in a home cones never opens.
+    #[test]
+    fn a_client_in_a_foreign_home_is_not_this_fleet() {
+        let kind = crate::config::HarnessKind::Codex;
+        let home = &crate::harness::spec(kind).home;
+        assert_eq!(
+            home.of_process(
+                "codex -C /tmp/capture/projects/api Deduplicate events \
+                 HOME=/tmp/capture CODEX_HOME=/tmp/capture/.codex TERM=xterm"
+            )
+            .as_deref(),
+            Some(Path::new("/tmp/capture/.codex")),
+            "the home the process names, not this machine's"
+        );
+        // With no override the home sits beside the Claude directory of that process's own home.
+        assert_eq!(
+            home.of_process("codex HOME=/tmp/capture TERM=xterm")
+                .as_deref(),
+            Some(Path::new("/tmp/capture/.codex"))
+        );
+        // A prompt that names the variable cannot claim a home: the command line read without
+        // `-E` says where the environment begins.
+        let argv = "codex -C /tmp/capture CODEX_HOME=/spoofed";
+        assert_eq!(
+            environment(&format!("{argv} HOME=/tmp/capture"), argv)
+                .and_then(|env| home.of_process(env))
+                .as_deref(),
+            Some(Path::new("/tmp/capture/.codex"))
+        );
+        assert_eq!(
+            home.of_process("codex --remote unix:///run/s prompt"),
+            None,
+            "an environment ps did not print names no home"
+        );
+        // Each definition states its own home, so the rule needs no per-harness code.
+        assert_eq!(
+            crate::harness::spec(crate::config::HarnessKind::Opencode)
+                .home
+                .of_process("opencode HOME=/tmp/capture XDG_DATA_HOME=/tmp/capture/xdg")
+                .as_deref(),
+            Some(Path::new("/tmp/capture/xdg/opencode"))
+        );
+        // Against the live table: this process runs against the home this fleet reads, and
+        // launchd is a platform binary whose environment macOS hides. A hidden environment
+        // keeps the process, because it must never empty the fleet.
+        let me = std::process::id();
+        assert!(own_home_processes("/bin/ps", kind, &[me]).contains(&me));
+        assert!(own_home_processes("/bin/ps", kind, &[1]).contains(&1));
     }
 
     // An empty table is how a pid is reported dead, so a table that could not be read must not

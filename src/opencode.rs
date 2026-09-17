@@ -439,6 +439,12 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
         return Ok(Vec::new());
     }
     let mut procs = processes(&fleet::process_table("/bin/ps")?);
+    let own = fleet::own_home_processes(
+        "/bin/ps",
+        HarnessKind::Opencode,
+        &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
+    );
+    procs.retain(|p| own.contains(&p.pid));
     #[cfg(target_os = "macos")]
     for process in &mut procs {
         process.cwd = crate::process_info::cwd(process.pid);
