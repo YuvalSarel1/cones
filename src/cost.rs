@@ -124,6 +124,7 @@ pub fn describe(usd: Option<f64>, info: Option<&Info>) -> Option<String> {
 pub struct Total {
     usd: f64,
     priced: u64,
+    estimated: bool,
     reasons: BTreeMap<String, u64>,
     catalog: Option<CatalogStamp>,
 }
@@ -153,6 +154,7 @@ impl Total {
             Ok(n) if valid(self.usd + n) => {
                 self.usd += n;
                 self.priced += 1;
+                self.estimated = true;
             }
             Ok(_) => self.unknown("invalid_cost"),
             Err(reason) => self.unknown(reason),
@@ -174,7 +176,11 @@ impl Total {
         (
             (self.priced > 0).then_some(self.usd),
             Some(Info {
-                source,
+                source: if self.estimated {
+                    Source::ModelsDev
+                } else {
+                    source
+                },
                 coverage,
                 priced_records: self.priced,
                 unpriced_records: unpriced,

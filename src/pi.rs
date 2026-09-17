@@ -45,7 +45,7 @@ pub struct Tail {
     pub tokens_out: u64,
     /// Latest prompt size: input plus cacheRead and cacheWrite.
     pub context_tokens: Option<u64>,
-    /// `usage.cost.total` summed. pi writes 0 for a model it has no price for.
+    /// Native costs summed, with catalog estimates for unpriced responses when available.
     pub cost_usd: f64,
     pub(crate) costs: crate::cost::Total,
     /// The name `--name` or `/name` set, from the last `session_info` entry.
@@ -153,6 +153,10 @@ pub fn meta(line: &str) -> Option<Meta> {
 
 /// Ignore malformed JSON, including a partially written last line.
 pub fn tail(lines: &str) -> Tail {
+    tail_priced(lines, None)
+}
+
+pub(crate) fn tail_priced(lines: &str, catalog: Option<&crate::cost::Catalog>) -> Tail {
     let mut t = Tail::default();
     let mut cost_ids = HashSet::new();
     for line in lines.lines() {
@@ -194,7 +198,7 @@ pub fn tail(lines: &str) -> Tail {
         }
         let m = &v["message"];
         if m["role"] == "assistant" {
-            observe_cost(&mut t.costs, &mut cost_ids, &v);
+            observe_cost(&mut t.costs, &mut cost_ids, &v, catalog);
             if let Some(model) = m["model"].as_str() {
                 t.model = Some(model.to_owned());
             }
@@ -222,11 +226,12 @@ pub fn tail(lines: &str) -> Tail {
     t
 }
 
-/// Pi writes zero for unpriced models as well as empty responses. Do not claim those tokens were free.
+/// Prefer native costs; Pi also writes zero for unpriced models, whose reported usage can be priced.
 pub(crate) fn observe_cost(
     costs: &mut crate::cost::Total,
     seen: &mut HashSet<String>,
     event: &Value,
+    catalog: Option<&crate::cost::Catalog>,
 ) {
     if event["type"] != "message" || event["message"]["role"] != "assistant" {
         return;
@@ -236,11 +241,43 @@ pub(crate) fn observe_cost(
     {
         return;
     }
-    let usage = &event["message"]["usage"];
+    let message = &event["message"];
+    let usage = &message["usage"];
     let empty = ["input", "output", "cacheRead", "cacheWrite"]
         .iter()
         .all(|k| usage[k].as_u64() == Some(0));
-    costs.reported(usage["cost"]["total"].as_f64(), !empty);
+    if let Some(usd) = usage["cost"]["total"]
+        .as_f64()
+        .filter(|n| crate::cost::valid(*n) && (*n > 0.0 || empty))
+    {
+        costs.reported(Some(usd), false);
+        return;
+    }
+    let (Some(provider), Some(model)) = (message["provider"].as_str(), message["model"].as_str())
+    else {
+        costs.unknown("missing_provider_or_model");
+        return;
+    };
+    let (Some(input), Some(output), Some(cache_read), Some(cache_write)) = (
+        usage["input"].as_u64(),
+        usage["output"].as_u64(),
+        usage["cacheRead"].as_u64(),
+        usage["cacheWrite"].as_u64(),
+    ) else {
+        costs.unknown("missing_counters");
+        return;
+    };
+    costs.estimate(
+        &crate::cost::Usage {
+            provider,
+            model,
+            input,
+            output,
+            cache_read,
+            cache_write,
+        },
+        catalog,
+    );
 }
 
 pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
@@ -343,25 +380,170 @@ fn meta_of(path: &Path) -> Option<Meta> {
     Some(m)
 }
 
-/// Cache by length; recount the whole file when it changes.
+/// Recount when the file or pricing snapshot changes, including catalog arrival and expiry.
 fn tail_of(path: &Path) -> Tail {
-    static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Tail)>>> = Mutex::new(None);
+    let catalog = crate::cost::snapshot();
+    tail_of_priced(path, catalog.as_deref())
+}
+
+fn tail_of_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Tail {
+    type CachedTail = (u64, Tail, Option<crate::cost::CatalogStamp>);
+    static CACHE: Mutex<Option<HashMap<PathBuf, CachedTail>>> = Mutex::new(None);
+    let stamp = catalog.map(|c| c.stamp.clone());
     let len = fs::metadata(path).map_or(0, |m| m.len());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some((_, t)) = cache.get(path).filter(|(seen, _)| *seen == len) {
+    if let Some((_, t, _)) = cache
+        .get(path)
+        .filter(|(seen, _, priced_with)| *seen == len && *priced_with == stamp)
+    {
         return t.clone();
     }
     let t = fs::read_to_string(path)
-        .map(|s| tail(&s))
+        .map(|s| tail_priced(&s, catalog))
         .unwrap_or_default();
-    cache.insert(path.to_owned(), (len, t.clone()));
+    cache.insert(path.to_owned(), (len, t.clone(), stamp));
     t
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use serde_json::json;
+
+    pub(crate) fn unpriced_message(id: &str) -> Value {
+        json!({"type":"message","id":id,"message":{
+            "role":"assistant","provider":"provider","model":"model",
+            "usage":{"input":30,"output":10,"cacheRead":40,"cacheWrite":30,
+                "cost":{"total":0}}
+        }})
+    }
+
+    #[test]
+    fn unpriced_responses_use_their_own_model_caches_and_context_tier_once() {
+        let catalog = crate::cost::tests::fixture();
+        let first = unpriced_message("one");
+        let mut second = unpriced_message("two");
+        second["message"]["usage"]["input"] = json!(31);
+        let mut third = unpriced_message("three");
+        third["message"]["model"] = json!("other_model");
+        third["message"]["usage"]
+            .as_object_mut()
+            .unwrap()
+            .remove("cost");
+        let t = tail_priced(
+            &format!("{first}\n{first}\n{second}\n{third}\n"),
+            Some(&catalog),
+        );
+        let (usd, info) = t.costs.report(crate::cost::Source::Harness);
+        // Ordinary input excludes both caches; the second response crosses the fixture's tier.
+        assert!((usd.unwrap() - (0.00025 + 0.000464 + 0.000105)).abs() < 1e-12);
+        let info = info.unwrap();
+        assert_eq!(info.source, crate::cost::Source::ModelsDev);
+        assert_eq!(info.coverage, crate::cost::Coverage::Complete);
+        assert_eq!(info.priced_records, 3);
+        assert_eq!(info.catalog, Some(catalog.stamp));
+        assert!(crate::cost::display(usd, Some(&info)).starts_with("~$"));
+    }
+
+    #[test]
+    fn native_prices_and_explicit_empty_zero_win_over_catalog_estimates() {
+        let catalog = crate::cost::tests::fixture();
+        let mut reported = unpriced_message("reported");
+        reported["message"]["usage"]["cost"]["total"] = json!(0.2);
+        let mut empty = unpriced_message("empty");
+        for key in ["input", "output", "cacheRead", "cacheWrite"] {
+            empty["message"]["usage"][key] = json!(0);
+        }
+        let native = tail_priced(&format!("{reported}\n{empty}\n"), Some(&catalog));
+        let (usd, info) = native.costs.report(crate::cost::Source::Harness);
+        assert_eq!(usd, Some(0.2));
+        let info = info.unwrap();
+        assert_eq!(info.source, crate::cost::Source::Harness);
+        assert_eq!(info.priced_records, 2);
+        assert_eq!(info.catalog, None);
+        assert_eq!(crate::cost::display(usd, Some(&info)), "$0.20");
+
+        let estimate = unpriced_message("estimated");
+        let mixed = tail_priced(
+            &format!("{reported}\n{empty}\n{estimate}\n"),
+            Some(&catalog),
+        );
+        let (usd, info) = mixed.costs.report(crate::cost::Source::Harness);
+        assert!((usd.unwrap() - 0.20025).abs() < 1e-12);
+        assert_eq!(info.unwrap().source, crate::cost::Source::ModelsDev);
+    }
+
+    #[test]
+    fn incomplete_or_unknown_pi_usage_keeps_the_subtotal_partial() {
+        let catalog = crate::cost::tests::fixture();
+        let priced = unpriced_message("priced");
+        let missing = unpriced_message("missing");
+        let mut cases = Vec::new();
+        for key in ["provider", "model"] {
+            let mut event = missing.clone();
+            event["message"].as_object_mut().unwrap().remove(key);
+            cases.push((event, "missing_provider_or_model"));
+        }
+        for key in ["input", "output", "cacheRead", "cacheWrite"] {
+            let mut event = missing.clone();
+            event["message"]["usage"]
+                .as_object_mut()
+                .unwrap()
+                .remove(key);
+            cases.push((event, "missing_counters"));
+        }
+        for (model, reason) in [
+            ("unknown", "unknown_provider_or_model"),
+            ("missing-cache", "missing_rate"),
+            ("free-or-unknown", "unpriced_model"),
+        ] {
+            let mut event = missing.clone();
+            event["message"]["model"] = json!(model);
+            cases.push((event, reason));
+        }
+        for (event, reason) in cases {
+            let t = tail_priced(&format!("{priced}\n{event}\n"), Some(&catalog));
+            let (usd, info) = t.costs.report(crate::cost::Source::Harness);
+            assert!((usd.unwrap() - 0.00025).abs() < 1e-12);
+            let info = info.unwrap();
+            assert_eq!(info.coverage, crate::cost::Coverage::Partial);
+            assert_eq!(info.unpriced_reasons.get(reason), Some(&1));
+            assert!(crate::cost::display(usd, Some(&info)).ends_with(" partial"));
+            assert!(
+                tail_priced(&event.to_string(), Some(&catalog))
+                    .costs
+                    .report(crate::cost::Source::Harness)
+                    .0
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn cached_pi_cost_replays_on_catalog_arrival_refresh_and_expiry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        fs::write(&path, format!("{}\n", unpriced_message("one"))).unwrap();
+        let mut catalog = crate::cost::tests::fixture();
+        let report = |catalog: Option<&crate::cost::Catalog>| {
+            tail_of_priced(&path, catalog)
+                .costs
+                .report(crate::cost::Source::Harness)
+        };
+        let (usd, info) = report(None);
+        assert!(usd.is_none());
+        assert_eq!(info.unwrap().unpriced_reasons["catalog_unavailable"], 1);
+        let (usd, info) = report(Some(&catalog));
+        assert!((usd.unwrap() - 0.00025).abs() < 1e-12);
+        assert_eq!(info.unwrap().catalog, Some(catalog.stamp.clone()));
+        catalog.stamp.fetched_at += chrono::Duration::seconds(1);
+        assert_eq!(
+            report(Some(&catalog)).1.unwrap().catalog,
+            Some(catalog.stamp.clone())
+        );
+        assert!(report(None).0.is_none());
+    }
 
     const SESSION: &str = r#"{"type":"session","version":3,"id":"01a0393e-ad43","timestamp":"2026-08-25T14:06:44.035Z","cwd":"/src/one"}
 {"type":"model_change","timestamp":"2026-08-25T14:06:44.050Z","provider":"amazon-bedrock","modelId":"us.openai.gpt-5.6-sol"}

@@ -515,7 +515,7 @@ impl Cache {
         if let Some(c) = self.columns.get_mut(&e.transcript)
             && c.stamp == current
             && c.statusline == status_stamp
-            && (e.key.harness != "codex" || c.pricing == pricing)
+            && (spec.transcript.handler == Native::Claude || c.pricing == pricing)
         {
             c.used = self.used;
             stats.column_cache_hits += 1;
@@ -524,7 +524,7 @@ impl Cache {
         let mut columns = match spec.transcript.handler {
             Native::Claude => fleet::history_columns(&e.transcript)?,
             Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
-            Native::Pi => pi_columns(&e.transcript)?,
+            Native::Pi => pi_columns(&e.transcript, catalog.as_deref())?,
         };
         if status_stamp.is_some() {
             let mut bytes = Vec::new();
@@ -786,7 +786,7 @@ fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> 
     })
 }
 
-fn pi_columns(path: &Path) -> Result<Columns> {
+fn pi_columns(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Columns> {
     let mut out = Columns::default();
     let mut name = None;
     let mut costs = crate::cost::Total::default();
@@ -796,7 +796,7 @@ fn pi_columns(path: &Path) -> Result<Columns> {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        pi::observe_cost(&mut costs, &mut cost_ids, &v);
+        pi::observe_cost(&mut costs, &mut cost_ids, &v, catalog);
         let tail = pi::tail(&line);
         name = tail.name.or(name);
         out.title = out.title.or(tail.prompt);
@@ -860,7 +860,7 @@ mod tests {
         let unpriced = message("two", 0.0);
         let text = format!("{priced}\n{priced}\n{unpriced}\n");
         fs::write(&path, &text).unwrap();
-        let history = pi_columns(&path).unwrap();
+        let history = pi_columns(&path, None).unwrap();
         let live = pi::tail(&text);
         assert_eq!(history.cost_usd, Some(0.2));
         assert_eq!(
@@ -872,7 +872,35 @@ mod tests {
             live.costs.report(crate::cost::Source::Harness)
         );
         fs::write(&path, format!("{unpriced}\n")).unwrap();
-        assert!(pi_columns(&path).unwrap().cost_usd.is_none());
+        assert!(pi_columns(&path, None).unwrap().cost_usd.is_none());
+    }
+
+    #[test]
+    fn pi_history_and_live_share_native_prices_fallbacks_and_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let catalog = crate::cost::tests::fixture();
+        let estimated = pi::tests::unpriced_message("estimated");
+        let mut native = pi::tests::unpriced_message("native");
+        native["message"]["usage"]["cost"]["total"] = json!(0.2);
+        let mut unknown = pi::tests::unpriced_message("unknown");
+        unknown["message"]["model"] = json!("not-in-catalog");
+        let text = format!("{estimated}\n{estimated}\n{native}\n{unknown}\n");
+        fs::write(&path, &text).unwrap();
+        for catalog in [Some(&catalog), None] {
+            let history = pi_columns(&path, catalog).unwrap();
+            let live = pi::tail_priced(&text, catalog);
+            assert_eq!(
+                (history.cost_usd, history.cost_info),
+                live.costs.report(crate::cost::Source::Harness)
+            );
+        }
+        let columns = pi_columns(&path, Some(&catalog)).unwrap();
+        assert!((columns.cost_usd.unwrap() - 0.20025).abs() < 1e-12);
+        let info = columns.cost_info.unwrap();
+        assert_eq!(info.source, crate::cost::Source::ModelsDev);
+        assert_eq!(info.coverage, crate::cost::Coverage::Partial);
+        assert_eq!((info.priced_records, info.unpriced_records), (2, 1));
     }
 
     fn history_entry(harness: HarnessKind, records: &[Value]) -> Entry {
@@ -945,7 +973,7 @@ mod tests {
                 let columns = if kind == HarnessKind::Claude {
                     fleet::history_columns(&path).unwrap()
                 } else {
-                    pi_columns(&path).unwrap()
+                    pi_columns(&path, None).unwrap()
                 };
                 assert_eq!(
                     columns.title.as_deref(),

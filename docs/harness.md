@@ -82,7 +82,7 @@ The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each s
 | Context tokens | Last real message's input + cache creation + cache read, the same usage fields as statusLine. | Latest `token_count.info.last_token_usage.total_tokens`. | Those same three input counters on the last assistant message, as in pi's status line. |
 | Context window | Saved statusLine payload, described below. | Latest `token_count.info.model_context_window`. | Absent; the catalog's model window is not written in session files. |
 | Model | Last message with usage, `message.model`. | Latest `turn_context.model`. | Last assistant message's `model`; `model_change` entries are not used. |
-| Session cost | Saved statusLine `cost.total_cost_usd`, including reported zero. Finished supervised runs use the [result event](jobs.md#results). | [Calculated estimate](#cost-estimates) from reported usage and cached provider/model prices, prefixed `~`. | Sum valid `usage.cost.total` once per message id. Zero with consumed or unreported tokens is unpriced; explicitly empty responses may report zero. Gaps make the total `partial`. |
+| Session cost | Saved statusLine `cost.total_cost_usd`, including reported zero. Finished supervised runs use the [result event](jobs.md#results). | [Calculated estimate](#cost-estimates) from reported usage and cached provider/model prices, prefixed `~`. | Sum valid `usage.cost.total` once per message id, falling back to a [calculated estimate](#cost-estimates) for unpriced responses. Explicitly empty responses may report zero. Gaps make the total `partial`. |
 
 Claude's `<synthetic>` messages are skipped: they represent turns without a model answer and contain zero usage. Before a harness reports usage, counters stay absent. An absent last-activity timestamp is never replaced by process start.
 
@@ -91,6 +91,8 @@ Model names come from the provider catalog recorded by `aws bedrock list-foundat
 ### Cost estimates
 
 Agent and history rows share accounting. Claude's saved total is used directly; pi's per-response totals are summed. These are harness estimates. A finished run retains its terminal ledger cost when the native session later resumes.
+
+Pi writes zero costs for custom models without configured prices. When a response lacks a valid native cost, cones prices its reported provider, model, input, output, cache reads and cache writes using the catalog. All four token counters are required and remain separate. Native costs take precedence, including zero for explicitly empty responses. A total containing any catalog estimate is prefixed `~`, including totals that also contain native costs.
 
 Codex's native reader uses the reported provider, model and request usage. It separates ordinary input, cache reads, cache writes and output; reasoning is already included in output. Requests are priced at their own model and input size before summing. Repeated cumulative updates count once. Missing requests, counters, models or rates make the estimate incomplete. Reported nonstandard service tiers stay unpriced.
 
