@@ -423,7 +423,7 @@ impl Data {
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
                         (
                             if has_harness {
-                                logo(&h)
+                                logo_cell(&h)
                             } else {
                                 mark(&h).into()
                             },
@@ -531,7 +531,7 @@ impl Data {
                     let harness = if h.is_empty() {
                         "-".into()
                     } else if set.iter().any(|c| c == "harness") {
-                        logo(&h)
+                        logo_cell(&h)
                     } else {
                         mark(&h).into()
                     };
@@ -968,7 +968,7 @@ fn session_cells(
     branch: Option<&str>,
 ) -> Vec<(String, Style)> {
     let harness = if set.iter().any(|c| c == "harness") {
-        logo(&s.harness)
+        logo_cell(&s.harness)
     } else {
         mark(&s.harness).into()
     };
@@ -1408,6 +1408,18 @@ fn logo(harness: &str) -> String {
         || harness.to_owned(),
         |spec| format!("{} {harness}", spec.icon),
     )
+}
+
+/// A logo for a stacked table cell: a one-cell mark is padded so every name
+/// starts in the column codex's two-cell `>_` sets. ponytail: two cells is the
+/// widest mark shipped, widen it when a harness defines a wider icon.
+fn logo_cell(harness: &str) -> String {
+    let mark = mark(harness);
+    if logo(harness) == harness {
+        return harness.to_owned();
+    }
+    let pad = " ".repeat(2usize.saturating_sub(Span::raw(mark).width()));
+    format!("{mark}{pad} {harness}")
 }
 
 /// Prefix on the coordinator's title, which is also drawn in orange.
@@ -9507,7 +9519,7 @@ mod tests {
             "without the harness column the mark stays and the name goes"
         );
         data.columns = vec!["harness".into()];
-        assert_eq!(row(&data, "aaaa-worker").cells[1].0.trim(), "✻ claude");
+        assert_eq!(row(&data, "aaaa-worker").cells[1].0.trim(), "✻  claude");
     }
 
     #[test]
@@ -14199,6 +14211,20 @@ mod tests {
     }
 
     #[test]
+    fn harness_names_start_in_the_same_column_whatever_the_mark_is() {
+        let start = |harness: &str| {
+            let cell = logo_cell(harness);
+            let name = cell.find(harness).expect("the cell names the harness");
+            Span::raw(&cell[..name]).width()
+        };
+        assert_eq!(start("codex"), 3, "a two-cell mark and one space");
+        assert_eq!(start("claude"), start("codex"));
+        assert_eq!(start("pi"), start("codex"));
+        assert_eq!(start("terminal"), start("codex"));
+        assert_eq!(logo_cell("nosuch"), "nosuch", "no mark, nothing to pad");
+    }
+
+    #[test]
     fn run_columns_keep_icons_and_use_reported_values_for_live_and_finished_runs() {
         use crate::ledger::{Record, Status};
         let d = dir();
@@ -14273,7 +14299,7 @@ mod tests {
         let texts: Vec<&str> = finished.cells.iter().map(|c| c.0.trim()).collect();
         assert_eq!(
             &texts[1..],
-            ["✻ claude", "ok", "fixture-job", "74s", "$0.21"]
+            ["✻  claude", "ok", "fixture-job", "74s", "$0.21"]
         );
         data.run_columns.clear();
         assert_eq!(
