@@ -105,6 +105,9 @@ for editing before announcing; record the owner and move on.
   for one.
 - Gate only shared files. An agent whose files nobody else touches commits on its own green
   checks; you read the hash from `git log` afterwards. No "go" round trip, no diff-stat paste.
+  A commit stops at the agent's branch and you fast-forward main. Landing is the last point at
+  which a change can be held: once it is on main the only remedy is another commit, and the
+  delta between a held hash and its amendment can no longer be read.
 - Shared file, two writers: order them once, tell both in one line each, then get out of the
   way. Never `git stash` in the shared tree.
 - Greeting walls, per-commit paste-and-go ceremony, digest items to agents that did not need
@@ -195,8 +198,10 @@ unattributed ones first.
 
 A path with no owner on the roster may have no agent behind it. The roster is background-only,
 so an interactive session - including the owner's own editor, `kind: interactive` in
-`~/.claude/sessions/<pid>.json` - edits the shared tree invisibly. Read the registry before
-challenging a writer, and never gate the owner.
+`~/.claude/sessions/<pid>.json` - edits the shared tree invisibly. A declaration also goes stale
+the moment the owner redirects an agent mid-task, so an unannounced path is attributed by asking
+its likely author, never by matching a session's cwd. Read the registry before challenging a
+writer, and never gate the owner.
 
 ## Swarm end: keep insights, shed slop
 
