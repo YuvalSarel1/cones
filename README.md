@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/cones.svg" alt="cones: Traffic control for agents." width="720">
+  <img src="assets/cones.svg" alt="cones: A terminal workspace for coding agents." width="720">
 </p>
 
-**A dashboard for coding agents on your Mac.** See what is running, move between sessions, and start, stop or schedule work.
+**A terminal workspace for coding agents.** Peek into sessions, return to past work, and start work in another project without leaving the dashboard.
 
-Supports Claude Code, Codex, pi and OpenCode sessions. Scheduled jobs currently use Claude Code.
+Works with Claude Code, Codex, pi and OpenCode, using their native interfaces.
 
 <p align="center">
   <a href="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml"><img src="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -16,16 +16,31 @@ Supports Claude Code, Codex, pi and OpenCode sessions. Scheduled jobs currently 
 
 <p align="center"><a href="assets/tui.svg"><img src="assets/tui.svg" alt="cones dashboard: live sessions grouped by folder, a finished run, and a peek into the selected agent in the pane" width="100%"></a></p>
 
-## What you can do
+## Work from one place
 
-* **See what is running.** Find sessions grouped by folder, including ones cones did not start. See their state, recent activity and token usage as each harness reports them.
-* **Move between sessions.** Preview output, open supported sessions and return to the dashboard while they keep working.
-* **Schedule recurring work.** Run Claude Code jobs with timeouts and tool permissions, then review their output and cost.
-* **Coordinate agents.** [Start the bundled coordinator](docs/cli.md#coordinator-launch) in a folder to help agents share findings and coordinate changes.
+| | In cones |
+| --- | --- |
+| Live sessions | See running agents grouped by project, including sessions started outside cones. |
+| Previews | Peek into supported live sessions and open their native interface when you want to respond. |
+| History | Browse past conversations, read previews and resume a session. |
+| Projects | Add an existing folder and start an agent there from the dashboard. |
+| Settings | Adjust the layout, visible columns and model defaults in place. |
+| Scheduled work | Create recurring Claude Code jobs and review their output and cost. |
+
+Each harness keeps its own tools and permissions. Available previews and controls follow its [native capabilities](docs/harness.md#native-actions).
 
 ## Install
 
-Requires macOS and Claude Code 2.1 or later, logged in. Claude Code must support background sessions (`--bg` and `attach`). For Codex sessions, use Codex 0.154 or later. pi sessions need nothing: any pi running in a terminal is a row. OpenCode uses its native CLI and SQLite session history; see [harness support](docs/harness.md#opencode).
+Requires macOS. Install and configure the harnesses you want to use:
+
+| Harness | Requirement |
+| --- | --- |
+| Claude Code | 2.1 or later, with background sessions (`--bg` and `attach`). |
+| Codex | 0.154 or later. |
+| pi | `pi` available in your terminal. |
+| OpenCode | Native CLI with SQLite session storage. See [harness support](docs/harness.md#opencode). |
+
+Install cones with Homebrew:
 
 ```sh
 brew tap YuvalSarel1/cones https://github.com/YuvalSarel1/cones
@@ -43,15 +58,29 @@ From a checkout of this repository, `cargo install --path .` does the same.
 
 ## Quick start
 
-Open the dashboard. Existing sessions appear automatically; no jobs file is needed.
+Open the workspace. Existing sessions appear automatically; no configuration file is needed.
 
 ```sh
 cones
 ```
 
-To start a session, choose `folder` in the menu and enter your project directory. Type an instruction and press `Enter` to start work there. `Shift+Tab` cycles Claude Code, Codex, pi, OpenCode and terminal.
+To start work in a project:
 
-Press `Enter` again to open your new session. `Ctrl+Z` returns to the list. The [dashboard guide](docs/dashboard.md) covers previews, stopping sessions and other controls.
+1. Choose `folder` in the menu and enter an existing project directory.
+2. Use `Shift+Tab` to choose Claude Code, Codex, pi or OpenCode.
+3. Type an instruction and press `Enter`.
+
+Open a session with `Enter`; `Ctrl+Z` returns to the list. Press `Ctrl+H` to browse history, select a conversation to preview it, and press `Enter` to resume.
+
+The `config` menu lets you change the layout, columns and model defaults. To open a shell in the selected project, choose `terminal` with `Shift+Tab` and press `Enter`.
+
+See the [dashboard guide](docs/dashboard.md) for the full controls.
+
+### Schedule work
+
+Open `jobs` in the menu, choose `new job`, and enter the task, folder and schedule. Saving installs the schedule. Select a job and press `Enter` to run it immediately.
+
+Scheduled jobs currently use Claude Code. The job form also exposes timeouts and write permissions. For file-based setup, start with [jobs.example.yaml](jobs.example.yaml) and the [configuration guide](docs/jobs.md).
 
 ### Run a task from the shell
 
@@ -61,22 +90,12 @@ cones run --prompt "Read this repo and summarize its TODOs."
 
 This runs a supervised Claude Code task in the current directory. See [one-off tasks](docs/cli.md#one-off-tasks) for policy selection.
 
-### Schedule a task
-
-Adapt [jobs.example.yaml](jobs.example.yaml) into `jobs.yaml`, setting `cwd` and `prompt` for your project. Run the example job once to see what it does:
-
-```sh
-cones run readme-check
-```
-
-Then open `jobs` in the dashboard menu and save the job to install its schedule.
-
 ## Documentation
 
 | Guide | Contents |
 | --- | --- |
 | [Dashboard](docs/dashboard.md) | Controls and interactions, in screen order. |
 | [Configuration and runs](docs/jobs.md) | All `jobs.yaml` fields, scheduling and run lifecycle. |
-| [Commands](docs/cli.md) | CLI flags, one-off tasks and coordinator launch. |
+| [Commands](docs/cli.md) | CLI flags, one-off tasks and diagnostics. |
 | [Harness support](docs/harness.md) | Native sources, reports and capabilities. |
 | [Harness definitions](docs/harness-definitions.md) | The built-in integration schema. |

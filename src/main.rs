@@ -15,7 +15,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "Traffic control for coding agents")]
+#[command(version, about = "A terminal workspace for coding agents")]
 struct Cli {
     #[arg(long, global = true, default_value = "jobs.yaml")]
     jobs: PathBuf,
