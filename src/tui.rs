@@ -4240,7 +4240,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+tab",
-        "cycle Claude Code, Codex, pi and terminal; enter on terminal opens your shell in the selected folder; ctrl+z returns to the list",
+        "cycle Claude Code, Codex, pi and terminal; type a terminal command and enter to run it, or enter empty to open a shell; ctrl+z returns to the list",
     ),
     (
         "ctrl+v",
@@ -4728,6 +4728,7 @@ struct App {
     harness: usize,
     shell: PathBuf,
     shell_startup: Option<tempfile::TempDir>,
+    terminal_input: Input,
     /// Shell rows belong to this dashboard and have no harness registry.
     terminals: Vec<Session>,
     /// Background launches keyed by placeholder row id.
@@ -5003,6 +5004,7 @@ impl App {
             harness: Self::harness_at(Some(start.harness)),
             shell: terminal::default_shell(),
             shell_startup: None,
+            terminal_input: Input::default(),
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
@@ -5467,7 +5469,7 @@ impl App {
             self.history.return_to = self
                 .selected()
                 .and_then(|r| r.kind.key().map(str::to_owned));
-            self.history.select_first = self.text.is_empty();
+            self.history.select_first = self.composer_text().is_empty();
             self.history.reset(&self.filter.text, true);
         } else {
             self.history.revision += 1;
@@ -5767,7 +5769,7 @@ impl App {
                 self.rebuild_with_reason("history");
                 if self.history.select_first
                     && self.focus.is_none()
-                    && self.text.is_empty()
+                    && self.composer_text().is_empty()
                     && let Some(i) = self
                         .visible
                         .iter()
@@ -6295,7 +6297,7 @@ impl App {
 
     /// Do not change the launch target while typing or move selection away from a focused viewer.
     fn select_new(&mut self, id: &str) {
-        if self.focus.is_some() || !self.text.is_empty() {
+        if self.focus.is_some() || !self.composer_text().is_empty() {
             return;
         }
         if let Some(i) = self
@@ -6961,7 +6963,7 @@ impl App {
             || self.focus.is_some()
             || self.opening.is_some()
             || self.history.select_first
-            || !self.text.trim().is_empty()
+            || !self.composer_text().trim().is_empty()
         {
             return Err("not_browsing_sessions");
         }
@@ -7454,17 +7456,13 @@ impl App {
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
     /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
-        if self.transcript.focused
-            || (self.focus.is_none()
-                && matches!(self.mode, Mode::Normal)
-                && self.terminal_selected())
-        {
+        if self.transcript.focused {
             return;
         }
         if text.is_empty() {
             if let Some(open) = self.focused() {
                 open.viewer.write(b"\x16");
-            } else if matches!(self.mode, Mode::Normal) {
+            } else if matches!(self.mode, Mode::Normal) && !self.terminal_selected() {
                 self.attach_image();
             }
             return;
@@ -7480,10 +7478,11 @@ impl App {
             }
         } else if matches!(self.mode, Mode::Normal) {
             // A bracketed paste breaks lines with CR; the composer keeps one kind of break.
-            let text = text.replace("\r\n", "\n").replace('\r', "\n");
-            let at = snap(&self.text, self.caret);
-            self.text.insert_str(at, &text);
-            self.caret = at + text.len();
+            let pasted = text.replace("\r\n", "\n").replace('\r', "\n");
+            let (text, caret) = self.composer_input_mut();
+            let at = snap(text, *caret);
+            text.insert_str(at, &pasted);
+            *caret = at + pasted.len();
         }
     }
 
@@ -8133,6 +8132,22 @@ impl App {
         self.harness == harness::launchable().len()
     }
 
+    fn composer_text(&self) -> &str {
+        if self.terminal_selected() {
+            &self.terminal_input.text
+        } else {
+            &self.text
+        }
+    }
+
+    fn composer_input_mut(&mut self) -> (&mut String, &mut usize) {
+        if self.terminal_selected() {
+            (&mut self.terminal_input.text, &mut self.terminal_input.at)
+        } else {
+            (&mut self.text, &mut self.caret)
+        }
+    }
+
     fn launch_name(&self) -> String {
         if self.terminal_selected() {
             "terminal".into()
@@ -8159,6 +8174,12 @@ impl App {
         let id = format!("terminal:{}", uuid::Uuid::new_v4());
         if !self.open(self.size, command, &name, id.clone(), None) {
             return;
+        }
+        let input = std::mem::take(&mut self.terminal_input);
+        if !input.text.trim().is_empty() {
+            let mut bytes = input.text.replace('\n', "\r").into_bytes();
+            bytes.push(b'\r');
+            self.focused().unwrap().viewer.write(&bytes);
         }
         let session = Session {
             session_id: id.clone(),
@@ -8449,10 +8470,17 @@ impl App {
     fn composer(&self) -> Line<'static> {
         if self.terminal_selected() {
             let shell = self.shell.file_name().unwrap_or(self.shell.as_os_str());
-            return Line::from(vec![
-                Span::styled(format!("terminal ({}) › ", shell.to_string_lossy()), bold()),
-                Span::styled("Enter to open", dim()),
-            ]);
+            let mut spans = vec![Span::styled(
+                format!("terminal ({}) › ", shell.to_string_lossy()),
+                bold(),
+            )];
+            let input = &self.terminal_input;
+            let shown = input.text.replace('\n', "⏎");
+            let caret = input.text[..snap(&input.text, input.at)]
+                .replace('\n', "⏎")
+                .len();
+            spans.extend(typed(&shown, caret, "Type a command, or Enter to open"));
+            return Line::from(spans);
         }
         if self.on_button() {
             return Line::default();
@@ -9137,7 +9165,7 @@ impl App {
                 if !self.on_button()
                     && code == KeyCode::Right
                     && mods.is_empty()
-                    && self.text.is_empty()
+                    && self.composer_text().is_empty()
                 {
                     match self.shown() {
                         _ if !self.split => self.toggle_split(),
@@ -9148,12 +9176,12 @@ impl App {
                     }
                     return Ok(false);
                 }
-                if !self.on_button()
-                    && !self.terminal_selected()
-                    && let Some(at) = edit(&mut self.text, self.caret, code, mods)
-                {
-                    self.caret = at;
-                    return Ok(false);
+                if !self.on_button() {
+                    let (text, caret) = self.composer_input_mut();
+                    if let Some(at) = edit(text, *caret, code, mods) {
+                        *caret = at;
+                        return Ok(false);
+                    }
                 }
                 match code {
                     KeyCode::Char('c') if ctrl => {
@@ -9168,6 +9196,8 @@ impl App {
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
+                        } else if self.terminal_selected() && !self.terminal_input.text.is_empty() {
+                            self.terminal_input = Input::default();
                         } else if self.terminal_selected() {
                             self.harness = Self::harness_at(Some(self.data.start.harness));
                         } else if !self.text.is_empty() {
@@ -9197,6 +9227,16 @@ impl App {
                     KeyCode::BackTab => {
                         self.harness = (self.harness + 1) % (harness::launchable().len() + 1);
                     }
+                    // With a draft, shift+enter adds a line for either launch type.
+                    KeyCode::Enter
+                        if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
+                            && !self.composer_text().trim().is_empty() =>
+                    {
+                        let (text, caret) = self.composer_input_mut();
+                        let at = snap(text, *caret);
+                        text.insert(at, '\n');
+                        *caret = at + 1;
+                    }
                     KeyCode::Enter if self.terminal_selected() => {
                         self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
                         self.start();
@@ -9213,12 +9253,6 @@ impl App {
                     KeyCode::Enter if self.text.trim().is_empty() => {
                         self.full = false;
                         self.enter()?;
-                    }
-                    // With something typed, the same chord breaks the line instead of launching.
-                    KeyCode::Enter if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) => {
-                        let at = snap(&self.text, self.caret);
-                        self.text.insert(at, '\n');
-                        self.caret = at + 1;
                     }
                     KeyCode::Enter => self.start(),
                     KeyCode::Char('s') if ctrl => {
@@ -9609,7 +9643,7 @@ impl App {
 
     /// The list is sitting on a button, which takes no instruction.
     fn on_button(&self) -> bool {
-        self.on_menu() && self.text.is_empty()
+        self.on_menu() && !self.terminal_selected() && self.text.is_empty()
     }
 
     fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
@@ -12686,8 +12720,12 @@ mod tests {
             app.pump();
             assert!(
                 Instant::now() < deadline,
-                "terminal did not become ready: {}",
-                app.status
+                "terminal did not become ready: {} {:?}",
+                app.status,
+                app.viewers
+                    .iter()
+                    .map(|open| open.viewer.screen().contents())
+                    .collect::<Vec<_>>()
             );
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -12709,8 +12747,12 @@ mod tests {
         assert!(app.terminal_selected());
         assert!(app.composer().to_string().contains("terminal (sh)"));
         app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
-        app.paste("do not replace the draft");
+        app.paste(" a separate command");
+        assert_eq!(app.terminal_input.text, "x a separate command");
         assert_eq!(app.text, "an unfinished agent instruction");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.terminal_selected());
+        assert!(app.terminal_input.text.is_empty());
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.terminals.len(), 1);
         let id = app.terminals[0].session_id.clone();
@@ -12749,6 +12791,104 @@ mod tests {
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.terminal_selected());
         assert_eq!(app.text, "an unfinished agent instruction");
+    }
+
+    #[test]
+    fn the_terminal_launcher_edits_and_preserves_its_own_draft_even_on_the_menu() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(app.on_menu());
+        app.harness = harness::launchable().len();
+        assert!(app.composer().to_string().contains("Type a command"));
+        for c in "echo café".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.paste("f");
+        assert_eq!(
+            app.terminal_input,
+            Input {
+                text: "echo caffé".into(),
+                at: 9
+            }
+        );
+        assert!(app.composer().to_string().contains("echo caffé"));
+        app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.paste("pwd\r\nprintf done");
+        let command = "echo caffé\npwd\nprintf done";
+        assert_eq!(app.terminal_input.text, command);
+        assert!(
+            app.composer()
+                .to_string()
+                .contains("echo caffé⏎pwd⏎printf done")
+        );
+        assert!(app.viewers.is_empty(), "editing does not start a shell");
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.fill("agent draft".into());
+        for _ in 0..harness::launchable().len() {
+            app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.terminal_selected());
+        assert_eq!(app.terminal_input.text, command);
+        app.paste("");
+        assert!(app.images.is_empty());
+        assert_eq!(app.text, "agent draft");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.terminal_input, Input::default());
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.terminal_selected());
+        assert_eq!(app.text, "agent draft");
+    }
+
+    #[test]
+    fn a_terminal_launcher_command_runs_in_the_selected_folder_and_keeps_the_shell() {
+        use std::os::unix::fs::PermissionsExt;
+
+        for shell in ["/bin/sh", "/bin/bash", "/bin/zsh"] {
+            if !Path::new(shell).is_file() {
+                continue;
+            }
+            let d = dir();
+            let folder = d.path().join("working folder");
+            fs::create_dir(&folder).unwrap();
+            // Keep real shell startup files out of the test and delay the initial prompt.
+            let wrapper = d.path().join("test-shell");
+            fs::write(
+                &wrapper,
+                format!(
+                    "#!/bin/sh\nexport HOME='{}' ZDOTDIR='{}'\nunset ENV BASH_ENV\nexec {shell} \"$@\"\n",
+                    d.path().display(),
+                    d.path().display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+            for file in [".zshrc", ".bashrc"] {
+                fs::write(d.path().join(file), "sleep 0.05\nPS1='READY: '\n").unwrap();
+            }
+            let mut app = app(d.path());
+            app.refresh().unwrap();
+            app.pin_folder(folder.clone()).unwrap();
+            app.shell = wrapper;
+            app.harness = harness::launchable().len();
+            app.fill("do not run the agent draft".into());
+            app.paste("value='hello café'\nprintf '%s\\n' \"$value\" > 'command output'");
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.focus, Some(0));
+            terminal_until(&mut app, |_| {
+                fs::read_to_string(folder.join("command output")).is_ok_and(|s| s == "hello café\n")
+            });
+            assert!(app.terminal_input.text.is_empty());
+            assert_eq!(app.text, "do not run the agent draft");
+            app.paste("printf '%s\\n' \"$value\" > 'same shell'\n");
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            terminal_until(&mut app, |_| {
+                fs::read_to_string(folder.join("same shell")).is_ok_and(|s| s == "hello café\n")
+            });
+            assert_eq!(app.terminals.len(), 1);
+        }
     }
 
     #[test]
@@ -12857,10 +12997,12 @@ mod tests {
         app.shell = "/missing/shell".into();
         app.harness = harness::launchable().len();
         app.fill("keep my instruction".into());
+        app.paste("printf retry");
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.viewers.is_empty() && app.terminals.is_empty());
         assert_eq!(key(&app), before);
         assert_eq!(app.text, "keep my instruction");
+        assert_eq!(app.terminal_input, Input::new("printf retry"));
         assert!(app.status.contains("failed"));
     }
 
