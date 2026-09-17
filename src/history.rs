@@ -12,6 +12,7 @@
 //! request for visible entries: it streams one transcript at a time and caches
 //! only scalar summaries, without per-session activity vectors. This keeps
 //! browsing a large archive independent of full transcript size.
+use crate::cost::Reader as _;
 use crate::{
     codex,
     config::HarnessKind,
@@ -286,6 +287,13 @@ struct DatabaseIndex {
     entries: Vec<Entry>,
 }
 
+struct DatabaseColumns {
+    stamp: crate::opencode::Fingerprint,
+    pricing: Option<crate::cost::CatalogStamp>,
+    columns: Columns,
+    used: u64,
+}
+
 #[derive(Default)]
 struct Cache {
     initialized: bool,
@@ -297,7 +305,7 @@ struct Cache {
     used: u64,
     homes: HashMap<PathBuf, PathBuf>,
     databases: HashMap<PathBuf, DatabaseIndex>,
-    database_columns: HashMap<Key, (crate::opencode::Fingerprint, Columns, u64)>,
+    database_columns: HashMap<Key, DatabaseColumns>,
 }
 
 impl Cache {
@@ -561,14 +569,14 @@ impl Cache {
         if let Some(c) = self.columns.get_mut(&e.transcript)
             && c.stamp == current
             && c.statusline == status_stamp
-            && (spec.transcript.handler == Native::Claude || c.pricing == pricing)
+            && c.pricing == pricing
         {
             c.used = self.used;
             stats.column_cache_hits += 1;
             return Ok(c.columns.clone());
         }
         let mut columns = match spec.transcript.handler {
-            Native::Claude => fleet::history_columns(&e.transcript)?,
+            Native::Claude => fleet::history_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Pi => pi_columns(&e.transcript, catalog.as_deref())?,
             Native::Opencode => unreachable!("database hydration handled above"),
@@ -581,10 +589,10 @@ impl Cache {
             let source = spec.transcript.statusline.as_ref().expect("stamped source");
             if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
                 columns.context_window = v.pointer(&source.window_pointer).and_then(Value::as_u64);
-                if let Some(cost) = fleet::statusline_cost(source, &v) {
-                    columns.cost_usd = Some(cost);
-                    columns.cost_info = Some(crate::cost::Info::reported());
-                }
+                (columns.cost_usd, columns.cost_info) = crate::cost::prefer_native(
+                    fleet::statusline_cost(source, &v),
+                    (columns.cost_usd, columns.cost_info),
+                );
             }
         }
         ensure!(
@@ -616,6 +624,8 @@ impl Cache {
 
     fn hydrate_database(&mut self, e: &Entry, stats: &mut Stats) -> Result<Columns> {
         let current = crate::opencode::fingerprint(&e.transcript)?;
+        let catalog = crate::cost::snapshot();
+        let pricing = catalog.as_ref().map(|c| c.stamp.clone());
         ensure!(
             self.databases
                 .get(&e.transcript)
@@ -623,28 +633,36 @@ impl Cache {
             "OpenCode history changed; refresh before loading columns"
         );
         self.used += 1;
-        if let Some((_, columns, used)) = self
+        if let Some(cached) = self
             .database_columns
             .get_mut(&e.key)
-            .filter(|(stamp, _, _)| *stamp == current)
+            .filter(|c| c.stamp == current && c.pricing == pricing)
         {
-            *used = self.used;
+            cached.used = self.used;
             stats.column_cache_hits += 1;
-            return Ok(columns.clone());
+            return Ok(cached.columns.clone());
         }
-        let columns = crate::opencode::columns(&e.transcript, &e.key.session_id)?;
+        let columns =
+            crate::opencode::columns_priced(&e.transcript, &e.key.session_id, catalog.as_deref())?;
         ensure!(
             crate::opencode::fingerprint(&e.transcript)? == current,
             "OpenCode history changed while loading columns; refresh again"
         );
         stats.hydrated_files += 1;
-        self.database_columns
-            .insert(e.key.clone(), (current, columns.clone(), self.used));
+        self.database_columns.insert(
+            e.key.clone(),
+            DatabaseColumns {
+                stamp: current,
+                pricing,
+                columns: columns.clone(),
+                used: self.used,
+            },
+        );
         while self.database_columns.len() > COLUMN_CACHE {
             let oldest = self
                 .database_columns
                 .iter()
-                .min_by_key(|(_, (_, _, used))| used)
+                .min_by_key(|(_, c)| c.used)
                 .map(|(key, _)| key.clone())
                 .unwrap();
             self.database_columns.remove(&oldest);
@@ -859,7 +877,7 @@ fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> 
         // History keeps scalars, not one activity allocation per line ever written.
         tail.activity.clear();
     }
-    let (cost_usd, cost_info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+    let (cost_usd, cost_info) = tail.accounting.report(None);
     Ok(Columns {
         title,
         model: tail.model,
@@ -876,14 +894,16 @@ fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> 
 fn pi_columns(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Columns> {
     let mut out = Columns::default();
     let mut name = None;
-    let mut costs = crate::cost::Total::default();
-    let mut cost_ids = HashSet::new();
+    let mut costs = harness::spec(HarnessKind::Pi)
+        .transcript
+        .handler
+        .accounting();
     for line in BufReader::new(File::open(path)?).lines() {
         let line = line?;
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
-        pi::observe_cost(&mut costs, &mut cost_ids, &v, catalog);
+        costs.observe(&v, catalog);
         let tail = pi::tail(&line);
         name = tail.name.or(name);
         out.title = out.title.or(tail.prompt);
@@ -906,7 +926,7 @@ fn pi_columns(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Col
             }
         }
     }
-    (out.cost_usd, out.cost_info) = costs.report(crate::cost::Source::Harness);
+    (out.cost_usd, out.cost_info) = costs.report(None);
     out.title = name.or(out.title);
     Ok(out)
 }
@@ -935,7 +955,7 @@ mod tests {
         live.fold_priced(&text, Some(&catalog));
         assert_eq!(
             (history.cost_usd, history.cost_info),
-            live.accounting.total.report(crate::cost::Source::ModelsDev)
+            live.accounting.report(None)
         );
 
         let message = |id: &str, cost: f64| {
@@ -956,7 +976,7 @@ mod tests {
         );
         assert_eq!(
             (history.cost_usd, history.cost_info),
-            live.costs.report(crate::cost::Source::Harness)
+            live.costs.report(None)
         );
         fs::write(&path, format!("{unpriced}\n")).unwrap();
         assert!(pi_columns(&path, None).unwrap().cost_usd.is_none());
@@ -979,7 +999,7 @@ mod tests {
             let live = pi::tail_priced(&text, catalog);
             assert_eq!(
                 (history.cost_usd, history.cost_info),
-                live.costs.report(crate::cost::Source::Harness)
+                live.costs.report(None)
             );
         }
         let columns = pi_columns(&path, Some(&catalog)).unwrap();

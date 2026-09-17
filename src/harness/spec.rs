@@ -309,6 +309,18 @@ impl Native {
             Self::Opencode => crate::opencode::sessions(home),
         }
     }
+
+    /// Adding a native reader requires an adapter for the shared accounting path.
+    /// There is deliberately no default or "cost unsupported" branch.
+    pub(crate) fn accounting(self) -> Box<dyn crate::cost::Reader> {
+        use crate::cost::Accounting;
+        match self {
+            Self::Claude => Box::new(Accounting::<crate::fleet::CostAdapter>::default()),
+            Self::Codex => Box::new(Accounting::<crate::codex::CostAdapter>::default()),
+            Self::Pi => Box::new(Accounting::<crate::pi::CostAdapter>::default()),
+            Self::Opencode => Box::new(Accounting::<crate::opencode::CostAdapter>::default()),
+        }
+    }
 }
 
 fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {

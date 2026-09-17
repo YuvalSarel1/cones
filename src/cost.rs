@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs::{self, OpenOptions},
     io::{Read, Write},
     os::unix::fs::OpenOptionsExt,
@@ -120,21 +120,103 @@ pub fn describe(usd: Option<f64>, info: Option<&Info>) -> Option<String> {
     ))
 }
 
+/// Native adapters translate reports; only this module decides how they are priced.
+pub(crate) trait Adapter: std::fmt::Debug + Clone + Default + PartialEq {
+    fn read<'a>(&'a mut self, event: &'a Value) -> Reading<'a>;
+}
+
+pub(crate) enum Reading<'a> {
+    Ignore,
+    Gap(&'static str),
+    Response(Response<'a>),
+}
+
+pub(crate) struct Response<'a> {
+    pub id: Option<&'a str>,
+    pub reported_usd: Option<f64>,
+    /// True only when the native counters explicitly describe an empty response.
+    pub empty: bool,
+    pub usage: std::result::Result<Usage<'a>, &'static str>,
+    /// A native cumulative jump can reveal missing requests before this response.
+    pub gap: Option<&'static str>,
+}
+
+/// Every registered harness constructs this interface with its native adapter.
+pub(crate) trait Reader: std::fmt::Debug {
+    fn observe(&mut self, event: &Value, catalog: Option<&Catalog>);
+    fn report(&self, native_total: Option<f64>) -> (Option<f64>, Option<Info>);
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Total {
+pub(crate) struct Accounting<A: Adapter> {
+    adapter: A,
+    total: Total,
+    seen: HashSet<String>,
+}
+
+impl<A: Adapter> Reader for Accounting<A> {
+    fn observe(&mut self, event: &Value, catalog: Option<&Catalog>) {
+        let response = match self.adapter.read(event) {
+            Reading::Ignore => return,
+            Reading::Gap(reason) => {
+                self.total.unknown(reason);
+                return;
+            }
+            Reading::Response(response) => response,
+        };
+        if let Some(id) = response.id
+            && !self.seen.insert(id.to_owned())
+        {
+            return;
+        }
+        if let Some(reason) = response.gap {
+            self.total.unknown(reason);
+        }
+        if let Some(usd) = response
+            .reported_usd
+            .filter(|n| valid(*n) && (*n > 0.0 || response.empty))
+        {
+            self.total.reported(Some(usd), false);
+            return;
+        }
+        match response.usage {
+            Ok(usage) => self.total.estimate(&usage, catalog),
+            Err(reason) => self.total.unknown(reason),
+        }
+    }
+
+    fn report(&self, native_total: Option<f64>) -> (Option<f64>, Option<Info>) {
+        prefer_native(native_total, self.total.report())
+    }
+}
+
+/// A reported session total supersedes response accounting, including a reported zero.
+pub(crate) fn prefer_native(
+    native_total: Option<f64>,
+    responses: (Option<f64>, Option<Info>),
+) -> (Option<f64>, Option<Info>) {
+    match native_total.filter(|n| valid(*n)) {
+        Some(usd) => (Some(usd), Some(Info::reported())),
+        None => responses,
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Total {
     usd: f64,
     priced: u64,
     estimated: bool,
+    estimation_attempted: bool,
     reasons: BTreeMap<String, u64>,
     catalog: Option<CatalogStamp>,
 }
 
 impl Total {
-    pub fn unknown(&mut self, reason: &str) {
+    fn unknown(&mut self, reason: &str) {
         *self.reasons.entry(reason.into()).or_default() += 1;
     }
 
-    pub fn reported(&mut self, usd: Option<f64>, zero_is_unpriced: bool) {
+    fn reported(&mut self, usd: Option<f64>, zero_is_unpriced: bool) {
         match usd.filter(|n| valid(*n) && (!zero_is_unpriced || *n > 0.0)) {
             Some(n) if valid(self.usd + n) => {
                 self.usd += n;
@@ -144,7 +226,8 @@ impl Total {
         }
     }
 
-    pub fn estimate(&mut self, usage: &Usage<'_>, catalog: Option<&Catalog>) {
+    fn estimate(&mut self, usage: &Usage<'_>, catalog: Option<&Catalog>) {
+        self.estimation_attempted = true;
         let Some(catalog) = catalog else {
             self.unknown("catalog_unavailable");
             return;
@@ -161,7 +244,7 @@ impl Total {
         }
     }
 
-    pub fn report(&self, source: Source) -> (Option<f64>, Option<Info>) {
+    fn report(&self) -> (Option<f64>, Option<Info>) {
         let unpriced: u64 = self.reasons.values().sum();
         if self.priced == 0 && unpriced == 0 {
             return (None, None);
@@ -176,10 +259,10 @@ impl Total {
         (
             (self.priced > 0).then_some(self.usd),
             Some(Info {
-                source: if self.estimated {
+                source: if self.estimated || (self.priced == 0 && self.estimation_attempted) {
                     Source::ModelsDev
                 } else {
-                    source
+                    Source::Harness
                 },
                 coverage,
                 priced_records: self.priced,
@@ -534,16 +617,16 @@ pub(crate) mod tests {
         total.reported(Some(0.25), true);
         total.reported(Some(0.0), true);
         total.reported(Some(f64::NAN), true);
-        let (usd, info) = total.report(Source::Harness);
+        let (usd, info) = total.report();
         assert_eq!(usd, Some(0.25));
         assert_eq!(info.as_ref().unwrap().coverage, Coverage::Partial);
         assert_eq!(display(usd, info.as_ref()), "$0.25 partial");
         let mut zero = Total::default();
         zero.reported(Some(0.0), false);
-        assert_eq!(zero.report(Source::Harness).0, Some(0.0));
+        assert_eq!(zero.report().0, Some(0.0));
         let mut missing = Total::default();
         missing.unknown("missing");
-        assert_eq!(missing.report(Source::ModelsDev).0, None);
+        assert_eq!(missing.report().0, None);
         assert_eq!(display(None, None), "-");
     }
 

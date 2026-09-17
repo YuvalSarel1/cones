@@ -2,6 +2,7 @@
 //! migrate its database, change permissions, or infer a busy state from saved messages.
 use crate::{
     config::HarnessKind,
+    cost::{Adapter, Reading, Response},
     fleet::{self, Session},
     history::{Columns, Entry, Key},
 };
@@ -187,19 +188,81 @@ fn entries(db: &Path, home: &Path, filter: &str) -> Result<Vec<Entry>> {
     .collect())
 }
 
-/// Scalar usage reads exclude tool payloads, reasoning and message text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CostAdapter;
+
+impl Adapter for CostAdapter {
+    fn read<'a>(&'a mut self, event: &'a Value) -> Reading<'a> {
+        if event["role"] != "assistant" {
+            return Reading::Ignore;
+        }
+        let tokens = &event["tokens"];
+        Reading::Response(Response {
+            id: event["id"].as_str(),
+            reported_usd: event["cost"].as_f64(),
+            empty: [
+                "/input",
+                "/output",
+                "/reasoning",
+                "/cache/read",
+                "/cache/write",
+            ]
+            .iter()
+            .all(|p| tokens.pointer(p).and_then(Value::as_u64) == Some(0)),
+            usage: (|| {
+                let n = |p| {
+                    tokens
+                        .pointer(p)
+                        .and_then(Value::as_u64)
+                        .ok_or("missing_counters")
+                };
+                Ok(crate::cost::Usage {
+                    provider: event["providerID"]
+                        .as_str()
+                        .ok_or("missing_provider_or_model")?,
+                    model: event["modelID"]
+                        .as_str()
+                        .ok_or("missing_provider_or_model")?,
+                    input: n("/input")?,
+                    // OpenCode separates reasoning tokens from ordinary output.
+                    output: n("/output")?
+                        .checked_add(n("/reasoning")?)
+                        .ok_or("invalid_usage")?,
+                    cache_read: n("/cache/read")?,
+                    cache_write: n("/cache/write")?,
+                })
+            })(),
+            gap: None,
+        })
+    }
+}
+
+/// Scalar usage reads exclude tool payloads, reasoning text and message text.
 pub(crate) fn columns(db: &Path, id: &str) -> Result<Columns> {
+    let catalog = crate::cost::snapshot();
+    columns_priced(db, id, catalog.as_deref())
+}
+
+pub(crate) fn columns_priced(
+    db: &Path,
+    id: &str,
+    catalog: Option<&crate::cost::Catalog>,
+) -> Result<Columns> {
     let id = operand(id)?;
     let mut columns = Columns::default();
-    let mut costs = crate::cost::Total::default();
+    let mut costs = crate::harness::spec(HarnessKind::Opencode)
+        .transcript
+        .handler
+        .accounting();
     let mut input = 0_u64;
     let mut output = 0_u64;
     let mut usage = false;
-    for v in query(
+    for mut v in query(
         db,
         &format!(
-            "SELECT json_extract(data, '$.modelID') AS model,
-                    json_extract(data, '$.providerID') AS provider,
+            "SELECT id, 'assistant' AS role,
+                    json_extract(data, '$.modelID') AS modelID,
+                    json_extract(data, '$.providerID') AS providerID,
                     json_extract(data, '$.tokens') AS tokens,
                     json_extract(data, '$.cost') AS cost
              FROM message WHERE session_id = {id} AND json_valid(data)
@@ -207,16 +270,18 @@ pub(crate) fn columns(db: &Path, id: &str) -> Result<Columns> {
              ORDER BY time_created, id"
         ),
     )? {
-        if let Some(model) = v["model"].as_str() {
-            columns.model = Some(match v["provider"].as_str() {
+        if let Some(model) = v["modelID"].as_str() {
+            columns.model = Some(match v["providerID"].as_str() {
                 Some(provider) => format!("{provider}/{model}"),
                 None => model.to_owned(),
             });
         }
-        let tokens = v["tokens"]
+        v["tokens"] = v["tokens"]
             .as_str()
-            .and_then(|text| serde_json::from_str::<Value>(text).ok());
-        if let Some(tokens) = tokens.filter(Value::is_object) {
+            .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            .unwrap_or(Value::Null);
+        costs.observe(&v, catalog);
+        if let Some(tokens) = v.get("tokens").filter(|v| v.is_object()) {
             let n = |pointer| tokens.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
             let prompt = n("/input")
                 .saturating_add(n("/cache/read"))
@@ -232,25 +297,22 @@ pub(crate) fn columns(db: &Path, id: &str) -> Result<Columns> {
                         .saturating_add(n("/reasoning")),
                 );
             }
-            costs.reported(v["cost"].as_f64(), prompt > 0 || n("/output") > 0);
         }
     }
     if usage {
         columns.tokens_in = Some(input);
         columns.tokens_out = Some(output);
     }
-    (columns.cost_usd, columns.cost_info) = costs.report(crate::cost::Source::Harness);
     // Current OpenCode reports a session total. Older schemas expose message costs only.
     let fields = query(db, "PRAGMA table_info(session)")?;
-    if fields.iter().any(|v| v["name"] == "cost")
-        && let Some(row) = query(db, &format!("SELECT cost FROM session WHERE id = {id}"))?.first()
-        && let Some(cost) = row["cost"]
-            .as_f64()
-            .filter(|cost| crate::cost::valid(*cost))
-    {
-        columns.cost_usd = Some(cost);
-        columns.cost_info = Some(crate::cost::Info::reported());
-    }
+    let native_total = if fields.iter().any(|v| v["name"] == "cost") {
+        query(db, &format!("SELECT cost FROM session WHERE id = {id}"))?
+            .first()
+            .and_then(|row| row["cost"].as_f64())
+    } else {
+        None
+    };
+    (columns.cost_usd, columns.cost_info) = costs.report(native_total);
     let text = text_events(db, &id, 1, Some("assistant"))?;
     columns.last = text
         .last()

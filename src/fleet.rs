@@ -1,5 +1,6 @@
 //! Fleet discovery from harness-owned registries and transcripts. Missing reports
 //! remain absent; state and usage are never estimated. See docs/harness.md.
+use crate::cost::{Adapter, Reader, Reading, Response};
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -368,6 +369,7 @@ fn session(
         Details::default()
     };
     let (window, cost) = statusline_values(dir, id);
+    let (cost_usd, cost_info) = d.report.costs.report(cost);
     Some(Session {
         session_id: id.into(),
         harness: claude(),
@@ -384,8 +386,8 @@ fn session(
         tokens_out: d.report.tokens_out,
         context_tokens: d.report.context,
         context_window: window,
-        cost_usd: cost,
-        cost_info: cost.map(|_| crate::cost::Info::reported()),
+        cost_usd,
+        cost_info,
         title: d
             .title
             .or_else(|| {
@@ -471,14 +473,18 @@ struct Details {
     report: Report,
 }
 
-/// Cache by file length; a changed transcript requires a full usage recount.
+/// Recount when the transcript or its pricing snapshot changes.
 fn details(transcript: &Path) -> Details {
-    static CACHE: Mutex<Option<HashMap<PathBuf, (u64, Details)>>> = Mutex::new(None);
+    type Cached = (u64, Details, Option<crate::cost::CatalogStamp>);
+    static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
+    let catalog = crate::cost::snapshot();
+    let pricing = catalog.as_ref().map(|c| c.stamp.clone());
     let len = fs::metadata(transcript).map_or(0, |m| m.len());
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some((seen, d)) = cache.get(transcript)
+    if let Some((seen, d, priced_with)) = cache.get(transcript)
         && *seen == len
+        && *priced_with == pricing
     {
         return d.clone();
     }
@@ -486,9 +492,9 @@ fn details(transcript: &Path) -> Details {
     let d = Details {
         title,
         last: last.pop(),
-        report: report(transcript).unwrap_or_default(),
+        report: report_with_activity(transcript, true, catalog.as_deref()).unwrap_or_default(),
     };
-    cache.insert(transcript.to_owned(), (len, d.clone()));
+    cache.insert(transcript.to_owned(), (len, d.clone(), pricing));
     d
 }
 
@@ -714,11 +720,78 @@ struct Report {
     started: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
     activity: Vec<Activity>,
+    costs: crate::cost::Accounting<CostAdapter>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct CostAdapter;
+
+impl Adapter for CostAdapter {
+    fn read<'a>(&'a mut self, event: &'a Value) -> Reading<'a> {
+        let message = &event["message"];
+        if event["type"] != "assistant" || message["model"] == "<synthetic>" {
+            return Reading::Ignore;
+        }
+        let usage = &message["usage"];
+        Reading::Response(Response {
+            id: message["id"].as_str(),
+            reported_usd: None, // Claude's dollar report is the saved session total.
+            empty: [
+                "input_tokens",
+                "output_tokens",
+                "cache_read_input_tokens",
+                "cache_creation_input_tokens",
+            ]
+            .iter()
+            .all(|k| usage[k].as_u64() == Some(0)),
+            usage: (|| {
+                // Never infer the endpoint from the model or local settings.
+                let provider = message["provider"]
+                    .as_str()
+                    .ok_or("missing_provider_or_model")?;
+                let model = message["model"]
+                    .as_str()
+                    .ok_or("missing_provider_or_model")?;
+                if !matches!(usage["service_tier"].as_str(), None | Some("standard")) {
+                    return Err("unsupported_service_tier");
+                }
+                if usage["cache_creation"]["ephemeral_1h_input_tokens"]
+                    .as_u64()
+                    .is_some_and(|n| n > 0)
+                {
+                    return Err("unsupported_cache_retention");
+                }
+                Ok(crate::cost::Usage {
+                    provider,
+                    model,
+                    input: usage["input_tokens"].as_u64().ok_or("missing_counters")?,
+                    output: usage["output_tokens"].as_u64().ok_or("missing_counters")?,
+                    cache_read: usage["cache_read_input_tokens"]
+                        .as_u64()
+                        .ok_or("missing_counters")?,
+                    cache_write: usage["cache_creation_input_tokens"]
+                        .as_u64()
+                        .ok_or("missing_counters")?,
+                })
+            })(),
+            gap: None,
+        })
+    }
 }
 
 /// History hydrates only requested rows and never takes the live fleet's cache mutex.
+#[cfg(test)]
 pub(crate) fn history_columns(transcript: &Path) -> Result<crate::history::Columns> {
-    let report = report_with_activity(transcript, false)?;
+    let catalog = crate::cost::snapshot();
+    history_columns_priced(transcript, catalog.as_deref())
+}
+
+pub(crate) fn history_columns_priced(
+    transcript: &Path,
+    catalog: Option<&crate::cost::Catalog>,
+) -> Result<crate::history::Columns> {
+    let report = report_with_activity(transcript, false, catalog)?;
+    let (cost_usd, cost_info) = report.costs.report(None);
     Ok(crate::history::Columns {
         title: report.title.or(report.ai_title).or(report.first_prompt),
         model: report.model,
@@ -726,6 +799,8 @@ pub(crate) fn history_columns(transcript: &Path) -> Result<crate::history::Colum
         tokens_out: report.tokens_out,
         context_tokens: report.context,
         last: report.last,
+        cost_usd,
+        cost_info,
         ..crate::history::Columns::default()
     })
 }
@@ -738,42 +813,54 @@ pub(crate) fn run_columns(
     session_id: Option<&str>,
 ) -> crate::history::Columns {
     use std::os::unix::fs::MetadataExt;
-    type Cached = ((u64, u64, i64, i64), crate::history::Columns);
+    type Cached = (
+        (u64, u64, i64, i64),
+        crate::history::Columns,
+        Option<crate::cost::CatalogStamp>,
+    );
     static CACHE: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
     let mut columns = crate::history::Columns::default();
+    let catalog = crate::cost::snapshot();
+    let pricing = catalog.as_ref().map(|c| c.stamp.clone());
     if let Some(path) = transcript
         && let Ok(meta) = fs::metadata(path)
     {
         let stamp = (meta.ino(), meta.len(), meta.mtime(), meta.mtime_nsec());
         let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let cache = cache.get_or_insert_with(HashMap::new);
-        if let Some((seen, saved)) = cache.get(path)
+        if let Some((seen, saved, priced_with)) = cache.get(path)
             && *seen == stamp
+            && *priced_with == pricing
         {
             columns = saved.clone();
-        } else if let Ok(saved) = history_columns(path) {
+        } else if let Ok(saved) = history_columns_priced(path, catalog.as_deref()) {
             if cache.len() >= 200 {
                 cache.clear();
             }
-            cache.insert(path.to_owned(), (stamp, saved.clone()));
+            cache.insert(path.to_owned(), (stamp, saved.clone(), pricing));
             columns = saved;
         }
     }
     if let Some(id) = session_id {
         let (window, cost) = statusline_values(claude, id);
         columns.context_window = window;
-        columns.cost_usd = cost;
-        columns.cost_info = cost.map(|_| crate::cost::Info::reported());
+        (columns.cost_usd, columns.cost_info) =
+            crate::cost::prefer_native(cost, (columns.cost_usd, columns.cost_info));
     }
     columns
 }
 
 /// Count streaming usage once per message id; skip `<synthetic>` placeholder messages.
+#[cfg(test)]
 fn report(transcript: &Path) -> Result<Report> {
-    report_with_activity(transcript, true)
+    report_with_activity(transcript, true, None)
 }
 
-fn report_with_activity(transcript: &Path, activity: bool) -> Result<Report> {
+fn report_with_activity(
+    transcript: &Path,
+    activity: bool,
+    catalog: Option<&crate::cost::Catalog>,
+) -> Result<Report> {
     let mut seen = HashSet::new();
     let (mut input, mut output) = (0, 0);
     let mut r = Report::default();
@@ -782,6 +869,7 @@ fn report_with_activity(transcript: &Path, activity: bool) -> Result<Report> {
         let Ok(event) = serde_json::from_str::<Value>(&line?) else {
             continue;
         };
+        r.costs.observe(&event, catalog);
         if let Some(t) = event["timestamp"]
             .as_str()
             .and_then(|t| DateTime::parse_from_rfc3339(t).ok())

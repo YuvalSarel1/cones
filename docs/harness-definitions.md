@@ -112,4 +112,8 @@ Start with the reported behavior in [harness.md](harness.md). Change a definitio
 
 A new built-in needs a `HarnessKind`, a registration and native handler selection in `spec.rs`. Begin with its implemented discovery and transcript behavior, then declare operations as their adapters become available. Storage formats beyond the existing JSONL readers need native code; a YAML capability claim cannot create a reader or execution adapter.
 
+Cost accounting is required. Implement `cost::Adapter` to translate native events into response records or explicit gaps, then register it in the exhaustive `Native::accounting` match. Adapters supply reported identities and disjoint counters; they do not price usage. `cost::Accounting` owns native-cost precedence, duplicate response ids, catalog fallback and coverage. A reported session total goes through `cost::prefer_native`. The accumulator and pricing decisions are private to `cost`.
+
+Extend the native fixture in `tests/cost.rs` when adding a harness. That test enumerates every registered harness and exercises its actual live and history readers against the same prices. It requires fallback estimates, native-cost precedence, duplicate protection, partial coverage and cache refresh after catalog arrival, replacement and expiry. Its exhaustive fixture and reader matches make an omitted harness a compile error. No real harness or model is started by the test.
+
 Give a worktree its own `CARGO_TARGET_DIR` while another checkout is building. A shared target directory can serve another checkout's test binary, so a suite count alone does not establish which code ran.

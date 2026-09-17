@@ -1,6 +1,9 @@
 //! Codex fleet discovery from processes, writer locks, the thread database and rollouts.
 //! This module observes native sessions; it does not execute supervised jobs.
-use crate::fleet::Session;
+use crate::{
+    cost::{Adapter, Reader, Reading, Response},
+    fleet::Session,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -85,18 +88,17 @@ pub struct Tail {
     pub context_tokens: Option<u64>,
     /// `token_count.info.model_context_window` on that event.
     pub context_window: Option<u64>,
-    pub(crate) accounting: Accounting,
+    pub(crate) accounting: crate::cost::Accounting<CostAdapter>,
     /// Timestamped rollout activity for sparklines; see docs/harness.md for event mappings.
     pub activity: Vec<crate::fleet::Activity>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct Accounting {
+pub(crate) struct CostAdapter {
     provider: Option<String>,
     model: Option<String>,
     unsupported_tier: bool,
     previous: Option<Counters>,
-    pub total: crate::cost::Total,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -132,8 +134,8 @@ impl Counters {
     }
 }
 
-impl Accounting {
-    fn observe(&mut self, event: &Value, catalog: Option<&crate::cost::Catalog>) {
+impl Adapter for CostAdapter {
+    fn read<'a>(&'a mut self, event: &'a Value) -> Reading<'a> {
         let payload = &event["payload"];
         if event["type"] == "session_meta" {
             self.provider = payload["model_provider"].as_str().map(str::to_owned);
@@ -146,70 +148,67 @@ impl Accounting {
             );
         }
         if event["type"] != "event_msg" {
-            return;
+            return Reading::Ignore;
         }
         if payload["type"] == "model_rerouted" {
             // A reroute must identify the actual model before it can be priced.
             self.model = payload["to_model"].as_str().map(str::to_owned);
         }
         if payload["type"] != "token_count" || !payload["info"].is_object() {
-            return;
+            return Reading::Ignore;
         }
         let info = &payload["info"];
         let bedrock = self.provider.as_deref() == Some("amazon-bedrock");
         let Some(current) = Counters::read(&info["total_token_usage"], bedrock) else {
-            self.total.unknown("missing_counters");
-            return;
+            return Reading::Gap("missing_counters");
         };
         if self.previous == Some(current) {
             // Rate-limit/usage updates may repeat the last completed request.
-            return;
+            return Reading::Ignore;
         }
         let previous = self.previous.replace(current).unwrap_or_default();
         let Some(delta) = current.since(previous) else {
-            self.total.unknown("counter_reset");
-            return;
+            return Reading::Gap("counter_reset");
         };
         let Some(last) = Counters::read(&info["last_token_usage"], bedrock) else {
-            self.total.unknown("missing_request_usage");
-            return;
+            return Reading::Gap("missing_request_usage");
         };
-        if delta != last {
+        let gap = if delta != last {
             // A cumulative jump can cover requests whose model/tier is no longer recoverable.
-            self.total.unknown("unobserved_usage");
             if delta.since(last).is_none() {
-                return;
+                return Reading::Gap("unobserved_usage");
             }
-        }
-        if self.unsupported_tier {
-            self.total.unknown("unsupported_service_tier");
-            return;
-        }
-        let (Some(provider), Some(model)) = (self.provider.as_deref(), self.model.as_deref())
-        else {
-            self.total.unknown("missing_provider_or_model");
-            return;
+            Some("unobserved_usage")
+        } else {
+            None
         };
-        let Some(input) = last
-            .input
-            .checked_sub(last.cached)
-            .and_then(|n| n.checked_sub(last.written))
-        else {
-            self.total.unknown("invalid_usage");
-            return;
-        };
-        self.total.estimate(
-            &crate::cost::Usage {
-                provider,
-                model,
-                input,
-                cache_read: last.cached,
-                cache_write: last.written,
-                // Reasoning is already included in output_tokens.
-                output: last.output,
-            },
-            catalog,
-        );
+        Reading::Response(Response {
+            id: None, // Repeated cumulative updates were eliminated above.
+            reported_usd: None,
+            empty: last == Counters::default(),
+            usage: (|| {
+                if self.unsupported_tier {
+                    return Err("unsupported_service_tier");
+                }
+                Ok(crate::cost::Usage {
+                    provider: self
+                        .provider
+                        .as_deref()
+                        .ok_or("missing_provider_or_model")?,
+                    model: self.model.as_deref().ok_or("missing_provider_or_model")?,
+                    input: last
+                        .input
+                        .checked_sub(last.cached)
+                        .and_then(|n| n.checked_sub(last.written))
+                        .ok_or("invalid_usage")?,
+                    cache_read: last.cached,
+                    cache_write: last.written,
+                    // Reasoning is already included in output_tokens.
+                    output: last.output,
+                })
+            })(),
+            gap,
+        })
     }
 }
 
@@ -749,7 +748,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 rollout.map_or_else(|| format!("codex-{}", p.pid), |(_, m)| m.session_id.clone());
             let kind = (daemon.is_some() && locks.get(&id) == daemon.as_ref())
                 .then(|| "daemon".to_owned());
-            let (cost_usd, cost_info) = t.accounting.total.report(crate::cost::Source::ModelsDev);
+            let (cost_usd, cost_info) = t.accounting.report(None);
             Session {
                 title: index
                     .titles
@@ -891,8 +890,7 @@ pub(crate) fn thread_rows_observed(
                     "daemon_lock"
                 },
             );
-            let (cost_usd, cost_info) =
-                tail.accounting.total.report(crate::cost::Source::ModelsDev);
+            let (cost_usd, cost_info) = tail.accounting.report(None);
             Some(Session {
                 title: index
                     .titles
@@ -1086,7 +1084,7 @@ mod tests {
         let first = cost_event([100, 40, 30, 10], [100, 40, 30, 10]);
         let mut tail = Tail::default();
         tail.fold_priced(&(cost_header("model") + &first + &first), Some(&catalog));
-        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        let (usd, info) = tail.accounting.report(None);
         assert!((usd.unwrap() - 0.00025).abs() < 1e-12);
         assert_eq!(
             info.unwrap().priced_records,
@@ -1095,7 +1093,7 @@ mod tests {
         );
         let second = cost_event([120, 50, 30, 12], [20, 10, 0, 2]);
         tail.fold_priced(&(cost_header("other_model") + &second), Some(&catalog));
-        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        let (usd, info) = tail.accounting.report(None);
         assert!(
             (usd.unwrap() - 0.0002665).abs() < 1e-12,
             "price the first request at its own model"
@@ -1117,7 +1115,7 @@ mod tests {
             &(cost_header("not-in-catalog") + &cost_event([200, 80, 60, 20], [100, 40, 30, 10])),
             Some(&catalog),
         );
-        let (usd, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+        let (usd, info) = tail.accounting.report(None);
         assert_eq!(
             info.as_ref().unwrap().coverage,
             crate::cost::Coverage::Partial
@@ -1152,7 +1150,7 @@ mod tests {
         ] {
             let mut tail = Tail::default();
             tail.fold_priced(&(header + &event), Some(&catalog));
-            let (_, info) = tail.accounting.total.report(crate::cost::Source::ModelsDev);
+            let (_, info) = tail.accounting.report(None);
             assert!(
                 info.as_ref().unwrap().unpriced_reasons.contains_key(reason),
                 "{reason}: {info:?}"
@@ -1168,28 +1166,22 @@ mod tests {
         let path = dir.path().join("rollout.jsonl");
         let text = cost_header("model") + &cost_event([101, 40, 30, 10], [101, 40, 30, 10]);
         fs::write(&path, text).unwrap();
-        let absent = tail_of_priced(&path, None)
-            .accounting
-            .total
-            .report(crate::cost::Source::ModelsDev);
+        let absent = tail_of_priced(&path, None).accounting.report(None);
         assert!(absent.0.is_none());
         let priced = tail_of_priced(&path, Some(&catalog))
             .accounting
-            .total
-            .report(crate::cost::Source::ModelsDev);
+            .report(None);
         assert!((priced.0.unwrap() - 0.000464).abs() < 1e-12);
         assert_eq!(
             priced,
             tail_of_priced(&path, Some(&catalog))
                 .accounting
-                .total
-                .report(crate::cost::Source::ModelsDev)
+                .report(None)
         );
         assert!(
             tail_of_priced(&path, None)
                 .accounting
-                .total
-                .report(crate::cost::Source::ModelsDev)
+                .report(None)
                 .0
                 .is_none()
         );
