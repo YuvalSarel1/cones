@@ -3,7 +3,7 @@ use crate::{
     harness, private_file,
 };
 use anyhow::{Context, Result, bail, ensure};
-use chrono::{DateTime, Datelike, Duration, Local, Timelike};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Timelike};
 use plist::{Dictionary, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -153,6 +153,64 @@ pub fn first_missed(
             return Ok(Some(t));
         }
         t += Duration::minutes(1);
+    }
+    Ok(None)
+}
+
+/// Next configured tick, strictly after `after`. Enumerate matching calendar dates
+/// before wall-clock times, so rare schedules do not require years of minute scans.
+/// Nonexistent local times are skipped; either occurrence of a repeated time can match.
+pub fn next_fire<Tz: TimeZone>(
+    schedule: &str,
+    after: DateTime<Tz>,
+) -> Result<Option<DateTime<Tz>>> {
+    let intervals = calendar_intervals(schedule)?;
+    let zone = after.timezone();
+    let mut date = after.date_naive();
+    // Eight years include the next leap day even across a non-leap century.
+    for _ in 0..366 * 8 {
+        let mut next = None;
+        for interval in &intervals {
+            let at = |key: &str| interval.get(key).copied();
+            let weekday = date.weekday().num_days_from_sunday();
+            let days = match (at("Day"), at("Weekday")) {
+                (Some(day), Some(week)) => day == date.day() || week == weekday,
+                (day, week) => {
+                    day.is_none_or(|d| d == date.day()) && week.is_none_or(|w| w == weekday)
+                }
+            };
+            if !days || at("Month").is_some_and(|month| month != date.month()) {
+                continue;
+            }
+            for hour in 0..24 {
+                if at("Hour").is_some_and(|h| h != hour) {
+                    continue;
+                }
+                for minute in 0..60 {
+                    if at("Minute").is_some_and(|m| m != minute) {
+                        continue;
+                    }
+                    let local = zone.from_local_datetime(
+                        &date.and_hms_opt(hour, minute, 0).expect("valid time"),
+                    );
+                    for candidate in [local.clone().earliest(), local.latest()]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if candidate > after && next.as_ref().is_none_or(|next| candidate < *next) {
+                            next = Some(candidate);
+                        }
+                    }
+                }
+            }
+        }
+        if next.is_some() {
+            return Ok(next);
+        }
+        let Some(tomorrow) = date.succ_opt() else {
+            break;
+        };
+        date = tomorrow;
     }
     Ok(None)
 }
@@ -543,6 +601,74 @@ mod tests {
             .and_local_timezone(Local)
             .single()
             .expect("test dates avoid DST folds")
+    }
+
+    #[test]
+    fn next_fire_uses_calendar_constraints_and_searches_across_leap_years() {
+        let next = |schedule: &str, after: &str| {
+            next_fire(schedule, DateTime::parse_from_rfc3339(after).unwrap())
+                .unwrap()
+                .map(|at| at.to_rfc3339())
+        };
+        assert_eq!(
+            next("* * * * *", "2026-09-17T09:00:59+03:00").as_deref(),
+            Some("2026-09-17T09:01:00+03:00")
+        );
+        assert_eq!(
+            next("0 2 * * *", "2026-09-17T02:00:00+03:00").as_deref(),
+            Some("2026-09-18T02:00:00+03:00")
+        );
+        assert_eq!(
+            next("0 9 1 * 1", "2026-09-17T12:00:00+03:00").as_deref(),
+            Some("2026-09-21T09:00:00+03:00"),
+            "day and weekday are ORed"
+        );
+        assert_eq!(
+            next("0 0 29 2 *", "2096-03-01T00:00:00+00:00").as_deref(),
+            Some("2104-02-29T00:00:00+00:00")
+        );
+        assert_eq!(next("0 0 31 2 *", "2026-09-17T12:00:00+03:00"), None);
+    }
+
+    #[test]
+    fn next_fire_respects_local_clock_gaps_and_repeated_minutes() {
+        let mut date = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        // Use the machine's timezone, including zones with no daylight saving.
+        for _ in 0..365 {
+            for hour in 0..24 {
+                let naive = date.and_hms_opt(hour, 0, 0).unwrap();
+                let schedule = format!("0 {hour} * * *");
+                match Local.from_local_datetime(&naive) {
+                    chrono::LocalResult::None => {
+                        if let Some(before) = Local
+                            .from_local_datetime(&(naive - Duration::hours(2)))
+                            .earliest()
+                        {
+                            let found = next_fire(&schedule, before).unwrap().unwrap();
+                            assert!(
+                                found.date_naive() > date,
+                                "a skipped hour cannot fire: {found}"
+                            );
+                            assert_eq!(found.hour(), hour);
+                        }
+                    }
+                    chrono::LocalResult::Ambiguous(first, second) => {
+                        let (first, second) = if first < second {
+                            (first, second)
+                        } else {
+                            (second, first)
+                        };
+                        assert_eq!(
+                            next_fire(&schedule, first).unwrap(),
+                            Some(second),
+                            "the later occurrence is still in the future"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            date = date.succ_opt().unwrap();
+        }
     }
 
     #[test]

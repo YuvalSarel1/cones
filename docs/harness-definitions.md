@@ -22,7 +22,7 @@ Identity checks remain native code. Reported-thread handover requires a unique n
 | `home` | Native home environment variable, explicit default base and optional sibling-home discovery. |
 | `discovery` | Registry location or process name, daemon pid and lock paths, and process subcommands that are not sessions. |
 | `state` | Ordered event guards, discriminator paths and state mappings. Claude uses its native registry handler and omits this block. |
-| `transcript` | Scan roots, message sources and an optional saved statusline window source. |
+| `transcript` | Scan roots, message sources and an optional saved statusline source. `window_pointer` selects the reported context window; optional `cost_pointer` selects reported dollars. |
 | `operations` | Launch, attach, resume, remove, unarchive, rename availability and session-kind behavior. |
 | `execution` | Native enforcement and result-reporting support. Both default to `unknown`. |
 | `viewer` | Label, speculative joins, retention, input alignment and optional native input overrides. |

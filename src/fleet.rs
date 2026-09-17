@@ -365,6 +365,7 @@ fn session(
     } else {
         Details::default()
     };
+    let (window, cost) = statusline_values(dir, id);
     Some(Session {
         session_id: id.into(),
         harness: claude(),
@@ -380,8 +381,8 @@ fn session(
         tokens_in: d.report.tokens_in,
         tokens_out: d.report.tokens_out,
         context_tokens: d.report.context,
-        context_window: statusline_window(dir, id),
-        cost_usd: None,
+        context_window: window,
+        cost_usd: cost,
         title: d
             .title
             .or_else(|| {
@@ -430,18 +431,34 @@ fn state(job: &Value, status: &str) -> String {
     .into()
 }
 
-/// Read only the window saved by the user's statusLine command.
-fn statusline_window(claude: &Path, id: &str) -> Option<u64> {
-    let source = crate::harness::spec(crate::config::HarnessKind::Claude)
+/// Read reported values saved by the user's statusLine command.
+fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>) {
+    let Some(source) = crate::harness::spec(crate::config::HarnessKind::Claude)
         .transcript
         .statusline
-        .as_ref()?;
-    let text =
-        fs::read_to_string(claude.join(&source.directory).join(format!("{id}.json"))).ok()?;
-    serde_json::from_str::<Value>(&text)
-        .ok()?
-        .pointer(&source.window_pointer)?
-        .as_u64()
+        .as_ref()
+    else {
+        return (None, None);
+    };
+    let values = fs::read(claude.join(&source.directory).join(format!("{id}.json")))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    let window = values
+        .as_ref()
+        .and_then(|v| v.pointer(&source.window_pointer)?.as_u64());
+    let cost = values.as_ref().and_then(|v| statusline_cost(source, v));
+    (window, cost)
+}
+
+/// Read reported dollars only from the declared statusline source.
+pub(crate) fn statusline_cost(
+    source: &crate::harness::spec::Statusline,
+    value: &Value,
+) -> Option<f64> {
+    value
+        .pointer(source.cost_pointer.as_deref()?)?
+        .as_f64()
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
 }
 
 #[derive(Default, Clone)]
@@ -739,7 +756,11 @@ pub(crate) fn run_columns(
             columns = saved;
         }
     }
-    columns.context_window = session_id.and_then(|id| statusline_window(claude, id));
+    if let Some(id) = session_id {
+        let (window, cost) = statusline_values(claude, id);
+        columns.context_window = window;
+        columns.cost_usd = cost;
+    }
     columns
 }
 
@@ -1230,6 +1251,35 @@ pub fn tilde(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statusline_cost_follows_the_declared_pointer_and_stays_absent_without_one() {
+        let mut source = crate::harness::spec::Statusline {
+            directory: PathBuf::from("statusline"),
+            window_pointer: "/window".into(),
+            cost_pointer: Some("/billing/dollars".into()),
+        };
+        let payload = serde_json::json!({
+            "cost": {"total_cost_usd": 99},
+            "billing": {"dollars": 0.25},
+        });
+        assert_eq!(statusline_cost(&source, &payload), Some(0.25));
+        for (value, expected) in [
+            (serde_json::json!(0), Some(0.0)),
+            (serde_json::json!(-1), None),
+            (serde_json::json!("0.25"), None),
+            (Value::Null, None),
+        ] {
+            assert_eq!(
+                statusline_cost(&source, &serde_json::json!({"billing":{"dollars":value}})),
+                expected
+            );
+        }
+        source.cost_pointer = Some("/missing".into());
+        assert_eq!(statusline_cost(&source, &payload), None);
+        source.cost_pointer = None;
+        assert_eq!(statusline_cost(&source, &payload), None);
+    }
 
     #[test]
     fn a_model_id_is_shown_under_the_name_it_is_presented_by() {

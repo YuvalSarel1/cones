@@ -32,6 +32,7 @@ transcript:
   statusline:
     directory: statusline
     window_pointer: /context_window/context_window_size
+    cost_pointer: /cost/total_cost_usd
 operations:
   launch:
     identity: background_id

@@ -802,7 +802,7 @@ fn statusline_changes_invalidate_columns_and_a_failed_refresh_keeps_the_prior_sn
     );
     write(
         &dir.path().join("statusline").join(format!("{A}.json")),
-        &[json!({"context_window":{"context_window_size":200000}})],
+        &[json!({"context_window":{"context_window_size":200000},"cost":{"total_cost_usd":0.5}})],
     );
     let after = page(
         &mut reader,
@@ -815,6 +815,26 @@ fn statusline_changes_invalidate_columns_and_a_failed_refresh_keeps_the_prior_sn
     assert_eq!(
         after.entries[0].columns.as_ref().unwrap().context_window,
         Some(200000)
+    );
+    assert_eq!(
+        after.entries[0].columns.as_ref().unwrap().cost_usd,
+        Some(0.5)
+    );
+    write(
+        &dir.path().join("statusline").join(format!("{A}.json")),
+        &[json!({"context_window":{"context_window_size":200000},"cost":{"total_cost_usd":0}})],
+    );
+    let repriced = page(
+        &mut reader,
+        Query {
+            hydrate: true,
+            ..Query::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        repriced.entries[0].columns.as_ref().unwrap().cost_usd,
+        Some(0.0)
     );
     let projects = dir.path().join("projects");
     fs::rename(&projects, dir.path().join("saved")).unwrap();

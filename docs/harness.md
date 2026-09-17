@@ -82,7 +82,7 @@ The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each s
 | Context tokens | Last real message's input + cache creation + cache read, the same usage fields as statusLine. | Latest `token_count.info.last_token_usage.total_tokens`. | Those same three input counters on the last assistant message, as in pi's status line. |
 | Context window | Saved statusLine payload, described below. | Latest `token_count.info.model_context_window`. | Absent; the catalog's model window is not written in session files. |
 | Model | Last message with usage, `message.model`. | Latest `turn_context.model`. | Last assistant message's `model`; `model_change` entries are not used. |
-| Session cost | Absent: transcripts contain tokens without prices. Supervised run cost comes from the [result event](jobs.md#results). | Absent: rollouts contain tokens without prices. | Sum `usage.cost.total`; zero shows `-`. pi writes zero for models it has not priced, including its Bedrock models. |
+| Session cost | Saved statusLine `cost.total_cost_usd`, when present, including reported zero. Finished supervised run cost comes from the [result event](jobs.md#results). | Absent: rollouts contain tokens without prices. | Sum `usage.cost.total`; zero shows `-`. pi writes zero for models it has not priced, including its Bedrock models. |
 
 Claude's `<synthetic>` messages are skipped: they represent turns without a model answer and contain zero usage. Before a harness reports usage, counters stay absent. An absent last-activity timestamp is never replaced by process start.
 
@@ -110,7 +110,7 @@ A completed turn followed by a local command such as `/compact` may still satisf
 
 ### Context window for Claude
 
-Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
+Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`, including its reported `cost.total_cost_usd` when present. Missing, negative or non-finite costs remain unavailable. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
 
 ```sh
 claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}

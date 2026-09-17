@@ -494,6 +494,7 @@ impl ScanRoot {
 pub struct Statusline {
     pub directory: PathBuf,
     pub window_pointer: String,
+    pub cost_pointer: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -897,6 +898,9 @@ impl HarnessSpec {
         if let Some(statusline) = &self.transcript.statusline {
             relative(&statusline.directory)?;
             pointer(&statusline.window_pointer)?;
+            if let Some(cost) = &statusline.cost_pointer {
+                pointer(cost)?;
+            }
         }
         for message in [
             &self.transcript.messages.user,

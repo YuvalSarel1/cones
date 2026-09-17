@@ -2,8 +2,11 @@ version: 3
 defaults:
   timeout_min: 5
   write: false
-columns: [harness, state, context, activity, model, age, last]   # dashboard session columns, see docs/jobs.md
-run_columns: [harness, status, started, took, context, model, cost, reason]
+# Optional column overrides; omit them to follow category defaults. See docs/jobs.md.
+# columns: [state, context, activity, model, age, last_active, folder, last_reply]
+# run_columns: [status, started, duration, model, cost, folder, reason]
+# job_columns: [status, schedule, next_run, model, last_run, folder]
+# history_columns: [last_active, folder, model, context, last_reply]
 jobs:
   - name: readme-check
     schedule: "0 9 * * 1-5"

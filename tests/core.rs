@@ -287,6 +287,41 @@ fn registry(claude: &std::path::Path, name: &str, entry: serde_json::Value) {
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join(format!("{name}.json")), entry.to_string()).unwrap();
 }
+
+#[test]
+fn claude_session_cost_comes_only_from_the_saved_report_and_keeps_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    registry(
+        dir.path(),
+        id,
+        serde_json::json!({
+            "pid": std::process::id(), "sessionId": id, "cwd": dir.path(),
+            "kind": "interactive", "status": "idle",
+        }),
+    );
+    fs::create_dir(dir.path().join("statusline")).unwrap();
+    let path = dir.path().join("statusline").join(format!("{id}.json"));
+    let cost = || {
+        cones::fleet::find(dir.path(), id)
+            .unwrap()
+            .unwrap()
+            .cost_usd
+    };
+    assert_eq!(cost(), None);
+    for (reported, expected) in [
+        (serde_json::json!(0), Some(0.0)),
+        (serde_json::json!(0.125), Some(0.125)),
+        (serde_json::json!(-1), None),
+        (serde_json::json!("0.125"), None),
+        (serde_json::Value::Null, None),
+    ] {
+        fs::write(&path, serde_json::json!({"cost":{"total_cost_usd":reported},"context_window":{"context_window_size":200000}}).to_string()).unwrap();
+        assert_eq!(cost(), expected);
+    }
+    fs::write(path, r#"{"usage":{"input_tokens":1000000}}"#).unwrap();
+    assert_eq!(cost(), None, "token counts do not supply a price");
+}
 fn transcript(claude: &std::path::Path, cwd: &std::path::Path, id: &str, prompt: u64, text: &str) {
     let project = claude.join("projects").join(
         cwd.to_string_lossy()
@@ -648,7 +683,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     let row = list.lines().find(|l| l.starts_with(live)).unwrap();
     assert!(row.starts_with(&format!("{live}\tidle\t")), "{row}");
     for s in [
-        "✻ claude  ",
+        "✻  ",
         "idle  ",
         "fix the widget",
         "Fable 5.1",
@@ -680,7 +715,7 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         list.contains("tokens in/out") && !list.contains("100k  "),
         "columns: in jobs.yaml picks the session columns"
     );
-    fs::write(&jobs, "version: 1\ncolumns: [cost]\njobs: []\n").unwrap();
+    fs::write(&jobs, "version: 1\ncolumns: [speed]\njobs: []\n").unwrap();
     assert!(
         config::read_jobs(&jobs)
             .unwrap_err()

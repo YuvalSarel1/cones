@@ -510,17 +510,11 @@ impl Cache {
             File::open(statusline.as_ref().expect("stamped statusline"))?
                 .take(WINDOW)
                 .read_to_end(&mut bytes)?;
-            columns.context_window = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| {
-                v.pointer(
-                    &spec
-                        .transcript
-                        .statusline
-                        .as_ref()
-                        .expect("stamped source")
-                        .window_pointer,
-                )?
-                .as_u64()
-            });
+            let source = spec.transcript.statusline.as_ref().expect("stamped source");
+            if let Ok(v) = serde_json::from_slice::<Value>(&bytes) {
+                columns.context_window = v.pointer(&source.window_pointer).and_then(Value::as_u64);
+                columns.cost_usd = fleet::statusline_cost(source, &v).or(columns.cost_usd);
+            }
         }
         ensure!(
             stamp(&e.transcript)? == current,

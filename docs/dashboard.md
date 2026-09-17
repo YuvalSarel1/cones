@@ -39,7 +39,7 @@ A newly pinned empty folder becomes the selection. Choosing a folder already con
 
 ### Jobs
 
-The jobs screen lists jobs in file order, then `new job`. Its fixed columns show enabled state, harness, last run status, schedule, name, model, age and directory. `enter` starts a job; `ctrl+e` edits it with an empty composer; confirmed removal stops its running run or deletes the idle job.
+The jobs screen lists jobs in file order, then `new job`. Its `job_columns` picker controls status, schedule, next run, model, last run and folder, with harness names optional. Enabled and harness icons and the job name always show. Next run follows the enabled job's configured calendar intervals. `enter` starts a job; `ctrl+e` edits it with an empty composer; confirmed removal stops its running run or deletes the idle job.
 
 Open `new job`, or press `enter` on the menu's `jobs` button with an instruction typed. The wizard accepts answers in any order: `↑ ↓` select rows, `enter` accepts and advances, `← →` pick schedules, backspace on an empty answer goes back, and `esc` cancels. Untouched answers use the displayed defaults.
 
@@ -69,7 +69,7 @@ Each row shows its control and value. `↑ ↓` select a field; `← →` change
 | Text | Type a value; environment names use commas. Empty values omit overrides. |
 | Columns | Visible columns precede a separator and hidden columns. Arrows select, space shows/hides, `[` `]` reorder visible columns, and backspace restores defaults. The live table updates after each save. |
 
-Config saves replace only `defaults`, `columns`, `run_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
+Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
 
 ### Help
 
@@ -79,7 +79,7 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `whole_columns`,
 
 Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Pinned empty folders show their git branch and tree state. Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
 
-Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The `columns` and `run_columns` rows in config each support showing, hiding, reordering and restoring their own defaults. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
+Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The `columns`, `run_columns`, `job_columns` and `history_columns` rows in config each support showing, hiding, reordering and restoring their own defaults. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
 
 | State | Icon | Label | Color |
 | --- | --- | --- | --- |
@@ -115,7 +115,7 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 
 ### History
 
-History appears below the live list, ordered by latest recorded activity regardless of grouping. It excludes live sessions and identified Claude ledger sessions. It uses the configured session columns, with state and activity `-`, and `last` showing the last recorded reply. [Historical sources](harness.md#historical-sessions) define which conversations appear.
+History appears below the live list, ordered by latest recorded activity regardless of grouping. It excludes live sessions and identified Claude ledger sessions. Its independent `history_columns` default to last active, folder, model, context and last reply. Live state and activity chart columns are not offered. [Historical sources](harness.md#historical-sessions) define which conversations appear.
 
 Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
 

@@ -165,6 +165,11 @@ pub struct Data {
     /// Session column names from jobs.yaml's `columns:`.
     pub columns: Vec<String>,
     pub run_columns: Vec<String>,
+    pub job_columns: Vec<String>,
+    pub history_columns: Vec<String>,
+    columns_default: bool,
+    branches: BTreeMap<PathBuf, String>,
+    next_runs: BTreeMap<String, chrono::DateTime<chrono::Utc>>,
     run_reports: HashMap<String, history::Columns>,
     pub pane: config::Pane,
     /// Applied at startup only.
@@ -212,6 +217,22 @@ impl Data {
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
         let folders = ledger.folders()?;
         let jobs = config::read_jobs(jobs_path).unwrap_or_default();
+        let columns = config::columns(jobs_path);
+        let job_columns = config::job_columns(jobs_path);
+        let branches = if columns.iter().any(|c| c == "branch") {
+            seen.iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .filter_map(|dir| git_branch(dir).map(|b| (dir.clone(), b)))
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        let next_runs = if job_columns.iter().any(|c| c == "next_run") {
+            next_runs(&jobs)
+        } else {
+            BTreeMap::new()
+        };
         let git = folders
             .iter()
             .filter(|f| !seen.contains(f) && !jobs.iter().any(|j| &j.cwd == *f))
@@ -221,8 +242,13 @@ impl Data {
             jobs,
             runs,
             sessions,
-            columns: config::columns(jobs_path),
+            columns,
+            columns_default: config::file_columns(jobs_path).is_none(),
             run_columns: config::run_columns(jobs_path),
+            job_columns,
+            history_columns: config::history_columns(jobs_path),
+            branches,
+            next_runs,
             run_reports,
             pane: config::pane(jobs_path),
             start: config::start(jobs_path),
@@ -282,7 +308,7 @@ impl Data {
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, false, &HashSet::new(), &mut Widths::new())
+        self.rows_excluding(by_state, false, false, &HashSet::new(), &mut Widths::new())
     }
 
     /// Hide pending deletions without changing source data, so failures can restore their rows.
@@ -290,10 +316,10 @@ impl Data {
         &self,
         by_state: bool,
         jobs_view: bool,
+        hide_reply: bool,
         deleting: &HashSet<&str>,
         widths: &mut Widths,
     ) -> Vec<Row> {
-        let by_state = by_state || jobs_view;
         let mut out = Vec::new();
         let header = |out: &mut Vec<Row>, title: &str| {
             out.push(Row {
@@ -358,26 +384,19 @@ impl Data {
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
         let table = flat.iter().any(|(_, e)| !matches!(e, Entry::Folder(_)));
-        let job_columns = ["model".to_owned(), "age".to_owned(), "last".to_owned()];
-        // Keep the same columns at every width; narrow panes clip the right edge.
-        let set = &self.columns;
-        let has_state = jobs_view || set.iter().any(|c| c == "state");
-        // The harness column is the name after its mark; the mark itself always shows.
-        let has_harness = jobs_view || set.iter().any(|c| c == "harness");
-        let harness = |h: &str| {
-            if has_harness {
-                logo(h)
-            } else {
-                mark(h).to_owned()
-            }
-        };
-        let cols: Vec<&String> = if jobs_view {
-            job_columns.iter().collect()
+        let session_columns = visible_session_columns(&self.columns, by_state, hide_reply);
+        let set = if jobs_view {
+            &self.job_columns
         } else {
-            set.iter()
-                .filter(|c| *c != "state" && *c != "harness")
-                .collect()
+            &session_columns
         };
+        let state_key = if jobs_view { "status" } else { "state" };
+        let has_state = set.iter().any(|c| c == state_key);
+        let has_harness = set.iter().any(|c| c == "harness");
+        let cols: Vec<&String> = set
+            .iter()
+            .filter(|c| *c != state_key && *c != "harness")
+            .collect();
         let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
         let cells = flat
             .iter()
@@ -386,9 +405,10 @@ impl Data {
                 Entry::Folder(_) => vec![],
                 Entry::Session(s) => session_cells(
                     s,
-                    &self.columns,
+                    set,
                     by_state,
                     sparks.get(&s.session_id).map(String::as_str),
+                    self.branches.get(&s.cwd).map(String::as_str),
                 ),
                 Entry::Job(j) => {
                     let last = self
@@ -397,33 +417,34 @@ impl Data {
                         .rev()
                         .find(|r| r.started.job.as_deref() == Some(&j.name));
                     let status = last.map_or("-".to_owned(), |r| r.status());
+                    let next = self.next_runs.get(&j.name).copied();
+                    let h = j.harness.to_string();
                     let mut row = vec![
                         (if j.enabled { "◆" } else { "◇" }.into(), color(&status)),
                         (
-                            harness(&j.harness.to_string()),
-                            brand(&j.harness.to_string()),
+                            if has_harness {
+                                logo(&h)
+                            } else {
+                                mark(&h).into()
+                            },
+                            brand(&h),
                         ),
                     ];
                     if has_state {
-                        let (word, style) = job_cell("state", j, last, &status, by_state);
-                        row.push((format!("{word} · {}", j.schedule), style));
+                        row.push(job_cell("status", j, last, &status, next));
                     }
                     row.push((j.name.clone(), plain()));
-                    row.extend(cols.iter().map(|c| job_cell(c, j, last, &status, by_state)));
+                    row.extend(cols.iter().map(|c| job_cell(c, j, last, &status, next)));
                     row
                 }
             })
             .collect();
         let mut names = vec!["", ""];
         if has_state {
-            names.push("state");
+            names.push(state_key);
         }
-        names.push("title");
-        names.extend(cols.iter().map(|c| match c.as_str() {
-            "tokens" => "tokens in/out",
-            "last" if by_state => "dir",
-            c => c,
-        }));
+        names.push(if jobs_view { "job" } else { "title" });
+        names.extend(cols.iter().map(|c| column_label(c)));
         let (names, cells) = columns(&names, cells, widths);
         if table {
             out.push(Row {
@@ -501,10 +522,7 @@ impl Data {
                 names.push("status");
             }
             names.push("job");
-            names.extend(
-                cols.iter()
-                    .map(|c| if *c == "tokens" { "tokens in/out" } else { *c }),
-            );
+            names.extend(cols.iter().map(|c| column_label(c)));
             let cells = runs
                 .iter()
                 .map(|r| {
@@ -869,7 +887,7 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
         let now = rows
             .iter()
             .filter_map(|r| r.get(c))
-            .map(|(t, _)| t.chars().count())
+            .map(|(t, _)| Span::raw(t.as_str()).width())
             .max()
             .unwrap_or(0);
         *w = (*w).max(now);
@@ -880,11 +898,8 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
             r.into_iter()
                 .enumerate()
                 .map(|(c, (text, style))| {
-                    let pad = if c + 1 == n {
-                        0
-                    } else {
-                        widths[c] - text.chars().count() + 2
-                    };
+                    let pad = widths[c] - Span::raw(text.as_str()).width()
+                        + if c + 1 == n { 0 } else { 2 };
                     (format!("{text}{:pad$}", ""), style)
                 })
                 .collect()
@@ -892,28 +907,55 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
         .collect()
 }
 
-/// `last` shows the directory when grouping by state; session-only columns stay blank.
+fn column_label(column: &str) -> &str {
+    match config::column_name(column) {
+        "tokens" => "tokens in/out",
+        "last_reply" => "last reply",
+        "last_active" => "last active",
+        "last_run" => "last run",
+        "next_run" => "next run",
+        c => c,
+    }
+}
+
+fn visible_session_columns(set: &[String], by_state: bool, hide_reply: bool) -> Vec<String> {
+    set.iter()
+        .map(|c| config::column_name(c))
+        .filter(|c| (*c != "folder" || by_state) && (*c != "last_reply" || !hide_reply))
+        .map(str::to_owned)
+        .collect()
+}
+
 fn job_cell(
     column: &str,
     j: &ResolvedJob,
     last: Option<&Run>,
     status: &str,
-    by_state: bool,
+    next: Option<chrono::DateTime<chrono::Utc>>,
 ) -> (String, Style) {
-    match column {
-        "state" if !j.enabled => ("off".into(), dim()),
-        "state" => (status.to_owned(), color(status)),
+    match config::column_name(column) {
+        "status" if !j.enabled => ("off".into(), dim()),
+        "status" => (status.to_owned(), color(status)),
+        "schedule" => (j.schedule.clone(), dim()),
+        "next_run" => (
+            if j.enabled {
+                local_stamp(next)
+            } else {
+                "-".into()
+            },
+            dim(),
+        ),
         "model" => (
             j.model.as_deref().map_or_else(|| "-".into(), fleet::model),
             dim(),
         ),
-        "age" => (
+        "last_run" => (
             last.and_then(|r| r.started.fired_at)
                 .map_or_else(|| "-".into(), fleet::age),
             dim(),
         ),
-        "last" if by_state => (fleet::tilde(&j.cwd), dim()),
-        _ => (String::new(), dim()),
+        "folder" => (fleet::tilde(&j.cwd), dim()),
+        _ => ("-".into(), dim()),
     }
 }
 
@@ -923,6 +965,7 @@ fn session_cells(
     set: &[String],
     by_state: bool,
     spark: Option<&str>,
+    branch: Option<&str>,
 ) -> Vec<(String, Style)> {
     let harness = if set.iter().any(|c| c == "harness") {
         logo(&s.harness)
@@ -950,14 +993,20 @@ fn session_cells(
     row.extend(
         set.iter()
             .filter(|c| *c != "state" && *c != "harness")
-            .map(|c| cell(c, s, by_state, spark)),
+            .map(|c| {
+                if c == "branch" {
+                    (branch.unwrap_or("-").into(), dim())
+                } else {
+                    cell(c, s, by_state, spark)
+                }
+            }),
     );
     row
 }
 
-fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (String, Style) {
+fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
-    match column {
+    match config::column_name(column) {
         "state" => (label(&s.state).into(), color(&s.state)),
         "activity" => {
             let bars = spark.unwrap_or_default().to_owned();
@@ -971,8 +1020,13 @@ fn cell(column: &str, s: &Session, by_state: bool, spark: Option<&str>) -> (Stri
         "age" => (since(s.started), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
-        "last" if by_state => (fleet::tilde(&s.cwd), dim()),
-        "last" => (
+        "folder" => (fleet::tilde(&s.cwd), dim()),
+        "last_active" => (since(s.last_activity), dim()),
+        "cost" => (
+            s.cost_usd.map(fleet::cost).unwrap_or_else(|| "-".into()),
+            dim(),
+        ),
+        "last_reply" => (
             s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default(),
             dim(),
         ),
@@ -991,10 +1045,10 @@ fn local_stamp(at: Option<chrono::DateTime<chrono::Utc>>) -> String {
 
 fn run_cell(column: &str, run: &Run, report: &history::Columns) -> (String, Style) {
     let last = run.terminal.as_ref().unwrap_or(&run.started);
-    let text = match column {
+    let text = match config::column_name(column) {
         "started" => local_stamp(run.started.fired_at),
         "ended" => local_stamp(last.ended_at),
-        "took" => last
+        "duration" => last
             .duration_s
             .or_else(|| {
                 (run.terminal.is_none() && run.status() == "started")
@@ -1017,16 +1071,20 @@ fn run_cell(column: &str, run: &Run, report: &history::Columns) -> (String, Styl
             last.tokens_in.or(report.tokens_in),
             last.tokens_out.or(report.tokens_out),
         ),
-        "cost" => last.cost_usd.map(fleet::cost).unwrap_or_else(|| "-".into()),
+        "cost" => last
+            .cost_usd
+            .or_else(|| run.terminal.is_none().then_some(report.cost_usd).flatten())
+            .map(fleet::cost)
+            .unwrap_or_else(|| "-".into()),
         "reason" => last.reason.clone().unwrap_or_else(|| "-".into()),
-        "dir" => run
+        "folder" => run
             .started
             .cwd
             .as_deref()
             .map(fleet::tilde)
             .unwrap_or_else(|| "-".into()),
         "trigger" => run.started.trigger.clone().unwrap_or_else(|| "-".into()),
-        "last" => report
+        "last_reply" => report
             .last
             .as_deref()
             .map(|s| clip(s, 100))
@@ -1414,10 +1472,13 @@ fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
 fn whole_cells(spans: Vec<Span<'static>>, width: usize, keep: usize) -> Vec<Span<'static>> {
     let mut out = Vec::with_capacity(spans.len());
     let mut used = 0;
+    let count = spans.len();
     for (i, span) in spans.into_iter().enumerate() {
         // The two spaces between columns are the cell's own; falling off the edge is no cut.
-        let pad = span.content.len() - span.content.trim_end_matches(' ').len();
-        if used + span.width() - pad > width {
+        // Retain the allocated width, so short headings and missing values cannot
+        // appear under a column whose wider values would be omitted.
+        let gap = if i + 1 == count { 0 } else { 2 };
+        if used + span.width().saturating_sub(gap) > width {
             if i < keep {
                 out.extend(fit(vec![span], width.saturating_sub(used)));
             }
@@ -1478,6 +1539,54 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
     }
     path.canonicalize()
         .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn git_branch(dir: &Path) -> Option<String> {
+    let read = |args: &[&str]| {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    };
+    read(&["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .or_else(|| read(&["rev-parse", "--short", "HEAD"]).map(|hash| format!("@{hash}")))
+}
+
+fn next_runs(jobs: &[ResolvedJob]) -> BTreeMap<String, chrono::DateTime<chrono::Utc>> {
+    type Stamp = chrono::DateTime<chrono::Utc>;
+    static CACHE: std::sync::Mutex<BTreeMap<String, (Stamp, Option<Stamp>)>> =
+        std::sync::Mutex::new(BTreeMap::new());
+    let now = chrono::Utc::now();
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.retain(|schedule, _| jobs.iter().any(|j| j.enabled && &j.schedule == schedule));
+    jobs.iter()
+        .filter(|j| j.enabled)
+        .filter_map(|j| {
+            let next = match cache.get(&j.schedule) {
+                Some((checked, next))
+                    if now >= *checked
+                        && next
+                            .map_or(now - *checked < chrono::Duration::days(1), |at| at > now) =>
+                {
+                    *next
+                }
+                _ => {
+                    let next = launchd::next_fire(&j.schedule, now.with_timezone(&chrono::Local))
+                        .ok()
+                        .flatten()
+                        .map(|at| at.with_timezone(&chrono::Utc));
+                    cache.insert(j.schedule.clone(), (now, next));
+                    next
+                }
+            };
+            next.map(|next| (j.name.clone(), next))
+        })
+        .collect()
 }
 
 pub fn git_state(dir: &Path) -> Option<String> {
@@ -2447,7 +2556,7 @@ fn fold_row() -> usize {
 const SHUT_LONG: &str = "The value every run starts with, for each field a run has, unless the job's own line says otherwise. Scheduled runs and a `once` run take them; a session the composer starts is the harness's own and takes only the model and provider above.";
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 28] = [
+const FIELDS: [Field; 30] = [
     Field {
         group: "cones",
         sub: "",
@@ -2462,8 +2571,8 @@ const FIELDS: [Field; 28] = [
         sub: "",
         name: "columns",
         short: "session columns",
-        long: "The columns the table draws after the harness and title, in their order. The row is the arranger: left and right pick a column, space shows or hides it, [ ] move it, and the table redraws under each key.",
-        builtin: "harness, state, context, activity, model, age, last",
+        long: "Agent columns. Folder appears when grouping by state; folder headings identify the normal groups. The default last reply hides while the preview pane is open; an explicit column set keeps your choice. Harness controls the name beside its permanent icon.",
+        builtin: "state, context, activity, model, age, last_active, folder, last_reply",
         input: Answer::Columns,
     },
     Field {
@@ -2472,7 +2581,25 @@ const FIELDS: [Field; 28] = [
         name: "run_columns",
         short: "run columns",
         long: "Columns for supervised runs. The harness icon and job always show; harness adds the name and status sits before the job. Left and right select, space shows or hides, [ ] reorder, and backspace restores defaults. Times use your local timezone.",
-        builtin: "harness, status, started, took, context, model, cost, reason",
+        builtin: "status, started, duration, model, cost, folder, reason",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "job_columns",
+        short: "job columns",
+        long: "Job columns. Enabled and harness icons and the job name always show. Schedule and last run status are separate. Next run is the next local time matching the enabled job's configured schedule.",
+        builtin: "status, schedule, next_run, model, last_run, folder",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "history_columns",
+        short: "history columns",
+        long: "Historical session columns, independent of live agents. Last active is time since the latest recorded activity. Folder identifies the conversation's directory. Live state and activity charts do not apply here.",
+        builtin: "last_active, folder, model, context, last_reply",
         input: Answer::Columns,
     },
     Field {
@@ -2945,15 +3072,17 @@ fn job_value(f: &Field, j: &config::Job) -> String {
 pub enum ConfigAction {
     Stay,
     Cancel,
-    /// Validated values for the caller to persist. Empty columns and absent blocks use built-ins.
+    /// Validated values to persist. Absent sets use defaults; empty sets hide optional columns.
     Save(
         Box<config::Policy>,
-        Vec<String>,
-        Option<config::Activity>,
+        Option<Vec<String>>,
+        Option<Box<config::Activity>>,
         Option<config::Pane>,
         Option<config::Start>,
         Option<f64>,
         Option<bool>,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
         Option<Vec<String>>,
     ),
 }
@@ -2975,8 +3104,7 @@ pub struct ConfigForm {
     shut: bool,
     /// The selection sits on that head rather than on the field it stands for, open or shut.
     on_head: bool,
-    arrange: ColumnForm,
-    run_arrange: ColumnForm,
+    arrange: HashMap<&'static str, ColumnForm>,
 }
 
 impl ConfigForm {
@@ -2990,11 +3118,35 @@ impl ConfigForm {
         confirm_secs: Option<f64>,
         whole_columns: Option<bool>,
         run_columns: Option<&[String]>,
+        job_columns: Option<&[String]>,
+        history_columns: Option<&[String]>,
     ) -> Self {
         let num = |v: Option<f64>| v.map(|v| v.to_string()).unwrap_or_default();
         let flag = |v: Option<bool>| v.map(|v| v.to_string()).unwrap_or_default();
         let spark = |f: fn(&config::Activity) -> String| spark.map(f).unwrap_or_default();
         let pane = |f: fn(&config::Pane) -> String| pane.map(f).unwrap_or_default();
+        let sets = [
+            ("columns", columns),
+            ("run_columns", run_columns),
+            ("job_columns", job_columns),
+            ("history_columns", history_columns),
+        ];
+        let column_value = |key: &str| {
+            sets.iter()
+                .find(|(name, _)| *name == key)
+                .and_then(|(_, set)| *set)
+                .map(|c| {
+                    if c.is_empty() {
+                        "[]".into()
+                    } else {
+                        c.iter()
+                            .map(|c| config::column_name(c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    }
+                })
+                .unwrap_or_default()
+        };
         let values = FIELDS
             .iter()
             .map(|f| match f.name {
@@ -3031,16 +3183,9 @@ impl ConfigForm {
                 "activity.metric" => spark(|s| s.metric.clone()),
                 "confirm_secs" => num(confirm_secs),
                 "whole_columns" => flag(whole_columns),
-                "columns" => columns.map(|c| c.join(", ")).unwrap_or_default(),
-                "run_columns" => run_columns
-                    .map(|c| {
-                        if c.is_empty() {
-                            "[]".into()
-                        } else {
-                            c.join(", ")
-                        }
-                    })
-                    .unwrap_or_default(),
+                "columns" | "run_columns" | "job_columns" | "history_columns" => {
+                    column_value(f.name)
+                }
                 _ => spark(|s| s.bound.clone()),
             })
             .collect();
@@ -3053,11 +3198,19 @@ impl ConfigForm {
             cursor: usize::MAX,
             shut: true,
             on_head: false,
-            arrange: ColumnForm::new(columns.unwrap_or(&built_columns()), &config::COLUMNS),
-            run_arrange: ColumnForm::new(
-                run_columns.unwrap_or(&built_run_columns()),
-                &config::RUN_COLUMNS,
-            ),
+            arrange: sets
+                .into_iter()
+                .map(|(key, set)| {
+                    let chosen = set
+                        .map(|set| {
+                            set.iter()
+                                .map(|c| config::column_name(c).to_owned())
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_else(|| built_column_set(key));
+                    (key, ColumnForm::new(&chosen, config::column_set(key).0))
+                })
+                .collect(),
         }
     }
 
@@ -3096,12 +3249,14 @@ impl ConfigForm {
     ) -> Result<
         (
             config::Policy,
-            Vec<String>,
+            Option<Vec<String>>,
             Option<config::Activity>,
             Option<config::Pane>,
             Option<config::Start>,
             Option<f64>,
             Option<bool>,
+            Option<Vec<String>>,
+            Option<Vec<String>>,
             Option<Vec<String>>,
         ),
         String,
@@ -3129,11 +3284,10 @@ impl ConfigForm {
                 .filter(|c| !c.is_empty())
                 .collect()
         };
-        let columns = names("columns");
-        let run_columns = match v("run_columns") {
+        let column_values = |key: &str| match v(key) {
             "" => None,
             "[]" => Some(Vec::new()),
-            _ => Some(names("run_columns")),
+            _ => Some(names(key)),
         };
         let env = names("env");
         // Refuse a name on the row: written into the file's flow sequence, one carrying YAML
@@ -3268,13 +3422,15 @@ impl ConfigForm {
         }
         Ok((
             policy,
-            columns,
+            column_values("columns"),
             spark,
             pane,
             start,
             mark,
             flag("whole_columns"),
-            run_columns,
+            column_values("run_columns"),
+            column_values("job_columns"),
+            column_values("history_columns"),
         ))
     }
 
@@ -3353,10 +3509,10 @@ impl ConfigForm {
                 self.error = Some(e);
                 ConfigAction::Stay
             }
-            Ok((p, c, s, pn, st, m, w, rc)) => {
+            Ok((p, c, s, pn, st, m, w, rc, jc, hc)) => {
                 self.open = false;
                 if changed {
-                    ConfigAction::Save(Box::new(p), c, s, pn, st, m, w, rc)
+                    ConfigAction::Save(Box::new(p), c, s.map(Box::new), pn, st, m, w, rc, jc, hc)
                 } else {
                     ConfigAction::Stay
                 }
@@ -3388,14 +3544,12 @@ impl ConfigForm {
                     if matches!(self.field().input, Answer::Columns) =>
                 {
                     self.before = self.values[self.row].clone();
-                    let runs = self.field().name == "run_columns";
-                    let arrange = if runs {
-                        &mut self.run_arrange
-                    } else {
-                        &mut self.arrange
-                    };
+                    let arrange = self
+                        .arrange
+                        .get_mut(self.field().name)
+                        .expect("column field");
                     if let Arranged::Shown(cols) = arrange.key(code) {
-                        self.values[self.row] = if runs && cols.is_empty() {
+                        self.values[self.row] = if cols.is_empty() {
                             "[]".into()
                         } else {
                             cols.join(", ")
@@ -3412,11 +3566,12 @@ impl ConfigForm {
                 KeyCode::Backspace if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
-                    if self.field().name == "run_columns" {
-                        self.run_arrange =
-                            ColumnForm::new(&built_run_columns(), &config::RUN_COLUMNS);
-                    } else if matches!(self.field().input, Answer::Columns) {
-                        self.arrange = ColumnForm::new(&built_columns(), &config::COLUMNS);
+                    if matches!(self.field().input, Answer::Columns) {
+                        let key = self.field().name;
+                        self.arrange.insert(
+                            key,
+                            ColumnForm::new(&built_column_set(key), config::column_set(key).0),
+                        );
                     }
                     return self.commit();
                 }
@@ -3651,11 +3806,7 @@ impl ConfigForm {
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Columns) {
             let built = value.is_empty();
-            let arrange = if f.name == "run_columns" {
-                &self.run_arrange
-            } else {
-                &self.arrange
-            };
+            let arrange = &self.arrange[f.name];
             let mut spans = vec![];
             for (n, c) in arrange.order.iter().enumerate() {
                 if n == arrange.shown {
@@ -3757,6 +3908,14 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
         }
     }
     lines
+}
+
+fn built_column_set(key: &str) -> Vec<String> {
+    config::column_set(key)
+        .1
+        .iter()
+        .map(|c| (*c).to_owned())
+        .collect()
 }
 
 fn built_columns() -> Vec<String> {
@@ -4207,23 +4366,24 @@ impl HistoryView {
             .collect();
         if !shown.is_empty() {
             let mut names = vec!["", ""];
-            if data.columns.iter().any(|c| c == "state") {
-                names.push("state");
-            }
             names.push("title");
             names.extend(
-                data.columns
+                data.history_columns
                     .iter()
                     .filter(|c| *c != "state" && *c != "harness")
-                    .map(|c| match c.as_str() {
-                        "tokens" => "tokens in/out",
-                        "last" => "last",
-                        c => c,
-                    }),
+                    .map(|c| column_label(c)),
             );
             let cells = shown
                 .iter()
-                .map(|r| session_cells(&history_session(&r.entry), &data.columns, false, Some("-")))
+                .map(|r| {
+                    session_cells(
+                        &history_session(&r.entry),
+                        &data.history_columns,
+                        false,
+                        Some("-"),
+                        None,
+                    )
+                })
                 .collect();
             let (head, cells) = columns(&names, cells, &mut self.widths);
             rows.push(head);
@@ -5330,6 +5490,7 @@ impl App {
         self.rows.extend(self.data.rows_excluding(
             self.by_state,
             self.jobs_view,
+            self.split_active() && self.data.columns_default,
             &deleting,
             &mut self.widths,
         ));
@@ -5337,6 +5498,7 @@ impl App {
         self.other.extend(self.data.rows_excluding(
             self.by_state,
             !self.jobs_view,
+            self.split_active() && self.data.columns_default,
             &deleting,
             &mut self.widths,
         ));
@@ -5682,6 +5844,8 @@ impl App {
             config::file_confirm_secs(&self.jobs_path),
             config::file_whole_columns(&self.jobs_path),
             config::file_run_columns(&self.jobs_path).as_deref(),
+            config::file_job_columns(&self.jobs_path).as_deref(),
+            config::file_history_columns(&self.jobs_path).as_deref(),
         ))
     }
 
@@ -7136,7 +7300,7 @@ impl App {
                 let f = form.field();
                 let mut keys = vec![("↑ ↓", "field")];
                 if matches!(f.input, Answer::Columns) {
-                    let a = &form.arrange;
+                    let a = &form.arrange[f.name];
                     keys.push(("← →", "column"));
                     keys.push(("space", if a.at < a.shown { "hide" } else { "show" }));
                     keys.push(("[ ]", "move"));
@@ -7645,27 +7809,32 @@ impl App {
                     mark,
                     whole,
                     run_columns,
+                    job_columns,
+                    history_columns,
                 ) => {
-                    self.data.columns = if columns.is_empty() {
-                        built_columns()
-                    } else {
-                        columns.clone()
-                    };
-                    self.data.run_columns = run_columns.clone().unwrap_or_else(built_run_columns);
-                    self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
-                    self.rebuild();
                     match config::write_config(
                         &self.jobs_path,
                         &policy,
-                        Some(&columns),
-                        spark.as_ref(),
+                        columns.as_deref(),
+                        spark.as_deref(),
                         pane.as_ref(),
                         start.as_ref(),
                         mark,
                         whole,
                         run_columns.as_deref(),
+                        job_columns.as_deref(),
+                        history_columns.as_deref(),
                     ) {
                         Ok(()) => {
+                            self.data.columns_default = columns.is_none();
+                            self.data.columns = columns.unwrap_or_else(built_columns);
+                            self.data.run_columns = run_columns.unwrap_or_else(built_run_columns);
+                            self.data.job_columns =
+                                job_columns.unwrap_or_else(|| built_column_set("job_columns"));
+                            self.data.history_columns = history_columns
+                                .unwrap_or_else(|| built_column_set("history_columns"));
+                            self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
+                            self.rebuild();
                             self.status =
                                 format!("config saved to {}", fleet::tilde(&self.jobs_path));
                             self.invalidate();
@@ -8475,6 +8644,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         let none = KeyModifiers::NONE;
         let head = FIELDS.iter().position(|f| f.group == SHUT).unwrap();
@@ -8526,7 +8697,7 @@ mod tests {
             archive_transcript: Some(true),
             ..Default::default()
         };
-        let c = ConfigForm::new(&p, None, None, None, None, None, None, None);
+        let c = ConfigForm::new(&p, None, None, None, None, None, None, None, None, None);
         assert_eq!(c.values[field_at("env")], "FOO, BAR");
         assert_eq!(c.values[field_at("archive_transcript")], "true");
         let saved = c.config().unwrap().0;
@@ -8536,7 +8707,7 @@ mod tests {
             "a run field the file names comes back from its row unchanged"
         );
 
-        let mut c = ConfigForm::new(&p, None, None, None, None, None, None, None);
+        let mut c = ConfigForm::new(&p, None, None, None, None, None, None, None, None, None);
         c.go(field_at("env"));
         for bad in ["A: B", "1FOO", "PATH"] {
             c.values[c.row] = bad.to_owned();
@@ -8552,6 +8723,8 @@ mod tests {
     fn arrows_step_a_number_field_on_its_own_grid() {
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
+            None,
             None,
             None,
             None,
@@ -8620,7 +8793,7 @@ mod tests {
             "moving the cursor along the row writes nothing"
         );
         let shown = match c.key(KeyCode::Char(' '), none) {
-            ConfigAction::Save(_, cols, ..) => cols,
+            ConfigAction::Save(_, Some(cols), ..) => cols,
             other => panic!("space on the columns row writes the line, got {other:?}"),
         };
         assert_eq!(
@@ -8630,7 +8803,10 @@ mod tests {
         );
         assert_eq!(value(&c), shown.join(", "), "and the row reads the line");
         assert!(
-            matches!(c.key(KeyCode::Backspace, none), ConfigAction::Save(_, c, ..) if c.is_empty()),
+            matches!(
+                c.key(KeyCode::Backspace, none),
+                ConfigAction::Save(_, None, ..)
+            ),
             "backspace leaves the line out, so the built-in set applies"
         );
 
@@ -8698,6 +8874,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
         );
         let (lines, _) = c.lines(48);
         let shown: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
@@ -8743,6 +8921,8 @@ mod tests {
     fn the_row_the_cursor_is_on_is_shaded_across_the_pane() {
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
+            None,
             None,
             None,
             None,
@@ -8954,6 +9134,8 @@ mod tests {
 
         let mut c = ConfigForm::new(
             &config::Policy::default(),
+            None,
+            None,
             None,
             None,
             None,
@@ -9853,7 +10035,7 @@ mod tests {
         let historical = &app.rows[history_at];
         assert!(historical.text().contains("fixture-model"));
         assert!(!historical.working());
-        assert_eq!(historical.cells[2].0.trim(), "-");
+        assert_eq!(historical.cells[2].0.trim(), "old session 003");
         assert!(historical.cells.iter().any(|c| c.0.trim() == "20"));
         app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
         assert!(!app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
@@ -11806,8 +11988,8 @@ mod tests {
             .unwrap();
         let text = job.text();
         assert!(
-            text.contains("off · 0 2 * * *"),
-            "the last run's status, or off, sits before the name with the schedule: {text}"
+            job.cells[2].0.trim() == "off" && job.cells[4].0.trim() == "0 2 * * *",
+            "status and schedule are independent cells around the job name: {text}"
         );
         assert!(text.contains("nightly"), "{text}");
         assert!(
@@ -11826,7 +12008,10 @@ mod tests {
             .map(Row::text)
             .unwrap_or_default();
         assert!(
-            names.contains("model") && names.contains("dir") && !names.contains("context"),
+            names.contains("model")
+                && names.contains("folder")
+                && names.contains("next run")
+                && !names.contains("context"),
             "the jobs screen has a job's columns, not a session's: {names}"
         );
         let hint: String = app
@@ -11962,6 +12147,34 @@ mod tests {
             "/src/one\n",
             "the folder ctrl+p pinned stays"
         );
+    }
+
+    #[test]
+    fn whole_columns_keep_headings_and_short_values_with_their_widest_value() {
+        let row = |activity: &str| {
+            vec![
+                ("▁".into(), plain()),
+                ("x".into(), plain()),
+                (activity.into(), plain()),
+            ]
+        };
+        let (header, rows) = columns(
+            &["", "title", "activity"],
+            vec![row("▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"), row("-")],
+            &mut Widths::new(),
+        );
+        let spans = |cells: &[(String, Style)]| {
+            cells
+                .iter()
+                .map(|(t, s)| Span::styled(t.clone(), *s))
+                .collect()
+        };
+        assert_eq!(whole_cells(spans(&header.cells), 20, 2).len(), 2);
+        for row in &rows {
+            assert_eq!(whole_cells(spans(row), 18, 2).len(), 2);
+            assert_eq!(whole_cells(spans(row), 26, 2).len(), 3);
+        }
+        assert_eq!(whole_cells(spans(&header.cells), 28, 2).len(), 3);
     }
 
     #[test]
@@ -13853,6 +14066,185 @@ mod tests {
         assert_eq!(app.data.run_columns, config::DEFAULT_RUN_COLUMNS);
         assert_eq!(config::columns(&app.jobs_path), ["model"]);
         assert_eq!(config::file_run_columns(&app.jobs_path), None);
+    }
+
+    #[test]
+    fn agent_folder_follows_grouping_and_reply_keeps_its_meaning() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut live = session(A, "idle", "fixture title", 30);
+        live.cwd = PathBuf::from("/fixture/folder");
+        live.last = Some("reply survives grouping".into());
+        app.data.sessions = vec![live];
+        app.split = true;
+        app.size = (30, 200);
+        app.rebuild();
+        let header = |app: &App| {
+            app.rows
+                .iter()
+                .find(|r| r.kind == Kind::Columns)
+                .unwrap()
+                .text()
+        };
+        let row = |app: &App| {
+            app.rows
+                .iter()
+                .find(|r| matches!(r.kind, Kind::Session(..)))
+                .unwrap()
+                .text()
+        };
+        assert!(
+            !header(&app).contains("folder"),
+            "the folder heading already identifies the group"
+        );
+        assert!(
+            !header(&app).contains("last reply"),
+            "the default avoids duplicating the preview"
+        );
+        assert!(
+            !row(&app).contains("claude"),
+            "the icon identifies the harness by default"
+        );
+        app.by_state = true;
+        app.rebuild();
+        assert!(header(&app).contains("folder"));
+        assert!(row(&app).contains("/fixture/folder"));
+        app.split = false;
+        app.rebuild();
+        assert!(header(&app).contains("last reply"));
+        assert!(row(&app).contains("reply survives grouping"));
+        app.split = true;
+        app.data.columns_default = false;
+        app.rebuild();
+        assert!(
+            row(&app).contains("reply survives grouping"),
+            "an explicit last reply column stays visible beside the pane"
+        );
+    }
+
+    #[test]
+    fn job_and_history_pickers_reorder_hide_and_reset_independently() {
+        let d = dir();
+        fs::write(d.path().join("none.yaml"), "version: 3\ncolumns: [state]\nrun_columns: [cost]\njob_columns: [schedule, next_run]\nhistory_columns: [folder, last_active]\njobs: []\n").unwrap();
+        let mut app = app(d.path());
+        app.mode = Mode::Config(app.config_form());
+        for (key, first, second) in [
+            ("job_columns", "schedule", "next_run"),
+            ("history_columns", "folder", "last_active"),
+        ] {
+            if let Mode::Config(form) = &mut app.mode {
+                form.go(field_at(key));
+            }
+            app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
+            let saved = || {
+                if key == "job_columns" {
+                    config::job_columns(&app.jobs_path)
+                } else {
+                    config::history_columns(&app.jobs_path)
+                }
+            };
+            assert_eq!(saved(), [second, first]);
+            app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+            app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+            app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+            assert!(if key == "job_columns" {
+                app.data.job_columns.is_empty()
+            } else {
+                app.data.history_columns.is_empty()
+            });
+            app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+            assert_eq!(
+                if key == "job_columns" {
+                    &app.data.job_columns
+                } else {
+                    &app.data.history_columns
+                },
+                &built_column_set(key)
+            );
+        }
+        assert_eq!(config::columns(&app.jobs_path), ["state"]);
+        assert_eq!(config::run_columns(&app.jobs_path), ["cost"]);
+        assert_eq!(config::file_job_columns(&app.jobs_path), None);
+        assert_eq!(config::file_history_columns(&app.jobs_path), None);
+    }
+
+    #[test]
+    fn history_headers_use_their_own_columns_and_latest_activity() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.data.columns = vec!["state".into(), "activity".into()];
+        app.data.history_columns = vec!["folder".into(), "last_active".into()];
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let table = app.history.table(&app.data, &HashSet::new());
+        let header = table
+            .iter()
+            .find(|r| r.kind == Kind::Columns)
+            .unwrap()
+            .text();
+        assert!(header.contains("folder") && header.contains("last active"));
+        assert!(!header.contains("state") && !header.contains("activity"));
+        let entry = &app.history.rows[0].entry;
+        let row = table
+            .iter()
+            .find(|r| matches!(r.kind, Kind::History(_)))
+            .unwrap();
+        assert_eq!(row.cells[3].0.trim(), fleet::tilde(&entry.cwd));
+        assert_eq!(
+            row.cells[4].0.trim(),
+            fleet::age(entry.last_activity.unwrap())
+        );
+    }
+
+    #[test]
+    fn branch_reads_identify_worktrees_and_detached_checkouts() {
+        let d = dir();
+        let repo = d.path().join("repo");
+        let worktree = d.path().join("worktree");
+        fs::create_dir(&repo).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Fixture")
+                .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+                .env("GIT_COMMITTER_NAME", "Fixture")
+                .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&repo, &["init", "-b", "main"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        );
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(git_branch(&worktree).as_deref(), Some("feature"));
+        git(&worktree, &["checkout", "--detach"]);
+        assert!(git_branch(&worktree).unwrap().starts_with('@'));
+        assert_eq!(git_branch(d.path()), None);
     }
 
     #[test]

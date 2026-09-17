@@ -45,6 +45,11 @@ fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
         (0, "/home/typo", json!(true)),
         (0, "/home/env", json!("1INVALID")),
         (0, "/transcript/roots/0/path", json!("../projects")),
+        (
+            0,
+            "/transcript/statusline/cost_pointer",
+            json!("cost.total"),
+        ),
         (0, "/discovery/handler", json!("claude")),
         (0, "/transcript/handler", json!("claude")),
         (0, "/operations/launch/handler", json!("claude_background")),

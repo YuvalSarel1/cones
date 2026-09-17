@@ -24,7 +24,7 @@ jobs:
 | `version` | Schema version, currently `3`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `run_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
 | `pane` | [Viewer position and size](#pane). |
 | `start` | [Initial dashboard settings](#start). |
 | `activity` | [Activity chart settings](#activity). |
@@ -60,43 +60,45 @@ Bedrock profile and region must be explicit in the file, on the job or in `defau
 
 ## List settings
 
-| Field | Default | Meaning |
+Each category has an independent column picker. Visible columns can be reordered; `[]` hides every optional column. The title or job name and row icons always remain. `harness` controls the name beside its permanent icon and is hidden by default. An explicit list preserves your choices when built-in defaults change.
+
+| Field | Default |
+| --- | --- |
+| `columns` | `[state, context, activity, model, age, last_active, folder, last_reply]` |
+| `run_columns` | `[status, started, duration, model, cost, folder, reason]` |
+| `job_columns` | `[status, schedule, next_run, model, last_run, folder]` |
+| `history_columns` | `[last_active, folder, model, context, last_reply]` |
+| `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
+| `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
+
+The agent `folder` column appears when grouped by state. Normal folder groups identify it in their headings. Agent defaults hide `last_reply` while the preview pane is open; explicitly selecting it in `columns` keeps it visible. Grouping never changes last reply into a folder. History always uses its own selection, independently of grouping and pane visibility.
+
+| Column | Categories | Value |
 | --- | --- | --- |
-| `columns` | `[harness, state, context, activity, model, age, last]` | Visible session columns. `harness` and `state` always sit before the title in that order; other columns follow it in list order. Unknown names are rejected. |
-| `run_columns` | `[harness, status, started, took, context, model, cost, reason]` | Visible run columns, independent of session columns. The harness icon and job always show; `harness` adds its name and `status` sits before the job. Other columns follow in list order. `[]` hides all optional columns. Unknown names are rejected. |
-| `whole_columns` | `true` | Omit a column that would cross the list's right edge. `false` draws its visible portion. The mark, harness, state and title are drawn either way so a narrow row still identifies itself. |
-| `confirm_secs` | `2` | Seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
+| `harness` | All | Harness name after the permanent icon. |
+| `state` | Agents | Working, input, idle, done, failed or stopped. |
+| `status` | Jobs, runs | Last run outcome for a job, or the run's supervision status. Disabled jobs show `off`. |
+| `folder` | All | Reported working directory. |
+| `branch` | Agents | Current Git branch of the displayed folder, or `@<commit>` for a detached checkout. Read once per distinct folder during background refresh, only when selected. |
+| `model` | All | Reported model; jobs show their configured model. |
+| `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
+| `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
+| `cost` | Agents, runs, history | Reported dollars only. Claude's saved status line supplies live/session totals; finished runs use their terminal record. No token-price estimates are calculated. |
+| `activity` | Agents | Counts over time under the [activity settings](#activity). |
+| `age` | Agents, history | Time since session start. |
+| `last_active` | Agents, history | Time since the latest recorded activity. |
+| `last_reply` | Agents, runs, history | Latest recorded reply or agent status text. |
+| `started`, `ended` | Runs | Start and end time in the local timezone, including the date. |
+| `duration` | Runs | Recorded duration, or elapsed seconds while running. |
+| `reason` | Runs | Failure, timeout or skip reason. |
+| `trigger` | Runs | `manual` or `schedule`. |
+| `schedule` | Jobs | Configured local cron rule, separate from status. |
+| `next_run` | Jobs | Next time matching the enabled job's configured calendar intervals. This is the configured schedule, not confirmation that its LaunchAgent is loaded. Disabled jobs show `-`. |
+| `last_run` | Jobs | Time since the latest run started. |
 
-| Column | Value |
-| --- | --- |
-| `harness` | Name after the harness mark, such as `✻ claude`. Without the column only the mark appears. |
-| `state` | working, input, idle, done, failed or stopped. |
-| `context` | Prompt/window tokens, such as `98k/200k`; prompt alone when the window is unavailable. |
-| `activity` | Counts over time under the [activity settings](#activity). |
-| `model` | The reported model's display name. |
-| `age` | Time since session start; never resets between turns. |
-| `last` | Latest reply or status text; directory instead when grouped by state. |
-| `tokens` | Session input/output totals, such as `49.2M/201k`. |
+Missing values show `-`. History offers no live state or activity chart columns. Unknown column names are rejected; duplicate names are ignored. Older `last`, `dir` and `took` names remain accepted as aliases for `last_reply`, `folder` and `duration`; saves write the explicit names.
 
-Missing values show `-`. [Harness reports](harness.md#reports) define each source and model naming.
-
-Run columns:
-
-| Column | Value |
-| --- | --- |
-| `harness` | Name after the always visible harness icon. |
-| `status` | Recorded run outcome, or current supervision status. |
-| `started`, `ended` | Start and end time in your local timezone, including the date. |
-| `took` | Duration in seconds, or elapsed time while running. |
-| `context`, `model` | Latest reported prompt/window tokens and model, using the same formatting as sessions. |
-| `tokens` | Input/output totals from the terminal record, or reported usage while running. |
-| `cost` | Cost reported by the harness. |
-| `reason` | Failure, timeout or skip reason. |
-| `dir` | Run's working directory. |
-| `trigger` | `manual` or `schedule`. |
-| `last` | Latest recorded reply. |
-
-Claude run details come from saved run output, falling back to an archived transcript when the output is unavailable. Context windows come from the saved status line when available. Missing reports stay `-`; current job settings do not supply historical model or context values. Ledger timestamps remain UTC; displayed start and end times use the machine's local timezone, including daylight saving changes.
+Claude run details come from saved output, falling back to an archived transcript. Context windows and live costs come from the saved status line when available. Current job settings do not supply historical model or context values. Ledger timestamps remain UTC; displayed times use the machine's local timezone, including daylight saving changes. [Harness reports](harness.md#reports) describe the native sources.
 
 ## Pane
 
@@ -201,7 +203,7 @@ Each run starts with a cleared environment. Installed schedules capture values i
 
 | Status | Reason | When | Exit |
 | --- | --- | --- | --- |
-| `started` | | Running; cost is not yet available. | |
+| `started` | | Running; a saved status line may supply live cost. | |
 | `ok` | | Exit 0 with a `success` result and reported cost. | 0 |
 | `skipped` | `disabled`, `overlap`, `replace_unconfirmed` | Admission refused the run for the reason above. | 0 |
 | `timeout` | `timeout` | The clock ran out. | 124 |
