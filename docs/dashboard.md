@@ -186,7 +186,7 @@ Text pastes preserve bracketed-paste mode when requested. An empty paste, which 
 
 ### Viewer lifetime
 
-Resting on a joinable row opens a speculative viewer after 50 ms in split view or 400 ms otherwise: a Claude background attach, or a Codex client on a thread the daemon holds. Both join a session that is already running and add no row. Finished runs are opened only on request because resuming one changes the fleet, and a Codex client in its own terminal cannot be joined at all. A speculative viewer says `attach` until first entered; an entered live viewer says `return`.
+Resting on a joinable row opens a speculative viewer after 50 ms in split view or 400 ms otherwise: a Claude background attach, or a Codex client on a thread the daemon holds. Both join a session that is already running and add no row. Finished runs are opened only on request because resuming one changes the fleet, and a Codex client in its own terminal cannot be joined at all. A saved Codex row outlives its daemon; when that daemon is gone the row waits for `enter`, since resuming it would start one. A speculative viewer says `attach` until first entered; an entered live viewer says `return`.
 
 The live pool targets three viewers. Making room closes the least recently focused Claude attach of a listed session. Codex clients, resumed runs and viewers opened from history are retained and may exceed the cap. Two speculative viewers have a separate pool, oldest evicted first, so passing over Codex rows costs at most two clients. A viewer left in Claude's own agent list is closed to avoid displaying that list under a session's name.
 

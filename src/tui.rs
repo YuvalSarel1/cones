@@ -5495,6 +5495,11 @@ impl App {
         if !Self::joinable(s) {
             return None;
         }
+        // A peek joins what already runs. A saved thread row outlives its daemon, and resuming it
+        // would start one, so a row whose daemon is gone waits for enter.
+        if s.harness == "codex" && codex::daemon_pid(&self.codex_home(s)).is_none() {
+            return None;
+        }
         Some((id.clone(), s.cwd.clone()))
     }
 
@@ -13373,10 +13378,21 @@ mod tests {
     }
 
     /// A thread the daemon holds is joined, not started, so peek pre-opens it like an attach.
-    /// A Codex client in its own terminal has no thread to join.
+    /// A Codex client in its own terminal has no thread to join, and a saved row whose daemon is
+    /// gone waits for enter rather than starting one on a hover.
     #[test]
     fn a_rested_codex_thread_row_is_a_prespawn_target_and_its_own_terminal_is_not() {
         let d = dir();
+        let home = d.path().join("codex");
+        let rollout = home.join("sessions/2026/09/17/rollout.jsonl");
+        let pid_file = home.join("app-server-daemon/app-server.pid");
+        fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+        fs::create_dir_all(pid_file.parent().unwrap()).unwrap();
+        fs::write(
+            &pid_file,
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
         let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
@@ -13390,7 +13406,7 @@ mod tests {
             last_activity: None,
             model: None,
             pid: None,
-            transcript_path: None,
+            transcript_path: Some(rollout),
             tokens_in: None,
             tokens_out: None,
             context_tokens: None,
@@ -13409,6 +13425,17 @@ mod tests {
             app.prespawn_target(),
             Some((B.to_owned(), PathBuf::from("/src/two")))
         );
+        fs::remove_file(&pid_file).unwrap();
+        assert_eq!(
+            app.prespawn_target(),
+            None,
+            "a hover never starts the daemon a resume needs"
+        );
+        fs::write(
+            &pid_file,
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
         app.data.sessions[0].kind = None;
         assert_eq!(app.prespawn_target(), None, "own terminal");
     }
