@@ -359,8 +359,11 @@ impl Data {
         })
     }
 
-    fn has_rows_in(&self, dir: &Path) -> bool {
-        self.sessions.iter().any(|s| s.cwd == dir)
+    /// A pending deletion is already hidden, so its folder must not stay covered by it.
+    fn has_rows_in(&self, dir: &Path, deleting: &HashSet<&str>) -> bool {
+        self.sessions
+            .iter()
+            .any(|s| s.cwd == dir && !deleting.contains(s.session_id.as_str()))
     }
 
     fn count(&self, state: &str) -> usize {
@@ -472,7 +475,7 @@ impl Data {
                 (sort, name)
             };
             let group = groups.entry(key).or_default();
-            if group.is_empty() && !self.has_rows_in(dir) {
+            if group.is_empty() && !self.has_rows_in(dir, deleting) {
                 group.push(Entry::Folder(dir));
             }
         }
@@ -4887,7 +4890,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "← →",
-        "move a character in the instruction, and in every prompt that takes text; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
+        "move a character in the instruction, and in every prompt that takes text; with nothing typed, ← leaves the jobs screen, the folder prompt, the filter and the guide; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
     ),
     (
         "backspace",
@@ -10118,6 +10121,8 @@ impl App {
                         self.mode = Mode::Normal;
                     }
                     KeyCode::Enter => self.mode = Mode::Normal,
+                    // Nothing to the left of an empty prompt, so ← leaves it.
+                    KeyCode::Left if self.filter.text.is_empty() => self.mode = Mode::Normal,
                     _ => {
                         self.filter.key(code, mods);
                     }
@@ -10148,6 +10153,7 @@ impl App {
             },
             Mode::Folder(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Left if input.text.is_empty() => self.mode = Mode::Normal,
                 KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
                     let recent: Vec<String> =
                         self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
@@ -10266,6 +10272,17 @@ impl App {
                         }
                         None => self.status = "nothing in the pane".into(),
                     }
+                    return Ok(false);
+                }
+                // ← leaves the jobs screen the way tab and ctrl+z do, with nothing typed.
+                if self.jobs_view
+                    && code == KeyCode::Left
+                    && mods.is_empty()
+                    && !self.on_button()
+                    && self.composer_text().is_empty()
+                {
+                    self.leave_jobs();
+                    self.needs_clear = true;
                     return Ok(false);
                 }
                 if !self.on_button() {
@@ -11628,6 +11645,39 @@ mod tests {
             .collect::<String>();
         assert!(text.contains("clipboard"), "{text}");
         assert!(!text.contains("move between rows"), "no other key: {text}");
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn left_leaves_a_screen_or_prompt_with_nothing_to_its_left() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.show_jobs();
+        assert!(!app.on_button(), "the cursor is on a job row");
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        assert!(!app.jobs_view, "the jobs screen returns to the list");
+        app.show_jobs();
+        app.text = "x".into();
+        app.caret = 1;
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert!(
+            app.jobs_view && app.caret == 0,
+            "typed text keeps the arrow"
+        );
+        app.text.clear();
+        app.leave_jobs();
+        app.mode = Mode::Folder(Input::default());
+        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+        app.mode = Mode::Folder(Input::new("/src"));
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Folder(t) if t.at == 3),
+            "a typed path keeps the arrow"
+        );
+        app.mode = Mode::Filter;
         assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
     }
@@ -13017,6 +13067,45 @@ mod tests {
             headers(&app),
             ["input", "idle", names[0].as_str()],
             "by state the pinned folder trails"
+        );
+    }
+
+    /// A pending delete already hides the row, so its pinned folder must take the same
+    /// frame; waiting for the next read made the row blink out and come back empty.
+    #[test]
+    fn deleting_the_last_session_leaves_its_pinned_folder_in_the_same_frame() {
+        let d = dir();
+        let claude = d.path();
+        let work = claude.join("work");
+        fs::create_dir(&work).unwrap();
+        registry(claude, A, work.to_str().unwrap(), "idle", 1_757_682_871_000);
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        app.pin_folder(work.clone()).unwrap();
+        let folder = Kind::Folder(fleet::tilde(&work));
+        assert!(
+            !app.rows.iter().any(|r| r.kind == folder),
+            "the session covers the folder while it lives"
+        );
+        let (_tx, rx) = mpsc::channel();
+        app.stopping.push(PendingStop {
+            operation: None,
+            context: json!({}),
+            id: A.into(),
+            label: "aaaaaaaa".into(),
+            verb: "delete",
+            result: rx,
+        });
+        app.rebuild();
+        assert!(
+            app.rows.iter().any(|r| r.kind == folder),
+            "the folder row is there before the next read"
+        );
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Session(id, _) if id == A)),
+            "and the deleted session is gone"
         );
     }
 

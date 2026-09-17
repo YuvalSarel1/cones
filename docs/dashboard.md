@@ -125,7 +125,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+x twice` | Confirm the selected row's removal or stop. |
 | `ctrl+p` | Pin its folder. |
 | `ctrl+s` | Group by state or directory. |
-| `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it. |
+| `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
 | `ctrl+r` | Reload now. |
@@ -197,7 +197,7 @@ Keys without another action type into the composer. Text prompts share these edi
 
 | Keys | Edit |
 | --- | --- |
-| `← →` | Move one character. |
+| `← →` | Move one character. With nothing typed, `←` leaves the jobs screen, the folder prompt and the filter, since there is nothing to its left. |
 | `alt+← alt+→`, `ctrl+← ctrl+→`, `alt+b alt+f` | Move one word. |
 | `home end`, `ctrl+a ctrl+e` | Move to the line's ends. With an empty composer, `ctrl+e` edits a selected job. |
 | `backspace delete` | Delete one character. |
