@@ -9369,6 +9369,7 @@ impl App {
                     || self.transcript_target().is_some()
                 {
                     keys.push(("tab", "pane"));
+                    keys.push(("ctrl+\\", "layout"));
                 }
                 keys.push(("shift+tab", "session"));
                 keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
