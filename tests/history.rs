@@ -100,6 +100,130 @@ fn ids(page: &Page) -> Vec<&str> {
 }
 
 #[test]
+fn opening_history_does_not_create_a_search_index_or_load_a_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let home = dir.path().join("claude");
+    claude(&home, A, "2026-09-10T13:00:00Z");
+    let mut reader =
+        Reader::with_search(vec![source(&home, HarnessKind::Claude)], state.clone()).unwrap();
+    assert_eq!(
+        page(&mut reader, Query::default()).unwrap().entries.len(),
+        1
+    );
+    assert!(!state.join("search").exists());
+}
+
+#[test]
+fn search_never_opens_excluded_live_transcripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let live_path = claude(dir.path(), A, "2026-09-10T13:00:00Z");
+    claude(dir.path(), B, "2026-09-10T12:00:00Z");
+    let mut reader = Reader::new(vec![source(dir.path(), HarnessKind::Claude)]).unwrap();
+    let snapshot = page(&mut reader, Query::default()).unwrap();
+    let live = snapshot
+        .entries
+        .iter()
+        .find(|e| e.key.session_id == A)
+        .unwrap()
+        .key
+        .clone();
+    // The metadata snapshot already contains it. An excluded source may disappear
+    // or be actively rewritten without preventing a search of finished sessions.
+    fs::remove_file(live_path).unwrap();
+    let found = page(
+        &mut reader,
+        Query {
+            filter: "Last reply".into(),
+            excluded: [live].into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ids(&found), [B]);
+}
+
+#[test]
+fn conversation_search_finds_old_content_across_harnesses_and_preserves_page_cursors() {
+    let dir = tempfile::tempdir().unwrap();
+    let ch = dir.path().join(".claude");
+    let co = dir.path().join(".codex");
+    let ph = dir.path().join(".pi");
+    let cp = claude(&ch, A, "2026-09-10T13:00:00Z");
+    let xp = codex(&co, B, false, "2026-09-10T14:00:00Z");
+    let pp = pi(&ph, C, "2026-09-10T12:00:00Z");
+    for (path, record) in [
+        (
+            &cp,
+            json!({"type":"assistant","message":{"content":[{"type":"text","text":"Discuss retry backoff"}]}}),
+        ),
+        (
+            &xp,
+            json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Discuss retry backoff"}]}}),
+        ),
+        (
+            &pp,
+            json!({"type":"message","message":{"role":"user","content":"Discuss retry backoff"}}),
+        ),
+    ] {
+        writeln!(
+            OpenOptions::new().append(true).open(path).unwrap(),
+            "{record}"
+        )
+        .unwrap();
+    }
+    let mut reader = Reader::new(vec![
+        source(&ch, HarnessKind::Claude),
+        source(&co, HarnessKind::Codex),
+        source(&ph, HarnessKind::Pi),
+    ])
+    .unwrap();
+    let first = page(
+        &mut reader,
+        Query {
+            filter: "retry backoff".into(),
+            limit: 1,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(first.total, 3);
+    assert!(
+        first.entries[0]
+            .hit
+            .as_ref()
+            .unwrap()
+            .snippet
+            .contains("retry backoff")
+    );
+    let cursor = first.next.unwrap();
+    // A newly live cursor row may be excluded without losing the remaining results.
+    let second = page(
+        &mut reader,
+        Query {
+            filter: "retry backoff".into(),
+            limit: 2,
+            after: Some(cursor.clone()),
+            excluded: [first.entries[0].key.clone()].into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(second.entries.len(), 2);
+    assert!(second.next.is_none());
+    let error = page(
+        &mut reader,
+        Query {
+            filter: "different".into(),
+            after: Some(cursor),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("search changed"));
+}
+
+#[test]
 fn all_harnesses_share_reported_time_order_and_only_requested_columns_are_read() {
     let dir = tempfile::tempdir().unwrap();
     let ch = dir.path().join(".claude");
@@ -221,6 +345,7 @@ fn exclusions_and_filtering_happen_before_pagination_and_equal_times_do_not_skip
             limit: 1,
             excluded,
             after: first.next,
+            filter: "SESSION".into(),
             ..Query::default()
         },
     )
@@ -231,6 +356,7 @@ fn exclusions_and_filtering_happen_before_pagination_and_equal_times_do_not_skip
         Query {
             limit: 1,
             after: second.next,
+            filter: "SESSION".into(),
             ..Query::default()
         },
     )

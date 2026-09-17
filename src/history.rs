@@ -18,7 +18,7 @@ use crate::{
     config::HarnessKind,
     fleet,
     harness::{self, spec::Native},
-    pi,
+    pi, search,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
@@ -94,6 +94,8 @@ pub struct Entry {
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub columns: Option<Columns>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hit: Option<search::Hit>,
 }
 
 /// Cursors belong to an indexed snapshot. A changed refresh requires a new first page.
@@ -102,13 +104,16 @@ pub struct Cursor {
     generation: u64,
     last_activity: Option<DateTime<Utc>>,
     key: Key,
+    filter: String,
+    search_revision: u64,
+    score: Option<f32>,
 }
 
 #[derive(Clone, Debug)]
 pub struct Query {
     pub after: Option<Cursor>,
     pub limit: usize,
-    /// Match indexed title, cwd, harness and session id before slicing a page.
+    /// Search metadata and conversation passages before slicing a page.
     pub filter: String,
     /// The caller supplies known live/visible identities; history never polls processes.
     pub excluded: HashSet<Key>,
@@ -159,6 +164,9 @@ pub struct Page {
     pub stats: Stats,
     /// Native home aliases resolved by the worker, for matching live rows without UI file IO.
     pub homes: HashMap<PathBuf, PathBuf>,
+    pub search_pending: bool,
+    pub search_status: Option<String>,
+    pub search_error: Option<String>,
 }
 
 /// One outstanding request, with no queue of obsolete scroll positions or refreshes.
@@ -170,31 +178,41 @@ pub struct Reader {
 }
 
 impl Reader {
+    /// Fixture-friendly text search, with no persistent cache or model downloads.
     pub fn new(sources: Vec<Source>) -> std::io::Result<Self> {
-        Self::with_sources(move || sources)
+        Self::with_sources(move || sources, None)
+    }
+
+    /// Search explicit native homes with persistent text and local semantic indexing.
+    pub fn with_search(sources: Vec<Source>, state: PathBuf) -> std::io::Result<Self> {
+        Self::with_sources(move || sources, Some(state.join("search")))
     }
 
     /// Discover configured native homes on the worker, never on the dashboard input thread.
-    pub fn discover(claude: PathBuf) -> std::io::Result<Self> {
-        Self::with_sources(move || {
-            harness::known()
-                .iter()
-                .flat_map(|&kind| {
-                    harness::spec(kind)
-                        .home
-                        .all(&claude)
-                        .into_iter()
-                        .map(move |home| Source {
-                            harness: kind,
-                            home,
-                        })
-                })
-                .collect()
-        })
+    pub fn discover(claude: PathBuf, state: PathBuf) -> std::io::Result<Self> {
+        Self::with_sources(
+            move || {
+                harness::known()
+                    .iter()
+                    .flat_map(|&kind| {
+                        harness::spec(kind)
+                            .home
+                            .all(&claude)
+                            .into_iter()
+                            .map(move |home| Source {
+                                harness: kind,
+                                home,
+                            })
+                    })
+                    .collect()
+            },
+            Some(state.join("search")),
+        )
     }
 
     fn with_sources(
         sources: impl FnOnce() -> Vec<Source> + Send + 'static,
+        search_directory: Option<PathBuf>,
     ) -> std::io::Result<Self> {
         let (requests, rx) = mpsc::channel();
         let (tx, results) = mpsc::channel();
@@ -202,7 +220,10 @@ impl Reader {
             .name("cones-history".into())
             .spawn(move || {
                 let sources = sources();
-                let mut cache = Cache::default();
+                let mut cache = Cache {
+                    search_directory,
+                    ..Default::default()
+                };
                 while let Ok(query) = rx.recv() {
                     if tx.send(cache.page(&sources, query)).is_err() {
                         break;
@@ -306,6 +327,10 @@ struct Cache {
     homes: HashMap<PathBuf, PathBuf>,
     databases: HashMap<PathBuf, DatabaseIndex>,
     database_columns: HashMap<Key, DatabaseColumns>,
+    search_directory: Option<PathBuf>,
+    search: Option<search::Index>,
+    search_results: Option<(String, search::Results)>,
+    search_revision: u64,
 }
 
 impl Cache {
@@ -319,12 +344,17 @@ impl Cache {
         if !self.initialized || query.refresh {
             let indexing = std::time::Instant::now();
             self.scan(sources, &mut stats)?;
+            self.search_results = None;
             stats.index_ms = indexing.elapsed().as_secs_f64() * 1000.0;
         }
         if let Some(cursor) = &query.after {
             ensure!(
                 cursor.generation == self.generation,
                 "history changed; restart pagination"
+            );
+            ensure!(
+                cursor.filter == query.filter,
+                "search changed; restart pagination"
             );
         }
         let excluded: HashSet<Key> = query
@@ -337,32 +367,67 @@ impl Cache {
                 key
             })
             .collect();
-        let needle = query.filter.to_lowercase();
-        let matched: Vec<&Entry> = self
+        let mut matched: Vec<Entry> = self
             .entries
             .iter()
-            .filter(|e| {
-                (query.include_archived || !e.archived)
-                    && !excluded.contains(&e.key)
-                    && (needle.is_empty()
-                        || e.title
-                            .as_deref()
-                            .unwrap_or("")
-                            .to_lowercase()
-                            .contains(&needle)
-                        || e.cwd.to_string_lossy().to_lowercase().contains(&needle)
-                        || e.key.harness.contains(&needle)
-                        || e.key.session_id.to_lowercase().contains(&needle))
-            })
+            .filter(|e| (query.include_archived || !e.archived) && !excluded.contains(&e.key))
+            .cloned()
             .collect();
+        let searching = !query.filter.trim().is_empty();
+        let mut search_pending = false;
+        let mut search_status = None;
+        let mut search_error = None;
+        if searching {
+            if self
+                .search_results
+                .as_ref()
+                .is_none_or(|(q, _)| q != &query.filter)
+                || (query.after.is_none() && !query.hydrate)
+            {
+                if self.search.is_none() {
+                    self.search = Some(search::Index::open(self.search_directory.clone())?);
+                }
+                let index = self.search.as_mut().unwrap();
+                index.sync(&matched)?;
+                let results = index.search(&matched, &query.filter, query.refresh)?;
+                self.search_results = Some((query.filter.clone(), results));
+                self.search_revision += 1;
+            }
+            if let Some(cursor) = &query.after {
+                ensure!(
+                    cursor.search_revision == self.search_revision,
+                    "search changed; restart pagination"
+                );
+            }
+            let results = &self.search_results.as_ref().unwrap().1;
+            search_pending = results.pending;
+            search_status = results.status.clone();
+            search_error = results.error.clone();
+            matched.retain_mut(|e| {
+                e.hit = results.hits.get(&search::identity(e)).cloned();
+                e.hit.is_some()
+            });
+            matched.sort_by(|a, b| {
+                b.hit
+                    .as_ref()
+                    .unwrap()
+                    .score
+                    .total_cmp(&a.hit.as_ref().unwrap().score)
+                    .then_with(|| order(a.last_activity, &a.key, b.last_activity, &b.key))
+            });
+        }
         let total = matched.len();
         let mut remaining = matched.into_iter().filter(|e| {
-            query
-                .after
-                .as_ref()
-                .is_none_or(|c| order(e.last_activity, &e.key, c.last_activity, &c.key).is_gt())
+            query.after.as_ref().is_none_or(|c| {
+                let rank = e.hit.as_ref().map(|h| h.score);
+                c.score
+                    .zip(rank)
+                    .map_or(std::cmp::Ordering::Equal, |(old, new)| old.total_cmp(&new))
+                    .then_with(|| order(e.last_activity, &e.key, c.last_activity, &c.key))
+                    .is_gt()
+            })
         });
-        let mut entries: Vec<Entry> = remaining.by_ref().take(query.limit).cloned().collect();
+        let mut entries: Vec<Entry> = remaining.by_ref().take(query.limit).collect();
         let next = remaining
             .next()
             .and_then(|_| entries.last())
@@ -370,6 +435,9 @@ impl Cache {
                 generation: self.generation,
                 last_activity: e.last_activity,
                 key: e.key.clone(),
+                filter: query.filter.clone(),
+                search_revision: self.search_revision,
+                score: e.hit.as_ref().map(|h| h.score),
             });
         if query.hydrate {
             let hydrating = std::time::Instant::now();
@@ -399,6 +467,9 @@ impl Cache {
             generation: self.generation,
             stats,
             homes: self.homes.clone(),
+            search_pending,
+            search_status,
+            search_error,
         })
     }
 
@@ -822,6 +893,7 @@ fn metadata(
         last_activity,
         title,
         columns: None,
+        hit: None,
     }))
 }
 

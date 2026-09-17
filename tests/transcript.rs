@@ -49,6 +49,76 @@ fn poll(reader: &mut Reader) -> anyhow::Result<transcript::Response> {
 }
 
 #[test]
+fn search_preview_opens_at_the_match_then_pages_both_directions_without_losing_messages() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let data: Vec<_> = (0..120)
+        .map(|i| claude("user", &format!("message {i}")))
+        .collect();
+    let before = records(&data[..50]).len() as u64;
+    let end = before + records(&data[50..51]).len() as u64;
+    fs::write(&path, records(&data)).unwrap();
+    let mut target = target(&path);
+    target.source = transcript::Source::Match {
+        source: Box::new(target.source),
+        anchor: cones::search::Anchor {
+            offset: before,
+            end,
+            text: "message 50".into(),
+        },
+    };
+    let mut reader = Reader::new().unwrap();
+    let mut doc = (*read(&mut reader, target.clone()).unwrap()).clone();
+    assert_eq!(doc.messages[doc.matched.unwrap()].text, "message 50");
+    assert!(doc.messages.len() <= 5);
+    while let Some(cursor) = doc.newer.clone() {
+        assert!(reader.request_page(target.clone(), Some(cursor)).unwrap());
+        doc.append((*poll(&mut reader).unwrap().result.unwrap()).clone());
+    }
+    while let Some(cursor) = doc.older.clone() {
+        assert!(reader.request_page(target.clone(), Some(cursor)).unwrap());
+        doc.prepend((*poll(&mut reader).unwrap().result.unwrap()).clone());
+    }
+    assert_eq!(
+        doc.messages
+            .iter()
+            .map(|m| m.text.clone())
+            .collect::<Vec<_>>(),
+        (0..120).map(|i| format!("message {i}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn search_preview_keeps_a_match_near_the_start_of_a_large_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let data = records(&[claude(
+        "user",
+        &format!("needle {}", "unrelated ".repeat(30000)),
+    )]);
+    fs::write(&path, &data).unwrap();
+    let mut target = target(&path);
+    target.source = transcript::Source::Match {
+        source: Box::new(target.source),
+        anchor: cones::search::Anchor {
+            offset: 0,
+            end: data.len() as u64,
+            text: "needle".into(),
+        },
+    };
+    let mut reader = Reader::new().unwrap();
+    let doc = read(&mut reader, target.clone()).unwrap();
+    assert!(
+        doc.messages[doc.matched.unwrap()]
+            .text
+            .starts_with("needle")
+    );
+    assert!(doc.messages[0].text.len() < 128 * 1024);
+    fs::write(&path, records(&[claude("user", "replacement")])).unwrap();
+    assert!(read(&mut reader, target).is_err());
+}
+
+#[test]
 fn earlier_pages_recover_the_whole_conversation_once_in_order() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("session.jsonl");

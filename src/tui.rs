@@ -5201,11 +5201,11 @@ const GUIDE: &[(&str, &str)] = &[
     ("ctrl+s", "Group sessions by state or folder."),
     (
         "ctrl+h",
-        "Show or hide history. Enter resumes a saved session.",
+        "Show or hide history. Type to search, scroll for older sessions, enter resumes.",
     ),
     (
         "ctrl+f",
-        "Filter rows. Enter keeps the filter; esc clears it.",
+        "Filter rows. History searches words and meaning; enter keeps the search, esc clears it.",
     ),
     ("ctrl+n", "Rename the selected Claude session."),
     (
@@ -5336,6 +5336,8 @@ struct TranscriptView {
     bottom: bool,
     loaded_at: Option<Instant>,
     load_older: bool,
+    load_newer: bool,
+    jump_to_match: bool,
     request_cursor: Option<transcript::Cursor>,
     prepend_lines: Option<usize>,
     operation: Option<(DiagnosticOperation, transcript::Target)>,
@@ -5358,6 +5360,8 @@ impl TranscriptView {
         self.bottom = true;
         self.loaded_at = None;
         self.load_older = false;
+        self.load_newer = false;
+        self.jump_to_match = true;
         self.request_cursor = None;
         self.prepend_lines = None;
     }
@@ -5374,6 +5378,9 @@ impl TranscriptView {
         self.bottom = self.scroll == self.max_scroll();
         if delta < 0 && self.scroll <= self.height {
             self.load_older = true;
+        }
+        if delta > 0 && self.scroll == self.max_scroll() {
+            self.load_newer = true;
         }
     }
 
@@ -5393,11 +5400,22 @@ impl TranscriptView {
                     ));
                     self.lines.push(Line::default());
                 }
-                for message in &doc.messages {
+                let mut matched_line = None;
+                for (i, message) in doc.messages.iter().enumerate() {
+                    if doc.matched == Some(i) {
+                        matched_line = Some(self.lines.len());
+                    }
                     let harness = self.target.as_ref().map_or("", |t| t.harness.as_str());
                     self.lines
                         .extend(conversation_message(message, harness, width, colors));
                     self.lines.push(Line::default());
+                }
+                if let Some(at) = matched_line
+                    && self.jump_to_match
+                {
+                    self.scroll = at;
+                    self.bottom = false;
+                    self.jump_to_match = false;
                 }
                 while self.lines.last().is_some_and(|line| line.width() == 0) {
                     self.lines.pop();
@@ -5697,6 +5715,9 @@ struct HistoryView {
     filter: String,
     filter_rest: Option<Instant>,
     error: Option<String>,
+    search_pending: bool,
+    search_status: Option<String>,
+    updated: Option<Instant>,
     select_first: bool,
     return_to: Option<String>,
     homes: HashMap<PathBuf, PathBuf>,
@@ -5751,6 +5772,9 @@ impl HistoryView {
         self.refresh |= refresh;
         self.ready = false;
         self.error = None;
+        self.search_pending = false;
+        self.search_status = None;
+        self.updated = None;
         self.filter = filter.to_owned();
         self.filter_rest = Some(Instant::now());
     }
@@ -5805,15 +5829,30 @@ impl HistoryView {
                 .collect();
             let (head, cells) = columns(&names, cells, &mut self.widths);
             rows.push(head);
-            rows.extend(shown.iter().zip(cells).map(|(r, cells)| Row {
-                kind: Kind::History(r.key.clone()),
-                cells,
-            }));
+            for (r, cells) in shown.iter().zip(cells) {
+                rows.push(Row {
+                    kind: Kind::History(r.key.clone()),
+                    cells,
+                });
+                if let Some(hit) = &r.entry.hit
+                    && !hit.snippet.is_empty()
+                {
+                    let mut cells =
+                        vec![(if hit.semantic { "    ≈ " } else { "    " }.into(), dim())];
+                    cells.extend(highlight_search(&hit.snippet, &self.filter));
+                    rows.push(Row {
+                        kind: Kind::HistoryStatus,
+                        cells,
+                    });
+                }
+            }
         }
         let status = if let Some(error) = &self.error {
             Some(format!("history unavailable: {error} · ctrl+r retries"))
         } else if !self.ready || self.fetch.as_ref().is_some_and(|f| !f.hydrate) {
             Some("loading history".into())
+        } else if self.search_status.is_some() {
+            self.search_status.clone()
         } else if shown.is_empty() {
             Some("no matching history".into())
         } else {
@@ -5827,6 +5866,27 @@ impl HistoryView {
         }
         rows
     }
+}
+
+fn highlight_search(text: &str, query: &str) -> Vec<(String, Style)> {
+    let words: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+    let mut cells: Vec<(String, Style)> = Vec::new();
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let matched = words.iter().any(|word| piece.to_lowercase().contains(word));
+        let style = if matched {
+            Style::default().fg(Color::Yellow)
+        } else {
+            dim()
+        };
+        if let Some((text, previous)) = cells.last_mut()
+            && *previous == style
+        {
+            text.push_str(piece);
+        } else {
+            cells.push((piece.into(), style));
+        }
+    }
+    cells
 }
 
 #[derive(Clone)]
@@ -6702,8 +6762,18 @@ impl App {
         self.session_history_key(s).as_ref() == Some(&entry.key)
     }
 
+    fn history_selected(&self) -> bool {
+        self.history.visible
+            && !self.jobs_view
+            && (self.history.select_first
+                || matches!(
+                    self.selected().map(|r| &r.kind),
+                    Some(Kind::History(_) | Kind::HistoryStatus)
+                ))
+    }
+
     fn toggle_history(&mut self) {
-        let from_history = matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
+        let from_history = self.history_selected();
         self.history.visible = !self.history.visible;
         if self.history.visible {
             self.history.return_to = self
@@ -6752,16 +6822,26 @@ impl App {
         match &row.kind {
             Kind::History(key) if self.history.visible => {
                 let entry = self.history.row(key)?;
+                let source = if entry.key.harness == "opencode" {
+                    transcript::Source::Opencode {
+                        database: entry.transcript.clone(),
+                        session_id: entry.key.session_id.clone(),
+                    }
+                } else {
+                    transcript::Source::Conversation(entry.transcript.clone())
+                };
                 Some(transcript::Target {
                     key: key.clone(),
                     harness: entry.key.harness.clone(),
-                    source: if entry.key.harness == "opencode" {
-                        transcript::Source::Opencode {
-                            database: entry.transcript.clone(),
-                            session_id: entry.key.session_id.clone(),
+                    source: if let Some(anchor) =
+                        entry.hit.as_ref().and_then(|hit| hit.anchor.clone())
+                    {
+                        transcript::Source::Match {
+                            source: Box::new(source),
+                            anchor,
                         }
                     } else {
-                        transcript::Source::Conversation(entry.transcript.clone())
+                        source
                     },
                 })
             }
@@ -6871,8 +6951,14 @@ impl App {
                             if response.cursor.is_some()
                                 && let Some(current) = &mut self.transcript.document
                             {
-                                self.transcript.prepend_lines = Some(self.transcript.lines.len());
-                                Arc::make_mut(current).prepend((*document).clone());
+                                if response.cursor.as_ref().is_some_and(|c| c.forward()) {
+                                    self.transcript.bottom = false;
+                                    Arc::make_mut(current).append((*document).clone());
+                                } else {
+                                    self.transcript.prepend_lines =
+                                        Some(self.transcript.lines.len());
+                                    Arc::make_mut(current).prepend((*document).clone());
+                                }
                             } else {
                                 self.transcript.document = Some(document);
                             }
@@ -6909,6 +6995,18 @@ impl App {
                 .document
                 .as_ref()
                 .and_then(|doc| doc.older.clone())
+            {
+                self.transcript.request_cursor = Some(cursor);
+                self.transcript.requested = false;
+            }
+        }
+        if self.transcript.load_newer && self.transcript.loaded_at.is_some() {
+            self.transcript.load_newer = false;
+            if let Some(cursor) = self
+                .transcript
+                .document
+                .as_ref()
+                .and_then(|d| d.newer.clone())
             {
                 self.transcript.request_cursor = Some(cursor);
                 self.transcript.requested = false;
@@ -7006,6 +7104,8 @@ impl App {
                 "total": result.as_ref().ok().map(|p| p.total),
                 "generation": result.as_ref().ok().map(|p| p.generation),
                 "stats": result.as_ref().ok().map(|p| &p.stats),
+                "search_status": result.as_ref().ok().and_then(|p| p.search_status.as_ref()),
+                "search_error": result.as_ref().ok().and_then(|p| p.search_error.as_ref()),
                 "error": result.as_ref().err().map(|e| format!("{e:#}")),
             }));
             if let Ok(page) = &result {
@@ -7030,6 +7130,9 @@ impl App {
                 match result {
                     Ok(page) => {
                         self.history.homes = page.homes;
+                        self.history.search_pending = page.search_pending;
+                        self.history.search_status = page.search_status;
+                        self.history.updated = Some(Instant::now());
                         if fetch.hydrate {
                             for entry in page.entries.into_iter().filter(|e| e.columns.is_some()) {
                                 if let Some(row) = self
@@ -7058,6 +7161,10 @@ impl App {
                                 }
                             }
                         } else {
+                            if fetch.after.is_none() {
+                                self.history.rows.clear();
+                                self.history.batches.clear();
+                            }
                             self.history.batches.push(HistoryBatch {
                                 after: fetch.after,
                                 keys: page.entries.iter().map(|e| e.key.clone()).collect(),
@@ -7080,7 +7187,6 @@ impl App {
                 self.rebuild_with_reason("history");
                 if self.history.select_first
                     && self.focus.is_none()
-                    && self.composer_text().is_empty()
                     && let Some(i) = self
                         .visible
                         .iter()
@@ -7101,7 +7207,7 @@ impl App {
         {
             return;
         }
-        if matches!(self.mode, Mode::Filter)
+        if (matches!(self.mode, Mode::Filter) || (self.history_selected() && !self.history.refresh))
             && self
                 .history
                 .filter_rest
@@ -7110,7 +7216,7 @@ impl App {
             return;
         }
         if self.history.reader.is_none() {
-            match history::Reader::discover(self.claude.clone()) {
+            match history::Reader::discover(self.claude.clone(), self.state.clone()) {
                 Ok(reader) => self.history.reader = Some(reader),
                 Err(error) => {
                     self.event("error", "history.failed", || {
@@ -7145,7 +7251,12 @@ impl App {
             .filter(|r| r.entry.columns.is_none() && visible.contains(&r.entry.key))
             .map(|r| r.entry.key.clone())
             .collect();
-        let (after, hydrate) = if self.history.first {
+        let update_search = self.history.search_pending
+            && self
+                .history
+                .updated
+                .is_some_and(|at| at.elapsed() >= Duration::from_millis(500));
+        let (after, hydrate) = if self.history.first || update_search {
             (None, false)
         } else if near_end && self.history.next.is_some() {
             (self.history.next.clone(), false)
@@ -7342,11 +7453,7 @@ impl App {
                 })
             });
         }
-        let history_browsing = self.history.select_first
-            || matches!(
-                self.selected().map(|r| &r.kind),
-                Some(Kind::History(_) | Kind::HistoryStatus)
-            );
+        let history_browsing = self.history_selected();
         if self.status.starts_with("reload failed:") {
             self.status.clear();
         }
@@ -7696,6 +7803,17 @@ impl App {
         self.report_rows(reason);
     }
 
+    fn filter_changed(&mut self) {
+        if self.history.visible && self.history.filter != self.filter.text {
+            // Retain history focus while results load or the query has no matches.
+            self.history.select_first = self.history_selected();
+            self.history.reset(&self.filter.text, false);
+            self.rebuild_with_reason("filter");
+        }
+        self.apply_filter();
+        self.settle();
+    }
+
     /// Keep matching rows and their group headers. Exclude other unselectable kinds
     /// when filtering, or they can hide the header above them.
     fn apply_filter(&mut self) {
@@ -7929,6 +8047,7 @@ impl App {
         }
         let own = self.selected().and_then(|r| self.viewer_of(&r.kind));
         if own.is_some()
+            || self.history_selected()
             || matches!(
                 self.selected().map(|r| &r.kind),
                 Some(Kind::Session(..) | Kind::Run(..) | Kind::History(_) | Kind::HistoryStatus)
@@ -7991,7 +8110,9 @@ impl App {
             _ => self.jobs_view.then_some("jobs"),
         };
         open.or_else(|| {
-            matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)).then(|| MENU[self.menu].0)
+            (!self.history_selected()
+                && matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu)))
+            .then(|| MENU[self.menu].0)
         })
     }
 
@@ -8935,6 +9056,19 @@ impl App {
             guide.find.text.insert_str(at, &pasted);
             guide.find.at = at + pasted.len();
             guide.top = 0;
+            return;
+        }
+        if self.focus.is_none()
+            && (matches!(self.mode, Mode::Filter)
+                || (matches!(self.mode, Mode::Normal) && self.history_selected()))
+        {
+            if !text.is_empty() {
+                let pasted = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+                let at = snap(&self.filter.text, self.filter.at);
+                self.filter.text.insert_str(at, &pasted);
+                self.filter.at = at + pasted.len();
+                self.filter_changed();
+            }
             return;
         }
         if text.is_empty() {
@@ -10050,8 +10184,14 @@ impl App {
         if self.transcript.focused {
             return self.transcript_hints();
         }
-        let prefix = (!self.filter.text.is_empty())
-            .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
+        let prefix = (!self.filter.text.is_empty()).then(|| {
+            let label = if self.history.visible {
+                "search"
+            } else {
+                "filter"
+            };
+            Span::styled(format!("{label}: {}  ", self.filter.text), dim())
+        });
         let mut line = if self.focus.is_some_and(|i| self.viewers[i].is_terminal()) {
             let mut keys = vec![];
             if self.viewers[self.focus.unwrap()].what == "zsh" {
@@ -10089,7 +10229,17 @@ impl App {
             )
         };
         match &self.mode {
-            Mode::Filter => hints(&[("enter", "keep the filter"), ("esc", "clear it")]),
+            Mode::Filter => hints(&[
+                (
+                    "enter",
+                    if self.history.visible {
+                        "keep the search"
+                    } else {
+                        "keep the filter"
+                    },
+                ),
+                ("esc", "clear it"),
+            ]),
             Mode::Job(form) if form.row == JobRow::Head => {
                 let mut keys = vec![("↑ ↓", "field"), ("enter →", "open")];
                 if !form.shut {
@@ -10121,6 +10271,18 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
+            Mode::Normal if self.history_selected() => {
+                let mut keys = vec![("↑ ↓", "select")];
+                if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
+                    keys.push(("enter", self.enter_label()));
+                    keys.push(("tab", "pane"));
+                }
+                if !self.filter.text.is_empty() {
+                    keys.push(("esc", "clear filter"));
+                }
+                keys.push(("ctrl+h", "hide history"));
+                hints(&keys)
+            }
             Mode::Normal if self.terminal_selected() => {
                 let mut keys = vec![("enter", start.as_str())];
                 if self.focusable_viewer().is_some() {
@@ -10463,6 +10625,7 @@ impl App {
                 KeyCode::End => {
                     self.transcript.scroll = self.transcript.max_scroll();
                     self.transcript.bottom = true;
+                    self.transcript.load_newer = true;
                 }
                 KeyCode::Enter => {
                     self.leave_transcript();
@@ -10516,14 +10679,7 @@ impl App {
                         self.filter.key(code, mods);
                     }
                 }
-                if self.history.visible && self.history.filter != self.filter.text {
-                    self.history.select_first =
-                        matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
-                    self.history.reset(&self.filter.text, false);
-                    self.rebuild();
-                }
-                self.apply_filter();
-                self.settle();
+                self.filter_changed();
             }
             Mode::Guide(guide) => {
                 if guide.key(code, mods) {
@@ -10626,6 +10782,7 @@ impl App {
             }
             Mode::Normal => {
                 let armed = self.armed.take();
+                let searching_history = self.history_selected();
                 if self.on_button() && matches!(code, KeyCode::Left | KeyCode::Right) {
                     let n = MENU.len();
                     self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
@@ -10636,7 +10793,11 @@ impl App {
                 if !self.on_button()
                     && code == KeyCode::Right
                     && mods.is_empty()
-                    && self.composer_text().is_empty()
+                    && if searching_history {
+                        self.filter.text.is_empty()
+                    } else {
+                        self.composer_text().is_empty()
+                    }
                 {
                     match self.focusable_viewer() {
                         Some(i) => self.focus(i),
@@ -10665,7 +10826,12 @@ impl App {
                     self.needs_clear = true;
                     return Ok(false);
                 }
-                if !self.on_button() {
+                if searching_history {
+                    if self.filter.key(code, mods) {
+                        self.filter_changed();
+                        return Ok(false);
+                    }
+                } else if !self.on_button() {
                     let (text, caret) = self.composer_input_mut();
                     if let Some(at) = edit(text, *caret, code, mods) {
                         *caret = at;
@@ -10685,6 +10851,11 @@ impl App {
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
+                        } else if searching_history && !self.filter.text.is_empty() {
+                            self.filter = Input::default();
+                            self.filter_changed();
+                        } else if searching_history {
+                            self.toggle_history();
                         } else if self.terminal_selected() && !self.terminal_input.text.is_empty() {
                             self.terminal_input = Input::default();
                         } else if self.terminal_selected() {
@@ -10717,6 +10888,12 @@ impl App {
                         None => self.status = "nothing in the pane".into(),
                     },
                     KeyCode::BackTab => self.cycle_harness(),
+                    KeyCode::Enter if searching_history => {
+                        if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
+                            self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+                            self.enter()?;
+                        }
+                    }
                     // With a draft, shift+enter adds a line for either launch type.
                     KeyCode::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
@@ -10758,15 +10935,18 @@ impl App {
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
                         if self.history.visible {
-                            self.history.select_first =
-                                matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_)));
+                            self.history.select_first = searching_history;
                             self.history.reset(&self.filter.text, true);
                             self.rebuild();
                         }
                         self.invalidate();
                         self.status = "refresh requested".into();
                     }
-                    KeyCode::Char('v') if ctrl && !self.terminal_selected() => self.attach_image(),
+                    KeyCode::Char('v')
+                        if ctrl && !self.terminal_selected() && !searching_history =>
+                    {
+                        self.attach_image()
+                    }
                     _ => {}
                 }
             }
@@ -10959,9 +11139,18 @@ impl App {
 
     fn mode_line(&self) -> Line<'static> {
         match &self.mode {
+            Mode::Normal if self.history_selected() => {
+                let mut spans = vec![Span::styled("history / ", bold())];
+                spans.extend(self.filter.spans("Type to search history"));
+                Line::from(spans)
+            }
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
-                spans.extend(self.filter.spans("text a row must contain"));
+                spans.extend(self.filter.spans(if self.history.visible {
+                    "Search past conversations"
+                } else {
+                    "text a row must contain"
+                }));
                 Line::from(spans)
             }
             Mode::Job(f) => f.line(),
@@ -11182,7 +11371,10 @@ impl App {
 
     /// The list is sitting on a button, which takes no instruction.
     fn on_button(&self) -> bool {
-        self.on_menu() && !self.terminal_selected() && self.text.is_empty()
+        self.on_menu()
+            && !self.history_selected()
+            && !self.terminal_selected()
+            && self.text.is_empty()
     }
 
     fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
@@ -13877,6 +14069,185 @@ mod tests {
         history_until(&mut app, &mut terminal, |a| {
             a.history.ready && a.history.rows.len() == HISTORY_PAGE
         });
+    }
+
+    #[test]
+    fn history_search_shows_an_excerpt_and_previews_the_match_without_resuming() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        let mut records = fs::read_to_string(&path).unwrap();
+        for i in 0..90 {
+            let text = if i == 10 {
+                "The retry backoff discussion".to_owned()
+            } else {
+                format!("Other message {i}")
+            };
+            records.push_str(&format!(
+                "{}\n",
+                json!({"type":"user","message":{"content":text}})
+            ));
+        }
+        fs::write(&path, &records).unwrap();
+        app.key(KeyCode::Char('f'), KeyModifiers::CONTROL).unwrap();
+        for c in "retry backoff".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.rows.len(), 1);
+        assert!(matches!(
+            app.selected().map(|r| &r.kind),
+            Some(Kind::History(_))
+        ));
+        let excerpt = app
+            .rows
+            .iter()
+            .find(|r| r.kind == Kind::HistoryStatus && r.text().contains("retry"))
+            .unwrap();
+        assert!(
+            excerpt
+                .cells
+                .iter()
+                .any(|(text, style)| text.contains("retry") && style.fg == Some(Color::Yellow))
+        );
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(text.contains("retry backoff"), "{text}");
+        assert!(!text.contains("Other message 89"), "{text}");
+        assert!(app.viewers.is_empty() && app.opening.is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), records);
+        assert_eq!(app.enter_label(), "resume");
+    }
+
+    #[test]
+    fn history_typing_searches_while_loading_and_recovers_from_no_matches() {
+        let (_d, mut app, mut terminal) = history_fixture(120);
+        app.toggle_history();
+        app.history_tick();
+        assert!(app.history.fetch.is_some());
+        for c in "old session 005".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        assert_eq!(app.filter.text, "old session 005");
+        assert!(app.text.is_empty());
+        assert!(matches!(app.mode, Mode::Normal));
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.rows.len(), 1);
+        assert_eq!(
+            app.history.rows[0].entry.title.as_deref(),
+            Some("old session 005")
+        );
+        assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+
+        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert!(app.history.rows.is_empty());
+        assert!(app.mode_line().to_string().contains("old session 005x"));
+        assert!(app.panel().is_none());
+        app.viewers.push(viewer_open(A, "attach", "OTHER SESSION"));
+        assert_eq!(app.shown(), None);
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        assert!(app.opening.is_none() && app.pending.is_empty());
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.filter.text, "old session 005");
+        assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+        assert!(app.text.is_empty());
+
+        assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert!(app.filter.text.is_empty());
+        assert_eq!(app.history.rows.len(), HISTORY_PAGE);
+        assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+    }
+
+    #[test]
+    fn history_search_edits_and_resumes_without_using_either_composer_draft() {
+        let (_d, mut app, mut terminal) = history_fixture(4);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        app.fill("keep this instruction".into());
+        app.terminal_input = Input::new("keep this command");
+        app.harness = harness::launchable().len();
+        app.paste("old\r\nsession 00");
+        app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+        app.paste("é ");
+        app.key(KeyCode::Char('w'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.filter.text, "old session 00");
+        app.paste("");
+        assert!(app.images.is_empty());
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+        assert!(app.mode_line().to_string().starts_with("history / "));
+
+        let first = key(&app);
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        let second = key(&app).unwrap();
+        assert_ne!(first.as_deref(), Some(second.as_str()));
+        assert_eq!(app.filter.text, "old session 00");
+        app.viewers.push(viewer_open(&second, "attach", "HISTORY"));
+        wait_paint(&mut app, 0, "HISTORY");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(app.viewers.len(), 1);
+        assert!(app.opening.is_none() && app.pending.is_empty());
+        assert_eq!(app.text, "keep this instruction");
+        assert_eq!(app.terminal_input.text, "keep this command");
+        app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.filter.text.is_empty());
+        assert_eq!(app.text, "keep this instruction");
+        assert_eq!(app.terminal_input.text, "keep this command");
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.history.visible);
+        assert_eq!(app.text, "keep this instruction");
+        assert_eq!(app.terminal_input.text, "keep this command");
+    }
+
+    #[test]
+    fn live_rows_keep_the_composer_while_history_is_visible() {
+        let (d, mut app, mut terminal) = history_fixture(2);
+        let mut live = session(A, "idle", "live session", 0);
+        live.cwd = d.path().to_owned();
+        app.data.sessions = vec![live];
+        app.rebuild();
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        app.paste(" draft");
+        assert_eq!(app.text, "x draft");
+        assert!(app.filter.text.is_empty());
+        assert!(!app.mode_line().to_string().starts_with("history / "));
+
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.filter.text, "o");
+        assert_eq!(app.text, "x draft");
+        app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.history.visible);
+        app.key(KeyCode::Char('y'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.text, "x drafty");
+        assert_eq!(app.filter.text, "o");
     }
 
     #[test]

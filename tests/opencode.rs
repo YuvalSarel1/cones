@@ -83,6 +83,74 @@ fn preview(reader: &mut transcript::Reader, db: &Path, id: &str) -> transcript::
 }
 
 #[test]
+fn search_finds_visible_opencode_messages_and_opens_the_matching_passage() {
+    let (dir, db) = fixture();
+    sql(
+        &db,
+        "UPDATE part SET data = json_set(data, '$.text',
+        json_extract(data, '$.text') || replace(hex(zeroblob(20000)), '00', ' trailing'))
+        WHERE id = 'prt_b2';",
+    );
+    let mut reader = history::Reader::new(vec![Source {
+        harness: HarnessKind::Opencode,
+        home: dir.path().to_owned(),
+    }])
+    .unwrap();
+    let found = page(
+        &mut reader,
+        Query {
+            filter: "Additional detail".into(),
+            ..Default::default()
+        },
+    );
+    assert_eq!(found.entries.len(), 1);
+    let entry = &found.entries[0];
+    let hit = entry.hit.as_ref().unwrap();
+    assert!(hit.snippet.contains("Additional detail"));
+    let mut preview = transcript::Reader::new().unwrap();
+    preview
+        .request(Target {
+            key: "search".into(),
+            harness: "opencode".into(),
+            source: transcript::Source::Match {
+                source: Box::new(transcript::Source::Opencode {
+                    database: db,
+                    session_id: entry.key.session_id.clone(),
+                }),
+                anchor: hit.anchor.clone().unwrap(),
+            },
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let doc = loop {
+        if let Some(response) = preview.poll() {
+            break response.unwrap().result.unwrap();
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(
+        doc.messages[doc.matched.unwrap()]
+            .text
+            .contains("Additional detail")
+    );
+    for text in ["injected", "ignored", "private reasoning", "tool payload"] {
+        assert!(
+            page(
+                &mut reader,
+                Query {
+                    filter: text.into(),
+                    ..Default::default()
+                }
+            )
+            .entries
+            .is_empty(),
+            "{text}"
+        );
+    }
+}
+
+#[test]
 fn history_pages_one_database_without_mixing_conversations_or_inventing_usage() {
     let (dir, db) = fixture();
     let before = fs::read(&db).unwrap();
@@ -358,6 +426,7 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
             last_activity: None,
             title: None,
             columns: None,
+            hit: None,
         };
         let command = harness::resume_history(&entry).unwrap();
         assert_eq!(

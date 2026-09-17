@@ -8,6 +8,9 @@ repository = "https://github.com/YuvalSarel1/cones"
 
 [dependencies]
 anyhow = "1"
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
@@ -22,6 +25,9 @@ signal-hook = "0.3"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+rayon = "1"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 tui-markdown = "0.3.9"
 vt100 = "0.16"
 

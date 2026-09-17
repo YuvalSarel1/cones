@@ -150,7 +150,13 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 
 History appears below the live list, ordered by latest recorded activity regardless of grouping. It excludes live sessions and identified Claude ledger sessions. Its independent `history_columns` default to last active, folder, model, context and last reply. Live state and activity chart columns are not offered. [Historical sources](harness.md#historical-sessions) define which conversations appear.
 
-Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
+Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. With the cursor in history, typing or pasting edits the filter directly, including while results load or no rows match. Backspace and the usual text editing keys edit the search; `esc` clears it, or hides history when empty. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
+
+Typing in history searches session titles, folders, harnesses, IDs and conversation text. `ctrl+f` also opens the search field. Keyword and semantic matches share one list, ordered by relevance. Each conversation appears once, with a matching excerpt; yellow words match the query and `≈` marks a result found by meaning. Selecting a result opens its matching passage; `enter` resumes it. In the explicit `ctrl+f` field, `enter` keeps the search and returns to the list.
+
+Semantic search uses MiniLM locally. The first search downloads the model, about 90 MB, and builds passage embeddings in the background. Keyword results remain usable while semantic results arrive. Conversation text and queries stay on the machine. If the model cannot load, the list says semantic search is unavailable; `ctrl+r` retries. The model works best with English; keyword search also handles other languages.
+
+The rebuildable search cache lives under `STATE_DIR/search/`. Text comes from visible user and assistant messages, excluding thinking, tool output and harness control records. Changed transcripts are reindexed on refresh; unchanged passage embeddings are reused. SQLite stores the text index and vectors, and model files are cached alongside it. Opening history without a query does not load or download the model.
 
 Selecting a row loads its conversation in the pane after a short cursor rest. Messages appear in chronological order, with the latest message at the bottom. Claude and Codex use their prompt and response markers; pi uses shaded prompt blocks and unmarked replies. Replies render Markdown with highlighted code. Recorded tool calls appear as compact names and inputs; tool outputs and thinking stay out of the conversation. The pane says `history · read only`. Scrolling up loads earlier messages in bounded pages and keeps the text you were reading in place. Large individual messages remain bounded; omitted text is marked.
 
@@ -158,7 +164,9 @@ These are read-only presentations based on each harness's default appearance. Na
 
 The wheel scrolls the preview without changing the selection. When focused, arrows and page-up/down scroll; home/end reach the loaded beginning or latest text. Reaching the beginning requests an older page when available. `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored. Focused `ctrl+r` rereads the preview at the bottom; `ctrl+\` changes its layout.
 
-With an empty composer, `enter` resumes the selected conversation, including from its preview. Its native viewer replaces the preview and is reused when the session appears live. History has no delete action. Browsing it starts no harness client.
+A search preview starts at the matching passage. Scrolling past either end loads more conversation in that direction. Large individual messages show a bounded excerpt around the match, with omitted text marked.
+
+`enter` resumes the selected conversation, including from its preview. An existing composer draft is preserved while searching and resuming history. Its native viewer replaces the preview and is reused when the session appears live. History has no delete action. Browsing it starts no harness client.
 
 ## Viewer
 

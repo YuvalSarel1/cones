@@ -16,7 +16,7 @@ use serde_json::Value;
 use std::{
     collections::{HashSet, VecDeque},
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
@@ -39,6 +39,10 @@ pub struct Target {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
     Conversation(PathBuf),
+    Match {
+        source: Box<Source>,
+        anchor: crate::search::Anchor,
+    },
     Opencode {
         database: PathBuf,
         session_id: String,
@@ -90,12 +94,15 @@ pub struct Transcript {
     /// Bytes read for this snapshot, including a retried larger tail window.
     pub bytes_read: u64,
     pub older: Option<Cursor>,
+    pub newer: Option<Cursor>,
+    pub matched: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cursor {
     before: u64,
     stamp: Stamp,
+    forward: bool,
 }
 
 impl Transcript {
@@ -114,9 +121,23 @@ impl Transcript {
         }
         older.messages.append(&mut self.messages);
         self.messages = older.messages;
+        self.matched = None;
         self.earlier = older.earlier;
         self.older = older.older;
         self.bytes_read += older.bytes_read;
+    }
+
+    pub fn append(&mut self, mut newer: Transcript) {
+        self.messages.append(&mut newer.messages);
+        self.newer = newer.newer;
+        self.matched = None;
+        self.bytes_read += newer.bytes_read;
+    }
+}
+
+impl Cursor {
+    pub fn forward(&self) -> bool {
+        self.forward
     }
 }
 
@@ -234,6 +255,7 @@ impl Stamp {
 impl Source {
     fn stamps(&self) -> Result<Vec<Option<Stamp>>> {
         match self {
+            Self::Match { source, .. } => source.stamps(),
             Self::Conversation(path) => Ok(vec![Some(Stamp::of(path)?)]),
             Self::Opencode { database, .. } => {
                 let mut stamp = Stamp::of(database)?;
@@ -269,7 +291,7 @@ struct Cache {
 struct Cached {
     target: Target,
     stamps: Vec<Option<Stamp>>,
-    before: Option<u64>,
+    before: Option<(u64, bool)>,
     document: Arc<Transcript>,
 }
 
@@ -287,7 +309,7 @@ impl Cache {
                 "transcript changed; refresh before loading earlier messages"
             );
         }
-        let before = cursor.map(|c| c.before);
+        let before = cursor.map(|c| (c.before, c.forward));
         if let Some(i) = self
             .entries
             .iter()
@@ -299,11 +321,28 @@ impl Cache {
             self.entries.push_back(cached);
             return Ok(result);
         }
-        let document = match &target.source {
+        let source = match &target.source {
+            Source::Match { source, .. } => source.as_ref(),
+            source => source,
+        };
+        let mut document = match source {
             Source::Conversation(path) => {
                 let stamp = stamps[0].as_ref().unwrap();
-                let mut document =
-                    read_conversation(path, &target.harness, before.unwrap_or(stamp.len))?;
+                let anchor = match &target.source {
+                    Source::Match { anchor, .. } if cursor.is_none() => Some(anchor),
+                    _ => None,
+                };
+                let mut document = if cursor.is_some_and(|c| c.forward) {
+                    read_forward(path, &target.harness, cursor.unwrap().before, stamp)?
+                } else if let Some(anchor) = anchor {
+                    read_match(path, &target.harness, anchor, stamp)?
+                } else {
+                    read_conversation(
+                        path,
+                        &target.harness,
+                        cursor.map_or(stamp.len, |c| c.before),
+                    )?
+                };
                 if let Some(cursor) = &mut document.older {
                     cursor.stamp = stamp.clone();
                 }
@@ -318,14 +357,33 @@ impl Cache {
                 database,
                 session_id,
             } => {
-                let document = crate::opencode::preview(database, session_id)?;
+                let anchor = match &target.source {
+                    Source::Match { anchor, .. } if cursor.is_none() => Some(anchor),
+                    _ => None,
+                };
+                let document = if anchor.is_some() || cursor.is_some() {
+                    read_opencode(
+                        database,
+                        session_id,
+                        anchor,
+                        cursor,
+                        stamps[0].as_ref().unwrap(),
+                    )?
+                } else {
+                    crate::opencode::preview(database, session_id)?
+                };
                 ensure!(
                     target.source.stamps()? == stamps,
                     "OpenCode transcript changed while reading; reload history"
                 );
                 document
             }
+            Source::Match { .. } => unreachable!("nested search target"),
         };
+        if cursor.is_some_and(|c| !c.forward()) {
+            // Prepending must preserve the current window's forward cursor.
+            document.newer = None;
+        }
         let document = Arc::new(document);
         self.entries
             .retain(|c| c.target != *target || c.before != before);
@@ -445,6 +503,7 @@ fn read_conversation(path: &Path, harness: &str, len: u64) -> Result<Transcript>
                     document.older = Some(Cursor {
                         before,
                         stamp: Stamp::of(path)?,
+                        forward: false,
                     });
                 }
             }
@@ -518,7 +577,241 @@ fn parse_at(harness: &str, bytes: &[u8], mut offset: u64) -> Transcript {
         earlier,
         bytes_read: 0,
         older: None,
+        newer: None,
+        matched: None,
     }
+}
+
+/// Stream complete native records for the text index. Prompt selectors are shared
+/// with previews, so tool output, thinking and harness control records stay out.
+pub(crate) fn search_passages(
+    entry: &crate::history::Entry,
+    mut visit: impl FnMut(&str, u64, u64) -> Result<()>,
+) -> Result<()> {
+    if entry.key.harness == "opencode" {
+        let mut at = 0;
+        loop {
+            let events = crate::opencode::conversation_page(
+                &entry.transcript,
+                &entry.key.session_id,
+                at,
+                64,
+            )?;
+            let count = events.len();
+            for (i, v) in events.into_iter().enumerate() {
+                if let Some(m) = message("opencode", &v) {
+                    visit(&plain(&m.text), (at + i) as u64, (at + i + 1) as u64)?;
+                }
+            }
+            at += count;
+            if count < 64 {
+                break;
+            }
+        }
+        return Ok(());
+    }
+    let mut reader = BufReader::new(File::open(&entry.transcript)?);
+    let mut bytes = Vec::new();
+    let mut offset = 0;
+    let mut seen = HashSet::new();
+    loop {
+        bytes.clear();
+        let len = reader.read_until(b'\n', &mut bytes)?;
+        if len == 0 {
+            break;
+        }
+        let start = offset;
+        offset += len as u64;
+        // A writer's incomplete last record is picked up by the next refresh.
+        if !bytes.ends_with(b"\n") {
+            break;
+        }
+        let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if let Some(id) = v["uuid"].as_str()
+            && !seen.insert(id.to_owned())
+        {
+            continue;
+        }
+        if let Some(m) = message(&entry.key.harness, &v) {
+            let text = plain(&m.text);
+            if !text.trim().is_empty() {
+                visit(&text, start, offset)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_match(
+    path: &Path,
+    harness: &str,
+    anchor: &crate::search::Anchor,
+    stamp: &Stamp,
+) -> Result<Transcript> {
+    ensure!(
+        anchor.offset < anchor.end && anchor.end <= stamp.len,
+        "search passage changed; refresh history"
+    );
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(anchor.offset))?;
+    let mut bytes = Vec::new();
+    file.take(anchor.end - anchor.offset)
+        .read_to_end(&mut bytes)?;
+    let value: Value = serde_json::from_slice(&bytes)?;
+    let mut matched =
+        message(harness, &value).context("search passage changed; refresh history")?;
+    matched.text = plain(&matched.text);
+    trim_match(&mut matched.text, anchor)?;
+    matched.offset = anchor.offset;
+    let mut document = read_conversation(path, harness, anchor.offset)?;
+    // A short context leaves the initial selection visibly near the matching passage.
+    if document.messages.len() > 4 {
+        document.messages.drain(..document.messages.len() - 4);
+    }
+    document.matched = Some(document.messages.len());
+    document.messages.push(matched);
+    document.bytes_read += bytes.len() as u64;
+    if let Some(first) = document.messages.first()
+        && first.offset > 0
+    {
+        document.earlier = true;
+        document.older = Some(Cursor {
+            before: first.offset,
+            stamp: stamp.clone(),
+            forward: false,
+        });
+    }
+    if anchor.end < stamp.len {
+        document.newer = Some(Cursor {
+            before: anchor.end,
+            stamp: stamp.clone(),
+            forward: true,
+        });
+    }
+    Ok(document)
+}
+
+fn trim_match(text: &mut String, anchor: &crate::search::Anchor) -> Result<()> {
+    let at = text
+        .find(&anchor.text)
+        .context("search passage changed; refresh history")?;
+    // Keep the match visible even when the rest of an individual message is large.
+    let mut from = at.saturating_sub(256);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let mut to = (from + MAX_TEXT / 2).min(text.len());
+    while !text.is_char_boundary(to) {
+        to -= 1;
+    }
+    *text = format!(
+        "{}{}{}",
+        if from > 0 { "…\n" } else { "" },
+        &text[from..to],
+        if to < text.len() { "\n…" } else { "" }
+    );
+    Ok(())
+}
+
+fn read_forward(path: &Path, harness: &str, start: u64, stamp: &Stamp) -> Result<Transcript> {
+    let mut reader = BufReader::new(File::open(path)?);
+    reader.seek(SeekFrom::Start(start))?;
+    let mut offset = start;
+    let mut document = Transcript::default();
+    let mut bytes = Vec::new();
+    let mut size = 0;
+    while offset < stamp.len && document.messages.len() < MAX_MESSAGES && size < MAX_TEXT {
+        bytes.clear();
+        let count = (&mut reader)
+            .take(stamp.len - offset)
+            .read_until(b'\n', &mut bytes)?;
+        if count == 0 {
+            break;
+        }
+        let at = offset;
+        offset += count as u64;
+        document.bytes_read += count as u64;
+        let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if let Some(mut m) = message(harness, &v) {
+            m.text = plain(&m.text);
+            m.offset = at;
+            trim_message(&mut m);
+            size += m.bytes();
+            document.messages.push(m);
+        }
+        if document.bytes_read >= MAX_WINDOW {
+            break;
+        }
+    }
+    if offset < stamp.len {
+        document.newer = Some(Cursor {
+            before: offset,
+            stamp: stamp.clone(),
+            forward: true,
+        });
+    }
+    Ok(document)
+}
+
+fn read_opencode(
+    database: &Path,
+    session: &str,
+    anchor: Option<&crate::search::Anchor>,
+    cursor: Option<&Cursor>,
+    stamp: &Stamp,
+) -> Result<Transcript> {
+    let start = if let Some(anchor) = anchor {
+        anchor.offset.saturating_sub(4)
+    } else if let Some(cursor) = cursor {
+        if cursor.forward {
+            cursor.before
+        } else {
+            cursor.before.saturating_sub(MAX_MESSAGES as u64)
+        }
+    } else {
+        0
+    };
+    let limit = cursor
+        .filter(|c| !c.forward)
+        .map_or(MAX_MESSAGES, |c| (c.before - start) as usize);
+    let events = crate::opencode::conversation_page(database, session, start as usize, limit)?;
+    let count = events.len();
+    let mut document = Transcript::default();
+    for (i, v) in events.into_iter().enumerate() {
+        if let Some(mut m) = message("opencode", &v) {
+            m.text = plain(&m.text);
+            if let Some(anchor) = anchor.filter(|a| a.offset == start + i as u64) {
+                trim_match(&mut m.text, anchor)?;
+                document.matched = Some(document.messages.len());
+            }
+            trim_message(&mut m);
+            document.messages.push(m);
+        }
+    }
+    ensure!(
+        anchor.is_none() || document.matched.is_some(),
+        "search passage changed; refresh history"
+    );
+    if start > 0 {
+        document.earlier = true;
+        document.older = Some(Cursor {
+            before: start,
+            stamp: stamp.clone(),
+            forward: false,
+        });
+    }
+    if count == limit {
+        document.newer = Some(Cursor {
+            before: start + count as u64,
+            stamp: stamp.clone(),
+            forward: true,
+        });
+    }
+    Ok(document)
 }
 
 fn trim_text(text: &mut String) -> bool {

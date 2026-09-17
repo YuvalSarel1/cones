@@ -185,6 +185,7 @@ fn entries(db: &Path, home: &Path, filter: &str) -> Result<Vec<Entry>> {
             last_activity: millis(&v["time_updated"]),
             title: v["title"].as_str().and_then(fleet::headline),
             columns: None,
+            hit: None,
         })
     })
     .collect())
@@ -376,6 +377,33 @@ pub(crate) fn preview(db: &Path, id: &str) -> Result<crate::transcript::Transcri
     document.earlier |= truncated;
     document.bytes_read = bytes.len() as u64;
     Ok(document)
+}
+
+/// Search reads the same visible text roles as previews, in stable message order.
+pub(crate) fn conversation_page(
+    db: &Path,
+    id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<Value>> {
+    let id = operand(id)?;
+    query(
+        db,
+        &format!(
+            "SELECT m.id, json_extract(m.data, '$.role') AS role,
+            (SELECT group_concat(text, char(10)) FROM (
+                SELECT json_extract(p.data, '$.text') AS text FROM part p
+                WHERE p.message_id = m.id AND p.session_id = m.session_id
+                    AND json_valid(p.data) AND json_extract(p.data, '$.type') = 'text'
+                    AND coalesce(json_extract(p.data, '$.synthetic'), 0) = 0
+                    AND coalesce(json_extract(p.data, '$.ignored'), 0) = 0
+                ORDER BY p.id)) AS text
+         FROM message m WHERE m.session_id = {id} AND json_valid(m.data)
+            AND json_extract(m.data, '$.role') IN ('user', 'assistant')
+            AND text IS NOT NULL AND trim(text) != ''
+         ORDER BY m.time_created, m.id LIMIT {limit} OFFSET {offset}"
+        ),
+    )
 }
 
 #[derive(Clone, Debug)]
