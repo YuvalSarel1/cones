@@ -242,6 +242,34 @@ fn transcript_storage_can_live_outside_the_native_config_home() {
 }
 
 #[test]
+fn statusline_cost_pointer_is_optional_and_validated() {
+    use serde_json::json;
+    let source = spec(HarnessKind::Claude)
+        .transcript
+        .statusline
+        .as_ref()
+        .unwrap();
+    let report = json!({"cost": {"total_cost_usd": 0.125}});
+    assert_eq!(
+        report
+            .pointer(source.cost_pointer.as_deref().unwrap())
+            .and_then(serde_json::Value::as_f64),
+        Some(0.125)
+    );
+    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[0].1).unwrap();
+    document["transcript"]["statusline"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cost_pointer");
+    let absent = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
+    assert!(absent.transcript.statusline.unwrap().cost_pointer.is_none());
+    for invalid in ["cost.total_cost_usd", "/cost/~bad"] {
+        document["transcript"]["statusline"]["cost_pointer"] = json!(invalid);
+        assert!(HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).is_err());
+    }
+}
+
+#[test]
 fn command_sequences_preserve_argv_environment_and_short_circuit_failures() {
     let dir = tempfile::tempdir().unwrap();
     let program = dir.path().join("fake harness");
