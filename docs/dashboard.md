@@ -79,7 +79,7 @@ Every change validates and saves only that table's column setting in `jobs.yaml`
 
 ### Config
 
-The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. Use `[` `]` or click a tab to switch. Each tab remembers its selected field. Subheadings name actual config blocks or harnesses.
+The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. `[` `]` switch from anywhere in the editor, and clicking a tab also lands on the row. Each tab remembers its selected field. Subheadings name actual config blocks or harnesses.
 
 Each setting occupies one row with its current value. The selected field's explanation stays below the list. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `home`, `end`, `page up` and `page down` navigate within the current tab. The wheel moves through fields, and the selected row stays visible in short panes.
 

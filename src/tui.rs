@@ -3384,6 +3384,8 @@ pub struct ConfigForm {
     selected: [usize; 3],
     /// A choice list is separate from text editing; browsing never changes the value.
     choice: Option<usize>,
+    /// Focus is on the group tabs, the button row the dashboard menu uses.
+    tabs: bool,
     /// What a row that runs something reported, held until the next key.
     note: Option<String>,
     area: Rect,
@@ -3490,6 +3492,7 @@ impl ConfigForm {
                 FIELDS.iter().position(|f| f.group == GROUPS[i].0).unwrap()
             }),
             choice: None,
+            tabs: false,
             note: None,
             area: Rect::default(),
             top: 0,
@@ -3521,6 +3524,7 @@ impl ConfigForm {
     }
 
     fn step(&mut self, row: usize) {
+        self.tabs = false;
         self.row = row;
         self.cursor = usize::MAX;
         self.choice = None;
@@ -3784,8 +3788,9 @@ impl ConfigForm {
     }
 
     fn up(&mut self) {
-        if let Some(row) = self.fields().into_iter().rev().find(|&i| i < self.row) {
-            self.step(row);
+        match self.fields().into_iter().rev().find(|&i| i < self.row) {
+            Some(row) => self.step(row),
+            None => self.tabs = true,
         }
     }
 
@@ -3862,6 +3867,25 @@ impl ConfigForm {
                 KeyCode::PageDown => self.choice = Some((at + page).min(last)),
                 _ => {}
             }
+            return ConfigAction::Stay;
+        }
+        // The tab row behaves like the dashboard's menu buttons: ←→ pick, ↓ enters the fields.
+        if self.tabs && !self.open {
+            let n = GROUPS.len();
+            let tab = match code {
+                KeyCode::Esc => return ConfigAction::Cancel,
+                KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.tabs = false;
+                    return ConfigAction::Stay;
+                }
+                KeyCode::Left | KeyCode::Char('[') => (self.tab() + n - 1) % n,
+                KeyCode::Right | KeyCode::Char(']') => (self.tab() + 1) % n,
+                KeyCode::Home => 0,
+                KeyCode::End => n - 1,
+                _ => return ConfigAction::Stay,
+            };
+            self.switch(tab);
+            self.tabs = true;
             return ConfigAction::Stay;
         }
         if !self.open {
@@ -4013,15 +4037,22 @@ impl ConfigForm {
         for (i, (name, _)) in GROUPS.iter().enumerate() {
             spans.push(Span::styled(
                 format!(" {name} "),
-                if i == self.tab() {
-                    lit().add_modifier(Modifier::UNDERLINED)
-                } else {
-                    plain()
+                match (i == self.tab(), self.tabs) {
+                    (true, true) => pressed(),
+                    (true, false) => button().fg(ORANGE),
+                    _ => button(),
                 },
             ));
             spans.push(Span::raw(" "));
         }
-        spans.push(Span::styled(" [ ] group", dim()));
+        spans.push(Span::styled(
+            if self.tabs {
+                " ←→ group"
+            } else {
+                " ↑ group"
+            },
+            dim(),
+        ));
         spans
     }
 
@@ -4078,6 +4109,7 @@ impl ConfigForm {
             }
             sub = f.sub;
             let selected = i == self.row;
+            let focused = selected && !self.tabs;
             let label = if label_w == 0 {
                 String::new()
             } else {
@@ -4093,7 +4125,7 @@ impl ConfigForm {
             let room = (columns as usize).saturating_sub(label_w + 4);
             spans.extend(self.control(i, room));
             let mut line = Line::from(fit(spans, columns as usize));
-            if selected {
+            if focused {
                 at = lines.len();
                 on_row(std::slice::from_mut(&mut line), columns);
             }
@@ -4259,6 +4291,9 @@ impl ConfigForm {
         if self.choice.is_some() {
             return hints(&[("↑↓", "choice"), ("enter", "choose"), ("esc", "back")]);
         }
+        if self.tabs {
+            return hints(&[("←→", "group"), ("↓", "fields"), ("esc", "done")]);
+        }
         let f = self.field();
         let mut keys = vec![("↑↓", "field")];
         if matches!(f.input, Answer::Columns) {
@@ -4322,6 +4357,7 @@ impl ConfigForm {
                         let right = left + name.len() as u16 + 2;
                         if (left..right).contains(&x) {
                             self.switch(i);
+                            self.tabs = true;
                             return ConfigAction::Stay;
                         }
                         left = right + 1;
@@ -11285,9 +11321,27 @@ mod tests {
         assert_eq!(c.field().name, "bedrock");
         c.key(KeyCode::Char(']'), none);
         assert_eq!(c.field().name, "harness");
+        // ↑ past the first field lands on the tab row, where ←→ pick a group and ↓ enters it.
         c.key(KeyCode::Up, none);
-        c.key(KeyCode::Char(']'), none);
-        assert_eq!(c.field().name, "harness");
+        assert!(c.tabs);
+        c.key(KeyCode::Right, none);
+        assert_eq!(
+            GROUPS[c.tab()].0,
+            "cones",
+            "the row wraps like the menu buttons"
+        );
+        assert!(c.tabs, "picking a group keeps the tab row");
+        c.key(KeyCode::Left, none);
+        assert_eq!(GROUPS[c.tab()].0, "runs");
+        c.key(KeyCode::Down, none);
+        assert!(!c.tabs, "↓ goes back to the fields");
+        assert_eq!(c.field().name, "harness", "the group keeps its field");
+        c.key(KeyCode::Right, none);
+        assert!(
+            !c.values[c.row].is_empty(),
+            "→ in the fields changes a value"
+        );
+        c.values[c.row].clear();
         assert!(
             c.values.iter().all(String::is_empty),
             "navigation saves nothing"
@@ -17467,7 +17521,7 @@ mod tests {
         );
         assert!(text.contains("Seconds an armed ctrl+x waits"), "{text}");
         assert!(
-            text.contains("[ ] group") && text.contains("esc done"),
+            text.contains("↑ group") && text.contains("esc done"),
             "{text}"
         );
         let go = |app: &mut App, name| {
