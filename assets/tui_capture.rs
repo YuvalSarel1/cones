@@ -83,6 +83,10 @@ fn capture() -> Result<()> {
         fixture.join("native.txt"),
         app.viewers[0].viewer.screen().contents(),
     )?;
+    write_cells(&terminal, &fixture.join("cells.json"))
+}
+
+fn write_cells(terminal: &Terminal<TestBackend>, path: &Path) -> Result<()> {
     let buffer = terminal.backend().buffer();
     let cells: Vec<Value> = buffer
         .content
@@ -99,6 +103,42 @@ fn capture() -> Result<()> {
             })
         })
         .collect();
-    std::fs::write(fixture.join("cells.json"), serde_json::to_vec(&cells)?)?;
+    std::fs::write(path, serde_json::to_vec(&cells)?)?;
+    Ok(())
+}
+
+/// Config captures use an empty fixture and never start a viewer.
+#[test]
+#[ignore = "set CONES_CONFIG_CAPTURE to an output directory"]
+fn capture_config() -> Result<()> {
+    let output = PathBuf::from(std::env::var("CONES_CONFIG_CAPTURE")?);
+    std::fs::create_dir_all(&output)?;
+    let fixture = tempfile::tempdir()?;
+    let mut app = App::new(
+        Path::new("cones"),
+        &fixture.path().join("jobs.yaml"),
+        &fixture.path().join("state"),
+        &fixture.path().join(".claude"),
+    )?;
+    app.data.sessions.clear();
+    app.data.runs.clear();
+    app.rebuild();
+    app.split = false;
+    for (name, field, choice) in [
+        ("cones", "activity.bucket", false),
+        ("harnesses", "model", false),
+        ("choices", "model", true),
+        ("runs", "timeout_min", false),
+    ] {
+        let mut form = app.config_form();
+        form.go(field_at(field));
+        if choice {
+            form.key(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.mode = Mode::Config(form);
+        let mut terminal = Terminal::new(TestBackend::new(60, 32))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        write_cells(&terminal, &output.join(format!("{name}.json")))?;
+    }
     Ok(())
 }

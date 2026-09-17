@@ -79,17 +79,19 @@ Every change validates and saves only that table's column setting in `jobs.yaml`
 
 ### Config
 
-The editor has three groups: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. Subheadings name actual config blocks or harnesses. `runs` starts collapsed: `enter` or `→` opens it and `←` closes it.
+The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. Use `[` `]` or click a tab to switch. Each tab remembers its selected field. Subheadings name actual config blocks or harnesses.
 
-Each row shows its control and value. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `enter` advances, except on text or number fields where it first opens editing and a second press accepts. Escape restores the previous value. Leaving keeps already saved changes; validation errors focus the relevant field and leave the file untouched.
+Each setting occupies one row with its current value. The selected field's explanation stays below the list. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `home`, `end`, `page up` and `page down` navigate within the current tab. The wheel moves through fields, and the selected row stays visible in short panes.
 
 | Control | Interaction |
 | --- | --- |
-| Choices | Arrows cycle; an initial letter selects a matching option. An unset field brackets its effective built-in, such as `[claude]`; `default` is used when the harness chooses. |
-| Choices or text | Model, AWS region and bucket rows have an empty slot after the choices. Arrows reach it or typing fills it; returning to a listed choice drops custom text. |
+| Choices | Arrows or space cycle directly. `enter` or clicking the value opens a vertical list. `↑ ↓` browse without changing the setting; `enter`, space or clicking a choice saves it. `(*)` marks the current value. `esc` or `←` returns without changing it. |
+| Choices or text | Model, AWS region and bucket pickers include a custom value option. Typing on the setting also opens text editing. Arrows cycle through the choices and the custom slot. |
 | Numbers | Confirmation time and bar count step by 1, timeout by 5 minutes. Steps stay on their grid and never go below zero; field validation may reject zero. Unset nonnumeric values step from zero. |
-| Text | Type a value; environment names use commas. Empty values omit overrides. |
+| Text | `enter` or clicking the value starts editing; `enter` accepts and `esc` restores the previous value. Long values scroll within the row to keep the cursor visible. Environment names use commas. Empty values omit overrides. |
 | Columns | `enter`, `→` or space opens the [column picker](#columns). |
+
+Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write restores the preceding value and shows the error.
 
 Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
 
