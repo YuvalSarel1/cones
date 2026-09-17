@@ -4640,6 +4640,10 @@ struct TranscriptView {
     height: usize,
     scroll: usize,
     bottom: bool,
+    loaded_at: Option<Instant>,
+    load_older: bool,
+    request_cursor: Option<transcript::Cursor>,
+    prepend_lines: Option<usize>,
     operation: Option<(DiagnosticOperation, transcript::Target)>,
 }
 
@@ -4658,6 +4662,10 @@ impl TranscriptView {
         self.width = 0;
         self.scroll = 0;
         self.bottom = true;
+        self.loaded_at = None;
+        self.load_older = false;
+        self.request_cursor = None;
+        self.prepend_lines = None;
     }
 
     fn max_scroll(&self) -> usize {
@@ -4670,47 +4678,47 @@ impl TranscriptView {
             .saturating_add_signed(delta)
             .min(self.max_scroll());
         self.bottom = self.scroll == self.max_scroll();
+        if delta < 0 && self.scroll <= self.height {
+            self.load_older = true;
+        }
     }
 
-    fn layout(&mut self, width: u16, height: u16) {
+    fn layout(&mut self, width: u16, height: u16, colors: &viewer::Colors) {
         if self.width != width {
             self.width = width;
             self.lines.clear();
             if let Some(doc) = &self.document {
                 if doc.earlier {
-                    self.lines
-                        .push(Line::styled("Earlier transcript text omitted", dim()));
+                    self.lines.push(Line::styled(
+                        if doc.older.is_some() {
+                            "Scroll up for earlier messages"
+                        } else {
+                            "Earlier text omitted"
+                        },
+                        dim(),
+                    ));
                     self.lines.push(Line::default());
                 }
                 for message in &doc.messages {
-                    let who = match message.role {
-                        transcript::Role::User => "you",
-                        transcript::Role::Assistant => "assistant",
-                    };
-                    let mut label = vec![Span::styled(
-                        who,
-                        if message.role == transcript::Role::User {
-                            lit()
-                        } else {
-                            bold()
-                        },
-                    )];
-                    if let Some(at) = message.at {
-                        label.push(Span::styled(
-                            format!(
-                                " · {}",
-                                at.with_timezone(&chrono::Local).format("%m-%d %H:%M")
-                            ),
-                            dim(),
-                        ));
-                    }
-                    self.lines.push(Line::from(label));
-                    self.lines.extend(transcript_wrap(&message.text, width));
+                    let harness = self.target.as_ref().map_or("", |t| t.harness.as_str());
+                    self.lines
+                        .extend(conversation_message(message, harness, width, colors));
                     self.lines.push(Line::default());
                 }
+                while self.lines.last().is_some_and(|line| line.width() == 0) {
+                    self.lines.pop();
+                }
                 if doc.messages.is_empty() {
-                    self.lines
-                        .push(Line::styled("No conversation text in this preview", dim()));
+                    let empty = if self
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| matches!(t.source, transcript::Source::Run { .. }))
+                    {
+                        "No captured output for this run"
+                    } else {
+                        "No conversation text in this preview"
+                    };
+                    self.lines.push(Line::styled(empty, dim()));
                 }
             } else if let Some(error) = &self.error {
                 self.lines.extend(transcript_wrap(
@@ -4720,6 +4728,11 @@ impl TranscriptView {
             }
         }
         self.height = usize::from(height);
+        if let Some(previous) = self.prepend_lines.take()
+            && !self.bottom
+        {
+            self.scroll += self.lines.len().saturating_sub(previous);
+        }
         self.scroll = if self.bottom {
             self.max_scroll()
         } else {
@@ -4730,40 +4743,246 @@ impl TranscriptView {
 
 /// Cache wrapped lines once per width, preserving newlines, indentation and Unicode graphemes.
 fn transcript_wrap(text: &str, width: u16) -> Vec<Line<'static>> {
+    transcript_wrap_lines(text.split('\n').map(Line::raw), width)
+}
+
+#[derive(Clone)]
+struct ConversationStyle {
+    pi: bool,
+}
+
+impl tui_markdown::StyleSheet for ConversationStyle {
+    fn heading(&self, _level: u8) -> Style {
+        if self.pi {
+            bold().fg(Color::Rgb(240, 198, 116))
+        } else {
+            bold()
+        }
+    }
+    fn heading_marker(&self, _level: u8) -> &str {
+        ""
+    }
+    fn code(&self) -> Style {
+        if self.pi {
+            Style::default().fg(Color::Rgb(138, 190, 183))
+        } else {
+            Style::default()
+        }
+    }
+    fn code_block_fence(&self) -> &str {
+        ""
+    }
+    fn link(&self) -> Style {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED)
+    }
+    fn blockquote(&self) -> Style {
+        dim()
+    }
+    fn table_header(&self) -> Style {
+        bold()
+    }
+}
+
+#[cfg(test)]
+fn transcript_markdown(text: &str, width: u16) -> Vec<Line<'static>> {
+    transcript_markdown_for(text, width, false)
+}
+
+fn transcript_markdown_for(text: &str, width: u16, pi: bool) -> Vec<Line<'static>> {
+    let options = tui_markdown::Options::new(ConversationStyle { pi });
+    let rendered = tui_markdown::from_str_with_options(text, &options);
+    let mut lines = transcript_wrap_lines(rendered.lines, width);
+    while lines.first().is_some_and(|l| l.width() == 0) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|l| l.width() == 0) {
+        lines.pop();
+    }
+    lines
+}
+
+fn conversation_message(
+    message: &transcript::Message,
+    harness: &str,
+    width: u16,
+    colors: &viewer::Colors,
+) -> Vec<Line<'static>> {
+    if message.role == transcript::Role::Output {
+        return transcript_wrap(&message.text, width);
+    }
+    let user = message.role == transcript::Role::User;
+    let marker = match (harness, user) {
+        ("claude", true) => "❯ ",
+        ("claude", false) => "⏺ ",
+        ("codex", true) => "› ",
+        ("codex", false) => "• ",
+        ("pi", _) => "",
+        (_, true) => "> ",
+        (_, false) => "• ",
+    };
+    let gutter = if width > 2 {
+        Span::raw(marker).width() as u16
+    } else {
+        0
+    };
+    let content_width = width.saturating_sub(gutter);
+    let mut lines = if message.text.is_empty() {
+        Vec::new()
+    } else if user && harness != "pi" {
+        transcript_wrap(&message.text, content_width)
+    } else {
+        transcript_markdown_for(&message.text, content_width, harness == "pi")
+    };
+    let marker_style = if harness == "claude" && !user {
+        brand(harness)
+    } else {
+        dim()
+    };
+    for (i, line) in lines.iter_mut().enumerate() {
+        if gutter > 0 {
+            line.spans.insert(
+                0,
+                Span::styled(
+                    if i == 0 {
+                        marker.to_owned()
+                    } else {
+                        " ".repeat(usize::from(gutter))
+                    },
+                    marker_style,
+                ),
+            );
+        }
+    }
+    if user && matches!(harness, "codex" | "pi") {
+        let bg = conversation_prompt_background(harness, colors);
+        let pad = || Line::styled(" ".repeat(usize::from(width)), Style::default().bg(bg));
+        for line in &mut lines {
+            line.spans.push(Span::raw(
+                " ".repeat(usize::from(width).saturating_sub(line.width())),
+            ));
+            line.style = line.style.bg(bg);
+        }
+        lines.insert(0, pad());
+        lines.push(pad());
+    }
+    for tool in &message.tools {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        let detail = if tool.input.is_empty() {
+            tool.name.clone()
+        } else if harness == "claude" {
+            format!("{}({})", tool.name, tool.input)
+        } else {
+            format!("{} {}", tool.name, tool.input)
+        };
+        for (i, mut line) in transcript_wrap(&detail, content_width)
+            .into_iter()
+            .enumerate()
+        {
+            line.style = dim();
+            if gutter > 0 {
+                line.spans.insert(
+                    0,
+                    Span::styled(
+                        if i == 0 {
+                            marker.to_owned()
+                        } else {
+                            " ".repeat(usize::from(gutter))
+                        },
+                        marker_style,
+                    ),
+                );
+            }
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn conversation_prompt_background(harness: &str, colors: &viewer::Colors) -> Color {
+    let channels: Vec<_> = colors
+        .bg
+        .strip_prefix("rgb:")
+        .unwrap_or("")
+        .split('/')
+        .filter_map(|s| u16::from_str_radix(s, 16).ok().map(|v| (v / 257) as u8))
+        .collect();
+    let [r, g, b] = channels.as_slice() else {
+        return Color::Reset;
+    };
+    let light = u16::from(*r) + u16::from(*g) + u16::from(*b) > 3 * 128;
+    if harness == "pi" && !light {
+        return Color::Rgb(52, 53, 65);
+    }
+    let tint = |channel: u8| {
+        if light {
+            (u16::from(channel) * 96 / 100) as u8
+        } else {
+            (u16::from(channel) * 88 / 100 + 255 * 12 / 100) as u8
+        }
+    };
+    Color::Rgb(tint(*r), tint(*g), tint(*b))
+}
+
+fn transcript_wrap_lines<'a>(
+    lines: impl IntoIterator<Item = Line<'a>>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    fn whitespace(span: &Span<'_>) -> bool {
+        span.content.chars().all(char::is_whitespace)
+    }
+    fn line(mut spans: Vec<Span<'static>>) -> Line<'static> {
+        while spans.last().is_some_and(whitespace) {
+            spans.pop();
+        }
+        let mut merged: Vec<Span<'static>> = Vec::new();
+        for span in spans {
+            if let Some(last) = merged.last_mut()
+                && last.style == span.style
+            {
+                last.content.to_mut().push_str(&span.content);
+            } else {
+                merged.push(span);
+            }
+        }
+        Line::from(merged)
+    }
     let width = usize::from(width.max(1));
     let mut out = Vec::new();
-    for source in text.split('\n') {
+    for source in lines {
         let first = out.len();
-        let line = Line::raw(source);
-        let mut buffer = String::new();
+        let mut buffer = Vec::new();
         let mut used = 0;
-        for g in line.styled_graphemes(Style::default()) {
+        for g in source.styled_graphemes(source.style) {
             let w = Span::raw(g.symbol).width();
             if used + w > width && !buffer.is_empty() {
                 if g.is_whitespace() {
-                    out.push(Line::raw(buffer.trim_end().to_owned()));
-                    buffer.clear();
+                    out.push(line(std::mem::take(&mut buffer)));
                     used = 0;
                     continue;
                 }
                 if let Some(at) = buffer
-                    .rfind(char::is_whitespace)
-                    .filter(|&i| !buffer[..i].trim().is_empty())
+                    .iter()
+                    .rposition(whitespace)
+                    .filter(|&i| buffer[..i].iter().any(|s| !whitespace(s)))
                 {
                     let rest = buffer.split_off(at);
-                    out.push(Line::raw(buffer.trim_end().to_owned()));
-                    buffer = rest.trim_start().to_owned();
-                    used = Span::raw(&buffer).width();
+                    out.push(line(std::mem::take(&mut buffer)));
+                    buffer = rest.into_iter().skip_while(whitespace).collect();
+                    used = buffer.iter().map(Span::width).sum();
                 } else {
-                    out.push(Line::raw(std::mem::take(&mut buffer)));
+                    out.push(line(std::mem::take(&mut buffer)));
                     used = 0;
                 }
             }
-            buffer.push_str(g.symbol);
+            buffer.push(Span::styled(g.symbol.to_owned(), g.style));
             used += w;
         }
         if !buffer.is_empty() || out.len() == first {
-            out.push(Line::raw(buffer));
+            out.push(line(buffer));
         }
     }
     out
@@ -5829,23 +6048,54 @@ impl App {
     }
 
     fn transcript_target(&self) -> Option<transcript::Target> {
-        if self.focus.is_some() || self.panel().is_some() || !self.history.visible {
+        if self.focus.is_some() || self.panel().is_some() {
             return None;
         }
         let row = self.selected()?;
-        let Kind::History(key) = &row.kind else {
-            return None;
-        };
         if self.viewer_of(&row.kind).is_some() {
             return None;
         }
-        let entry = self.history.row(key)?;
-        Some(transcript::Target {
-            key: key.clone(),
-            harness: entry.key.harness.clone(),
-            path: entry.transcript.clone(),
-            session_id: Some(entry.key.session_id.clone()),
-        })
+        match &row.kind {
+            Kind::History(key) if self.history.visible => {
+                let entry = self.history.row(key)?;
+                Some(transcript::Target {
+                    key: key.clone(),
+                    harness: entry.key.harness.clone(),
+                    source: if entry.key.harness == "opencode" {
+                        transcript::Source::Opencode {
+                            database: entry.transcript.clone(),
+                            session_id: entry.key.session_id.clone(),
+                        }
+                    } else {
+                        transcript::Source::Conversation(entry.transcript.clone())
+                    },
+                })
+            }
+            Kind::Run(id, _) => {
+                let run = self.data.runs.iter().find(|r| &r.started.run_id == id)?;
+                let source = if run.started.output.is_none()
+                    && run.started.stderr.is_none()
+                    && let Some(path) = run.terminal.as_ref().and_then(|r| r.transcript.as_ref())
+                {
+                    transcript::Source::Conversation(path.clone())
+                } else {
+                    transcript::Source::Run {
+                        events: run.started.output.clone(),
+                        stderr: run.started.stderr.clone(),
+                    }
+                };
+                Some(transcript::Target {
+                    key: format!("run:{id}"),
+                    harness: run
+                        .started
+                        .harness
+                        .unwrap_or(HarnessKind::Claude)
+                        .to_string(),
+                    source,
+                })
+            }
+            _ => None,
+        }
     }
 
     fn transcript_shown(&self) -> bool {
@@ -5888,7 +6138,8 @@ impl App {
             match &response {
                 Ok(response) => {
                     let applied = self.transcript.target.as_ref() == Some(&response.target)
-                        && self.transcript.requested;
+                        && self.transcript.requested
+                        && self.transcript.request_cursor == response.cursor;
                     self.event(if response.result.is_err() { "error" } else { "debug" }, "transcript.completed", || json!({
                         "operation_id": operation.as_ref().map(|(o, _)| &o.id),
                         "row_id": response.target.key, "harness": response.target.harness,
@@ -5917,19 +6168,34 @@ impl App {
             match response {
                 Ok(response)
                     if self.transcript.target.as_ref() == Some(&response.target)
-                        && self.transcript.requested =>
+                        && self.transcript.requested
+                        && self.transcript.request_cursor == response.cursor =>
                 {
+                    self.transcript.loaded_at = Some(Instant::now());
                     match response.result {
                         Ok(document) => {
-                            self.transcript.document = Some(document);
+                            if response.cursor.is_some()
+                                && let Some(current) = &mut self.transcript.document
+                            {
+                                self.transcript.prepend_lines = Some(self.transcript.lines.len());
+                                Arc::make_mut(current).prepend((*document).clone());
+                            } else {
+                                self.transcript.document = Some(document);
+                            }
                             self.transcript.error = None;
                         }
-                        Err(error) => self.transcript.error = Some(format!("{error:#}")),
+                        Err(error) => {
+                            if response.cursor.is_some() {
+                                self.status = format!("Preview: {error:#}");
+                            }
+                            self.transcript.error = Some(format!("{error:#}"));
+                        }
                     }
                     self.transcript.width = 0;
                     self.feedback = Some(("transcript_to_draw", Instant::now()));
                 }
                 Err(error) => {
+                    self.transcript.loaded_at = Some(Instant::now());
                     self.transcript.error = Some(format!("{error:#}"));
                     self.transcript.requested = true;
                     self.transcript.reader = None;
@@ -5942,6 +6208,28 @@ impl App {
         let Some(target) = self.transcript.target.clone() else {
             return;
         };
+        if self.transcript.load_older && self.transcript.loaded_at.is_some() {
+            self.transcript.load_older = false;
+            if let Some(cursor) = self
+                .transcript
+                .document
+                .as_ref()
+                .and_then(|doc| doc.older.clone())
+            {
+                self.transcript.request_cursor = Some(cursor);
+                self.transcript.requested = false;
+            }
+        }
+        // Runs can finish or write stderr after the last live snapshot. Poll their file
+        // stamps while visible; unchanged files reuse the reader's cached document.
+        if matches!(self.selected().map(|r| &r.kind), Some(Kind::Run(..)))
+            && self
+                .transcript
+                .loaded_at
+                .is_some_and(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            self.transcript.requested = false;
+        }
         if self.transcript.requested
             || (!self.transcript.focused
                 && self
@@ -5974,9 +6262,10 @@ impl App {
             .reader
             .as_mut()
             .unwrap()
-            .request(target.clone())
+            .request_page(target.clone(), self.transcript.request_cursor.clone())
         {
             Ok(true) => {
+                self.transcript.loaded_at = None;
                 self.event("debug", "transcript.requested", || {
                     json!({
                         "operation_id": operation.as_ref().map(|o| &o.id),
@@ -6922,7 +7211,7 @@ impl App {
         Rect { height, ..frame }
     }
 
-    /// Session rows show only their own viewer. Non-session rows may keep the last focused viewer.
+    /// Sessions, runs and history show only their own viewer or preview.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
@@ -6937,7 +7226,7 @@ impl App {
         if own.is_some()
             || matches!(
                 self.selected().map(|r| &r.kind),
-                Some(Kind::Session(..) | Kind::History(_) | Kind::HistoryStatus)
+                Some(Kind::Session(..) | Kind::Run(..) | Kind::History(_) | Kind::HistoryStatus)
             )
         {
             return own;
@@ -9352,6 +9641,10 @@ impl App {
                     self.transcript.document = None;
                     self.transcript.error = None;
                     self.transcript.width = 0;
+                    self.transcript.request_cursor = None;
+                    self.transcript.load_older = false;
+                    self.transcript.prepend_lines = None;
+                    self.transcript.bottom = true;
                 }
                 KeyCode::Up => self.transcript.scroll(-1),
                 KeyCode::Down => self.transcript.scroll(1),
@@ -9364,6 +9657,7 @@ impl App {
                 KeyCode::Home => {
                     self.transcript.scroll = 0;
                     self.transcript.bottom = false;
+                    self.transcript.load_older = true;
                 }
                 KeyCode::End => {
                     self.transcript.scroll = self.transcript.max_scroll();
@@ -9786,7 +10080,7 @@ impl App {
         }
         hints(&[
             ("↑ ↓", "scroll"),
-            ("enter", "resume"),
+            ("enter", self.enter_label()),
             ("tab", "list"),
             ("ctrl+\\", "layout"),
         ])
@@ -9796,12 +10090,42 @@ impl App {
         let Some(target) = self.transcript_target() else {
             return;
         };
-        let title = self
-            .history
-            .row(&target.key)
-            .and_then(|e| e.title.as_deref())
-            .unwrap_or("history");
-        let header = Line::styled(clip(&transcript::plain(title), pane.width as usize), bold());
+        let pane = if pane.width > 2 {
+            Rect {
+                x: pane.x + 1,
+                width: pane.width - 2,
+                ..pane
+            }
+        } else {
+            pane
+        };
+        let run = matches!(self.selected().map(|r| &r.kind), Some(Kind::Run(..)));
+        let (title, subtitle) = match self.selected().map(|r| &r.kind) {
+            Some(Kind::Run(id, _)) => {
+                let Some(run) = self.data.runs.iter().find(|r| &r.started.run_id == id) else {
+                    return;
+                };
+                let last = run.terminal.as_ref().unwrap_or(&run.started);
+                let title = format!(
+                    "{} · {}",
+                    run.started.job.as_deref().unwrap_or("run"),
+                    run.status()
+                );
+                let mut subtitle = "output · read only".to_owned();
+                if let Some(reason) = &last.reason {
+                    subtitle.push_str(&format!(" · {reason}"));
+                }
+                (title, subtitle)
+            }
+            _ => (
+                format!("{} · history · read only", logo(&target.harness)),
+                String::new(),
+            ),
+        };
+        let header = Line::styled(
+            clip(&transcript::plain(&title), pane.width as usize),
+            if run { bold() } else { dim() },
+        );
         frame.render_widget(
             Paragraph::new(header),
             Rect {
@@ -9812,24 +10136,28 @@ impl App {
         if pane.height < 2 {
             return;
         }
-        frame.render_widget(
-            Paragraph::new(Line::styled("transcript · read only", dim())),
-            Rect {
-                y: pane.y + 1,
-                height: 1,
-                ..pane
-            },
-        );
+        if run {
+            frame.render_widget(
+                Paragraph::new(Line::styled(transcript::plain(&subtitle), dim())),
+                Rect {
+                    y: pane.y + 1,
+                    height: 1,
+                    ..pane
+                },
+            );
+        }
+        let header_rows = if run { 2 } else { 1 };
         let body = Rect {
-            y: pane.y + 2,
-            height: pane.height.saturating_sub(2),
+            y: pane.y + header_rows,
+            height: pane.height.saturating_sub(header_rows),
             ..pane
         };
         // Drawing may precede the next tick after a key or click. Never reuse another row's text.
         if self.transcript.target.as_ref() != Some(&target) {
             return;
         }
-        self.transcript.layout(body.width, body.height);
+        self.transcript
+            .layout(body.width, body.height, &self.colors);
         let lines: Vec<_> = self
             .transcript
             .lines
@@ -12797,7 +13125,7 @@ mod tests {
         let summary = app.header_summary().to_string();
         transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
         let text = pane_text(&app, &terminal);
-        assert!(text.contains("transcript · read only"), "{text}");
+        assert!(text.contains("history · read only"), "{text}");
         assert!(
             text.contains("old session 001") && text.contains("reply 1"),
             "{text}"
@@ -12884,7 +13212,7 @@ mod tests {
         app.toggle_history();
         history_until(&mut app, &mut terminal, |a| a.history.ready);
         let path = app.history.rows[0].entry.transcript.clone();
-        fs::write(path, format!("{}\n",serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":(0..60).map(|i| format!("line {i}\n")).collect::<String>()}]}}))).unwrap();
+        fs::write(path, format!("{}\n",serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":(0..60).map(|i| format!("line {i}\n\n")).collect::<String>()}]}}))).unwrap();
         transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
         let before = app.transcript.scroll;
         let selected = key(&app);
@@ -12979,6 +13307,199 @@ mod tests {
             ["中中", "a\u{0301}b"]
         );
         assert!(wrapped.iter().all(|line| line.width() <= 4));
+    }
+
+    #[test]
+    fn run_peek_clears_the_previous_agent_and_refreshes_without_starting_a_viewer() {
+        let (d, mut app, mut terminal) = history_fixture(0);
+        let output = d.path().join("events.jsonl");
+        let event = |text: &str| {
+            format!(
+                "{}\n",
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":text}]}})
+            )
+        };
+        fs::write(&output, event("first run output")).unwrap();
+        let mut started = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        started.fired_at = Some(chrono::Utc::now());
+        started.output = Some(output.clone());
+        started.job = Some("preview fixture".into());
+        started.harness = Some(HarnessKind::Claude);
+        app.data.runs.push(Run {
+            started,
+            terminal: None,
+        });
+        app.viewers.push(viewer_open(B, "attach", "OTHER AGENT"));
+        app.rebuild();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::Run(..)))
+            .unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(app.shown().is_none());
+        assert!(!pane_text(&app, &terminal).contains("OTHER AGENT"));
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(
+            text.contains("first run output") && text.contains("output · read only"),
+            "{text}"
+        );
+        assert_eq!(app.viewers.len(), 1);
+        assert!(app.opening.is_none() && app.focus.is_none());
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.focused);
+        assert!(app.hint_line().to_string().contains("follow log"));
+        let output_text = (0..60).map(|i| format!("output {i}\n")).collect::<String>();
+        fs::write(&output, event(&output_text)).unwrap();
+        app.transcript.loaded_at = Some(Instant::now() - Duration::from_secs(2));
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.messages[0].text.contains("output 59"))
+        });
+        assert!(pane_text(&app, &terminal).contains("output 59"));
+        app.key(KeyCode::PageUp, KeyModifiers::NONE).unwrap();
+        let scroll = app.transcript.scroll;
+        fs::write(&output, event(&(output_text + "final output"))).unwrap();
+        let mut ended = crate::ledger::Record::new(A.into(), crate::ledger::Status::Failed);
+        ended.reason = Some("fixture failure".into());
+        app.data.runs[0].terminal = Some(ended);
+        app.rebuild();
+        app.transcript.loaded_at = Some(Instant::now() - Duration::from_secs(2));
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.messages[0].text.contains("final output"))
+        });
+        assert_eq!(
+            app.transcript.scroll, scroll,
+            "new output preserves a scrolled view"
+        );
+        assert!(pane_text(&app, &terminal).contains("fixture failure"));
+        assert_eq!(app.viewers.len(), 1);
+        assert!(app.opening.is_none());
+    }
+
+    #[test]
+    fn history_scroll_loads_older_messages_and_preserves_the_visible_text() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        fs::write(path, (0..110).map(|i| format!("{}\n", json!({"type":if i % 2 == 0 {"user"} else {"assistant"},"message":{"content":format!("message {i:03}")}}))).collect::<String>()).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(pane_text(&app, &terminal).contains("message 109"));
+        app.focus_transcript();
+        app.transcript
+            .scroll(-(app.transcript.max_scroll() as isize - 3));
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let before = pane_text(&app, &terminal);
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.messages.len() == 80)
+        });
+        assert_eq!(pane_text(&app, &terminal), before);
+        app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.older.is_none())
+        });
+        app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(pane_text(&app, &terminal).contains("message 000"));
+        app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(pane_text(&app, &terminal).contains("message 109"));
+        assert!(app.viewers.is_empty() && app.opening.is_none());
+    }
+
+    #[test]
+    fn conversation_markdown_keeps_styles_while_wrapping_and_removes_fences() {
+        let lines = transcript_markdown(
+            "# Result\n\n**The check passed** and `value` is ready.\n\n```rust\n  let value = 1;\n```",
+            18,
+        );
+        let text = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains("**") && !text.contains("```") && !text.contains("# Result"),
+            "{text}"
+        );
+        assert!(text.contains("let value = 1;"), "{text}");
+        assert!(lines.iter().all(|l| l.width() <= 18));
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| &l.spans)
+                .any(|s| s.content.contains("check")
+                    && s.style.add_modifier.contains(Modifier::BOLD))
+        );
+    }
+
+    #[test]
+    fn conversation_uses_native_markers_and_shaded_prompt_blocks_without_role_headers() {
+        let colors = viewer::Colors::default();
+        for (harness, prompt, reply, marker) in [
+            (
+                "claude",
+                json!({"type":"user","message":{"content":"Question"}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"Reply **ready**"}]}}),
+                "❯ Question",
+            ),
+            (
+                "codex",
+                json!({"type":"event_msg","payload":{"item":{"type":"UserMessage","content":[{"text":"Question"}]}}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Reply **ready**"}]}}),
+                "› Question",
+            ),
+            (
+                "pi",
+                json!({"type":"message","message":{"role":"user","content":"Question"}}),
+                json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Reply **ready**"}]}}),
+                "Question",
+            ),
+        ] {
+            let doc = transcript::parse(harness, format!("{prompt}\n{reply}\n").as_bytes());
+            let prompt = conversation_message(&doc.messages[0], harness, 30, &colors);
+            assert!(prompt.iter().any(|line| line.to_string().trim() == marker));
+            if harness != "claude" {
+                assert!(prompt.iter().all(|line| line.style.bg.is_some()));
+            }
+            let reply = conversation_message(&doc.messages[1], harness, 30, &colors);
+            let text = reply
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let expected = match harness {
+                "claude" => "⏺ Reply ready",
+                "codex" => "• Reply ready",
+                _ => "Reply ready",
+            };
+            assert_eq!(text, expected);
+        }
+        let light = viewer::Colors {
+            bg: "rgb:ffff/ffff/ffff".into(),
+            ..colors.clone()
+        };
+        assert_ne!(
+            conversation_prompt_background("codex", &colors),
+            conversation_prompt_background("codex", &light)
+        );
+        assert_ne!(
+            conversation_prompt_background("pi", &colors),
+            conversation_prompt_background("pi", &light)
+        );
     }
 
     fn app(dir: &Path) -> App {

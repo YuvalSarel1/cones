@@ -102,6 +102,8 @@ Live sessions group by directory, sorted without case, or by state with input re
 
 Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The [column picker](#columns) edits `columns`, `run_columns`, `job_columns` and `history_columns` independently. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
 
+Selecting a run previews its captured output, including tool activity and stderr, beneath its recorded status and reason. The preview refreshes once per second while visible and follows new output until you scroll back. It never resumes the run. `tab` or a pane click focuses the read-only preview; `enter` follows a running run's log or opens a finished run through the harness. Older runs with only an archived transcript use that file instead. Runs without captured files say so.
+
 | State | Icon | Label | Color |
 | --- | --- | --- | --- |
 | `active` | Animated `▁▂▃▄▅▆▇` and back | working | plain |
@@ -140,13 +142,17 @@ History appears below the live list, ordered by latest recorded activity regardl
 
 Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
 
-Selecting a row loads its recent conversation in the pane after a short cursor rest. The pane says `transcript · read only` and starts at the latest text. The wheel scrolls it without changing the selection. When focused, arrows, page-up/down and home/end scroll; `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored. Focused `ctrl+r` rereads the preview; `ctrl+\` changes its layout.
+Selecting a row loads its conversation in the pane after a short cursor rest. Messages appear in chronological order, with the latest message at the bottom. Claude and Codex use their prompt and response markers; pi uses shaded prompt blocks and unmarked replies. Replies render Markdown with highlighted code. Recorded tool calls appear as compact names and inputs; tool outputs and thinking stay out of the conversation. The pane says `history · read only`. Scrolling up loads earlier messages in bounded pages and keeps the text you were reading in place. Large individual messages remain bounded; omitted text is marked.
+
+These are read-only presentations based on each harness's default appearance. Native extensions, custom themes and interactive tool widgets are not reproduced.
+
+The wheel scrolls the preview without changing the selection. When focused, arrows and page-up/down scroll; home/end reach the loaded beginning or latest text. Reaching the beginning requests an older page when available. `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored. Focused `ctrl+r` rereads the preview at the bottom; `ctrl+\` changes its layout.
 
 With an empty composer, `enter` resumes the selected conversation, including from its preview. Its native viewer replaces the preview and is reused when the session appears live. History has no delete action. Browsing it starts no harness client.
 
 ## Viewer
 
-The pane shows the focused viewer, otherwise the selected session's viewer. A live session never shows another session's output or a transcript substitute while its client starts. Other rows can retain the last focused viewer; menu rows preview their button, and historical rows use the read-only preview above.
+The pane shows the focused viewer, otherwise the selected session's viewer. Sessions, runs and historical rows never show another row's output. A live session stays blank while its client starts. Runs and historical rows use their read-only previews until explicitly opened; menu rows preview their button. Folder and job rows can retain the last focused viewer.
 
 Resting on a joinable live row can prepare its viewer before entry. This never starts a new agent: finished runs require an explicit open, and a saved Codex thread waits for entry if its daemon has exited. A speculative viewer says `attach` until entered, then `return`. A preview may be closed to make room for another; entered Codex clients, resumed runs and historical viewers are retained. A Claude client left in its own agents list closes so that list cannot appear under a session's name.
 

@@ -65,8 +65,10 @@ fn preview(reader: &mut transcript::Reader, db: &Path, id: &str) -> transcript::
             .request(Target {
                 key: format!("opencode:{id}"),
                 harness: "opencode".into(),
-                path: db.to_owned(),
-                session_id: Some(id.into()),
+                source: transcript::Source::Opencode {
+                    database: db.to_owned(),
+                    session_id: id.into(),
+                },
             })
             .unwrap()
     );

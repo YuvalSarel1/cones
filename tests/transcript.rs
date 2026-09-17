@@ -22,9 +22,8 @@ fn claude(role: &str, text: &str) -> Value {
 
 fn target(path: &Path) -> Target {
     Target {
-        session_id: None,
         key: path.display().to_string(),
-        path: path.to_owned(),
+        source: transcript::Source::Conversation(path.to_owned()),
         harness: "claude".into(),
     }
 }
@@ -35,6 +34,10 @@ fn read(reader: &mut Reader, target: Target) -> anyhow::Result<Arc<Transcript>> 
 
 fn read_response(reader: &mut Reader, target: Target) -> anyhow::Result<transcript::Response> {
     assert!(reader.request(target)?);
+    poll(reader)
+}
+
+fn poll(reader: &mut Reader) -> anyhow::Result<transcript::Response> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if let Some(response) = reader.poll() {
@@ -43,6 +46,127 @@ fn read_response(reader: &mut Reader, target: Target) -> anyhow::Result<transcri
         assert!(Instant::now() < deadline, "preview worker did not respond");
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[test]
+fn earlier_pages_recover_the_whole_conversation_once_in_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    let data: Vec<_> = (0..103)
+        .map(|i| {
+            claude(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("message {i}"),
+            )
+        })
+        .collect();
+    fs::write(&path, records(&data)).unwrap();
+    let mut reader = Reader::new().unwrap();
+    let mut document = (*read(&mut reader, target(&path)).unwrap()).clone();
+    assert_eq!(document.messages.len(), 40);
+    let mut pages = 1;
+    while let Some(cursor) = document.older.clone() {
+        assert!(reader.request_page(target(&path), Some(cursor)).unwrap());
+        let older = poll(&mut reader).unwrap().result.unwrap();
+        assert!(older.messages.len() <= 40);
+        document.prepend((*older).clone());
+        pages += 1;
+        assert!(pages <= 3);
+    }
+    assert_eq!(pages, 3);
+    assert!(!document.earlier);
+    assert_eq!(
+        document
+            .messages
+            .iter()
+            .map(|m| m.text.clone())
+            .collect::<Vec<_>>(),
+        (0..103).map(|i| format!("message {i}")).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn earlier_pages_refuse_a_rewritten_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.jsonl");
+    fs::write(
+        &path,
+        records(
+            &(0..50)
+                .map(|i| claude("user", &i.to_string()))
+                .collect::<Vec<_>>(),
+        ),
+    )
+    .unwrap();
+    let mut reader = Reader::new().unwrap();
+    let first = read(&mut reader, target(&path)).unwrap();
+    fs::write(&path, records(&[claude("user", "replacement")])).unwrap();
+    assert!(
+        reader
+            .request_page(target(&path), first.older.clone())
+            .unwrap()
+    );
+    let error = poll(&mut reader).unwrap().result.unwrap_err();
+    assert!(error.to_string().contains("refresh before loading earlier"));
+}
+
+#[test]
+fn run_previews_follow_complete_events_stderr_and_cache_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let events = dir.path().join("events.jsonl");
+    let stderr = dir.path().join("stderr.log");
+    let target = Target {
+        key: "run:fixture".into(),
+        harness: "claude".into(),
+        source: transcript::Source::Run {
+            events: Some(events.clone()),
+            stderr: Some(stderr.clone()),
+        },
+    };
+    let mut reader = Reader::new().unwrap();
+    assert!(
+        read(&mut reader, target.clone())
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    fs::write(&events, records(&[
+        claude("assistant", "Working"),
+        json!({"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}),
+        json!({"type":"cones_error","message":"worker failed"}),
+    ])).unwrap();
+    let result = json!({"type":"result","subtype":"success","total_cost_usd":0.2}).to_string();
+    OpenOptions::new()
+        .append(true)
+        .open(&events)
+        .unwrap()
+        .write_all(result.as_bytes())
+        .unwrap();
+    let first = read(&mut reader, target.clone()).unwrap();
+    assert!(
+        first.messages[0]
+            .text
+            .contains("Working\nBash  cargo test\nError: worker failed")
+    );
+    assert!(!first.messages[0].text.contains("Result:"));
+    let cached = read_response(&mut reader, target.clone()).unwrap();
+    assert!(cached.cache_hit && cached.bytes_read == 0);
+    OpenOptions::new()
+        .append(true)
+        .open(&events)
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    fs::write(&stderr, "\x1b[31mpermission denied\x1b[0m").unwrap();
+    let finished = read(&mut reader, target.clone()).unwrap();
+    assert!(finished.messages[0].text.contains("Result: success"));
+    assert_eq!(
+        finished.messages[1].text,
+        "Harness stderr:\npermission denied"
+    );
+    fs::write(&stderr, "changed error").unwrap();
+    let updated = read(&mut reader, target).unwrap();
+    assert!(updated.messages[1].text.contains("changed error"));
 }
 
 #[test]
@@ -78,9 +202,11 @@ fn codex_uses_the_ui_user_stream_and_one_assistant_stream() {
         json!({"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"tool input"}}),
     ]);
     let doc = transcript::parse("codex", &data);
-    assert_eq!(doc.messages.len(), 2);
+    assert_eq!(doc.messages.len(), 3);
     assert_eq!(doc.messages[0].text, "<actual question>\nnext line");
     assert!(doc.messages[1].text.contains("let n = 1;"));
+    assert_eq!(doc.messages[2].tools[0].name, "exec");
+    assert_eq!(doc.messages[2].tools[0].input, "tool input");
     assert_eq!(cones::codex::prompt(std::str::from_utf8(&records(&[
         json!({"type":"event_msg","payload":{"item":{"type":"UserMessage","content":[{"text":"actual question\nnext line"}]}}})
     ])).unwrap()).as_deref(), Some("actual question"));
@@ -102,6 +228,32 @@ fn pi_reads_user_and_assistant_messages_and_omits_tool_results() {
             .collect::<Vec<_>>(),
         ["question", "answer"]
     );
+    assert_eq!(doc.messages[1].tools[0].name, "read");
+}
+
+#[test]
+fn compact_tool_calls_keep_reported_names_and_inputs_without_tool_output_or_injected_calls() {
+    let doc = transcript::parse(
+        "claude",
+        &records(&[
+            json!({"type":"assistant","isMeta":true,"message":{"content":[{"type":"tool_use","name":"hidden","input":{"command":"injected"}}]}}),
+            json!({"type":"assistant","message":{"id":"a","content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","content":"not a conversation message"}]}}),
+            claude("assistant", "The check passed"),
+        ]),
+    );
+    assert_eq!(doc.messages.len(), 2);
+    assert!(doc.messages[0].text.is_empty());
+    assert_eq!(doc.messages[0].tools[0].name, "Bash");
+    assert_eq!(doc.messages[0].tools[0].input, "cargo test");
+    assert_eq!(doc.messages[1].text, "The check passed");
+    let doc = transcript::parse(
+        "codex",
+        &records(&[
+            json!({"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo fmt\\u001b[31m\"}"}}),
+        ]),
+    );
+    assert_eq!(doc.messages[0].tools[0].input, "cargo fmt");
 }
 
 #[test]
