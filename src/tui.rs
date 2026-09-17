@@ -10159,11 +10159,12 @@ impl App {
                         self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
                     let at = recent.iter().position(|r| *r == input.text);
                     let n = recent.len();
+                    // The list is on screen newest first, so the keys follow its rows and
+                    // both start at the newest.
                     let next = match (code, at) {
-                        (KeyCode::Up, None) => 0,
-                        (KeyCode::Up, Some(i)) => (i + 1) % n,
-                        (_, None) => n - 1,
-                        (_, Some(i)) => (i + n - 1) % n,
+                        (_, None) => 0,
+                        (KeyCode::Up, Some(i)) => (i + n - 1) % n,
+                        (_, Some(i)) => (i + 1) % n,
                     };
                     *input = Input::new(recent[next].clone());
                 }
@@ -11647,6 +11648,34 @@ mod tests {
         assert!(!text.contains("move between rows"), "no other key: {text}");
         assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn folder_recall_follows_the_recent_list_on_screen() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.data.recent = ["/src/new", "/src/mid", "/src/old"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        app.mode = Mode::Folder(Input::default());
+        for (code, want) in [
+            (KeyCode::Down, "/src/new"),
+            (KeyCode::Down, "/src/mid"),
+            (KeyCode::Down, "/src/old"),
+            (KeyCode::Down, "/src/new"),
+            (KeyCode::Up, "/src/old"),
+            (KeyCode::Up, "/src/mid"),
+            (KeyCode::Up, "/src/new"),
+        ] {
+            app.key(code, KeyModifiers::NONE).unwrap();
+            let held = match &app.mode {
+                Mode::Folder(input) => input.text.clone(),
+                _ => String::new(),
+            };
+            assert_eq!(held, want, "{code:?} from the row above it");
+        }
     }
 
     #[test]

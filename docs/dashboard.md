@@ -29,7 +29,7 @@ The menu has `folder`, `jobs`, `config`, `columns` and `help`. Once there, use `
 
 ### Folder
 
-Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `↑ ↓` recalls previously seen folders, newest first.
+Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `↑ ↓` recall previously seen folders. The list sits above the prompt, newest first, and the keys move through its rows: either key starts at the newest, `↓` goes down toward older and `↑` back up, both wrapping.
 
 A newly pinned empty folder becomes the selection. Choosing a folder already containing sessions keeps the current selection. `ctrl+p` also pins the selected row's folder, or the dashboard cwd from the menu.
 
