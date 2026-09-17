@@ -53,9 +53,8 @@ a new session whose prompt is "stop <id>". A stopped-but-alive session does not 
 
 ## Scope rules
 
-- Message only pids on `roster.now`. A bg job's launch dir (`jobs/<jobId>/state.json` cwd) decides,
-  then the registry cwd, not ListAgents; the registry cwd moves into the worktree on EnterWorktree,
-  the job cwd stays put. Verify the pid is alive before every SendMessage.
+- Message only live pids on `roster.now`, checked alive first. A bg job's launch dir
+  (`jobs/<jobId>/state.json` cwd) decides, not ListAgents: the registry cwd moves on EnterWorktree.
 - Codex rows (`CODEX:<cwd>`) go through `$S/codex.sh`, not SendMessage: `send <pid> <text>` queues
   on the agent's thread, `last <pid>` reads its latest rollout reply, `thread <pid>` prints thread
   id and rollout path. A queued message to a thread with no live client waits in Codex's queue db,
@@ -77,20 +76,22 @@ a new session whose prompt is "stop <id>". A stopped-but-alive session does not 
 ## Talking to agents
 
 The agent's time is the scarce resource, not yours, and a message that confuses one or parks it
-waiting is worse than no message at all. Two per agent per swarm, one line each - a ruling and a
-gate - and each says what the head is, what is owed and what is not.
+waiting is worse than no message at all. One line each, for a greeting, a ruling, a gate or an
+answer to something it asked.
 
-- Do not greet an arrival. A roster row is not work: an agent with no path in the tree owes you
-  nothing, and an introduction spends its first turn on you. The trigger is an unattributed path.
-  Ask then, for functions rather than files, of the agent that owns it. Never broadcast, and never
-  scold one that edited before it announced.
+- Greet every arrival, with three things and nothing more: who you are, what you need to know from
+  it - the functions it will edit, a ping before it commits - and how to answer you when its harness
+  has no native channel back. Claude replies by message; a Codex thread appends one inbox line, and
+  it needs that instruction once, not stapled to every ruling after. No rules paragraph, no digest,
+  no pointer unless it changes what this agent does now. Never broadcast, and never scold one that
+  edited before it announced.
+- After that, write only when it bears on what you know that agent is doing: you need it to hold off
+  or to do something, or it asked you a question and your answer helps. A queued Codex message
+  arrives as a user turn indistinguishable from the owner's, so an idle agent reads any note as the
+  signal to continue and spends a turn on the owner's account. Name whose voice it is; the rest goes
+  in `.claude/observations.log`.
 - Never repair a message with another message. A line naming another agent's files is self-evidently
   not theirs and they say so unprompted, so a retraction is a second wrong message. Fix the router.
-- Every message is a work order, never a note. A queued Codex message arrives as a user turn
-  indistinguishable from the owner's, so an idle agent, or one waiting on a reply, reads it as the
-  signal to continue and spends a turn on the owner's account: an "awareness only" line buys work.
-  Send only what you want done now, name whose voice it is, leave the rest in
-  `.claude/observations.log`, and do not ask for evidence unless a commit is pending.
 - Rule only on state that has settled. A reversal costs the agent two or three further messages, so
   a ruling that may flip is worth less than the minute it takes to be sure. A request keyed on a
   hash goes stale while it sits in the queue: ask a live writer for the head of its branch, and name
