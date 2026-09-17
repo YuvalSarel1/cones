@@ -381,7 +381,7 @@ pub fn launch_path() -> String {
 
 /// Embedded coordinator plugin, loaded only for the session that starts it.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
-const COORDINATOR_FILES: [(&str, &str); 6] = [
+const COORDINATOR_FILES: [(&str, &str); 7] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
@@ -405,6 +405,10 @@ const COORDINATOR_FILES: [(&str, &str); 6] = [
     (
         "skills/start-orchestrator/bin/codex.sh",
         include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.sh"),
+    ),
+    (
+        "skills/start-orchestrator/bin/tick.sh",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/tick.sh"),
     ),
 ];
 

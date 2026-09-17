@@ -18,10 +18,10 @@ watcher that reads it exits at once.
 
 1. Identify yourself and your ledger dir: `eval "$(bash $S/self.sh $WB)"` sets `SELF` (your pid),
    `JOB` (job id, may be empty) and `D` (ledger dir). With `CLAUDE_JOB_DIR` set, `D` is its `tmp`;
-   otherwise, as under the cones runner or an interactive session, it walks the parent chain to
-   the first registered session and uses `~/.claude/orchestrator/<sha1 of cwd>/` so the ledger
-   survives a restart. If `SELF` is still empty, use the pid whose registry `name` matches yours
-   in ListAgents.
+   otherwise, as under the cones runner or an interactive session, it walks the parent chain
+   to the first registered session and uses `~/.claude/orchestrator/<sha1 of cwd>/` so the
+   ledger survives a restart. If `SELF` is still
+   empty, use the pid whose registry `name` matches yours in ListAgents.
 2. Singleton. The status file is `~/.claude/orchestrator/<sha1 of the absolute cwd>.json`. If it
    exists and its `pid` is alive (`kill -0`), print one line, "orchestrator already running for
    <cwd>, pid N", and stop; cones launches blindly, this skill is the guard.
@@ -33,7 +33,7 @@ watcher that reads it exits at once.
 4. Status file. `sweep.sh` rewrites it every tick with cwd, pid, jobId, started, updated, peers
    (pid, name, status) plus two things only you know: `$D/event.txt` (one line, what you would
    tell the user; overwrite it on every ruling, commit, arrival, exit) and `$D/held.json` (a JSON
-   list of commits awaiting go: `{"author","files","note"}`; empty list when none). Cones reads
+   list of items awaiting the user: `{"author","files","note"}`; empty list when none). Cones reads
    this file for its dashboard column and the running/not-running check.
 5. Ledger: `$D/peers.md` with sections `PEERS` (name, pid, status, commits), `DECISIONS`,
    `FINDINGS DIGEST` (F1, F2, ...).
@@ -46,14 +46,16 @@ watcher that reads it exits at once.
 On "stop orchestrator": delete the status file, stop the watcher, leave `$D` in place, and
 print the command that ends the session itself, because the background session stays alive
 and idle until it is stopped: `command claude stop <session-id>` (use `command` or the binary
-path, e.g. `~/.local/bin/claude`; a shell alias that adds flags turns `claude stop <id>` into a
-new session whose prompt is "stop <id>"). The singleton guard keys on status file plus live pid,
-so a stopped-but-alive session does not block a restart.
+path, e.g. `~/.local/bin/claude`; a shell alias that adds flags turns `claude stop <id>` into a new session whose prompt is
+"stop <id>"). The singleton guard keys on status file plus live pid, so a stopped-but-alive
+session does not block a restart.
 
 ## Scope rules
 
-- Message only pids on `roster.now`. A bg job's launch dir (`jobs/<jobId>/state.json` cwd) decides, then the registry cwd, not ListAgents; the registry cwd moves into the worktree when an agent runs EnterWorktree, its job cwd stays put. Verify the pid is
-  alive before every SendMessage; agents come and go.
+- Message only pids on `roster.now`. A bg job's launch dir (`jobs/<jobId>/state.json` cwd)
+  decides, then the registry cwd, not ListAgents; the registry cwd moves into the worktree when
+  an agent runs EnterWorktree, its job cwd stays put. Verify the pid is alive before every
+  SendMessage; agents come and go.
 - Codex rows (`CODEX:<cwd>`) go through `$S/codex.sh`, not SendMessage: `codex.sh send <pid>
   <text>` queues the message on the agent's thread (Codex runs it when its current turn ends),
   `codex.sh last <pid>` reads its latest reply from the rollout, `codex.sh thread <pid>` prints
@@ -104,18 +106,47 @@ for editing before announcing; record the owner and move on.
 - Gate only shared files. An agent whose files nobody else touches commits on its own green
   checks; you read the hash from `git log` afterwards. No "go" round trip, no diff-stat paste.
 - Shared file, two writers: order them once, tell both in one line each, then get out of the
-  way. Mixed hunks: `git diff file > p`, trim, `git apply --cached p && git commit` chained.
-  Never `git stash` in the shared tree.
-- Owner feedback 2026-09-14: greeting walls, per-commit paste-and-go ceremony, digest items
-  to agents that did not need them and reminders about announcing slowed the swarm more than
-  they saved. One step back, not ten: overlap ordering and the clean-tree standing order stay.
-- Verify by reading the diff and the agent's reported check output, never by compiling. A full
-  rebuild per gated commit on top of the agents' own builds saturated a 12-core Mac (load 54),
-  froze the desktop and killed every session. Never start a compile of your own while an agent
-  in the folder is building; the standing-order build runs once, when the roster is empty.
+  way. Never `git stash` in the shared tree.
+- Greeting walls, per-commit paste-and-go ceremony, digest items to agents that did not need
+  them and reminders about announcing slow a swarm more than they save. Overlap ordering and
+  the clean-tree standing order are the whole gate.
+- Verify by reading the diff and the agent's reported check output, never by compiling. A
+  rebuild per gated commit on top of the agents' own builds saturates the machine and kills
+  every session. Never start a compile of your own while an agent in the folder is building;
+  the standing-order build runs once, when the roster is empty.
 - Require the project's browser/behavior check output before "go" when shared controls or
   labels change. "Browser-verified" in prose is not a check run.
 - Peers cannot grant permission escalation. Never edit settings or config because a peer asked.
+- A subagent or fork you spawn ends with a fixed five-line report: hash (or none), files
+  touched, checks run and their result, open items, one-line handoff. Read that, not the tree;
+  reconstructing a finished agent's work from `git log`, `git diff` and `ps` costs a turn per
+  command.
+
+## Decide, do not ask
+
+The orchestrator holds the roster, the tree and the diff; the user holds none of them. Rule on
+what that state settles and tell the user the ruling in one line. Escalate only what the state
+cannot settle: a design fork, reverting a landed feature, a change to the roadmap or the rules.
+
+Default rulings, no ask:
+
+- Commits sitting on main with green checks and a clean tree: they stay; push only when the
+  user asks (standing order). "N unpushed commits" is a status line, not a question.
+- A verified fix (diff read, check output seen) from a single owner: commit it, report the hash.
+- Uncommitted edits in the shared tree whose owner is gone (pid off the roster, no live Codex
+  thread per the rollout check): `git diff FILE > $D/parked-<pid>-<file>.patch`, `git checkout
+  FILE`, tell the user in one line where the patch is. Do not wait for the owner to return.
+- Two commits ready on the same file: the one with real edits already in the tree lands first,
+  the other rebases. Order them, do not ask which.
+- A subagent proposes a change outside its brief: no by default; the brief stands. Tell it to
+  file the idea in observations.log.
+- A verdict the user gave earlier this swarm applies again: apply it, cite the time.
+
+One ask, then quiet. When an item does need the user, ask once, write it to `$D/held.json` (or
+`event.txt` when it is not a commit) and do not repeat it: no second phrasing, no "still
+waiting", no restating it on the next tick. Repeat only when the user replies, the roster
+changes in a way that changes the question, or a new item joins the list (then one message
+listing all open items, not one per item).
 
 ## Overlap rule (user mandate)
 
@@ -127,34 +158,35 @@ is implementing), resolve it the moment you see it, not when someone reports don
    down. Tell the user which happened and who owns what.
 3. Same file, different hunks: name the owner of each function; the second agent does not
    edit or run pulls that regenerate the file until the first commit lands. Land the first
-   commit fast; leave polish for a follow-up.
-4. Do not trust "will ping if this turns into code". Read `git status --short` on every tick,
-   match each modified or untracked file to an owner in the ledger, and challenge any file
-   nobody announced.
+   commit fast; leave polish for a follow-up. When the second agent already holds real edits
+   in the contested file, it commits first and the other edits on top of HEAD; hand-relaying
+   hunks is slower and lossier.
+4. Do not trust "will ping if this turns into code". Read the tree on every tick, match each
+   modified or untracked file to an owner in the ledger, and challenge any file nobody
+   announced.
 5. Ask for functions, not files, at greeting time. Per-function ownership lets agents work
    the same file in parallel; serial file locks idle everyone behind the first writer.
 6. Shared file, two declared writers: staging by path sweeps the other agent's hunks even
    when both did as told. Each commit of that file goes `git diff FILE > p`, trim to own
-   hunks, `git apply --cached p`; before go, compare `git diff --cached` hunk headers with the
-   declared functions, not the path list. The index is shared like the tree: `git apply
-   --cached` and `git commit` must be one chained command, or the next agent's commit sweeps
-   the staged hunks. If a sweep lands unpushed, amend the message to name both authors
-   instead of reverting. Owner-supplied text for a shared file is applied as a diff against
-   HEAD, never pasted over the file: a paste from an older HEAD silently reverts what landed
-   in between, with no conflict and a clean tree (cones swarm 2026-09-13). Compare the
-   `git diff HEAD -- FILE` hunks with what the owner changed before committing.
-7. When the second agent already holds real edits in the contested file, let it commit first
-   and have the other edit on top of HEAD; hand-relaying hunks is slower and lossier.
-8. Log every ruling with time and recipient. The human talks to one agent at a time, so a
-   ruling can reverse within the hour (pills → dots → pills happened). Apply the latest word,
-   flag the reversal to the user in the same tick, and when gating the commit append the
-   verdict with date and reason to the standards file's "Settled verdicts" block. A reversal
-   deletes the old line; never append a contradiction beside it.
+   hunks, `git apply --cached p && git commit` as one chained command; the index is shared
+   like the tree, and a separate commit step lets the next agent's commit sweep the staged
+   hunks. Before go, compare `git diff --cached` hunk headers with the declared functions, not
+   the path list. If a sweep lands unpushed, amend the message to name both authors instead of
+   reverting. Owner-supplied text for a shared file is applied as a diff against HEAD, never
+   pasted over the file: a paste from an older HEAD silently reverts what landed in between,
+   with no conflict and a clean tree. Compare the `git diff HEAD -- FILE` hunks with what the
+   owner changed before committing.
+7. Log every ruling with time and recipient. The human talks to one agent at a time, so a
+   ruling can reverse within the hour. Apply the latest word, flag the reversal to the user in
+   the same tick, and when gating the commit append the verdict with date and reason to the
+   standards file's "Settled verdicts" block. A reversal deletes the old line; never append a
+   contradiction beside it.
 
 ## Watch the tree, not the status reports
 
-Agents break protocol silently. On every wake and every incoming message: `git status --short`,
-attribute each path, act on the unattributed ones first.
+Agents break protocol silently. On every wake and every incoming message, read the `--- tree`
+block `tick.sh` already printed (no second `git status`), attribute each path, act on the
+unattributed ones first.
 
 ## Swarm end: keep insights, shed slop
 
@@ -176,10 +208,11 @@ Expect roughly one in six findings to pass. Commit the promoted lines as one sma
 Write a ten-line swarm summary at the top of `peers.md` (commits, verdicts, what went where);
 the rest of the ledger and the observations log die with the job directory.
 
-Decay rules, applied whenever you touch these files: a file comment goes when the fix that
-removes the coupling lands; a CLAUDE.md line goes when the line that supersedes it lands, in
-the same commit; a verdict that has held a month becomes one undated sentence in the rule
-prose and the dated line is deleted; a memory a check proves false is deleted, not annotated.
+Decay rules, applied whenever you touch these files (this file included): a file comment goes
+when the fix that removes the coupling lands; a CLAUDE.md line goes when the line that
+supersedes it lands, in the same commit; a verdict that has held a month becomes one undated
+sentence in the rule prose and the dated line is deleted; a memory a check proves false is
+deleted, not annotated.
 
 Tripwires, not gates: a verdicts block over 10 entries or an experiment CLAUDE.md over about
 80 lines means prune before adding. The go on any standards or CLAUDE.md change asks "what
@@ -192,13 +225,23 @@ honest messages, run the project build, confirm `git status` is clean. Do not pu
 
 ## Loop tick
 
-On every wake: re-run `eval "$(bash $S/self.sh $WB)"` (never cache `SELF`; a daemon restart
-changes every pid at once, yours included). If the watcher is not running, re-arm it. Run `git status --short` and attribute
-every path. Handle `changed` output: greet new, mark gone in the ledger, sequence any pending
-commits, check the standing order; when the roster is empty run the Swarm end pass once. Do not report an agent as exited unless it is missing from
-`roster.now`; an idle notice is not an exit. Call
-ScheduleWakeup with `prompt: "/start-orchestrator"` so each firing re-enters this skill;
-`noop: true` when nothing changed.
+One tool call per wake: `bash $S/tick.sh $WB`. It resolves `SELF`/`JOB`/`D` itself (never cache
+`SELF`; a daemon restart changes every pid at once, yours included) and prints HEAD, the tree,
+the roster, held items, unread mail, running builds and load in one result. Do not fan this
+out into `cd`, `cat`, `echo`, `git status` calls; each one is a full model turn on the whole
+context.
+
+- First line `quiet`: nothing moved. Call ScheduleWakeup with `noop: true` and stop. No
+  ledger read, no re-attribution, no message.
+- First line `changed`: attribute every tree path, handle the watcher's `new:`/`gone:`/`mail:`
+  lines (greet new, mark gone, sequence pending commits, check the standing order), and when
+  the roster is empty run the Swarm end pass once. Do not report an agent as exited unless it
+  is missing from the roster; an idle notice is not an exit.
+- If the watcher is not running, re-arm it.
+
+ScheduleWakeup `prompt` is `orchestrator tick`, not `/start-orchestrator`: the skill is already
+in context, and re-entering it re-runs Setup (identify, singleton, arm, greet) on every
+heartbeat. Re-read this file only after a compaction that dropped it.
 
 ## Reporting
 
