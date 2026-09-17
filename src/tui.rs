@@ -9890,17 +9890,25 @@ impl App {
                     self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
                     return Ok(false);
                 }
-                // Right on a row with nothing typed reaches for the pane: open it, then focus it.
+                // Right on a row with nothing typed goes to the agent: into the pane when it is
+                // open, over the whole frame when it is closed.
                 if !self.on_button()
                     && code == KeyCode::Right
                     && mods.is_empty()
                     && self.composer_text().is_empty()
                 {
-                    match self.shown() {
-                        _ if !self.split => self.toggle_split(),
+                    match self.focusable_viewer() {
                         Some(i) => self.focus(i),
                         None if self.transcript_target().is_some() => self.focus_transcript(),
                         None if self.panel_shown() => self.open_menu(),
+                        // ponytail: only a session row attaches on its own; right never launches.
+                        None if matches!(
+                            self.selected().map(|r| &r.kind),
+                            Some(Kind::Session(..))
+                        ) =>
+                        {
+                            self.enter()?
+                        }
                         None => self.status = "nothing in the pane".into(),
                     }
                     return Ok(false);
@@ -16211,8 +16219,13 @@ mod tests {
         assert_eq!(rule.symbol(), "│");
         assert_ne!(rule.fg, ORANGE, "the rule is dim while nothing is focused");
         assert!(
-            !left[29].contains("ctrl+]") && !left[29].contains("ctrl+\\"),
-            "unfocused, the hint line has no pane keys: {:?}",
+            !left[29].contains("ctrl+]"),
+            "unfocused, the hint line has no viewer keys: {:?}",
+            left[29]
+        );
+        assert!(
+            left[29].contains("ctrl+\\ layout"),
+            "the layout key is listed whenever there is a pane: {:?}",
             left[29]
         );
 
@@ -16567,7 +16580,7 @@ mod tests {
     }
 
     #[test]
-    fn right_on_a_row_with_nothing_typed_opens_the_pane_then_reaches_into_it() {
+    fn right_on_a_row_with_nothing_typed_goes_to_the_agent() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
@@ -16577,10 +16590,15 @@ mod tests {
         }
         app.split = false;
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
-        assert!(app.split, "the first right opens the pane");
-        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
-        assert!(app.split, "and the next one reaches into it");
-        assert_eq!(app.status, "nothing in the pane", "as tab would");
+        assert!(
+            !app.split,
+            "a closed pane stays closed: the agent takes the whole frame"
+        );
+        assert!(
+            app.status.contains("own terminal"),
+            "right reached the agent itself: {:?}",
+            app.status
+        );
         app.text = "hi".into();
         app.caret = 0;
         app.status.clear();

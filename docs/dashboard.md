@@ -14,6 +14,7 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `enter` | With an empty composer, act on the selection: open a session or finished run, follow a running run, start a job, or open a menu screen. With text, submit the instruction. |
 | `shift+enter` | Open the selection over the whole frame once; returning restores the prior layout. With text, insert a line break. Terminals reporting alt+enter use the same action. |
 | `tab` | Enter the pane from the list. Return when an agent's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells and forms keep Tab for their own input. |
+| `→` | With an empty composer, go to the agent: into the pane when it is open, over the whole frame when it is closed. On the menu row it picks a button. |
 | `ctrl+z` | Return from a viewer or menu screen; the viewer keeps running. |
 | `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
