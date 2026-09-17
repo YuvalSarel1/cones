@@ -48,9 +48,8 @@ then `mv` it over); a half-written script fails to parse and every watcher readi
 6. Run the sweep once and greet everyone already on the roster.
 
 On "stop orchestrator": delete the status file, stop the watcher, leave `$D`, and print
-`command claude stop <session-id>`, or the binary path, `~/.local/bin/claude` (the bare `claude stop <id>` under an alias that adds flags
-starts a new session whose prompt is "stop <id>"). The guard keys on status file plus live pid,
-so a stopped-but-alive session does not block a restart.
+`command claude stop <session-id>`, or the binary path `~/.local/bin/claude` - a bare `claude stop <id>` under an alias that adds flags starts
+a new session whose prompt is "stop <id>". A stopped-but-alive session does not block a restart.
 
 ## Scope rules
 
@@ -67,8 +66,7 @@ so a stopped-but-alive session does not block a restart.
   orphaned. A client that reports itself finished keeps its process and its row.
 - Answers from agents that cannot SendMessage arrive in the folder inbox,
   `~/.claude/orchestrator/<sha1 of cwd>/inbox.jsonl`, one JSON line each; `codex.sh send` appends
-  that instruction to every message, `sweep.sh` prints new lines as `mail:`. Never poll a rollout
-  for a reply the inbox carries.
+  that instruction and `sweep.sh` prints new lines as `mail:`, so never poll a rollout for a reply.
 - A worktree an agent made under its own `$CLAUDE_JOB_DIR/tmp` vanishes with the job while the
   branch stays. When such an agent exits before landing: `git worktree prune`, check the branch out
   in a worktree of your own, rebase, run the checks, fast-forward.
@@ -80,19 +78,24 @@ so a stopped-but-alive session does not block a restart.
 
 ## Talking to agents
 
-One line per message, three messages per agent per swarm: the greeting, a ruling, a gate. Anything
-longer is not read as instruction, it is read as noise, and a fourth message usually means you are
-asking for something the tree already shows you.
+The agent's time is the scarce resource, not yours, and a message that confuses one or parks it
+waiting is worse than no message at all. One line, three per agent per swarm - greeting, ruling,
+gate - and each one says what the head is, what is owed and what is not.
 
 - Greeting: who you are, which files and functions it will edit, ping you before it commits,
   `notify_when_idle`. No rules paragraph, no digest, no pointer unless it changes what this agent
-  does right now. Never broadcast. Treat an arrival as already editing: check the tree, not the
-  reply, and do not scold an agent that edited first.
+  does now. Never broadcast, treat an arrival as already editing, and never scold one that edited
+  first.
 - Every message is a work order, never a note. A queued Codex message arrives as a user turn
   indistinguishable from the owner's, so an idle agent, or one waiting on a reply, reads it as the
   signal to continue and spends a turn on the owner's account: an "awareness only" line buys work.
   Send only what you want done now, name whose voice it is, leave the rest in
   `.claude/observations.log`, and do not ask for evidence unless a commit is pending.
+- Rule only on state that has settled. A reversal costs the agent two or three further messages, so
+  a ruling that may flip is worth less than the minute it takes to be sure. A request keyed on a
+  hash goes stale while it sits in the queue: ask a live writer for the head of its branch, and name
+  a hash only to land or hold one. Never hand out a queue position without cancelling it in the
+  message that resolves it, or the agent parks waiting for a head that is not coming.
 - Relay a finding only to the agent that needs it, as a one-liner, and never hand one agent an API
   that exists only on another's unlanded branch: the first writer commits against main, and
   whoever changes a signature fixes the call sites when it rebases.
@@ -112,8 +115,6 @@ asking for something the tree already shows you.
   re-running one. Never hand an agent counts to cite: numbers it did not observe are decoration.
 - When you gate on an amendment, diff the old hash against the new before landing and confirm the
   delta is only what you asked for.
-- A subagent or fork you spawn ends with five lines: hash (or none), files touched, checks and
-  their result, open items, one-line handoff. Read that, not the tree.
 
 ## Decide, do not ask
 
@@ -209,6 +210,5 @@ re-entering it re-runs Setup on every heartbeat. Re-read this file only after a 
 
 ## Reporting
 
-Report hashes, conflicts and asks. Not arrivals, not exits, not your exchanges with agents - the
-dashboard already shows those, and narrating them turns one event into three turns. Answer the
-user's questions directly.
+Report hashes, conflicts and asks, not arrivals or your exchanges: the dashboard shows those, and
+narrating one event costs three turns. Answer the user's questions directly.
