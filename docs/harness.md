@@ -57,7 +57,7 @@ The session id is the file's first-line `id`, otherwise `pi-<pid>`. A session fi
 
 The [definition](../assets/harnesses/opencode.yaml) excludes service and management commands. Terminal clients appear as `opencode-<pid>` until a leading `--session <id>`, `--session=<id>` or `-s <id>` identifies a saved conversation whose recorded directory matches the process cwd. Multiple clients naming the same session keep separate process rows. `run`, remote attachments, forks and prompt text do not identify local conversations. New composer sessions retain their prompt and viewer through the child pid; their native session id, usage and model remain absent.
 
-OpenCode's normal TUI uses an in-process backend. Joining an arbitrary terminal would require a reported server address, so those rows say `own terminal`. cones does not start a server or install reporting plugins.
+OpenCode's normal TUI uses an in-process backend. Joining an arbitrary terminal would require a reported server address, so those rows say `own terminal`. cones currently launches the standalone TUI; attaching through OpenCode's native server is not integrated.
 
 The reader uses the standard CLI's `session`, `message` and `part` SQLite tables, verified against OpenCode 1.18.31. It scans `opencode.db` and `opencode-*.db` under the native home. `OPENCODE_DB` selects one database: absolute paths are used directly, relative paths resolve under that home, and `:memory:` has no disk history. Legacy JSON storage is not scanned.
 
@@ -170,7 +170,7 @@ Each timestamped transcript/rollout line contributes one `lines` count. The othe
 | `tools` | `tool_use` blocks. | `function_call`, `custom_tool_call`, `local_shell_call` items. | `toolCall` blocks. |
 | `tokens` | Assistant `output_tokens`. | `last_token_usage.output_tokens` on `token_count` events. | Assistant `usage.output`. |
 
-OpenCode activity charts remain empty; its mutable database rows are not an append-only activity stream.
+OpenCode activity charts are not implemented.
 
 ## Native actions
 
@@ -210,6 +210,6 @@ Model and provider overrides follow [configuration](jobs.md#job-fields-and-defau
 | Claude Code | Execution adapter verifies version `>=2.1, <3` and the compiled flags against native help, then uses the [run contract](jobs.md#what-the-harness-is-told). |
 | Codex | No execution adapter: native enforcement and terminal result reporting remain unverified. |
 | pi | No execution adapter: pi offers no sandbox for the required write policy; terminal result reporting is unverified. |
-| OpenCode | No execution adapter: permission rules do not provide the filesystem and network isolation required by the write policy. Native composer and history sessions keep OpenCode's own permissions. |
+| OpenCode | Supervised jobs are not implemented. Native enforcement and completion reporting remain unverified. Interactive sessions keep OpenCode's own permissions. |
 
 Unsupported jobs parse but fail execution validation, including installation. A direct run records the validation failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).
