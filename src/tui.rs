@@ -8,7 +8,7 @@ use crate::{
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    output, runner, transcript,
+    output, runner, terminal, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -1394,10 +1394,16 @@ fn icon(state: &str) -> &str {
 
 /// The harness's mark alone; an unknown harness has only its name.
 fn mark(harness: &str) -> &str {
+    if harness == "terminal" {
+        return "$";
+    }
     harness::by_name(harness).map_or(harness, |spec| spec.icon.as_str())
 }
 
 fn logo(harness: &str) -> String {
+    if harness == "terminal" {
+        return format!("{} {harness}", mark(harness));
+    }
     harness::by_name(harness).map_or_else(
         || harness.to_owned(),
         |spec| format!("{} {harness}", spec.icon),
@@ -2616,7 +2622,7 @@ const FIELDS: [Field; 30] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
-        long: "The harness the composer is on in a new cones terminal; shift+tab changes it from there and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and uses the pi model and provider defaults below.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex and pi sessions start, their jobs are still unavailable. A pi runs in the dashboard's own viewer and ends with it, and uses the pi model and provider defaults below.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi"]),
     },
@@ -4064,7 +4070,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+tab",
-        "the harness the next session starts under; the composer's prefix shows it, and a pi ends with the viewer it runs in",
+        "cycle Claude Code, Codex, pi and terminal; enter on terminal opens your shell in the selected folder; ctrl+z returns to the list",
     ),
     (
         "ctrl+v",
@@ -4081,11 +4087,11 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; a form that uses tab itself, the folder prompt or an open field, is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
+        "into the pane's viewer or a button's screen and back out to the list, as does ← with the client's composer empty; terminals keep tab for completion and use ctrl+z to return; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
     ),
     (
         "ctrl+z",
-        "back to the list from a viewer or a button's screen; the viewer stays alive and enter on its row gives it the keys again",
+        "back to the list from a viewer or a button's screen; the viewer stays alive and tab on its row gives it the keys again",
     ),
     (
         "ctrl+\\",
@@ -4100,7 +4106,10 @@ const GUIDE: &[(&str, &str)] = &[
         "esc",
         "backs out one thing at a time: an armed ctrl+x, the instruction, the jobs screen, the dashboard",
     ),
-    ("ctrl+c twice", "quit"),
+    (
+        "ctrl+c twice",
+        "quit from the list or an agent viewer; a terminal keeps ctrl+c to interrupt commands",
+    ),
     ("ctrl+g", "this guide; ↑ ↓ scroll it, esc closes it"),
 ];
 
@@ -4441,8 +4450,11 @@ struct App {
     caret: usize,
     /// The PNGs pasted into the instruction, in the order their markers were typed.
     images: Vec<PathBuf>,
-    /// Index into `harness::launchable()` for the next launch.
+    /// Index into `harness::launchable()`, followed by the terminal option.
     harness: usize,
+    shell: PathBuf,
+    /// Shell rows belong to this dashboard and have no harness registry.
+    terminals: Vec<Session>,
     /// Background launches keyed by placeholder row id.
     started: Vec<(String, mpsc::Receiver<Launched>)>,
     /// Immediate rows until discovery reports the launched sessions.
@@ -4595,6 +4607,12 @@ struct Open {
     speculative: bool,
 }
 
+impl Open {
+    fn is_terminal(&self) -> bool {
+        self.key.starts_with("terminal:")
+    }
+}
+
 struct PendingStop {
     id: String,
     label: String,
@@ -4651,6 +4669,8 @@ impl App {
             caret: 0,
             images: Vec::new(),
             harness: Self::harness_at(Some(start.harness)),
+            shell: terminal::default_shell(),
+            terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
             opening: None,
@@ -5241,6 +5261,8 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
+        data.sessions.retain(|s| s.harness != "terminal");
+        data.sessions.extend(self.terminals.iter().cloned());
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
@@ -5922,7 +5944,12 @@ impl App {
         }
         self.debug(|| format!("open {what} as {key}: {c:?}"));
         let normal = SHELL_TTY.get().and_then(|t| t.as_ref());
-        match Viewer::spawn(
+        let spawn = if key.starts_with("terminal:") {
+            Viewer::spawn_terminal
+        } else {
+            Viewer::spawn
+        };
+        match spawn(
             c,
             self.pane.height,
             self.pane.width,
@@ -6172,6 +6199,11 @@ impl App {
             Some(f) if f > i => self.focus = Some(f - 1),
             _ => {}
         }
+        if open.is_terminal() {
+            self.terminals.retain(|s| s.session_id != open.key);
+            self.data.sessions.retain(|s| s.session_id != open.key);
+            self.rebuild();
+        }
         self.debug(|| format!("close {} ({})", open.key, open.what));
         if open.record.is_some() && !open.recorded {
             self.record_codex(&open.key);
@@ -6204,7 +6236,9 @@ impl App {
         );
         self.debug(|| line);
         // Drop viewers left in Claude's agent list so the row cannot show or attach another session.
-        if self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE) {
+        if !self.viewers[i].is_terminal()
+            && self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE)
+        {
             self.close(i);
         }
     }
@@ -6361,7 +6395,14 @@ impl App {
             ]
         } else {
             vec![
-                Span::styled("tab back", dim()),
+                Span::styled(
+                    if open.is_terminal() {
+                        "ctrl+z back"
+                    } else {
+                        "tab back"
+                    },
+                    dim(),
+                ),
                 Span::styled(" · ctrl+\\ split", dim()),
             ]
         };
@@ -6400,7 +6441,11 @@ impl App {
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
     /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
-        if self.transcript.focused {
+        if self.transcript.focused
+            || (self.focus.is_none()
+                && matches!(self.mode, Mode::Normal)
+                && self.terminal_selected())
+        {
             return;
         }
         if text.is_empty() {
@@ -6927,6 +6972,10 @@ impl App {
     }
 
     fn start(&mut self) {
+        if self.terminal_selected() {
+            self.start_terminal();
+            return;
+        }
         if self.menu_is("jobs") || self.on_new_job() {
             self.new_job();
             return;
@@ -6985,6 +7034,73 @@ impl App {
             let _ = tx.send(feedback);
         });
         self.started.push((id, rx));
+    }
+
+    fn terminal_selected(&self) -> bool {
+        self.harness == harness::launchable().len()
+    }
+
+    fn launch_name(&self) -> String {
+        if self.terminal_selected() {
+            "terminal".into()
+        } else {
+            harness::launchable()[self.harness].to_string()
+        }
+    }
+
+    fn start_terminal(&mut self) {
+        let dir = self.target_dir();
+        let name = self
+            .shell
+            .file_name()
+            .unwrap_or(self.shell.as_os_str())
+            .to_string_lossy()
+            .into_owned();
+        let id = format!("terminal:{}", uuid::Uuid::new_v4());
+        if !self.open(
+            self.size,
+            terminal::command(&self.shell, &dir),
+            &name,
+            id.clone(),
+            None,
+        ) {
+            return;
+        }
+        let session = Session {
+            session_id: id.clone(),
+            harness: "terminal".into(),
+            kind: None,
+            cwd: dir,
+            state: "-".into(),
+            started: Some(chrono::Utc::now()),
+            last_activity: None,
+            model: None,
+            pid: self.focus.map(|i| self.viewers[i].viewer.pid()),
+            transcript_path: None,
+            tokens_in: None,
+            tokens_out: None,
+            context_tokens: None,
+            context_window: None,
+            cost_usd: None,
+            title: Some(name),
+            last: None,
+            coordinator: false,
+            activity: Vec::new(),
+        };
+        self.terminals.push(session.clone());
+        self.data.sessions.push(session);
+        self.jobs_view = false;
+        self.history.select_first = false;
+        self.rebuild();
+        if let Some(i) = self
+            .visible
+            .iter()
+            .position(|&i| self.rows[i].kind.key() == Some(id.as_str()))
+        {
+            self.cursor = i;
+            self.settle();
+        }
+        self.status.clear();
     }
 
     fn launch_row(&mut self, kind: HarnessKind, dir: &Path, prompt: &str) -> String {
@@ -7209,6 +7325,13 @@ impl App {
     }
 
     fn composer(&self) -> Line<'static> {
+        if self.terminal_selected() {
+            let shell = self.shell.file_name().unwrap_or(self.shell.as_os_str());
+            return Line::from(vec![
+                Span::styled(format!("terminal ({}) › ", shell.to_string_lossy()), bold()),
+                Span::styled("Enter to open", dim()),
+            ]);
+        }
         if self.on_button() {
             return Line::default();
         }
@@ -7247,7 +7370,13 @@ impl App {
         }
         let prefix = (!self.filter.text.is_empty())
             .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
-        let mut line = if self.focus.is_some() {
+        let mut line = if self.focus.is_some_and(|i| self.viewers[i].is_terminal()) {
+            hints(&[
+                ("ctrl+z", "back"),
+                ("ctrl+c", "interrupt"),
+                ("ctrl+\\", "full screen"),
+            ])
+        } else if self.focus.is_some() {
             hints(&[("tab", "back"), ("ctrl+\\", "full screen")])
         } else {
             self.mode_hints(prefix.as_ref().map_or(0, Span::width))
@@ -7260,12 +7389,12 @@ impl App {
 
     /// Drop global hints from the end until they fit; keep the selected row's action and exit key.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
-        let start = if self.menu_is("jobs") || self.on_new_job() {
+        let start = if !self.terminal_selected() && (self.menu_is("jobs") || self.on_new_job()) {
             "new job with it".to_owned()
         } else {
             format!(
                 "start {} in {}",
-                harness::launchable()[self.harness],
+                self.launch_name(),
                 fleet::tilde(&self.target_dir())
             )
         };
@@ -7326,8 +7455,20 @@ impl App {
                 ("esc", "cancel"),
             ]),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
+            Mode::Normal if self.terminal_selected() => {
+                let mut keys = vec![("enter", start.as_str())];
+                if self.shown().is_some() {
+                    keys.push(("tab", "pane"));
+                }
+                if let Some(verb) = self.stop_verb() {
+                    keys.push(("ctrl+x", verb));
+                }
+                keys.push(("shift+tab", "session"));
+                keys.push(("esc", "back"));
+                hints(&keys)
+            }
             Mode::Normal if !self.text.is_empty() => {
-                hints(&[("enter", &start), ("shift+tab", "harness")])
+                hints(&[("enter", &start), ("shift+tab", "session")])
             }
             Mode::Normal => {
                 let mut keys = vec![];
@@ -7359,7 +7500,7 @@ impl App {
                 {
                     keys.push(("tab", "pane"));
                 }
-                keys.push(("shift+tab", "harness"));
+                keys.push(("shift+tab", "session"));
                 keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
                 let room = (self.hint_width() as usize).saturating_sub(taken);
                 let mut line = hints(&keys);
@@ -7417,6 +7558,11 @@ impl App {
         match self.armed.take() {
             Some(armed) if armed == id => {
                 let local = self.selected().and_then(|r| self.viewer_of(&r.kind));
+                if let Some(i) = local.filter(|&i| self.viewers[i].is_terminal()) {
+                    self.close(i);
+                    self.status = "terminal closed".into();
+                    return;
+                }
                 let ended_with_viewer = local.is_some()
                     && self.data.sessions.iter().any(|s| {
                         s.session_id == id
@@ -7566,10 +7712,11 @@ impl App {
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
+            let terminal = open.is_terminal();
             let return_to_list = open.harness.map_or_else(
                 || {
                     (ctrl && code == KeyCode::Char('z'))
-                        || (code == KeyCode::Tab && mods.is_empty())
+                        || (!terminal && code == KeyCode::Tab && mods.is_empty())
                 },
                 |kind| {
                     viewer::returns_to_list(
@@ -7589,10 +7736,10 @@ impl App {
                 self.toggle_split();
                 return Ok(false);
             }
-            // ctrl+c never reaches the client: Claude Code, Codex and pi all quit on two of
+            // ctrl+c never reaches agent clients: Claude Code, Codex and pi all quit on two of
             // them, and Claude Code's first one drops to the agents list. It is the
             // dashboard's quit key here as it is from the list; esc interrupts the client.
-            if ctrl && code == KeyCode::Char('c') {
+            if !terminal && ctrl && code == KeyCode::Char('c') {
                 return Ok(self.quit_press());
             }
             if mods.contains(KeyModifiers::SHIFT)
@@ -7870,6 +8017,7 @@ impl App {
                     return Ok(false);
                 }
                 if !self.on_button()
+                    && !self.terminal_selected()
                     && let Some(at) = edit(&mut self.text, self.caret, code, mods)
                 {
                     self.caret = at;
@@ -7888,6 +8036,8 @@ impl App {
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
+                        } else if self.terminal_selected() {
+                            self.harness = Self::harness_at(Some(self.data.start.harness));
                         } else if !self.text.is_empty() {
                             self.text.clear();
                             self.images.clear();
@@ -7913,7 +8063,11 @@ impl App {
                         None => self.status = "nothing in the pane".into(),
                     },
                     KeyCode::BackTab => {
-                        self.harness = (self.harness + 1) % harness::launchable().len();
+                        self.harness = (self.harness + 1) % (harness::launchable().len() + 1);
+                    }
+                    KeyCode::Enter if self.terminal_selected() => {
+                        self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+                        self.start();
                     }
                     // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
                     KeyCode::Enter
@@ -7956,7 +8110,7 @@ impl App {
                         self.invalidate();
                         self.status = "refresh requested".into();
                     }
-                    KeyCode::Char('v') if ctrl => self.attach_image(),
+                    KeyCode::Char('v') if ctrl && !self.terminal_selected() => self.attach_image(),
                     _ => {}
                 }
             }
@@ -10880,6 +11034,126 @@ mod tests {
         }
     }
 
+    fn terminal_until(app: &mut App, ready: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !ready(app) {
+            app.pump();
+            assert!(
+                Instant::now() < deadline,
+                "terminal did not become ready: {}",
+                app.status
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_terminal_keeps_its_folder_draft_and_viewer_across_refreshes() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let folder = d.path().join("working folder");
+        fs::create_dir(&folder).unwrap();
+        app.pin_folder(folder.clone()).unwrap();
+        app.shell = "/bin/sh".into();
+        app.fill("an unfinished agent instruction".into());
+        for _ in 0..3 {
+            app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.terminal_selected());
+        assert!(app.composer().to_string().contains("terminal (sh)"));
+        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        app.paste("do not replace the draft");
+        assert_eq!(app.text, "an unfinished agent instruction");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.terminals.len(), 1);
+        let id = app.terminals[0].session_id.clone();
+        let pid = app.terminals[0].pid.unwrap();
+        assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+        assert_eq!(app.terminals[0].cwd, folder);
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(app.viewers[0].harness, None);
+        assert!(app.pending.is_empty() && app.opening.is_none());
+
+        app.paste("printf '\\nDIRECTORY=%s\\n' \"$PWD\"\n");
+        let expected = format!("DIRECTORY={}", folder.canonicalize().unwrap().display());
+        terminal_until(&mut app, |a| {
+            a.viewers[0].viewer.screen().contents().contains(&expected)
+        });
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.focus, Some(0), "Tab belongs to shell completion");
+        app.key(KeyCode::Char('c'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.quit_armed.is_none(), "Ctrl+C belongs to the shell");
+        assert_eq!(app.focus, Some(0));
+        assert!(app.hint_line().to_string().contains("ctrl+z back"));
+        assert!(app.strip(0, 160).to_string().contains("ctrl+z back"));
+        app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.focus, None);
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+        assert_eq!(app.enter_label(), "return");
+        assert_eq!(app.terminals.len(), 1);
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.viewers[app.focus.unwrap()].viewer.pid(), pid);
+        assert_eq!(app.text, "an unfinished agent instruction");
+        app.paste("exit\n");
+        terminal_until(&mut app, |a| a.viewers.is_empty());
+        assert!(app.terminals.is_empty());
+        assert!(!app.data.sessions.iter().any(|s| s.session_id == id));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.terminal_selected());
+        assert_eq!(app.text, "an unfinished agent instruction");
+    }
+
+    #[test]
+    fn terminal_launches_are_distinct_and_closing_one_keeps_the_other() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.cwd = d.path().into();
+        app.shell = "/bin/sh".into();
+        app.harness = harness::launchable().len();
+        app.refresh().unwrap();
+        for _ in 0..4 {
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+        }
+        assert_eq!(app.terminals.len(), 4, "user terminals are never evicted");
+        assert_eq!(app.viewers.len(), 4);
+        let ids: HashSet<_> = app.terminals.iter().map(|s| s.session_id.clone()).collect();
+        assert_eq!(ids.len(), 4);
+        let closed = key(&app).unwrap();
+        let kept = app.terminals[0].session_id.clone();
+        app.key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.viewers.len(), 4, "first press only arms the close");
+        app.key(KeyCode::Char('x'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.viewers.len(), 3);
+        assert!(app.viewer_index(&kept).is_some());
+        assert!(app.viewer_index(&closed).is_none());
+        assert!(
+            app.stopping.is_empty(),
+            "shells never invoke harness stop commands"
+        );
+        app.refresh().unwrap();
+        assert!(!app.data.sessions.iter().any(|s| s.session_id == closed));
+        assert_eq!(app.terminals.len(), 3);
+    }
+
+    #[test]
+    fn a_failed_terminal_launch_leaves_the_rows_and_instruction_intact() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let before = key(&app);
+        app.shell = "/missing/shell".into();
+        app.harness = harness::launchable().len();
+        app.fill("keep my instruction".into());
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.viewers.is_empty() && app.terminals.is_empty());
+        assert_eq!(key(&app), before);
+        assert_eq!(app.text, "keep my instruction");
+        assert!(app.status.contains("failed"));
+    }
+
     #[test]
     fn foreground_launches_keep_selection_and_reuse_their_viewer_when_the_id_changes() {
         for kind in [HarnessKind::Codex, HarnessKind::Pi] {
@@ -11595,7 +11869,7 @@ mod tests {
             .collect();
         assert!(
             hint.starts_with(
-                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab harness · esc back"
+                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab session · esc back"
             ),
             "a job row offers its own keys first: {hint}"
         );
@@ -11805,19 +12079,24 @@ mod tests {
             "an empty dashboard opens on the menu row, folder picked: {hint}"
         );
         app.text = "fix the tests".into();
-        // The key names its own effect: with three harnesses it cannot name the next one.
-        for (mark, name) in [(">_", "codex"), ("\u{3c0}", "pi"), ("\u{273b}", "claude")] {
+        app.shell = "/bin/sh".into();
+        for (prefix, name) in [
+            (">_ codex", "codex"),
+            ("\u{3c0} pi", "pi"),
+            ("terminal (sh)", "terminal"),
+            ("\u{273b} claude", "claude"),
+        ] {
             app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
             let (composer, hint) = (text(app.composer()), text(app.hint_line()));
             assert!(
-                composer.starts_with(&format!("{mark} {name} \u{203a} ")),
+                composer.starts_with(&format!("{prefix} \u{203a} ")),
                 "{composer}"
             );
             assert!(
                 hint.starts_with(&format!("enter start {name} in ")),
                 "{hint}"
             );
-            assert!(hint.contains("shift+tab harness"), "{hint}");
+            assert!(hint.contains("shift+tab session"), "{hint}");
         }
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(text(app.composer()).starts_with(">_ codex \u{203a} "));
@@ -13161,7 +13440,7 @@ mod tests {
         app.size = (30, 130);
         app.split = false;
         let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("shift+tab harness · esc quit"), "{wide}");
+        assert!(wide.ends_with("shift+tab session · esc quit"), "{wide}");
         let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
         app.size = (30, 140);
         app.split = true;

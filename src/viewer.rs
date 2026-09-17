@@ -196,7 +196,7 @@ pub struct Viewer {
     reaped: bool,
     master: File,
     master_open: bool,
-    stderr: ChildStderr,
+    stderr: Option<ChildStderr>,
     errors: Vec<u8>,
     parser: vt100::Parser<Replies>,
     /// The tail of the last read that ended inside a UTF-8 sequence, fed first next time.
@@ -235,11 +235,33 @@ fn winsize(rows: u16, cols: u16) -> libc::winsize {
 impl Viewer {
     /// Spawn with shell termios and default signals. Capture stderr separately from the screen.
     pub fn spawn(
+        command: Command,
+        rows: u16,
+        cols: u16,
+        normal: Option<&libc::termios>,
+        colors: Colors,
+    ) -> io::Result<Viewer> {
+        Self::spawn_pty(command, rows, cols, normal, colors, false)
+    }
+
+    /// Shell prompts and command errors belong on the same terminal as stdout.
+    pub fn spawn_terminal(
+        command: Command,
+        rows: u16,
+        cols: u16,
+        normal: Option<&libc::termios>,
+        colors: Colors,
+    ) -> io::Result<Viewer> {
+        Self::spawn_pty(command, rows, cols, normal, colors, true)
+    }
+
+    fn spawn_pty(
         mut command: Command,
         rows: u16,
         cols: u16,
         normal: Option<&libc::termios>,
         colors: Colors,
+        terminal: bool,
     ) -> io::Result<Viewer> {
         let (mut master, mut slave) = (-1, -1);
         let mut size = winsize(rows, cols);
@@ -263,7 +285,11 @@ impl Viewer {
         command
             .stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
-            .stderr(Stdio::piped());
+            .stderr(if terminal {
+                Stdio::from(slave.try_clone()?)
+            } else {
+                Stdio::piped()
+            });
         unsafe {
             command.pre_exec(|| {
                 if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
@@ -279,8 +305,10 @@ impl Viewer {
         let mut child = command.spawn()?;
         drop(slave);
         nonblocking(master.as_raw_fd())?;
-        let stderr = child.stderr.take().expect("stderr was piped");
-        nonblocking(stderr.as_raw_fd())?;
+        let stderr = child.stderr.take();
+        if let Some(stderr) = &stderr {
+            nonblocking(stderr.as_raw_fd())?;
+        }
         Ok(Viewer {
             child,
             reaped: false,
@@ -365,8 +393,8 @@ impl Viewer {
         }
         // After the exit, drain what is there and stop: a descendant that inherited stderr
         // is not waited for.
-        loop {
-            match self.stderr.read(&mut bytes) {
+        while let Some(stderr) = &mut self.stderr {
+            match stderr.read(&mut bytes) {
                 Ok(0) => break,
                 Ok(n) => {
                     self.errors.extend_from_slice(&bytes[..n]);
@@ -507,9 +535,11 @@ impl Drop for Viewer {
                     Err(_) => self.master_open = false,
                 }
             }
-            while let Ok(n) = self.stderr.read(&mut bytes) {
-                if n == 0 {
-                    break;
+            if let Some(stderr) = &mut self.stderr {
+                while let Ok(n) = stderr.read(&mut bytes) {
+                    if n == 0 {
+                        break;
+                    }
                 }
             }
             if Instant::now() >= deadline {
@@ -833,6 +863,25 @@ pub fn encode_mouse(ev: MouseEvent, origin: (u16, u16), mode: MouseProtocolMode)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terminal_has_three_tty_streams_and_displays_stderr_in_order() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "test -t 0 && test -t 1 && test -t 2 || exit 1; printf 'out-'; printf 'err-' >&2; printf 'end'",
+        ]);
+        let mut viewer = Viewer::spawn_terminal(command, 4, 80, None, Colors::default()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while viewer.exited().is_none() {
+            viewer.pump().unwrap();
+            assert!(Instant::now() < deadline, "terminal did not exit");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(viewer.exited().unwrap().success());
+        assert!(viewer.screen().contents().contains("out-err-end"));
+        assert!(viewer.stderr_tail().is_empty());
+    }
 
     fn text(screen: &vt100::Screen, row: u16) -> String {
         let (_, cols) = screen.size();
