@@ -2,7 +2,7 @@
 
 Back to the [README](../README.md). Jobs and runs are in [jobs.md](jobs.md), the dashboard in [dashboard.md](dashboard.md), where every session fact comes from in [harness.md](harness.md).
 
-cones is the dashboard. Plain `cones` opens it, and the only other commands are the two a machine runs: launchd starts a scheduled job, and a login agent catches up the ticks a sleeping Mac missed. Everything the old subcommands did at the shell is a key or a save in the dashboard.
+cones is the dashboard. Plain `cones` opens it, and the only other commands are `run`, which launchd fires for a scheduled job and you can call yourself for a one-off task, and `catchup`, which a login agent uses for the ticks a sleeping Mac missed. Everything else the old subcommands did at the shell is a key or a save in the dashboard.
 
 Global flags: `--jobs PATH` (default `jobs.yaml`), `--state-dir PATH` (default `~/.cones`) and `--debug`.
 

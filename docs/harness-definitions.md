@@ -2,9 +2,13 @@
 
 Back to [harness behavior and sources](harness.md).
 
-Each built-in harness has one definition under `assets/harnesses/`: `claude.yaml`, `codex.yaml` or `pi.yaml`. The binary embeds these files. Editing a definition takes effect after rebuilding cones; cones does not load user definitions or overrides from disk. `jobs.yaml` is unchanged.
+Each built-in harness has one definition under `assets/harnesses/`: `claude.yaml`, `codex.yaml` or `pi.yaml`. The binary embeds them, so editing one takes effect after rebuilding cones; no definitions or overrides are read from disk, and `jobs.yaml` is unchanged. Between them they cover discovery, commands, live reports, history and viewer input.
 
-The definitions collect the decisions used by discovery, commands, live reports, history and viewer input. `src/harness/spec.rs` reads them into typed Rust structures, rejects unknown fields and incompatible handler combinations, and exposes one registry in composer cycle order. Shared code handles OS parsing, directory walking, event matching, text extraction, caching and key dispatch. Definitions supply the harness-specific names, paths, mappings, conditions and strategy choices. Complex native identity matching, usage accounting and Claude's registry-state precedence remain named code mechanisms.
+## The line between YAML and code
+
+A definition supplies names, paths, mappings, conditions and strategy choices. Shared code owns OS parsing, directory walking, event matching, text extraction, caching and key dispatch, none of which varies by harness: the `ps` arguments, column splitting, UTC timestamp format and unreadable-table errors all live in `fleet.rs`. A typed handler owns whatever needs the native protocol interpreted, which is why Claude's registry-state precedence, native identity matching, usage accounting and supervised execution are named mechanisms rather than fields. `src/harness/spec.rs` reads the files into typed structures, rejects unknown fields and incompatible handler combinations, and exposes one registry in composer cycle order.
+
+Two consequences hold throughout, so the sections below do not restate them. A definition cannot weaken a check the code owns: `launch.identity`'s reported-thread handover keeps its requirement for a unique new thread matching the launch's prompt, cwd and start time with no competing launch, and nothing in YAML can substitute a title for identity. And a definition cannot claim a capability cones has no adapter for: declaring `execution` support for Codex or pi is rejected, because `Harness::compile`, result handling, permission validation and timeout supervision are code. `unknown` there means unverified, not unsupported.
 
 ## Fields
 
@@ -25,35 +29,33 @@ The definitions collect the decisions used by discovery, commands, live reports,
 | `input` | Return-key bindings, their capture conditions, and the native empty-editor recognition profile. |
 | `viewer` | Speculative-join mechanism and excluded states, entered-viewer retention, and input alignment. |
 
-The OS `ps` arguments, column splitting, UTC timestamp format and unreadable-table errors are shared code in `fleet.rs`. They do not vary by harness. YAML only supplies the process name and subcommands to exclude; native argv interpretation, writer-lock binding and cwd attribution are mechanisms selected by the discovery handler.
+## Homes
 
-`home.sibling: null` means the caller already supplied the Claude root. Other defaults replace the final component of that root: `.codex` or `.pi/agent`. A nonempty native environment override takes precedence for those homes, including a relative override. Empty overrides keep the default.
+`home.sibling: null` means the caller already supplied the Claude root. Other defaults replace the final component of that root: `.codex` or `.pi/agent`. A nonempty native environment override takes precedence, including a relative one; an empty override keeps the default.
 
-History canonicalizes native homes. Its identity remains `(harness, canonical native home, session id)`: aliases of one home collapse, separate homes remain distinct, and transcript copies under project directories within one home collapse by identity. Joining a Codex row uses the home its rollout belongs to. Historical resume carries the entry's saved home into the native environment.
+History canonicalizes these homes and keys every entry by `(harness, canonical native home, session id)`. Aliases of one home collapse, separate homes stay distinct, and transcript copies under project directories within one home collapse by identity. Joining a Codex row uses the home its rollout belongs to, and historical resume carries the entry's saved home into the native environment.
 
-## Reports and history
+## State and messages
 
-An event state rule names string-valued guards, a JSON pointer to the discriminator, mapped state words and an optional unknown-value result. Codex maps `task_complete` to `done`; unrelated events preserve earlier state. pi maps assistant `stopReason` and explicitly reports `-` for an unknown reason. Claude's multi-field precedence remains its native handler because it depends on registry and job state together.
+An event state rule names string-valued guards, a JSON pointer to the discriminator, mapped state words and an optional unknown-value result. Codex maps `task_complete` to `done` and lets unrelated events preserve the earlier state; pi maps assistant `stopReason` and reports `-` for a reason it does not know.
 
-Message sources name their event guards, boolean exclusion flags, content path and shape. Shared text extraction understands strings and arrays of content blocks. Definitions select block types and attachment labels. Codex selects the actual UI `UserMessage` records and its legacy `user_message` event, excluding injected model-history instructions. Its assistant headline uses the first text block; pi uses the last. The history preview retains the complete selected text and applies shared control-character stripping, bounded reads and caching. History and live viewers stay separate UI modes.
+A message source names its event guards, boolean exclusion flags, content path and shape. Shared extraction understands strings and arrays of content blocks, and the definition selects block types and attachment labels. Codex selects the UI `UserMessage` records and its legacy `user_message` event while excluding injected model-history instructions, and takes its assistant headline from the first text block where pi takes the last. The history preview keeps the complete selected text under shared control-character stripping, bounded reads and caching; history and live viewers stay separate UI modes.
 
-## Arguments and capabilities
+## Commands
 
-Command templates are argument arrays. Placeholders occupy a whole argument:
+Command templates are argument arrays, and a placeholder occupies a whole argument:
 
 ```yaml
 resume: [--remote, "{remote}", resume, --, "{id}"]
 ```
 
-The accepted placeholders depend on the command: `prompt`, `remote`, `cwd`, `id`, `short_id` and `transcript`. Unknown placeholders and missing required operands are errors. Substitution retains spaces, newlines and native path bytes in one argument. It performs no shell expansion. A typed handler sequences Claude's background resume followed by attach, or Codex's unarchive followed by resume; command values travel as positional shell arguments and a failed first command prevents the second.
+Which placeholders are accepted depends on the command: `prompt`, `remote`, `cwd`, `id`, `short_id` and `transcript`. An unknown placeholder or a missing required operand is an error. Substitution keeps spaces, newlines and native path bytes inside one argument, and performs no shell expansion.
 
-Launching, joining a live session and resuming history are separate operations. pi has no live attach, but can resume history through `--session <transcript>`. A composer pi returns to the viewer cones already owns. Claude background sessions and daemon-held Codex threads can be joined speculatively. Codex's `viewer.peek: existing_daemon` checks that its daemon is running; explicit history resume may start it. Its `viewer.retention: retain` keeps an entered viewer even though a speculative one can be reopened. The shared pool manager applies the policy; its pool sizes and the retention of resumed runs and historical viewers remain dashboard invariants.
+Launching, joining a live session and resuming history are separate operations. A typed handler sequences the pairs a native client needs, Claude's background resume then attach and Codex's unarchive then resume, passing command values as positional shell arguments; a failed first command prevents the second. pi has no live attach but resumes history through `--session <transcript>`.
 
-`launch.identity` selects background-id, client-pid or reported-thread handover. The reported-thread mechanism keeps the existing requirement for a unique new thread matching the launch's prompt, cwd and start time, with no competing launch. A definition cannot weaken that ambiguity check or substitute a title for identity.
+## Viewers and input
 
-The definitions do not supply supervised command flags. `Harness::compile`, result handling, permission validation and timeout supervision remain code. Declaring Codex or pi execution support in YAML is rejected because cones has no native execution adapter for them. `unknown` means unverified, not unsupported.
-
-## Viewer input
+`viewer.peek` says whether a row can be joined speculatively. Claude background sessions can; Codex's `existing_daemon` first checks that its daemon is running, since an explicit history resume may start one; pi's `unavailable` is why a composer pi returns to the viewer cones already owns. `viewer.retention: retain` keeps an entered Codex viewer even though a speculative one can be reopened. The shared pool manager applies the policy, and its pool sizes and the retention of resumed runs and historical viewers are dashboard invariants rather than fields.
 
 Each harness declares which keys return to cones and when they are captured:
 
@@ -68,18 +70,16 @@ input:
   ignore_braille: false
 ```
 
-The current keys are `ctrl+z`, `tab` and `left`; conditions are `always` and `empty_prompt`. Removing a binding passes that key through to the native client. A conditional Tab binding lets the harness keep Tab while a draft is populated. Unknown keys, duplicate bindings and definitions with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain dashboard controls.
+The keys are `ctrl+z`, `tab` and `left`; the conditions are `always` and `empty_prompt`. Removing a binding passes that key through to the native client, and a conditional Tab lets a harness keep Tab while a draft is populated. Unknown keys, duplicate bindings and definitions with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys stay dashboard controls, and Shift+Tab and modified arrows stay native keys. The defaults return on Tab and Ctrl+Z from any focused live viewer and keep the native process running; Left returns only when the harness's `empty_prompt` profile matches the rendered screen. An opened viewer records its harness identity, so input behavior never depends on a title or on which row discovery last selected.
 
-The defaults return on Tab and Ctrl+Z for all focused live viewers, keeping the native process running. Left returns only when that harness's empty-editor profile matches the rendered screen. Shift+Tab and modified arrows remain native keys. The opened viewer records its harness identity so input behavior does not depend on a title or on which row discovery most recently selected.
-
-The marker profile recognizes Claude and Codex's prompt marker before a visible terminal caret. The bordered profile recognizes pi's standard editor: one empty row between horizontal borders, with an inverse-video software caret at the terminal cursor position. pi normally hides that terminal cursor and has no prompt marker. Text anywhere in the editor row, a multiline draft, a missing software caret or a non-editor screen keeps Left in pi. This profile follows the installed pi 0.85.1 `Editor.render` and `MainScreenTUI.positionHardwareCursor` behavior. A custom editor that does not match it can still return through Tab or Ctrl+Z.
+The `marker` profile recognizes Claude and Codex's prompt marker before a visible terminal caret. The `bordered` profile recognizes pi's standard editor: one empty row between horizontal borders with an inverse-video software caret at the terminal cursor position, since pi normally hides that cursor and has no prompt marker. Text anywhere in the editor row, a multiline draft, a missing software caret or a non-editor screen all keep Left in pi. This follows the installed pi 0.85.1 `Editor.render` and `MainScreenTUI.positionHardwareCursor`; a custom editor that does not match can still return through Tab or Ctrl+Z.
 
 ## Changing or adding a harness
 
-Start with the reported behavior in [harness.md](harness.md). Change the definition when a command, capability, source location or input profile changes. Change its typed handler when the native protocol needs different interpretation. Keep the native report fixtures under `assets/harnesses/fixtures/` and expected behavior in `src/harness/spec/tests.rs` current together.
+Start with the reported behavior in [harness.md](harness.md). Change a definition when a command, capability, source location or input profile changes; change its typed handler when the native protocol needs different interpretation. Keep the native report fixtures under `assets/harnesses/fixtures/` and the expected behavior in `src/harness/spec/tests.rs` current together.
 
-A new built-in also needs a `HarnessKind` and a registration in `spec.rs`. Select existing typed strategies where they fit; add a handler for a new protocol. The current native-handler validation explicitly checks the three supported integrations. Extending it requires evidence and tests for the new one. User-installed packages are future work; the embedded definitions establish the contract they would need to satisfy.
+A new built-in also needs a `HarnessKind` and a registration in `spec.rs`. Reuse an existing typed strategy where one fits and add a handler for a new protocol; the native-handler validation names the three supported integrations explicitly, so extending it takes evidence and tests for the fourth. User-installed packages are future work, and these embedded definitions are the contract such a package would have to satisfy.
 
-Contract tests cover definition rejection, capabilities, event mappings, process filters, probes, argument boundaries, command sequencing, native-home resolution and all three transcript formats through both history readers. Existing tests cover canonical aliases, separate homes, partial records, bounded reads, missing counters and ambiguous launches. Viewer and dashboard tests cover empty Pi input, populated and multiline drafts, configurable return conditions, modified keys, return and re-entry with the same process. All tests use fixtures or fake commands and spend no model tokens.
+Contract tests cover definition rejection, capabilities, event mappings, process filters, probes, argument boundaries, command sequencing, native-home resolution and all three transcript formats through both history readers, along with canonical aliases, separate homes, partial records, bounded reads, missing counters and ambiguous launches. Viewer and dashboard tests cover empty pi input, populated and multiline drafts, configurable return conditions, modified keys, and return and re-entry with the same process.
 
-Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test --all-targets` before committing. Use the worktree's own `CARGO_TARGET_DIR` while another checkout is being built.
+Give a worktree its own `CARGO_TARGET_DIR` while another checkout is building. A shared target directory can serve a test binary built from that other checkout, so a suite count you read here can come from code you are not looking at.
