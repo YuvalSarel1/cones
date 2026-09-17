@@ -484,13 +484,17 @@ impl Recording {
     }
 }
 
-/// Config captures use an empty fixture and never start a viewer.
+/// Config and Help captures use a disposable config and never start a viewer.
 #[test]
 #[ignore = "set CONES_CONFIG_CAPTURE to an output directory"]
 fn capture_config() -> Result<()> {
     let output = PathBuf::from(std::env::var("CONES_CONFIG_CAPTURE")?);
     std::fs::create_dir_all(&output)?;
     let fixture = tempfile::tempdir()?;
+    std::fs::write(
+        fixture.path().join("jobs.yaml"),
+        "version: 3\ndefaults:\n  model: opus\njobs: []\n",
+    )?;
     let mut app = App::new(
         Path::new("cones"),
         &fixture.path().join("jobs.yaml"),
@@ -501,19 +505,38 @@ fn capture_config() -> Result<()> {
     app.data.runs.clear();
     app.rebuild();
     app.split = false;
-    for (name, field, choice) in [
-        ("cones", "activity.bucket", false),
-        ("harnesses", "model", false),
-        ("choices", "model", true),
-        ("runs", "timeout_min", false),
+    for (name, field, choice, width, height) in [
+        ("cones", "activity.bucket", false, 60, 32),
+        ("harnesses", "model", false, 60, 40),
+        ("harnesses-narrow", "model", false, 40, 28),
+        ("choices", "model", true, 60, 32),
+        ("config-help", "bedrock", false, 60, 26),
+        ("runs", "timeout_min", false, 60, 24),
     ] {
         let mut form = app.config_form();
         form.go(field_at(field));
         if choice {
             form.key(KeyCode::Enter, KeyModifiers::NONE);
         }
+        if name == "config-help" {
+            form.key(KeyCode::F(1), KeyModifiers::NONE);
+        }
         app.mode = Mode::Config(form);
-        let mut terminal = Terminal::new(TestBackend::new(60, 32))?;
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|frame| app.draw(frame))?;
+        write_cells(&terminal, &output.join(format!("{name}.json")))?;
+    }
+    for (name, query, width, height) in [
+        ("help", "", 60, 36),
+        ("help-search", "config reset", 60, 24),
+        ("help-empty", "not-a-shortcut", 60, 24),
+        ("help-narrow", "viewer", 40, 28),
+    ] {
+        app.mode = Mode::Guide(Guide {
+            find: Input::new(query),
+            ..Guide::default()
+        });
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
         terminal.draw(|frame| app.draw(frame))?;
         write_cells(&terminal, &output.join(format!("{name}.json")))?;
     }

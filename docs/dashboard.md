@@ -79,9 +79,13 @@ Every change validates and saves only that table's column setting in `jobs.yaml`
 
 ### Config
 
-The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. `[` `]` switch from anywhere in the editor, and clicking a tab also lands on the row. Each tab remembers its selected field. Subheadings name actual config blocks or harnesses.
+The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. The visible `[` `]` shortcut switches groups while browsing settings, and clicking a tab also lands on the row. Each tab remembers its selected field. Bold subheadings, indentation and blank rows separate config blocks and harnesses. Bedrock and AWS settings are under `claude`.
 
-Each setting occupies one row with its current value. The selected field's explanation stays below the list. `↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `home`, `end`, `page up` and `page down` navigate within the current tab. The wheel moves through fields, and the selected row stays visible in short panes.
+Each setting occupies one row with its current value. A `*` marks values set in config; inherited values are dim. Boolean controls show `on` and `off`, and `full access` describes the existing `codex_full_access` setting. These labels do not change the stored keys or boolean values. An unset harness-owned setting says `harness default`.
+
+A fixed two-line hint stays below the list and names the default or reset value. `?` or `F1` opens the full explanation for the selected setting; arrows, the wheel and page keys scroll it, and `esc` returns to the same setting. `F1` also works during text editing. Results and errors can use more hint space.
+
+`↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `home`, `end`, `page up` and `page down` navigate within the current tab. The wheel moves through fields, and the selected row stays visible in short panes.
 
 | Control | Interaction |
 | --- | --- |
@@ -98,7 +102,9 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide. What you type in its prompt narrows it to the keys whose name or description contain the text. `↑ ↓` scroll; `←`, `esc`, `enter` or `ctrl+g` close it.
+`help` and `ctrl+g` open the built-in guide. The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f` also start search. Each search word must match the shortcut, description or section name, regardless of case. For example, `config reset` finds reset in the Config section. The guide shows the match count and explains how to recover from an empty result.
+
+`↑ ↓` and the wheel scroll by rendered lines. `page up` and `page down` scroll a page; `home` and `end` reach the first and last results. Shortcuts stack above their descriptions in narrow panes. Left and right edit a nonempty search, and `enter` keeps its results visible. `esc` or `ctrl+u` clears the search; with an empty search, `esc` or `←` returns to the list. `ctrl+g` closes Help directly.
 
 ## Sessions and runs
 

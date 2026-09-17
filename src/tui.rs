@@ -944,58 +944,196 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The guide's rows whose key or text contain `find`, with each match's heading kept.
+/// Match every search word against the shortcut, explanation and section name.
 fn guide_rows(find: &str) -> Vec<&'static (&'static str, &'static str)> {
-    let find = find.trim().to_lowercase();
-    if find.is_empty() {
+    let words: Vec<String> = find.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
         return GUIDE.iter().collect();
     }
     let mut rows = vec![];
     let mut head = None;
+    let mut shown = false;
     for entry in GUIDE {
         let (key, what) = entry;
         if key.is_empty() {
             head = Some(entry);
-        } else if key.to_lowercase().contains(&find) || what.to_lowercase().contains(&find) {
-            rows.extend(head.take());
-            rows.push(entry);
+            shown = false;
+        } else {
+            let text =
+                format!("{} {key} {what}", head.map_or("", |(_, title)| *title)).to_lowercase();
+            if words.iter().all(|word| text.contains(word)) {
+                if !shown {
+                    rows.extend(head);
+                    shown = true;
+                }
+                rows.push(entry);
+            }
         }
     }
     rows
 }
 
-fn guide(top: usize, columns: u16, find: &str) -> Paragraph<'static> {
+fn guide_lines(columns: u16, find: &str) -> Vec<Line<'static>> {
     let rows = guide_rows(find);
     if rows.is_empty() {
-        return Paragraph::new(Line::from(Span::styled("  no key matches", dim())));
+        return vec![
+            Line::from("No shortcuts match your search."),
+            Line::default(),
+            Line::from(Span::styled(
+                "Try a key or topic, such as config, clipboard or pane.",
+                dim(),
+            )),
+            Line::from(Span::styled("Esc clears the search.", dim())),
+        ]
+        .into_iter()
+        .flat_map(|line| hang(line.spans, 0, columns.max(1) as usize))
+        .collect();
     }
     let width = GUIDE
         .iter()
         .map(|(key, _)| key.chars().count())
         .max()
         .unwrap_or(0);
-    // Wrap what a key does under the key's column, not back at the frame's edge.
     let indent = 2 + width + 2;
     let mut lines = vec![];
     for (key, what) in rows {
         if key.is_empty() {
-            lines.push(Line::default());
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
             lines.push(Line::from(Span::styled(
                 (*what).to_owned(),
-                Style::default().fg(ORANGE),
+                bold().fg(ORANGE),
             )));
             continue;
         }
-        lines.extend(hang(
-            vec![
-                Span::styled(format!("  {key:width$}  "), bold()),
-                Span::styled((*what).to_owned(), dim()),
-            ],
-            indent,
-            columns as usize,
-        ));
+        if columns < 48 {
+            lines.extend(hang(
+                vec![Span::styled(format!("  {key}"), bold())],
+                0,
+                columns.max(1) as usize,
+            ));
+            lines.extend(hang(
+                vec![Span::raw("    "), Span::raw((*what).to_owned())],
+                4.min(columns.saturating_sub(1) as usize),
+                columns.max(1) as usize,
+            ));
+        } else {
+            lines.extend(hang(
+                vec![
+                    Span::styled(format!("  {key:width$}  "), bold()),
+                    Span::raw((*what).to_owned()),
+                ],
+                indent,
+                columns as usize,
+            ));
+        }
     }
-    Paragraph::new(lines).scroll((top as u16, 0))
+    lines
+}
+
+#[derive(Default)]
+struct Guide {
+    top: usize,
+    find: Input,
+    area: Rect,
+}
+
+impl Guide {
+    fn body_height(&self) -> usize {
+        self.area
+            .height
+            .saturating_sub(if self.area.height >= 4 { 3 } else { 0 })
+            .max(1) as usize
+    }
+
+    fn max_scroll(&self) -> usize {
+        guide_lines(self.area.width.max(1), &self.find.text)
+            .len()
+            .saturating_sub(self.body_height())
+    }
+
+    /// Return true only when leaving Help. Search editing never launches an action.
+    fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
+        match code {
+            KeyCode::Esc if !self.find.text.is_empty() => {
+                self.find = Input::default();
+                self.top = 0;
+            }
+            KeyCode::Esc => return true,
+            KeyCode::Char('g') if mods.contains(KeyModifiers::CONTROL) => return true,
+            KeyCode::Left if self.find.text.is_empty() => return true,
+            KeyCode::Enter => {}
+            KeyCode::Char('/') if self.find.text.is_empty() => {}
+            KeyCode::Char('f') if mods.contains(KeyModifiers::CONTROL) => {}
+            KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
+                self.find = Input::default();
+                self.top = 0;
+            }
+            KeyCode::Up => self.top = self.top.saturating_sub(1),
+            KeyCode::Down => self.top = (self.top + 1).min(self.max_scroll()),
+            KeyCode::PageUp => self.top = self.top.saturating_sub(self.body_height()),
+            KeyCode::PageDown => self.top = (self.top + self.body_height()).min(self.max_scroll()),
+            KeyCode::Home => self.top = 0,
+            KeyCode::End => self.top = self.max_scroll(),
+            _ => {
+                if self.find.key(code, mods) {
+                    self.top = 0;
+                }
+            }
+        }
+        false
+    }
+
+    fn draw(&mut self, frame: &mut Frame, area: Rect, active: bool) {
+        self.area = area;
+        let lines = guide_lines(area.width.max(1), &self.find.text);
+        self.top = self.top.min(lines.len().saturating_sub(self.body_height()));
+        let mut visible = vec![];
+        if area.height >= 4 {
+            let count = guide_rows(&self.find.text)
+                .iter()
+                .filter(|(key, _)| !key.is_empty())
+                .count();
+            visible.push(Line::from(Span::styled("help", lit())));
+            visible.push(Line::from(Span::styled(
+                if self.find.text.trim().is_empty() {
+                    format!(
+                        "{} · {count} shortcuts",
+                        if active {
+                            "Type to search"
+                        } else {
+                            "Enter to search"
+                        }
+                    )
+                } else {
+                    format!(
+                        "{count} {} · esc clears search",
+                        if count == 1 { "match" } else { "matches" }
+                    )
+                },
+                dim(),
+            )));
+            visible.push(Line::default());
+        }
+        visible.extend(lines.into_iter().skip(self.top).take(self.body_height()));
+        frame.render_widget(Paragraph::new(visible), area);
+    }
+
+    fn hints(&self) -> Line<'static> {
+        hints(&[
+            ("↑↓", "scroll"),
+            ("pgup/dn", "page"),
+            (
+                "esc",
+                if self.find.text.is_empty() {
+                    "back"
+                } else {
+                    "clear"
+                },
+            ),
+        ])
+    }
 }
 
 fn uncolored(text: &str) -> String {
@@ -2662,6 +2800,7 @@ struct Field {
     sub: &'static str,
     name: &'static str,
     short: &'static str,
+    hint: &'static str,
     long: &'static str,
     builtin: &'static str,
     input: Answer,
@@ -2678,6 +2817,20 @@ enum Answer {
 }
 
 impl Field {
+    fn display<'a>(&self, value: &'a str) -> &'a str {
+        if self
+            .picks()
+            .is_some_and(|p| p.contains(&"true") && p.contains(&"false"))
+        {
+            match value {
+                "true" => return "on",
+                "false" => return "off",
+                _ => {}
+            }
+        }
+        value
+    }
+
     fn picks(&self) -> Option<&'static [&'static str]> {
         match self.input {
             Answer::Typed | Answer::Number(_) | Answer::Columns | Answer::Check => None,
@@ -2787,6 +2940,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "confirm_secs",
         short: "ctrl+x armed (s)",
+        hint: "Time allowed for the second ctrl+x press.",
         long: "Seconds an armed ctrl+x waits for its second press with no key pressed, up to 600. 0 keeps the mark until the next key.",
         builtin: "2",
         input: Answer::Number(1.0),
@@ -2796,6 +2950,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "columns",
         short: "columns",
+        hint: "Choose the columns shown in each table.",
         long: "Open the column picker for sessions, runs, jobs and history. Each table keeps its own visibility and order. Changes save immediately.",
         builtin: "state, context, activity, model, age, last_active, folder, last_reply",
         input: Answer::Columns,
@@ -2805,6 +2960,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "run_columns",
         short: "run columns",
+        hint: "Choose columns for supervised runs.",
         long: "Columns for supervised runs. The harness icon and job always show; harness adds the name and status sits before the job. Left and right select, space shows or hides, [ ] reorder, and backspace restores defaults. Times use your local timezone.",
         builtin: "status, started, duration, model, cost, folder, reason",
         input: Answer::Columns,
@@ -2814,6 +2970,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "job_columns",
         short: "job columns",
+        hint: "Choose columns for scheduled jobs.",
         long: "Job columns. Enabled and harness icons and the job name always show. Schedule and last run status are separate. Next run is the next local time matching the enabled job's configured schedule.",
         builtin: "status, schedule, next_run, model, last_run, folder",
         input: Answer::Columns,
@@ -2823,6 +2980,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "history_columns",
         short: "history columns",
+        hint: "Choose columns for session history.",
         long: "Historical session columns, independent of live agents. Last active is time since the latest recorded activity. Folder identifies the conversation's directory. Live state and activity charts do not apply here.",
         builtin: "last_active, folder, model, context, last_reply",
         input: Answer::Columns,
@@ -2832,6 +2990,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "whole_columns",
         short: "whole columns only",
+        hint: "Hide columns that would be cut off at the edge.",
         long: "true leaves out a column the list's right edge would cut through, so the table ends on a column that fits. false draws as much of it as there is room for. The mark, harness, state and title are always drawn, so a row names itself however narrow the list is.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -2841,6 +3000,7 @@ const FIELDS: [Field; 36] = [
         sub: "start",
         name: "start.harness",
         short: "composer starts on",
+        hint: "Default harness for the composer.",
         long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex, pi and OpenCode sessions start; their jobs remain unavailable. Pi and OpenCode run in the dashboard's own viewer and end with it. Model and provider defaults are below.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
@@ -2850,6 +3010,7 @@ const FIELDS: [Field; 36] = [
         sub: "start",
         name: "start.pane",
         short: "open with the pane",
+        hint: "Show the viewer pane when cones starts.",
         long: "Whether a new cones terminal opens with the viewer pane beside the list; ctrl+\\ toggles it from there and cones writes nothing back.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -2859,6 +3020,7 @@ const FIELDS: [Field; 36] = [
         sub: "pane",
         name: "pane.at",
         short: "pane side",
+        hint: "Place the pane beside or below the list.",
         long: "right puts the pane beside the list, bottom under it.",
         builtin: "right",
         input: Answer::Pick(&["-", "right", "bottom"]),
@@ -2868,6 +3030,7 @@ const FIELDS: [Field; 36] = [
         sub: "pane",
         name: "pane.ratio",
         short: "pane share (%)",
+        hint: "Percentage of the screen used by the pane.",
         long: "Percent of the frame the pane takes, 30 to 70 in tens. The list keeps the rest, less the divider between them; a taller or wider terminal gives both more.",
         builtin: "50",
         input: Answer::Pick(&["-", "30", "40", "50", "60", "70"]),
@@ -2877,6 +3040,7 @@ const FIELDS: [Field; 36] = [
         sub: "activity",
         name: "activity.bars",
         short: "bar count",
+        hint: "Number of bars in the activity chart.",
         long: "Number of bars, 1 to 64, oldest first. 16 bars at 1m show the last 16 minutes.",
         builtin: "16",
         input: Answer::Number(1.0),
@@ -2886,6 +3050,7 @@ const FIELDS: [Field; 36] = [
         sub: "activity",
         name: "activity.bucket",
         short: "time per bar",
+        hint: "Time represented by each activity bar.",
         long: "Time per bar, such as 30s, 1m or 5m. Maximum 24h.",
         builtin: "1m",
         input: Answer::PickOrType(&["-", "30s", "1m", "5m", "15m", "1h"], "a duration"),
@@ -2895,6 +3060,7 @@ const FIELDS: [Field; 36] = [
         sub: "activity",
         name: "activity.metric",
         short: "count per bar",
+        hint: "What the activity chart counts.",
         long: "lines: all transcript lines. messages: assistant replies. tools: tool calls. tokens: output tokens.",
         builtin: "lines",
         input: Answer::Pick(&["-", "lines", "messages", "tools", "tokens"]),
@@ -2904,6 +3070,7 @@ const FIELDS: [Field; 36] = [
         sub: "activity",
         name: "activity.bound",
         short: "chart scale",
+        hint: "How activity is scaled across sessions.",
         long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number in jobs.yaml sets the count for a full bar.",
         builtin: "fleet",
         input: Answer::Pick(&["-", "fleet", "row", "log"]),
@@ -2913,51 +3080,17 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "check",
         short: "connectivity",
+        hint: "Check which harnesses can launch here.",
         long: "Run the launch probe every harness is given before a session starts: it looks for the binary on cones's own launch PATH, then checks that the installed version takes the flags a dashboard session needs. The answer for each harness replaces this line. Nothing is written and no model is called.",
         builtin: "",
         input: Answer::Check,
     },
     Field {
         group: "harnesses",
-        sub: "",
-        name: "bedrock",
-        short: "run on Bedrock",
-        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi uses its own pi_provider setting. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
-        builtin: SYSTEM,
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "harnesses",
-        sub: "",
-        name: "aws_profile",
-        short: "AWS profile",
-        long: "The profile every Bedrock run is given as AWS_PROFILE, as named in ~/.aws/config. Required by bedrock: true and unused without it; the run still inherits every other AWS_ variable for the credentials themselves.",
-        builtin: SYSTEM,
-        input: Answer::Typed,
-    },
-    Field {
-        group: "harnesses",
-        sub: "",
-        name: "aws_region",
-        short: "AWS region",
-        long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a model id is answered only by the regions that carry it.",
-        builtin: SYSTEM,
-        input: Answer::PickOrType(
-            &[
-                "-",
-                "us-east-1",
-                "us-west-2",
-                "eu-central-1",
-                "ap-northeast-1",
-            ],
-            "a region",
-        ),
-    },
-    Field {
-        group: "harnesses",
         sub: "claude",
         name: "claude_enabled",
-        short: "offer this harness",
+        short: "enabled",
+        hint: "Include Claude in the composer and session list.",
         long: "true offers claude in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -2966,7 +3099,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "claude",
         name: "model",
-        short: "alias or model id",
+        short: "model",
+        hint: "Claude model or alias for new sessions and jobs.",
         long: "The alias or model id passed to Claude as --model, for jobs and for sessions the composer starts. A [1m] suffix asks for the million-token window, which the bare alias does not: opus starts on 200k. system default passes nothing and Claude's own settings decide.",
         builtin: SYSTEM,
         input: Answer::PickOrType(
@@ -2984,9 +3118,49 @@ const FIELDS: [Field; 36] = [
     },
     Field {
         group: "harnesses",
+        sub: "claude",
+        name: "bedrock",
+        short: "use Bedrock",
+        hint: "Use Amazon Bedrock for Claude.",
+        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness it reaches: a Codex job is refused outright, the Codex daemon keeps the provider it started with, and a composer pi uses its own pi_provider setting. true is refused without the profile and region below, since the switch alone reaches Bedrock with nothing to authenticate it.",
+        builtin: SYSTEM,
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
+        name: "aws_profile",
+        short: "AWS profile",
+        hint: "AWS profile for Claude on Bedrock.",
+        long: "The profile every Bedrock run is given as AWS_PROFILE, as named in ~/.aws/config. Required by bedrock: true and unused without it; the run still inherits every other AWS_ variable for the credentials themselves.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
+        name: "aws_region",
+        short: "AWS region",
+        hint: "AWS region for Claude on Bedrock.",
+        long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a model id is answered only by the regions that carry it.",
+        builtin: SYSTEM,
+        input: Answer::PickOrType(
+            &[
+                "-",
+                "us-east-1",
+                "us-west-2",
+                "eu-central-1",
+                "ap-northeast-1",
+            ],
+            "a region",
+        ),
+    },
+    Field {
+        group: "harnesses",
         sub: "codex",
         name: "codex_enabled",
-        short: "offer this harness",
+        short: "enabled",
+        hint: "Include Codex in the composer and session list.",
         long: "true offers codex in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -2995,7 +3169,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "codex",
         name: "codex_model",
-        short: "model id",
+        short: "model",
+        hint: "Model for new Codex sessions.",
         long: "Passed to Codex as -m for sessions the composer starts. The words are the ids as OpenAI names them; a Bedrock daemon takes the same id with the openai. prefix, typed in the slot. Empty passes nothing and Codex's own config decides. Codex jobs are still unavailable.",
         builtin: SYSTEM,
         input: Answer::PickOrType(
@@ -3013,7 +3188,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "codex",
         name: "codex_full_access",
-        short: "no sandbox",
+        short: "full access",
+        hint: "Allow access outside the workspace sandbox.",
         long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
         builtin: "false",
         input: Answer::Pick(BOOL),
@@ -3022,7 +3198,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "pi",
         name: "pi_enabled",
-        short: "offer this harness",
+        short: "enabled",
+        hint: "Include pi in the composer and session list.",
         long: "true offers pi in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -3031,7 +3208,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "pi",
         name: "pi_model",
-        short: "model id",
+        short: "model",
+        hint: "Model for new pi sessions.",
         long: "Passed to pi as --model for sessions the composer starts. Empty follows pi's own model configuration. Pi jobs are unavailable.",
         builtin: SYSTEM,
         input: Answer::Typed,
@@ -3041,6 +3219,7 @@ const FIELDS: [Field; 36] = [
         sub: "pi",
         name: "pi_provider",
         short: "provider",
+        hint: "Provider for new pi sessions.",
         long: "Passed to pi as --provider for sessions the composer starts. Empty follows pi's own provider configuration.",
         builtin: SYSTEM,
         input: Answer::Typed,
@@ -3049,7 +3228,8 @@ const FIELDS: [Field; 36] = [
         group: "harnesses",
         sub: "opencode",
         name: "opencode_enabled",
-        short: "offer this harness",
+        short: "enabled",
+        hint: "Include OpenCode in the composer and session list.",
         long: "true offers opencode in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
@@ -3059,6 +3239,7 @@ const FIELDS: [Field; 36] = [
         sub: "opencode",
         name: "opencode_model",
         short: "provider/model",
+        hint: "Provider/model for new OpenCode sessions.",
         long: "Passed to OpenCode as --model for sessions the composer starts. Use provider/model, as listed by opencode models. Empty follows OpenCode's own configuration. OpenCode jobs are unavailable.",
         builtin: SYSTEM,
         input: Answer::Typed,
@@ -3068,6 +3249,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "harness",
         short: "harness",
+        hint: "Default harness for supervised jobs.",
         long: "The harness a run starts under, unless the job names one of its own. What the composer comes up on is start.harness above. Codex, pi and OpenCode jobs are unavailable.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
@@ -3077,6 +3259,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "timeout_min",
         short: "time limit (min)",
+        hint: "Stop a run after this many minutes.",
         long: "Positive minutes, up to 10080 (one week). cones stops overdue runs and records a timeout.",
         builtin: "30",
         input: Answer::Number(5.0),
@@ -3086,6 +3269,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "write",
         short: "allow file changes",
+        hint: "Allow supervised jobs to edit files.",
         long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
         builtin: "false",
         input: Answer::Pick(BOOL),
@@ -3095,6 +3279,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "overlap",
         short: "already running",
+        hint: "What to do when a job is already running.",
         long: "When a job is already running: skip the next run, allow both, or replace the active run.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "allow", "replace"]),
@@ -3104,6 +3289,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "catch_up",
         short: "missed ticks",
+        hint: "Whether to run once after missed schedule ticks.",
         long: "launchd loses a tick that passes while the Mac is powered off or logged out. once starts one run at the next login when any tick was missed, however many passed; skip leaves them lost. A slept-through tick already fires on wake and needs neither.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "once"]),
@@ -3113,6 +3299,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "notify",
         short: "failure alerts",
+        hint: "Show notifications for failures and timeouts.",
         long: "Notify on failures and timeouts.",
         builtin: "false",
         input: Answer::Pick(BOOL),
@@ -3121,7 +3308,8 @@ const FIELDS: [Field; 36] = [
         group: "runs",
         sub: "",
         name: "archive_transcript",
-        short: "keep the transcript",
+        short: "save transcript",
+        hint: "Keep a copy of each completed run’s transcript.",
         long: "true copies Claude's transcript into ~/.cones/transcripts/<run id>/ when the run ends.",
         builtin: "false",
         input: Answer::Pick(BOOL),
@@ -3131,6 +3319,7 @@ const FIELDS: [Field; 36] = [
         sub: "",
         name: "env",
         short: "import env vars",
+        hint: "Names of shell variables imported by jobs.",
         long: "Shell variables every run imports, by name, separated by commas. A job's own list replaces this one. Values are read when the schedule is installed. Names that could change execution policy are refused, and Bedrock credentials come from the switch above instead.",
         builtin: "none",
         input: Answer::Typed,
@@ -3150,6 +3339,7 @@ const ENABLED: Field = Field {
     sub: "",
     name: "enabled",
     short: "on its schedule",
+    hint: "Include this job in its schedule.",
     long: "false keeps the job in the file and off the schedule; cones still starts it by hand.",
     builtin: "true",
     input: Answer::Pick(&["-", "true", "false"]),
@@ -3391,6 +3581,8 @@ pub struct ConfigForm {
     area: Rect,
     top: usize,
     choice_top: usize,
+    /// Scroll position in the selected field's full explanation.
+    help: Option<usize>,
 }
 
 impl ConfigForm {
@@ -3497,6 +3689,7 @@ impl ConfigForm {
             area: Rect::default(),
             top: 0,
             choice_top: 0,
+            help: None,
         }
     }
 
@@ -3528,6 +3721,7 @@ impl ConfigForm {
         self.row = row;
         self.cursor = usize::MAX;
         self.choice = None;
+        self.help = None;
     }
 
     fn enter(&mut self) {
@@ -3853,6 +4047,28 @@ impl ConfigForm {
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.error = None;
         self.note = None;
+        if let Some(top) = self.help {
+            let page = self.area.height.max(1) as usize;
+            let last = self
+                .details()
+                .line_count(self.area.width.max(1))
+                .saturating_sub(page);
+            self.help = match code {
+                KeyCode::Esc | KeyCode::Left | KeyCode::F(1) | KeyCode::Char('?') => None,
+                KeyCode::Up => Some(top.saturating_sub(1)),
+                KeyCode::Down => Some((top + 1).min(last)),
+                KeyCode::PageUp => Some(top.saturating_sub(page)),
+                KeyCode::PageDown => Some((top + page).min(last)),
+                KeyCode::Home => Some(0),
+                KeyCode::End => Some(last),
+                _ => Some(top),
+            };
+            return ConfigAction::Stay;
+        }
+        if code == KeyCode::F(1) || (!self.open && code == KeyCode::Char('?')) {
+            self.help = Some(0);
+            return ConfigAction::Stay;
+        }
         if let Some(at) = self.choice {
             let last = self.choices().len().saturating_sub(1);
             let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
@@ -4026,7 +4242,7 @@ impl ConfigForm {
     fn label_width(&self, width: u16) -> usize {
         self.fields()
             .iter()
-            .map(|&i| FIELDS[i].short.len())
+            .map(|&i| FIELDS[i].short.len() + if FIELDS[i].sub.is_empty() { 0 } else { 4 })
             .max()
             .unwrap_or(0)
             .min((width as usize / 2).saturating_sub(2))
@@ -4046,11 +4262,7 @@ impl ConfigForm {
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled(
-            if self.tabs {
-                " ←→ group"
-            } else {
-                " ↑ group"
-            },
+            if self.tabs { " ←→ group" } else { "" },
             dim(),
         ));
         spans
@@ -4076,10 +4288,10 @@ impl ConfigForm {
                     if f.builtin == SYSTEM {
                         "harness default".to_owned()
                     } else {
-                        format!("{} (default)", f.word_from(f.builtin))
+                        format!("{} (default)", f.display(f.builtin))
                     }
                 } else {
-                    value.clone()
+                    f.display(value).to_owned()
                 };
                 let mut line = Line::from(fit(
                     vec![
@@ -4105,24 +4317,34 @@ impl ConfigForm {
         for i in self.fields() {
             let f = &FIELDS[i];
             if !f.sub.is_empty() && f.sub != sub {
-                lines.push(Line::from(Span::styled(format!("  {}", f.sub), dim())));
+                if !lines.is_empty() {
+                    lines.push(Line::default());
+                }
+                lines.push(Line::from(Span::styled(format!("  {}", f.sub), bold())));
             }
             sub = f.sub;
             let selected = i == self.row;
             let focused = selected && !self.tabs;
-            let label = if label_w == 0 {
+            let indent = if f.sub.is_empty() {
+                0
+            } else {
+                4.min(label_w.saturating_sub(4))
+            };
+            let field_w = label_w - indent;
+            let label = if field_w == 0 {
                 String::new()
             } else {
-                clip(f.short, label_w)
+                clip(f.short, field_w)
             };
             let mut spans = vec![
                 Span::styled(if selected { "› " } else { "  " }, lit()),
+                Span::raw(" ".repeat(indent)),
                 Span::styled(
-                    format!("{label:<label_w$}  "),
+                    format!("{label:<field_w$} "),
                     if selected { lit() } else { plain() },
                 ),
             ];
-            let room = (columns as usize).saturating_sub(label_w + 4);
+            let room = (columns as usize).saturating_sub(label_w + 3);
             spans.extend(self.control(i, room));
             let mut line = Line::from(fit(spans, columns as usize));
             if focused {
@@ -4136,6 +4358,16 @@ impl ConfigForm {
 
     fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.area = area;
+        if let Some(top) = self.help {
+            let details = self.details();
+            let last = details
+                .line_count(area.width.max(1))
+                .saturating_sub(area.height as usize);
+            let top = top.min(last);
+            frame.render_widget(details.scroll((top as u16, 0)), area);
+            self.help = Some(top);
+            return;
+        }
         let header = self.header_rows();
         let (body, at) = self.lines(area.width);
         let height = area.height.saturating_sub(header) as usize;
@@ -4176,7 +4408,7 @@ impl ConfigForm {
                 Line::from(Span::styled("config", lit())),
                 Line::from(self.tab_spans()),
                 Line::from(Span::styled(
-                    format!("{}    {position} / {count}", GROUPS[self.tab()].1),
+                    format!("[ ] group    {position}/{count}    * set"),
                     dim(),
                 )),
                 Line::default(),
@@ -4198,7 +4430,7 @@ impl ConfigForm {
             return vec![Span::styled("open picker…  →", dim())];
         }
         if matches!(f.input, Answer::Check) {
-            return vec![Span::styled("run the probe…  →", dim())];
+            return vec![Span::styled("[ check ]", button())];
         }
         if i == self.row && self.open {
             let cursor = snap(value, self.cursor);
@@ -4212,32 +4444,73 @@ impl ConfigForm {
             spans.push(Span::styled(" ]", lit()));
             return spans;
         }
+        let configured = !value.is_empty();
         let value = if value.is_empty() {
             if f.builtin == SYSTEM {
-                "default"
+                "harness default"
             } else {
                 f.builtin
             }
         } else {
             value
         };
-        let style = if i == self.row { lit() } else { plain() };
+        let value = f.display(value);
+        let style = if i == self.row {
+            lit()
+        } else if configured {
+            bold()
+        } else {
+            dim()
+        };
         let edges = if f.picks().is_some() || f.step().is_some() {
             ("‹ ", " ›")
         } else {
             ("[ ", " ]")
         };
-        let room = width.saturating_sub(4);
+        let room = width.saturating_sub(if configured { 6 } else { 4 });
         let value = if room == 0 {
             String::new()
         } else {
             clip(value, room)
         };
-        vec![
+        let mut spans = vec![
             Span::styled(edges.0, dim()),
             Span::styled(value, style),
             Span::styled(edges.1, dim()),
-        ]
+        ];
+        if configured {
+            spans.push(Span::styled(" *", lit()));
+        }
+        spans
+    }
+
+    fn default_label(&self) -> &str {
+        let f = self.field();
+        if f.builtin == SYSTEM {
+            "harness default"
+        } else {
+            f.display(f.builtin)
+        }
+    }
+
+    fn details(&self) -> Paragraph<'static> {
+        let f = self.field();
+        let mut lines = vec![
+            Line::from(Span::styled(format!("{} / {}", f.group, f.short), bold())),
+            Line::from(Span::styled(f.name, dim())),
+        ];
+        if !matches!(f.input, Answer::Check) {
+            lines.push(Line::from(format!("Default: {}", self.default_label())));
+            if !self.values[self.row].is_empty() {
+                lines.push(Line::from(format!(
+                    "Set in config: {}",
+                    f.display(&self.values[self.row])
+                )));
+            }
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(f.long));
+        Paragraph::new(lines).wrap(Wrap { trim: false })
     }
 
     fn line(&self) -> Line<'static> {
@@ -4250,49 +4523,60 @@ impl ConfigForm {
         let f = self.field();
         // A row that runs something has no value, so it has no default to name either.
         if matches!(f.input, Answer::Check) {
-            return Line::from(vec![
-                Span::styled(format!("{} › ", f.name), lit()),
-                Span::raw(f.long),
-            ]);
+            return Line::from(f.hint);
         }
-        let default = if f.builtin == SYSTEM {
-            "harness default".to_owned()
-        } else {
-            format!("default: {}", f.builtin)
-        };
         Line::from(vec![
-            Span::styled(format!("{} › ", f.name), lit()),
-            Span::styled(format!("{default} · "), dim()),
-            Span::raw(f.long),
+            Span::raw(f.hint),
+            Span::styled(
+                format!(
+                    "  {}: {}",
+                    if self.values[self.row].is_empty() {
+                        "Default"
+                    } else {
+                        "Reset"
+                    },
+                    self.default_label()
+                ),
+                dim(),
+            ),
         ])
     }
 
     fn prompt_rows(&self, width: u16) -> u16 {
-        // The selected field and its controls never move when its explanation changes.
-        self.fields()
-            .iter()
-            .map(|&i| {
-                let f = &FIELDS[i];
-                let text = format!("{} › default: {} · {}", f.name, f.builtin, f.long);
-                (Paragraph::new(text)
-                    .wrap(Wrap { trim: false })
-                    .line_count(width)
-                    + 2)
-                .clamp(3, 10) as u16
-            })
-            .max()
-            .unwrap_or(3)
+        // Two hint lines plus borders. Only a result or error can ask for more room.
+        if self.error.is_some() || self.note.is_some() {
+            (Paragraph::new(self.line())
+                .wrap(Wrap { trim: false })
+                .line_count(width)
+                + 2)
+            .clamp(4, 10) as u16
+        } else {
+            4
+        }
     }
 
     fn hints(&self) -> Line<'static> {
+        if self.help.is_some() {
+            return hints(&[("↑↓", "scroll"), ("esc", "back")]);
+        }
         if self.open {
             return hints(&[("enter", "keep"), ("esc", "revert")]);
         }
         if self.choice.is_some() {
-            return hints(&[("↑↓", "choice"), ("enter", "choose"), ("esc", "back")]);
+            return hints(&[
+                ("↑↓", "choice"),
+                ("enter", "choose"),
+                ("?", "help"),
+                ("esc", "back"),
+            ]);
         }
         if self.tabs {
-            return hints(&[("←→", "group"), ("↓", "fields"), ("esc", "done")]);
+            return hints(&[
+                ("←→", "group"),
+                ("↓", "fields"),
+                ("?", "help"),
+                ("esc", "done"),
+            ]);
         }
         let f = self.field();
         let mut keys = vec![("↑↓", "field")];
@@ -4316,6 +4600,7 @@ impl ConfigForm {
                 keys.push(("bksp", "reset"));
             }
         }
+        keys.push(("?", "help"));
         keys.push(("esc", "done"));
         let width = if self.area.width == 0 {
             60
@@ -4327,10 +4612,29 @@ impl ConfigForm {
                 keys.retain(|(key, _)| *key != omit);
             }
         }
+        if hints(&keys).width() > width {
+            for (key, label) in &mut keys {
+                if *key == "enter" {
+                    *label = "open";
+                }
+            }
+        }
         hints(&keys)
     }
 
     fn mouse(&mut self, ev: MouseEvent) -> ConfigAction {
+        if self.help.is_some() {
+            if let Some(code) = match ev.kind {
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                _ => None,
+            } {
+                for _ in 0..WHEEL_LINES {
+                    self.key(code, KeyModifiers::NONE);
+                }
+            }
+            return ConfigAction::Stay;
+        }
         if self.open {
             return ConfigAction::Stay;
         }
@@ -4376,12 +4680,15 @@ impl ConfigForm {
                         for i in self.fields() {
                             let f = &FIELDS[i];
                             if !f.sub.is_empty() && f.sub != sub {
+                                if line > 0 {
+                                    line += 1;
+                                }
                                 line += 1;
                             }
                             sub = f.sub;
                             if line == at {
                                 self.step(i);
-                                if x as usize >= self.label_width(self.area.width) + 4 {
+                                if x as usize >= self.label_width(self.area.width) + 3 {
                                     return self.key(KeyCode::Enter, KeyModifiers::NONE);
                                 }
                                 break;
@@ -4866,8 +5173,8 @@ enum Mode {
     Columns(Box<ColumnsPicker>),
     Folder(Input),
     Rename(Input),
-    /// Wrapped line offset in the usage guide, and the text its rows must contain.
-    Guide(usize, Input),
+    /// Search and scroll state for the keyboard guide.
+    Guide(Guide),
 }
 
 /// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
@@ -4875,117 +5182,122 @@ const GUIDE: &[(&str, &str)] = &[
     ("", "Rows"),
     (
         "↑ ↓",
-        "move between rows; ↑ past the first table lands on the menu, where ← → pick a button",
+        "Move between rows. Up past the first table reaches the menu.",
     ),
     (
         "enter",
-        "start the job, follow the running run, open the session or finished run as a viewer, return to a viewer that is alive; on the menu row, give the picked button's screen the keys in the pane: add folder, jobs, defaults, columns, help; on the jobs screen's last row, the wizard on a new job",
+        "Open the selected session or run, start a job, or enter a menu screen.",
     ),
     (
         "shift+enter",
-        "the same over the whole frame; ctrl+z or esc come back to the pane; with an instruction typed, a line break",
+        "Open a viewer over the full frame. While typing, insert a line break.",
     ),
     (
         "ctrl+x twice",
-        "stop the run or session; delete a job with no run in flight; hide a finished run; forget a Codex daemon thread; remove a pinned folder",
+        "Stop a session or run; remove an idle job, finished run or pinned folder.",
     ),
-    (
-        "ctrl+e",
-        "edit the selected job in the wizard, on the jobs screen",
-    ),
-    (
-        "ctrl+p",
-        "pin the selected row's folder: it keeps a row after the last session there leaves",
-    ),
-    ("ctrl+s", "regroup sessions by state or by directory"),
+    ("ctrl+e", "Edit the selected job."),
+    ("ctrl+p", "Pin the selected folder so it stays in the list."),
+    ("ctrl+s", "Group sessions by state or folder."),
     (
         "ctrl+h",
-        "show or hide session history below the main list; scroll for older sessions and enter to resume",
+        "Show or hide history. Enter resumes a saved session.",
     ),
     (
         "ctrl+f",
-        "filter rows by text; enter keeps the filter, esc clears it",
+        "Filter rows. Enter keeps the filter; esc clears it.",
     ),
-    (
-        "ctrl+n",
-        "rename the selected Claude session; the title is written where claude --resume reads it",
-    ),
+    ("ctrl+n", "Rename the selected Claude session."),
     (
         "ctrl+r",
-        "reload now; the dashboard reloads every second on its own",
+        "Refresh now. The list also refreshes every second.",
     ),
     ("", "Composer"),
     (
         "any key",
-        "types an instruction; enter starts a session with it in the selected row's directory",
+        "Type an instruction. Enter starts a session in the selected folder.",
     ),
     (
         "shift+tab",
-        "cycle Claude Code, Codex, pi, OpenCode and terminal; type a terminal command and enter to run it, or enter empty to open a shell; ctrl+z returns to the list",
+        "Choose Claude, Codex, pi, OpenCode or a terminal.",
     ),
-    (
-        "ctrl+v",
-        "paste the clipboard's image; its path is typed into the instruction",
-    ),
+    ("ctrl+v", "Paste a clipboard image into the instruction."),
     (
         "← →",
-        "move a character in the instruction, and in every prompt that takes text; with nothing typed, ← leaves the jobs screen, the folder prompt, the filter and the guide; alt+← alt+→ a word; ctrl+a ctrl+e to the ends",
+        "Move the text cursor. Alt moves by word; ctrl+a and ctrl+e jump to either end.",
     ),
     (
         "backspace",
-        "delete a character; ctrl+w alt+d a word; ctrl+u ctrl+k everything before or after the cursor",
+        "Delete a character. Ctrl+w or alt+d deletes a word; ctrl+u or ctrl+k deletes to an end.",
     ),
     ("", "Viewers"),
     (
         "tab",
-        "into the pane's viewer or a button's screen; from an agent, back to the list when its empty prompt is recognized, like ←; with text entered, tab completes in the agent; zsh returns on ← or tab with an empty command line and keeps them for editing otherwise; ctrl+z returns with a draft or from other shells; a form that uses tab itself is left with ctrl+z or esc; shift+tab inside a viewer is the client's",
+        "Focus the pane. From an empty supported prompt, return to the list.",
     ),
     (
         "ctrl+z",
-        "back to the list from a viewer or a button's screen; the viewer stays alive and tab on its row gives it the keys again",
+        "Return to the list, keeping the viewer and its draft alive.",
     ),
     (
         "ctrl+\\",
-        "from the list, the pane on or off; inside a viewer, beside the list or over the whole frame",
+        "Toggle the pane from the list; toggle fullscreen inside a viewer.",
     ),
     (
         "wheel",
-        "scrolls the pane's viewer back, focused or not; over the list with history open, moves through its rows",
+        "Scroll the viewer or the history list under the pointer.",
     ),
-    ("", "Leaving"),
-    (
-        "esc",
-        "backs out one thing at a time: an armed ctrl+x, the instruction, the jobs screen, the dashboard",
-    ),
-    (
-        "ctrl+c twice",
-        "quit from the list or an agent viewer; a terminal keeps ctrl+c to interrupt commands",
-    ),
-    (
-        "ctrl+g",
-        "this guide; what you type narrows it to the keys that match, ↑ ↓ scroll, ← or esc closes it",
-    ),
-    ("", "Columns"),
+    ("", "Config"),
+    ("[ ]", "Switch between cones, harnesses and runs."),
     (
         "↑ ↓",
-        "select a column; home, end, page up and page down navigate a short pane",
+        "Select a setting. Up from the first setting reaches the group tabs.",
     ),
     (
         "← →",
-        "switch sessions, runs, jobs and history; each table remembers its cursor",
-    ),
-    (
-        "space",
-        "show or hide the column without moving its row; changes save immediately",
-    ),
-    (
-        "[ ]",
-        "move a shown column earlier or later; the cursor follows it",
+        "Change a value immediately. Enter opens choices or text editing.",
     ),
     (
         "backspace",
-        "restore this table's defaults; esc returns to Config when opened there",
+        "Reset a setting to its default. An asterisk marks a value set in config.",
     ),
+    (
+        "?",
+        "Read the selected setting’s full explanation. F1 also works while editing.",
+    ),
+    ("", "Columns"),
+    ("↑ ↓", "Select a column."),
+    ("← →", "Switch between sessions, runs, jobs and history."),
+    (
+        "space",
+        "Show or hide the selected column. Changes save immediately.",
+    ),
+    ("[ ]", "Move a visible column earlier or later."),
+    ("backspace", "Restore this table’s default columns."),
+    ("", "Help"),
+    (
+        "/",
+        "Search this guide by shortcut, topic or section. You can also just type.",
+    ),
+    (
+        "page up",
+        "Scroll up a page. Home goes to the first result.",
+    ),
+    (
+        "page down",
+        "Scroll down a page. End goes to the last result.",
+    ),
+    ("esc", "Clear a search first, then return to the list."),
+    ("", "Leaving"),
+    (
+        "esc",
+        "Back out of the current action, prompt, screen or dashboard.",
+    ),
+    (
+        "ctrl+c twice",
+        "Quit cones. In a terminal, ctrl+c interrupts the running command.",
+    ),
+    ("ctrl+g", "Open or close this guide."),
 ];
 
 const HISTORY_PAGE: usize = 50;
@@ -8592,13 +8904,26 @@ impl App {
         self.split_active()
             || self.focus.is_some()
             || self.history.visible
-            || matches!(self.mode, Mode::Columns(_) | Mode::Config(_))
+            || matches!(
+                self.mode,
+                Mode::Columns(_) | Mode::Config(_) | Mode::Guide(_)
+            )
     }
 
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
     /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
         if self.transcript.focused {
+            return;
+        }
+        if self.focus.is_none()
+            && let Mode::Guide(guide) = &mut self.mode
+        {
+            let pasted = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+            let at = snap(&guide.find.text, guide.find.at);
+            guide.find.text.insert_str(at, &pasted);
+            guide.find.at = at + pasted.len();
+            guide.top = 0;
             return;
         }
         if text.is_empty() {
@@ -8657,6 +8982,20 @@ impl App {
     /// Clamp drags and releases outside the pane so the viewer sees buttons released.
     /// Shift-wheel or clients without mouse reporting scroll the emulator.
     fn mouse(&mut self, ev: MouseEvent) {
+        if let Mode::Guide(guide) = &mut self.mode
+            && guide.area.contains((ev.column, ev.row).into())
+        {
+            if let Some(code) = match ev.kind {
+                MouseEventKind::ScrollUp => Some(KeyCode::Up),
+                MouseEventKind::ScrollDown => Some(KeyCode::Down),
+                _ => None,
+            } {
+                for _ in 0..WHEEL_LINES {
+                    guide.key(code, KeyModifiers::NONE);
+                }
+            }
+            return;
+        }
         if let Mode::Config(form) = &mut self.mode
             && (form.area.left()..form.area.right()).contains(&ev.column)
             && (form.area.top()..form.area.bottom()).contains(&ev.row)
@@ -9166,7 +9505,7 @@ impl App {
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
             "columns" => self.open_columns(None),
-            _ => self.mode = Mode::Guide(0, Input::default()),
+            _ => self.mode = Mode::Guide(Guide::default()),
         }
     }
 
@@ -9763,7 +10102,7 @@ impl App {
             }
             Mode::Columns(form) => form.hints(),
             Mode::Config(form) => form.hints(),
-            Mode::Guide(..) => hints(&[("↑ ↓", "scroll"), ("← esc", "back")]),
+            Mode::Guide(guide) => guide.hints(),
             Mode::Folder(_) => hints(&[
                 ("enter", "add"),
                 ("tab", "complete"),
@@ -10175,21 +10514,11 @@ impl App {
                 self.apply_filter();
                 self.settle();
             }
-            Mode::Guide(top, find) => match code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Left => self.mode = Mode::Normal,
-                KeyCode::Char('g') if ctrl => self.mode = Mode::Normal,
-                KeyCode::Up => *top = top.saturating_sub(1),
-                // Scroll is clamped to entry count, not wrapped line count.
-                KeyCode::Down => {
-                    *top = (*top + 1).min(guide_rows(&find.text).len().saturating_sub(1))
+            Mode::Guide(guide) => {
+                if guide.key(code, mods) {
+                    self.mode = Mode::Normal;
                 }
-                _ => {
-                    // A narrowed guide starts at its first row again.
-                    if find.key(code, mods) {
-                        *top = 0;
-                    }
-                }
-            },
+            }
             Mode::Folder(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Left if input.text.is_empty() => self.mode = Mode::Normal,
@@ -10413,7 +10742,7 @@ impl App {
                     KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
                     KeyCode::Char('e') if ctrl => self.edit_job(),
                     KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
-                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(0, Input::default()),
+                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(Guide::default()),
                     KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('r') if ctrl => {
@@ -10637,9 +10966,9 @@ impl App {
                 spans.extend(input.spans("a title for the session"));
                 Line::from(spans)
             }
-            Mode::Guide(_, find) => {
-                let mut spans = vec![Span::styled("guide › ", Style::default().fg(ORANGE))];
-                spans.extend(find.spans("words in a key or what it does"));
+            Mode::Guide(guide) => {
+                let mut spans = vec![Span::styled("search › ", Style::default().fg(ORANGE))];
+                spans.extend(guide.find.spans("Type a key or topic"));
                 Line::from(spans)
             }
             Mode::Normal => self.composer(),
@@ -10662,7 +10991,7 @@ impl App {
             rows = rows.max(form.prompt_rows(width));
         }
         if let Mode::Config(form) = &self.mode {
-            rows = rows.max(form.prompt_rows(width));
+            rows = form.prompt_rows(width);
         }
         (input, rows)
     }
@@ -10699,10 +11028,8 @@ impl App {
             (Mode::Columns(form), _) => form.draw(frame, body),
             (Mode::Job(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Config(form), _) => form.draw(frame, body),
-            (Mode::Guide(top, find), _) => {
-                frame.render_widget(guide(*top, body.width, &find.text), body)
-            }
-            (_, "help") => frame.render_widget(guide(0, body.width, ""), body),
+            (Mode::Guide(guide), _) => guide.draw(frame, body, true),
+            (_, "help") => Guide::default().draw(frame, body, false),
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
             (_, "config") => self.config_form().draw(frame, body),
@@ -10815,8 +11142,8 @@ impl App {
             frame.render_widget(Paragraph::new(lines), list);
         } else if in_pane {
             self.draw_list(frame, list);
-        } else if let Mode::Guide(top, find) = &self.mode {
-            frame.render_widget(guide(*top, list.width, &find.text), list);
+        } else if let Mode::Guide(guide) = &mut self.mode {
+            guide.draw(frame, list, true);
         } else if let Mode::Job(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
         } else if let Mode::Config(form) = &mut self.mode {
@@ -11318,7 +11645,7 @@ mod tests {
         c.key(KeyCode::Char('['), none);
         assert_eq!(c.field().name, "activity.bound");
         c.key(KeyCode::Char(']'), none);
-        assert_eq!(c.field().name, "bedrock");
+        assert_eq!(c.field().name, "claude_enabled");
         c.key(KeyCode::Char(']'), none);
         assert_eq!(c.field().name, "harness");
         // ↑ past the first field lands on the tab row, where ←→ pick a group and ↓ enters it.
@@ -11541,15 +11868,22 @@ mod tests {
                     .filter(|s| !s.is_empty())
                     .collect::<HashSet<_>>()
                     .len();
-                assert_eq!(lines.len(), c.fields().len() + headings);
+                assert_eq!(
+                    lines
+                        .iter()
+                        .filter(|l| !l.to_string().trim().is_empty())
+                        .count(),
+                    c.fields().len() + headings
+                );
                 assert!(lines.iter().all(|l| l.width() <= width as usize));
                 assert!(!lines.iter().any(|l| l.to_string().contains(c.field().long)));
-                assert!(c.line().to_string().contains(c.field().long));
+                assert!(c.line().to_string().contains(c.field().hint));
+                assert_eq!(c.prompt_rows(width), 4);
             }
         }
         c.go(field_at("model"));
         let (lines, at) = c.lines(48);
-        assert!(lines[at].to_string().contains("alias or model id"));
+        assert!(lines[at].to_string().contains("model"));
         assert!(!lines[at].to_string().contains("sonnet"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         let (lines, _) = c.lines(48);
@@ -11649,6 +11983,116 @@ mod tests {
     }
 
     #[test]
+    fn config_display_labels_preserve_values_and_help_preserves_edits() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut form = app.config_form();
+        form.go(field_at("codex_full_access"));
+        app.mode = Mode::Config(form);
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::defaults(&app.jobs_path).codex_full_access,
+            Some(true)
+        );
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        let control = Line::from(form.control(form.row, 40)).to_string();
+        assert!(
+            control.contains("on") && control.ends_with('*'),
+            "{control}"
+        );
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        assert_eq!(config::defaults(&app.jobs_path).codex_full_access, None);
+        let Mode::Config(form) = &mut app.mode else {
+            unreachable!()
+        };
+        let control = Line::from(form.control(form.row, 40)).to_string();
+        assert!(
+            control.contains("off") && !control.contains('*'),
+            "{control}"
+        );
+        form.go(field_at("model"));
+        form.key(KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(form.open);
+        let before = form.values.clone();
+        let cursor = form.cursor;
+        form.key(KeyCode::F(1), KeyModifiers::NONE);
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(24, 7)).unwrap();
+        t.draw(|f| form.draw(f, f.area())).unwrap();
+        form.key(KeyCode::End, KeyModifiers::NONE);
+        assert!(form.help.is_some_and(|top| top > 0));
+        form.key(KeyCode::Backspace, KeyModifiers::NONE);
+        form.key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(form.open && form.help.is_none());
+        assert_eq!((form.values.clone(), form.cursor), (before, cursor));
+        form.key(KeyCode::Char('?'), KeyModifiers::NONE);
+        assert_eq!(form.values[form.row], "x?");
+    }
+
+    #[test]
+    fn guide_search_matches_topics_and_scrolls_to_the_last_wrapped_line() {
+        let matches = guide_rows("CONFIG reset");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].1, "Config");
+        assert_eq!(matches[1].0, "backspace");
+        assert!(guide_rows("config clipboard").is_empty());
+        for width in [12, 32, 60, 120] {
+            let mut guide = Guide::default();
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
+            t.draw(|f| guide.draw(f, f.area(), true)).unwrap();
+            guide.key(KeyCode::End, KeyModifiers::NONE);
+            t.draw(|f| guide.draw(f, f.area(), true)).unwrap();
+            let lines = guide_lines(width, "");
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.to_string().trim_end().chars().count() <= width as usize),
+                "{width}"
+            );
+            assert_eq!(guide.top + guide.body_height(), lines.len(), "{width}");
+            let text = rows(&t, width as usize).join("\n");
+            assert!(!text.trim().is_empty(), "{width}");
+            guide.key(KeyCode::PageUp, KeyModifiers::NONE);
+            assert!(guide.top < guide.max_scroll());
+            guide.key(KeyCode::Home, KeyModifiers::NONE);
+            assert_eq!(guide.top, 0);
+        }
+    }
+
+    #[test]
+    fn guide_search_accepts_paste_and_handles_empty_results() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        app.mode = Mode::Guide(Guide::default());
+        app.paste("config\r\nreset");
+        let Mode::Guide(guide) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(guide.find.text, "config reset");
+        assert_eq!(guide_rows(&guide.find.text).len(), 2);
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.paste("no-such-設定");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(60, 24)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 60).join("\n");
+        assert!(
+            text.contains("0 matches") && text.contains("No shortcuts match"),
+            "{text}"
+        );
+        app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(&app.mode, Mode::Guide(g) if g.find.text.is_empty() && g.top == 0));
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(&app.mode, Mode::Guide(g) if g.top > 0));
+    }
+
+    #[test]
     fn guide_keys_are_documented() {
         let docs = include_str!("../docs/dashboard.md");
         for (key, _) in super::GUIDE {
@@ -11660,7 +12104,7 @@ mod tests {
         let mut app = app(d.path());
         app.split = false;
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 0, .. })));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = t
@@ -11671,18 +12115,21 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(
-            text.contains("Viewers") && text.contains("this guide"),
+            text.contains("Viewers") && text.contains("Type to search"),
             "{text}"
         );
-        assert!(text.contains("↑ ↓ scroll · ← esc back"), "{text}");
+        assert!(
+            text.contains("↑↓ scroll · pgup/dn page · esc back"),
+            "{text}"
+        );
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(1, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 1, .. })));
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
     }
 
     #[test]
-    fn the_guides_prompt_narrows_it_and_left_closes_it() {
+    fn guide_search_keeps_cursor_editing_and_escape_clears_before_leaving() {
         let d = dir();
         let mut app = app(d.path());
         app.split = false;
@@ -11691,7 +12138,10 @@ mod tests {
         for c in "clipboard".chars() {
             assert!(!app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap());
         }
-        assert!(matches!(app.mode, Mode::Guide(0, _)), "typing rewinds it");
+        assert!(
+            matches!(app.mode, Mode::Guide(Guide { top: 0, .. })),
+            "typing rewinds it"
+        );
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 50)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = t
@@ -11702,8 +12152,14 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(text.contains("clipboard"), "{text}");
-        assert!(!text.contains("move between rows"), "no other key: {text}");
+        assert!(!text.contains("Move between rows"), "no other key: {text}");
         assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
+        assert!(matches!(&app.mode, Mode::Guide(g) if g.find.at == "clipboard".len() - 1));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Guide(g) if g.find.text == "clipboard"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::Guide(g) if g.find.text.is_empty()));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
     }
 
@@ -14238,7 +14694,11 @@ mod tests {
         );
 
         c.go(field_at("check"));
-        assert!(c.line().to_string().contains("launch probe"));
+        assert!(
+            c.line()
+                .to_string()
+                .contains("Check which harnesses can launch")
+        );
         c.key(KeyCode::Enter, none);
         let answer = c.line().to_string();
         for kind in harness::launchable() {
@@ -17264,17 +17724,21 @@ mod tests {
         assert!(app.menu_is("help"));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("move between rows"),
+            pane(&t).contains("Move between rows") && pane(&t).contains("Enter to search"),
             "hover: {}",
             pane(&t)
         );
         assert!(pane(&t).contains("guide › the keys"), "{}", pane(&t));
         assert!(left(&t).contains(&A[..8]), "the list stays: {}", left(&t));
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 0, .. })));
         assert!(app.split_active());
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(pane(&t).contains("move between rows"), "{}", pane(&t));
+        assert!(
+            pane(&t).contains("Move between rows") && pane(&t).contains("search ›"),
+            "{}",
+            pane(&t)
+        );
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
         assert!(
             !left(&t).contains("Type an instruction…"),
@@ -17282,17 +17746,17 @@ mod tests {
             left(&t)
         );
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(1, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 1, .. })));
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z leaves the guide");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("move between rows"),
+            pane(&t).contains("Move between rows"),
             "still picked: {}",
             pane(&t)
         );
         assert!(!app.key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap());
-        assert!(matches!(app.mode, Mode::Guide(0, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 0, .. })));
         assert!(!app.split_active(), "shift+enter takes the frame");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(!left(&t).contains(&A[..8]), "{}", left(&t));
@@ -17516,12 +17980,15 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 120).join("\n");
         assert!(
-            text.contains("chart scale") && !text.contains("alias or model id"),
+            text.contains("chart scale") && !text.contains("use Bedrock"),
             "{text}"
         );
-        assert!(text.contains("Seconds an armed ctrl+x waits"), "{text}");
         assert!(
-            text.contains("↑ group") && text.contains("esc done"),
+            text.contains("Time allowed for the second ctrl+x press"),
+            "{text}"
+        );
+        assert!(
+            text.contains("[ ] group") && text.contains("esc done"),
             "{text}"
         );
         let go = |app: &mut App, name| {
@@ -17747,7 +18214,7 @@ mod tests {
         assert_eq!((MENU[app.menu].0, app.caret), ("help", 0));
         app.text.clear();
         app.enter().unwrap();
-        assert!(matches!(app.mode, Mode::Guide(0, _)));
+        assert!(matches!(app.mode, Mode::Guide(Guide { top: 0, .. })));
         app.mode = Mode::Normal;
         app.step(1);
         let s = screen(&mut app, &mut t);
