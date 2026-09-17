@@ -8,7 +8,7 @@ use crate::{
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    output, runner,
+    output, runner, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -3799,6 +3799,148 @@ struct HistoryFetch {
 }
 
 #[derive(Default)]
+struct TranscriptView {
+    reader: Option<transcript::Reader>,
+    target: Option<transcript::Target>,
+    document: Option<Arc<transcript::Transcript>>,
+    error: Option<String>,
+    requested: bool,
+    since: Option<Instant>,
+    focused: bool,
+    lines: Vec<Line<'static>>,
+    width: u16,
+    height: usize,
+    scroll: usize,
+    bottom: bool,
+}
+
+impl TranscriptView {
+    fn select(&mut self, target: Option<transcript::Target>) {
+        if self.target == target {
+            return;
+        }
+        self.target = target;
+        self.document = None;
+        self.error = None;
+        self.requested = false;
+        self.since = Some(Instant::now());
+        self.focused = false;
+        self.lines.clear();
+        self.width = 0;
+        self.scroll = 0;
+        self.bottom = true;
+    }
+
+    fn max_scroll(&self) -> usize {
+        self.lines.len().saturating_sub(self.height)
+    }
+
+    fn scroll(&mut self, delta: isize) {
+        self.scroll = self
+            .scroll
+            .saturating_add_signed(delta)
+            .min(self.max_scroll());
+        self.bottom = self.scroll == self.max_scroll();
+    }
+
+    fn layout(&mut self, width: u16, height: u16) {
+        if self.width != width {
+            self.width = width;
+            self.lines.clear();
+            if let Some(doc) = &self.document {
+                if doc.earlier {
+                    self.lines
+                        .push(Line::styled("Earlier transcript text omitted", dim()));
+                    self.lines.push(Line::default());
+                }
+                for message in &doc.messages {
+                    let who = match message.role {
+                        transcript::Role::User => "you",
+                        transcript::Role::Assistant => "assistant",
+                    };
+                    let mut label = vec![Span::styled(
+                        who,
+                        if message.role == transcript::Role::User {
+                            lit()
+                        } else {
+                            bold()
+                        },
+                    )];
+                    if let Some(at) = message.at {
+                        label.push(Span::styled(
+                            format!(
+                                " · {}",
+                                at.with_timezone(&chrono::Local).format("%m-%d %H:%M")
+                            ),
+                            dim(),
+                        ));
+                    }
+                    self.lines.push(Line::from(label));
+                    self.lines.extend(transcript_wrap(&message.text, width));
+                    self.lines.push(Line::default());
+                }
+                if doc.messages.is_empty() {
+                    self.lines
+                        .push(Line::styled("No conversation text in this preview", dim()));
+                }
+            } else if let Some(error) = &self.error {
+                self.lines.extend(transcript_wrap(
+                    &format!("Preview unavailable: {}", transcript::plain(error)),
+                    width,
+                ));
+            }
+        }
+        self.height = usize::from(height);
+        self.scroll = if self.bottom {
+            self.max_scroll()
+        } else {
+            self.scroll.min(self.max_scroll())
+        };
+    }
+}
+
+/// Cache wrapped lines once per width, preserving newlines, indentation and Unicode graphemes.
+fn transcript_wrap(text: &str, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width.max(1));
+    let mut out = Vec::new();
+    for source in text.split('\n') {
+        let first = out.len();
+        let line = Line::raw(source);
+        let mut buffer = String::new();
+        let mut used = 0;
+        for g in line.styled_graphemes(Style::default()) {
+            let w = Span::raw(g.symbol).width();
+            if used + w > width && !buffer.is_empty() {
+                if g.is_whitespace() {
+                    out.push(Line::raw(buffer.trim_end().to_owned()));
+                    buffer.clear();
+                    used = 0;
+                    continue;
+                }
+                if let Some(at) = buffer
+                    .rfind(char::is_whitespace)
+                    .filter(|&i| !buffer[..i].trim().is_empty())
+                {
+                    let rest = buffer.split_off(at);
+                    out.push(Line::raw(buffer.trim_end().to_owned()));
+                    buffer = rest.trim_start().to_owned();
+                    used = Span::raw(&buffer).width();
+                } else {
+                    out.push(Line::raw(std::mem::take(&mut buffer)));
+                    used = 0;
+                }
+            }
+            buffer.push_str(g.symbol);
+            used += w;
+        }
+        if !buffer.is_empty() || out.len() == first {
+            out.push(Line::raw(buffer));
+        }
+    }
+    out
+}
+
+#[derive(Default)]
 struct HistoryView {
     visible: bool,
     reader: Option<history::Reader>,
@@ -4024,6 +4166,7 @@ struct App {
     widths: Widths,
     filter: Input,
     history: HistoryView,
+    transcript: TranscriptView,
     mode: Mode,
     status: String,
     /// Composer text; `caret` is a byte offset.
@@ -4230,6 +4373,7 @@ impl App {
             widths: Widths::new(),
             filter: Input::default(),
             history: HistoryView::default(),
+            transcript: TranscriptView::default(),
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
@@ -4441,6 +4585,120 @@ impl App {
                 _ => None,
             })
             .collect()
+    }
+
+    fn transcript_target(&self) -> Option<transcript::Target> {
+        if self.focus.is_some() || self.panel().is_some() || !self.history.visible {
+            return None;
+        }
+        let row = self.selected()?;
+        let Kind::History(key) = &row.kind else {
+            return None;
+        };
+        if self.viewer_of(&row.kind).is_some() {
+            return None;
+        }
+        let entry = self.history.row(key)?;
+        Some(transcript::Target {
+            key: key.clone(),
+            harness: entry.key.harness.clone(),
+            path: entry.transcript.clone(),
+        })
+    }
+
+    fn transcript_shown(&self) -> bool {
+        (self.split_active() || self.transcript.focused) && self.transcript_target().is_some()
+    }
+
+    fn focus_transcript(&mut self) {
+        if let Some(target) = self.transcript_target() {
+            self.transcript.select(Some(target));
+            self.transcript.focused = true;
+            self.status.clear();
+        }
+    }
+
+    fn leave_transcript(&mut self) {
+        if self.transcript.focused {
+            self.needs_clear |= !self.split_active();
+            self.transcript.focused = false;
+            self.full = false;
+        }
+    }
+
+    fn transcript_tick(&mut self) {
+        let target = if self.transcript_shown() {
+            self.transcript_target()
+        } else {
+            None
+        };
+        if self.transcript.target != target {
+            self.leave_transcript();
+            self.transcript.select(target);
+        }
+        if let Some(response) = self
+            .transcript
+            .reader
+            .as_mut()
+            .and_then(transcript::Reader::poll)
+        {
+            match response {
+                Ok(response)
+                    if self.transcript.target.as_ref() == Some(&response.target)
+                        && self.transcript.requested =>
+                {
+                    match response.result {
+                        Ok(document) => {
+                            self.transcript.document = Some(document);
+                            self.transcript.error = None;
+                        }
+                        Err(error) => self.transcript.error = Some(format!("{error:#}")),
+                    }
+                    self.transcript.width = 0;
+                    self.feedback = Some(("transcript_to_draw", Instant::now()));
+                }
+                Err(error) => {
+                    self.transcript.error = Some(format!("{error:#}"));
+                    self.transcript.requested = true;
+                    self.transcript.reader = None;
+                    self.transcript.width = 0;
+                    self.feedback = Some(("transcript_to_draw", Instant::now()));
+                }
+                _ => {}
+            }
+        }
+        let Some(target) = self.transcript.target.clone() else {
+            return;
+        };
+        if self.transcript.requested
+            || (!self.transcript.focused
+                && self
+                    .transcript
+                    .since
+                    .is_some_and(|at| at.elapsed() < REST_SPLIT))
+        {
+            return;
+        }
+        if self.transcript.reader.is_none() {
+            match transcript::Reader::new() {
+                Ok(reader) => self.transcript.reader = Some(reader),
+                Err(error) => {
+                    self.transcript.error = Some(error.to_string());
+                    self.transcript.requested = true;
+                    self.transcript.width = 0;
+                    return;
+                }
+            }
+        }
+        match self.transcript.reader.as_mut().unwrap().request(target) {
+            Ok(true) => self.transcript.requested = true,
+            Ok(false) => {}
+            Err(error) => {
+                self.transcript.error = Some(format!("{error:#}"));
+                self.transcript.requested = true;
+                self.transcript.width = 0;
+            }
+        }
     }
 
     /// Poll and queue the separate reader. No discovery or transcript IO runs here.
@@ -5290,7 +5548,7 @@ impl App {
     }
 
     fn pane_focused(&self) -> bool {
-        self.focus.is_some() || self.panel_focused()
+        self.focus.is_some() || self.transcript.focused || self.panel_focused()
     }
 
     fn config_form(&self) -> Box<ConfigForm> {
@@ -5339,6 +5597,7 @@ impl App {
 
     /// First focus promotes a speculative viewer into the live pool and enforces its cap.
     fn focus(&mut self, mut i: usize) {
+        self.transcript.focused = false;
         if std::mem::take(&mut self.viewers[i].speculative) {
             let spawned = self.viewers[i].last_focused;
             self.timing("viewer_prespawn_hit", spawned);
@@ -5836,6 +6095,9 @@ impl App {
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
     /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
+        if self.transcript.focused {
+            return;
+        }
         if text.is_empty() {
             if let Some(open) = self.focused() {
                 open.viewer.write(b"\x16");
@@ -5906,6 +6168,7 @@ impl App {
                 if self.focus.is_some() {
                     self.unfocus();
                 }
+                self.leave_transcript();
                 let delta = if ev.kind == MouseEventKind::ScrollDown {
                     1
                 } else {
@@ -5920,6 +6183,18 @@ impl App {
                 self.click(ev);
                 return;
             }
+        }
+        if self.transcript_shown()
+            && (self.pane.left()..self.pane.right()).contains(&ev.column)
+            && (self.pane.top()..self.pane.bottom()).contains(&ev.row)
+        {
+            match ev.kind {
+                MouseEventKind::Down(MouseButton::Left) => self.focus_transcript(),
+                MouseEventKind::ScrollUp => self.transcript.scroll(-(WHEEL_LINES as isize)),
+                MouseEventKind::ScrollDown => self.transcript.scroll(WHEEL_LINES as isize),
+                _ => {}
+            }
+            return;
         }
         if self.split_active() && !self.click(ev) {
             return;
@@ -5980,6 +6255,10 @@ impl App {
             && (p.left()..p.right()).contains(&ev.column)
             && (p.top()..p.bottom()).contains(&ev.row);
         if on_pane {
+            if self.transcript_target().is_some() {
+                self.focus_transcript();
+                return false;
+            }
             match self.panel() {
                 None => {
                     if self.focus.is_none()
@@ -6000,6 +6279,7 @@ impl App {
         if self.focus.is_some() {
             self.unfocus();
         }
+        self.leave_transcript();
         // A click off the pane takes the keys back from a focused panel, as esc would.
         if !on_pane && self.panel_focused() {
             if self.jobs_view {
@@ -6191,6 +6471,7 @@ impl App {
     }
 
     fn enter(&mut self) -> Result<()> {
+        self.leave_transcript();
         self.history.select_first = false;
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return Ok(());
@@ -6652,6 +6933,9 @@ impl App {
         {
             return Line::styled(action.message(), dim());
         }
+        if self.transcript.focused {
+            return self.transcript_hints();
+        }
         let prefix = (!self.filter.text.is_empty())
             .then(|| Span::styled(format!("filter: {}  ", self.filter.text), dim()));
         let mut line = if self.focus.is_some() {
@@ -6760,7 +7044,10 @@ impl App {
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                if self.shown().is_some() || self.panel_shown() {
+                if self.shown().is_some()
+                    || self.panel_shown()
+                    || self.transcript_target().is_some()
+                {
                     keys.push(("tab", "pane"));
                 }
                 keys.push(("shift+tab", "harness"));
@@ -7005,6 +7292,49 @@ impl App {
             }
             return Ok(false);
         }
+        if self.transcript.focused {
+            if ctrl && code == KeyCode::Char('c') {
+                return Ok(self.quit_press());
+            }
+            match code {
+                KeyCode::Tab | KeyCode::Esc | KeyCode::Left => self.leave_transcript(),
+                KeyCode::Char('z') if ctrl => self.leave_transcript(),
+                KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
+                KeyCode::Char('h') if ctrl => {
+                    self.leave_transcript();
+                    self.toggle_history();
+                }
+                KeyCode::Char('r') if ctrl => {
+                    self.transcript.requested = false;
+                    self.transcript.document = None;
+                    self.transcript.error = None;
+                    self.transcript.width = 0;
+                }
+                KeyCode::Up => self.transcript.scroll(-1),
+                KeyCode::Down => self.transcript.scroll(1),
+                KeyCode::PageUp => self
+                    .transcript
+                    .scroll(-(self.transcript.height.max(1) as isize)),
+                KeyCode::PageDown => self
+                    .transcript
+                    .scroll(self.transcript.height.max(1) as isize),
+                KeyCode::Home => {
+                    self.transcript.scroll = 0;
+                    self.transcript.bottom = false;
+                }
+                KeyCode::End => {
+                    self.transcript.scroll = self.transcript.max_scroll();
+                    self.transcript.bottom = true;
+                }
+                KeyCode::Enter => {
+                    self.leave_transcript();
+                    self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
+                    self.enter()?;
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         self.status.clear();
         if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
             return Ok(false);
@@ -7200,6 +7530,7 @@ impl App {
                     match self.shown() {
                         _ if !self.split => self.toggle_split(),
                         Some(i) => self.focus(i),
+                        None if self.transcript_target().is_some() => self.focus_transcript(),
                         None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
                     }
@@ -7243,6 +7574,7 @@ impl App {
                     }
                     KeyCode::Tab => match self.shown() {
                         Some(i) => self.focus(i),
+                        None if self.transcript_target().is_some() => self.focus_transcript(),
                         None if self.jobs_view => self.leave_jobs(),
                         None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
@@ -7331,6 +7663,7 @@ impl App {
                     self.draw_viewer(frame, i, inner)
                 }
                 Some(i) => self.viewers[i].viewer.resize(inner.height, inner.width),
+                None if self.transcript_shown() => self.draw_transcript(frame, inner),
                 None => {}
             }
             return;
@@ -7348,7 +7681,80 @@ impl App {
             self.draw_viewer(frame, i, pane);
             return;
         }
+        if self.transcript.focused && self.transcript_target().is_some() {
+            self.draw_transcript(frame, self.pane);
+            if area.height >= 2 {
+                let foot = Rect {
+                    y: area.bottom() - 1,
+                    height: 1,
+                    ..area
+                };
+                frame.render_widget(Paragraph::new(self.transcript_hints()), foot);
+            }
+            return;
+        }
         self.draw_dashboard(frame, area);
+    }
+
+    fn transcript_hints(&self) -> Line<'static> {
+        if self.quitting() {
+            return Line::styled(QUIT_HINT, Style::default().fg(Color::Red));
+        }
+        hints(&[
+            ("↑ ↓", "scroll"),
+            ("enter", "resume"),
+            ("tab", "list"),
+            ("ctrl+\\", "layout"),
+        ])
+    }
+
+    fn draw_transcript(&mut self, frame: &mut Frame, pane: Rect) {
+        let Some(target) = self.transcript_target() else {
+            return;
+        };
+        let title = self
+            .history
+            .row(&target.key)
+            .and_then(|e| e.title.as_deref())
+            .unwrap_or("history");
+        let header = Line::styled(clip(&transcript::plain(title), pane.width as usize), bold());
+        frame.render_widget(
+            Paragraph::new(header),
+            Rect {
+                height: pane.height.min(1),
+                ..pane
+            },
+        );
+        if pane.height < 2 {
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled("transcript · read only", dim())),
+            Rect {
+                y: pane.y + 1,
+                height: 1,
+                ..pane
+            },
+        );
+        let body = Rect {
+            y: pane.y + 2,
+            height: pane.height.saturating_sub(2),
+            ..pane
+        };
+        // Drawing may precede the next tick after a key or click. Never reuse another row's text.
+        if self.transcript.target.as_ref() != Some(&target) {
+            return;
+        }
+        self.transcript.layout(body.width, body.height);
+        let lines: Vec<_> = self
+            .transcript
+            .lines
+            .iter()
+            .skip(self.transcript.scroll)
+            .take(usize::from(body.height))
+            .cloned()
+            .collect();
+        frame.render_widget(Paragraph::new(lines), body);
     }
 
     /// Draw the emulator cursor only when focused and at the live scroll position.
@@ -7531,7 +7937,7 @@ impl App {
             self.mode_line()
         };
         // Hide the composer cursor while the pane has focus.
-        if self.focus.is_some() || (in_pane && self.panel_focused()) {
+        if self.focus.is_some() || self.transcript.focused || (in_pane && self.panel_focused()) {
             for span in &mut line.spans {
                 span.style = span.style.remove_modifier(Modifier::REVERSED);
             }
@@ -7758,6 +8164,7 @@ pub fn run(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path, debug: boo
             app.history_tick();
             let dirty = app.pump();
             app.prespawn_tick();
+            app.transcript_tick();
             app.expire();
             let wants_mouse = app.wants_mouse();
             if wants_mouse != app.mouse_capture {
@@ -9638,6 +10045,235 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn transcript_until(
+        app: &mut App,
+        terminal: &mut Terminal<ratatui::backend::TestBackend>,
+        done: impl Fn(&App) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            app.history_tick();
+            app.transcript_tick();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            if done(app) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "preview did not settle: {:?}",
+                app.transcript.error
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn pane_text(app: &App, terminal: &Terminal<ratatui::backend::TestBackend>) -> String {
+        let mut text = String::new();
+        for y in app.pane.top()..app.pane.bottom() {
+            for x in app.pane.left()..app.pane.right() {
+                if let Some(cell) = terminal.backend().buffer().cell((x, y)) {
+                    text.push_str(cell.symbol());
+                }
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn transcript_selection_reads_history_without_starting_or_changing_a_session() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        let before = fs::read(&path).unwrap();
+        let summary = app.header_summary().to_string();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(text.contains("transcript · read only"), "{text}");
+        assert!(
+            text.contains("old session 001") && text.contains("reply 1"),
+            "{text}"
+        );
+        assert!(app.viewers.is_empty() && app.opening.is_none());
+        assert!(app.focus.is_none() && !app.transcript.focused);
+        assert_eq!(app.enter_label(), "resume");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(app.header_summary().to_string(), summary);
+    }
+
+    #[test]
+    fn transcript_never_displays_the_previous_rows_text_even_before_the_next_tick() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(pane_text(&app, &terminal).contains("reply 1"));
+        app.step(1);
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!pane_text(&app, &terminal).contains("reply 1"));
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.messages.iter().any(|m| m.text == "reply 0"))
+        });
+        assert!(pane_text(&app, &terminal).contains("reply 0"));
+        app.toggle_history();
+        app.transcript_tick();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(app.transcript.document.is_none());
+        assert!(!pane_text(&app, &terminal).contains("reply 0"));
+    }
+
+    #[test]
+    fn transcript_focus_scrolls_read_only_and_enter_returns_to_an_existing_native_viewer() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let row_key = app.history.rows[0].key.clone();
+        let path = app.history.rows[0].entry.transcript.clone();
+        let messages: String = (0..30).map(|i| {
+            format!("{}\n", serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":format!("preview line {i:02}")}]}}))
+        }).collect();
+        fs::write(&path, messages).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(pane_text(&app, &terminal).contains("preview line 29"));
+        let selected = key(&app);
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.focused && app.focus.is_none());
+        app.key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(pane_text(&app, &terminal).contains("preview line 00"));
+        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        app.paste("do not run this");
+        assert!(app.text.is_empty() && app.opening.is_none());
+        assert_eq!(key(&app), selected);
+        app.key(KeyCode::PageDown, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.scroll > 0);
+        assert!(app.hint_line().to_string().contains("scroll"));
+        app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.split_active() && app.transcript.focused);
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.transcript.focused);
+        app.split = true;
+        terminal.draw(|f| app.draw(f)).unwrap();
+        app.focus_transcript();
+        app.viewers.push(viewer_open(&row_key, "attach", "NATIVE"));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.transcript.focused);
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(
+            app.viewers.len(),
+            1,
+            "returning does not start another native client"
+        );
+    }
+
+    #[test]
+    fn transcript_wheel_scrolls_without_moving_the_list_selection() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        fs::write(path, format!("{}\n",serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":(0..60).map(|i| format!("line {i}\n")).collect::<String>()}]}}))).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let before = app.transcript.scroll;
+        let selected = key(&app);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: app.pane.x + 1,
+            row: app.pane.y + 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.transcript.scroll < before);
+        assert_eq!(key(&app), selected);
+        assert!(!app.transcript.focused);
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: app.pane.x + 1,
+            row: app.pane.y + 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.transcript.focused);
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.transcript.focused);
+    }
+
+    #[test]
+    fn transcript_preview_is_not_a_fallback_for_live_rows_or_an_unpainted_viewer() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let entry = app.history.rows[0].entry.clone();
+        let row_key = app.history.rows[0].key.clone();
+        app.viewers.push(silent_open(&row_key));
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(!pane_text(&app, &terminal).contains("reply 0"));
+        assert!(!pane_text(&app, &terminal).contains("read only"));
+        app.transcript_tick();
+        assert!(app.transcript.document.is_none());
+        app.viewers.clear();
+        let mut live = history_session(&entry);
+        live.kind = Some("interactive".into());
+        live.state = "idle".into();
+        app.data.sessions.push(live);
+        app.rebuild();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::Session(..)))
+            .unwrap();
+        app.transcript_tick();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(app.transcript_target().is_none());
+        assert!(!pane_text(&app, &terminal).contains("reply 0"));
+        assert!(!pane_text(&app, &terminal).contains("read only"));
+    }
+
+    #[test]
+    fn transcript_failure_does_not_clear_a_stale_live_read_and_can_be_reloaded() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        let path = app.history.rows[0].entry.transcript.clone();
+        let bytes = fs::read(&path).unwrap();
+        fs::remove_file(&path).unwrap();
+        app.stale = true;
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.error.is_some());
+        assert!(app.stale && app.header_summary().to_string().contains("! stale"));
+        assert!(pane_text(&app, &terminal).contains("Preview unavailable"));
+        fs::write(path, bytes).unwrap();
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(app.stale);
+        assert!(pane_text(&app, &terminal).contains("reply 0"));
+        assert!(app.viewers.is_empty() && app.opening.is_none());
+    }
+
+    #[test]
+    fn transcript_wrapping_preserves_newlines_indent_and_unicode_graphemes() {
+        let text = |s, w| {
+            transcript_wrap(s, w)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(text("one two three", 7), ["one two", "three"]);
+        assert_eq!(text("  let x = 1;\n\nend", 30), ["  let x = 1;", "", "end"]);
+        let wrapped = transcript_wrap("中中a\u{0301}b", 4);
+        assert_eq!(
+            wrapped.iter().map(Line::to_string).collect::<Vec<_>>(),
+            ["中中", "a\u{0301}b"]
+        );
+        assert!(wrapped.iter().all(|line| line.width() <= 4));
     }
 
     fn app(dir: &Path) -> App {

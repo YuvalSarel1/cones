@@ -14,7 +14,7 @@ Back to the [README](../README.md). See [harness.md](harness.md) for session sou
 | Jobs | A separate screen with enabled marker, harness, last run status and schedule, name, model, last run age and directory. A `new job` row opens the wizard. |
 | Runs | Newest 200 visible runs: icon, job, status, fired time, duration, dollars and reason. |
 | History | `ctrl+h` shows resumable sessions below the main list, newest recorded activity first. More rows load as you scroll. |
-| Viewer | A live terminal screen for the focused or selected session. |
+| Viewer | A live terminal screen, or a read-only transcript preview for the selected historical session. |
 | Composer | Instruction for a new session, followed by context-sensitive key hints or the last action's result. |
 
 Sessions group by directory, sorted without case, or by state with input requests first. Within each group, sessions sort by reported start time, oldest first; unknown starts sort last, then by id. Pinned empty folders keep a row with their git branch and tree state.
@@ -33,7 +33,7 @@ Column headers are dim and unselectable. Widths only grow during a dashboard ses
 
 The activity bar advances every 160 ms, holding three frames at each endpoint. Harness marks and the mascot stay still. The coordinator's title is orange with a `★` before it; the table never spells the word out. Without a `state` column there is no slot before the title; a session that requires its own terminal says so in the footer.
 
-The pane shows live viewers only. `enter` on a finished run opens its recorded output in a viewer of its own; the dashboard has no transcript details pane.
+Live rows show only their own viewers. Historical rows have a read-only transcript preview; `enter` resumes their session in a native viewer. Finished runs open their recorded output in a viewer of their own.
 
 ## Columns
 
@@ -154,7 +154,9 @@ History includes Claude transcripts, Codex rollouts, including archived threads,
 
 The list loads pages of 50. Arrows, page-up/down and the wheel over the list reach older rows without wrapping at the end. Filtering searches indexed history beyond the loaded pages. A separate worker indexes metadata and loads detailed columns only for visible rows. `ctrl+r`, or hiding and reopening history, refreshes its snapshot; the live fleet's one-second refresh does not scan history.
 
-With an empty composer, `enter` resumes the selected conversation in its recorded directory and native home. Archived Codex threads are unarchived by Codex when opened. The same viewer is reused when the resumed session appears in the live list. History offers no delete action. A history row's pane stays blank until its viewer is opened and paints; browsing history starts no harness clients.
+Selecting a history row loads its recent user and assistant messages in the pane after a short cursor rest. The pane says `transcript · read only`; tool results, thinking blocks and injected instruction records are omitted. The preview starts at the latest text. The wheel scrolls it without moving the list selection. `tab` or a pane click gives it focus; arrows, page-up/down and home/end scroll, and `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting into this preview are ignored. `ctrl+r` while focused rereads it, and `ctrl+\` switches its layout.
+
+With an empty composer, `enter` resumes the selected conversation in its recorded directory and native home, including from the focused preview. Archived Codex threads are unarchived by Codex when opened. The same viewer is reused when the resumed session appears in the live list. History offers no delete action. Browsing and scrolling the transcript starts no harness clients.
 
 ### Text editing
 
@@ -176,7 +178,7 @@ Words are runs of non-space characters. macOS terminal bindings usually translat
 
 Viewers are harness clients on private ptys, rendered by a vt100 emulator. Claude background sessions and Codex daemon threads can be opened; sessions marked `own terminal` cannot. A composer pi runs in its viewer and ends with it. A finished run opens its saved session; a running run opens its log. The [kinds table](harness.md#kinds) covers each case.
 
-The pane shows the focused viewer, otherwise the selected session's viewer. A session never displays another session's screen. Non-session rows can retain the last focused viewer, while menu rows preview their selected button. A pane stays blank until its live viewer paints; it never substitutes transcript text.
+The pane shows the focused viewer, otherwise the selected session's viewer. A session never displays another session's screen. Non-session rows can retain the last focused viewer, while menu rows preview their selected button. Live rows stay blank until their viewer paints, including sessions in their own terminals. Historical rows are the explicit exception: they show a read-only transcript until a native viewer is opened. Once opened, that viewer takes the pane and the transcript does not substitute for its startup screen.
 
 `enter`, `tab` or a pane click gives a viewer focus. `tab` or `ctrl+z` returns to the list while it continues parsing output. Clicking a list row selects it and takes focus back. `ctrl+\` changes split/full-frame layout persistently; `shift+enter` supplies a temporary full-frame view. A split viewer keeps the same dimensions across focus changes, and its hints go in the dashboard's own hint row so the harness keeps its bottom status row, permission mode and all. A full-frame viewer reserves its last row for a strip showing its title, fleet counts, input requests elsewhere and return keys.
 

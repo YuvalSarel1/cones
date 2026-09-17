@@ -10,6 +10,7 @@ pub mod pi;
 #[cfg(target_os = "macos")]
 mod process_info;
 pub mod runner;
+pub mod transcript;
 pub mod tui;
 mod viewer;
 

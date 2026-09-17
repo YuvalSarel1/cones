@@ -878,15 +878,22 @@ pub(crate) fn prompt_of(path: &Path) -> Option<String> {
 
 pub fn prompt(line: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(line).ok()?;
+    user_texts(&v).find_map(crate::fleet::headline)
+}
+
+/// The UI's actual user message, excluding model-history instructions and skills.
+pub fn user_texts(v: &Value) -> impl Iterator<Item = &str> {
     let item = &v["payload"]["item"];
-    if v["type"] != "event_msg" || item["type"] != "UserMessage" {
-        return None;
-    }
+    let legacy = (v["type"] == "event_msg" && v["payload"]["type"] == "user_message")
+        .then(|| v["payload"]["message"].as_str())
+        .flatten();
     item["content"]
-        .as_array()?
-        .iter()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(move |_| v["type"] == "event_msg" && item["type"] == "UserMessage")
         .filter_map(|c| c["text"].as_str())
-        .find_map(crate::fleet::headline)
+        .chain(legacy)
 }
 
 /// Fold appended bytes after the first full read, retaining earlier state.
