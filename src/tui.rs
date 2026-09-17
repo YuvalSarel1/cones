@@ -8694,6 +8694,13 @@ impl App {
                     .then_some(entry.started)
                     .flatten()
                     .map(|at| (entry.cwd.clone(), at));
+                // A forgotten row is hidden by id, which would keep the revived session out of the
+                // list: the client defers its row to the daemon and the daemon's row stays hidden.
+                if let Err(e) =
+                    Ledger::new(&self.state).and_then(|l| l.unhide(&entry.key.session_id))
+                {
+                    self.status = format!("could not restore this session's row: {e:#}");
+                }
                 self.history.opened.insert(key.clone(), entry.clone());
                 self.prepare_viewer(what, key, record, None, move || history_command(&entry));
             }
@@ -12496,6 +12503,11 @@ mod tests {
         );
         Ledger::new(&state).unwrap().hide("dddd").unwrap();
         assert_eq!(ids(), [A], "a forgotten thread stays gone on a restart");
+        // Reviving it from history clears the hidden id, so the lock's row returns at once.
+        Ledger::new(&state).unwrap().unhide("dddd").unwrap();
+        assert_eq!(ids(), ["dddd", A], "a revived thread is in the list again");
+        Ledger::new(&state).unwrap().hide("dddd").unwrap();
+        assert_eq!(ids(), [A]);
         // A resume records the thread after its first turn, which brings the row back.
         codex::remember(
             &state,
@@ -12814,6 +12826,27 @@ mod tests {
                 .iter()
                 .all(|r| r.entry.key.session_id != id)
         );
+    }
+
+    /// Forgetting a row hides its id for good, so a revived session would keep a viewer and no
+    /// row. Only a deliberate revive clears it: a peek never reaches this path.
+    #[test]
+    fn reviving_a_forgotten_session_clears_its_hidden_id() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let id = app.history.rows[0].entry.key.session_id.clone();
+        let ledger = Ledger::new(&app.state).unwrap();
+        ledger.hide(&id).unwrap();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::History(_)))
+            .unwrap();
+        app.enter().unwrap();
+        assert!(app.opening.is_some(), "the revive is under way");
+        assert!(!ledger.hidden().unwrap().contains(&id));
+        assert!(app.cancel_opening());
     }
 
     #[test]

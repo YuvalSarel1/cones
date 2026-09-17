@@ -253,6 +253,19 @@ impl Ledger {
         writeln!(f, "{run_id}")?;
         Ok(())
     }
+    /// Undo `hide`. Reviving a session is the un-forget: its row belongs in the list again.
+    pub fn unhide(&self, run_id: &str) -> Result<()> {
+        let hidden = self.hidden()?;
+        if !hidden.contains(run_id) {
+            return Ok(());
+        }
+        let mut f = private_file(&self.state.join("hidden"))?;
+        f.set_len(0)?;
+        for id in hidden.iter().filter(|id| *id != run_id) {
+            writeln!(f, "{id}")?;
+        }
+        Ok(())
+    }
     pub fn hidden(&self) -> Result<std::collections::BTreeSet<String>> {
         Ok(std::fs::read_to_string(self.state.join("hidden"))
             .unwrap_or_default()
