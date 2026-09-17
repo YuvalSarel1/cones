@@ -187,7 +187,7 @@ All viewers close with the dashboard. Whether that also ends the session depends
 | Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. |
 | Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
 
-OpenCode keeps Tab and Left for its native controls; Ctrl+Z returns to the list. Its empty-editor shape is not assumed.
+OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
 
 Typing returns to the live screen. Terminal text selection may need the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
 

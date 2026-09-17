@@ -6217,10 +6217,10 @@ impl Open {
     fn return_key(&self) -> &'static str {
         if self.returns_to_list(KeyCode::Tab, KeyModifiers::NONE) {
             "tab"
-        } else if self.returns_to_list(KeyCode::Char('z'), KeyModifiers::CONTROL) {
-            "ctrl+z"
-        } else {
+        } else if self.returns_to_list(KeyCode::Left, KeyModifiers::NONE) {
             "←"
+        } else {
+            "ctrl+z"
         }
     }
 }
@@ -8766,7 +8766,17 @@ impl App {
         if open.record.is_some() && !open.recorded {
             self.record_codex(&open.key);
         }
+        let opencode_pid = (open.harness == Some(HarnessKind::Opencode)).then(|| open.viewer.pid());
         drop(open);
+        if let Some(pid) = opencode_pid {
+            // This native client has ended with its viewer. Remove its reported
+            // identity before history queries can exclude the saved conversation.
+            self.data
+                .sessions
+                .retain(|s| s.harness != "opencode" || s.pid != Some(pid));
+            self.rebuild_with_reason("native_client_closed");
+            self.invalidate();
+        }
         closed["duration_ms"] = json!(closing.elapsed().as_secs_f64() * 1000.0);
         self.event("debug", "viewer.closed", || closed);
     }
