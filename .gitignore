@@ -5,3 +5,4 @@
 .DS_Store
 /.claude/
 /assets/__pycache__/
+/scripts/__pycache__/
