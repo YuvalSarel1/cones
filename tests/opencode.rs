@@ -392,6 +392,30 @@ fn checkpointed_databases_with_uri_characters_remain_read_only() {
     );
 }
 
+/// A launched or resumed session must not report the terminal and the agent session cones itself
+/// was started from: an inherited editor socket sends its IDE traffic to a window it does not run
+/// in, and an inherited terminal name makes it offer keys the viewer cannot deliver. A machine
+/// preference is not identity, so it survives.
+fn host_identity_is_not_inherited(command: &Command) {
+    let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+    for name in [
+        "TERM_PROGRAM",
+        "CLAUDE_CODE_SSE_PORT",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDECODE",
+    ] {
+        assert_eq!(
+            env.get(std::ffi::OsStr::new(name)),
+            Some(&None),
+            "{name} must be removed, not passed on: {env:?}"
+        );
+    }
+    assert!(
+        !env.contains_key(std::ffi::OsStr::new("CLAUDE_CODE_NO_FLICKER")),
+        "a machine-wide preference keeps being inherited: {env:?}"
+    );
+}
+
 #[test]
 fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
     const CHILD: &str = "CONES_OPENCODE_COMMAND_FIXTURE";
@@ -408,6 +432,7 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
             panic!("OpenCode is a terminal client")
         };
         assert_eq!(command.get_program(), home.join(".opencode/bin/opencode"));
+        host_identity_is_not_inherited(&command);
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             ["--prompt=--auto literal"]
@@ -442,6 +467,7 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
             env[std::ffi::OsStr::new("XDG_DATA_HOME")],
             Some(home.join("native").as_os_str())
         );
+        host_identity_is_not_inherited(&command);
         return;
     }
     let (dir, _) = fixture();
@@ -459,6 +485,16 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
         ])
         .env(CHILD, dir.path())
         .env("HOME", dir.path())
+        // The terminal cones is started from may belong to an editor and to a live agent
+        // session; a pane belongs to neither, and a rendering preference belongs to the machine.
+        .env("TERM_PROGRAM", "vscode")
+        .env("CLAUDE_CODE_SSE_PORT", "65471")
+        .env(
+            "CLAUDE_CODE_SESSION_ID",
+            "11111111-1111-4111-8111-111111111111",
+        )
+        .env("CLAUDECODE", "1")
+        .env("CLAUDE_CODE_NO_FLICKER", "1")
         .output()
         .unwrap();
     assert!(

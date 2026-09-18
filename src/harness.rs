@@ -8,7 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
@@ -105,6 +105,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
         policy.aws_profile.as_deref(),
         policy.aws_region.as_deref(),
     );
+    drop_host_identity(c);
     if launch.stdin_prompt && !prompt.is_empty() {
         let Start::Foreground(command) = start else {
             bail!("stdin prompts require a terminal harness");
@@ -231,7 +232,48 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
             policy.aws_region.as_deref(),
         );
     }
+    drop_host_identity(&mut command);
     Ok(Start::Foreground(command))
+}
+
+/// The environment of the terminal cones was started from names that terminal and, when cones
+/// itself was launched from inside an agent, that agent's live session: its IDE socket, its
+/// messaging socket, its identifiers and the provider its own launcher chose. A pane is neither,
+/// so passing those on makes a session report a host it does not run in. A machine-wide
+/// preference is not identity and stays, and a value cones set on this command is this launch's
+/// own policy and always wins.
+const HOST_IDENTITY: [&str; 14] = [
+    "AI_AGENT",
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SSE_PORT",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_EFFORT",
+    "CLAUDE_JOB_DIR",
+    "CLAUDE_PID",
+];
+
+/// `TERM_PROGRAM` decides which terminal a native CLI adapts its keys to, and the viewer answers
+/// for none of them: it encodes shift+enter as a plain return, so an inherited name makes a CLI
+/// offer a newline binding the pane cannot deliver.
+const HOST_TERMINAL: [&str; 2] = ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+
+fn drop_host_identity(command: &mut std::process::Command) {
+    let ours: Vec<OsString> = command
+        .get_envs()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    for name in HOST_IDENTITY.iter().chain(&HOST_TERMINAL) {
+        if !ours.iter().any(|ours| ours == OsStr::new(name)) {
+            command.env_remove(name);
+        }
+    }
 }
 
 /// AWS_PROFILE and AWS_REGION go to every harness: each resolves AWS through the same
@@ -394,7 +436,7 @@ pub fn join(
     speculative: bool,
 ) -> Result<std::process::Command> {
     let spec = by_name(&session.harness).context("unknown session harness")?;
-    match spec.session(session.kind.as_deref()).join {
+    let mut command = match spec.session(session.kind.as_deref()).join {
         spec::Join::Unavailable => bail!(
             "{} runs in its own terminal and cannot be joined from here",
             spec.name
@@ -410,7 +452,9 @@ pub fn join(
                 speculative,
             )
         }
-    }
+    }?;
+    drop_host_identity(&mut command);
+    Ok(command)
 }
 
 pub fn can_peek(session: &crate::fleet::Session, home: &Path) -> bool {
@@ -473,6 +517,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
         }
     };
     spec.home.set_command_home(&mut command, &entry.key.home);
+    drop_host_identity(&mut command);
     if entry.archived && spec.commands.resume_handler != spec::Resume::SessionId {
         check_operation(spec, &spec.operations.unarchive, "unarchive")?;
         ensure!(
@@ -1192,6 +1237,27 @@ mod tests {
             );
             assert_eq!(switch(&env(None)), None, "unset passes no switch at all");
         }
+    }
+
+    #[test]
+    fn a_configured_provider_outranks_the_identity_a_launch_drops() {
+        let launch = spec(HarnessKind::Claude)
+            .launch
+            .as_ref()
+            .expect("claude launches");
+        let switch = |bedrock| {
+            let mut c = std::process::Command::new("true");
+            provider_env(&mut c, launch, bedrock, None, None);
+            drop_host_identity(&mut c);
+            c.get_envs()
+                .find(|(name, _)| *name == OsStr::new("CLAUDE_CODE_USE_BEDROCK"))
+                .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+        };
+        // The config chose the provider, so the pane keeps it; with nothing configured the
+        // launcher's own switch is identity like the rest and the pane starts without it.
+        assert_eq!(switch(Some(true)), Some(Some("1".to_owned())));
+        assert_eq!(switch(Some(false)), Some(None));
+        assert_eq!(switch(None), Some(None));
     }
 
     #[test]
