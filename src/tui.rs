@@ -8188,6 +8188,16 @@ impl App {
             })
         });
         let mut replaced = self.reconcile_launches(&mut data);
+        // A revived session is live from the moment its client starts, while the harness can take
+        // minutes to report it. Stand in for its row so it joins the live list at once instead of
+        // sitting in history, and the loop below hands the row over when discovery catches up.
+        for (key, entry) in &self.history.opened {
+            if self.viewers.iter().any(|o| &o.key == key)
+                && !data.sessions.iter().any(|s| self.history_matches(key, s))
+            {
+                data.sessions.push(history_session(entry));
+            }
+        }
         for key in self.history.opened.keys() {
             if let Some(session) = data
                 .sessions
@@ -9316,7 +9326,14 @@ impl App {
         if id.starts_with("starting:") {
             return Err("launch_pending");
         }
-        if self.viewer_index(id).is_some() {
+        // A revived session's viewer is keyed by the history row it came from, so ask which
+        // viewer the row owns rather than the id alone: peeking one would attach a second client
+        // beside the live one and show it in the pane.
+        if self
+            .selected()
+            .and_then(|r| self.viewer_of(&r.kind))
+            .is_some()
+        {
             return Err("viewer_already_open");
         }
         if self.stopping.iter().any(|a| &a.id == id) {
@@ -15605,6 +15622,40 @@ mod tests {
             app.toggle_history();
             assert_eq!(app.viewer_of(&app.selected().unwrap().kind), Some(0));
         }
+    }
+
+    #[test]
+    fn a_revived_session_joins_the_live_list_before_the_harness_reports_it_and_is_not_peeked() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let entry = app.history.rows[0].entry.clone();
+        let viewer_key = history_key(&entry.key);
+        app.history.opened.insert(viewer_key.clone(), entry.clone());
+        app.viewers
+            .push(viewer_open(&viewer_key, "claude", "RESUMED"));
+        // The harness reports nothing yet: the row must still be the live one.
+        app.apply(Data::load(&app.jobs_path, &app.state, &app.claude).unwrap());
+        let id = entry.key.session_id.clone();
+        assert!(!app.rows.iter().any(|r| matches!(r.kind, Kind::History(_))));
+        let at = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(id.as_str()))
+            .expect("a live session row");
+        assert!(matches!(app.rows[app.visible[at]].kind, Kind::Session(..)));
+        app.cursor = at;
+        assert_eq!(key(&app).as_deref(), Some(id.as_str()));
+        assert_eq!(app.viewer_of(&app.selected().unwrap().kind), Some(0));
+        assert_eq!(app.shown(), Some(0));
+        app.history.select_first = false;
+        app.rest = Some((id.clone(), Instant::now() - Duration::from_secs(60)));
+        assert_eq!(app.prespawn_decision(), Err("viewer_already_open"));
+        // Closing the viewer gives the row back to the harness's own reporting.
+        app.viewers.clear();
+        app.history_tick();
+        app.apply(Data::load(&app.jobs_path, &app.state, &app.claude).unwrap());
+        assert!(!app.rows.iter().any(|r| r.kind.key() == Some(id.as_str())));
     }
 
     #[test]
