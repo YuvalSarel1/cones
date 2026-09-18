@@ -256,6 +256,9 @@ fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
 pub fn process_table(ps: &str) -> Result<String> {
     let out = Command::new(ps)
         .env("TZ", "UTC")
+        // lstart is locale text: under a non-English LANG ps prints its own month names,
+        // which never match the start a harness recorded, so every live session is dropped.
+        .env("LC_ALL", "C")
         .args(["-axww", "-o", "pid=,lstart=,command="])
         .stdin(Stdio::null())
         .output()
@@ -387,6 +390,9 @@ fn starts_from(ps: &str, pids: impl Iterator<Item = u64>) -> Result<HashMap<u32,
     }
     let out = Command::new(ps)
         .env("TZ", "UTC")
+        // lstart is locale text: under a non-English LANG ps prints its own month names,
+        // which never match the start a harness recorded, so every live session is dropped.
+        .env("LC_ALL", "C")
         .args(["-o", "pid=,lstart=", "-p", &list])
         .stdin(Stdio::null())
         .output()
@@ -2014,6 +2020,33 @@ mod tests {
         let me = std::process::id();
         assert!(own_home_processes("/bin/ps", kind, &[me]).contains(&me));
         assert!(own_home_processes("/bin/ps", kind, &[1]).contains(&1));
+    }
+
+    /// `lstart` is locale text. Under a non-English `LANG` ps prints its own month names, so
+    /// `Fri Sep 18 17:07:16 2026` arrives as something the harness's recorded start can never
+    /// equal, `session` drops every row and the whole fleet reads empty. The suite itself runs
+    /// under C, so only a ps that reports the locale it was handed can catch this.
+    #[test]
+    fn the_process_table_is_read_in_one_locale_whatever_the_machine_speaks() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ps = dir.path().join("ps");
+        fs::write(&ps, "#!/bin/sh\necho \"1 $LC_ALL $TZ\"\n").unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+        let ps = ps.to_str().unwrap();
+        assert_eq!(
+            process_table(ps).unwrap().trim(),
+            "1 C UTC",
+            "the whole table is read in one locale and one timezone"
+        );
+        assert_eq!(
+            starts_from(ps, [1u64].into_iter())
+                .unwrap()
+                .get(&1)
+                .map(String::as_str),
+            Some("C UTC"),
+            "and so are the starts of named pids"
+        );
     }
 
     // An empty table is how a pid is reported dead, so a table that could not be read must not
