@@ -895,6 +895,11 @@ pub(crate) fn thread_rows_observed(
         }
     }
     ids.sort_by(|a, b| a.0.cmp(&b.0));
+    // A daemon-held thread has no process of its own: the daemon runs it, so the kernel charges
+    // its work there. Threads the same daemon holds all report that one process.
+    let held = daemon
+        .filter(|_| ids.iter().any(|(_, record)| record.is_none()))
+        .and_then(|pid| crate::fleet::usage(std::iter::once(pid)).remove(&pid));
     ids.into_iter()
         .filter(|(id, _)| !live.iter().any(|s| s.session_id == *id))
         .filter_map(|(id, record)| {
@@ -933,7 +938,8 @@ pub(crate) fn thread_rows_observed(
                 last_activity: tail.last_activity,
                 model: tail.model,
                 effort: tail.effort,
-                usage: None,
+                // A saved launch the daemon no longer holds is detached, and reports no process.
+                usage: record.is_none().then_some(held).flatten(),
                 started: meta
                     .as_ref()
                     .map(|m| m.started)
@@ -1479,6 +1485,10 @@ mod tests {
             "two launches in the same folder stay two sessions, without codex-PID rows"
         );
         assert!(live.iter().all(|s| s.kind.as_deref() == Some("daemon")));
+        assert!(
+            live[0].usage.is_some_and(|u| u.rss > 0) && live[0].usage == live[1].usage,
+            "threads one daemon holds report that daemon's process, the one the kernel charges"
+        );
         assert_eq!(
             live.iter().map(|s| s.started).collect::<Vec<_>>(),
             fleet(&[]).iter().map(|s| s.started).collect::<Vec<_>>(),
@@ -1624,6 +1634,10 @@ mod tests {
         let rows = thread_rows(&home, &state, &[], &BTreeSet::new());
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind.as_deref(), Some("daemon"));
+        assert_eq!(
+            rows[0].usage, None,
+            "a saved launch no daemon holds has no process to report"
+        );
         assert_eq!(
             (
                 rows[0].tokens_in,

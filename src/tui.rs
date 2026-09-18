@@ -2045,7 +2045,11 @@ fn fleet_rows_observed(
     }
     let usage = fleet::usage(out.iter().filter_map(|s| s.pid));
     for s in &mut out {
-        s.usage = s.pid.and_then(|pid| usage.get(&pid)).copied();
+        // A row that already named the process running it, as a daemon-held Codex thread does,
+        // keeps that read.
+        if let Some(u) = s.pid.and_then(|pid| usage.get(&pid)) {
+            s.usage = Some(*u);
+        }
     }
     fleet::sort(&mut out);
     Ok(out)
@@ -5542,8 +5546,8 @@ fn column_help(name: &str) -> &'static str {
         "harness" => "Harness name beside its permanent icon.",
         "model" => "Model reported by the harness.",
         "effort" => "Reasoning effort reported by the harness.",
-        "cpu" => "Processor share of the session's own process.",
-        "memory" => "Resident memory of the session's own process.",
+        "cpu" => "Processor share of the process running the session.",
+        "memory" => "Resident memory of the process running the session.",
         "context" => "Reported context usage and window.",
         "tokens" => "Reported input and output tokens.",
         "cost" => "Session or run cost; ~ marks an estimate.",
