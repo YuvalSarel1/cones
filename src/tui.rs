@@ -29,7 +29,7 @@ use ratatui::{
     },
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 use serde_json::{Value, json};
@@ -3986,8 +3986,8 @@ pub struct ConfigForm {
     /// One harness's subheading, when the form is the composer's picker rather than the
     /// config screen: it shows that harness's rows alone and has no group tabs.
     pub scope: Option<&'static str>,
-    /// What a row that runs something reported, held until the next key.
-    note: Option<String>,
+    /// What a row that runs something reported, one line per answer, held until the next key.
+    note: Option<Vec<Line<'static>>>,
     area: Rect,
     top: usize,
     choice_top: usize,
@@ -5013,9 +5013,6 @@ impl ConfigForm {
         if let Some(error) = &self.error {
             return Line::from(Span::styled(error.clone(), Style::default().fg(Color::Red)));
         }
-        if let Some(note) = &self.note {
-            return Line::from(Span::styled(note.clone(), plain()));
-        }
         let f = self.field();
         // A row that runs something has no value, so it has no default to name either.
         if matches!(f.input, Answer::Check) {
@@ -5051,10 +5048,18 @@ impl ConfigForm {
         ])
     }
 
+    /// What the box under the list says: a row that ran something answers over several
+    /// lines, everything else is the one hint line.
+    fn text(&self) -> Text<'static> {
+        self.note
+            .clone()
+            .map_or_else(|| Text::from(self.line()), Text::from)
+    }
+
     fn prompt_rows(&self, width: u16) -> u16 {
         // Two hint lines plus borders. Only a result or error can ask for more room.
         if self.error.is_some() || self.note.is_some() {
-            (Paragraph::new(self.line())
+            (Paragraph::new(self.text())
                 .wrap(Wrap { trim: false })
                 .line_count(width)
                 + 2)
@@ -5240,23 +5245,53 @@ fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'sta
     lines
 }
 
-/// The launch probe for every harness the composer can start, as one line. This is the
-/// check a launch makes, so a harness that answers here starts a session too.
-fn connectivity() -> String {
-    harness::launchable()
+/// The launch probe for every harness the composer can start, a row each: what can launch,
+/// then what is installed but cannot, then the names that are not installed at all. This is
+/// the check a launch makes, so a harness that answers here starts a session too.
+fn connectivity() -> Vec<Line<'static>> {
+    let path = harness::launch_path();
+    let mut answers: Vec<(&'static str, String, String)> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    for &kind in harness::launchable() {
+        let name = kind.to_string();
+        if harness::executable(&name, &path).is_none() {
+            missing.push(name);
+            continue;
+        }
+        match harness::leave_and_return(kind) {
+            Ok(_) => answers.push(("ok", logo_cell(&name), "can launch here".to_owned())),
+            Err(e) => answers.push((
+                "failed",
+                logo_cell(&name),
+                format!("{e:#}")
+                    .trim_start_matches(&format!("{name} "))
+                    .to_owned(),
+            )),
+        }
+    }
+    // A harness that answers is the useful half of the check, so it reads before a failure,
+    // and the ones with nothing installed to ask share the last row.
+    answers.sort_by_key(|(state, ..)| *state != "ok");
+    const ABSENT: &str = "not installed";
+    let pad = answers
         .iter()
-        .map(|&kind| {
-            let name = kind.to_string();
-            match harness::leave_and_return(kind) {
-                Ok(_) => format!("{name} ok"),
-                Err(e) => format!(
-                    "{name} {}",
-                    format!("{e:#}").trim_start_matches(&format!("{name} "))
-                ),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" · ")
+        .map(|(_, name, _)| Span::raw(name.clone()).width())
+        .chain(missing.iter().map(|_| ABSENT.len()))
+        .max()
+        .unwrap_or_default();
+    let row = |state: &str, name: String, answer: String| {
+        let gap = " ".repeat(pad.saturating_sub(Span::raw(name.clone()).width()));
+        Line::from(vec![
+            Span::styled(format!("{} ", icon(state)), color(state)),
+            Span::styled(format!("{name}{gap}  "), plain()),
+            Span::styled(answer, color(state)),
+        ])
+    };
+    answers
+        .into_iter()
+        .map(|(state, name, answer)| row(state, name, answer))
+        .chain((!missing.is_empty()).then(|| row("-", ABSENT.to_owned(), missing.join(" · "))))
+        .collect()
 }
 
 /// Rows the config screen leaves out: a harness's own launch settings belong to the composer's
@@ -12088,7 +12123,7 @@ impl App {
         }
     }
 
-    fn framed(&self, line: Line<'static>, width: u16) -> (Paragraph<'static>, u16) {
+    fn framed(&self, line: impl Into<Text<'static>>, width: u16) -> (Paragraph<'static>, u16) {
         let rules = Block::default()
             .borders(Borders::TOP | Borders::BOTTOM)
             .border_style(if self.quitting() {
@@ -12096,7 +12131,9 @@ impl App {
             } else {
                 dim()
             });
-        let input = Paragraph::new(line).wrap(Wrap { trim: false }).block(rules);
+        let input = Paragraph::new(line.into())
+            .wrap(Wrap { trim: false })
+            .block(rules);
         // line_count already counts the two rules, so this is the whole framed box.
         let mut rows = input.line_count(width).clamp(3, 10) as u16;
         if let Mode::Columns(form) = &self.mode {
@@ -12213,7 +12250,12 @@ impl App {
                 span.style = span.style.remove_modifier(Modifier::REVERSED);
             }
         }
-        let (input, rows) = self.framed(line, area.width);
+        // The config screen's connectivity answer is a row per harness, so the box takes a block.
+        let text = match &self.mode {
+            Mode::Config(form) if !in_pane && form.scope.is_none() => form.text(),
+            _ => line.into(),
+        };
+        let (input, rows) = self.framed(text, area.width);
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(5),
@@ -16139,13 +16181,64 @@ mod tests {
                 .contains("Check which harnesses can launch")
         );
         c.key(KeyCode::Enter, none);
-        let answer = c.line().to_string();
+        let note = c.note.clone().expect("the probe answers");
+        let answer = c.text().to_string();
+        assert_eq!(
+            answer.lines().count(),
+            note.len(),
+            "the box under the list shows every row"
+        );
         for kind in harness::launchable() {
             assert!(
                 answer.contains(&kind.to_string()),
                 "{kind} is missing from {answer}"
             );
         }
+        for line in &note {
+            let text = line.to_string();
+            let mark = line.spans.first().expect("a row leads with its mark");
+            let (want, colour) = if text.contains("can launch here") {
+                ("\u{2713}", Some(Color::Green))
+            } else if text.contains("not installed") {
+                ("\u{2013}", None)
+            } else {
+                ("\u{2717}", Some(Color::Red))
+            };
+            assert_eq!(
+                (mark.content.trim(), mark.style.fg),
+                (want, colour),
+                "the mark and colour follow the answer: {text}"
+            );
+        }
+        let launchable = harness::launchable().len();
+        let named = note
+            .iter()
+            .map(|line| {
+                let text = line.to_string();
+                // A whole word, since one harness's name can sit inside another's: `pi` in
+                // `copilot`, which a substring test counts as a second naming.
+                let words: Vec<&str> = text
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+                    .collect();
+                harness::launchable()
+                    .iter()
+                    .filter(|kind| words.contains(&kind.to_string().as_str()))
+                    .count()
+            })
+            .sum::<usize>();
+        assert_eq!(named, launchable, "every harness is named once: {answer}");
+        assert!(
+            note.len() < launchable || launchable == 1,
+            "the ones with nothing installed share a row: {answer}"
+        );
+        let states: Vec<bool> = note
+            .iter()
+            .map(|line| line.to_string().contains("can launch here"))
+            .collect();
+        assert!(
+            states.iter().skip_while(|ok| **ok).all(|ok| !*ok),
+            "what can launch reads first: {answer}"
+        );
         assert!(
             c.values[field_at("check")].is_empty() && c.config().is_ok(),
             "the probe writes nothing into the file"
