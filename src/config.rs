@@ -1260,6 +1260,19 @@ pub fn bedrock_aws(
 fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     // Apply harness-specific defaults only to matching jobs; explicit job values are always validated.
     let kind = j.harness.or(d.harness).unwrap_or(HarnessKind::Claude);
+    // A job on a harness cones cannot supervise is refused here rather than at install, where one
+    // such job used to abort the whole file's schedules with a message naming no job.
+    ensure!(
+        crate::harness::executes(kind),
+        "job {}: cones cannot supervise a run on {kind}. Only {} runs jobs; {kind} is still \
+         yours to start from the composer",
+        j.name,
+        crate::harness::executing()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let claude = kind == HarnessKind::Claude;
     let full = j
         .codex_full_access
@@ -1501,42 +1514,64 @@ mod tests {
         };
         let (_d, claude) = file(&job("claude"));
         assert_eq!(read_jobs(&claude).unwrap()[0].bedrock, Some(true));
-        // Codex keeps the provider its daemon started with, and pi and OpenCode choose
-        // Bedrock as a provider, so none of the three takes a switch from cones.
+        // Codex keeps the provider its daemon started with, and pi and OpenCode choose Bedrock as
+        // a provider, so none of the three takes a switch from cones. None of them can hold a job
+        // at all now, so the harness refusal is what a file naming one gets, before the switch is
+        // ever weighed. The switch's own check stands for the day a second harness executes.
         for harness in ["codex", "pi", "opencode"] {
             let (_d, path) = file(&job(harness));
             let e = format!("{:#}", read_jobs(&path).unwrap_err());
             assert!(
-                e.contains(&format!("bedrock cannot be set on a {harness} job")),
-                "an ignored switch is a validation error: {e}"
-            );
-            assert!(
-                e.contains("Only claude takes a Bedrock switch"),
-                "a file that stopped loading is fixable from the message alone: {e}"
+                e.contains(&format!("cones cannot supervise a run on {harness}")),
+                "a job on a harness with no execution adapter is a validation error: {e}"
             );
         }
     }
 
     #[test]
-    fn an_aws_profile_and_region_reach_a_job_on_any_harness_without_bedrock() {
-        let file_for = |harness: &str| {
-            format!(
-                "version: 1\ndefaults:\n  aws_profile: claude\n  aws_region: us-east-1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    harness: {harness}\n"
-            )
-        };
-        for harness in ["claude", "codex", "pi", "opencode"] {
-            let (_d, path) = file(&file_for(harness));
-            let job = &read_jobs(&path).unwrap()[0];
-            assert_eq!(
-                (
-                    job.bedrock,
-                    job.aws_profile.as_deref(),
-                    job.aws_region.as_deref()
-                ),
-                (None, Some("claude"), Some("us-east-1")),
-                "{harness} resolves AWS itself, and the pair is not a Bedrock-only field"
-            );
-        }
+    fn a_job_on_a_harness_cones_cannot_supervise_is_refused_by_name() {
+        let (_d, p) = file(
+            "version: 3\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n",
+        );
+        let e = format!("{:#}", read_jobs(&p).unwrap_err());
+        assert!(
+            e.contains("job nightly:"),
+            "the job that stopped the file is named: {e}"
+        );
+        assert!(
+            e.contains("cones cannot supervise a run on codex"),
+            "the refusal names the harness: {e}"
+        );
+        assert!(
+            e.contains("Only claude runs jobs"),
+            "and the fix is in the message: {e}"
+        );
+        // The same refusal covers a harness reaching a job through defaults, not only a job line.
+        let (_d, p) = file(
+            "version: 3\ndefaults:\n  harness: opencode\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
+        );
+        let e = format!("{:#}", read_jobs(&p).unwrap_err());
+        assert!(
+            e.contains("cones cannot supervise a run on opencode"),
+            "a default harness is refused the same way: {e}"
+        );
+    }
+
+    #[test]
+    fn an_aws_profile_and_region_reach_a_job_without_bedrock() {
+        let (_d, path) = file(
+            "version: 1\ndefaults:\n  aws_profile: claude\n  aws_region: us-east-1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n",
+        );
+        let job = &read_jobs(&path).unwrap()[0];
+        assert_eq!(
+            (
+                job.bedrock,
+                job.aws_profile.as_deref(),
+                job.aws_region.as_deref()
+            ),
+            (None, Some("claude"), Some("us-east-1")),
+            "the pair reaches a run without the Bedrock switch, and AWS resolves it"
+        );
     }
 
     #[test]
@@ -2099,11 +2134,12 @@ mod tests {
     #[test]
     fn a_job_without_a_harness_takes_the_default_harness() {
         let (_d, p) = file(
-            "version: 1\ndefaults:\n  harness: codex\njobs:\n  - name: d\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
+            "version: 1\ndefaults:\n  harness: claude\njobs:\n  - name: d\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
         );
         let jobs = read_jobs(&p).unwrap();
-        assert_eq!(jobs[0].harness, HarnessKind::Codex);
-        assert_eq!(jobs[1].harness, HarnessKind::Claude);
+        assert_eq!(jobs[0].harness, HarnessKind::Claude, "from defaults");
+        assert_eq!(jobs[1].harness, HarnessKind::Claude, "from its own line");
+        assert_eq!(defaults(&p).harness, Some(HarnessKind::Claude));
         let (_d, p) = file(
             "version: 1\njobs:\n  - name: d\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
         );
@@ -2282,17 +2318,13 @@ mod tests {
     #[test]
     fn a_harness_default_applies_only_to_that_harness_and_a_job_keeps_its_own_model() {
         let (_d, p) = file(
-            "version: 1\ndefaults:\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
+            "version: 1\ndefaults:\n  model: sonnet\n  codex_model: o3\n  codex_full_access: true\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: own\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n    model: opus\n",
         );
         let jobs = read_jobs(&p).unwrap();
-        let (c, x, own) = (&jobs[0], &jobs[1], &jobs[2]);
+        let (c, own) = (&jobs[0], &jobs[1]);
+        // Codex's own defaults are composer settings; neither reaches the job that can run.
         assert!(!c.codex_full_access);
         assert_eq!(c.model.as_deref(), Some("sonnet"));
-        assert!(
-            x.codex_full_access,
-            "Codex's own default does not reach a Claude job"
-        );
-        assert_eq!(x.model.as_deref(), Some("o3"));
         assert_eq!(own.model.as_deref(), Some("opus"));
         let text = fs::read_to_string(&p).unwrap();
         let d = defaults(&p);
@@ -2341,15 +2373,11 @@ mod tests {
     #[test]
     fn a_claude_job_runs_at_the_configured_effort_and_no_other_harness_takes_it() {
         let (_d, p) = file(
-            "version: 3\ndefaults:\n  effort: high\n  pi_thinking: minimal\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n",
+            "version: 3\ndefaults:\n  effort: high\n  pi_thinking: minimal\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
         );
         let jobs = read_jobs(&p).unwrap();
         assert_eq!(jobs[0].effort.as_deref(), Some("high"));
-        assert_eq!(
-            jobs[1].effort.as_deref(),
-            None,
-            "Codex has no effort flag, so its job passes none"
-        );
+        // pi's own thinking level is a composer setting and reaches no run: only claude has jobs.
         let saved = defaults(&p);
         assert_eq!(saved.effort_for(HarnessKind::Claude), Some("high"));
         assert_eq!(saved.effort_for(HarnessKind::Pi), Some("minimal"));

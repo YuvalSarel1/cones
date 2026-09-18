@@ -43,6 +43,17 @@ pub fn adapter(kind: HarnessKind) -> Result<Box<dyn Harness>> {
     }
 }
 
+/// Whether cones can supervise a run on this harness. `adapter` remains the one place that
+/// decides, so a job the config accepts is a job the installer and the runner can carry.
+pub fn executes(kind: HarnessKind) -> bool {
+    adapter(kind).is_ok()
+}
+
+/// Every harness a job may name, for a message that offers the answer with the refusal.
+pub fn executing() -> Vec<HarnessKind> {
+    known().iter().copied().filter(|k| executes(*k)).collect()
+}
+
 /// Native session launch with harness-owned permissions and lifetime.
 /// Background commands return after launch; foreground commands are daemon clients.
 /// See docs/harness.md and docs/dashboard.md for the ownership boundary.

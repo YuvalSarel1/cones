@@ -33,7 +33,9 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. Only Claude currently supports supervised jobs. Composer settings belong in `defaults`; their exact keys are listed under [composer harnesses](#composer-harnesses). Unset values follow the harness's own configuration. The initial selection is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. Composer settings belong in `defaults`; their exact keys are listed under [composer harnesses](#composer-harnesses). Unset values follow the harness's own configuration. The initial selection is the separate [`start.harness`](#start).
+
+Claude is the only harness cones can supervise, so it is the only one a job may name. A job on any other harness, whether the job says so or `defaults.harness` does, is refused when the file is read, and the message names the job. The refusal is deliberate: a schedule cones cannot carry is worse than no schedule. Every other harness remains yours to start from the composer.
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -42,7 +44,7 @@ A job's policy fields override `defaults` individually. The Default column below
 | `cwd` | required | Existing working directory. `~/` expands; relative paths resolve against the jobs file's directory. |
 | `prompt` | required | Nonempty task, passed as the final command-line argument after `--`. |
 | `enabled` | `true` | Saving a disabled job removes its LaunchAgent; attempts to run it record `skipped` / `disabled`. |
-| `harness` | `claude` | Only `claude` validates for supervised jobs. Other registered [harness keys](#composer-harnesses) are recognized but have no supervised execution adapter. |
+| `harness` | `claude` | Must be `claude`. Other [harness keys](#composer-harnesses) are valid in the composer settings and refused on a job. |
 | `model` | harness's own | Overrides the per-harness default. Must be nonempty and contain no NUL. |
 | `timeout_min` | `30` | Positive number of minutes, at most `10080` (one week). This is the only run limit; there is no dollar or turn cap. |
 | `write` | `false` | `false` permits Read, Grep and Glob. `true` adds Edit, Write and sandboxed Bash. No per-tool rules: Claude treats a scoped `Bash(pattern)` as pre-approval, so cones cannot enforce it as an exclusive allowlist. |
@@ -51,10 +53,11 @@ A job's policy fields override `defaults` individually. The Default column below
 | `notify` | `false` | macOS notification through `osascript` when a run fails or times out. `CONES_NOTIFIER` can name a command receiving the title and message instead. |
 | `archive_transcript` | `false` | Copy the native transcript into the [run's state directory](#stored-files) when it ends. |
 | `env` | `[]` | Shell variable names to import. A job's nonempty list replaces the default list; an empty list inherits it, so opting out requires removing the name from `defaults.env`. See [environment](#environment). |
-| `codex_full_access` | `false` | Codex option; defaults reach only Codex jobs. `true` is rejected on Claude. |
-| `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands), so a job on any other harness is rejected rather than left to ignore the field: the Codex daemon keeps the provider it started with, and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
-| `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value, on every harness. Required with `bedrock: true`. |
-| `aws_region` | unset | Sets `AWS_REGION`, on every harness; the chosen region must serve the model. Required with `bedrock: true`. |
+| `bedrock` | unset | `true` selects Amazon Bedrock; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands); the Codex daemon keeps the provider it started with, and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
+| `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value. Required with `bedrock: true`. |
+| `aws_region` | unset | Sets `AWS_REGION`; the chosen region must serve the model. Required with `bedrock: true`. |
+
+`codex_full_access` is a Codex setting and Codex has no jobs, so the only thing it can do on a job line is fail validation. It is still read from `defaults`, where nothing consumes it yet: no run and no composer launch passes it on today.
 
 ### Composer harnesses
 
