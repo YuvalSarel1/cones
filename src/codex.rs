@@ -719,13 +719,20 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .filter(|(_, meta)| !locks.contains_key(&meta.session_id))
         .collect();
     let guessed = attribute(procs, &rollouts);
-    // A remote client is a viewer, so `thread_rows` supplies the row of a thread the daemon holds and
-    // the viewer gets none: its own start time is not the thread's. Until the daemon takes the thread
-    // there is no row there to defer to, whether the client named one or asked for a new one, so the
-    // client keeps a row of its own rather than leave the fleet a gap. Only a thread this client could
-    // have opened counts, by folder and by starting no earlier than the client; a client that resumes
-    // an older thread without naming it is rare enough to show twice.
-    let daemon_holds = |id: &str| daemon.is_some() && locks.get(id) == daemon.as_ref();
+    // A remote client is a viewer, so `thread_rows` supplies the row of the thread it opened and the
+    // viewer gets none: its own start time is not the thread's. A named thread with a rollout is that
+    // row whether the daemon still holds the writer lock or released it, because the daemon drops a
+    // lock minutes after a thread goes quiet while the viewer stays open for hours: reading a released
+    // lock as "no thread yet" turns that viewer into a session of its own long after the work ended.
+    // Until the daemon makes the thread there is nothing to defer to, so a client that named none, or
+    // named one with no rollout, keeps a row rather than leave the fleet a gap. Only a thread this
+    // client could have opened counts, by folder and by starting no earlier than the client; a client
+    // that resumes an older thread without naming it is rare enough to show twice.
+    let names_thread = |p: &Process| {
+        p.thread
+            .as_deref()
+            .is_some_and(|id| rollout_for(codex, &index, id).is_some())
+    };
     let viewable: Vec<Meta> = locks
         .iter()
         .filter(|(_, pid)| Some(**pid) == daemon)
@@ -735,7 +742,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
         .iter()
         .filter(|p| {
             !(p.remote
-                && (p.thread.as_deref().is_some_and(daemon_holds)
+                && (names_thread(p)
                     || viewable.iter().any(|m| {
                         Some(m.cwd.as_path()) == p.cwd.as_deref() && m.started >= p.started
                     })))
@@ -1483,15 +1490,24 @@ mod tests {
             "a standalone TUI cannot claim a rollout whose writer is the daemon"
         );
         drop(held);
+        assert!(
+            fleet(&viewers).is_empty(),
+            "a released writer lock leaves the viewers viewers: a peek left open outliving the                 daemon's hold on its thread is not a session of its own"
+        );
+        assert!(fleet(&[]).is_empty(), "the daemon released both threads");
+        let unmade = Process {
+            pid: 13,
+            thread: Some("01a0a432-0000-7000-8000-000000000000".into()),
+            ..viewers[0].clone()
+        };
         assert_eq!(
-            fleet(&viewers)
+            rows(&home, &[unmade])
                 .iter()
                 .map(|s| s.session_id.as_str())
                 .collect::<Vec<_>>(),
-            [A, B],
-            "a thread the daemon has not taken has no row to defer to, so its client keeps one"
+            ["codex-13"],
+            "a thread with no rollout has no row to defer to, so its client keeps one"
         );
-        assert!(fleet(&[]).is_empty(), "the daemon released both threads");
     }
 
     #[test]
