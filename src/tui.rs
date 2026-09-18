@@ -8489,28 +8489,16 @@ impl App {
         Rect { height, ..frame }
     }
 
-    /// Sessions, runs and history show only their own viewer or preview.
+    /// Every row shows only its own viewer or preview. A row that owns none, such as a job
+    /// or a pinned folder, leaves the pane empty rather than peeking at another agent.
     fn shown(&self) -> Option<usize> {
         if self.focus.is_some() {
             return self.focus;
         }
-        if self.panel().is_some() {
+        if self.panel().is_some() || !self.split_active() {
             return None;
         }
-        if !self.split_active() {
-            return None;
-        }
-        let own = self.selected().and_then(|r| self.viewer_of(&r.kind));
-        if own.is_some()
-            || self.history_selected()
-            || matches!(
-                self.selected().map(|r| &r.kind),
-                Some(Kind::Session(..) | Kind::Run(..) | Kind::History(_) | Kind::HistoryStatus)
-            )
-        {
-            return own;
-        }
-        self.most_recently_focused()
+        self.selected().and_then(|r| self.viewer_of(&r.kind))
     }
 
     /// The selected row's viewer can take focus even when the split pane is hidden.
@@ -8541,15 +8529,6 @@ impl App {
             Some(_) => self.status = "only Claude sessions can be renamed here".into(),
             None => self.status = "ctrl+n renames the selected session".into(),
         }
-    }
-
-    fn most_recently_focused(&self) -> Option<usize> {
-        self.viewers
-            .iter()
-            .enumerate()
-            .filter(|(_, o)| !o.speculative)
-            .max_by_key(|(_, o)| o.last_focused)
-            .map(|(i, _)| i)
     }
 
     fn panel(&self) -> Option<&'static str> {
@@ -20732,6 +20711,39 @@ mod tests {
         app.viewers.clear();
         app.viewers.push(viewer_open(A, "attach", "VIEW"));
         wait_paint(&mut app, 0, "VIEW");
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+    }
+
+    #[test]
+    fn a_folder_row_shows_no_agent_and_the_session_row_brings_its_viewer_back() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        app.viewers.push(viewer_open(A, "attach", "VIEW"));
+        wait_paint(&mut app, 0, "VIEW");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+
+        let folder = d.path().join("empty");
+        fs::create_dir(&folder).unwrap();
+        app.pin_folder(folder.clone()).unwrap();
+        assert!(
+            app.selected().map(|r| &r.kind) == Some(&Kind::Folder(fleet::tilde(&folder))),
+            "the cursor is on the folder row"
+        );
+        assert_eq!(app.shown(), None, "a folder owns no session");
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            (0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()),
+            "the pane blanks instead of peeking another agent"
+        );
+
+        app.select_new(A);
+        assert_eq!(app.shown(), Some(0), "its own row brings the viewer back");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
     }
