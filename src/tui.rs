@@ -9335,6 +9335,14 @@ impl App {
             return Err("native_kind_cannot_peek");
         }
         let spec = harness::by_name(&s.harness).ok_or("unknown_harness")?;
+        // A hover must leave no trace in the fleet. Where a harness is discovered from the
+        // process table, the client a prespawn starts is itself a session cones then reads back:
+        // the row appears while the speculative viewer lives and vanishes when the pool closes
+        // it, so browsing flickers sessions nobody started. Those rows wait for enter, which
+        // opens a viewer the reader is right to see.
+        if spec.discovery.process.is_some() {
+            return Err("client_would_be_discovered");
+        }
         let home = spec.session_home(&self.claude, s);
         if !harness::can_peek(s, &home) {
             return Err("native_viewer_unavailable");
@@ -21799,11 +21807,11 @@ mod tests {
         assert_eq!(app.prespawn_target(), None, "own terminal");
     }
 
-    /// A thread the daemon holds is joined, not started, so peek pre-opens it like an attach.
-    /// A Codex client in its own terminal has no thread to join, and a saved row whose daemon is
-    /// gone waits for enter rather than starting one on a hover.
+    /// Codex clients are discovered from the process table, so the client a hover would start is
+    /// read back as a session of its own and disappears when the pool closes it. A thread the
+    /// daemon holds waits for enter even with the daemon up and the row joinable.
     #[test]
-    fn a_rested_codex_thread_row_is_a_prespawn_target_and_its_own_terminal_is_not() {
+    fn a_rested_codex_thread_row_is_never_a_prespawn_target() {
         let d = dir();
         let home = d.path().join("codex");
         let rollout = home.join("sessions/2026/09/17/rollout.jsonl");
@@ -21847,23 +21855,12 @@ mod tests {
         app.settle();
         assert_eq!(key(&app).as_deref(), Some(B));
         rested(&mut app, B, OLD);
+        assert!(App::joinable(&app.data.sessions[0]), "the row is joinable");
         assert_eq!(
-            app.prespawn_target(),
-            Some((B.to_owned(), PathBuf::from("/src/two")))
+            app.prespawn_decision(),
+            Err("client_would_be_discovered"),
+            "a hover never starts a client the fleet would report as a session"
         );
-        fs::remove_file(&pid_file).unwrap();
-        assert_eq!(
-            app.prespawn_target(),
-            None,
-            "a hover never starts the daemon a resume needs"
-        );
-        fs::write(
-            &pid_file,
-            serde_json::json!({"pid": std::process::id()}).to_string(),
-        )
-        .unwrap();
-        app.data.sessions[0].kind = None;
-        assert_eq!(app.prespawn_target(), None, "own terminal");
     }
 
     /// A finished run's attach resumes it, so it is never opened ahead of time.
