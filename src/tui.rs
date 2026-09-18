@@ -8036,15 +8036,19 @@ impl App {
             let Some((dir, since)) = &open.record else {
                 return vec![];
             };
-            let Some(prompt) = self
+            let prompt = self
                 .data
                 .sessions
                 .iter()
                 .find(|s| s.session_id == open.key)
-                .and_then(|s| s.title.as_deref())
-            else {
+                .and_then(|s| s.title.as_deref());
+            // A fork replays its parent's conversation, so its first reported prompt is the next
+            // message typed into it, not the placeholder title. Pair it by the parent the harness
+            // reports instead.
+            let parent = open.fork.as_ref().map(|fork| fork.parent.as_str());
+            if parent.is_none() && prompt.is_none() {
                 return vec![];
-            };
+            }
             let launch = spec.launch.as_ref().expect("filtered launch identity");
             if !launch
                 .identity
@@ -8060,11 +8064,16 @@ impl App {
                         && s.cwd == *dir
                         && s.started.is_some_and(|at| at >= *since)
                         && !self.viewers.iter().any(|o| o.key == s.session_id)
-                        && s.transcript_path
-                            .as_deref()
-                            .and_then(codex::prompt_of)
-                            .as_deref()
-                            == Some(prompt)
+                        && match parent {
+                            Some(parent) => s.forked_from.as_deref() == Some(parent),
+                            None => {
+                                s.transcript_path
+                                    .as_deref()
+                                    .and_then(codex::prompt_of)
+                                    .as_deref()
+                                    == prompt
+                            }
+                        }
                 })
                 .collect()
         };
@@ -18170,6 +18179,68 @@ mod tests {
             forked_from: None,
             activity: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_codex_fork_replaces_its_placeholder_row_instead_of_appearing_twice() {
+        let d = dir();
+        let mut app = app(d.path());
+        let cwd = d.path().to_path_buf();
+        let since = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let id = format!("codex:start:{}", uuid::Uuid::new_v4());
+        let mut row = placeholder(HarnessKind::Codex, &id, &cwd, "investigate the pane");
+        row.forked_from = Some(A.into());
+        app.data.sessions.push(row.clone());
+        app.pending.push(Pending {
+            session: row,
+            short: None,
+            fork_home: Some(cwd.clone()),
+            at: Instant::now(),
+        });
+        let mut open = viewer_open(&id, "fork codex", "FORK");
+        open.harness = Some(HarnessKind::Codex);
+        open.record = Some((cwd.clone(), since));
+        open.fork = Some(ForkedSession {
+            parent: A.into(),
+            home: cwd.clone(),
+            requested: None,
+            reported: None,
+            saved: false,
+        });
+        app.viewers.push(open);
+
+        let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+        // The fork replays the parent's conversation, so the thread Codex reports carries the
+        // parent id and the next prompt typed into it, never the parent's title.
+        let mut child = placeholder(HarnessKind::Codex, B, &cwd, "test");
+        child.forked_from = Some(A.into());
+        child.state = "active".into();
+        data.sessions.push(child);
+        app.apply(data);
+
+        assert_eq!(
+            app.data
+                .sessions
+                .iter()
+                .filter(|s| s.harness == "codex")
+                .map(|s| s.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![B],
+            "one row for the fork, not the placeholder beside the reported thread"
+        );
+        assert_eq!(
+            app.viewers[0].key, B,
+            "the fork's viewer follows its reported thread"
+        );
+        assert_eq!(
+            app.viewers[0]
+                .fork
+                .as_ref()
+                .and_then(|f| f.reported.clone()),
+            Some(B.to_owned()),
+            "the fork remembers which thread it became"
+        );
+        assert!(app.pending.is_empty(), "the placeholder launch is resolved");
     }
 
     #[test]
