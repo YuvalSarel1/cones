@@ -14,6 +14,22 @@ pub enum HarnessKind {
     Codex,
     Pi,
     Opencode,
+    Gemini,
+    #[serde(rename = "cursor-agent")]
+    Cursor,
+    Copilot,
+    Amp,
+    Droid,
+    Kimi,
+}
+
+impl HarnessKind {
+    pub fn terminal_only(self) -> bool {
+        matches!(
+            self,
+            Self::Gemini | Self::Cursor | Self::Copilot | Self::Amp | Self::Droid | Self::Kimi
+        )
+    }
 }
 
 impl std::fmt::Display for HarnessKind {
@@ -23,6 +39,12 @@ impl std::fmt::Display for HarnessKind {
             Self::Codex => "codex",
             Self::Pi => "pi",
             Self::Opencode => "opencode",
+            Self::Gemini => "gemini",
+            Self::Cursor => "cursor-agent",
+            Self::Copilot => "copilot",
+            Self::Amp => "amp",
+            Self::Droid => "droid",
+            Self::Kimi => "kimi",
         })
     }
 }
@@ -65,6 +87,11 @@ pub struct Policy {
     pub pi_model: Option<String>,
     pub pi_provider: Option<String>,
     pub opencode_model: Option<String>,
+    pub gemini_model: Option<String>,
+    pub cursor_model: Option<String>,
+    pub copilot_model: Option<String>,
+    pub kimi_model: Option<String>,
+
     /// Per-harness reasoning effort, named after the flag each harness takes.
     /// Codex and OpenCode have no such flag, so neither has a key here.
     pub effort: Option<String>,
@@ -75,6 +102,13 @@ pub struct Policy {
     pub codex_enabled: Option<bool>,
     pub pi_enabled: Option<bool>,
     pub opencode_enabled: Option<bool>,
+    pub gemini_enabled: Option<bool>,
+    pub cursor_enabled: Option<bool>,
+    pub copilot_enabled: Option<bool>,
+    pub amp_enabled: Option<bool>,
+    pub droid_enabled: Option<bool>,
+    pub kimi_enabled: Option<bool>,
+
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Passed to whichever harness a run names. Both must be configured when `bedrock`
@@ -92,6 +126,12 @@ impl Policy {
             HarnessKind::Codex => self.codex_model.as_deref(),
             HarnessKind::Pi => self.pi_model.as_deref(),
             HarnessKind::Opencode => self.opencode_model.as_deref(),
+            HarnessKind::Gemini => self.gemini_model.as_deref(),
+            HarnessKind::Cursor => self.cursor_model.as_deref(),
+            HarnessKind::Copilot => self.copilot_model.as_deref(),
+            HarnessKind::Amp => None,
+            HarnessKind::Droid => None,
+            HarnessKind::Kimi => self.kimi_model.as_deref(),
         }
     }
 
@@ -100,7 +140,14 @@ impl Policy {
         match kind {
             HarnessKind::Claude => self.effort.as_deref(),
             HarnessKind::Pi => self.pi_thinking.as_deref(),
-            HarnessKind::Codex | HarnessKind::Opencode => None,
+            HarnessKind::Codex
+            | HarnessKind::Opencode
+            | HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => None,
         }
     }
 
@@ -110,6 +157,12 @@ impl Policy {
             HarnessKind::Codex => self.codex_enabled,
             HarnessKind::Pi => self.pi_enabled,
             HarnessKind::Opencode => self.opencode_enabled,
+            HarnessKind::Gemini => self.gemini_enabled,
+            HarnessKind::Cursor => self.cursor_enabled,
+            HarnessKind::Copilot => self.copilot_enabled,
+            HarnessKind::Amp => self.amp_enabled,
+            HarnessKind::Droid => self.droid_enabled,
+            HarnessKind::Kimi => self.kimi_enabled,
         }
         .unwrap_or(true)
     }
@@ -1649,6 +1702,7 @@ mod tests {
             codex_enabled: None,
             pi_enabled: None,
             opencode_enabled: Some(false),
+            ..Policy::default()
         };
         let cols = ["state".to_owned(), "age".to_owned()];
         write_config(

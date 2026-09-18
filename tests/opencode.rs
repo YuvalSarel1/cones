@@ -501,3 +501,35 @@ fn large_messages_keep_a_bounded_preview_and_the_original_reply_headline() {
         Some("First line")
     );
 }
+
+#[test]
+fn a_reported_fork_source_requires_an_exact_database_and_directory() {
+    let (dir, db) = fixture();
+    assert_eq!(
+        opencode::session_database(dir.path(), "ses_fixture", Path::new("/fixture"), None).unwrap(),
+        db
+    );
+    assert!(
+        opencode::session_database(dir.path(), "ses_fixture", Path::new("/other"), None).is_err()
+    );
+    let second = dir.path().join("opencode-dev.db");
+    fs::copy(&db, &second).unwrap();
+    assert!(
+        opencode::session_database(dir.path(), "ses_fixture", Path::new("/fixture"), None).is_err(),
+        "duplicate ids must not pick a database by recency"
+    );
+    assert_eq!(
+        opencode::session_database(
+            dir.path(),
+            "ses_fixture",
+            Path::new("/fixture"),
+            Some(&second)
+        )
+        .unwrap(),
+        second
+    );
+    assert!(
+        opencode::session_database(dir.path(), "missing", Path::new("/fixture"), Some(&db))
+            .is_err()
+    );
+}

@@ -51,6 +51,14 @@ operations:
       description: "claude: background sessions with a viewer (--bg, attach)"
   attach:
     args: [attach, "{short_id}"]
+  fork:
+    args: [--resume, "{id}", --fork-session]
+    probe:
+      args: [--help]
+      require_success: false
+      contains: [--fork-session]
+      error: "this claude does not support native forks"
+      description: "claude: native session forks"
   resume:
     args: [--bg, --resume, "{id}"]
   remove:

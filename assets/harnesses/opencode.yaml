@@ -67,6 +67,15 @@ operations:
       contains: [--prompt, --session, --model]
       error: "this OpenCode does not support native prompt and session flags"
       description: "OpenCode runs in the dashboard's viewer and ends with it; saved conversations resume by session id"
+  fork:
+    args: [--session, "{id}", --fork]
+    probe:
+      args: [--help]
+      output: stderr
+      require_success: false
+      contains: [fork]
+      error: "this opencode does not support native forks"
+      description: "opencode: native session forks"
   resume:
     args: [--session, "{id}"]
 execution:

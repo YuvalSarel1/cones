@@ -65,6 +65,8 @@ pub struct Session {
     /// Matched by pid and cwd against the coordinator skill's status file, never by title.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coordinator: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from: Option<String>,
     /// Timestamped activity for sparklines; excluded from JSON output.
     #[serde(skip)]
     pub activity: Vec<Activity>,
@@ -489,6 +491,7 @@ fn session(
             .map(Into::into)
             .or(d.last),
         coordinator: false,
+        forked_from: None,
         activity: d.report.activity,
     })
 }
@@ -1945,6 +1948,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         };
         assert!(rename(&session, "  ").is_err(), "a blank title is refused");

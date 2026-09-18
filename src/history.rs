@@ -656,6 +656,7 @@ impl Cache {
             Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Pi => pi_columns(&e.transcript, catalog.as_deref())?,
             Native::Opencode => unreachable!("database hydration handled above"),
+            Native::External(_) => anyhow::bail!("native history unavailable for this harness"),
         };
         if status_stamp.is_some() {
             let mut bytes = Vec::new();
@@ -767,6 +768,9 @@ fn children(dir: &Path) -> Result<Vec<fs::DirEntry>> {
 }
 
 fn discover(source: &Source) -> Result<Vec<(PathBuf, bool)>> {
+    if source.harness.terminal_only() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     let mut stack: Vec<_> = harness::spec(source.harness)
         .transcript
@@ -884,6 +888,7 @@ fn metadata(
             .and_then(fleet::headline)
             .or_else(|| user_title(user, &head)),
         Native::Opencode => unreachable!("SQLite metadata uses its native reader"),
+        Native::External(_) => None,
     };
     Ok(Some(Entry {
         key: Key {
@@ -923,7 +928,7 @@ fn identity(harness: HarnessKind, path: &Path, events: &[Value]) -> Option<Ident
             .iter()
             .find_map(|v| pi::meta(&v.to_string()))
             .map(|m| (m.session_id, m.cwd, Some(m.started))),
-        Native::Opencode => None,
+        Native::Opencode | Native::External(_) => None,
     }
 }
 

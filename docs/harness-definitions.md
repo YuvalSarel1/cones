@@ -2,7 +2,7 @@
 
 Back to [harness behavior and sources](harness.md).
 
-Each built-in harness has one definition under `assets/harnesses/`: `claude.yaml`, `codex.yaml`, `pi.yaml` or `opencode.yaml`. The binary embeds them, so editing one takes effect after rebuilding cones; no definitions or overrides are read from disk. The definitions describe discovery, reports, native operations and viewer behavior. User choices, including model and provider defaults, belong in `jobs.yaml`.
+Each built-in harness has one YAML definition under `assets/harnesses/`. Claude, Codex, pi and OpenCode have native report readers; six additional definitions currently expose terminal launch and process discovery. The binary embeds them, so editing one takes effect after rebuilding cones; no definitions or overrides are read from disk. The definitions describe discovery, reports, native operations and viewer behavior. User choices, including model and provider defaults, belong in `jobs.yaml`.
 
 ## The line between YAML and code
 
@@ -125,3 +125,13 @@ Cost accounting is required. Implement `cost::Adapter` to translate native event
 Extend the native fixture in `tests/cost.rs` when adding a harness. That test enumerates every registered harness and exercises its actual live and history readers against the same prices. It requires fallback estimates, native-cost precedence, duplicate protection, partial coverage and cache refresh after catalog arrival, replacement and expiry. Its exhaustive fixture and reader matches make an omitted harness a compile error. No real harness or model is started by the test.
 
 Give a worktree its own `CARGO_TARGET_DIR` while another checkout is building. A shared target directory can serve another checkout's test binary, so a suite count alone does not establish which code ran.
+
+## Terminal-only definitions and forks
+
+A terminal-only adapter declares `transcript.available: false` with empty roots and message sources. Its process identity is not a conversation id. It exposes no native history or accounting data; the native reader and accounting requirements above apply before promoting it to a full integration. `home.env` may be empty for these adapters when no verified native home override exists. No synthetic environment variable is passed to the harness.
+
+`discovery.aliases` lists native executable aliases whose paths must resolve to the canonical executable. This prevents an unrelated program called `agent` from being classified as Cursor. `discovery.entrypoints` lists relative script suffixes for Node/Bun entry points. Only the command or the interpreter's immediate script operand is inspected; an agent name inside a prompt cannot become a process identity. `process_title` matches a complete native process title, used by Kimi because it replaces argv with `Kimi Code`.
+
+`operations.launch.prompt_flag` sends the instruction as one `--flag=value` argument. `stdin_prompt: true` instead supplies an anonymous input file while retaining the terminal on stdout; cancelling a prepared launch closes the file. These options are mutually exclusive. Positional instructions keep the existing `--` separator.
+
+`operations.fork` supplies a separately probed native fork command. Only adapters with verified native fork semantics may declare it. Its operands include `id`, `transcript`, `remote`, and, for pi, `new_id`. Pi receives a generated UUID through its native `--session-id` flag, so a parent and fork in one directory do not depend on timestamp matching. The UI persists the relationship only after native identity is confirmed.

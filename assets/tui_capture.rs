@@ -233,6 +233,7 @@ fn spawn_viewer(app: &mut App, spec: &Value) -> Result<()> {
         )?,
         record: None,
         recorded: false,
+        fork: None,
         first_paint_logged: false,
         last_focused: Instant::now(),
         speculative: true,

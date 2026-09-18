@@ -6,6 +6,8 @@
 
 cones brings Claude Code, Codex, pi and OpenCode into one workspace while keeping their native terminal interfaces. Your conversations stay with each harness, so you can use its CLI directly whenever you prefer.
 
+Experimental terminal launchers also support Gemini CLI, Cursor Agent, Copilot CLI, Amp, Droid and Kimi. These offer launch, process discovery and return to an owned viewer; native conversation history, state and usage reporting are not integrated.
+
 <p align="center">
   <a href="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml"><img src="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS">

@@ -1,0 +1,34 @@
+version: 2
+kind: kimi
+icon: "☾"
+home:
+  env: ""
+  default: {base: provided_parent, path: .kimi}
+discovery:
+  process: kimi
+  process_title: Kimi Code
+  exclude_subcommands: ["--help", "-h", "--version", "login", "logout", "mcp", "web", "info", "export"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    prompt: [--, "{prompt}"]
+    prompt_flag: --prompt
+    model: --model
+    probe:
+      args: [--help]
+      contains: [--prompt]
+      error: "kimi does not support the required native command"
+      description: "kimi: terminal launch; external sessions remain in their own terminals"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

@@ -246,7 +246,7 @@ impl Data {
         runs.retain(|r| !hidden.contains(&r.started.run_id));
         // Read before discovery: the harnesses config offers decide what is scanned.
         let offered = config::defaults(jobs_path);
-        let sessions = phase!(
+        let mut sessions = phase!(
             "discovery",
             fleet_rows_observed(
                 claude,
@@ -258,6 +258,7 @@ impl Data {
                 operation,
             )
         );
+        crate::forks::apply(&crate::forks::read(state)?, claude, &mut sessions);
         let reports_started = Instant::now();
         let run_reports = runs
             .iter()
@@ -485,6 +486,29 @@ impl Data {
                 group.push(Entry::Folder(dir));
             }
         }
+        let mut depths = HashMap::new();
+        for group in groups.values_mut() {
+            let sessions: Vec<_> = group
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Session(s) => Some(*s),
+                    _ => None,
+                })
+                .collect();
+            if sessions.is_empty() {
+                continue;
+            }
+            let ordered = crate::forks::order(&sessions);
+            depths.extend(
+                ordered
+                    .iter()
+                    .map(|(s, depth)| ((s.harness.as_str(), s.session_id.as_str()), *depth)),
+            );
+            *group = ordered
+                .into_iter()
+                .map(|(s, _)| Entry::Session(s))
+                .collect();
+        }
         // One table across all groups, so columns line up between directories.
         let flat: Vec<(&(String, String), &Entry)> = groups
             .iter()
@@ -516,6 +540,10 @@ impl Data {
                     by_state,
                     sparks.get(&s.session_id).map(String::as_str),
                     self.branches.get(&s.cwd).map(String::as_str),
+                    depths
+                        .get(&(s.harness.as_str(), s.session_id.as_str()))
+                        .copied()
+                        .unwrap_or(0),
                 ),
                 Entry::Job(j) => {
                     let last = self
@@ -1243,6 +1271,7 @@ fn session_cells(
     by_state: bool,
     spark: Option<&str>,
     branch: Option<&str>,
+    depth: usize,
 ) -> Vec<(String, Style)> {
     let harness = if set.iter().any(|c| c == "harness") {
         logo_cell(&s.harness)
@@ -1262,6 +1291,13 @@ fn session_cells(
             .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
         40,
     );
+    let title = if depth > 0 {
+        format!("{}↳ {title}", "  ".repeat(depth.min(8)))
+    } else if s.forked_from.is_some() {
+        format!("↳ {title}")
+    } else {
+        title
+    };
     row.push(if s.coordinator {
         (format!("{COORDINATOR} {title}"), lit())
     } else {
@@ -3062,7 +3098,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 38] = [
+const FIELDS: [Field; 48] = [
     Field {
         group: "cones",
         sub: "",
@@ -3131,7 +3167,19 @@ const FIELDS: [Field; 38] = [
         hint: "Default harness for the composer.",
         long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex, pi and OpenCode sessions start; their jobs remain unavailable. Pi and OpenCode run in the dashboard's own viewer and end with it. Model and provider defaults are below.",
         builtin: "claude",
-        input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
+        input: Answer::Pick(&[
+            "-",
+            "claude",
+            "codex",
+            "pi",
+            "opencode",
+            "gemini",
+            "cursor-agent",
+            "copilot",
+            "amp",
+            "droid",
+            "kimi",
+        ]),
     },
     Field {
         group: "cones",
@@ -3391,6 +3439,106 @@ const FIELDS: [Field; 38] = [
         short: "provider/model",
         hint: "Provider/model for new OpenCode sessions.",
         long: "Passed to OpenCode as --model for sessions the composer starts. Use provider/model, as listed by opencode models. Empty follows OpenCode's own configuration. OpenCode jobs are unavailable.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "gemini",
+        name: "gemini_enabled",
+        short: "enabled",
+        hint: "Offer gemini sessions.",
+        long: "Enable terminal launch and process discovery for gemini. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "gemini",
+        name: "gemini_model",
+        short: "model",
+        hint: "Model for new gemini sessions.",
+        long: "Passed through the native model flag. Empty keeps the harness configuration.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "cursor-agent",
+        name: "cursor_enabled",
+        short: "enabled",
+        hint: "Offer cursor-agent sessions.",
+        long: "Enable terminal launch and process discovery for cursor-agent. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "cursor-agent",
+        name: "cursor_model",
+        short: "model",
+        hint: "Model for new cursor-agent sessions.",
+        long: "Passed through the native model flag. Empty keeps the harness configuration.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "copilot",
+        name: "copilot_enabled",
+        short: "enabled",
+        hint: "Offer copilot sessions.",
+        long: "Enable terminal launch and process discovery for copilot. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "copilot",
+        name: "copilot_model",
+        short: "model",
+        hint: "Model for new copilot sessions.",
+        long: "Passed through the native model flag. Empty keeps the harness configuration.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "amp",
+        name: "amp_enabled",
+        short: "enabled",
+        hint: "Offer amp sessions.",
+        long: "Enable terminal launch and process discovery for amp. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "droid",
+        name: "droid_enabled",
+        short: "enabled",
+        hint: "Offer droid sessions.",
+        long: "Enable terminal launch and process discovery for droid. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "kimi",
+        name: "kimi_enabled",
+        short: "enabled",
+        hint: "Offer kimi sessions.",
+        long: "Enable terminal launch and process discovery for kimi. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "kimi",
+        name: "kimi_model",
+        short: "model",
+        hint: "Model for new kimi sessions.",
+        long: "Passed through the native model flag. Empty keeps the harness configuration.",
         builtin: SYSTEM,
         input: Answer::Typed,
     },
@@ -3802,6 +3950,17 @@ impl ConfigForm {
                 "codex_enabled" => flag(d.codex_enabled),
                 "pi_enabled" => flag(d.pi_enabled),
                 "opencode_enabled" => flag(d.opencode_enabled),
+                "gemini_model" => d.gemini_model.clone().unwrap_or_default(),
+                "gemini_enabled" => flag(d.gemini_enabled),
+                "cursor_model" => d.cursor_model.clone().unwrap_or_default(),
+                "cursor_enabled" => flag(d.cursor_enabled),
+                "copilot_model" => d.copilot_model.clone().unwrap_or_default(),
+                "copilot_enabled" => flag(d.copilot_enabled),
+                "amp_enabled" => flag(d.amp_enabled),
+                "droid_enabled" => flag(d.droid_enabled),
+                "kimi_model" => d.kimi_model.clone().unwrap_or_default(),
+                "kimi_enabled" => flag(d.kimi_enabled),
+
                 "check" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
@@ -3963,6 +4122,18 @@ impl ConfigForm {
             effort: text("effort"),
             pi_thinking: text("pi_thinking"),
             opencode_model: text("opencode_model"),
+            gemini_model: text("gemini_model"),
+            gemini_enabled: flag("gemini_enabled"),
+            cursor_model: text("cursor_model"),
+            cursor_enabled: flag("cursor_enabled"),
+            copilot_model: text("copilot_model"),
+            copilot_enabled: flag("copilot_enabled"),
+
+            amp_enabled: flag("amp_enabled"),
+            droid_enabled: flag("droid_enabled"),
+            kimi_model: text("kimi_model"),
+            kimi_enabled: flag("kimi_enabled"),
+
             claude_enabled: flag("claude_enabled"),
             codex_enabled: flag("codex_enabled"),
             pi_enabled: flag("pi_enabled"),
@@ -4472,7 +4643,10 @@ impl ConfigForm {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
-                lines.push(Line::from(Span::styled(format!("  {}", f.sub), bold())));
+                lines.push(Line::from(fit(
+                    vec![Span::styled(format!("  {}", f.sub), bold())],
+                    columns as usize,
+                )));
             }
             sub = f.sub;
             let selected = i == self.row;
@@ -5374,6 +5548,10 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     ("ctrl+n", "Rename the selected Claude session."),
     (
+        "ctrl+y",
+        "Fork the selected conversation into a new native session.",
+    ),
+    (
         "ctrl+r",
         "Refresh now. The list also refreshes every second.",
     ),
@@ -5921,6 +6099,7 @@ fn history_session(entry: &history::Entry) -> Session {
         effort: None,
         usage: None,
         coordinator: false,
+        forked_from: None,
         activity: Vec::new(),
     }
 }
@@ -5992,6 +6171,7 @@ impl HistoryView {
                         false,
                         Some("-"),
                         None,
+                        0,
                     )
                 })
                 .collect();
@@ -6281,12 +6461,14 @@ type Launched = (String, Option<String>);
 struct Pending {
     session: Session,
     short: Option<String>,
+    fork_home: Option<PathBuf>,
     at: Instant,
 }
 
 impl Pending {
     fn matches(&self, s: &Session) -> bool {
         s.harness == self.session.harness
+            && self.session.forked_from.as_deref() != Some(s.session_id.as_str())
             && s.cwd == self.session.cwd
             && (self.session.pid.is_some_and(|pid| s.pid == Some(pid))
                 || (harness::by_name(&s.harness).is_some_and(|spec| {
@@ -6339,8 +6521,40 @@ fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session
         effort: None,
         usage: None,
         coordinator: false,
+        forked_from: None,
         activity: Vec::new(),
     }
+}
+
+fn hydrate_pi_forks(data: &mut Data, forks: &[(u32, String, PathBuf, String)]) {
+    for (pid, parent, home, id) in forks {
+        if let Some(row) = data
+            .sessions
+            .iter_mut()
+            .find(|s| s.harness == "pi" && s.pid == Some(*pid))
+            && let Some(started) = row.started
+            && let Some(mut reported) = crate::pi::session_for_id(
+                home,
+                &crate::pi::Process {
+                    pid: *pid,
+                    started,
+                    cwd: Some(row.cwd.clone()),
+                },
+                id,
+            )
+        {
+            reported.forked_from = Some(parent.clone());
+            *row = reported;
+        }
+    }
+}
+
+struct ForkedSession {
+    parent: String,
+    home: PathBuf,
+    requested: Option<String>,
+    reported: Option<String>,
+    saved: bool,
 }
 
 struct Open {
@@ -6354,6 +6568,7 @@ struct Open {
     /// A Codex thread to record from its rollout once the viewer is left or ends.
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     recorded: bool,
+    fork: Option<ForkedSession>,
     first_paint_logged: bool,
     /// For a speculative viewer, which was never focused, this is when it was spawned.
     last_focused: Instant,
@@ -6803,9 +7018,26 @@ impl App {
 
     #[cfg(test)]
     fn refresh(&mut self) -> Result<()> {
-        let data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
+        let mut data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
+        hydrate_pi_forks(&mut data, &self.owned_pi_forks());
         self.apply(data);
         Ok(())
+    }
+
+    fn owned_pi_forks(&self) -> Vec<(u32, String, PathBuf, String)> {
+        self.viewers
+            .iter()
+            .filter(|o| o.harness == Some(HarnessKind::Pi))
+            .filter_map(|o| {
+                let fork = o.fork.as_ref()?;
+                Some((
+                    o.viewer.pid(),
+                    fork.parent.clone(),
+                    fork.home.clone(),
+                    fork.requested.clone()?,
+                ))
+            })
+            .collect()
     }
 
     fn reload(&mut self) {
@@ -6819,6 +7051,7 @@ impl App {
             self.claude.clone(),
         );
         let started = Instant::now();
+        let owned_pi_forks = self.owned_pi_forks();
         let log = self.log.clone();
         let operation = log.as_ref().map(|_| DiagnosticOperation::new());
         self.loading_operation = operation.clone();
@@ -6830,7 +7063,12 @@ impl App {
         }
         std::thread::spawn(move || {
             let data =
-                Data::load_observed(&jobs, &state, &claude, log.as_ref(), operation.as_ref());
+                Data::load_observed(&jobs, &state, &claude, log.as_ref(), operation.as_ref()).map(
+                    |mut data| {
+                        hydrate_pi_forks(&mut data, &owned_pi_forks);
+                        data
+                    },
+                );
             let _ = tx.send(data);
         });
         self.loading = Some(rx);
@@ -7650,6 +7888,14 @@ impl App {
                 report.apply(row);
             }
         }
+        data.sessions.retain(|row| {
+            !self.pending.iter().any(|p| {
+                p.session.pid.is_some()
+                    && p.session.pid == row.pid
+                    && p.session.harness == row.harness
+                    && p.session.forked_from.as_deref() == Some(row.session_id.as_str())
+            })
+        });
         let mut replaced = self.reconcile_launches(&mut data);
         for key in self.history.opened.keys() {
             if let Some(session) = data
@@ -7767,6 +8013,7 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|launch| launch.identity.owns_client_pid())
                         }) && s.harness == old.harness
+                            && old.forked_from.as_deref() != Some(s.session_id.as_str())
                             && s.cwd == old.cwd
                             && old.pid.is_some_and(|pid| s.pid == Some(pid))
                     })
@@ -7849,8 +8096,44 @@ impl App {
                         spec.launch
                             .as_ref()
                             .is_some_and(|launch| launch.identity.owns_client_pid())
+                            || open.fork.is_some()
                     }) {
                         s.pid = Some(open.viewer.pid());
+                    }
+                    if let Some(fork) = &mut open.fork {
+                        let native = s.session_id != format!("{}-{}", s.harness, open.viewer.pid())
+                            && !s.session_id.contains(":start:")
+                            && !s.session_id.starts_with("starting:")
+                            && s.session_id != fork.parent;
+                        if native && fork.reported.is_none() {
+                            fork.reported = Some(s.session_id.clone());
+                        }
+                        if fork.reported.as_deref() == Some(s.session_id.as_str())
+                            || (!native && fork.reported.is_none())
+                        {
+                            s.forked_from = Some(fork.parent.clone());
+                        }
+                        if native
+                            && !fork.saved
+                            && fork.reported.as_deref() == Some(s.session_id.as_str())
+                        {
+                            match crate::forks::record(
+                                &self.state,
+                                crate::forks::Link {
+                                    harness: s.harness.clone(),
+                                    home: fork.home.clone(),
+                                    cwd: s.cwd.clone(),
+                                    parent: fork.parent.clone(),
+                                    child: s.session_id.clone(),
+                                },
+                            ) {
+                                Ok(()) => fork.saved = true,
+                                Err(e) => {
+                                    self.status =
+                                        format!("fork relationship could not be saved: {e}")
+                                }
+                            }
+                        }
                     }
                     if open.record.is_some()
                         && !open.recorded
@@ -8594,11 +8877,16 @@ impl App {
                 {
                     p.session.pid = Some(viewer.pid());
                 }
+                let foreground_fork = self
+                    .pending
+                    .iter()
+                    .any(|p| p.session.session_id == key && p.session.forked_from.is_some());
                 if let Some(s) = self.data.sessions.iter_mut().find(|s| s.session_id == key)
                     && harness::by_name(&s.harness).is_some_and(|spec| {
                         spec.launch
                             .as_ref()
                             .is_some_and(|launch| launch.identity.owns_client_pid())
+                            || foreground_fork
                     })
                 {
                     s.pid = Some(viewer.pid());
@@ -8611,6 +8899,19 @@ impl App {
                     self.close_for(oldest, "focused_viewer_capacity");
                 }
                 let harness = self.viewer_harness(&key);
+                let fork = self
+                    .pending
+                    .iter()
+                    .find(|p| p.session.session_id == key)
+                    .and_then(|p| {
+                        Some(ForkedSession {
+                            parent: p.session.forked_from.clone()?,
+                            home: p.fork_home.clone()?,
+                            requested: p.short.clone(),
+                            reported: None,
+                            saved: false,
+                        })
+                    });
                 self.viewers.push(Open {
                     key,
                     what: what.to_owned(),
@@ -8618,6 +8919,7 @@ impl App {
                     viewer,
                     record,
                     recorded: false,
+                    fork,
                     first_paint_logged: false,
                     last_focused: Instant::now(),
                     speculative: false,
@@ -8679,6 +8981,7 @@ impl App {
             .enumerate()
             .filter(|(i, o)| {
                 !o.speculative
+                    && o.fork.is_none()
                     && Some(*i) != keep
                     && o.harness.is_some_and(|kind| {
                         harness::spec(kind).viewer.retention == harness::spec::Retention::EvictLive
@@ -8822,6 +9125,7 @@ impl App {
             viewer,
             record: None,
             recorded: false,
+            fork: None,
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: true,
@@ -9897,6 +10201,7 @@ impl App {
             return;
         }
         let dir = self.target_dir();
+        let dir = dir.canonicalize().unwrap_or(dir);
         let kind = harness::launchable()[self.harness];
         let policy = self.session_policy();
         let prompt = self.take_prompt();
@@ -9974,6 +10279,127 @@ impl App {
         self.started.push((id, rx));
     }
 
+    fn can_fork_selected(&self) -> bool {
+        let supported =
+            |name: &str| harness::by_name(name).is_some_and(|s| s.operations.fork.is_some());
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::History(key)) => self
+                .history
+                .row(key)
+                .is_some_and(|e| !e.archived && supported(&e.key.harness)),
+            Some(Kind::Session(id, _))
+                if !self.pending.iter().any(|p| &p.session.session_id == id) =>
+            {
+                self.data
+                    .sessions
+                    .iter()
+                    .find(|s| &s.session_id == id)
+                    .is_some_and(|s| {
+                        supported(&s.harness)
+                            && !s
+                                .pid
+                                .is_some_and(|pid| s.session_id == format!("{}-{pid}", s.harness))
+                            && (s.transcript_path.is_some()
+                                || (s.harness == "opencode" && s.session_id.starts_with("ses_")))
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn fork_source(&self) -> Option<history::Entry> {
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::History(key)) => self.history.row(key).cloned(),
+            Some(Kind::Session(id, _))
+                if !self.pending.iter().any(|p| &p.session.session_id == id) =>
+            {
+                let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+                if s.pid
+                    .is_some_and(|pid| s.session_id == format!("{}-{pid}", s.harness))
+                {
+                    return None;
+                }
+                let spec = harness::by_name(&s.harness)?;
+                let origin = self
+                    .viewers
+                    .iter()
+                    .find(|o| s.pid == Some(o.viewer.pid()))
+                    .and_then(|o| self.history.opened.get(&o.key));
+                let transcript = s
+                    .transcript_path
+                    .clone()
+                    .or_else(|| origin.map(|e| e.transcript.clone()))
+                    .or_else(|| {
+                        (s.harness == "opencode" && s.session_id.starts_with("ses_"))
+                            .then(PathBuf::new)
+                    })?;
+                Some(history::Entry {
+                    key: history::Key {
+                        harness: s.harness.clone(),
+                        home: origin
+                            .map(|e| e.key.home.clone())
+                            .unwrap_or_else(|| spec.session_home(&self.claude, s)),
+                        session_id: s.session_id.clone(),
+                    },
+                    cwd: s.cwd.clone(),
+                    transcript,
+                    archived: false,
+                    started: s.started,
+                    last_activity: s.last_activity,
+                    title: s.title.clone(),
+                    columns: None,
+                    hit: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn fork_selected(&mut self) {
+        let entry = self.fork_source();
+        let Some(entry) = entry else {
+            self.status =
+                "fork needs a session with a native conversation id and transcript".into();
+            return;
+        };
+        let Some(spec) =
+            harness::by_name(&entry.key.harness).filter(|s| s.operations.fork.is_some())
+        else {
+            self.status = "this harness has no verified native fork operation".into();
+            return;
+        };
+        let kind = spec.kind;
+        let since = chrono::Utc::now();
+        let title = entry.title.clone().unwrap_or_else(|| "fork".into());
+        let expected = (kind == HarnessKind::Pi).then(|| uuid::Uuid::new_v4().to_string());
+        let id = self.launch_row(kind, &entry.cwd, &title);
+        if let Some(p) = self.pending.iter_mut().find(|p| p.session.session_id == id) {
+            p.session.forked_from = Some(entry.key.session_id.clone());
+            p.fork_home = Some(entry.key.home.clone());
+            p.short = expected.clone();
+            if kind == HarnessKind::Claude {
+                p.session.kind = Some("interactive".into());
+            }
+        }
+        if let Some(s) = self.data.sessions.iter_mut().find(|s| s.session_id == id) {
+            s.forked_from = Some(entry.key.session_id.clone());
+            if kind == HarnessKind::Claude {
+                s.kind = Some("interactive".into());
+            }
+        }
+        self.rebuild_with_reason("fork_placeholder");
+        self.select_new(&id);
+        let what = format!("fork {kind}");
+        let record = (kind == HarnessKind::Codex).then(|| (entry.cwd.clone(), since));
+        let policy = self.session_policy();
+        self.prepare_viewer(what, id, record, None, move || {
+            match harness::fork(&entry, expected.as_deref(), &policy)? {
+                Start::Foreground(command) => Ok(command),
+                Start::Background(_) => anyhow::bail!("fork needs its own native viewer"),
+            }
+        });
+    }
+
     fn terminal_selected(&self) -> bool {
         self.harness == harness::launchable().len()
     }
@@ -10049,6 +10475,7 @@ impl App {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         };
         self.terminals.push(session.clone());
@@ -10106,6 +10533,7 @@ impl App {
         self.pending.push(Pending {
             session,
             short: None,
+            fork_home: None,
             at: Instant::now(),
         });
         self.rebuild_with_reason("launch_placeholder");
@@ -10466,6 +10894,9 @@ impl App {
                 let switch = format!("search by {}", other.label());
                 keys.push(("shift+tab", &switch));
                 keys.push(("ctrl+h", "hide history"));
+                if self.can_fork_selected() {
+                    keys.push(("ctrl+y", "fork"));
+                }
                 hints(&keys)
             }
             Mode::Normal if self.terminal_selected() => {
@@ -10503,6 +10934,9 @@ impl App {
                 }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
+                }
+                if self.can_fork_selected() {
+                    keys.push(("ctrl+y", "fork"));
                 }
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
@@ -10822,7 +11256,7 @@ impl App {
             return Ok(false);
         }
         self.status.clear();
-        if self.cancel_opening() && (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) {
+        if (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) && self.cancel_opening() {
             return Ok(false);
         }
         if self.full && !self.pane_focused() && self.opening.is_none() {
@@ -11130,6 +11564,7 @@ impl App {
                     KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(Guide::default()),
                     KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
+                    KeyCode::Char('y') if ctrl => self.fork_selected(),
                     KeyCode::Char('r') if ctrl => {
                         if self.history.visible {
                             self.history.select_first = searching_history;
@@ -13312,6 +13747,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -13347,6 +13783,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         };
         data.sessions
@@ -13403,6 +13840,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator,
+            forked_from: None,
             activity: Vec::new(),
         };
         data.sessions.push(session("aaaa-worker", "bg", false));
@@ -13473,6 +13911,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -13511,6 +13950,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -15480,6 +15920,7 @@ mod tests {
         app.pending.push(Pending {
             session,
             short: Some("dddddddd".into()),
+            fork_home: None,
             at: Instant::now(),
         });
         app.rebuild();
@@ -15498,6 +15939,7 @@ mod tests {
         app.pending.push(Pending {
             session,
             short: Some("eeeeeeee".into()),
+            fork_home: None,
             at: Instant::now(),
         });
         app.rebuild();
@@ -15535,6 +15977,7 @@ mod tests {
         app.pending.push(Pending {
             session,
             short: None,
+            fork_home: None,
             at: Instant::now(),
         });
         app.rebuild();
@@ -15566,6 +16009,7 @@ mod tests {
         app.pending.push(Pending {
             session,
             short: None,
+            fork_home: None,
             at: Instant::now(),
         });
         app.rebuild();
@@ -15655,6 +16099,10 @@ mod tests {
         };
         cycle(&mut app);
         assert_eq!(app.launch_name(), "opencode", "pi is skipped");
+        for expected in ["gemini", "cursor-agent", "copilot", "amp", "droid", "kimi"] {
+            cycle(&mut app);
+            assert_eq!(app.launch_name(), expected);
+        }
         cycle(&mut app);
         assert!(app.terminal_selected(), "the terminal stays reachable");
         cycle(&mut app);
@@ -16881,6 +17329,12 @@ mod tests {
             (">_ codex", "codex"),
             ("\u{3c0} pi", "pi"),
             ("o opencode", "opencode"),
+            ("✦ gemini", "gemini"),
+            ("↗ cursor-agent", "cursor-agent"),
+            ("◉ copilot", "copilot"),
+            ("& amp", "amp"),
+            ("◆ droid", "droid"),
+            ("☾ kimi", "kimi"),
             ("terminal (sh)", "terminal"),
             ("\u{273b} claude", "claude"),
         ] {
@@ -17291,6 +17745,7 @@ mod tests {
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
+            fork: None,
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
@@ -17544,7 +17999,9 @@ mod tests {
                 app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
                 assert_eq!(app.focus, Some(0));
             }
-            let back = if kind == HarnessKind::Opencode {
+            let back = if kind.terminal_only() {
+                "ctrl+z"
+            } else if kind == HarnessKind::Opencode {
                 "←"
             } else {
                 "tab"
@@ -17574,7 +18031,21 @@ mod tests {
                 );
             }
             assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
-            assert_eq!(app.focus, None, "{kind}: Left returns to cones");
+            if kind.terminal_only() {
+                assert_eq!(
+                    app.focus,
+                    Some(0),
+                    "{kind}: Left belongs to the native editor"
+                );
+                app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+                assert_eq!(
+                    app.focus,
+                    Some(0),
+                    "{kind}: Tab belongs to the native editor"
+                );
+                app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+            }
+            assert_eq!(app.focus, None, "{kind}: return reaches cones");
             assert_eq!(app.viewers.len(), 1);
             app.enter().unwrap();
             assert_eq!(
@@ -17587,7 +18058,7 @@ mod tests {
                 (KeyCode::Tab, KeyModifiers::NONE),
                 (KeyCode::Char('z'), KeyModifiers::CONTROL),
             ] {
-                if kind == HarnessKind::Opencode && key == KeyCode::Tab {
+                if (kind == HarnessKind::Opencode || kind.terminal_only()) && key == KeyCode::Tab {
                     continue;
                 }
                 app.key(key, modifier).unwrap();
@@ -17640,6 +18111,7 @@ mod tests {
                 viewer: Viewer::spawn(command, 12, 80, None, viewer::Colors::default()).unwrap(),
                 record: None,
                 recorded: false,
+                fork: None,
                 first_paint_logged: false,
                 last_focused: Instant::now(),
                 speculative: false,
@@ -17716,6 +18188,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         }
     }
@@ -17970,6 +18443,7 @@ mod tests {
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
+            fork: None,
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
@@ -18409,6 +18883,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -20317,6 +20792,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -20446,6 +20922,7 @@ mod tests {
             viewer: Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap(),
             record: None,
             recorded: false,
+            fork: None,
             first_paint_logged: false,
             last_focused: Instant::now(),
             speculative: false,
@@ -20599,6 +21076,7 @@ mod tests {
             effort: None,
             usage: None,
             coordinator: false,
+            forked_from: None,
             activity: Vec::new(),
         });
         app.apply(data);
@@ -20896,5 +21374,251 @@ mod tests {
             unsafe { libc::signal(signal, libc::SIG_DFL) };
         }
         assert!(flipped, "SIGHUP sets the flag the dashboard loop reads");
+    }
+    #[test]
+    fn forks_indent_only_the_title_and_keep_every_column_aligned() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.data.sessions.clear();
+        let make = |id: &str, parent: Option<&str>| -> Session {
+            serde_json::from_value(json!({
+                "session_id": id, "harness":"claude", "cwd":"/fixture", "state":"idle",
+                "title": id, "model":"fixture-model", "tokens_in":123, "tokens_out":4,
+                "forked_from":parent
+            }))
+            .unwrap()
+        };
+        app.data.sessions = vec![
+            make("child", Some("parent")),
+            make("parent", None),
+            make("grandchild", Some("child")),
+        ];
+        app.data.columns = vec!["state".into(), "model".into(), "tokens".into()];
+        let rows = app.data.rows(false);
+        let sessions: Vec<_> = rows
+            .iter()
+            .filter(|r| matches!(r.kind, Kind::Session(..)))
+            .collect();
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|r| r.kind.key().unwrap())
+                .collect::<Vec<_>>(),
+            ["parent", "child", "grandchild"]
+        );
+        let widths = |row: &Row| {
+            row.cells
+                .iter()
+                .map(|(s, _)| Span::raw(s).width())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(widths(sessions[0]), widths(sessions[1]));
+        assert_eq!(widths(sessions[0]), widths(sessions[2]));
+        assert_eq!(sessions[0].cells[3].0.trim(), "parent");
+        assert!(sessions[1].cells[3].0.starts_with("  ↳ child"));
+        assert!(sessions[2].cells[3].0.starts_with("    ↳ grandchild"));
+        app.data.sessions.retain(|s| s.session_id != "parent");
+        let rows = app.data.rows(false);
+        assert!(
+            rows.iter()
+                .any(|r| r.kind.key() == Some("child") && r.text().contains("↳ child"))
+        );
+    }
+
+    #[test]
+    fn forking_requires_a_native_conversation_and_preserves_the_composer_draft() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut session = placeholder(HarnessKind::Gemini, "gemini-123", d.path(), "source");
+        session.state = "-".into();
+        app.data.sessions = vec![session];
+        app.rebuild();
+        app.select_new("gemini-123");
+        app.text = "unfinished instruction".into();
+        app.fork_selected();
+        assert!(app.status.contains("native conversation id"));
+        assert_eq!(app.text, "unfinished instruction");
+        assert!(app.pending.is_empty() && app.opening.is_none());
+        assert_eq!(app.data.sessions.len(), 1);
+    }
+    #[test]
+    #[ignore = "requires an isolated HOME and an explicitly selected installed native CLI"]
+    fn native_terminal_boot_without_a_model_prompt() {
+        let name = std::env::var("CONES_NATIVE_SMOKE").expect("select a native harness");
+        let root = PathBuf::from(std::env::var("HOME").unwrap());
+        assert!(
+            root.join(".cones-native-fixture").is_file(),
+            "requires disposable HOME"
+        );
+        let kind = harness::by_name(&name).unwrap().kind;
+        assert!(kind.terminal_only());
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let jobs = root.join("jobs.yaml");
+        fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+        let state = root.join("state");
+        let mut app = App::new(Path::new("cones"), &jobs, &state, &root.join(".claude")).unwrap();
+        app.cwd = project;
+        app.harness = harness::launchable()
+            .iter()
+            .position(|k| *k == kind)
+            .unwrap();
+        app.start();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !app.poll_opening() {
+            assert!(
+                Instant::now() < deadline,
+                "launch preparation: {}",
+                app.status
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.viewers.len(), 1, "{}", app.status);
+        while app.viewers[0].viewer.screen().contents().trim().is_empty() {
+            app.pump();
+            assert!(!app.viewers.is_empty(), "CLI exited: {}", app.status);
+            assert!(
+                Instant::now() < deadline,
+                "no terminal paint: {}",
+                app.status
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pid = app.viewers[0].viewer.pid();
+        fs::write(
+            root.join("screen.txt"),
+            app.viewers[0].viewer.screen().contents(),
+        )
+        .unwrap();
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.focus, None);
+        assert_eq!(app.viewers[0].viewer.pid(), pid);
+        app.refresh().unwrap();
+        assert_eq!(app.data.sessions.len(), 1, "{:?}", app.data.sessions);
+        assert_eq!(app.data.sessions[0].pid, Some(pid));
+        assert_eq!(app.data.sessions[0].harness, name);
+        fs::write(
+            root.join("process.txt"),
+            fleet::process_table("/bin/ps")
+                .unwrap()
+                .lines()
+                .filter(|line| line.trim_start().starts_with(&format!("{pid} ")))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            app.data.sessions[0].session_id,
+            format!("{name}-{pid}"),
+            "a placeholder is not process discovery"
+        );
+        assert_eq!(app.data.sessions[0].state, "-");
+        assert!(app.pending.is_empty());
+        assert!(app.data.sessions[0].cost_usd.is_none());
+        let id = app.data.sessions[0].session_id.clone();
+        app.select_new(&id);
+        app.enter().unwrap();
+        assert_eq!(app.focus, Some(0));
+        assert_eq!(app.viewers[0].viewer.pid(), pid);
+        app.close(0);
+        assert!(app.viewers.is_empty());
+        println!("native boot, Ctrl+Z, process row, return and stop passed: {name}");
+    }
+    #[test]
+    fn fork_parentage_survives_process_identity_and_stops_at_the_original_child() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut viewer = viewer_open("opencode:start:fork", "opencode", "FORK");
+        viewer.harness = Some(HarnessKind::Opencode);
+        viewer.fork = Some(ForkedSession {
+            parent: A.into(),
+            home: d.path().into(),
+            requested: None,
+            reported: None,
+            saved: false,
+        });
+        let pid = viewer.viewer.pid();
+        app.viewers.push(viewer);
+        let make = |id: &str, pid: Option<u32>| -> Session {
+            serde_json::from_value(json!({"session_id":id, "harness":"opencode", "cwd":d.path(), "state":"-", "pid":pid})).unwrap()
+        };
+        let mut pending = make("opencode:start:fork", Some(pid));
+        pending.forked_from = Some(A.into());
+        app.data.sessions = vec![make(A, None), pending.clone()];
+        app.pending.push(Pending {
+            session: pending,
+            short: None,
+            fork_home: Some(d.path().into()),
+            at: Instant::now(),
+        });
+        let snapshot = |sessions| {
+            let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+            data.sessions = sessions;
+            data
+        };
+        app.apply(snapshot(vec![make(A, None), make(A, Some(pid))]));
+        assert_eq!(
+            app.viewers[0].key, "opencode:start:fork",
+            "the source id cannot claim the fork"
+        );
+        assert_eq!(app.pending.len(), 1);
+        let process_id = format!("opencode-{pid}");
+        app.apply(snapshot(vec![make(A, None), make(&process_id, Some(pid))]));
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            app.data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == process_id)
+                .unwrap()
+                .forked_from
+                .as_deref(),
+            Some(A)
+        );
+        assert!(
+            crate::forks::read(d.path()).unwrap().is_empty(),
+            "process ids are not persisted as conversations"
+        );
+        app.apply(snapshot(vec![make(A, None), make(B, Some(pid))]));
+        let links = crate::forks::read(d.path()).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!((links[0].parent.as_str(), links[0].child.as_str()), (A, B));
+        assert_eq!(app.viewers[0].key, B);
+        app.apply(snapshot(vec![make(A, None), make(C, Some(pid))]));
+        assert!(
+            app.data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == C)
+                .unwrap()
+                .forked_from
+                .is_none(),
+            "switching conversations must not manufacture another fork"
+        );
+        assert_eq!(crate::forks::read(d.path()).unwrap().len(), 1);
+    }
+    #[test]
+    fn typing_during_preparation_does_not_cancel_a_launch() {
+        let d = dir();
+        let mut app = app(d.path());
+        let (release, wait) = mpsc::channel();
+        app.prepare_viewer(
+            "fixture".into(),
+            "preparing".into(),
+            None,
+            None,
+            move || {
+                wait.recv_timeout(Duration::from_secs(3)).unwrap();
+                Ok(Command::new("/bin/true"))
+            },
+        );
+        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
+        assert!(app.opening.is_some());
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.opening.is_none());
+        assert_eq!(app.status, "opening cancelled");
+        release.send(()).unwrap();
     }
 }

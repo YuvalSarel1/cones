@@ -222,3 +222,22 @@ Model and provider overrides follow [configuration](jobs.md#job-fields-and-defau
 | OpenCode | Supervised jobs are not implemented. Native enforcement and completion reporting remain unverified. Interactive sessions keep OpenCode's own permissions. |
 
 Unsupported jobs parse but fail execution validation, including installation. A direct run records the validation failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).
+
+## Additional terminal harnesses
+
+Gemini CLI, Cursor Agent, GitHub Copilot CLI, Amp, Droid and Kimi have experimental terminal launch and process discovery adapters. They retain their native permission settings. No hooks, config rewriting, transcript scraping or provider credential forwarding is installed for these integrations.
+
+| Harness | Initial interactive instruction | Model selection |
+| --- | --- | --- |
+| Gemini CLI | `--prompt-interactive=<instruction>` | `--model` |
+| Cursor Agent | positional instruction after `--` | `--model` |
+| Copilot CLI | `--interactive=<instruction>` | `--model` |
+| Amp | anonymous stdin file, while stdout remains a terminal | native configuration |
+| Droid | positional instruction after `--` | native configuration |
+| Kimi | `--prompt=<instruction>` | `--model` |
+
+Their YAML definitions explicitly declare no native transcript reader. A process row identifies a client PID, not a conversation. State, model, context, tokens, cost and last reply remain absent. Native history, joins of external terminals, exact conversation identity and supervised execution remain unsupported. Their owned terminal can be left with Ctrl+Z, revisited and stopped; tab and arrows retain native behavior. Changing a harness's `*_enabled` field controls its composer entry and discovery. Model defaults exist only where the native CLI has an interactive model flag.
+
+Native boot, process-row identity, Ctrl+Z, returning to the same viewer and stopping were exercised in disposable homes with Gemini 0.60.0, Cursor Agent 2026.09.15-d2fe57e, Copilot 1.0.86, Amp 0.0.1789704050-g778045, Droid 0.222.0 and Kimi 1.50.0 on September 18, 2026. Kimi reports its process title as `Kimi Code`; management commands that use the same title cannot be distinguished after argv is replaced. Model-backed turns, their native permission questions and conversation reporting are unverified. These launchers are not full harness integrations under the acceptance criteria above.
+
+Native references: [Gemini CLI](https://geminicli.com/docs/cli/cli-reference/), [Cursor Agent](https://cursor.com/docs/cli/reference/parameters), [Copilot CLI](https://docs.github.com/en/copilot/reference/cli-command-reference), [Amp](https://ampcode.com/docs/cli), [Droid](https://docs.factory.ai/reference/cli-reference), [Kimi CLI](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html). Superset's preset catalog supplied leads; flags were checked independently, and its permission-bypass settings are not included.

@@ -17,6 +17,12 @@ fn every_registered_harness_has_a_valid_definition_and_explicit_capabilities() {
             HarnessKind::Codex,
             HarnessKind::Pi,
             HarnessKind::Opencode,
+            HarnessKind::Gemini,
+            HarnessKind::Cursor,
+            HarnessKind::Copilot,
+            HarnessKind::Amp,
+            HarnessKind::Droid,
+            HarnessKind::Kimi,
         ]
     );
     for &(kind, yaml) in BUILTINS {
@@ -364,6 +370,7 @@ fn all_native_transcript_fixtures_pass_through_the_same_history_contract() {
             HarnessKind::Codex => "Done\nAdditional detail",
             HarnessKind::Pi => "Earlier text\nDone",
             HarnessKind::Opencode => unreachable!("SQLite fixtures have their own tests"),
+            _ => unreachable!("this fixture tests the original JSONL readers"),
         };
         assert_eq!(
             preview.messages.last().unwrap().text,
@@ -493,5 +500,59 @@ fn process_filters_change_without_reconfiguring_the_os_parser() {
             .map(|p| p.pid)
             .collect::<Vec<_>>(),
         [2]
+    );
+}
+
+#[test]
+fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts() {
+    let dir = tempfile::tempdir().unwrap();
+    let native = dir.path().join("cursor-agent");
+    fs::write(&native, "fixture").unwrap();
+    let alias = dir.path().join("agent");
+    std::os::unix::fs::symlink(&native, &alias).unwrap();
+    let alias_command = format!("{} -- hello", alias.display());
+    let commands = [
+        "/usr/bin/node /opt/node_modules/@google/gemini-cli/bundle/gemini.js --prompt-interactive=hello",
+        "/usr/bin/python3 /tools/bin/kimi --prompt=hello",
+        &alias_command,
+        "/bin/echo gemini --prompt-interactive=hello",
+        "/usr/bin/node /tools/other.js /opt/node_modules/@google/gemini-cli/bundle/gemini.js",
+        "/tools/bin/gemini mcp list",
+        "/tools/bin/agent other-service",
+        "/usr/bin/python-backup /tools/bin/kimi",
+    ];
+    let table = commands
+        .iter()
+        .enumerate()
+        .map(|(i, c)| format!("{} Sun Sep 13 15:19:19 2026 {c}\n", i + 1))
+        .collect::<String>();
+    for (kind, expected) in [
+        (HarnessKind::Gemini, vec![1]),
+        (HarnessKind::Kimi, vec![2]),
+        (HarnessKind::Cursor, vec![3]),
+    ] {
+        assert_eq!(
+            spec(kind)
+                .discovery
+                .processes(&table)
+                .iter()
+                .map(|p| p.pid)
+                .collect::<Vec<_>>(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn kimi_process_titles_are_exact_and_cannot_be_claimed_by_an_argument() {
+    let table = " 1 Sun Sep 13 15:19:19 2026 Kimi Code\n 2 Sun Sep 13 15:19:19 2026 /bin/echo Kimi Code\n 3 Sun Sep 13 15:19:19 2026 Kimi Code other\n";
+    assert_eq!(
+        spec(HarnessKind::Kimi)
+            .discovery
+            .processes(table)
+            .iter()
+            .map(|p| p.pid)
+            .collect::<Vec<_>>(),
+        [1]
     );
 }

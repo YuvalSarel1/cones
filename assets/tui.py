@@ -314,6 +314,8 @@ def main():
             "PATH": os.environ["PATH"],
             "CONES_README_FIXTURE": str(root),
         })
+        if target := os.environ.get("CARGO_TARGET_DIR"):
+            env["CARGO_TARGET_DIR"] = str(Path(target).resolve())
         try:
             run_capture(
                 [str(REPO / "scripts/check"), "test", "--lib", "tui::readme_capture::capture",

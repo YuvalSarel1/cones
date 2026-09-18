@@ -309,6 +309,8 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
     })
     (root / "jobs.yaml").write_text(
         "version: 3\ncolumns: [harness, state, context]\n"
+        "defaults:\n  gemini_enabled: false\n  cursor_enabled: false\n"
+        "  copilot_enabled: false\n  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\n"
         "pane:\n  at: right\n  ratio: 47\njobs: []\n"
     )
     return env

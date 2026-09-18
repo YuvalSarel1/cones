@@ -1,0 +1,31 @@
+version: 2
+kind: droid
+icon: "◆"
+home:
+  env: ""
+  default: {base: provided_parent, path: .factory}
+discovery:
+  process: droid
+  exclude_subcommands: ["--help", "-h", "--version", "auth", "login", "logout", "mcp", "update", "exec"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    prompt: [--, "{prompt}"]
+    probe:
+      args: [--help]
+      contains: [--help]
+      error: "droid does not support the required native command"
+      description: "droid: terminal launch; external sessions remain in their own terminals"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

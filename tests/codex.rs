@@ -98,6 +98,7 @@ fn a_rollout_belongs_to_the_only_process_in_its_directory() {
         (
             PathBuf::from(name),
             Meta {
+                forked_from: None,
                 session_id: name.into(),
                 cwd: PathBuf::from(cwd),
                 started: at(started),

@@ -155,6 +155,41 @@ pub fn require_session(db: &Path, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// A route report names a conversation, not a database. Resolve that exact id and
+/// directory, retaining a known database when the viewer came from history.
+pub fn session_database(
+    home: &Path,
+    id: &str,
+    cwd: &Path,
+    preferred: Option<&Path>,
+) -> Result<PathBuf> {
+    let paths = if let Some(path) = preferred {
+        ensure!(path.is_file(), "the source database no longer exists");
+        vec![path.to_owned()]
+    } else {
+        databases(home)?
+    };
+    let mut found = Vec::new();
+    for path in paths {
+        let rows = query(
+            &path,
+            &format!("SELECT directory FROM session WHERE id = {}", operand(id)?),
+        )?;
+        if rows.iter().any(|r| {
+            r["directory"]
+                .as_str()
+                .is_some_and(|dir| Path::new(dir) == cwd)
+        }) {
+            found.push(path);
+        }
+    }
+    ensure!(
+        found.len() == 1,
+        "OpenCode fork needs one database containing the reported conversation and directory"
+    );
+    Ok(found.remove(0))
+}
+
 /// The directory, title and timestamps are native fields, never filesystem fallbacks.
 pub(crate) fn history(db: &Path, home: &Path) -> Result<Vec<Entry>> {
     entries(db, home, "")
@@ -560,6 +595,7 @@ pub fn rows(home: &Path, procs: &[Process]) -> Result<Vec<Session>> {
                 effort: None,
                 usage: None,
                 coordinator: false,
+                forked_from: None,
                 activity: Vec::new(),
             })
         })

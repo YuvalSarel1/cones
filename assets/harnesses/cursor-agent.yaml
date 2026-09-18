@@ -1,0 +1,33 @@
+version: 2
+kind: cursor-agent
+icon: "↗"
+home:
+  env: ""
+  default: {base: provided_parent, path: .cursor}
+discovery:
+  process: cursor-agent
+  aliases: [agent]
+  exclude_subcommands: ["--help", "-h", "--version", "login", "logout", "status", "update", "install-shell-integration", "mcp", "create-chat"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    prompt: [--, "{prompt}"]
+    model: --model
+    probe:
+      args: [--help]
+      contains: [--help]
+      error: "cursor-agent does not support the required native command"
+      description: "cursor-agent: terminal launch; external sessions remain in their own terminals"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

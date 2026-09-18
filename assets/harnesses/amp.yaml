@@ -1,0 +1,32 @@
+version: 2
+kind: amp
+icon: "&"
+home:
+  env: ""
+  default: {base: provided_parent, path: .local/share/amp}
+discovery:
+  process: amp
+  exclude_subcommands: ["--help", "-h", "--version", "login", "logout", "threads", "mcp", "tools", "usage", "update"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    stdin_prompt: true
+    prompt: [--, "{prompt}"]
+    probe:
+      args: [--help]
+      contains: [--help]
+      error: "amp does not support the required native command"
+      description: "amp: terminal launch; external sessions remain in their own terminals"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

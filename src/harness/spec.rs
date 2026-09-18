@@ -27,6 +27,30 @@ const BUILTINS: &[(HarnessKind, &str)] = &[
         HarnessKind::Opencode,
         include_str!("../../assets/harnesses/opencode.yaml"),
     ),
+    (
+        HarnessKind::Gemini,
+        include_str!("../../assets/harnesses/gemini.yaml"),
+    ),
+    (
+        HarnessKind::Cursor,
+        include_str!("../../assets/harnesses/cursor-agent.yaml"),
+    ),
+    (
+        HarnessKind::Copilot,
+        include_str!("../../assets/harnesses/copilot.yaml"),
+    ),
+    (
+        HarnessKind::Amp,
+        include_str!("../../assets/harnesses/amp.yaml"),
+    ),
+    (
+        HarnessKind::Droid,
+        include_str!("../../assets/harnesses/droid.yaml"),
+    ),
+    (
+        HarnessKind::Kimi,
+        include_str!("../../assets/harnesses/kimi.yaml"),
+    ),
 ];
 
 static SPECS: LazyLock<Vec<HarnessSpec>> = LazyLock::new(|| {
@@ -116,6 +140,7 @@ pub struct Operations {
     pub launch: Option<Launch>,
     pub attach: Option<Operation>,
     pub resume: Option<Operation>,
+    pub fork: Option<Operation>,
     pub remove: Option<Operation>,
     pub unarchive: Option<Operation>,
     #[serde(default)]
@@ -181,6 +206,11 @@ pub struct Discovery {
     #[serde(default)]
     pub exclude_subcommands: Vec<String>,
     pub process: Option<String>,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub entrypoints: Vec<PathBuf>,
+    pub process_title: Option<String>,
 }
 
 /// A daemon that holds threads with no client attached, and the two files in the home that say
@@ -201,11 +231,42 @@ impl Discovery {
         crate::fleet::process_lines(ps)
             .into_iter()
             .filter(|line| {
+                if self.process_title.as_deref() == Some(line.command.trim()) {
+                    return true;
+                }
                 let mut words = line.command.split_whitespace();
-                words
-                    .next()
-                    .and_then(|name| Path::new(name).file_name())
-                    .is_some_and(|name| name == program.as_str())
+                let first = words.next().unwrap_or("");
+                let executable = Path::new(first)
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or("");
+                let native = |name: &str| name == program;
+                let alias = self.aliases.iter().any(|name| name == executable)
+                    && Path::new(first)
+                        .canonicalize()
+                        .ok()
+                        .and_then(|p| p.file_name().map(OsStr::to_owned))
+                        .is_some_and(|name| name == program.as_str());
+                let python = executable
+                    .strip_prefix("python")
+                    .is_some_and(|tail| tail.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
+                let matches = if native(executable) || alias {
+                    true
+                } else if matches!(executable, "node" | "bun") || python {
+                    words.next().is_some_and(|script| {
+                        Path::new(script)
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .is_some_and(native)
+                            || self
+                                .entrypoints
+                                .iter()
+                                .any(|suffix| Path::new(script).ends_with(suffix))
+                    })
+                } else {
+                    false
+                };
+                matches
                     && !words.next().is_some_and(|arg| {
                         self.exclude_subcommands
                             .iter()
@@ -298,6 +359,7 @@ pub enum Native {
     Codex,
     Pi,
     Opencode,
+    External(HarnessKind),
 }
 
 impl Native {
@@ -307,11 +369,12 @@ impl Native {
             Self::Codex => crate::codex::sessions(home),
             Self::Pi => crate::pi::sessions(home),
             Self::Opencode => crate::opencode::sessions(home),
+            Self::External(kind) => crate::agents::sessions(kind, home),
         }
     }
 
     /// Adding a native reader requires an adapter for the shared accounting path.
-    /// There is deliberately no default or "cost unsupported" branch.
+    /// Terminal-only entries cannot interpret usage until they acquire native readers.
     pub(crate) fn accounting(self) -> Box<dyn crate::cost::Reader> {
         use crate::cost::Accounting;
         match self {
@@ -319,6 +382,7 @@ impl Native {
             Self::Codex => Box::new(Accounting::<crate::codex::CostAdapter>::default()),
             Self::Pi => Box::new(Accounting::<crate::pi::CostAdapter>::default()),
             Self::Opencode => Box::new(Accounting::<crate::opencode::CostAdapter>::default()),
+            Self::External(kind) => crate::agents::accounting(kind),
         }
     }
 }
@@ -337,12 +401,24 @@ fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {
         ),
         HarnessKind::Pi => (Native::Pi, LaunchHandler::Terminal, Resume::Transcript),
         HarnessKind::Opencode => (Native::Opencode, LaunchHandler::Terminal, Resume::SessionId),
+        kind @ HarnessKind::Gemini
+        | kind @ HarnessKind::Cursor
+        | kind @ HarnessKind::Copilot
+        | kind @ HarnessKind::Amp
+        | kind @ HarnessKind::Droid
+        | kind @ HarnessKind::Kimi => (
+            Native::External(kind),
+            LaunchHandler::Terminal,
+            Resume::SessionId,
+        ),
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Transcript {
+    #[serde(default = "yes")]
+    pub available: bool,
     #[serde(skip)]
     pub handler: Native,
     pub roots: Vec<ScanRoot>,
@@ -463,7 +539,7 @@ impl Transcript {
         self.roots
             .iter()
             .find(|root| !root.archived)
-            .expect("validated live root")
+            .expect("this harness has no native transcript root")
     }
 
     pub fn live_path(&self, home: &Path) -> PathBuf {
@@ -545,6 +621,10 @@ pub struct Launch {
     /// AWS the same way, so cones passes them to all of them.
     pub bedrock: Option<String>,
     pub prompt: Vec<String>,
+    #[serde(default)]
+    pub stdin_prompt: bool,
+    #[serde(default)]
+    pub prompt_flag: Option<String>,
     pub probe: Probe,
 }
 
@@ -865,13 +945,14 @@ impl HarnessSpec {
         );
         ensure!(!self.icon.trim().is_empty(), "harness icon is empty");
         ensure!(
-            !self.home.env.is_empty()
-                && self
-                    .home
-                    .env
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                && !self.home.env.as_bytes()[0].is_ascii_digit(),
+            (self.home.env.is_empty() && self.kind.terminal_only())
+                || (!self.home.env.is_empty()
+                    && self
+                        .home
+                        .env
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                    && !self.home.env.as_bytes()[0].is_ascii_digit()),
             "invalid home environment variable"
         );
         match &self.home.default {
@@ -905,13 +986,32 @@ impl HarnessSpec {
                 "invalid native process name"
             );
         }
+        for alias in &self.discovery.aliases {
+            ensure!(
+                !alias.is_empty() && !alias.contains(|c: char| c.is_whitespace() || c == '/'),
+                "invalid executable alias"
+            );
+        }
+        for path in &self.discovery.entrypoints {
+            relative(path)?;
+        }
+        if let Some(title) = &self.discovery.process_title {
+            ensure!(
+                !title.trim().is_empty()
+                    && title.len() <= 128
+                    && !title.chars().any(char::is_control),
+                "invalid native process title"
+            );
+        }
         ensure!(
             (self.kind == HarnessKind::Claude)
                 == (self.state.handler == StateHandler::ClaudeRegistry),
             "state handler does not implement this harness"
         );
         ensure!(
-            (self.state.handler == StateHandler::ClaudeRegistry) == self.state.rules.is_empty(),
+            self.kind.terminal_only()
+                || (self.state.handler == StateHandler::ClaudeRegistry)
+                    == self.state.rules.is_empty(),
             "registry state uses its native handler; event state requires rules"
         );
         for rule in &self.state.rules {
@@ -930,9 +1030,17 @@ impl HarnessSpec {
             );
             relative(&siblings.marker)?;
         }
-        ensure!(!self.transcript.roots.is_empty(), "no transcript roots");
         ensure!(
-            self.transcript.roots.iter().filter(|r| !r.archived).count() == 1,
+            self.transcript.available != self.kind.terminal_only(),
+            "native readers require transcript definitions"
+        );
+        ensure!(
+            self.transcript.available != self.transcript.roots.is_empty(),
+            "available transcripts need roots; unavailable transcripts must not invent roots"
+        );
+        ensure!(
+            self.transcript.roots.iter().filter(|r| !r.archived).count()
+                == usize::from(self.transcript.available),
             "exactly one live transcript root is required"
         );
         let mut roots = HashSet::new();
@@ -960,7 +1068,10 @@ impl HarnessSpec {
             if let Some(id) = &message.id {
                 pointer(id)?;
             }
-            ensure!(!message.sources.is_empty(), "missing message sources");
+            ensure!(
+                self.transcript.available != message.sources.is_empty(),
+                "message sources must match transcript availability"
+            );
             for source in &message.sources {
                 ensure!(
                     !source.when.is_empty(),
@@ -986,12 +1097,20 @@ impl HarnessSpec {
             ensure!(
                 launch.prompt.last().map(String::as_str) == Some("{prompt}")
                     && launch.prompt.iter().filter(|a| *a == "{prompt}").count() == 1
-                    && (launch.prompt.iter().any(|a| a == "--") || named_prompt),
+                    && (launch.prompt.iter().any(|a| a == "--")
+                        || named_prompt
+                        || launch.prompt_flag.is_some()
+                        || launch.stdin_prompt),
                 "launch must pass one prompt after --, or OpenCode's --prompt"
             );
-            for flag in [&launch.model, &launch.provider, &launch.effort]
-                .into_iter()
-                .flatten()
+            for flag in [
+                &launch.model,
+                &launch.provider,
+                &launch.effort,
+                &launch.prompt_flag,
+            ]
+            .into_iter()
+            .flatten()
             {
                 ensure!(
                     flag.starts_with('-')
@@ -1001,6 +1120,14 @@ impl HarnessSpec {
                 );
             }
             ensure!(
+                !launch.stdin_prompt || launch.handler == LaunchHandler::Terminal,
+                "stdin prompts require a terminal adapter"
+            );
+            ensure!(
+                !launch.stdin_prompt || launch.prompt_flag.is_none(),
+                "stdin and a named prompt flag are mutually exclusive"
+            );
+            ensure!(
                 launch.provider.is_none() || self.kind == HarnessKind::Pi,
                 "provider selection requires a native provider adapter"
             );
@@ -1008,6 +1135,7 @@ impl HarnessSpec {
         for operation in [
             &self.operations.attach,
             &self.operations.resume,
+            &self.operations.fork,
             &self.operations.remove,
             &self.operations.unarchive,
         ]
@@ -1018,6 +1146,17 @@ impl HarnessSpec {
             if let Some(probe) = &operation.probe {
                 probe.validate()?;
             }
+        }
+        if let Some(fork) = &self.operations.fork {
+            ensure!(
+                !self.kind.terminal_only(),
+                "fork requires a verified native adapter"
+            );
+            validate_args(
+                &fork.args,
+                &["id", "short_id", "remote", "transcript", "new_id"],
+            )?;
+            require_operand(&fork.args, &["{id}", "{transcript}"])?;
         }
         validate_args(&self.commands.attach, &["id", "short_id", "remote"])?;
         validate_args(
@@ -1238,7 +1377,10 @@ impl Home {
         self.resolve_with(
             claude,
             &dirs::home_dir().unwrap_or_default(),
-            std::env::var_os(&self.env).as_deref(),
+            (!self.env.is_empty())
+                .then(|| std::env::var_os(&self.env))
+                .flatten()
+                .as_deref(),
         )
     }
 
@@ -1265,6 +1407,9 @@ impl Home {
 
     /// Preserve the native meaning of home overrides when resuming a saved session.
     pub fn set_command_home(&self, command: &mut std::process::Command, home: &Path) {
+        if self.env.is_empty() {
+            return;
+        }
         let value = match &self.default {
             HomeDefault::XdgData { path } => home
                 .ancestors()

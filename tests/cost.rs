@@ -1,4 +1,4 @@
-//! Every registered harness must price the same usage through its live and history readers.
+//! Every registered native transcript reader must price the same usage through its live and history readers.
 //! This binary alone owns its in-process price service; no harness or model is started.
 use chrono::{DateTime, Utc};
 use cones::{codex, config::HarnessKind, cost, fleet, harness, history, opencode, pi};
@@ -51,6 +51,12 @@ impl Fixture {
             HarnessKind::Codex => format!("sessions/2026/09/16/rollout-{ID}.jsonl"),
             HarnessKind::Pi => format!("sessions/--fixture--/{ID}.jsonl"),
             HarnessKind::Opencode => "opencode.db".into(),
+            HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => unreachable!("terminal-only capabilities checked separately"),
         });
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         if kind == HarnessKind::Claude {
@@ -94,6 +100,12 @@ impl Fixture {
             HarnessKind::Pi => vec![json!({
                 "type":"session","id":ID,"cwd":"/fixture","timestamp":AT
             })],
+            HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => unreachable!("no native archive"),
             HarnessKind::Opencode => {
                 sql(
                     &self.path,
@@ -107,6 +119,12 @@ impl Fixture {
             let native = if n == 2 && native_response { 0.2 } else { 0.0 };
             let id = format!("message-{n}");
             let event = match self.kind {
+                HarnessKind::Gemini
+                | HarnessKind::Cursor
+                | HarnessKind::Copilot
+                | HarnessKind::Amp
+                | HarnessKind::Droid
+                | HarnessKind::Kimi => unreachable!("no native archive"),
                 HarnessKind::Claude => json!({
                     "type":"assistant","timestamp":AT,
                     "message":{"id":id,"provider":"provider","model":model,
@@ -166,6 +184,12 @@ impl Fixture {
         let pid = std::process::id();
         let cwd = Some(PathBuf::from("/fixture"));
         let rows = match self.kind {
+            HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => unreachable!("native usage is unavailable"),
             HarnessKind::Claude => fleet::sessions(&self.home).unwrap(),
             HarnessKind::Codex => codex::rows(
                 &self.home,
@@ -205,7 +229,14 @@ impl Fixture {
                 .unwrap();
             }
             HarnessKind::Opencode => sql(&self.path, &format!("UPDATE session SET cost = {usd};")),
-            HarnessKind::Pi | HarnessKind::Codex => unreachable!("no native session total"),
+            HarnessKind::Pi
+            | HarnessKind::Codex
+            | HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => unreachable!("no native session total"),
         }
     }
 }
@@ -285,6 +316,9 @@ fn every_registered_harness_inherits_fallback_precedence_coverage_and_cache_refr
     let state = dir.path().join("prices");
     let missing = dir.path().join("missing");
     for &kind in harness::known() {
+        if !harness::spec(kind).transcript.available {
+            continue;
+        }
         let fixture = Fixture::new(dir.path(), kind);
         let mut reader = history::Reader::new(vec![history::Source {
             harness: kind,
@@ -338,6 +372,12 @@ fn every_registered_harness_inherits_fallback_precedence_coverage_and_cache_refr
             "{kind}"
         );
         match kind {
+            HarnessKind::Gemini
+            | HarnessKind::Cursor
+            | HarnessKind::Copilot
+            | HarnessKind::Amp
+            | HarnessKind::Droid
+            | HarnessKind::Kimi => unreachable!("no native archive"),
             HarnessKind::Claude | HarnessKind::Opencode => {
                 fixture.native_total(0.9);
                 let native = assert_cost(&fixture, &mut reader, true, Some(0.9), Complete);

@@ -49,6 +49,14 @@ operations:
       version: {format: text}
       error: "this pi does not run, so no session could be started"
       description: "pi {version}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach"
+  fork:
+    args: [--fork, "{transcript}", --session-id, "{new_id}"]
+    probe:
+      args: [--help]
+      require_success: false
+      contains: [--fork, --session-id]
+      error: "this pi does not support native forks"
+      description: "pi: native session forks"
   resume:
     args: [--session, "{transcript}"]
 execution:

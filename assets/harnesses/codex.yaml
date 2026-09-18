@@ -74,6 +74,14 @@ operations:
       description: "codex {version}: threads behind the app-server daemon (experimental in Codex)"
   attach:
     args: [--remote, "{remote}", resume, --, "{id}"]
+  fork:
+    args: [--remote, "{remote}", fork, --, "{id}"]
+    probe:
+      args: [--help]
+      require_success: false
+      contains: [fork]
+      error: "this codex does not support native forks"
+      description: "codex: native session forks"
   resume:
     args: [--remote, "{remote}", resume, --, "{id}"]
   unarchive:

@@ -69,6 +69,7 @@ pub struct Process {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
     pub session_id: String,
+    pub forked_from: Option<String>,
     pub cwd: PathBuf,
     pub started: DateTime<Utc>,
 }
@@ -390,6 +391,7 @@ pub fn meta(line: &str) -> Option<Meta> {
     }
     Some(Meta {
         session_id: id.into(),
+        forked_from: p["forked_from_id"].as_str().map(str::to_owned),
         cwd: PathBuf::from(p["cwd"].as_str()?),
         started: DateTime::parse_from_rfc3339(p["timestamp"].as_str()?)
             .ok()?
@@ -794,6 +796,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 cost_info,
                 last: t.last,
                 coordinator: false,
+                forked_from: rollout.and_then(|(_, meta)| meta.forked_from.clone()),
                 activity: t.activity,
             }
         })
@@ -932,6 +935,7 @@ pub(crate) fn thread_rows_observed(
                 effort: tail.effort,
                 usage: None,
                 started: meta
+                    .as_ref()
                     .map(|m| m.started)
                     .or_else(|| record.as_ref().map(|t| t.started)),
                 pid: None,
@@ -944,6 +948,7 @@ pub(crate) fn thread_rows_observed(
                 cost_info,
                 last: tail.last,
                 coordinator: false,
+                forked_from: meta.and_then(|m| m.forked_from),
                 activity: tail.activity,
                 session_id: id,
             })

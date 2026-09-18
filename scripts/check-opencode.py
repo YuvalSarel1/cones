@@ -213,8 +213,9 @@ def main():
         for line in output.splitlines():
             words = line.split(None, 2)
             if len(words) == 3 and words[1] == str(child.pid):
-                program = words[2].split()[0]
-                if Path(program).name == "opencode":
+                argv = words[2].split()
+                program = argv[0]
+                if Path(program).name == "opencode" and argv[1:2] not in (["--help"], ["--version"]):
                     found.add(int(words[0]))
         native_pids.update(found)
         return found
@@ -305,8 +306,33 @@ def main():
             ["/bin/ps", "-ww", "-p", str(resumed), "-o", "command="], text=True)
         assert f"--session {ids[0]}" in command, command
         checks.append("resume uses the original native session id")
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+            source_messages = connection.execute("SELECT id FROM message WHERE session_id=? ORDER BY id", (ids[0],)).fetchall()
+        keys("C-z")
+        wait("fork offered for the resumed conversation", lambda: "ctrl+y fork" in screen())
+        keys("C-y")
+        def fork_record():
+            path = state / "forks.json"
+            if not path.exists():
+                return None
+            return next((row for row in json.loads(path.read_text())
+                         if row["harness"] == "opencode" and row["parent"] == ids[0]
+                         and row["child"] != ids[0]), None)
+        wait("fork opened a second native viewer", lambda: len(pids()) == 2 and resumed in pids())
+        fork = wait("fork relationship uses the new native identity", fork_record)
+        keys("Enter")
+        wait("fork replays the inherited conversation", lambda: REPLY in screen() and "← back" in screen())
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+            assert connection.execute("SELECT id FROM session WHERE id=?", (fork["child"],)).fetchone()
+            assert connection.execute("SELECT count(*) FROM message WHERE session_id=?", (fork["child"],)).fetchone()[0] > 0
+            assert connection.execute("SELECT id FROM message WHERE session_id=? ORDER BY id", (ids[0],)).fetchall() == source_messages
+        checks.append("fork inherits messages without changing the source")
+        keys("C-z")
+        wait("fork is indented in the main list", lambda: "↳" in screen())
+        keys("C-x", "C-x")
+        wait("stopping the fork keeps its parent alive", lambda: pids() == {resumed})
         result = {"opencode_version": version, "checks": checks, "provider": "loopback fixture",
-                  "requests": requests, "session_id": ids[0]}
+                  "requests": requests, "session_id": ids[0], "fork_id": fork["child"]}
         (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result, indent=2), flush=True)
     finally:

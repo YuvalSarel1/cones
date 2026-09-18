@@ -51,6 +51,22 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
     (read == size).then(|| path(&info.pvi_cdir)).flatten()
 }
 
+pub fn parent(pid: u32) -> Option<u32> {
+    let pid = i32::try_from(pid).ok().filter(|p| *p > 1)?;
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let read = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            size,
+        )
+    };
+    (read == size).then_some(info.pbi_ppid)
+}
+
 pub struct OpenFile {
     pub device: u64,
     pub inode: u64,

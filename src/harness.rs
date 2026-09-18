@@ -59,6 +59,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
+    let path = native_executable(kind, path);
     leave_and_return(kind)?;
     let mut start = match launch.handler {
         spec::LaunchHandler::ClaudeBackground => {
@@ -93,7 +94,133 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
         policy.aws_profile.as_deref(),
         policy.aws_region.as_deref(),
     );
+    if launch.stdin_prompt && !prompt.is_empty() {
+        let Start::Foreground(command) = start else {
+            bail!("stdin prompts require a terminal harness");
+        };
+        return Ok(Start::Foreground(stdin_prompt(command, prompt)?));
+    }
     Ok(start)
+}
+
+/// Copilot's npm shim waits on a native child. Spawn that same packaged binary so
+/// the viewer PID is the client PID; arbitrary user wrappers keep their behavior.
+fn native_executable(kind: HarnessKind, path: PathBuf) -> PathBuf {
+    if kind != HarnessKind::Copilot || !cfg!(target_os = "macos") {
+        return path;
+    }
+    let Some(loader) = path
+        .canonicalize()
+        .ok()
+        .filter(|p| p.ends_with("@github/copilot/npm-loader.js"))
+    else {
+        return path;
+    };
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        _ => return path,
+    };
+    let Some(scope) = loader.parent().and_then(Path::parent) else {
+        return path;
+    };
+    let package = scope.join(format!("copilot-darwin-{arch}"));
+    executable("copilot", &package.to_string_lossy()).unwrap_or(path)
+}
+
+fn stdin_prompt(mut command: std::process::Command, prompt: &str) -> Result<std::process::Command> {
+    use std::{
+        io::{Seek, Write},
+        os::{fd::AsRawFd, unix::process::CommandExt},
+    };
+    let mut input = tempfile::tempfile()?;
+    input.write_all(prompt.as_bytes())?;
+    input.rewind()?;
+    // The captured anonymous file is dropped if launch is cancelled. In the child,
+    // only async-signal-safe descriptor operations run before exec.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::lseek(input.as_raw_fd(), 0, libc::SEEK_SET) < 0
+                || libc::dup2(input.as_raw_fd(), libc::STDIN_FILENO) < 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(command)
+}
+
+/// Fork through the native CLI. No transcript copying and no synthetic user turn.
+pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy) -> Result<Start> {
+    let mut entry = entry.clone();
+    if entry.key.harness == "opencode" {
+        entry.transcript = crate::opencode::session_database(
+            &entry.key.home,
+            &entry.key.session_id,
+            &entry.cwd,
+            (!entry.transcript.as_os_str().is_empty()).then_some(entry.transcript.as_path()),
+        )?;
+    }
+    ensure!(entry.cwd.is_dir(), "the session folder no longer exists");
+    ensure!(
+        entry.transcript.is_file(),
+        "the source transcript no longer exists"
+    );
+    ensure!(
+        !entry.archived,
+        "resume an archived session before forking it"
+    );
+    let spec = by_name(&entry.key.harness).context("unknown fork harness")?;
+    check_operation(spec, &spec.operations.fork, "fork")?;
+    if spec.kind == HarnessKind::Pi {
+        ensure!(
+            new_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
+            "pi fork requires an exact new session UUID"
+        );
+    }
+    let template = &spec.operations.fork.as_ref().expect("checked fork").args;
+    let path = executable(&spec.name, &launch_path())
+        .with_context(|| format!("{} not found", spec.name))?;
+    let mut command = if spec.kind == HarnessKind::Codex {
+        codex_client(
+            &entry.key.home,
+            &entry.key.session_id,
+            &entry.cwd,
+            template,
+            false,
+        )?
+    } else {
+        let mut command = std::process::Command::new(path);
+        command
+            .args(spec::args(
+                template,
+                &[
+                    ("id", entry.key.session_id.as_ref()),
+                    ("transcript", entry.transcript.as_os_str()),
+                    ("new_id", new_id.unwrap_or("").as_ref()),
+                ],
+            )?)
+            .current_dir(&entry.cwd);
+        if spec.kind == HarnessKind::Opencode {
+            crate::opencode::require_session(&entry.transcript, &entry.key.session_id)?;
+            command
+                .env("OPENCODE_DB", &entry.transcript)
+                .env(crate::opencode::reporting::ENABLE, "1");
+        }
+        command
+    };
+    spec.home.set_command_home(&mut command, &entry.key.home);
+    if let Some(launch) = &spec.launch {
+        provider_env(
+            &mut command,
+            launch,
+            policy.bedrock,
+            policy.aws_profile.as_deref(),
+            policy.aws_region.as_deref(),
+        );
+    }
+    Ok(Start::Foreground(command))
 }
 
 /// AWS_PROFILE and AWS_REGION go to every harness: each resolves AWS through the same
@@ -157,7 +284,14 @@ pub fn session_args(
             args.extend([OsString::from(flag), value.into()]);
         }
     }
-    if kind == HarnessKind::Opencode {
+    if kind.terminal_only() && prompt.is_empty() {
+        return Ok(args);
+    }
+    if launch.stdin_prompt {
+        // This payload is attached to stdin after constructing the native command.
+    } else if let Some(flag) = &launch.prompt_flag {
+        args.push(format!("{flag}={prompt}").into());
+    } else if kind == HarnessKind::Opencode {
         // OpenCode's positional argument is a project. Assignment also keeps a
         // prompt beginning with "--" from being interpreted as another option.
         args.push(format!("--prompt={prompt}").into());
@@ -952,7 +1086,18 @@ mod tests {
     fn the_composer_offers_every_harness_claude_first() {
         assert_eq!(
             known().iter().map(ToString::to_string).collect::<Vec<_>>(),
-            ["claude", "codex", "pi", "opencode"],
+            [
+                "claude",
+                "codex",
+                "pi",
+                "opencode",
+                "gemini",
+                "cursor-agent",
+                "copilot",
+                "amp",
+                "droid",
+                "kimi"
+            ],
             "shift+tab cycles in this order and start.harness defaults to the first"
         );
     }
@@ -1083,5 +1228,43 @@ mod tests {
             codex_remote(&program, &home).unwrap().1,
             format!("unix://{}", second_path.display())
         );
+    }
+    #[test]
+    fn stdin_prompt_preserves_literal_bytes_in_an_anonymous_file() {
+        let prompt = "--model fake\n$(touch should-not-exist) `echo nope` 'quoted'\n";
+        let mut cat = std::process::Command::new("/bin/cat");
+        cat.env("CONES_TEST_STDIN", "yes");
+        let mut command = stdin_prompt(cat, prompt).unwrap();
+        assert_eq!(command.get_program(), "/bin/cat");
+        assert_eq!(command.get_args().count(), 0);
+        let out = command.output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, prompt.as_bytes());
+        assert_eq!(
+            command.output().unwrap().stdout,
+            prompt.as_bytes(),
+            "reusing a prepared command rewinds its input"
+        );
+    }
+
+    #[test]
+    fn terminal_harness_prompts_remain_single_native_operands_without_permission_bypasses() {
+        let prompt = "--model=other; $(echo surprise)\nsecond line";
+        for &kind in known().iter().filter(|k| k.terminal_only()) {
+            let args = session_args(kind, None, prompt, &Policy::default()).unwrap();
+            let args: Vec<_> = args.iter().map(|s| s.to_str().unwrap()).collect();
+            match kind {
+                HarnessKind::Gemini => assert_eq!(args, [format!("--prompt-interactive={prompt}")]),
+                HarnessKind::Copilot => assert_eq!(args, [format!("--interactive={prompt}")]),
+                HarnessKind::Kimi => assert_eq!(args, [format!("--prompt={prompt}")]),
+                HarnessKind::Amp => assert!(args.is_empty()),
+                HarnessKind::Cursor | HarnessKind::Droid => assert_eq!(args, ["--", prompt]),
+                _ => unreachable!(),
+            }
+            assert!(adapter(kind).is_err());
+            assert!(!spec(kind).transcript.available);
+            assert!(spec(kind).operations.resume.is_none());
+            assert!(spec(kind).operations.fork.is_none());
+        }
     }
 }

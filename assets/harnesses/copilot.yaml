@@ -1,0 +1,33 @@
+version: 2
+kind: copilot
+icon: "◉"
+home:
+  env: ""
+  default: {base: provided_parent, path: .copilot}
+discovery:
+  process: copilot
+  exclude_subcommands: ["--help", "-h", "--version", "login", "logout", "help", "version", "update"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    prompt: [--, "{prompt}"]
+    prompt_flag: --interactive
+    model: --model
+    probe:
+      args: [--help]
+      contains: [--interactive]
+      error: "copilot does not support the required native command"
+      description: "copilot: terminal launch; external sessions remain in their own terminals"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

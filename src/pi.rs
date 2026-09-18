@@ -282,41 +282,72 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
             let file = alone
                 .then(|| p.cwd.as_deref().and_then(|cwd| session_file(pi, cwd, p)))
                 .flatten();
-            let t = file
-                .as_ref()
-                .map(|(path, _)| tail_of(path))
-                .unwrap_or_default();
-            let (cost_usd, cost_info) = t.costs.report(None);
-            Session {
-                title: t.name.or(t.prompt),
-                session_id: file
-                    .as_ref()
-                    .map_or_else(|| format!("pi-{}", p.pid), |(_, m)| m.session_id.clone()),
-                harness: "pi".into(),
-                kind: None,
-                cwd: p.cwd.clone().unwrap_or_default(),
-                state: t.state.unwrap_or("-").into(),
-                last_activity: t.last_activity,
-                model: t.model,
-                started: Some(p.started),
-                pid: Some(p.pid),
-                transcript_path: file.as_ref().map(|(path, _)| path.clone()),
-                tokens_in: (t.tokens_in > 0).then_some(t.tokens_in),
-                tokens_out: (t.tokens_out > 0).then_some(t.tokens_out),
-                context_tokens: t.context_tokens,
-                context_window: None,
-                cost_usd,
-                cost_info,
-                last: t.last,
-                effort: None,
-                usage: None,
-                coordinator: false,
-                activity: t.activity,
-            }
+            row(p, file)
         })
         .collect();
     out.sort_by_key(|s| s.started);
     out
+}
+
+/// Read only the id supplied to this owned CLI through --session-id.
+pub fn session_for_id(home: &Path, process: &Process, id: &str) -> Option<Session> {
+    use std::io::{BufRead, BufReader, Read};
+    let cwd = process.cwd.as_deref()?;
+    let matches: Vec<_> = fs::read_dir(session_dir(home, cwd))
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            if !e.file_type().ok()?.is_file() || e.path().extension()? != "jsonl" {
+                return None;
+            }
+            let file = fs::File::open(e.path()).ok()?;
+            let mut line = String::new();
+            BufReader::new(file.take(64 * 1024))
+                .read_line(&mut line)
+                .ok()?;
+            let meta = meta(&line)?;
+            (meta.session_id == id && meta.cwd == cwd).then(|| (e.path(), meta))
+        })
+        .collect();
+    let [file] = matches.as_slice() else {
+        return None;
+    };
+    Some(row(process, Some(file.clone())))
+}
+
+fn row(p: &Process, file: Option<(PathBuf, Meta)>) -> Session {
+    let t = file
+        .as_ref()
+        .map(|(path, _)| tail_of(path))
+        .unwrap_or_default();
+    let (cost_usd, cost_info) = t.costs.report(None);
+    Session {
+        title: t.name.or(t.prompt),
+        session_id: file
+            .as_ref()
+            .map_or_else(|| format!("pi-{}", p.pid), |(_, m)| m.session_id.clone()),
+        harness: "pi".into(),
+        kind: None,
+        cwd: p.cwd.clone().unwrap_or_default(),
+        state: t.state.unwrap_or("-").into(),
+        last_activity: t.last_activity,
+        model: t.model,
+        started: Some(p.started),
+        pid: Some(p.pid),
+        transcript_path: file.as_ref().map(|(path, _)| path.clone()),
+        tokens_in: (t.tokens_in > 0).then_some(t.tokens_in),
+        tokens_out: (t.tokens_out > 0).then_some(t.tokens_out),
+        context_tokens: t.context_tokens,
+        context_window: None,
+        cost_usd,
+        cost_info,
+        last: t.last,
+        effort: None,
+        usage: None,
+        coordinator: false,
+        forked_from: None,
+        activity: t.activity,
+    }
 }
 
 /// Choose the latest file written since process start and verify its header cwd and start.

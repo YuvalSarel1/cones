@@ -229,3 +229,11 @@ Keys without another action type into the composer. Text prompts share these edi
 | `ctrl+v` | Paste a clipboard image. |
 
 Words are runs of non-space characters. macOS terminals commonly translate command/option shortcuts into these control/alt keys. Text pastes insert at the cursor. Images use macOS `osascript`, are saved as temporary PNGs and appear as `[Image #n]` markers; each marker deletes as one character and expands to its path at launch.
+
+## Fork a conversation
+
+Select a live session or a history entry and press `Ctrl+Y` (`ctrl+y`). Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open an interactive viewer, which stays alive when you return to the list and ends when that viewer or dashboard closes; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
+
+In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is absent, hidden, or in another state group, the fork remains visible with a branch mark. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
+
+The six experimental terminal harnesses use `Ctrl+Z` to leave their owned viewer. Tab and Left stay with their native editors, including when the input is empty. Their process rows report no inferred busy state, model, context, token count or cost. They cannot be attached from an unrelated terminal, resumed from cones history, forked through cones, or used for supervised jobs yet.
