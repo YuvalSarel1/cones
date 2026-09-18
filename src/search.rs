@@ -20,7 +20,12 @@ use std::{
 
 // Change the namespace when the model, chunking or extraction changes.
 const VERSION: &str = "minilm-l6-v2-passages-v1";
-const BATCH: usize = 32;
+/// Passages claimed from SQLite per scheduling round. One round trip per dashboard
+/// refresh, so a small batch spends most of its time waiting for the next tick.
+const BATCH: usize = 256;
+/// Sequences per forward pass. Activations are this many by 256 tokens by 384 floats,
+/// so a wider pass buys little and costs memory.
+const FORWARD: usize = 32;
 const DIMENSIONS: usize = 384;
 /// MiniLM puts unrelated English prose around 0.3, so anything lower is noise, not a result.
 const SEMANTIC_FLOOR: f32 = 0.5;
@@ -672,23 +677,54 @@ impl Model {
     }
 
     fn embed(&self, text: &str) -> Result<Vec<f32>> {
-        let encoding = self
+        Ok(self.embed_all(&[text])?.remove(0))
+    }
+
+    /// One padded pass for the whole group: a MiniLM forward call costs about the same for
+    /// thirty sequences as for one, and passages arrive in groups. Pooling ignores padding,
+    /// so a vector here equals the one a single sequence produced before batching and every
+    /// vector already cached stays valid.
+    fn embed_all(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let encodings = self
             .tokenizer
-            .encode(text, true)
+            .encode_batch(texts.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let ids = Tensor::new(encoding.get_ids(), &Device::Cpu)?.unsqueeze(0)?;
-        // One unpadded sequence: every token participates in mean pooling.
-        let vector = self
-            .bert
-            .forward(&ids, &ids.zeros_like()?, None)?
-            .mean(1)?
-            .squeeze(0)?
-            .to_vec1::<f32>()?;
+        // Padding is manual: the tokenizer stays unpadded so a lone query is untouched.
+        let width = encodings
+            .iter()
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let mut ids = Vec::with_capacity(texts.len() * width);
+        let mut mask = Vec::with_capacity(texts.len() * width);
+        for encoding in &encodings {
+            let got = encoding.get_ids();
+            ids.extend_from_slice(got);
+            ids.extend(std::iter::repeat_n(0, width - got.len()));
+            mask.extend(std::iter::repeat_n(1.0, got.len()));
+            mask.extend(std::iter::repeat_n(0.0, width - got.len()));
+        }
+        let shape = (texts.len(), width);
+        let ids = Tensor::from_vec(ids, shape, &Device::Cpu)?;
+        let mask = Tensor::from_vec(mask, shape, &Device::Cpu)?;
+        let hidden = self.bert.forward(&ids, &ids.zeros_like()?, Some(&mask))?;
+        // Mean over real tokens only; a padded column must not pull the vector toward PAD.
+        let summed = hidden.broadcast_mul(&mask.unsqueeze(2)?)?.sum(1)?;
+        let vectors = summed
+            .broadcast_div(&mask.sum(1)?.unsqueeze(1)?)?
+            .to_vec2::<f32>()?;
         ensure!(
-            vector.len() == DIMENSIONS && vector.iter().all(|x| x.is_finite()),
+            vectors.len() == texts.len()
+                && vectors
+                    .iter()
+                    .all(|v| v.len() == DIMENSIONS && v.iter().all(|x| x.is_finite())),
             "invalid embedding"
         );
-        Ok(vector)
+        Ok(vectors)
     }
 }
 
@@ -761,7 +797,11 @@ impl Embeddings {
             .spawn(move || {
                 // Initialization is lazy: opening history alone never loads or downloads a model.
                 let mut model = None;
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(2).build();
+                // Indexing runs behind a live dashboard, so leave it a core to draw with.
+                let threads = std::thread::available_parallelism()
+                    .map(|n| n.get().saturating_sub(1).max(1))
+                    .unwrap_or(2);
+                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build();
                 let mut query_cache: Option<(String, Vec<f32>)> = None;
                 while let Ok(request) = requests.recv() {
                     let result = (|| -> Result<EmbeddingResponse> {
@@ -778,8 +818,11 @@ impl Embeddings {
                             query_cache = Some((request.query.clone(), vector));
                         }
                         let mut vectors = Vec::new();
-                        for (hash, text) in request.chunks {
-                            vectors.push((hash, pool.install(|| model.embed(&text))?));
+                        for group in request.chunks.chunks(FORWARD) {
+                            let texts: Vec<_> = group.iter().map(|(_, t)| t.as_str()).collect();
+                            let embedded = pool.install(|| model.embed_all(&texts))?;
+                            vectors
+                                .extend(group.iter().map(|(hash, _)| hash.clone()).zip(embedded));
                         }
                         Ok(EmbeddingResponse {
                             query: request.query,
