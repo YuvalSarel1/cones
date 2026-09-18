@@ -875,14 +875,9 @@ fn ansi(text: &str, style: Style) -> String {
 }
 
 /// Button name, action verb, explanation.
-const MENU: [(&str, &str, &str); 4] = [
+const MENU: [(&str, &str, &str); 3] = [
     ("jobs", "jobs", "the jobs: start, edit, add one"),
     ("config", "defaults", "job defaults and dashboard settings"),
-    (
-        "columns",
-        "columns",
-        "choose and order the columns in each table",
-    ),
     ("help", "guide", "the keys and what they do"),
 ];
 
@@ -3203,10 +3198,11 @@ fn outside(builtin: &str) -> Option<&'static str> {
     }
 }
 
-const GROUPS: [(&str, &str); 3] = [
+const GROUPS: [(&str, &str); 4] = [
     ("cones", "the dashboard itself"),
     ("harnesses", "models and providers"),
     ("runs", "what a run starts with"),
+    ("columns", "what each table shows"),
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
@@ -3220,56 +3216,6 @@ const FIELDS: [Field; 48] = [
         long: "Seconds an armed ctrl+x waits for its second press with no key pressed, up to 600. 0 keeps the mark until the next key.",
         builtin: "2",
         input: Answer::Number(1.0),
-    },
-    Field {
-        group: "cones",
-        sub: "",
-        name: "columns",
-        short: "columns",
-        hint: "Choose the columns shown in each table.",
-        long: "Open the column picker for sessions, runs, jobs and history. Each table keeps its own visibility and order. Changes save immediately.",
-        builtin: "state, context, activity, model, age, last_active, folder, last_reply",
-        input: Answer::Columns,
-    },
-    Field {
-        group: "cones",
-        sub: "",
-        name: "run_columns",
-        short: "run columns",
-        hint: "Choose columns for supervised runs.",
-        long: "Columns for supervised runs. The harness icon and job always show; harness adds the name and status sits before the job. Left and right select, space shows or hides, [ ] reorder, and backspace restores defaults. Times use your local timezone.",
-        builtin: "status, started, duration, model, cost, folder, reason",
-        input: Answer::Columns,
-    },
-    Field {
-        group: "cones",
-        sub: "",
-        name: "job_columns",
-        short: "job columns",
-        hint: "Choose columns for scheduled jobs.",
-        long: "Job columns. Enabled and harness icons and the job name always show. Schedule and last run status are separate. Next run is the next local time matching the enabled job's configured schedule.",
-        builtin: "status, schedule, next_run, model, last_run, folder",
-        input: Answer::Columns,
-    },
-    Field {
-        group: "cones",
-        sub: "",
-        name: "history_columns",
-        short: "history columns",
-        hint: "Choose columns for session history.",
-        long: "Historical session columns, independent of live agents. Last active is time since the latest recorded activity. Folder identifies the conversation's directory. Live state and activity charts do not apply here.",
-        builtin: "last_active, folder, model, context, last_reply",
-        input: Answer::Columns,
-    },
-    Field {
-        group: "cones",
-        sub: "",
-        name: "whole_columns",
-        short: "whole columns only",
-        hint: "Hide columns that would be cut off at the edge.",
-        long: "true leaves out a column the list's right edge would cut through, so the table ends on a column that fits. false draws as much of it as there is room for. The mark, harness, state and title are always drawn, so a row names itself however narrow the list is.",
-        builtin: "true",
-        input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
@@ -3734,6 +3680,56 @@ const FIELDS: [Field; 48] = [
         builtin: "none",
         input: Answer::Typed,
     },
+    Field {
+        group: "columns",
+        sub: "",
+        name: "whole_columns",
+        short: "whole columns only",
+        hint: "Hide columns that would be cut off at the edge.",
+        long: "true leaves out a column the list's right edge would cut through, so the table ends on a column that fits. false draws as much of it as there is room for. The mark, harness, state and title are always drawn, so a row names itself however narrow the list is.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "columns",
+        sub: "",
+        name: "columns",
+        short: "sessions",
+        hint: "Choose the columns shown for live agents.",
+        long: "Live session columns. The row's activity icon, harness mark and title always show. Space shows or hides, [ ] reorder, and backspace restores defaults; each change saves as you make it.",
+        builtin: "state, context, activity, model, age, last_active, folder, last_reply",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "columns",
+        sub: "",
+        name: "run_columns",
+        short: "runs",
+        hint: "Choose columns for supervised runs.",
+        long: "Columns for supervised runs. The harness icon and job always show; harness adds the name and status sits before the job. Space shows or hides, [ ] reorder, and backspace restores defaults. Times use your local timezone.",
+        builtin: "status, started, duration, model, cost, folder, reason",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "columns",
+        sub: "",
+        name: "job_columns",
+        short: "jobs",
+        hint: "Choose columns for scheduled jobs.",
+        long: "Job columns. Enabled and harness icons and the job name always show. Schedule and last run status are separate. Next run is the next local time matching the enabled job's configured schedule.",
+        builtin: "status, schedule, next_run, model, last_run, folder",
+        input: Answer::Columns,
+    },
+    Field {
+        group: "columns",
+        sub: "",
+        name: "history_columns",
+        short: "history",
+        hint: "Choose columns for session history.",
+        long: "Historical session columns, independent of live agents. Last active is time since the latest recorded activity. Folder identifies the conversation's directory. Live state and activity charts do not apply here.",
+        builtin: "last_active, folder, model, context, last_reply",
+        input: Answer::Columns,
+    },
 ];
 
 fn field_at(name: &str) -> usize {
@@ -3951,7 +3947,8 @@ fn job_value(f: &Field, j: &config::Job) -> String {
 pub enum ConfigAction {
     Stay,
     Cancel,
-    Columns,
+    /// Open the column picker on the table the selected row names.
+    Columns(usize),
     /// Validated values to persist. Absent sets use defaults; empty sets hide optional columns.
     Save(
         Box<config::Policy>,
@@ -3981,7 +3978,7 @@ pub struct ConfigForm {
     /// Byte offset in the selected value.
     cursor: usize,
     /// Each group keeps its last selected field.
-    selected: [usize; 3],
+    selected: [usize; GROUPS.len()],
     /// A choice list is separate from text editing; browsing never changes the value.
     choice: Option<usize>,
     /// Focus is on the group tabs, the button row the dashboard menu uses.
@@ -4138,7 +4135,11 @@ impl ConfigForm {
     fn go(&mut self, row: usize) {
         let row = match self.scope {
             Some(sub) if FIELDS[row].sub != sub => self.row,
-            None if !config_field_visible(row) => field_at("columns"),
+            // A hidden launch setting lands on the harness list it belongs to, which is the
+            // first row of its group.
+            None if !config_field_visible(row) => (0..FIELDS.len())
+                .find(|&i| FIELDS[i].group == FIELDS[row].group && config_field_visible(i))
+                .unwrap_or(self.row),
             _ => row,
         };
         self.step(row);
@@ -4579,7 +4580,7 @@ impl ConfigForm {
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
                     if matches!(self.field().input, Answer::Columns) =>
                 {
-                    return ConfigAction::Columns;
+                    return ConfigAction::Columns(column_tab(self.field().name));
                 }
                 KeyCode::Backspace if matches!(self.field().input, Answer::Columns) => {}
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
@@ -4928,9 +4929,6 @@ impl ConfigForm {
 
     fn control(&self, i: usize, width: usize) -> Vec<Span<'static>> {
         let (f, value) = (&FIELDS[i], &self.values[i]);
-        if matches!(f.input, Answer::Columns) {
-            return vec![Span::styled("open picker…  →", dim())];
-        }
         if matches!(f.input, Answer::Check) {
             return vec![Span::styled("[ check ]", button())];
         }
@@ -4978,6 +4976,10 @@ impl ConfigForm {
         ];
         if configured {
             spans.push(Span::styled(" *", lit()));
+        }
+        // A column set is arranged in the picker, not typed over.
+        if matches!(f.input, Answer::Columns) {
+            spans.push(Span::styled(" →", dim()));
         }
         spans
     }
@@ -5257,13 +5259,11 @@ fn connectivity() -> String {
         .join(" · ")
 }
 
-/// Rows the config screen leaves out: the other column sets open from the one picker row,
-/// and a harness's own launch settings belong to the composer's ctrl+o picker, where the
-/// harness they apply to is the one already selected.
+/// Rows the config screen leaves out: a harness's own launch settings belong to the composer's
+/// ctrl+o picker, where the harness they apply to is the one already selected.
 fn config_field_visible(row: usize) -> bool {
     let f = &FIELDS[row];
-    !matches!(f.name, "run_columns" | "job_columns" | "history_columns")
-        && !(f.group == "harnesses" && !f.sub.is_empty())
+    !(f.group == "harnesses" && !f.sub.is_empty())
 }
 
 fn built_column_set(key: &str) -> Vec<String> {
@@ -5288,12 +5288,36 @@ fn built_run_columns() -> Vec<String> {
         .collect()
 }
 
+/// The config screen as the file has it, read fresh: the picker and the preview both need one.
+fn config_form(jobs_path: &Path) -> Box<ConfigForm> {
+    Box::new(ConfigForm::new(
+        &config::defaults(jobs_path),
+        config::file_columns(jobs_path).as_deref(),
+        config::file_activity(jobs_path).as_ref(),
+        config::file_pane(jobs_path).as_ref(),
+        config::file_start(jobs_path).as_ref(),
+        config::file_confirm_secs(jobs_path),
+        config::file_whole_columns(jobs_path),
+        config::file_run_columns(jobs_path).as_deref(),
+        config::file_job_columns(jobs_path).as_deref(),
+        config::file_history_columns(jobs_path).as_deref(),
+    ))
+}
+
 const COLUMN_SETS: [(&str, &str); 4] = [
     ("columns", "sessions"),
     ("run_columns", "runs"),
     ("job_columns", "jobs"),
     ("history_columns", "history"),
 ];
+
+/// Which table a config row names, so the picker opens on the set that row holds.
+fn column_tab(name: &str) -> usize {
+    COLUMN_SETS
+        .iter()
+        .position(|&(key, _)| key == name)
+        .unwrap_or_else(|| panic!("no column set {name}"))
+}
 
 /// Visibility is independent of row position, so toggling never moves the cursor.
 #[derive(Debug, Clone, PartialEq)]
@@ -5393,14 +5417,15 @@ struct ColumnsPicker {
     sets: [ColumnForm; 4],
     tab: usize,
     tabs: bool,
-    return_config: Option<Box<ConfigForm>>,
+    /// The columns group of the config screen, which the picker returns to when it closes.
+    return_config: Box<ConfigForm>,
     error: Option<String>,
     area: Rect,
     top: usize,
 }
 
 impl ColumnsPicker {
-    fn new(path: &Path, tab: usize) -> Self {
+    fn new(path: &Path, tab: usize, return_config: Box<ConfigForm>) -> Self {
         let values = [
             config::file_columns(path),
             config::file_run_columns(path),
@@ -5411,7 +5436,7 @@ impl ColumnsPicker {
             sets: std::array::from_fn(|i| ColumnForm::new(COLUMN_SETS[i].0, values[i].as_deref())),
             tab: tab.min(3),
             tabs: false,
-            return_config: None,
+            return_config,
             error: None,
             area: Rect::default(),
             top: 0,
@@ -5446,7 +5471,8 @@ impl ColumnsPicker {
             return ColumnAction::Stay;
         }
         match code {
-            KeyCode::Esc => return ColumnAction::Close,
+            // Both keys return to the columns group of the config screen the picker came from.
+            KeyCode::Esc | KeyCode::Left => return ColumnAction::Close,
             KeyCode::Up if self.current().at == 0 => self.tabs = true,
             _ => {
                 let before = self.current().clone();
@@ -5516,7 +5542,7 @@ impl ColumnsPicker {
         }
         let form = self.current();
         let mut keys = vec![
-            ("←", "list"),
+            ("←", "settings"),
             (
                 "space",
                 if form.shown.contains(form.selected()) {
@@ -6552,8 +6578,6 @@ struct App {
     cwd: PathBuf,
     /// Index into `MENU`.
     menu: usize,
-    /// Last table visited before moving onto the menu.
-    column_context: usize,
     data: Data,
     rows: Vec<Row>,
     /// Inactive list: jobs for menu previews, or main rows beside the jobs pane.
@@ -6873,7 +6897,6 @@ impl App {
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
             menu: 0,
-            column_context: 0,
             split: start.pane,
             data,
             rows: vec![],
@@ -8539,7 +8562,6 @@ impl App {
     }
 
     fn step(&mut self, delta: isize) {
-        self.column_context = self.columns_tab();
         self.history.select_first = false;
         let n = self.visible.len() as isize;
         if n == 0 {
@@ -8761,7 +8783,8 @@ impl App {
             // The composer's picker draws over the list, not as a screen in the pane.
             Mode::Config(form) if form.scope.is_some() => None,
             Mode::Config(_) => Some("config"),
-            Mode::Columns(_) => Some("columns"),
+            // The picker edits the config screen's columns group, so the pane keeps its name.
+            Mode::Columns(_) => Some("config"),
             Mode::Job(_) => Some("jobs"),
             _ => self.jobs_view.then_some("jobs"),
         };
@@ -8807,22 +8830,9 @@ impl App {
         self.focus.is_some() || self.transcript.focused || self.panel_focused()
     }
 
-    fn columns_tab(&self) -> usize {
-        if self.jobs_view {
-            return 2;
-        }
-        match self.selected().map(|r| &r.kind) {
-            Some(Kind::Session(..)) => 0,
-            Some(Kind::Run(..)) => 1,
-            Some(Kind::Job(_) | Kind::NewJob) => 2,
-            Some(Kind::History(_) | Kind::HistoryStatus) => 3,
-            _ => self.column_context,
-        }
-    }
-
-    fn open_columns(&mut self, return_config: Option<Box<ConfigForm>>) {
-        let mut form = ColumnsPicker::new(&self.jobs_path, self.columns_tab());
-        form.return_config = return_config;
+    /// The picker is the columns group's editor, so it always has a config screen to return to.
+    fn open_columns(&mut self, tab: usize, return_config: Box<ConfigForm>) {
+        let form = ColumnsPicker::new(&self.jobs_path, tab, return_config);
         self.mode = Mode::Columns(Box::new(form));
         self.needs_clear = true;
     }
@@ -8831,20 +8841,19 @@ impl App {
         match action {
             ColumnAction::Stay => {}
             ColumnAction::Close => {
-                let Mode::Columns(mut picker) = std::mem::replace(&mut self.mode, Mode::Normal)
-                else {
+                let Mode::Columns(picker) = std::mem::replace(&mut self.mode, Mode::Normal) else {
                     return;
                 };
-                if let Some(mut form) = picker.return_config.take() {
-                    let fresh = self.config_form();
-                    for (key, _) in COLUMN_SETS {
-                        let i = field_at(key);
-                        form.values[i] = fresh.values[i].clone();
-                    }
-                    self.mode = Mode::Config(form);
-                } else if !self.jobs_view {
-                    self.select_first_session();
+                let mut form = picker.return_config;
+                let fresh = self.config_form();
+                for (key, _) in COLUMN_SETS {
+                    let i = field_at(key);
+                    form.values[i] = fresh.values[i].clone();
                 }
+                // The row the picker left on is the table it was showing, so returning and
+                // reopening stay on the same set.
+                form.go(field_at(COLUMN_SETS[picker.tab].0));
+                self.mode = Mode::Config(form);
                 self.needs_clear = true;
             }
             ColumnAction::Save(before) => {
@@ -8883,11 +8892,11 @@ impl App {
 
     fn config_action(&mut self, action: ConfigAction, mut before: Box<ConfigForm>) {
         match action {
-            ConfigAction::Columns => {
+            ConfigAction::Columns(tab) => {
                 let Mode::Config(form) = std::mem::replace(&mut self.mode, Mode::Normal) else {
                     unreachable!()
                 };
-                self.open_columns(Some(form));
+                self.open_columns(tab, form);
             }
             ConfigAction::Stay => {}
             ConfigAction::Cancel => {
@@ -8942,18 +8951,7 @@ impl App {
     }
 
     fn config_form(&self) -> Box<ConfigForm> {
-        Box::new(ConfigForm::new(
-            &config::defaults(&self.jobs_path),
-            config::file_columns(&self.jobs_path).as_deref(),
-            config::file_activity(&self.jobs_path).as_ref(),
-            config::file_pane(&self.jobs_path).as_ref(),
-            config::file_start(&self.jobs_path).as_ref(),
-            config::file_confirm_secs(&self.jobs_path),
-            config::file_whole_columns(&self.jobs_path),
-            config::file_run_columns(&self.jobs_path).as_deref(),
-            config::file_job_columns(&self.jobs_path).as_deref(),
-            config::file_history_columns(&self.jobs_path).as_deref(),
-        ))
+        config_form(&self.jobs_path)
     }
 
     fn leave_jobs(&mut self) {
@@ -9954,7 +9952,6 @@ impl App {
 
     /// Handle list clicks and focus changes; return whether the viewer should receive the event.
     fn click(&mut self, ev: MouseEvent) -> bool {
-        self.column_context = self.columns_tab();
         if ev.kind != MouseEventKind::Down(MouseButton::Left) {
             return true;
         }
@@ -10349,7 +10346,6 @@ impl App {
         match MENU[self.menu].0 {
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
-            "columns" => self.open_columns(None),
             _ => self.mode = Mode::Guide(Guide::default()),
         }
     }
@@ -11577,11 +11573,7 @@ impl App {
                 Mode::Guide(..) | Mode::Columns(_) => true,
                 _ => false,
             };
-        let columns_out = code == KeyCode::Left
-            && mods.is_empty()
-            && matches!(&self.mode, Mode::Columns(form) if !form.tabs);
-        if (tab_out || columns_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused()
-        {
+        if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
             if matches!(self.mode, Mode::Normal) {
                 self.leave_jobs();
             } else {
@@ -12157,9 +12149,6 @@ impl App {
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
             (_, "config") => self.config_form().draw(frame, body),
-            (_, "columns") => {
-                ColumnsPicker::new(&self.jobs_path, self.columns_tab()).draw(frame, body)
-            }
             (_, "jobs") if self.jobs_view => self.draw_list(frame, body),
             (_, "jobs") => {
                 let all: Vec<usize> = (0..self.other.len()).collect();
@@ -12780,10 +12769,18 @@ mod tests {
         c.key(KeyCode::Right, none);
         assert_eq!(
             GROUPS[c.tab()].0,
+            "columns",
+            "the tables are the last group"
+        );
+        assert!(c.tabs, "picking a group keeps the tab row");
+        c.key(KeyCode::Right, none);
+        assert_eq!(
+            GROUPS[c.tab()].0,
             "cones",
             "the row wraps like the menu buttons"
         );
-        assert!(c.tabs, "picking a group keeps the tab row");
+        c.key(KeyCode::Left, none);
+        assert_eq!(GROUPS[c.tab()].0, "columns");
         c.key(KeyCode::Left, none);
         assert_eq!(GROUPS[c.tab()].0, "runs");
         c.key(KeyCode::Down, none);
@@ -12911,30 +12908,34 @@ mod tests {
         }
 
         c.scope = None;
-        c.go(field_at("columns"));
-        let before = c.values.clone();
-        assert_eq!(c.key(KeyCode::Right, none), ConfigAction::Columns);
-        assert_eq!(c.values, before, "the link changes no settings");
+        // Every table has its own row in the columns group, and each opens the picker on it.
+        for (tab, (key, label)) in COLUMN_SETS.iter().enumerate() {
+            c.go(field_at(key));
+            assert_eq!(GROUPS[c.tab()].0, "columns");
+            assert_eq!(c.field().short, *label);
+            let before = c.values.clone();
+            assert_eq!(c.key(KeyCode::Right, none), ConfigAction::Columns(tab));
+            assert_eq!(c.values, before, "opening the picker changes no settings");
+        }
+        c.go(field_at("whole_columns"));
         c.key(KeyCode::Down, none);
-        assert_eq!(c.field().name, "whole_columns");
-        c.key(KeyCode::Up, none);
-        assert_eq!(c.field().name, "columns");
+        assert_eq!(
+            c.field().name,
+            "columns",
+            "the tables follow the display rule"
+        );
         let text = c
-            .lines(60)
+            .lines(100)
             .0
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("open picker"));
-        for old in [
-            "session columns",
-            "run columns",
-            "job columns",
-            "history columns",
-        ] {
-            assert!(!text.contains(old), "{old} moved into the picker");
-        }
+        assert!(
+            text.contains("sessions") && text.contains("history"),
+            "the group names each table, not a single columns link"
+        );
+        assert!(text.contains('→'), "a column row says it opens the picker");
 
         let span = |t: &str| Span::raw(t.to_owned());
         let wide = flow(vec![span("ab"), span("cd"), span("ef")], 2, 4);
@@ -19433,7 +19434,7 @@ mod tests {
         );
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
         assert!(
-            left(&t).contains("jobs   config   columns   help   the jobs: start"),
+            left(&t).contains("jobs   config   help   the jobs: start"),
             "{}",
             left(&t)
         );
@@ -19670,9 +19671,13 @@ mod tests {
             saved.model, None,
             "the screen has no model row, so nothing here could have set one"
         );
-        // A jump that names a picker-only field lands on a row the screen shows.
+        // A jump that names a picker-only field lands on a row the screen shows, in the
+        // group that field belongs to.
         go(&mut app, "model");
-        assert!(matches!(&app.mode, Mode::Config(f) if f.field().name == "columns"));
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.field().group == "harnesses"
+                && config_field_visible(f.row))
+        );
         assert_eq!(config::file_columns(&app.jobs_path), None);
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
@@ -19968,7 +19973,7 @@ mod tests {
             rows(t, 160).join("\n")
         };
         let s = screen(&mut app, &mut t);
-        assert!(s.contains(" jobs   config   columns   help "), "{s}");
+        assert!(s.contains(" jobs   config   help "), "{s}");
         assert!(
             s.contains("start, edit, add one") && !s.contains("job defaults"),
             "{s}"
@@ -20310,7 +20315,11 @@ mod tests {
         for width in [1, 5, 12, 25, 60] {
             for height in [1, 3, 8] {
                 for (tab, (_, label)) in COLUMN_SETS.iter().enumerate() {
-                    let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), tab);
+                    let mut picker = ColumnsPicker::new(
+                        &d.path().join("none.yaml"),
+                        tab,
+                        config_form(&d.path().join("none.yaml")),
+                    );
                     let before = picker.sets.clone();
                     picker.key(KeyCode::Up);
                     let mut t =
@@ -20342,7 +20351,11 @@ mod tests {
     #[test]
     fn columns_picker_keeps_focus_on_toggle_and_remembers_each_table() {
         let d = dir();
-        let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), 0);
+        let mut picker = ColumnsPicker::new(
+            &d.path().join("none.yaml"),
+            0,
+            config_form(&d.path().join("none.yaml")),
+        );
         picker.key(KeyCode::Down);
         let before = picker.current().clone();
         assert!(matches!(
@@ -20413,7 +20426,7 @@ mod tests {
     }
 
     #[test]
-    fn columns_arrows_switch_only_on_tabs_and_left_from_a_column_returns_to_the_list() {
+    fn columns_arrows_switch_only_on_tabs_and_left_from_a_column_returns_to_the_settings() {
         let d = dir();
         let mut app = app(d.path());
         let original = "version: 3\ncolumns: [state, model]\njobs: []\n";
@@ -20421,85 +20434,60 @@ mod tests {
         app.text = "keep this draft".into();
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
         for split in [true, false] {
-            for from_config in [false, true] {
-                for tab in 0..COLUMN_SETS.len() {
-                    app.split = split;
-                    app.column_context = tab;
-                    let return_config = from_config.then(|| {
-                        let mut form = app.config_form();
-                        form.go(field_at("columns"));
-                        form
-                    });
-                    app.open_columns(return_config);
-                    terminal.draw(|f| app.draw(f)).unwrap();
-                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
-                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
-                    assert!(app.hint_line().to_string().starts_with("← list"));
-                    app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-                    app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-                    let previous = (tab + COLUMN_SETS.len() - 1) % COLUMN_SETS.len();
-                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == previous && f.tabs));
-                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && f.tabs));
-                    app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-                    app.key(KeyCode::Left, KeyModifiers::CONTROL).unwrap();
-                    assert!(matches!(&app.mode, Mode::Columns(f) if !f.tabs));
-                    app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-                    assert!(
-                        matches!(app.mode, Mode::Normal),
-                        "left returns to the list, split={split}, from_config={from_config}, tab={tab}"
-                    );
-                    assert_eq!(app.text, "keep this draft");
-                    assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), original);
-                }
+            for (tab, (key, _)) in COLUMN_SETS.iter().enumerate() {
+                app.split = split;
+                let mut form = app.config_form();
+                form.go(field_at(key));
+                app.open_columns(tab, form);
+                terminal.draw(|f| app.draw(f)).unwrap();
+                assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
+                app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
+                assert!(app.hint_line().to_string().starts_with("← settings"));
+                app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+                app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                let previous = (tab + COLUMN_SETS.len() - 1) % COLUMN_SETS.len();
+                assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == previous && f.tabs));
+                app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && f.tabs));
+                app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+                app.key(KeyCode::Left, KeyModifiers::CONTROL).unwrap();
+                assert!(matches!(&app.mode, Mode::Columns(f) if !f.tabs));
+                app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                assert!(
+                    matches!(&app.mode, Mode::Config(f) if f.row == field_at(key)),
+                    "left returns to the row that opened it, split={split}, tab={tab}"
+                );
+                assert_eq!(app.text, "keep this draft");
+                assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), original);
+                app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
             }
         }
     }
 
     #[test]
-    fn columns_menu_uses_the_table_we_left_and_config_returns_to_its_link() {
+    fn the_columns_group_opens_each_table_and_returns_to_its_row() {
         let d = dir();
         let mut app = app(d.path());
-        for (kind, tab) in [
-            (Kind::Session(A.into(), "idle".into()), 0),
-            (Kind::Run(A.into(), "ok".into()), 1),
-            (Kind::Job("test".into()), 2),
-            (Kind::History("test".into()), 3),
-        ] {
-            app.mode = Mode::Normal;
-            app.rows = vec![
-                Row {
-                    kind: Kind::Menu,
-                    cells: vec![],
-                },
-                Row {
-                    kind,
-                    cells: vec![],
-                },
-            ];
-            app.visible = vec![0, 1];
-            app.cursor = 1;
-            app.step(-1);
-            app.menu = MENU
-                .iter()
-                .position(|(name, ..)| *name == "columns")
-                .unwrap();
-            app.open_menu();
-            assert!(matches!(&app.mode, Mode::Columns(p) if p.tab == tab));
-            assert_eq!(app.panel(), Some("columns"));
-            assert!(app.panel_focused());
-        }
         fs::write(&app.jobs_path, "version: 3\ncolumns: [state]\njobs: []\n").unwrap();
-        app.column_context = 0;
-        let mut config = app.config_form();
-        config.go(field_at("columns"));
-        app.mode = Mode::Config(config);
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(
+            !MENU.iter().any(|(name, ..)| *name == "columns"),
+            "columns are settings, not a menu button"
+        );
+        for (tab, (key, _)) in COLUMN_SETS.iter().enumerate() {
+            let mut config = app.config_form();
+            config.go(field_at(key));
+            app.mode = Mode::Config(config);
+            app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(matches!(&app.mode, Mode::Columns(p) if p.tab == tab));
+            assert_eq!(app.panel(), Some("config"));
+            assert!(app.panel_focused());
+            // Hiding every column of the table saves an empty set through the picker.
+            app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+            app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at(key)));
+        }
         assert_eq!(config::file_columns(&app.jobs_path), Some(vec![]));
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Config(f) if f.row == field_at("columns")));
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert_eq!(
@@ -20516,7 +20504,7 @@ mod tests {
         let valid = "version: 3\ncolumns: [context, model]\njobs: []\n";
         fs::write(&app.jobs_path, valid).unwrap();
         app.refresh().unwrap();
-        app.open_columns(None);
+        app.open_columns(0, app.config_form());
         let before = match &app.mode {
             Mode::Columns(f) => f.current().clone(),
             _ => unreachable!(),
@@ -20539,7 +20527,11 @@ mod tests {
     #[test]
     fn columns_picker_scrolling_mouse_and_indicators_work_in_short_panes() {
         let d = dir();
-        let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), 0);
+        let mut picker = ColumnsPicker::new(
+            &d.path().join("none.yaml"),
+            0,
+            config_form(&d.path().join("none.yaml")),
+        );
         picker.key(KeyCode::End);
         let last = picker.current().selected().to_owned();
         for height in [1, 3, 4, 7, 8, 20] {
@@ -20617,7 +20609,7 @@ mod tests {
             .unwrap();
             app.refresh().unwrap();
             app.split = split;
-            app.open_columns(None);
+            app.open_columns(0, app.config_form());
             let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
             t.draw(|f| app.draw(f)).unwrap();
             assert!(app.wants_mouse());
@@ -20667,7 +20659,7 @@ mod tests {
         )
         .unwrap();
         let mut app = app(d.path());
-        app.open_columns(None);
+        app.open_columns(0, app.config_form());
         let go = |app: &mut App, name: &str| {
             if let Mode::Columns(f) = &mut app.mode {
                 f.tab = COLUMN_SETS
@@ -20807,7 +20799,7 @@ mod tests {
         let d = dir();
         fs::write(d.path().join("none.yaml"), "version: 3\ncolumns: [state]\nrun_columns: [cost]\njob_columns: [schedule, next_run]\nhistory_columns: [folder, last_active]\njobs: []\n").unwrap();
         let mut app = app(d.path());
-        app.open_columns(None);
+        app.open_columns(0, app.config_form());
         for (key, first, second) in [
             ("job_columns", "schedule", "next_run"),
             ("history_columns", "folder", "last_active"),
@@ -20976,10 +20968,13 @@ mod tests {
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
-        for _ in 0..2 {
-            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        }
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         app.enter().unwrap();
+        while let Mode::Config(f) = &app.mode
+            && GROUPS[f.tab()].0 != "columns"
+        {
+            app.key(KeyCode::Char(']'), KeyModifiers::NONE).unwrap();
+        }
         while let Mode::Config(f) = &app.mode
             && f.row != field_at("columns")
         {
