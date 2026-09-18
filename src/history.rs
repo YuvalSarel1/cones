@@ -105,6 +105,7 @@ pub struct Cursor {
     last_activity: Option<DateTime<Utc>>,
     key: Key,
     filter: String,
+    search: search::Mode,
     search_revision: u64,
     score: Option<f32>,
 }
@@ -115,6 +116,8 @@ pub struct Query {
     pub limit: usize,
     /// Search metadata and conversation passages before slicing a page.
     pub filter: String,
+    /// Words the passages must contain, or the meaning they must be close to.
+    pub search: search::Mode,
     /// The caller supplies known live/visible identities; history never polls processes.
     pub excluded: HashSet<Key>,
     pub include_archived: bool,
@@ -132,6 +135,7 @@ impl Default for Query {
             after: None,
             limit: 50,
             filter: String::new(),
+            search: search::Mode::default(),
             excluded: HashSet::new(),
             include_archived: false,
             refresh: false,
@@ -329,7 +333,7 @@ struct Cache {
     database_columns: HashMap<Key, DatabaseColumns>,
     search_directory: Option<PathBuf>,
     search: Option<search::Index>,
-    search_results: Option<(String, search::Results)>,
+    search_results: Option<((String, search::Mode), search::Results)>,
     search_revision: u64,
 }
 
@@ -353,7 +357,7 @@ impl Cache {
                 "history changed; restart pagination"
             );
             ensure!(
-                cursor.filter == query.filter,
+                cursor.filter == query.filter && cursor.search == query.search,
                 "search changed; restart pagination"
             );
         }
@@ -381,7 +385,7 @@ impl Cache {
             if self
                 .search_results
                 .as_ref()
-                .is_none_or(|(q, _)| q != &query.filter)
+                .is_none_or(|((q, m), _)| q != &query.filter || *m != query.search)
                 || (query.after.is_none() && !query.hydrate)
             {
                 if self.search.is_none() {
@@ -389,8 +393,8 @@ impl Cache {
                 }
                 let index = self.search.as_mut().unwrap();
                 index.sync(&matched)?;
-                let results = index.search(&matched, &query.filter, query.refresh)?;
-                self.search_results = Some((query.filter.clone(), results));
+                let results = index.search(&matched, &query.filter, query.search, query.refresh)?;
+                self.search_results = Some(((query.filter.clone(), query.search), results));
                 self.search_revision += 1;
             }
             if let Some(cursor) = &query.after {
@@ -436,6 +440,7 @@ impl Cache {
                 last_activity: e.last_activity,
                 key: e.key.clone(),
                 filter: query.filter.clone(),
+                search: query.search,
                 search_revision: self.search_revision,
                 score: e.hit.as_ref().map(|h| h.score),
             });

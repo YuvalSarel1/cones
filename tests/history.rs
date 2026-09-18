@@ -215,6 +215,18 @@ fn conversation_search_finds_old_content_across_harnesses_and_preserves_page_cur
         &mut reader,
         Query {
             filter: "different".into(),
+            after: Some(cursor.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("search changed"));
+    // The same words asked as a different question are a different search too.
+    let error = page(
+        &mut reader,
+        Query {
+            filter: "retry backoff".into(),
+            search: cones::search::Mode::Meaning,
             after: Some(cursor),
             ..Default::default()
         },

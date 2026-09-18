@@ -5362,7 +5362,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "ctrl+f",
-        "Filter rows. History searches words and meaning; enter keeps the search, esc clears it.",
+        "Filter rows. In history it searches saved conversations; enter keeps the search, esc clears it.",
     ),
     ("ctrl+n", "Rename the selected Claude session."),
     (
@@ -5376,7 +5376,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "shift+tab",
-        "Choose Claude, Codex, pi, OpenCode or a terminal.",
+        "Choose Claude, Codex, pi, OpenCode or a terminal. In history, search by words or meaning.",
     ),
     ("ctrl+v", "Paste a clipboard image into the instruction."),
     (
@@ -5872,6 +5872,7 @@ struct HistoryView {
     filter: String,
     filter_rest: Option<Instant>,
     error: Option<String>,
+    search: crate::search::Mode,
     search_pending: bool,
     search_status: Option<String>,
     updated: Option<Instant>,
@@ -7435,6 +7436,7 @@ impl App {
             after: after.clone(),
             limit: HISTORY_PAGE,
             filter: self.history.filter.clone(),
+            search: self.history.search,
             excluded: self.history_excluded(),
             refresh: self.history.refresh,
             hydrate,
@@ -7449,6 +7451,7 @@ impl App {
                         "operation_id": operation.as_ref().map(|o| &o.id),
                         "phase": if hydrate { "hydrate" } else { "index_page" },
                         "has_cursor": after.is_some(), "filter_bytes": self.history.filter.len(),
+                        "search": self.history.search.label(),
                         "limit": HISTORY_PAGE, "refresh": self.history.refresh,
                     })
                 });
@@ -10451,6 +10454,9 @@ impl App {
                 if !self.filter.text.is_empty() {
                     keys.push(("esc", "clear filter"));
                 }
+                let other = self.history.search.other();
+                let switch = format!("search by {}", other.label());
+                keys.push(("shift+tab", &switch));
                 keys.push(("ctrl+h", "hide history"));
                 hints(&keys)
             }
@@ -11062,6 +11068,14 @@ impl App {
                         None if self.panel_shown() => self.open_menu(),
                         None => self.status = "nothing in the pane".into(),
                     },
+                    // In history the composer is not on screen, so its harness cycle is free.
+                    KeyCode::BackTab if searching_history => {
+                        self.history.search = self.history.search.other();
+                        self.history.select_first = true;
+                        self.history.reset(&self.filter.text, false);
+                        self.status = format!("searching by {}", self.history.search.label());
+                        self.rebuild();
+                    }
                     KeyCode::BackTab => self.cycle_harness(),
                     KeyCode::Enter if searching_history => {
                         if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
@@ -11315,16 +11329,20 @@ impl App {
     fn mode_line(&self) -> Line<'static> {
         match &self.mode {
             Mode::Normal if self.history_selected() => {
-                let mut spans = vec![Span::styled("history / ", bold())];
-                spans.extend(self.filter.spans("Type to search history"));
+                let label = self.history.search.label();
+                let mut spans = vec![Span::styled(format!("history {label} / "), bold())];
+                spans.extend(self.filter.spans(&format!("Type to search by {label}")));
                 Line::from(spans)
             }
             Mode::Filter => {
                 let mut spans = vec![Span::styled("/ ", bold())];
-                spans.extend(self.filter.spans(if self.history.visible {
-                    "Search past conversations"
+                spans.extend(self.filter.spans(&if self.history.visible {
+                    format!(
+                        "Search past conversations by {}",
+                        self.history.search.label()
+                    )
                 } else {
-                    "text a row must contain"
+                    "text a row must contain".to_owned()
                 }));
                 Line::from(spans)
             }
@@ -14379,6 +14397,74 @@ mod tests {
     }
 
     #[test]
+    fn history_search_switches_between_words_and_meaning_on_request() {
+        let (_d, mut app, mut terminal) = history_fixture(4);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        for c in "reply 2".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.search, crate::search::Mode::Words);
+        assert_eq!(app.history.rows.len(), 1);
+        assert_eq!(
+            app.history.rows[0].entry.title.as_deref(),
+            Some("old session 002")
+        );
+        assert!(app.mode_line().to_string().starts_with("history words / "));
+        let keys = app.mode_hints(0).to_string();
+        assert!(
+            keys.contains("shift+tab") && keys.contains("search by meaning"),
+            "{keys}"
+        );
+
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.history.search, crate::search::Mode::Meaning);
+        assert_eq!(app.status, "searching by meaning");
+        assert_eq!(app.filter.text, "reply 2");
+        assert!(
+            app.mode_line()
+                .to_string()
+                .starts_with("history meaning / ")
+        );
+        let keys = app.mode_hints(0).to_string();
+        assert!(
+            keys.contains("shift+tab") && keys.contains("search by words"),
+            "{keys}"
+        );
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        // A fixture embeds nothing, so a meaning search matches only metadata and says so.
+        assert!(app.history.rows.is_empty());
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.text().contains("no matching history"))
+        );
+
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert_eq!(app.history.search, crate::search::Mode::Words);
+        assert_eq!(app.history.rows.len(), 1);
+        assert!(app.mode_line().to_string().starts_with("history words / "));
+
+        // Away from history the same key still picks the harness.
+        app.toggle_history();
+        assert!(!app.history_selected());
+        let harness = app.harness;
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_ne!(app.harness, harness);
+        assert_eq!(app.history.search, crate::search::Mode::Words);
+    }
+
+    #[test]
     fn history_search_edits_and_resumes_without_using_either_composer_draft() {
         let (_d, mut app, mut terminal) = history_fixture(4);
         app.toggle_history();
@@ -14399,7 +14485,7 @@ mod tests {
             a.history.ready && a.history.fetch.is_none()
         });
         assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
-        assert!(app.mode_line().to_string().starts_with("history / "));
+        assert!(app.mode_line().to_string().starts_with("history words / "));
 
         let first = key(&app);
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();

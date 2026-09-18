@@ -138,6 +138,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+s` | Group by state or directory. |
 | `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
+| `shift+tab` | With the cursor in history, switch its search between words and meaning. |
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
 | `ctrl+r` | Reload now. |
 
@@ -157,9 +158,11 @@ History appears below the live list, ordered by latest recorded activity regardl
 
 Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. With the cursor in history, typing or pasting edits the filter directly, including while results load or no rows match. Backspace and the usual text editing keys edit the search; `esc` clears it, or hides history when empty. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
 
-Typing in history searches session titles, folders, harnesses, IDs and conversation text. `ctrl+f` also opens the search field. Keyword and semantic matches share one list, ordered by relevance. Each conversation appears once, with a matching excerpt; yellow words match the query and `≈` marks a result found by meaning. Selecting a result opens its matching passage; `enter` resumes it. In the explicit `ctrl+f` field, `enter` keeps the search and returns to the list.
+Typing in history searches session titles, folders, harnesses, IDs and conversation text. `ctrl+f` also opens the search field. Each conversation appears once, with a matching excerpt, and yellow marks the words that matched. Selecting a result opens its matching passage; `enter` resumes it. In the explicit `ctrl+f` field, `enter` keeps the search and returns to the list.
 
-Semantic search uses MiniLM locally. The first search downloads the model, about 90 MB, and builds passage embeddings in the background. Keyword results remain usable while semantic results arrive. Conversation text and queries stay on the machine. If the model cannot load, the list says semantic search is unavailable; `ctrl+r` retries. The model works best with English; keyword search also handles other languages.
+`shift+tab` chooses what a query means, and the prompt says which is active. By words, the default, every word typed must appear in the same passage; common English filler such as `something about` is dropped, so it neither hides a match nor stands in for one, and a query of nothing but filler searches for the filler itself. By meaning, passages close to the query are returned instead and `≈` marks them. Titles, folders, harnesses and IDs match in both. Switching reruns the current query.
+
+Search by meaning uses MiniLM locally. The first such search downloads the model, about 90 MB, and builds passage embeddings in the background, reporting how many passages remain. Conversation text and queries stay on the machine. If the model cannot load, the list says so and `ctrl+r` retries; `shift+tab` returns to words, which never loads the model at all. Resemblance below 0.5 cosine is discarded as noise. The model works best with English; search by words also handles other languages.
 
 The rebuildable search cache lives under `STATE_DIR/search/`. Text comes from visible user and assistant messages, excluding thinking, tool output and harness control records. Changed transcripts are reindexed on refresh; unchanged passage embeddings are reused. SQLite stores the text index and vectors, and model files are cached alongside it. Opening history without a query does not load or download the model.
 
