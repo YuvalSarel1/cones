@@ -38,6 +38,7 @@ Codex has no registry. A live `codex` process is a candidate unless its first ar
 | Daemon ownership | `thread-writer-locks/<id>.lock` open in the live pid named by `app-server-daemon/app-server.pid`. A client of that thread also has kind `daemon`; several clients share one row. |
 | Daemon liveness | The kernel's open-file table, not a lock file's existence or mtime. Codex before 0.154 lacks writer locks, leaving only cones's saved composer records for detached threads. |
 | Directory | Kernel cwd for a process. Detached threads use `threads.cwd` in `state_*.sqlite`, then rollout `session_meta.cwd`. |
+| Model and effort | `turn_context.model` and `turn_context.effort` on the latest turn, verbatim. A rollout with no turn reports neither. |
 | Rollout | `threads.rollout_path` in the database, otherwise a file under `sessions/` ending in `-<id>.jsonl`. Rollouts are created on the first turn, so an unused client may have none. |
 | Saved threads | Identified composer threads with a reported turn are recorded in `STATE_DIR/codex-threads.json`, allowing resume after daemon exit. A missing rollout removes the saved row. |
 
@@ -158,7 +159,7 @@ A completed turn followed by a local command such as `/compact` may still satisf
 
 ### Context window for Claude
 
-Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`, including its reported `cost.total_cost_usd` when present. Missing, negative or non-finite costs remain unavailable. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
+Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`, including its reported `cost.total_cost_usd` and `effort.level` when present. Missing, negative or non-finite costs remain unavailable. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
 
 ```sh
 claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}

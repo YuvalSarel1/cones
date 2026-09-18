@@ -82,6 +82,8 @@ pub struct Tail {
     pub last_activity: Option<DateTime<Utc>>,
     /// `turn_context.model` on the last turn, verbatim.
     pub model: Option<String>,
+    /// `turn_context.effort` on the last turn, verbatim.
+    pub effort: Option<String>,
     /// Latest `total_token_usage`: input includes cache hits; context uses `last_token_usage.total_tokens`.
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
@@ -456,10 +458,13 @@ impl Tail {
             {
                 t.last = Some(first);
             }
-            if v["type"] == "turn_context"
-                && let Some(model) = v["payload"]["model"].as_str()
-            {
-                t.model = Some(model.to_owned());
+            if v["type"] == "turn_context" {
+                if let Some(model) = v["payload"]["model"].as_str() {
+                    t.model = Some(model.to_owned());
+                }
+                if let Some(effort) = v["payload"]["effort"].as_str() {
+                    t.effort = Some(effort.to_owned());
+                }
             }
             if let Some(state) = crate::harness::spec(crate::config::HarnessKind::Codex)
                 .state
@@ -776,6 +781,8 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 state: t.state.unwrap_or("-").into(),
                 last_activity: t.last_activity,
                 model: t.model,
+                effort: t.effort,
+                usage: None,
                 started: Some(p.started),
                 pid: Some(p.pid),
                 transcript_path: rollout.map(|(path, _)| path.clone()),
@@ -922,6 +929,8 @@ pub(crate) fn thread_rows_observed(
                 state: tail.state.unwrap_or("-").into(),
                 last_activity: tail.last_activity,
                 model: tail.model,
+                effort: tail.effort,
+                usage: None,
                 started: meta
                     .map(|m| m.started)
                     .or_else(|| record.as_ref().map(|t| t.started)),
@@ -1316,6 +1325,37 @@ mod tests {
         let path = dir.join(format!("{name}.jsonl"));
         fs::write(&path, text).unwrap();
         path
+    }
+
+    #[test]
+    fn a_thread_reports_the_effort_of_its_latest_turn_context() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("rollout.jsonl");
+        let context = |effort: &str| {
+            format!(
+                r#"{{"timestamp":"2026-09-15T08:31:22.334Z","type":"turn_context","payload":{{"model":"openai.gpt-6-astra","effort":"{effort}"}}}}"#
+            )
+        };
+        fs::write(&path, format!("{}\n", context("medium"))).unwrap();
+        assert_eq!(tail_of(&path).effort.as_deref(), Some("medium"));
+        fs::write(
+            &path,
+            format!("{}\n{}\n", context("medium"), context("xhigh")),
+        )
+        .unwrap();
+        let t = tail_of(&path);
+        assert_eq!(t.effort.as_deref(), Some("xhigh"), "the latest turn wins");
+        assert_eq!(t.model.as_deref(), Some("openai.gpt-6-astra"));
+        fs::write(
+            &path,
+            "{\"timestamp\":\"2026-09-15T08:31:22.334Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"openai.gpt-6-astra\"}}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            tail_of(&path).effort,
+            None,
+            "a turn that reports no effort reports none"
+        );
     }
 
     #[test]

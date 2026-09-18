@@ -1295,6 +1295,16 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
             crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
             dim(),
         ),
+        "effort" => (s.effort.clone().unwrap_or_else(|| "-".into()), dim()),
+        "cpu" => (
+            s.usage
+                .map_or_else(|| "-".into(), |u| format!("{:.0}%", u.cpu)),
+            dim(),
+        ),
+        "memory" => (
+            s.usage.map_or_else(|| "-".into(), |u| fleet::bytes(u.rss)),
+            dim(),
+        ),
         "last_reply" => (
             s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default(),
             dim(),
@@ -1924,6 +1934,10 @@ fn fleet_rows_observed(
                 .or_default() += started.elapsed().as_secs_f64() * 1000.0;
         }
         out.extend(rows);
+    }
+    let usage = fleet::usage(out.iter().filter_map(|s| s.pid));
+    for s in &mut out {
+        s.usage = s.pid.and_then(|pid| usage.get(&pid)).copied();
     }
     fleet::sort(&mut out);
     Ok(out)
@@ -5205,6 +5219,9 @@ fn column_help(name: &str) -> &'static str {
         "status" => "Status, before the job name.",
         "harness" => "Harness name beside its permanent icon.",
         "model" => "Model reported by the harness.",
+        "effort" => "Reasoning effort reported by the harness.",
+        "cpu" => "Processor share of the session's own process.",
+        "memory" => "Resident memory of the session's own process.",
         "context" => "Reported context usage and window.",
         "tokens" => "Reported input and output tokens.",
         "cost" => "Session or run cost; ~ marks an estimate.",
@@ -5813,6 +5830,8 @@ fn history_session(entry: &history::Entry) -> Session {
         cost_info: c.cost_info,
         title: entry.title.clone(),
         last: Some(c.last.unwrap_or_else(|| "-".into())),
+        effort: None,
+        usage: None,
         coordinator: false,
         activity: Vec::new(),
     }
@@ -6229,6 +6248,8 @@ fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session
         cost_info: None,
         title: fleet::headline(prompt),
         last: Some("starting".into()),
+        effort: None,
+        usage: None,
         coordinator: false,
         activity: Vec::new(),
     }
@@ -9937,6 +9958,8 @@ impl App {
             cost_info: None,
             title: Some(name),
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         };
@@ -13127,6 +13150,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });
@@ -13160,6 +13185,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         };
@@ -13214,6 +13241,8 @@ mod tests {
             cost_info: None,
             title: Some("sweep".into()),
             last: None,
+            effort: None,
+            usage: None,
             coordinator,
             activity: Vec::new(),
         };
@@ -13282,6 +13311,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });
@@ -13318,6 +13349,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });
@@ -17453,6 +17486,8 @@ mod tests {
             cost_info: None,
             title: Some(title.into()),
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         }
@@ -18144,6 +18179,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });
@@ -19167,6 +19204,47 @@ mod tests {
     }
 
     #[test]
+    fn effort_cpu_and_memory_columns_show_what_the_harness_and_kernel_report() {
+        let d = dir();
+        let mut app = app(d.path());
+        let mut reporting = session(A, "active", "reporting", 5);
+        reporting.effort = Some("xhigh".into());
+        reporting.usage = Some(fleet::Usage {
+            cpu: 42.7,
+            rss: 3 * 1_073_741_824 / 2,
+        });
+        let silent = session(B, "idle", "silent", 5);
+        app.data.sessions = vec![reporting, silent];
+        app.data.columns = vec!["effort".into(), "cpu".into(), "memory".into()];
+        app.size = (30, 200);
+        app.rebuild();
+        let cells = |title: &str| {
+            app.rows
+                .iter()
+                .find(|r| r.text().contains(title))
+                .map(|r| {
+                    r.cells
+                        .iter()
+                        .map(|c| c.0.trim().to_owned())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| panic!("no row for {title}"))
+        };
+        let reported = cells("reporting");
+        assert_eq!(&reported[reported.len() - 3..], ["xhigh", "43%", "1.5G"]);
+        let silent = cells("silent");
+        assert_eq!(
+            &silent[silent.len() - 3..],
+            ["-", "-", "-"],
+            "unreported effort and an unread process stay blank, never zero"
+        );
+        for name in ["effort", "cpu", "memory"] {
+            assert!(config::COLUMNS.contains(&name), "{name} is offered");
+            assert!(!column_help(name).is_empty(), "{name} explains itself");
+        }
+    }
+
+    #[test]
     fn agent_folder_follows_grouping_and_reply_keeps_its_meaning() {
         let d = dir();
         let mut app = app(d.path());
@@ -19756,6 +19834,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });
@@ -20036,6 +20116,8 @@ mod tests {
             cost_info: None,
             title: None,
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         });

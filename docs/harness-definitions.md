@@ -24,7 +24,7 @@ Native accounting passes reported costs through, or supplies disjoint request us
 | `home` | Native home environment variable, explicit default base and optional sibling-home discovery. |
 | `discovery` | Registry location or process name, daemon pid and lock paths, and process subcommands that are not sessions. |
 | `state` | Ordered event guards, discriminator paths and state mappings. Claude uses its native registry handler and omits this block. |
-| `transcript` | Scan roots, message sources and an optional saved statusline source. `window_pointer` selects the reported context window; optional `cost_pointer` selects reported dollars. |
+| `transcript` | Scan roots, message sources and an optional saved statusline source. `window_pointer` selects the reported context window; optional `cost_pointer` and `effort_pointer` select reported dollars and reasoning effort. These read what a live session reports, unlike `operations.launch.effort`, which writes a level at launch. |
 | `operations` | Launch, attach, resume, remove, unarchive, rename availability and session-kind behavior. |
 | `execution` | Native enforcement and result-reporting support. Both default to `unknown`. |
 | `viewer` | Label, speculative joins, retention, input alignment and optional native input overrides. |

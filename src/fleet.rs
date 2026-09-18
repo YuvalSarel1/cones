@@ -52,6 +52,12 @@ pub struct Session {
     pub cost_usd: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_info: Option<crate::cost::Info>,
+    /// Reasoning effort as the harness reports it, verbatim; see docs/harness.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Kernel-reported process usage, read once per refresh; excluded from JSON output.
+    #[serde(skip)]
+    pub usage: Option<Usage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -443,7 +449,7 @@ fn session(
     } else {
         Details::default()
     };
-    let (window, cost) = statusline_values(dir, id);
+    let (window, cost, effort) = statusline_values(dir, id);
     let (cost_usd, cost_info) = d.report.costs.report(cost);
     Some(Session {
         session_id: id.into(),
@@ -463,6 +469,8 @@ fn session(
         context_window: window,
         cost_usd,
         cost_info,
+        effort,
+        usage: None,
         title: d
             .title
             .or_else(|| {
@@ -512,13 +520,13 @@ fn state(job: &Value, status: &str) -> String {
 }
 
 /// Read reported values saved by the user's statusLine command.
-fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>) {
+fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>, Option<String>) {
     let Some(source) = crate::harness::spec(crate::config::HarnessKind::Claude)
         .transcript
         .statusline
         .as_ref()
     else {
-        return (None, None);
+        return (None, None, None);
     };
     let values = fs::read(claude.join(&source.directory).join(format!("{id}.json")))
         .ok()
@@ -527,7 +535,11 @@ fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>) {
         .as_ref()
         .and_then(|v| v.pointer(&source.window_pointer)?.as_u64());
     let cost = values.as_ref().and_then(|v| statusline_cost(source, v));
-    (window, cost)
+    let effort = values.as_ref().and_then(|v| {
+        let pointer = source.effort_pointer.as_deref()?;
+        Some(v.pointer(pointer)?.as_str()?.to_owned())
+    });
+    (window, cost, effort)
 }
 
 /// Read reported dollars only from the declared statusline source.
@@ -917,7 +929,7 @@ pub(crate) fn run_columns(
         }
     }
     if let Some(id) = session_id {
-        let (window, cost) = statusline_values(claude, id);
+        let (window, cost, _) = statusline_values(claude, id);
         columns.context_window = window;
         (columns.cost_usd, columns.cost_info) =
             crate::cost::prefer_native(cost, (columns.cost_usd, columns.cost_info));
@@ -1045,6 +1057,50 @@ fn report_with_activity(
         r.tokens_out = Some(output);
     }
     Ok(r)
+}
+
+/// What the kernel charges a session's own process. Commands it spawns are not counted,
+/// so the number answers how hard the agent itself is working, not its whole process tree.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Usage {
+    /// Percent of one core, as `ps` reports it.
+    pub cpu: f32,
+    /// Resident set size in bytes.
+    pub rss: u64,
+}
+
+/// Usage for the listed pids in one `ps` read, so a fleet costs one process, not one per row.
+pub fn usage(pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
+    usage_from("/bin/ps", pids)
+}
+
+/// `usage` against a named `ps`, so a test can point it at one that cannot run.
+fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
+    // ps rejects the whole list when one pid is above the kernel's maximum, as in `starts_from`.
+    let list = pids
+        .filter(|p| *p <= 99_998)
+        .map(|p| p.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    if list.is_empty() {
+        return HashMap::new();
+    }
+    let out = Command::new(ps)
+        .args(["-o", "pid=,%cpu=,rss=", "-p", &list])
+        .stdin(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let cpu = fields.next()?.parse().ok()?;
+            // ps prints resident size in kibibytes.
+            let rss = fields.next()?.parse::<u64>().ok()? * 1024;
+            Some((pid, Usage { cpu, rss }))
+        })
+        .collect()
 }
 
 pub fn alive(pid: u32) -> bool {
@@ -1256,6 +1312,15 @@ pub(crate) fn token_values(input: Option<u64>, output: Option<u64>) -> String {
         (i, o) => format!("{}/{}", short(i.unwrap_or(0)), short(o.unwrap_or(0))),
     }
 }
+/// Resident size in the same compact style as token counts.
+pub fn bytes(n: u64) -> String {
+    match n {
+        0..1_048_576 => format!("{}K", n / 1024),
+        1_048_576..1_073_741_824 => format!("{}M", n / 1_048_576),
+        _ => format!("{:.1}G", n as f64 / 1_073_741_824.0),
+    }
+}
+
 fn short(n: u64) -> String {
     match n {
         0..1000 => n.to_string(),
@@ -1433,11 +1498,81 @@ mod tests {
     use super::*;
 
     #[test]
+    fn usage_reads_this_process_and_survives_a_dead_pid_and_an_unreadable_ps() {
+        let me = std::process::id();
+        let read = usage(vec![me, 99_999, u32::MAX].into_iter());
+        let mine = read.get(&me).expect("this process is in the table");
+        assert!(mine.cpu >= 0.0 && mine.cpu.is_finite(), "{mine:?}");
+        assert!(
+            mine.rss > 1024 * 1024,
+            "a running test holds megabytes: {mine:?}"
+        );
+        assert!(
+            !read.contains_key(&99_999) && !read.contains_key(&u32::MAX),
+            "pids above the kernel maximum never reach ps"
+        );
+        assert!(usage(std::iter::empty()).is_empty(), "no pids, no ps");
+        assert!(
+            usage_from("/nonexistent/ps", std::iter::once(me)).is_empty(),
+            "an unreadable process table reports nothing, not zero usage"
+        );
+    }
+
+    #[test]
+    fn resident_size_reads_in_kilobytes_megabytes_and_gigabytes() {
+        assert_eq!(bytes(0), "0K");
+        assert_eq!(bytes(4096), "4K");
+        assert_eq!(bytes(1_048_575), "1023K");
+        assert_eq!(bytes(1_048_576), "1M");
+        assert_eq!(bytes(700 * 1_048_576), "700M");
+        assert_eq!(bytes(1_073_741_824), "1.0G");
+        assert_eq!(bytes(3 * 1_073_741_824 + 1_073_741_824 / 2), "3.5G");
+    }
+
+    #[test]
+    fn statusline_effort_follows_the_declared_pointer_and_is_absent_without_one() {
+        let source = crate::harness::spec(crate::config::HarnessKind::Claude)
+            .transcript
+            .statusline
+            .as_ref()
+            .expect("claude declares a statusline source");
+        assert_eq!(source.effort_pointer.as_deref(), Some("/effort/level"));
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        fs::create_dir(home.join(&source.directory)).unwrap();
+        let write = |id: &str, body: &str| {
+            fs::write(
+                home.join(&source.directory).join(format!("{id}.json")),
+                body,
+            )
+            .unwrap();
+        };
+        write("reported", r#"{"effort":{"level":"high"}}"#);
+        write(
+            "silent",
+            r#"{"context_window":{"context_window_size":200000}}"#,
+        );
+        write("wrong-shape", r#"{"effort":{"level":7}}"#);
+        assert_eq!(
+            statusline_values(home, "reported").2.as_deref(),
+            Some("high")
+        );
+        assert_eq!(statusline_values(home, "silent").2, None);
+        assert_eq!(
+            statusline_values(home, "wrong-shape").2,
+            None,
+            "a level that is not a string is not an effort"
+        );
+        assert_eq!(statusline_values(home, "never-written").2, None);
+    }
+
+    #[test]
     fn statusline_cost_follows_the_declared_pointer_and_stays_absent_without_one() {
         let mut source = crate::harness::spec::Statusline {
             directory: PathBuf::from("statusline"),
             window_pointer: "/window".into(),
             cost_pointer: Some("/billing/dollars".into()),
+            effort_pointer: None,
         };
         let payload = serde_json::json!({
             "cost": {"total_cost_usd": 99},
@@ -1807,6 +1942,8 @@ mod tests {
             cost_info: None,
             title: Some("Mine".into()),
             last: None,
+            effort: None,
+            usage: None,
             coordinator: false,
             activity: Vec::new(),
         };

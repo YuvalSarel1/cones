@@ -83,6 +83,9 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `folder` | All | Reported working directory. |
 | `branch` | Agents | Current Git branch of the displayed folder, or `@<commit>` for a detached checkout. Read once per distinct folder during background refresh, only when selected. |
 | `model` | All | Reported model; jobs show their configured model. |
+| `effort` | Agents | Reasoning effort as the harness reports it. Claude reports it through the [saved statusLine payload](harness.md#claude-code), Codex on each turn. A harness that reports none shows `-`. |
+| `cpu` | Agents | Percent of one core the session's own process is using, as the kernel reports it. |
+| `memory` | Agents | Resident memory of the session's own process. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
 | `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
 | `cost` | Agents, runs, history | Native dollars, or `~$…` for a Codex estimate from reported usage and cached prices. `partial` marks gaps; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
@@ -98,7 +101,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `next_run` | Jobs | Next time matching the enabled job's configured calendar intervals. This is the configured schedule, not confirmation that its LaunchAgent is loaded. Disabled jobs show `-`. |
 | `last_run` | Jobs | Time since the latest run started. |
 
-Missing values show `-`. History offers no live state or activity chart columns. Unknown column names are rejected; duplicate names are ignored. Older `last`, `dir` and `took` names remain accepted as aliases for `last_reply`, `folder` and `duration`; saves write the explicit names.
+Missing values show `-`. `cpu` and `memory` cover the agent's own process, not the commands it spawns, and a session with no process of its own, such as a detached Codex thread, shows `-`. History offers no live state, activity chart or process columns. Unknown column names are rejected; duplicate names are ignored. Older `last`, `dir` and `took` names remain accepted as aliases for `last_reply`, `folder` and `duration`; saves write the explicit names.
 
 Claude run details come from saved output, falling back to an archived transcript. Context windows and live costs come from the saved status line when available. Current job settings do not supply historical model or context values. Ledger timestamps remain UTC; displayed times use the machine's local timezone, including daylight saving changes. [Harness reports](harness.md#reports) describe the native sources.
 

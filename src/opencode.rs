@@ -557,6 +557,8 @@ pub fn rows(home: &Path, procs: &[Process]) -> Result<Vec<Session>> {
                 cost_usd: report.cost_usd,
                 cost_info: report.cost_info,
                 last: report.last,
+                effort: None,
+                usage: None,
                 coordinator: false,
                 activity: Vec::new(),
             })
