@@ -2799,7 +2799,7 @@ impl JobForm {
             JobRow::Set(i) => {
                 let f = run_field(i);
                 let d = self.inherited(i);
-                let default = if d.is_empty() || d == SYSTEM {
+                let default = if d.is_empty() || outside(&d).is_some() {
                     "default passes nothing".to_owned()
                 } else {
                     format!("default: {d}")
@@ -2928,8 +2928,8 @@ impl Field {
     fn label_from<'a>(&self, builtin: &'a str, o: &'a str) -> &'a str {
         if o != "-" {
             o
-        } else if builtin == SYSTEM {
-            SYSTEM
+        } else if outside(builtin).is_some() {
+            builtin
         } else {
             self.word_from(builtin)
         }
@@ -2955,6 +2955,19 @@ const BOOL: &[&str] = &["-", "false", "true"];
 
 /// Empty harness-owned fields pass no override to the harness.
 const SYSTEM: &str = "system default";
+
+/// Empty AWS fields pass no override either, but what answers them is the AWS
+/// resolution chain of the launching shell and ~/.aws/config, not the harness.
+const AWS: &str = "AWS default";
+
+/// What a row says for an empty value whose answer is owned outside cones.
+fn outside(builtin: &str) -> Option<&'static str> {
+    match builtin {
+        SYSTEM => Some("harness default"),
+        AWS => Some("AWS default"),
+        _ => None,
+    }
+}
 
 const GROUPS: [(&str, &str); 3] = [
     ("cones", "the dashboard itself"),
@@ -3161,8 +3174,8 @@ const FIELDS: [Field; 36] = [
         name: "aws_profile",
         short: "AWS profile",
         hint: "AWS profile for Claude on Bedrock.",
-        long: "The profile every Bedrock run is given as AWS_PROFILE, as named in ~/.aws/config. Required by bedrock: true and unused without it; the run still inherits every other AWS_ variable for the credentials themselves.",
-        builtin: SYSTEM,
+        long: "The profile every Bedrock run is given as AWS_PROFILE, as named in ~/.aws/config. Required by bedrock: true and unused without it; a session left on AWS default passes nothing and AWS resolves the profile itself. The run still inherits every other AWS_ variable for the credentials themselves.",
+        builtin: AWS,
         input: Answer::Typed,
     },
     Field {
@@ -3171,8 +3184,8 @@ const FIELDS: [Field; 36] = [
         name: "aws_region",
         short: "AWS region",
         hint: "AWS region for Claude on Bedrock.",
-        long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a model id is answered only by the regions that carry it.",
-        builtin: SYSTEM,
+        long: "The region every Bedrock run is given as AWS_REGION, as in us-east-1. Required by bedrock: true and unused without it; a session left on AWS default passes nothing and AWS resolves the region from the shell or the profile. A model id is answered only by the regions that carry it.",
+        builtin: AWS,
         input: Answer::PickOrType(
             &[
                 "-",
@@ -3525,7 +3538,7 @@ fn control(
     if open {
         spans.extend(typed(value, cursor, slot.unwrap_or(builtin)));
     } else if value.is_empty() {
-        let builtin = if builtin == SYSTEM {
+        let builtin = if outside(builtin).is_some() {
             "default"
         } else {
             builtin
@@ -4301,8 +4314,8 @@ impl ConfigForm {
                         format!("custom: {value}")
                     }
                 } else if value.is_empty() {
-                    if f.builtin == SYSTEM {
-                        "harness default".to_owned()
+                    if let Some(word) = outside(f.builtin) {
+                        word.to_owned()
                     } else {
                         format!("{} (default)", f.display(f.builtin))
                     }
@@ -4462,11 +4475,7 @@ impl ConfigForm {
         }
         let configured = !value.is_empty();
         let value = if value.is_empty() {
-            if f.builtin == SYSTEM {
-                "harness default"
-            } else {
-                f.builtin
-            }
+            outside(f.builtin).unwrap_or(f.builtin)
         } else {
             value
         };
@@ -4502,11 +4511,7 @@ impl ConfigForm {
 
     fn default_label(&self) -> &str {
         let f = self.field();
-        if f.builtin == SYSTEM {
-            "harness default"
-        } else {
-            f.display(f.builtin)
-        }
+        outside(f.builtin).unwrap_or_else(|| f.display(f.builtin))
     }
 
     fn details(&self) -> Paragraph<'static> {
@@ -12009,6 +12014,20 @@ mod tests {
         assert!(c.choice.is_some(), "enter exposes the complete choice list");
         assert_eq!(c.row, field_at("model"));
         c.key(KeyCode::Esc, none);
+
+        for (name, want) in [
+            ("model", "harness default"),
+            ("bedrock", "harness default"),
+            ("aws_profile", "AWS default"),
+            ("aws_region", "AWS default"),
+        ] {
+            c.go(field_at(name));
+            assert_eq!(
+                c.default_label(),
+                want,
+                "{name} names who answers it when cones passes nothing"
+            );
+        }
 
         c.go(field_at("columns"));
         let before = c.values.clone();
