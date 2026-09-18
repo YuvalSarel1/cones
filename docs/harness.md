@@ -2,7 +2,9 @@
 
 [README](../README.md) · [Dashboard controls](dashboard.md) · [Configuration and runs](jobs.md) · [Harness definitions](harness-definitions.md)
 
-cones discovers sessions, reads their reports and chooses native launch and control operations. This guide follows those operations. Missing reports stay absent; state and usage are never estimated from elapsed time or a model name. cones installs no hooks, watchers or background instrumentation inside harness sessions.
+cones discovers sessions, reads their reports and chooses native launch and control operations. This guide follows those operations. Missing reports stay absent; state and usage are never estimated from elapsed time or a model name. cones installs no global session hooks. Owned OpenCode viewers use a [native TUI reporter](#opencode).
+
+The tables below cover the four native report readers. See [additional terminal harnesses](#additional-terminal-harnesses) for the six experimental launchers and their limits.
 
 ## Discovery
 
@@ -13,7 +15,7 @@ cones discovers sessions, reads their reports and chooses native launch and cont
 | pi | `$PI_CODING_AGENT_DIR`, otherwise `.pi/agent` beside the Claude home | Process table and session files. |
 | OpenCode | `$XDG_DATA_HOME/opencode`, otherwise `~/.local/share/opencode` | Process table; explicit session arguments can identify SQLite conversations. |
 
-A missing native home skips that harness's discovery, and so does [`<harness>_enabled: false`](jobs.md#job-fields-and-defaults): the home is never read and the harness's sessions leave the list. Codex, pi and OpenCode processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. The process must also run against a home this machine reads: its own home override and `HOME`, as `ps -wwEp` prints them beyond the command line, resolve to the native home it uses, and a process that resolves to another home, such as a capture fixture's, belongs to that fleet and is not listed here. An environment macOS does not print, as for a platform binary, keeps the process, because a hidden environment must not empty the fleet. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
+For the four readers above, a missing native home skips discovery, and so does [`<harness>_enabled: false`](jobs.md#job-fields-and-defaults): the home is never read and the harness's sessions leave the list. Codex, pi and OpenCode processes come from `TZ=UTC ps -axww -o pid=,lstart=,command=`. The program itself must match; a name embedded in another command's arguments is insufficient. The process must also run against a home this machine reads: its own home override and `HOME`, as `ps -wwEp` prints them beyond the command line, resolve to the native home it uses, and a process that resolves to another home, such as a capture fixture's, belongs to that fleet and is not listed here. An environment macOS does not print, as for a platform binary, keeps the process, because a hidden environment must not empty the fleet. Kernel `proc_pidinfo` supplies cwd and open files, with `lsof` as a per-process fallback. An unreadable process table fails the refresh instead of claiming every session exited.
 
 ### Claude Code
 
@@ -183,13 +185,14 @@ OpenCode activity charts are not implemented.
 
 ## Native actions
 
-A daemon-owned session supports clients that can join and leave without ending the agent. An interactive terminal elsewhere has no such protocol, so cones reports `own terminal`; it neither takes over that tty nor tries a background attach on it. Before signaling an interactive process, cones verifies its program name and native identity.
+A daemon-owned session supports clients that can join and leave without ending the agent. An interactive terminal elsewhere has no such protocol, so cones reports `own terminal`; it neither takes over that tty nor tries a background attach on it. Before signaling a process, cones verifies its harness process match.
 
 | Session or run | Open | What survives viewer closure | Stop or removal |
 | --- | --- | --- | --- |
 | Claude background | `claude attach <short id>` in its cwd. | The daemon-owned session. | `claude rm <short id>` removes the job record but preserves the transcript. A signal alone lets the daemon respawn it; `claude stop` leaves a stopped record. |
-| Claude interactive, standalone Codex, external pi or OpenCode | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
+| Externally started Claude interactive, standalone Codex, pi, OpenCode or experimental CLI | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
 | Codex daemon thread | `codex --remote unix://<socket> resume <thread id>`, even with another client attached. | The thread in its daemon. | Forget the saved record, hide the id and close or signal any client on the row. A detached thread has no native stop; it remains resumable. Hiding prevents its held lock from restoring the row after restart. |
+| Interactive Claude fork or experimental CLI from the composer | Return to the owned viewer. | The owned client ends; other harness-managed work follows native behavior. | Close the owned viewer. |
 | pi from the composer | Return to its existing viewer; there is no live attach. | Nothing; pi owns that viewer's terminal and ends with it. | Close the owned viewer. |
 | Supervised run in flight | Follow captured output. | The supervised process. | [Terminate its process group](jobs.md#run-lifecycle). |
 | Finished Claude run or Claude history | `claude --bg --resume <session>`, then attach. | A new background session, also visible live. | The original finished-run row can be hidden without deleting its output. History offers no deletion. |
@@ -197,7 +200,9 @@ A daemon-owned session supports clients that can join and leave without ending t
 | pi history | `pi --session <transcript>`. | Nothing; its resumed client owns the terminal. | History offers no deletion. |
 | OpenCode composer or history | Return to the owned viewer, or resume history with `opencode --session <id>`. | Nothing; its native client ends with the viewer. | Close the owned viewer. History offers no deletion. |
 
-Historical resume uses the recorded cwd and native home. Claude background conversations remain available in `claude --resume` after removal; forgotten Codex conversations remain in `codex resume`. For shell use, invoke the native binary directly: a Claude alias that appends flags can turn `claude stop <id>` into a new prompt instead of a subcommand.
+For harnesses with a history reader, resume uses the recorded cwd and native home. Claude background conversations remain available in `claude --resume` after removal; forgotten Codex conversations remain in `codex resume`. For shell use, invoke the native binary directly: a Claude alias that appends flags can turn `claude stop <id>` into a new prompt instead of a subcommand.
+
+[Conversation forks](dashboard.md#fork-a-conversation) use a new native identity. Claude forks are interactive clients, unlike its normal background launches. Forks stay in the source directory and do not isolate edits.
 
 ### Composer identity
 

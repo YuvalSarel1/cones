@@ -13,6 +13,10 @@ Plain `cones` opens the dashboard. `run` starts supervised work from the shell o
 | `--debug` | off | Append [diagnostics](#diagnostics) to the state directory. |
 | `--trace` | off | Enable debug diagnostics plus input text, commands and individual timing samples. |
 
+## Native CLI lookup
+
+Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/.cargo/bin`, `~/.opencode/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, in that order. Shell aliases and additional shell PATH entries are not used. Make executables installed elsewhere available in one of these directories. Config's connectivity check reports missing binaries or required flags.
+
 ## Commands
 
 | Command | Effect |

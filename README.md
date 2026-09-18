@@ -49,6 +49,7 @@ Requires macOS. Install and configure the harnesses you want to use:
 | Codex | 0.154 or later. |
 | pi | `pi` available in your terminal. |
 | OpenCode | Native CLI with SQLite session storage. See [harness support](docs/harness.md#opencode). |
+| Experimental launchers | Install and authenticate `gemini`, `cursor-agent`, `copilot`, `amp`, `droid` or `kimi`. See [supported controls and limits](docs/harness.md#additional-terminal-harnesses). |
 
 Install cones with Homebrew:
 
@@ -77,10 +78,12 @@ cones
 To start work in a project:
 
 1. Choose `folder` in the menu and enter an existing project directory.
-2. Use `Shift+Tab` to choose Claude Code, Codex, pi or OpenCode.
+2. Use `Shift+Tab` to choose a harness.
 3. Type an instruction and press `Enter`.
 
 Open a session with `Enter`; `Ctrl+Z` returns to the list. Press `Ctrl+H` to browse history, select a conversation to preview it, and press `Enter` to resume.
+
+Press `Ctrl+Y` to [fork a supported conversation](docs/dashboard.md#fork-a-conversation). The new session appears beneath its parent with aligned columns. It uses the same folder, so file edits are shared.
 
 The `config` menu lets you change the layout, columns and model defaults. To open a shell in the selected project, choose `terminal` with `Shift+Tab` and press `Enter`.
 

@@ -33,7 +33,7 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider`, `opencode_model` and one `<harness>_enabled` switch each. Reasoning effort is named after the flag each harness takes: `effort` for Claude and `pi_thinking` for pi. Codex and OpenCode have no such flag, so neither has a key. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. Only Claude currently supports supervised jobs. Composer settings belong in `defaults`; their exact keys are listed under [composer harnesses](#composer-harnesses). Unset values follow the harness's own configuration. The initial selection is the separate [`start.harness`](#start).
 
 | Field | Default | Meaning |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ A job's policy fields override `defaults` individually. The Default column below
 | `cwd` | required | Existing working directory. `~/` expands; relative paths resolve against the jobs file's directory. |
 | `prompt` | required | Nonempty task, passed as the final command-line argument after `--`. |
 | `enabled` | `true` | Saving a disabled job removes its LaunchAgent; attempts to run it record `skipped` / `disabled`. |
-| `harness` | `claude` | `claude`, `codex`, `pi` or `opencode`. Only Claude currently has a supervised execution adapter; [native support](harness.md#supervised-execution) determines which jobs validate. |
+| `harness` | `claude` | Only `claude` validates for supervised jobs. Other registered [harness keys](#composer-harnesses) are recognized but have no supervised execution adapter. |
 | `model` | harness's own | Overrides the per-harness default. Must be nonempty and contain no NUL. |
 | `timeout_min` | `30` | Positive number of minutes, at most `10080` (one week). This is the only run limit; there is no dollar or turn cap. |
 | `write` | `false` | `false` permits Read, Grep and Glob. `true` adds Edit, Write and sandboxed Bash. No per-tool rules: Claude treats a scoped `Bash(pattern)` as pre-approval, so cones cannot enforce it as an exclusive allowlist. |
@@ -56,7 +56,28 @@ A job's policy fields override `defaults` individually. The Default column below
 | `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value, on every harness. Required with `bedrock: true`. |
 | `aws_region` | unset | Sets `AWS_REGION`, on every harness; the chosen region must serve the model. Required with `bedrock: true`. |
 
-`claude_enabled`, `codex_enabled`, `pi_enabled` and `opencode_enabled` are `defaults`-only and unset means offered. `false` takes that harness out of the composer's `shift+tab` cycle and out of the harness the dashboard comes up on, so a harness this machine does not have stops being something to land on. cones also stops scanning its native home, so its sessions and saved threads leave the list and cost nothing to skip; a viewer already open on one keeps running. A job that names the harness still runs it. The config editor's harnesses group carries the same switches and a connectivity row that runs the launch probe for every harness: it looks for the binary on cones's own launch PATH and checks that the installed version takes the flags a dashboard session needs.
+### Composer harnesses
+
+These are `defaults` fields. Harness keys also set `start.harness`; their order here is the composer's cycle order, followed by `terminal`.
+
+| Harness key | Enabled switch | Model default |
+| --- | --- | --- |
+| `claude` | `claude_enabled` | `model` |
+| `codex` | `codex_enabled` | `codex_model` |
+| `pi` | `pi_enabled` | `pi_model` |
+| `opencode` | `opencode_enabled` | `opencode_model` |
+| `gemini` | `gemini_enabled` | `gemini_model` |
+| `cursor-agent` | `cursor_enabled` | `cursor_model` |
+| `copilot` | `copilot_enabled` | `copilot_model` |
+| `amp` | `amp_enabled` | No override; native configuration |
+| `droid` | `droid_enabled` | No override; native configuration |
+| `kimi` | `kimi_enabled` | `kimi_model` |
+
+The last six are [experimental terminal launchers](harness.md#additional-terminal-harnesses). They have no native history, activity or usage reports and cannot run supervised jobs. Their CLIs must be installed and authenticated separately; [executable lookup](cli.md#native-cli-lookup) explains where cones finds them.
+
+An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches and a connectivity check for each installed CLI's required launch flags.
+
+Pi also accepts `pi_provider`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones. A matching model default supplies a job's omitted `model` where supervised execution is supported.
 
 Bedrock profile and region must be explicit in the file, on the job or in `defaults`; shell values do not satisfy validation. Claude model aliases resolve through the selected provider, while a full model id must belong to that provider. `opus[1m]` and `sonnet[1m]` explicitly request the million-token window; the bare aliases do not.
 
@@ -88,7 +109,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `memory` | Agents | Resident memory of the session's own process. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
 | `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
-| `cost` | Agents, runs, history | Native dollars, or `~$…` for a Codex estimate from reported usage and cached prices. `partial` marks gaps; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
+| `cost` | Agents, runs, history | Native dollars, or `~$…` for a catalog estimate from reported provider, model and usage. `partial` marks gaps; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
 | `activity` | Agents | Counts over time under the [activity settings](#activity). |
 | `age` | Agents, history | Time since session start. |
 | `last_active` | Agents, history | Time since the latest recorded activity. |
@@ -116,7 +137,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `start.harness` | `claude` | Initially selected composer harness: `claude`, `codex`, `pi` or `opencode`. |
+| `start.harness` | `claude` | Initially selected composer harness, using a key from [composer harnesses](#composer-harnesses). |
 | `start.pane` | `true` | Open the viewer pane at dashboard startup. |
 
 These values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves settings for future dashboards.
@@ -233,6 +254,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | --- | --- |
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
+| `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |

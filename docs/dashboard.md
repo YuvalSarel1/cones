@@ -113,7 +113,7 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ## Sessions and runs
 
-Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Pinned empty folders show their git branch and tree state. Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
+Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Forks follow their visible parents, with indentation confined to the title column. Pinned empty folders show their git branch and tree state. Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
 
 Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The [column picker](#columns) edits `columns`, `run_columns`, `job_columns` and `history_columns` independently. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
 
@@ -140,6 +140,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
+| `ctrl+y` | [Fork a supported conversation](#fork-a-conversation) into a new native session. |
 | `ctrl+r` | Reload now. |
 
 The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`confirm_secs`](jobs.md#list-settings). Confirmed deletions disappear before the native command finishes and return if it fails. A successful action clears the hint; the disappearing row is its confirmation.
@@ -151,6 +152,12 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 | Finished run | Hide the row; retain its ledger, output and transcript. Restore through the [`hidden` file](jobs.md#stored-files). |
 | Job with no live run | Delete the job and reinstall schedules. |
 | Pinned empty folder | Remove its pin; leave the directory intact. |
+
+### Fork a conversation
+
+Select a live session or a history entry and press `ctrl+y`. Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open an interactive viewer, which stays alive when you return to the list and ends when that viewer or dashboard closes; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
+
+In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is absent, hidden, or in another state group, the fork remains visible with a branch mark. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
 
 ### History
 
@@ -182,7 +189,7 @@ The pane shows the focused viewer, otherwise the selected session's viewer. Sess
 
 Resting on a joinable live row can prepare its viewer before entry. This never starts a new agent: finished runs require an explicit open, and a saved Codex thread waits for entry if its daemon has exited. A speculative viewer says `attach` until entered, then `return`. A preview may be closed to make room for another; entered Codex clients, resumed runs and historical viewers are retained. A Claude client left in its own agents list closes so that list cannot appear under a session's name.
 
-All viewers close with the dashboard. Whether that also ends the session depends on [native ownership](harness.md#native-actions); composer pi and OpenCode sessions end with their viewers. Stopping or removing a row is a separate action.
+All viewers close with the dashboard. Whether that also ends the session depends on [native ownership](harness.md#native-actions); this closes the owned terminal client for pi, OpenCode, the experimental launchers and interactive Claude forks. Stopping or removing a row is a separate action.
 
 | Input in a native viewer | Behavior |
 | --- | --- |
@@ -195,13 +202,13 @@ All viewers close with the dashboard. Whether that also ends the session depends
 | Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. |
 | Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
 
-OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
+The [experimental terminal launchers](harness.md#additional-terminal-harnesses) return with Ctrl+Z; Tab and Left stay native even with empty input. OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
 
 Typing returns to the live screen. Terminal text selection may need the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
 
 ## Composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles Claude Code, Codex, pi, OpenCode and terminal; the prefix names the selection. A harness turned off by [`<harness>_enabled`](jobs.md#job-fields-and-defaults) is skipped, including as the harness the dashboard comes up on, and its [discovery](harness.md#discovery) stops too; the terminal stays reachable with every harness off. Identified agent rows show their reported model.
+Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles the [configured harnesses](jobs.md#composer-harnesses), then terminal; the prefix names the selection. A harness turned off by its [enabled switch](jobs.md#composer-harnesses) is skipped, including as the harness the dashboard comes up on, and its [discovery](harness.md#discovery) stops too; the terminal stays reachable with every harness off. Identified agent rows show their reported model.
 
 On `terminal`, type or paste a command and press `enter` to run it in a new interactive shell in that directory and focus its pane. An empty command opens the shell at its prompt. The command field supports the composer's editing keys and `shift+enter` for a new line. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
 
@@ -209,7 +216,7 @@ From the list, Tab returns to the selected terminal in either split or full-scre
 
 The instruction wraps to at most eight text rows. In a side-by-side pane it aligns with Claude or pi's input box when that box is near the bottom; Codex and log viewers keep the composer at its normal position. Scrolling history does not move it.
 
-A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` cancels pending preparation; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
+A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` or `ctrl+z` cancels pending preparation; other keys do not cancel it; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
 
 Model and provider choices come from [policy defaults](jobs.md#job-fields-and-defaults). Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
 
@@ -229,11 +236,3 @@ Keys without another action type into the composer. Text prompts share these edi
 | `ctrl+v` | Paste a clipboard image. |
 
 Words are runs of non-space characters. macOS terminals commonly translate command/option shortcuts into these control/alt keys. Text pastes insert at the cursor. Images use macOS `osascript`, are saved as temporary PNGs and appear as `[Image #n]` markers; each marker deletes as one character and expands to its path at launch.
-
-## Fork a conversation
-
-Select a live session or a history entry and press `Ctrl+Y` (`ctrl+y`). Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open an interactive viewer, which stays alive when you return to the list and ends when that viewer or dashboard closes; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
-
-In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is absent, hidden, or in another state group, the fork remains visible with a branch mark. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
-
-The six experimental terminal harnesses use `Ctrl+Z` to leave their owned viewer. Tab and Left stay with their native editors, including when the input is empty. Their process rows report no inferred busy state, model, context, token count or cost. They cannot be attached from an unrelated terminal, resumed from cones history, forked through cones, or used for supervised jobs yet.
