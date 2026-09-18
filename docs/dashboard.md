@@ -19,6 +19,7 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
 | `ctrl+c twice` | Quit within a 1.5-second confirmation window, from the list or an agent viewer. In a terminal, Ctrl+C interrupts commands. |
+| `ctrl+o` | Open the [launch settings](#launch-settings) of the harness the composer names. |
 | `ctrl+g` | Open help. |
 
 Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
@@ -71,7 +72,7 @@ Every change validates and saves only that table's column setting in `jobs.yaml`
 
 ### Config
 
-The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. The visible `[` `]` shortcut switches groups while browsing settings, and clicking a tab also lands on the row. Each tab remembers its selected field. Bold subheadings, indentation and blank rows separate config blocks and harnesses. Bedrock and AWS settings are under `claude`.
+The editor has three tabs: `cones` for dashboard settings, `harnesses` for which harnesses the composer offers and the AWS settings every harness shares, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. The visible `[` `]` shortcut switches groups while browsing settings, and clicking a tab also lands on the row. Each tab remembers its selected field. Bold subheadings, indentation and blank rows separate config blocks. The `harnesses` tab holds the connectivity check, the Bedrock switch with its AWS profile and region, then one on/off row per harness. A harness's own model, effort and provider are not here: [`ctrl+o`](#launch-settings) sets them beside the composer, where the harness is already selected.
 
 Each setting occupies one row with its current value. A `*` marks values set in config; inherited values are dim. Boolean controls show `on` and `off`, and `full access` describes the existing `codex_full_access` setting. These labels do not change the stored keys or boolean values. An unset harness-owned setting says `harness default`; `aws_profile` and `aws_region` say `AWS default`, since an unset one is resolved by AWS from the shell and `~/.aws/config`, not by the harness.
 
@@ -217,7 +218,13 @@ The instruction wraps to at most eight text rows. In a side-by-side pane it alig
 
 A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` or `ctrl+z` cancels pending preparation; other keys do not cancel it; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
 
-Model and provider choices come from [policy defaults](jobs.md#job-fields-and-defaults). Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
+The prefix names what a launch passes: the harness, then the model and the rest of its [launch settings](#launch-settings) when they are set, dim beside the name. With none set, the harness's own configuration decides and the prefix names the harness alone. Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
+
+### Launch settings
+
+`ctrl+o` opens the selected harness's own settings under the list, with the composer and its draft still in place: Claude's model and effort, Codex's model and full access, pi's model, provider and thinking, and one model row for every other harness that takes one. Amp and droid define none, so `ctrl+o` says so and opens nothing. It is unavailable on the terminal, a menu button, the folder row, a history search and the jobs screen, where the composer names no harness.
+
+The rows are the [config editor's](#config) own controls, and each row saves to `defaults` in `jobs.yaml` as soon as it changes, so the next launch uses it, as does any job on that harness naming no [model of its own](jobs.md#job-fields-and-defaults). `↑ ↓` select a row, `enter` opens the choices or text editing, `backspace` restores the harness default, and `?` explains the selected setting. `esc`, `tab` or another `ctrl+o` closes the picker and keeps the draft and the selection. A failed save keeps the picker open and shows the error in the hint row.
 
 ### Text and images
 

@@ -203,6 +203,9 @@ pub struct Data {
     /// Applied at startup only.
     pub start: config::Start,
     pub spark: config::Activity,
+    /// The file's `defaults`, so the composer can name what a launch passes without
+    /// rereading the file on every frame.
+    pub policy: config::Policy,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
     pub confirm_secs: f64,
     /// Leave a table column out rather than draw the part of it that fits.
@@ -358,6 +361,7 @@ impl Data {
             pane,
             start,
             spark,
+            policy: offered,
             confirm_secs,
             whole_columns,
             folders,
@@ -3322,9 +3326,48 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "claude",
+        sub: "",
+        name: "bedrock",
+        short: "use Bedrock",
+        hint: "Use Amazon Bedrock for Claude.",
+        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness whose definition names a Bedrock switch, so a job on any other is refused rather than left to ignore it: the Codex daemon keeps the provider it started with, and pi and OpenCode choose Bedrock as a provider through their own model and provider settings, which ctrl+o sets beside the composer. The profile and region below reach every harness. true is refused without them, since the switch alone reaches Bedrock with nothing to authenticate it.",
+        builtin: SYSTEM,
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "aws_profile",
+        short: "AWS profile",
+        hint: "AWS profile for every harness.",
+        long: "The profile every run is given as AWS_PROFILE, as named in ~/.aws/config. Every harness resolves AWS the same way, so this reaches all of them, not only Claude on Bedrock; bedrock: true requires it. AWS default passes nothing and AWS resolves the profile itself. A run also inherits every other AWS_ variable for the credentials themselves.",
+        builtin: AWS,
+        input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "aws_region",
+        short: "AWS region",
+        hint: "AWS region for every harness.",
+        long: "The region every run is given as AWS_REGION, as in us-east-1. Every harness resolves AWS the same way, so this reaches all of them, not only Claude on Bedrock; bedrock: true requires it. AWS default passes nothing and AWS resolves the region from the shell or the profile. A model id is answered only by the regions that carry it.",
+        builtin: AWS,
+        input: Answer::PickOrType(
+            &[
+                "-",
+                "us-east-1",
+                "us-west-2",
+                "eu-central-1",
+                "ap-northeast-1",
+            ],
+            "a region",
+        ),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
         name: "claude_enabled",
-        short: "enabled",
+        short: "claude",
         hint: "Include Claude in the composer and session list.",
         long: "true offers claude in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
@@ -3363,48 +3406,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "claude",
-        name: "bedrock",
-        short: "use Bedrock",
-        hint: "Use Amazon Bedrock for Claude.",
-        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness whose definition names a Bedrock switch, so a job on any other is refused rather than left to ignore it: the Codex daemon keeps the provider it started with, and pi and OpenCode choose Bedrock as a provider through pi_provider and opencode_model. The profile and region below still reach every harness. true is refused without them, since the switch alone reaches Bedrock with nothing to authenticate it.",
-        builtin: SYSTEM,
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "harnesses",
-        sub: "claude",
-        name: "aws_profile",
-        short: "AWS profile",
-        hint: "AWS profile for every harness.",
-        long: "The profile every run is given as AWS_PROFILE, as named in ~/.aws/config. Every harness resolves AWS the same way, so this reaches all of them, not only Claude on Bedrock; bedrock: true requires it. AWS default passes nothing and AWS resolves the profile itself. A run also inherits every other AWS_ variable for the credentials themselves.",
-        builtin: AWS,
-        input: Answer::Typed,
-    },
-    Field {
-        group: "harnesses",
-        sub: "claude",
-        name: "aws_region",
-        short: "AWS region",
-        hint: "AWS region for every harness.",
-        long: "The region every run is given as AWS_REGION, as in us-east-1. Every harness resolves AWS the same way, so this reaches all of them, not only Claude on Bedrock; bedrock: true requires it. AWS default passes nothing and AWS resolves the region from the shell or the profile. A model id is answered only by the regions that carry it.",
-        builtin: AWS,
-        input: Answer::PickOrType(
-            &[
-                "-",
-                "us-east-1",
-                "us-west-2",
-                "eu-central-1",
-                "ap-northeast-1",
-            ],
-            "a region",
-        ),
-    },
-    Field {
-        group: "harnesses",
-        sub: "codex",
+        sub: "",
         name: "codex_enabled",
-        short: "enabled",
+        short: "codex",
         hint: "Include Codex in the composer and session list.",
         long: "true offers codex in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
@@ -3441,9 +3445,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "pi",
+        sub: "",
         name: "pi_enabled",
-        short: "enabled",
+        short: "pi",
         hint: "Include pi in the composer and session list.",
         long: "true offers pi in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
@@ -3483,9 +3487,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "opencode",
+        sub: "",
         name: "opencode_enabled",
-        short: "enabled",
+        short: "opencode",
         hint: "Include OpenCode in the composer and session list.",
         long: "true offers opencode in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
         builtin: "true",
@@ -3503,9 +3507,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "gemini",
+        sub: "",
         name: "gemini_enabled",
-        short: "enabled",
+        short: "gemini",
         hint: "Offer gemini sessions.",
         long: "Enable terminal launch and process discovery for gemini. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3523,9 +3527,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "cursor-agent",
+        sub: "",
         name: "cursor_enabled",
-        short: "enabled",
+        short: "cursor-agent",
         hint: "Offer cursor-agent sessions.",
         long: "Enable terminal launch and process discovery for cursor-agent. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3543,9 +3547,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "copilot",
+        sub: "",
         name: "copilot_enabled",
-        short: "enabled",
+        short: "copilot",
         hint: "Offer copilot sessions.",
         long: "Enable terminal launch and process discovery for copilot. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3563,9 +3567,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "amp",
+        sub: "",
         name: "amp_enabled",
-        short: "enabled",
+        short: "amp",
         hint: "Offer amp sessions.",
         long: "Enable terminal launch and process discovery for amp. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3573,9 +3577,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "droid",
+        sub: "",
         name: "droid_enabled",
-        short: "enabled",
+        short: "droid",
         hint: "Offer droid sessions.",
         long: "Enable terminal launch and process discovery for droid. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3583,9 +3587,9 @@ const FIELDS: [Field; 48] = [
     },
     Field {
         group: "harnesses",
-        sub: "kimi",
+        sub: "",
         name: "kimi_enabled",
-        short: "enabled",
+        short: "kimi",
         hint: "Offer kimi sessions.",
         long: "Enable terminal launch and process discovery for kimi. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
@@ -3607,7 +3611,7 @@ const FIELDS: [Field; 48] = [
         name: "harness",
         short: "harness",
         hint: "Default harness for supervised jobs.",
-        long: "The harness a run starts under, unless the job names one of its own. What the composer comes up on is start.harness above. Codex, pi and OpenCode jobs are unavailable.",
+        long: "The harness a run starts under, unless the job names one of its own. Claude is the only one cones can supervise: saving any other here is refused, and so is a job line naming one, because a schedule cones cannot carry is worse than no schedule. The rest are yours to start from the composer, and what it comes up on is start.harness above.",
         builtin: "claude",
         input: Answer::Pick(&["-", "claude", "codex", "pi", "opencode"]),
     },
@@ -3637,7 +3641,7 @@ const FIELDS: [Field; 48] = [
         name: "overlap",
         short: "already running",
         hint: "What to do when a job is already running.",
-        long: "When a job is already running: skip the next run, allow both, or replace the active run.",
+        long: "What a tick does while the job's previous run is still alive. skip abandons the tick and writes it to the ledger as skipped, reason overlap; the running job is left alone. allow starts a second run beside the first, so both edit the folder at once. replace asks the running supervisor to stop, waits up to ten seconds for it to confirm, and only then starts the new run: the old one ends as timeout, reason replaced, and if it does not confirm in time the new tick is skipped with reason replace_unconfirmed. Overlap is per job, so two jobs sharing a folder still run together.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "allow", "replace"]),
     },
@@ -3933,6 +3937,9 @@ pub struct ConfigForm {
     choice: Option<usize>,
     /// Focus is on the group tabs, the button row the dashboard menu uses.
     tabs: bool,
+    /// One harness's subheading, when the form is the composer's picker rather than the
+    /// config screen: it shows that harness's rows alone and has no group tabs.
+    pub scope: Option<&'static str>,
     /// What a row that runs something reported, held until the next key.
     note: Option<String>,
     area: Rect,
@@ -4055,6 +4062,7 @@ impl ConfigForm {
             }),
             choice: None,
             tabs: false,
+            scope: None,
             note: None,
             area: Rect::default(),
             top: 0,
@@ -4076,12 +4084,13 @@ impl ConfigForm {
         self.top = 0;
     }
 
-    /// A validation error or link can jump into another group.
+    /// A validation error or link can jump into another group. The picker holds one
+    /// harness, so an error about a field it does not show stays on the edited row.
     fn go(&mut self, row: usize) {
-        let row = if config_field_visible(row) {
-            row
-        } else {
-            field_at("columns")
+        let row = match self.scope {
+            Some(sub) if FIELDS[row].sub != sub => self.row,
+            None if !config_field_visible(row) => field_at("columns"),
+            _ => row,
         };
         self.step(row);
     }
@@ -4354,9 +4363,29 @@ impl ConfigForm {
     }
 
     fn fields(&self) -> Vec<usize> {
-        (0..FIELDS.len())
-            .filter(|&i| config_field_visible(i) && FIELDS[i].group == self.field().group)
-            .collect()
+        match self.scope {
+            Some(sub) => (0..FIELDS.len())
+                .filter(|&i| FIELDS[i].sub == sub)
+                .collect(),
+            None => (0..FIELDS.len())
+                .filter(|&i| config_field_visible(i) && FIELDS[i].group == self.field().group)
+                .collect(),
+        }
+    }
+
+    /// A harness whose launch settings the picker can edit. Amp and droid define none, so
+    /// there is nothing for it to open.
+    pub fn scope_of(harness: &str) -> Option<&'static str> {
+        FIELDS.iter().map(|f| f.sub).find(|sub| *sub == harness)
+    }
+
+    /// Rows the picker needs beside the composer: its heading, then the settings or the
+    /// open choice list. The caller clamps this to the room the list can give up.
+    fn rows(&self, columns: u16) -> u16 {
+        if self.help.is_some() {
+            return 12;
+        }
+        1 + self.lines(columns).0.len() as u16
     }
 
     fn down(&mut self) {
@@ -4368,7 +4397,8 @@ impl ConfigForm {
     fn up(&mut self) {
         match self.fields().into_iter().rev().find(|&i| i < self.row) {
             Some(row) => self.step(row),
-            None => self.tabs = true,
+            // The picker has no tab row above its first field.
+            None => self.tabs = self.scope.is_none(),
         }
     }
 
@@ -4489,6 +4519,14 @@ impl ConfigForm {
         if !self.open {
             match code {
                 KeyCode::Esc => return ConfigAction::Cancel,
+                // The picker opens over the list, so the key that opened it and the list's
+                // own key for leaving a screen both close it.
+                KeyCode::Tab if self.scope.is_some() => return ConfigAction::Cancel,
+                KeyCode::Char('o')
+                    if self.scope.is_some() && mods.contains(KeyModifiers::CONTROL) =>
+                {
+                    return ConfigAction::Cancel;
+                }
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
                     if matches!(self.field().input, Answer::Columns) =>
                 {
@@ -4501,8 +4539,12 @@ impl ConfigForm {
                     self.note = Some(connectivity());
                 }
                 KeyCode::Backspace if matches!(self.field().input, Answer::Check) => {}
-                KeyCode::Char('[') => self.switch(self.tab().saturating_sub(1)),
-                KeyCode::Char(']') => self.switch((self.tab() + 1).min(GROUPS.len() - 1)),
+                KeyCode::Char('[') if self.scope.is_none() => {
+                    self.switch(self.tab().saturating_sub(1));
+                }
+                KeyCode::Char(']') if self.scope.is_none() => {
+                    self.switch((self.tab() + 1).min(GROUPS.len() - 1));
+                }
                 KeyCode::Enter if self.field().picks().is_some() => {
                     let f = self.field();
                     let ring = f.ring(&self.values[self.row]);
@@ -4614,6 +4656,10 @@ impl ConfigForm {
     }
 
     fn header_rows(&self) -> u16 {
+        // The picker names its harness on one line and has no tab row to keep visible.
+        if self.scope.is_some() {
+            return u16::from(self.area.height > 2);
+        }
         match self.area.height {
             1..=3 if self.tabs && self.choice.is_none() => 1,
             0..=3 => 0,
@@ -4625,7 +4671,7 @@ impl ConfigForm {
     fn label_width(&self, width: u16) -> usize {
         self.fields()
             .iter()
-            .map(|&i| FIELDS[i].short.len() + if FIELDS[i].sub.is_empty() { 0 } else { 4 })
+            .map(|&i| FIELDS[i].short.len() + if self.indented(i) { 4 } else { 0 })
             .max()
             .unwrap_or(0)
             .min((width as usize / 2).saturating_sub(2))
@@ -4648,6 +4694,12 @@ impl ConfigForm {
             dim(),
         ));
         spans
+    }
+
+    /// Whether a row sits under a subheading. The picker holds one subheading's rows and
+    /// names it in its own header, so there its rows stand at the left edge.
+    fn indented(&self, row: usize) -> bool {
+        self.scope.is_none() && !FIELDS[row].sub.is_empty()
     }
 
     /// One physical row per setting or choice, including during text editing.
@@ -4698,7 +4750,7 @@ impl ConfigForm {
         let mut sub = "";
         for i in self.fields() {
             let f = &FIELDS[i];
-            if !f.sub.is_empty() && f.sub != sub {
+            if self.indented(i) && f.sub != sub {
                 if !lines.is_empty() {
                     lines.push(Line::default());
                 }
@@ -4710,10 +4762,10 @@ impl ConfigForm {
             sub = f.sub;
             let selected = i == self.row;
             let focused = selected && !self.tabs;
-            let indent = if f.sub.is_empty() {
-                0
-            } else {
+            let indent = if self.indented(i) {
                 4.min(label_w.saturating_sub(4))
+            } else {
+                0
             };
             let field_w = label_w - indent;
             let label = if field_w == 0 {
@@ -4777,7 +4829,17 @@ impl ConfigForm {
                 fields.len(),
             )
         };
-        let mut lines = if self.choice.is_some() {
+        let mut lines = if let Some(sub) = self.scope {
+            let mut label = sub.to_owned();
+            if self.choice.is_some() {
+                label.push_str(" / ");
+                label.push_str(self.field().short);
+            }
+            vec![Line::from(vec![
+                Span::styled(label, brand(sub).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("  {position}/{count}    * set"), dim()),
+            ])]
+        } else if self.choice.is_some() {
             vec![
                 Line::from(vec![
                     Span::styled("config / ", dim()),
@@ -4801,7 +4863,9 @@ impl ConfigForm {
                 Line::default(),
             ]
         };
-        if header == 1 {
+        if self.scope.is_some() {
+            lines.truncate(header as usize);
+        } else if header == 1 {
             lines = vec![Line::from(self.tab_spans())];
         } else if header == 2 {
             lines.remove(0);
@@ -4995,7 +5059,14 @@ impl ConfigForm {
             }
         }
         keys.push(("?", "help"));
-        keys.push(("esc", "done"));
+        keys.push((
+            "esc",
+            if self.scope.is_some() {
+                "close"
+            } else {
+                "done"
+            },
+        ));
         let width = if self.area.width == 0 {
             60
         } else {
@@ -5049,7 +5120,10 @@ impl ConfigForm {
                 let x = ev.column.saturating_sub(self.area.x);
                 let y = ev.row.saturating_sub(self.area.y);
                 let header = self.header_rows();
-                if self.choice.is_none() && NavigationRow::header_line(header) == Some(y) {
+                if self.choice.is_none()
+                    && self.scope.is_none()
+                    && NavigationRow::header_line(header) == Some(y)
+                {
                     if let Some(i) = self.navigation().hit(x) {
                         self.switch(i);
                         self.tabs = true;
@@ -5068,7 +5142,7 @@ impl ConfigForm {
                         let mut sub = "";
                         for i in self.fields() {
                             let f = &FIELDS[i];
-                            if !f.sub.is_empty() && f.sub != sub {
+                            if self.indented(i) && f.sub != sub {
                                 if line > 0 {
                                     line += 1;
                                 }
@@ -5134,11 +5208,46 @@ fn connectivity() -> String {
         .join(" · ")
 }
 
+/// Rows the config screen leaves out: the other column sets open from the one picker row,
+/// and a harness's own launch settings belong to the composer's ctrl+o picker, where the
+/// harness they apply to is the one already selected.
 fn config_field_visible(row: usize) -> bool {
-    !matches!(
-        FIELDS[row].name,
-        "run_columns" | "job_columns" | "history_columns"
-    )
+    let f = &FIELDS[row];
+    !matches!(f.name, "run_columns" | "job_columns" | "history_columns")
+        && !(f.group == "harnesses" && !f.sub.is_empty())
+}
+
+/// What a launch setting holds in the file, for the composer's prefix. Only the keys the
+/// ctrl+o picker offers, since only those say what a launch passes beyond the harness.
+fn launch_value(d: &config::Policy, name: &str) -> Option<String> {
+    match name {
+        "model" => d.model.clone(),
+        "effort" => d.effort.clone(),
+        "codex_model" => d.codex_model.clone(),
+        "codex_full_access" => d
+            .codex_full_access
+            .and_then(|on| on.then(|| "full access".into())),
+        "pi_model" => d.pi_model.clone(),
+        "pi_provider" => d.pi_provider.clone(),
+        "pi_thinking" => d.pi_thinking.clone(),
+        "opencode_model" => d.opencode_model.clone(),
+        "gemini_model" => d.gemini_model.clone(),
+        "cursor_model" => d.cursor_model.clone(),
+        "copilot_model" => d.copilot_model.clone(),
+        "kimi_model" => d.kimi_model.clone(),
+        _ => None,
+    }
+}
+
+/// The harness's own launch settings as one phrase, empty when its configuration answers
+/// for all of them.
+fn launch_identity(d: &config::Policy, harness: &str) -> String {
+    FIELDS
+        .iter()
+        .filter(|f| f.sub == harness)
+        .filter_map(|f| launch_value(d, f.name))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 fn built_column_set(key: &str) -> Vec<String> {
@@ -5634,6 +5743,10 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "shift+tab",
         "Choose Claude, Codex, pi, OpenCode or a terminal. In history, search by words or meaning.",
+    ),
+    (
+        "ctrl+o",
+        "Set the model and the rest of that harness's launch settings, beside the composer.",
     ),
     ("ctrl+v", "Paste a clipboard image into the instruction."),
     (
@@ -8622,8 +8735,10 @@ impl App {
         if self.focus.is_some() {
             return None;
         }
-        let open = match self.mode {
+        let open = match &self.mode {
             Mode::Guide(..) => Some("help"),
+            // The composer's picker draws over the list, not as a screen in the pane.
+            Mode::Config(form) if form.scope.is_some() => None,
             Mode::Config(_) => Some("config"),
             Mode::Columns(_) => Some("columns"),
             Mode::Job(_) => Some("jobs"),
@@ -8641,11 +8756,30 @@ impl App {
     }
 
     fn panel_focused(&self) -> bool {
+        // The composer keeps focus while its picker is open: the instruction stays editable
+        // and the pane keeps whatever it was showing.
+        if self.picker().is_some() {
+            return false;
+        }
         self.jobs_view
             || matches!(
                 self.mode,
                 Mode::Guide(..) | Mode::Config(_) | Mode::Columns(_) | Mode::Job(_)
             )
+    }
+
+    /// The composer's launch-settings picker, when that is what `Mode::Config` holds.
+    fn picker(&self) -> Option<&ConfigForm> {
+        match &self.mode {
+            Mode::Config(form) if form.scope.is_some() => Some(form),
+            _ => None,
+        }
+    }
+
+    /// Rows the picker takes from the bottom of the list, leaving two rows of list behind.
+    fn picker_rows(&self, area: Rect) -> Option<u16> {
+        let rows = self.picker()?.rows(area.width);
+        Some(rows.min(12).min(area.height.saturating_sub(2)).max(1))
     }
 
     fn pane_focused(&self) -> bool {
@@ -8765,6 +8899,9 @@ impl App {
                     history_columns.as_deref(),
                 ) {
                     Ok(()) => {
+                        // The composer names what a launch passes, so it reads the saved
+                        // policy rather than waiting for the next background read.
+                        self.data.policy = *policy;
                         self.data.columns_default = columns.is_none();
                         self.data.columns = columns.unwrap_or_else(built_columns);
                         self.data.run_columns = run_columns.unwrap_or_else(built_run_columns);
@@ -10252,6 +10389,45 @@ impl App {
         config::defaults(&self.jobs_path)
     }
 
+    /// The harness the composer is on, when the composer is naming one: not on the terminal,
+    /// a menu button, the folder row, a history search or the jobs screen.
+    fn composer_harness(&self) -> Option<HarnessKind> {
+        if self.terminal_selected()
+            || self.on_button()
+            || self.on_new_folder()
+            || self.history_selected()
+            || self.jobs_view
+        {
+            return None;
+        }
+        harness::launchable().get(self.harness).copied()
+    }
+
+    /// The rows ctrl+o would open, when that harness defines any.
+    fn harness_scope(&self) -> Option<&'static str> {
+        ConfigForm::scope_of(&self.composer_harness()?.to_string())
+    }
+
+    /// ctrl+o edits the launch settings of the harness the composer names, beside the
+    /// composer: the model, effort and provider rows that belong to the harness rather
+    /// than to the dashboard. Amp and droid define none, so there is nothing to open.
+    fn open_harness_settings(&mut self) {
+        let Some(kind) = self.composer_harness() else {
+            self.status = "ctrl+o sets the model for the harness the composer names".into();
+            return;
+        };
+        let kind = kind.to_string();
+        let Some(scope) = ConfigForm::scope_of(&kind) else {
+            self.status = format!("{kind} takes its model from its own configuration");
+            return;
+        };
+        let mut form = self.config_form();
+        form.scope = Some(scope);
+        let first = form.fields()[0];
+        form.step(first);
+        self.mode = Mode::Config(form);
+    }
+
     fn start(&mut self) {
         if self.terminal_selected() {
             self.start_terminal();
@@ -10865,10 +11041,15 @@ impl App {
             return Line::default();
         }
         let kind = harness::launchable()[self.harness].to_string();
-        let mut spans = vec![Span::styled(
-            format!("{} › ", logo(&kind)),
-            brand(&kind).add_modifier(Modifier::BOLD),
-        )];
+        let style = brand(&kind).add_modifier(Modifier::BOLD);
+        let mut spans = vec![Span::styled(logo(&kind), style)];
+        // What ctrl+o set, so the prefix answers what this launch passes. Nothing set means
+        // the harness's own configuration decides and the prefix stays quiet.
+        let settings = launch_identity(&self.data.policy, &kind);
+        if !settings.is_empty() {
+            spans.push(Span::styled(format!(" {settings}"), dim()));
+        }
+        spans.push(Span::styled(" › ", style));
         let label = |n: usize| format!("[Image #{}]", n + 1);
         // The composer is one line; a break shows as its glyph and stays a break in the prompt.
         let show = |t: &str| expand(t, label).replace('\n', "⏎");
@@ -10975,6 +11156,8 @@ impl App {
                 hints(&keys)
             }
             Mode::Columns(form) => form.hints(),
+            // The picker's box holds the composer, so its error has nowhere else to go.
+            Mode::Config(form) if form.scope.is_some() && form.error.is_some() => form.line(),
             Mode::Config(form) => form.hints(),
             Mode::Guide(guide) => guide.hints(),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
@@ -11043,6 +11226,9 @@ impl App {
                 }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
+                }
+                if self.harness_scope().is_some() {
+                    keys.push(("ctrl+o", "model"));
                 }
                 if self.can_fork_selected() {
                     keys.push(("ctrl+y", "fork"));
@@ -11560,6 +11746,7 @@ impl App {
                         self.armed = armed;
                         self.stop();
                     }
+                    KeyCode::Char('o') if ctrl => self.open_harness_settings(),
                     KeyCode::Esc => {
                         if armed.is_some() {
                             self.status = "kept".into();
@@ -11879,6 +12066,8 @@ impl App {
                 Line::from(spans)
             }
             Mode::Job(f) => f.line(),
+            // The picker draws over the list and leaves the box to the composer.
+            Mode::Config(f) if f.scope.is_some() => self.composer(),
             Mode::Config(f) => f.line(),
             Mode::Columns(f) => f.line(),
             Mode::Rename(input) => {
@@ -11910,7 +12099,10 @@ impl App {
             // Keep the table's height when a checkbox or its description changes.
             rows = rows.max(form.prompt_rows(width));
         }
-        if let Mode::Config(form) = &self.mode {
+        // The picker leaves the box to the composer, so the box keeps the composer's height.
+        if let Mode::Config(form) = &self.mode
+            && form.scope.is_none()
+        {
             rows = form.prompt_rows(width);
         }
         (input, rows)
@@ -12043,6 +12235,14 @@ impl App {
             guide.draw(frame, list, true);
         } else if let Mode::Job(form) = &self.mode {
             frame.render_widget(form.paragraph(list), list);
+        } else if let Some(rows) = self.picker_rows(list) {
+            // The list keeps the rest, so the row a launch would use stays in view.
+            let [above, picker] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(rows)]).areas(list);
+            self.draw_list(frame, above);
+            if let Mode::Config(form) = &mut self.mode {
+                form.draw(frame, picker);
+            }
         } else if let Mode::Config(form) = &mut self.mode {
             form.draw(frame, list);
         } else if let Mode::Columns(form) = &mut self.mode {
@@ -12555,7 +12755,11 @@ mod tests {
         c.key(KeyCode::Char('['), none);
         assert_eq!(c.field().name, "activity.bound");
         c.key(KeyCode::Char(']'), none);
-        assert_eq!(c.field().name, "claude_enabled");
+        assert_eq!(
+            c.field().name,
+            "bedrock",
+            "the harnesses tab keeps the general provider settings above the harnesses"
+        );
         c.key(KeyCode::Char(']'), none);
         assert_eq!(c.field().name, "harness");
         // ↑ past the first field lands on the tab row, where ←→ pick a group and ↓ enters it.
@@ -12660,6 +12864,8 @@ mod tests {
             c.key(KeyCode::Right, none);
             assert_eq!(value(&c), want, "the built-in is one stop, not two");
         }
+        // The model row lives in the composer's picker, which holds one harness's rows.
+        c.scope = Some("claude");
         c.go(field_at("model"));
         c.values[c.row] = "claude-opus-5".to_owned();
         c.key(KeyCode::Right, none);
@@ -12683,6 +12889,7 @@ mod tests {
             ("aws_profile", "AWS default"),
             ("aws_region", "AWS default"),
         ] {
+            c.scope = (name == "model").then_some("claude");
             c.go(field_at(name));
             assert_eq!(
                 c.default_label(),
@@ -12691,6 +12898,7 @@ mod tests {
             );
         }
 
+        c.scope = None;
         c.go(field_at("columns"));
         let before = c.values.clone();
         assert_eq!(c.key(KeyCode::Right, none), ConfigAction::Columns);
@@ -12805,9 +13013,24 @@ mod tests {
                 assert_eq!(c.prompt_rows(width), 4);
             }
         }
+        // A harness's own settings are the composer's picker, which holds one harness.
+        c.scope = Some("claude");
         c.go(field_at("model"));
+        assert_eq!(
+            c.fields()
+                .iter()
+                .map(|&i| FIELDS[i].name)
+                .collect::<Vec<_>>(),
+            ["model", "effort"],
+            "the picker holds Claude's launch settings and nothing else"
+        );
         let (lines, at) = c.lines(48);
-        assert!(lines[at].to_string().contains("model"));
+        assert_eq!(lines.len(), 2, "no subheading row above one harness's rows");
+        assert!(
+            lines[at].to_string().starts_with("› model"),
+            "{:?}",
+            lines[at]
+        );
         assert!(!lines[at].to_string().contains("sonnet"));
         c.key(KeyCode::Enter, KeyModifiers::NONE);
         let (lines, _) = c.lines(48);
@@ -12831,6 +13054,7 @@ mod tests {
             None,
         );
         let none = KeyModifiers::NONE;
+        c.scope = Some("claude");
         c.go(field_at("model"));
         c.key(KeyCode::Enter, none);
         c.key(KeyCode::Down, none);
@@ -12911,6 +13135,8 @@ mod tests {
         let d = dir();
         let mut app = app(d.path());
         let mut form = app.config_form();
+        // The harness's own settings are the picker's rows, one harness at a time.
+        form.scope = Some("codex");
         form.go(field_at("codex_full_access"));
         app.mode = Mode::Config(form);
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
@@ -12936,6 +13162,7 @@ mod tests {
             control.contains("off") && !control.contains('*'),
             "{control}"
         );
+        form.scope = Some("claude");
         form.go(field_at("model"));
         form.key(KeyCode::Char('x'), KeyModifiers::NONE);
         assert!(form.open);
@@ -19358,15 +19585,15 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_is_not_a_dashboard_key() {
+    fn an_unbound_ctrl_key_is_not_a_dashboard_key() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "the list keeps the key");
         assert!(app.text.is_empty(), "a ctrl key types nothing");
         assert!(
-            !GUIDE.iter().any(|(k, _)| *k == "ctrl+o"),
+            !GUIDE.iter().any(|(k, _)| *k == "ctrl+t"),
             "no key the guide leaves out does anything"
         );
     }
@@ -19425,20 +19652,19 @@ mod tests {
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         go(&mut app, "write");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        go(&mut app, "model");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        for _ in 0..3 {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let saved = config::defaults(&app.jobs_path);
         assert_eq!((saved.timeout_min, saved.write), (Some(5.0), Some(true)));
-        assert_eq!(saved.model.as_deref(), Some("opus[1m]"));
+        assert_eq!(
+            saved.model, None,
+            "the screen has no model row, so nothing here could have set one"
+        );
+        // A jump that names a picker-only field lands on a row the screen shows.
+        go(&mut app, "model");
+        assert!(matches!(&app.mode, Mode::Config(f) if f.field().name == "columns"));
         assert_eq!(config::file_columns(&app.jobs_path), None);
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(id, _)) if id == A));
-        assert_eq!(app.config_form().values[field_at("model")], "opus[1m]");
     }
 
     #[test]
@@ -19457,7 +19683,7 @@ mod tests {
         );
         for height in [1, 3, 4, 7, 8, 20] {
             for choice in [false, true] {
-                form.go(field_at(if choice { "model" } else { "pi_provider" }));
+                form.go(field_at(if choice { "aws_region" } else { "aws_profile" }));
                 if choice {
                     form.key(KeyCode::Enter, KeyModifiers::NONE);
                     form.key(KeyCode::End, KeyModifiers::NONE);
@@ -19473,7 +19699,7 @@ mod tests {
                     selected.contains(if choice {
                         "type a custom value"
                     } else {
-                        "provider"
+                        "AWS profile"
                     }),
                     "{selected}"
                 );
@@ -19522,7 +19748,7 @@ mod tests {
             app.mouse(click(area.x + 10, area.y + 1));
             assert!(matches!(&app.mode, Mode::Config(f) if f.tab() == 1));
             if let Mode::Config(form) = &mut app.mode {
-                form.go(field_at("model"));
+                form.go(field_at("aws_region"));
             }
             t.draw(|f| app.draw(f)).unwrap();
             let Mode::Config(form) = &app.mode else {
@@ -19541,14 +19767,14 @@ mod tests {
             };
             app.mouse(click(form.area.x + 8, form.area.y + form.header_rows() + 1));
             assert_eq!(
-                config::defaults(&app.jobs_path).model.as_deref(),
-                Some("fable")
+                config::defaults(&app.jobs_path).aws_region.as_deref(),
+                Some("us-east-1")
             );
             t.draw(|f| app.draw(f)).unwrap();
             let Mode::Config(form) = &app.mode else {
                 unreachable!()
             };
-            assert!(form.choice.is_none() && form.field().name == "model");
+            assert!(form.choice.is_none() && form.field().name == "aws_region");
             let (_, at) = form.lines(form.area.width);
             assert_eq!(
                 form.area.y + form.header_rows() + (at - form.top) as u16,
@@ -19563,23 +19789,190 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_o_sets_the_harness_launch_settings_beside_the_composer() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 24)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            app.hint_line().to_string().contains("ctrl+o"),
+            "the composer offers the key: {}",
+            app.hint_line()
+        );
+        app.text = "read the tests".to_owned();
+        app.caret = app.text.len();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 200).join("\n");
+        for shown in ["claude › read the tests", "model", "effort", "/src/one"] {
+            assert!(text.contains(shown), "{shown} is missing: {text}");
+        }
+        assert!(
+            !text.contains("[ ] group"),
+            "the picker has no group tabs: {text}"
+        );
+        // The choices save to defaults, so the next launch and every job on Claude use them.
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for _ in 0..2 {
+            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::defaults(&app.jobs_path).model.as_deref(),
+            Some("opus")
+        );
+        assert_eq!(app.session_policy().model.as_deref(), Some("opus"));
+        assert_eq!(app.data.policy.model.as_deref(), Some("opus"));
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('h'), KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::defaults(&app.jobs_path).effort.as_deref(),
+            Some("high")
+        );
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.text, "read the tests", "the draft survives the picker");
+        assert!(matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(id, _)) if id == A));
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 200).join("\n");
+        assert!(
+            text.contains("claude opus · high › read the tests"),
+            "the prefix names what a launch passes: {text}"
+        );
+
+        // A harness with no launch settings of its own says so instead of opening.
+        let all = harness::launchable();
+        app.harness = all.iter().position(|k| k.to_string() == "amp").unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "amp takes its model from its own configuration");
+        app.harness = all.len();
+        assert!(app.terminal_selected());
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(
+            app.status,
+            "ctrl+o sets the model for the harness the composer names"
+        );
+    }
+
+    #[test]
+    fn the_picker_draws_over_the_list_and_leaves_by_tab_or_ctrl_o() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for layout in ["right", "bottom", "full"] {
+            app.split = layout != "full";
+            app.data.pane.at = if layout == "bottom" {
+                "bottom"
+            } else {
+                "right"
+            }
+            .into();
+            app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+            assert!(app.picker().is_some(), "{layout}");
+            assert!(
+                !app.panel_focused(),
+                "{layout}: the composer keeps focus while the picker is open"
+            );
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let text = rows(&t, 120).join("\n");
+            for shown in ["claude › ", "/src/one", "model", "effort"] {
+                assert!(text.contains(shown), "{layout} is missing {shown}: {text}");
+            }
+            let mut small = Terminal::new(ratatui::backend::TestBackend::new(60, 16)).unwrap();
+            small.draw(|f| app.draw(f)).unwrap();
+            let short = rows(&small, 60).join("\n");
+            assert!(
+                short.contains("› model"),
+                "{layout}: a squeezed list keeps the picker's selected row: {short}"
+            );
+            app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+            assert!(app.picker().is_none(), "{layout}: tab closes the picker");
+            app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+            app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+            assert!(
+                app.picker().is_none(),
+                "{layout}: the key that opens it closes it"
+            );
+        }
+    }
+
+    #[test]
+    fn every_launch_setting_reaches_the_composer_prefix() {
+        let set = |v: &str| Some(v.to_owned());
+        let d = config::Policy {
+            model: set("opus"),
+            effort: set("high"),
+            codex_model: set("gpt-5.6-sol"),
+            codex_full_access: Some(true),
+            pi_model: set("sonnet"),
+            pi_provider: set("bedrock"),
+            pi_thinking: set("high"),
+            opencode_model: set("anthropic/claude-opus-4"),
+            gemini_model: set("gemini-3-pro"),
+            cursor_model: set("composer-1"),
+            copilot_model: set("gpt-5.6-sol"),
+            kimi_model: set("kimi-k2"),
+            ..Default::default()
+        };
+        for f in FIELDS
+            .iter()
+            .filter(|f| f.group == "harnesses" && !f.sub.is_empty())
+        {
+            assert!(
+                launch_value(&d, f.name).is_some(),
+                "{} is a picker row the prefix leaves out",
+                f.name
+            );
+        }
+        assert_eq!(launch_identity(&d, "claude"), "opus · high");
+        assert_eq!(launch_identity(&d, "codex"), "gpt-5.6-sol · full access");
+        assert_eq!(launch_identity(&d, "pi"), "sonnet · bedrock · high");
+        assert_eq!(launch_identity(&d, "amp"), "", "amp sets nothing here");
+        assert_eq!(
+            launch_identity(&config::Policy::default(), "claude"),
+            "",
+            "an unset harness keeps the prefix quiet"
+        );
+    }
+
+    #[test]
     fn config_failed_save_keeps_the_saved_choice_and_the_picker_open() {
         let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
         let valid = "version: 3\ndefaults:\n  model: opus\njobs: []\n";
         fs::write(&app.jobs_path, valid).unwrap();
-        let mut form = app.config_form();
-        form.go(field_at("model"));
-        app.mode = Mode::Config(form);
+        app.refresh().unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.scope == Some("claude") && f.field().name == "model"),
+            "ctrl+o opens the rows of the harness the composer names"
+        );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         let invalid = "version: 3\njobs: [\n";
         fs::write(&app.jobs_path, invalid).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Config(f) if f.choice.is_some() && f.values[f.row] == "opus" && f.error.is_some())
+            matches!(&app.mode, Mode::Config(f) if f.scope.is_some() && f.choice.is_some() && f.values[f.row] == "opus" && f.error.is_some())
         );
         assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), invalid);
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        let error = form.error.clone().unwrap();
+        app.status.clear();
+        assert_eq!(
+            app.hint_line().to_string(),
+            error,
+            "the picker keeps the composer in the box, so its error takes the hint row"
+        );
         fs::write(&app.jobs_path, valid).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(
@@ -19605,21 +19998,18 @@ mod tests {
         let s = screen(&mut app, &mut t);
         assert!(s.contains(" jobs   config   columns   help "), "{s}");
         assert!(
-            s.contains(" folder   jobs   config   columns   help "),
-            "{s}"
-        );
-        assert!(
-            s.contains("a row for a folder") && !s.contains("start, edit, add one"),
+            s.contains("start, edit, add one") && !s.contains("job defaults"),
             "{s}"
         );
         assert!(s.contains("← → pick"), "{s}");
+        assert_eq!(app.enter_label(), "jobs");
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         let s = screen(&mut app, &mut t);
         assert!(
-            s.contains("start, edit, add one") && !s.contains("a row for a folder"),
+            s.contains("job defaults") && !s.contains("start, edit, add one"),
             "{s}"
         );
-        assert_eq!(app.enter_label(), "jobs");
+        assert_eq!(app.enter_label(), "defaults");
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         assert_eq!(MENU[app.menu].0, "help");

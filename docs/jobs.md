@@ -78,9 +78,11 @@ These are `defaults` fields. Harness keys also set `start.harness`; their order 
 
 The last six are [experimental terminal launchers](harness.md#additional-terminal-harnesses). They have no native history, activity or usage reports and cannot run supervised jobs. Their CLIs must be installed and authenticated separately; [executable lookup](cli.md#native-cli-lookup) explains where cones finds them.
 
-An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches and a connectivity check for each installed CLI's required launch flags.
+An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) writes them to `defaults` beside the composer, for the harness it names.
 
-Pi also accepts `pi_provider`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones. A matching model default supplies a job's omitted `model` where supervised execution is supported.
+Pi also accepts `pi_provider`, and Codex accepts `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
+
+Two of these keys are also run policy, since a job has no field of its own for either: `defaults.model` supplies a Claude job's omitted `model`, and `defaults.effort` is the reasoning effort of every Claude run. Changing what the composer starts with therefore changes what tonight's job does.
 
 Bedrock profile and region must be explicit in the file, on the job or in `defaults`; shell values do not satisfy validation. Claude model aliases resolve through the selected provider, while a full model id must belong to that provider. `opus[1m]` and `sonnet[1m]` explicitly request the million-token window; the bare aliases do not.
 
