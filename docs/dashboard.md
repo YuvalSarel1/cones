@@ -27,6 +27,8 @@ Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click g
 
 The menu has `folder`, `jobs`, `config`, `columns` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
 
+Menu and section buttons shift horizontally to keep the selected button visible in narrow panes. Clicks follow the visible buttons; gaps do not select anything. An oversized selected label is clipped to the available space.
+
 ### Folder
 
 Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `↑ ↓` recall previously seen folders. The list sits above the prompt, newest first, and the keys move through its rows: either key starts at the newest, `↓` goes down toward older and `↑` back up, both wrapping.
@@ -63,7 +65,8 @@ Save validates the whole file and changes only the selected job block, preservin
 | Key | Action |
 | --- | --- |
 | `↑ ↓` | Select a column; `↑` past the first reaches the table buttons. Movement stops at the last column. |
-| `← →` | Switch tables. Wrap around when the table buttons have focus. |
+| `← →` on the table buttons | Switch tables and wrap around. |
+| `←` on a column | Return to the dashboard list, including when opened from Config. `→` does nothing on a column. |
 | `space` | Show or hide the selected column without moving its row. |
 | `[` `]` | Move a shown column earlier or later; the cursor follows it. |
 | `backspace` | Restore the current table's defaults. |
@@ -73,7 +76,7 @@ Save validates the whole file and changes only the selected job block, preservin
 
 The `›` marker and shaded row show keyboard focus; `[x]` and `[ ]` show visibility. The order number records a shown column's position in its saved set. State/status and the harness name retain their places beside the row's identity, as their descriptions explain. `defaults` or `custom` identifies where the selection comes from, independently of visibility.
 
-Click a row to select it, its checkbox to toggle it, or a table name to focus its button. The wheel moves through columns. The selected row stays visible when the pane is short.
+Click a row to select it, its checkbox to toggle it, or a table name to focus its button. The wheel moves through columns. The selected row stays visible when the pane is short. A focused tab row stays visible even in a one-line pane; returning to the columns restores their space.
 
 Every change validates and saves only that table's column setting in `jobs.yaml`, then updates the dashboard. Other settings and job blocks are preserved. A failed save keeps the previous selection and explains the error. An explicit empty selection hides every optional column; reset removes that override so defaults apply again.
 
@@ -82,6 +85,8 @@ Every change validates and saves only that table's column setting in `jobs.yaml`
 The editor has three tabs: `cones` for dashboard settings, `harnesses` for model/provider settings, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. The visible `[` `]` shortcut switches groups while browsing settings, and clicking a tab also lands on the row. Each tab remembers its selected field. Bold subheadings, indentation and blank rows separate config blocks and harnesses. Bedrock and AWS settings are under `claude`.
 
 Each setting occupies one row with its current value. A `*` marks values set in config; inherited values are dim. Boolean controls show `on` and `off`, and `full access` describes the existing `codex_full_access` setting. These labels do not change the stored keys or boolean values. An unset harness-owned setting says `harness default`; `aws_profile` and `aws_region` say `AWS default`, since an unset one is resolved by AWS from the shell and `~/.aws/config`, not by the harness.
+
+Only the focused field has the `›` marker. Moving to the tabs removes the field's focus styling without losing its selection. Focused tabs remain visible in short panes, and returning to the fields restores their space.
 
 A fixed two-line hint stays below the list and names the default or reset value. `?` or `F1` opens the full explanation for the selected setting; arrows, the wheel and page keys scroll it, and `esc` returns to the same setting. `F1` also works during text editing. Results and errors can use more hint space.
 

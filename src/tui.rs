@@ -1409,27 +1409,91 @@ fn pressed() -> Style {
     Style::default().bg(ORANGE).fg(Color::Black)
 }
 
-fn tab_buttons(
-    labels: impl Iterator<Item = &'static str>,
-    selected: usize,
-    focused: bool,
-) -> Vec<Span<'static>> {
-    labels
-        .enumerate()
-        .flat_map(|(i, label)| {
-            [
-                Span::styled(
-                    format!(" {label} "),
-                    match (i == selected, focused) {
-                        (true, true) => pressed(),
-                        (true, false) => button().fg(ORANGE),
-                        _ => button(),
-                    },
-                ),
-                Span::raw(" "),
-            ]
-        })
-        .collect()
+#[derive(Clone, Copy)]
+enum NavigationRole {
+    Menu,
+    Sections,
+}
+
+/// Draw and hit-test the same visible buttons. The selected button stays in view.
+struct NavigationRow {
+    spans: Vec<Span<'static>>,
+    buttons: Vec<(usize, std::ops::Range<u16>)>,
+}
+
+impl NavigationRow {
+    fn new(
+        labels: impl Iterator<Item = &'static str>,
+        selected: usize,
+        focused: bool,
+        role: NavigationRole,
+        width: u16,
+    ) -> Self {
+        let mut row = Self {
+            spans: vec![],
+            buttons: vec![],
+        };
+        let labels: Vec<_> = labels.collect();
+        if labels.is_empty() || width == 0 {
+            return row;
+        }
+        let selected = selected.min(labels.len() - 1);
+        let widths: Vec<_> = labels.iter().map(|s| Span::raw(*s).width() + 2).collect();
+        let style = |i| match (i == selected, focused, role) {
+            (true, true, _) => pressed(),
+            (true, false, NavigationRole::Sections) => button().fg(ORANGE),
+            _ => button(),
+        };
+        if widths[selected] > width as usize {
+            row.spans = fit(
+                vec![Span::styled(labels[selected], style(selected))],
+                width as usize,
+            );
+            if row.spans.is_empty() {
+                row.spans.push(Span::styled("…", style(selected)));
+            }
+            let used = row.spans.iter().map(Span::width).sum::<usize>() as u16;
+            row.buttons.push((selected, 0..used));
+            return row;
+        }
+        let mut start = 0;
+        let mut through_selected = widths[..=selected].iter().sum::<usize>() + selected;
+        while through_selected > width as usize {
+            through_selected -= widths[start] + 1;
+            start += 1;
+        }
+        let mut used = 0;
+        for i in start..labels.len() {
+            if used + widths[i] > width as usize {
+                break;
+            }
+            row.spans
+                .push(Span::styled(format!(" {} ", labels[i]), style(i)));
+            row.buttons
+                .push((i, used as u16..(used + widths[i]) as u16));
+            used += widths[i];
+            if used < width as usize {
+                row.spans.push(Span::raw(" "));
+                used += 1;
+            }
+        }
+        row
+    }
+
+    fn hit(&self, column: u16) -> Option<usize> {
+        self.buttons
+            .iter()
+            .find(|(_, area)| area.contains(&column))
+            .map(|(i, _)| *i)
+    }
+
+    fn header_line(rows: u16) -> Option<u16> {
+        match rows {
+            0 => None,
+            1 | 2 => Some(0),
+            _ => Some(1),
+        }
+    }
 }
 
 fn tab_key(code: KeyCode, selected: usize, count: usize) -> Option<usize> {
@@ -4313,6 +4377,7 @@ impl ConfigForm {
 
     fn header_rows(&self) -> u16 {
         match self.area.height {
+            1..=3 if self.tabs && self.choice.is_none() => 1,
             0..=3 => 0,
             4..=7 => 2,
             _ => 4,
@@ -4328,8 +4393,18 @@ impl ConfigForm {
             .min((width as usize / 2).saturating_sub(2))
     }
 
+    fn navigation(&self) -> NavigationRow {
+        NavigationRow::new(
+            GROUPS.iter().map(|&(name, _)| name),
+            self.tab(),
+            self.tabs,
+            NavigationRole::Sections,
+            self.area.width,
+        )
+    }
+
     fn tab_spans(&self) -> Vec<Span<'static>> {
-        let mut spans = tab_buttons(GROUPS.iter().map(|&(name, _)| name), self.tab(), self.tabs);
+        let mut spans = self.navigation().spans;
         spans.push(Span::styled(
             if self.tabs { " ←→ group" } else { "" },
             dim(),
@@ -4406,18 +4481,20 @@ impl ConfigForm {
                 clip(f.short, field_w)
             };
             let mut spans = vec![
-                Span::styled(if selected { "› " } else { "  " }, lit()),
+                Span::styled(if focused { "› " } else { "  " }, lit()),
                 Span::raw(" ".repeat(indent)),
                 Span::styled(
                     format!("{label:<field_w$} "),
-                    if selected { lit() } else { plain() },
+                    if focused { lit() } else { plain() },
                 ),
             ];
             let room = (columns as usize).saturating_sub(label_w + 3);
             spans.extend(self.control(i, room));
             let mut line = Line::from(fit(spans, columns as usize));
-            if focused {
+            if selected {
                 at = lines.len();
+            }
+            if focused {
                 on_row(std::slice::from_mut(&mut line), columns);
             }
             lines.push(line);
@@ -4483,7 +4560,9 @@ impl ConfigForm {
                 Line::default(),
             ]
         };
-        if header == 2 {
+        if header == 1 {
+            lines = vec![Line::from(self.tab_spans())];
+        } else if header == 2 {
             lines.remove(0);
             lines.truncate(2);
         } else if header == 0 {
@@ -4520,7 +4599,7 @@ impl ConfigForm {
             value
         };
         let value = f.display(value);
-        let style = if i == self.row {
+        let style = if i == self.row && !self.tabs {
             lit()
         } else if configured {
             bold()
@@ -4716,16 +4795,11 @@ impl ConfigForm {
                 let x = ev.column.saturating_sub(self.area.x);
                 let y = ev.row.saturating_sub(self.area.y);
                 let header = self.header_rows();
-                if self.choice.is_none() && ((header == 4 && y == 1) || (header == 2 && y == 0)) {
-                    let mut left = 0;
-                    for (i, (name, _)) in GROUPS.iter().enumerate() {
-                        let right = left + name.len() as u16 + 2;
-                        if (left..right).contains(&x) {
-                            self.switch(i);
-                            self.tabs = true;
-                            return ConfigAction::Stay;
-                        }
-                        left = right + 1;
+                if self.choice.is_none() && NavigationRow::header_line(header) == Some(y) {
+                    if let Some(i) = self.navigation().hit(x) {
+                        self.switch(i);
+                        self.tabs = true;
+                        return ConfigAction::Stay;
                     }
                 } else if y >= header {
                     if self.choice.is_some() {
@@ -4971,6 +5045,7 @@ impl ColumnsPicker {
 
     fn header_rows(&self) -> u16 {
         match self.area.height {
+            1..=3 if self.tabs => 1,
             0..=3 => 0,
             4..=7 => 2,
             _ => 5,
@@ -4994,8 +5069,6 @@ impl ColumnsPicker {
         match code {
             KeyCode::Esc => return ColumnAction::Close,
             KeyCode::Up if self.current().at == 0 => self.tabs = true,
-            KeyCode::Left => self.tab = self.tab.saturating_sub(1),
-            KeyCode::Right => self.tab = (self.tab + 1).min(3),
             _ => {
                 let before = self.current().clone();
                 let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
@@ -5063,14 +5136,17 @@ impl ColumnsPicker {
             return hints(&[("←→", "table"), ("↓", "columns"), ("esc", "back")]);
         }
         let form = self.current();
-        let mut keys = vec![(
-            "space",
-            if form.shown.contains(form.selected()) {
-                "hide"
-            } else {
-                "show"
-            },
-        )];
+        let mut keys = vec![
+            ("←", "list"),
+            (
+                "space",
+                if form.shown.contains(form.selected()) {
+                    "hide"
+                } else {
+                    "show"
+                },
+            ),
+        ];
         if let Some(pos) = form.position() {
             if pos > 0 {
                 keys.push(("[", "earlier"));
@@ -5086,12 +5162,18 @@ impl ColumnsPicker {
         hints(&keys)
     }
 
-    fn tab_spans(&self) -> Vec<Span<'static>> {
-        let mut spans = tab_buttons(
+    fn navigation(&self) -> NavigationRow {
+        NavigationRow::new(
             COLUMN_SETS.iter().map(|&(_, label)| label),
             self.tab,
             self.tabs,
-        );
+            NavigationRole::Sections,
+            self.area.width,
+        )
+    }
+
+    fn tab_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = self.navigation().spans;
         spans.push(Span::styled(
             if self.tabs {
                 " ←→ table"
@@ -5130,7 +5212,9 @@ impl ColumnsPicker {
             Line::default(),
             Line::from(Span::styled("↑↓ show column          order", dim())),
         ];
-        if header == 2 {
+        if header == 1 {
+            lines = vec![Line::from(self.tab_spans())];
+        } else if header == 2 {
             lines = vec![Line::from(self.tab_spans()), lines.pop().unwrap()];
         } else if header == 0 {
             lines.clear();
@@ -5185,16 +5269,11 @@ impl ColumnsPicker {
                 let x = ev.column.saturating_sub(self.area.x);
                 let y = ev.row.saturating_sub(self.area.y);
                 let header = self.header_rows();
-                if (header == 5 && y == 1) || (header == 2 && y == 0) {
-                    let mut left = 0;
-                    for (i, (_, label)) in COLUMN_SETS.iter().enumerate() {
-                        let right = left + label.len() as u16 + 2;
-                        if (left..right).contains(&x) {
-                            self.tab = i;
-                            self.tabs = true;
-                            return ColumnAction::Stay;
-                        }
-                        left = right + 1;
+                if NavigationRow::header_line(header) == Some(y) {
+                    if let Some(i) = self.navigation().hit(x) {
+                        self.tab = i;
+                        self.tabs = true;
+                        return ColumnAction::Stay;
                     }
                 } else if y >= header {
                     let at = self.top + (y - header) as usize;
@@ -9126,6 +9205,7 @@ impl App {
     /// Clients without mouse reporting leave wheel scrolling to our emulator.
     fn wants_mouse(&self) -> bool {
         self.split_active()
+            || self.on_button()
             || self.focus.is_some()
             || self.history.visible
             || matches!(
@@ -9293,7 +9373,7 @@ impl App {
             }
             return;
         }
-        if self.split_active() && !self.click(ev) {
+        if (self.split_active() || !self.pane_focused()) && !self.click(ev) {
             return;
         }
         let Some(ev) = self.pane_mouse(ev) else {
@@ -9391,16 +9471,13 @@ impl App {
             let n = self.scroll + (ev.row - l.y) as usize;
             if n < self.visible.len() && self.rows[self.visible[n]].kind.selectable() {
                 self.cursor = n;
-                if self.rows[self.visible[n]].kind == Kind::Menu {
-                    // Match `menu_cells`: the two-column selection mark, then buttons and gaps.
-                    let mut x = l.x + 2;
-                    for (i, (name, ..)) in MENU.iter().enumerate() {
-                        let w = name.chars().count() as u16 + 2;
-                        if (x..x + w).contains(&ev.column) {
-                            self.menu = i;
-                        }
-                        x += w + 1;
-                    }
+                if self.rows[self.visible[n]].kind == Kind::Menu
+                    && let Some(x) = ev.column.checked_sub(l.x.saturating_add(2))
+                    && let Some(i) = self
+                        .menu_navigation(false, l.width.saturating_sub(2))
+                        .hit(x)
+                {
+                    self.menu = i;
                 }
             }
         }
@@ -10745,7 +10822,11 @@ impl App {
                 Mode::Guide(..) | Mode::Columns(_) => true,
                 _ => false,
             };
-        if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
+        let columns_out = code == KeyCode::Left
+            && mods.is_empty()
+            && matches!(&self.mode, Mode::Columns(form) if !form.tabs);
+        if (tab_out || columns_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused()
+        {
             if matches!(self.mode, Mode::Normal) {
                 self.leave_jobs();
             } else {
@@ -11471,17 +11552,23 @@ impl App {
             && self.text.is_empty()
     }
 
-    fn menu_cells(&self, selected: bool) -> Vec<(String, Style)> {
-        let mut cells = vec![];
-        for (i, (name, ..)) in MENU.iter().enumerate() {
-            let style = if selected && i == self.menu {
-                pressed()
-            } else {
-                button()
-            };
-            cells.push((format!(" {name} "), style));
-            cells.push((" ".to_owned(), Style::default()));
-        }
+    fn menu_navigation(&self, focused: bool, width: u16) -> NavigationRow {
+        NavigationRow::new(
+            MENU.iter().map(|&(name, ..)| name),
+            self.menu,
+            focused,
+            NavigationRole::Menu,
+            width,
+        )
+    }
+
+    fn menu_cells(&self, selected: bool, width: u16) -> Vec<(String, Style)> {
+        let mut cells: Vec<_> = self
+            .menu_navigation(selected, width)
+            .spans
+            .into_iter()
+            .map(|span| (span.content.into_owned(), span.style))
+            .collect();
         if selected {
             cells.push((format!(" {}", MENU[self.menu].2), dim()));
         }
@@ -11541,7 +11628,7 @@ impl App {
                 }
                 let menu;
                 let cells = if row.kind == Kind::Menu {
-                    menu = self.menu_cells(selected);
+                    menu = self.menu_cells(selected, width.saturating_sub(mark as u16));
                     &menu
                 } else {
                     &row.cells
@@ -18591,7 +18678,16 @@ mod tests {
                 );
                 form.key(KeyCode::PageUp, KeyModifiers::NONE);
                 t.draw(|f| form.draw(f, f.area())).unwrap();
-                assert!(rows(&t, 40).iter().any(|l| l.starts_with('›')));
+                let painted = rows(&t, 40);
+                assert_eq!(
+                    painted.iter().any(|l| l.starts_with('›')),
+                    !form.tabs,
+                    "paging onto the tabs removes the field's focus marker"
+                );
+                if form.tabs {
+                    let y = if height < 8 { 0 } else { 1 };
+                    assert!(painted[y].contains(GROUPS[form.tab()].0));
+                }
             }
         }
     }
@@ -18881,6 +18977,205 @@ mod tests {
     }
 
     #[test]
+    fn navigation_row_keeps_selected_buttons_visible_and_hits_only_drawn_cells() {
+        let row = NavigationRow::new(
+            ["one", "two", "three"].into_iter(),
+            2,
+            true,
+            NavigationRole::Sections,
+            9,
+        );
+        assert_eq!(Line::from(row.spans.clone()).to_string(), " three  ");
+        assert_eq!(row.hit(0), Some(2));
+        assert_eq!(row.hit(6), Some(2));
+        assert_eq!(row.hit(7), None, "the gap is not a button");
+        assert_eq!(row.hit(9), None, "clipped buttons cannot be clicked");
+        assert_eq!(row.spans[0].style, pressed());
+
+        let row = NavigationRow::new(
+            ["ab", "界", "e\u{301}"].into_iter(),
+            2,
+            false,
+            NavigationRole::Sections,
+            9,
+        );
+        assert_eq!(
+            Line::from(row.spans.clone()).to_string(),
+            " 界   e\u{301}  "
+        );
+        assert_eq!(row.hit(2), Some(1), "wide characters occupy two cells");
+        assert_eq!(row.hit(4), None);
+        assert_eq!(row.hit(5), Some(2));
+        assert_eq!(row.hit(7), Some(2));
+        assert_eq!(row.hit(8), None);
+
+        for width in [0, 1, 2] {
+            let row = NavigationRow::new(
+                ["ab", "界"].into_iter(),
+                1,
+                true,
+                NavigationRole::Sections,
+                width,
+            );
+            assert!(Line::from(row.spans.clone()).width() <= width as usize);
+            assert_eq!(row.hit(0), (width > 0).then_some(1));
+            if width == 1 {
+                assert_eq!(Line::from(row.spans).to_string(), "…");
+            }
+        }
+        let row = NavigationRow::new([].into_iter(), 0, true, NavigationRole::Menu, 20);
+        assert!(row.spans.is_empty() && row.hit(0).is_none());
+    }
+
+    #[test]
+    fn config_navigation_has_one_focus_and_keeps_tabs_visible_in_small_panes() {
+        let d = dir();
+        let app = app(d.path());
+        let mut form = app.config_form();
+        let before = form.values.clone();
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        for width in [15, 20, 60] {
+            for height in [1, 2, 3, 4, 7, 8, 20] {
+                for (tab, (label, _)) in GROUPS.iter().enumerate() {
+                    form.switch(tab);
+                    form.key(KeyCode::Home, KeyModifiers::NONE);
+                    form.key(KeyCode::Up, KeyModifiers::NONE);
+                    let selected = form.row;
+                    let mut t =
+                        Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                    t.draw(|f| form.draw(f, f.area())).unwrap();
+                    let y = if height < 8 { 0 } else { 1 };
+                    let text = cells(&t, y, 0..width);
+                    let x = text.find(label).expect("the focused tab is visible") as u16;
+                    assert_eq!(t.backend().buffer().cell((x, y)).unwrap().bg, ORANGE);
+                    assert!(
+                        !(0..height).any(|y| cells(&t, y, 0..width).starts_with("› ")),
+                        "the field must not keep a second focus marker"
+                    );
+                    assert!(matches!(form.mouse(click(x, y)), ConfigAction::Stay));
+                    assert_eq!(form.tab(), tab, "clicks follow the shifted tab layout");
+                    assert!(form.tabs);
+                    form.key(KeyCode::Down, KeyModifiers::NONE);
+                    t.draw(|f| form.draw(f, f.area())).unwrap();
+                    assert!(!form.tabs);
+                    assert_eq!(form.row, selected);
+                    assert!(
+                        (0..height).any(|y| cells(&t, y, 0..width).starts_with("› ")),
+                        "down restores the selected field even in a one-line pane"
+                    );
+                    assert_eq!(form.values, before);
+                }
+            }
+        }
+        form.switch(2);
+        form.tabs = true;
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(20, 8)).unwrap();
+        t.draw(|f| form.draw(f, f.area())).unwrap();
+        assert!(cells(&t, 1, 0..20).starts_with(" harnesses "));
+        form.mouse(click(1, 1));
+        assert_eq!(form.tab(), 1, "a visible neighbor keeps its original index");
+        assert!(form.tabs);
+    }
+
+    #[test]
+    fn navigation_menu_keeps_its_active_button_visible_and_clickable() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.rows = vec![Row {
+            kind: Kind::Menu,
+            cells: vec![],
+        }];
+        app.visible = vec![0];
+        app.cursor = 0;
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        for split in [false, true] {
+            for width in [24, 40, 60, 120] {
+                app.mode = Mode::Normal;
+                app.split = split;
+                app.menu = MENU.len() - 1;
+                let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 18)).unwrap();
+                t.draw(|f| app.draw(f)).unwrap();
+                let area = app.list_area;
+                let text = cells(&t, area.y, area.x..area.right());
+                let at = text
+                    .find("help")
+                    .expect("the selected menu button stays visible");
+                let x = Span::raw(&text[..at]).width() as u16;
+                assert!(app.wants_mouse(), "the menu accepts clicks without a pane");
+                assert_eq!(
+                    t.backend().buffer().cell((area.x + x, area.y)).unwrap().bg,
+                    ORANGE
+                );
+                app.mouse(click(area.x + x, area.y));
+                assert_eq!(app.menu, MENU.len() - 1);
+                assert!(
+                    matches!(app.mode, Mode::Normal),
+                    "a click selects without opening"
+                );
+                if let Some(x) = text.find("columns") {
+                    app.mouse(click(area.x + Span::raw(&text[..x]).width() as u16, area.y));
+                    assert_eq!(MENU[app.menu].0, "columns", "split={split}, width={width}");
+                }
+                let selected = app.menu;
+                app.mouse(click(area.x, area.y));
+                assert_eq!(app.menu, selected, "the list marker is not a button");
+                app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.menu, (selected + MENU.len() - 1) % MENU.len());
+                t.draw(|f| app.draw(f)).unwrap();
+                assert!(
+                    cells(&t, app.list_area.y, app.list_area.x..app.list_area.right())
+                        .contains(MENU[app.menu].0)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn columns_navigation_keeps_each_table_visible_in_small_panes() {
+        let d = dir();
+        for width in [1, 5, 12, 25, 60] {
+            for height in [1, 3, 8] {
+                for (tab, (_, label)) in COLUMN_SETS.iter().enumerate() {
+                    let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), tab);
+                    let before = picker.sets.clone();
+                    picker.key(KeyCode::Up);
+                    let mut t =
+                        Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+                    t.draw(|f| picker.draw(f, f.area())).unwrap();
+                    let y = if height < 8 { 0 } else { 1 };
+                    let text = cells(&t, y, 0..width);
+                    let expected = &label[..label.len().min(width as usize)];
+                    let x = text.find(expected).expect("the selected table is visible") as u16;
+                    assert_eq!(t.backend().buffer().cell((x, y)).unwrap().bg, ORANGE);
+                    picker.mouse(MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column: x,
+                        row: y,
+                        modifiers: KeyModifiers::NONE,
+                    });
+                    assert_eq!(picker.tab, tab, "clicks match the visible button");
+                    assert!(picker.tabs);
+                    picker.key(KeyCode::Down);
+                    t.draw(|f| picker.draw(f, f.area())).unwrap();
+                    assert!(!picker.tabs);
+                    assert!(cells(&t, picker.header_rows(), 0..width).starts_with('›'));
+                    assert_eq!(picker.sets, before, "focus changes do not toggle columns");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn columns_picker_keeps_focus_on_toggle_and_remembers_each_table() {
         let d = dir();
         let mut picker = ColumnsPicker::new(&d.path().join("none.yaml"), 0);
@@ -18898,21 +19193,23 @@ mod tests {
         picker.key(KeyCode::Char(']'));
         assert_eq!(picker.current().selected(), before.selected());
         assert_eq!(picker.current().position(), Some(2));
+        // A tab click can focus the buttons without moving the current column.
+        picker.tabs = true;
         picker.key(KeyCode::Right);
+        picker.key(KeyCode::Down);
         picker.key(KeyCode::End);
         let run = picker.current().selected().to_owned();
         picker.key(KeyCode::Down);
         assert_eq!(picker.current().selected(), run);
+        picker.tabs = true;
         picker.key(KeyCode::Left);
         assert_eq!(picker.current().selected(), before.selected());
-        picker.key(KeyCode::Left);
         assert_eq!(picker.tab, 0);
         picker.key(KeyCode::Right);
         assert_eq!(picker.current().selected(), run);
-        for _ in 0..8 {
-            picker.key(KeyCode::Right);
-        }
+        picker.key(KeyCode::End);
         assert_eq!(picker.tab, 3);
+        picker.key(KeyCode::Down);
         picker.key(KeyCode::Home);
         picker.key(KeyCode::Up);
         assert_eq!(picker.current().at, 0);
@@ -18949,6 +19246,51 @@ mod tests {
         }
         picker.key(KeyCode::Up);
         assert!(matches!(picker.key(KeyCode::Esc), ColumnAction::Close));
+    }
+
+    #[test]
+    fn columns_arrows_switch_only_on_tabs_and_left_from_a_column_returns_to_the_list() {
+        let d = dir();
+        let mut app = app(d.path());
+        let original = "version: 3\ncolumns: [state, model]\njobs: []\n";
+        fs::write(&app.jobs_path, original).unwrap();
+        app.text = "keep this draft".into();
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
+        for split in [true, false] {
+            for from_config in [false, true] {
+                for tab in 0..COLUMN_SETS.len() {
+                    app.split = split;
+                    app.column_context = tab;
+                    let return_config = from_config.then(|| {
+                        let mut form = app.config_form();
+                        form.go(field_at("columns"));
+                        form
+                    });
+                    app.open_columns(return_config);
+                    terminal.draw(|f| app.draw(f)).unwrap();
+                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
+                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && !f.tabs));
+                    assert!(app.hint_line().to_string().starts_with("← list"));
+                    app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+                    app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                    let previous = (tab + COLUMN_SETS.len() - 1) % COLUMN_SETS.len();
+                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == previous && f.tabs));
+                    app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                    assert!(matches!(&app.mode, Mode::Columns(f) if f.tab == tab && f.tabs));
+                    app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+                    app.key(KeyCode::Left, KeyModifiers::CONTROL).unwrap();
+                    assert!(matches!(&app.mode, Mode::Columns(f) if !f.tabs));
+                    app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                    assert!(
+                        matches!(app.mode, Mode::Normal),
+                        "left returns to the list, split={split}, from_config={from_config}, tab={tab}"
+                    );
+                    assert_eq!(app.text, "keep this draft");
+                    assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), original);
+                }
+            }
+        }
     }
 
     #[test]
@@ -19055,13 +19397,11 @@ mod tests {
                 !(0..height).any(|y| cells(&t, y, 0..60).starts_with("› ")),
                 "the columns lose their focus marker when the buttons have focus"
             );
-            if height >= 4 {
-                let y = if height < 8 { 0 } else { 1 };
-                let cell = t.backend().buffer().cell((1, y)).unwrap();
-                assert_eq!(cell.bg, ORANGE);
-                assert_eq!(cell.fg, Color::Black);
-                assert!(cells(&t, y, 0..60).contains("←→ table"));
-            }
+            let y = if height < 8 { 0 } else { 1 };
+            let cell = t.backend().buffer().cell((1, y)).unwrap();
+            assert_eq!(cell.bg, ORANGE);
+            assert_eq!(cell.fg, Color::Black);
+            assert!(cells(&t, y, 0..60).contains("←→ table"));
             picker.key(KeyCode::Enter);
             picker.key(KeyCode::End);
         }
