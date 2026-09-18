@@ -26,9 +26,6 @@ fn capture() -> Result<()> {
     };
     app.data.sessions.clear();
     app.data
-        .recent
-        .retain(|dir| dir.starts_with(fixture.join("projects")));
-    app.data
         .folders
         .retain(|dir| dir.starts_with(fixture.join("projects")));
     app.cwd = PathBuf::from(input["cwd"].as_str().context("cwd")?);
@@ -137,15 +134,16 @@ fn capture() -> Result<()> {
     anyhow::ensure!(app.focus.is_none(), "Ctrl+Z did not return to list");
     recording.hold(&mut app, &mut terminal, 300)?;
     recording.scene = "folder";
-    while !matches!(app.selected().map(|row| &row.kind), Some(Kind::Menu)) {
-        app.key(KeyCode::Up, KeyModifiers::NONE)?;
+    for _ in 0..app.rows.len() {
+        if matches!(app.selected().map(|row| &row.kind), Some(Kind::NewFolder)) {
+            break;
+        }
+        app.key(KeyCode::Down, KeyModifiers::NONE)?;
         recording.hold(&mut app, &mut terminal, NAVIGATION_MS)?;
     }
-    recording.hold(&mut app, &mut terminal, 600)?;
-    app.key(KeyCode::Enter, KeyModifiers::NONE)?;
     anyhow::ensure!(
-        matches!(app.mode, Mode::Folder(_)),
-        "folder form did not open"
+        matches!(app.selected().map(|row| &row.kind), Some(Kind::NewFolder)),
+        "the add folder row was not reached"
     );
     recording.hold(&mut app, &mut terminal, 1200)?;
     recording.type_text(&mut app, &mut terminal, "~/projects/docs", 120)?;
@@ -341,8 +339,6 @@ impl Recording {
             match receiver.try_recv() {
                 Ok(mut result) => {
                     if let Ok(data) = &mut result {
-                        data.recent
-                            .retain(|dir| dir.starts_with(self.fixture.join("projects")));
                         data.folders
                             .retain(|dir| dir.starts_with(self.fixture.join("projects")));
                         let thread_ids: Vec<String> =

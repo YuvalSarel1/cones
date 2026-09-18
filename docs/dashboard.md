@@ -25,20 +25,9 @@ Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click g
 
 ## Menu
 
-The menu has `folder`, `jobs`, `config`, `columns` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
+The menu has `jobs`, `config`, `columns` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
 
 Menu and section buttons shift horizontally to keep the selected button visible in narrow panes. Clicks follow the visible buttons; gaps do not select anything. An oversized selected label is clipped to the available space.
-
-### Folder
-
-Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `↑ ↓` recall previously seen folders. The list sits above the prompt, newest first, and the keys move through its rows: either key starts at the newest, `↓` goes down toward older and `↑` back up, both wrapping.
-
-A newly pinned empty folder becomes the selection. Choosing a folder already containing sessions keeps the current selection. `ctrl+p` also pins the selected row's folder, or the dashboard cwd from the menu.
-
-| File under the state directory | Contents |
-| --- | --- |
-| `folders` | Pinned paths, one per line. Sessions replace the empty-folder placeholder while present; it returns when they leave. |
-| `recent` | The last 20 seen folders, newest first, used by folder recall. |
 
 ### Jobs
 
@@ -113,7 +102,7 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ## Sessions and runs
 
-Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Forks follow their visible parents, with indentation confined to the title column. Pinned empty folders show their git branch and tree state. Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
+Live sessions group by directory, sorted without case, or by state with input requests first. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Forks follow their visible parents, with indentation confined to the title column. Pinned empty folders show their git branch and tree state. The list's last row is always [`+ add folder`](#add-a-folder). Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
 
 Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The [column picker](#columns) edits `columns`, `run_columns`, `job_columns` and `history_columns` independently. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
 
@@ -152,6 +141,16 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 | Finished run | Hide the row; retain its ledger, output and transcript. Restore through the [`hidden` file](jobs.md#stored-files). |
 | Job with no live run | Delete the job and reinstall schedules. |
 | Pinned empty folder | Remove its pin; leave the directory intact. |
+
+### Add a folder
+
+`+ add folder` is the last row of the session list, always there. Select it and type: the row takes a path instead of an instruction, so the composer stays empty. Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `enter` pins the folder, `esc` clears what is typed, and a missing directory is reported without losing the text.
+
+The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows. `ctrl+p` also pins the selected row's folder, or the dashboard cwd from the menu.
+
+| File under the state directory | Contents |
+| --- | --- |
+| `folders` | Pinned paths, one per line. Sessions replace the empty-folder placeholder while present; it returns when they leave. |
 
 ### Fork a conversation
 
@@ -226,7 +225,7 @@ Keys without another action type into the composer. Text prompts share these edi
 
 | Keys | Edit |
 | --- | --- |
-| `← →` | Move one character. With nothing typed, `←` leaves the jobs screen, the folder prompt and the filter, since there is nothing to its left. |
+| `← →` | Move one character. With nothing typed, `←` leaves the jobs screen and the filter, since there is nothing to its left. |
 | `alt+← alt+→`, `ctrl+← ctrl+→`, `alt+b alt+f` | Move one word. |
 | `home end`, `ctrl+a ctrl+e` | Move to the line's ends. With an empty composer, `ctrl+e` edits a selected job. |
 | `backspace delete` | Delete one character. |

@@ -289,32 +289,6 @@ impl Ledger {
         }
         Ok(())
     }
-    /// Remember up to 20 folders in first-seen order, newest first; write only when changed.
-    pub fn recent(&self, seen: &[PathBuf]) -> Result<Vec<PathBuf>> {
-        let mut recent: Vec<PathBuf> = std::fs::read_to_string(self.state.join("recent"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(PathBuf::from)
-            .collect();
-        let mut new: Vec<PathBuf> = Vec::new();
-        for p in seen {
-            if !recent.contains(p) && !new.contains(p) {
-                new.push(p.clone());
-            }
-        }
-        if !new.is_empty() {
-            new.append(&mut recent);
-            new.truncate(20);
-            recent = new;
-            let mut f = private_file(&self.state.join("recent"))?;
-            f.set_len(0)?;
-            for p in &recent {
-                writeln!(f, "{}", p.display())?;
-            }
-        }
-        Ok(recent)
-    }
     pub fn resolve(&self, id: &str) -> Result<Run> {
         let candidates: Vec<_> = self
             .runs()?

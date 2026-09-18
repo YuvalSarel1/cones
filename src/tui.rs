@@ -119,6 +119,8 @@ pub enum Kind {
     Menu,
     /// A pinned folder with no live sessions, in `~` form.
     Folder(String),
+    /// The always-present last row of the session list: type a path to pin a folder.
+    NewFolder,
     NewJob,
 }
 
@@ -135,6 +137,7 @@ impl Kind {
             Self::Run(..) => "run",
             Self::Menu => "menu",
             Self::Folder(_) => "folder",
+            Self::NewFolder => "new_folder",
             Self::NewJob => "new_job",
         }
     }
@@ -154,6 +157,7 @@ impl Kind {
             Kind::History(key) => Some(key),
             Kind::Menu => Some("menu"),
             Kind::Folder(dir) => Some(dir),
+            Kind::NewFolder => Some("new folder"),
             Kind::NewJob => Some("new job"),
             _ => None,
         }
@@ -205,8 +209,6 @@ pub struct Data {
     pub whole_columns: bool,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
-    /// Previously seen session folders, newest first.
-    pub recent: Vec<PathBuf>,
     /// Git state for pinned folders without sessions.
     pub git: BTreeMap<PathBuf, String>,
     diagnostics: Option<LoadDiagnostics>,
@@ -340,7 +342,6 @@ impl Data {
         if let Some(d) = &mut diagnostics {
             d.phase("git", git_started);
         }
-        let recent = phase!("ledger.recent", ledger.recent(&seen));
         Ok(Self {
             jobs,
             jobs_path: jobs_path.to_owned(),
@@ -360,7 +361,6 @@ impl Data {
             confirm_secs,
             whole_columns,
             folders,
-            recent,
             git,
             diagnostics,
         })
@@ -624,6 +624,16 @@ impl Data {
             };
             out.push(row);
         }
+        if !jobs_view {
+            // Always the last row of the session list, so a folder is one keystroke away.
+            out.push(Row {
+                kind: Kind::NewFolder,
+                cells: vec![
+                    ("+ add folder".to_owned(), lit()),
+                    (" · a path to start work in".to_owned(), dim()),
+                ],
+            });
+        }
         if jobs_view {
             if !table {
                 // No job at all: name the file, since which one is read follows the
@@ -802,6 +812,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::History(key) => (key.clone(), "-".into()),
             Kind::Menu => ("menu".to_owned(), "-".to_owned()),
             Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
+            Kind::NewFolder => ("new folder".to_owned(), "-".to_owned()),
             Kind::NewJob => ("new job".to_owned(), "-".to_owned()),
         };
         out += &format!("{key}\t{aux}\t");
@@ -849,12 +860,7 @@ fn ansi(text: &str, style: Style) -> String {
 }
 
 /// Button name, action verb, explanation.
-const MENU: [(&str, &str, &str); 5] = [
-    (
-        "folder",
-        "add folder",
-        "a row for a folder nothing runs in, to start work there",
-    ),
+const MENU: [(&str, &str, &str); 4] = [
     ("jobs", "jobs", "the jobs: start, edit, add one"),
     ("config", "defaults", "job defaults and dashboard settings"),
     (
@@ -873,6 +879,7 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
         Some(Kind::History(_)) => "resume",
         Some(Kind::Menu) => MENU[menu].1,
         Some(Kind::Folder(_)) => "start here",
+        Some(Kind::NewFolder) => "add folder",
         Some(Kind::NewJob) => "new job",
         _ => "open",
     }
@@ -5575,7 +5582,6 @@ enum Mode {
     Job(Box<JobForm>),
     Config(Box<ConfigForm>),
     Columns(Box<ColumnsPicker>),
-    Folder(Input),
     Rename(Input),
     /// Search and scroll state for the keyboard guide.
     Guide(Guide),
@@ -6440,6 +6446,8 @@ struct App {
     shell: PathBuf,
     shell_startup: Option<tempfile::TempDir>,
     terminal_input: Input,
+    /// The path typed on the list's last row, which pins a folder.
+    folder: Input,
     /// Shell rows belong to this dashboard and have no harness registry.
     terminals: Vec<Session>,
     /// Background launches keyed by placeholder row id.
@@ -6754,6 +6762,7 @@ impl App {
             shell: terminal::default_shell(),
             shell_startup: None,
             terminal_input: Input::default(),
+            folder: Input::default(),
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
@@ -6927,7 +6936,6 @@ impl App {
             Mode::Job(_) => "job",
             Mode::Config(_) => "config",
             Mode::Columns(_) => "columns",
-            Mode::Folder(_) => "folder",
             Mode::Rename(_) => "rename",
             Mode::Guide(..) => "guide",
         };
@@ -8258,6 +8266,10 @@ impl App {
         if self.focus.is_some() || !self.composer_text().is_empty() {
             return;
         }
+        self.select_row(id);
+    }
+
+    fn select_row(&mut self, id: &str) {
         if let Some(i) = self
             .visible
             .iter()
@@ -8323,7 +8335,8 @@ impl App {
         } else if keep.is_none() {
             let below = |i: &usize| {
                 let k = &self.rows[*i].kind;
-                k.selectable() && *k != Kind::Menu
+                // Neither button row opens the list: the cursor wants work, or the menu.
+                k.selectable() && *k != Kind::Menu && *k != Kind::NewFolder
             };
             self.cursor = self.visible.iter().position(below).unwrap_or(0);
         }
@@ -8614,7 +8627,6 @@ impl App {
             Mode::Config(_) => Some("config"),
             Mode::Columns(_) => Some("columns"),
             Mode::Job(_) => Some("jobs"),
-            Mode::Folder(_) => Some("folder"),
             _ => self.jobs_view.then_some("jobs"),
         };
         open.or_else(|| {
@@ -8632,11 +8644,7 @@ impl App {
         self.jobs_view
             || matches!(
                 self.mode,
-                Mode::Guide(..)
-                    | Mode::Config(_)
-                    | Mode::Columns(_)
-                    | Mode::Job(_)
-                    | Mode::Folder(_)
+                Mode::Guide(..) | Mode::Config(_) | Mode::Columns(_) | Mode::Job(_)
             )
     }
 
@@ -10173,6 +10181,7 @@ impl App {
                 self.prepare_viewer(what, key, record, None, move || history_command(&entry));
             }
             Kind::Menu => self.open_menu(),
+            Kind::NewFolder => self.add_folder(),
             Kind::Folder(dir) => {
                 self.status = format!("type an instruction · enter starts a session in {dir}");
             }
@@ -10183,7 +10192,6 @@ impl App {
 
     fn open_menu(&mut self) {
         match MENU[self.menu].0 {
-            "folder" => self.mode = Mode::Folder(Input::default()),
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
             "columns" => self.open_columns(None),
@@ -10706,6 +10714,48 @@ impl App {
         Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
     }
 
+    fn on_new_folder(&self) -> bool {
+        matches!(self.selected().map(|r| &r.kind), Some(Kind::NewFolder))
+    }
+
+    /// Pin the folder typed on the last row and move the cursor to where it sorted.
+    fn add_folder(&mut self) {
+        let text = self.folder.text.clone();
+        if text.trim().is_empty() {
+            self.status = "type a path · tab completes it".into();
+            return;
+        }
+        let dir = match launch_dir(&text, &self.cwd, &self.cwd) {
+            Ok(dir) => dir,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let name = fleet::tilde(&dir);
+        self.folder = Input::default();
+        self.status = match self.pin_folder(dir) {
+            Ok(()) => {
+                self.select_row(&name);
+                format!("{name} added · type an instruction and enter starts a session there")
+            }
+            Err(e) => format!("folder not saved: {e:#}"),
+        };
+    }
+
+    /// The last row draws its own cells: what is typed changes without a rebuild.
+    /// It keeps the `+` it shows when the cursor is elsewhere.
+    fn new_folder_cells(&self) -> Vec<(String, Style)> {
+        let mut cells = vec![("+ ".to_owned(), lit())];
+        cells.extend(
+            self.folder
+                .spans("add folder · a path, tab completes")
+                .into_iter()
+                .map(|span| (span.content.into_owned(), span.style)),
+        );
+        cells
+    }
+
     fn on_new_job(&self) -> bool {
         matches!(self.selected().map(|r| &r.kind), Some(Kind::NewJob))
     }
@@ -10811,7 +10861,7 @@ impl App {
             spans.extend(typed(&shown, caret, "Type a command, or Enter to open"));
             return Line::from(spans);
         }
-        if self.on_button() {
+        if self.on_button() || self.on_new_folder() {
             return Line::default();
         }
         let kind = harness::launchable()[self.harness].to_string();
@@ -10927,12 +10977,6 @@ impl App {
             Mode::Columns(form) => form.hints(),
             Mode::Config(form) => form.hints(),
             Mode::Guide(guide) => guide.hints(),
-            Mode::Folder(_) => hints(&[
-                ("enter", "add"),
-                ("tab", "complete"),
-                ("↑ ↓", "recent"),
-                ("esc", "cancel"),
-            ]),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Normal if self.history_selected() => {
                 let mut keys = vec![("↑ ↓", "select")];
@@ -10952,6 +10996,18 @@ impl App {
                 }
                 hints(&keys)
             }
+            Mode::Normal if self.on_new_folder() => hints(&[
+                ("enter", "add folder"),
+                ("tab", "complete"),
+                (
+                    "esc",
+                    if self.folder.text.is_empty() {
+                        "quit"
+                    } else {
+                        "clear"
+                    },
+                ),
+            ]),
             Mode::Normal if self.terminal_selected() => {
                 let mut keys = vec![("enter", start.as_str())];
                 if self.focusable_viewer().is_some() {
@@ -11362,44 +11418,6 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
-            Mode::Folder(input) => match code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Left if input.text.is_empty() => self.mode = Mode::Normal,
-                KeyCode::Up | KeyCode::Down if !self.data.recent.is_empty() => {
-                    let recent: Vec<String> =
-                        self.data.recent.iter().map(|p| fleet::tilde(p)).collect();
-                    let at = recent.iter().position(|r| *r == input.text);
-                    let n = recent.len();
-                    // The list is on screen newest first, so the keys follow its rows and
-                    // both start at the newest.
-                    let next = match (code, at) {
-                        (_, None) => 0,
-                        (KeyCode::Up, Some(i)) => (i + n - 1) % n,
-                        (_, Some(i)) => (i + 1) % n,
-                    };
-                    *input = Input::new(recent[next].clone());
-                }
-                KeyCode::Tab => self.status = input.complete(&self.cwd).join("  "),
-                KeyCode::Enter => {
-                    let text = input.text.clone();
-                    match launch_dir(&text, &self.cwd, &self.cwd) {
-                        Ok(dir) => {
-                            self.mode = Mode::Normal;
-                            let name = fleet::tilde(&dir);
-                            self.status = match self.pin_folder(dir) {
-                                Ok(()) => format!(
-                                    "{name} added · type an instruction and enter starts a session there"
-                                ),
-                                Err(e) => format!("folder not saved: {e:#}"),
-                            };
-                        }
-                        Err(e) => self.status = e,
-                    }
-                }
-                _ => {
-                    input.key(code, mods);
-                }
-            },
             Mode::Rename(input) => match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -11467,6 +11485,7 @@ impl App {
                 // Right on a row with nothing typed goes to the agent: into the pane when it is
                 // open, over the whole frame when it is closed.
                 if !self.on_button()
+                    && !self.on_new_folder()
                     && code == KeyCode::Right
                     && mods.is_empty()
                     && if searching_history {
@@ -11506,6 +11525,23 @@ impl App {
                     if self.filter.key(code, mods) {
                         self.filter_changed();
                         return Ok(false);
+                    }
+                } else if self.on_new_folder() {
+                    match code {
+                        KeyCode::Tab => {
+                            self.status = self.folder.complete(&self.cwd).join("  ");
+                            return Ok(false);
+                        }
+                        KeyCode::Enter => {
+                            self.add_folder();
+                            return Ok(false);
+                        }
+                        KeyCode::Esc if !self.folder.text.is_empty() => {
+                            self.folder = Input::default();
+                            return Ok(false);
+                        }
+                        _ if self.folder.key(code, mods) => return Ok(false),
+                        _ => {}
                     }
                 } else if !self.on_button() {
                     let (text, caret) = self.composer_input_mut();
@@ -11845,11 +11881,6 @@ impl App {
             Mode::Job(f) => f.line(),
             Mode::Config(f) => f.line(),
             Mode::Columns(f) => f.line(),
-            Mode::Folder(input) => {
-                let mut spans = vec![Span::styled("folder › ", Style::default().fg(ORANGE))];
-                spans.extend(input.spans(&fleet::tilde(&self.cwd)));
-                Line::from(spans)
-            }
             Mode::Rename(input) => {
                 let mut spans = vec![Span::styled("rename › ", Style::default().fg(ORANGE))];
                 spans.extend(input.spans("a title for the session"));
@@ -11932,35 +11963,12 @@ impl App {
                     self.row_lines(&self.other, &all, None, 0, body.height as usize, body.width);
                 frame.render_widget(Paragraph::new(lines), body);
             }
-            _ => frame.render_widget(Paragraph::new(self.recent_lines()), body),
+            _ => {}
         }
         frame.render_widget(prompt, foot);
         if self.panel_focused() {
             frame.render_widget(Paragraph::new(self.hint_line()), hint);
         }
-    }
-
-    fn recent_lines(&self) -> Vec<Line<'static>> {
-        let held = match &self.mode {
-            Mode::Folder(input) => input.text.as_str(),
-            _ => "",
-        };
-        let mut lines = vec![
-            Line::default(),
-            Line::from(Span::styled("recent folders", Style::default().fg(ORANGE))),
-        ];
-        lines.extend(self.data.recent.iter().map(|p| {
-            let name = fleet::tilde(p);
-            if name == held {
-                Line::from(vec![
-                    Span::styled("▌ ", Style::default().fg(ORANGE)),
-                    Span::styled(name, bold()),
-                ])
-            } else {
-                Line::from(vec![Span::raw("  "), Span::styled(name, dim())])
-            }
-        }));
-        lines
     }
 
     /// Align with Claude and pi's lower input rule, even while viewing history.
@@ -12140,10 +12148,14 @@ impl App {
                     ));
                     mark = 2;
                 }
-                let menu;
+                let live;
                 let cells = if row.kind == Kind::Menu {
-                    menu = self.menu_cells(selected, width.saturating_sub(mark as u16));
-                    &menu
+                    live = self.menu_cells(selected, width.saturating_sub(mark as u16));
+                    &live
+                } else if row.kind == Kind::NewFolder && (selected || !self.folder.text.is_empty())
+                {
+                    live = self.new_folder_cells();
+                    &live
                 } else {
                     &row.cells
                 };
@@ -13076,34 +13088,6 @@ mod tests {
     }
 
     #[test]
-    fn folder_recall_follows_the_recent_list_on_screen() {
-        let d = dir();
-        let mut app = app(d.path());
-        app.refresh().unwrap();
-        app.data.recent = ["/src/new", "/src/mid", "/src/old"]
-            .iter()
-            .map(PathBuf::from)
-            .collect();
-        app.mode = Mode::Folder(Input::default());
-        for (code, want) in [
-            (KeyCode::Down, "/src/new"),
-            (KeyCode::Down, "/src/mid"),
-            (KeyCode::Down, "/src/old"),
-            (KeyCode::Down, "/src/new"),
-            (KeyCode::Up, "/src/old"),
-            (KeyCode::Up, "/src/mid"),
-            (KeyCode::Up, "/src/new"),
-        ] {
-            app.key(code, KeyModifiers::NONE).unwrap();
-            let held = match &app.mode {
-                Mode::Folder(input) => input.text.clone(),
-                _ => String::new(),
-            };
-            assert_eq!(held, want, "{code:?} from the row above it");
-        }
-    }
-
-    #[test]
     fn left_leaves_a_screen_or_prompt_with_nothing_to_its_left() {
         let d = dir();
         let mut app = app(d.path());
@@ -13122,15 +13106,6 @@ mod tests {
         );
         app.text.clear();
         app.leave_jobs();
-        app.mode = Mode::Folder(Input::default());
-        assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
-        assert!(matches!(app.mode, Mode::Normal));
-        app.mode = Mode::Folder(Input::new("/src"));
-        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(&app.mode, Mode::Folder(t) if t.at == 3),
-            "a typed path keeps the arrow"
-        );
         app.mode = Mode::Filter;
         assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
@@ -15070,7 +15045,8 @@ mod tests {
             a.history.ready && a.history.fetch.is_none()
         });
         app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert_eq!(key(&app).as_deref(), Some(A));
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A), "past the add folder row");
         app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
         app.paste(" draft");
         assert_eq!(app.text, "x draft");
@@ -15078,11 +15054,14 @@ mod tests {
         assert!(!app.mode_line().to_string().starts_with("history / "));
 
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('o'), KeyModifiers::NONE).unwrap();
         assert_eq!(app.filter.text, "o");
         assert_eq!(app.text, "x draft");
         app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
         assert!(!app.history.visible);
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A), "back on the live row");
         app.key(KeyCode::Char('y'), KeyModifiers::NONE).unwrap();
         assert_eq!(app.text, "x drafty");
         assert_eq!(app.filter.text, "o");
@@ -17441,14 +17420,16 @@ mod tests {
         );
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter add folder")
+            hint.starts_with("enter jobs")
                 && hint.contains("ctrl+h history")
                 && hint.contains("← → pick")
                 && hint.ends_with("esc quit"),
-            "an empty dashboard opens on the menu row, folder picked: {hint}"
+            "an empty dashboard opens on the menu row, jobs picked: {hint}"
         );
         app.text = "fix the tests".into();
         app.shell = "/bin/sh".into();
+        // Away from the jobs button, where a typed instruction becomes a job instead.
+        app.menu = MENU.iter().position(|m| m.0 == "help").unwrap();
         for (prefix, name) in [
             (">_ codex", "codex"),
             ("\u{3c0} pi", "pi"),
@@ -17476,7 +17457,7 @@ mod tests {
         }
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(text(app.composer()).starts_with(">_ codex \u{203a} "));
-        app.menu = 1;
+        app.menu = MENU.iter().position(|m| m.0 == "jobs").unwrap();
         assert!(text(app.hint_line()).starts_with("enter new job with it"));
         app.status = "back from attach".into();
         assert_eq!(
@@ -17491,7 +17472,7 @@ mod tests {
     }
 
     #[test]
-    fn the_top_menu_is_reached_going_up_and_its_folder_prompt_adds_a_row() {
+    fn the_top_menu_is_reached_going_up_and_keeps_its_picked_button() {
         let d = dir();
         let claude = d.path();
         registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
@@ -17500,75 +17481,94 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A), "opens on the first table");
         app.step(-1);
         assert_eq!(key(&app).as_deref(), Some("menu"));
-        assert!(app.menu_is("folder"), "folder is picked until ← → move it");
-        let home = app.cwd.clone();
+        assert!(app.menu_is("jobs"), "jobs is picked until ← → move it");
         assert_eq!(
             app.target_dir(),
-            home,
+            app.cwd,
             "the menu row launches into the dashboard's own directory"
         );
-        let inside = claude.join("inside");
-        fs::create_dir(&inside).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(app.mode, Mode::Folder(_)),
-            "enter opens the prompt"
-        );
-        for c in "nowhere-such-dir".chars() {
-            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
-        }
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(app.mode, Mode::Folder(_)),
-            "a missing directory is refused"
-        );
-        assert!(app.status.contains("not a directory"), "{}", app.status);
-        app.mode = Mode::Folder(Input::new(inside.display().to_string()));
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let inside = inside.canonicalize().unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(
-            key(&app).as_deref(),
-            Some(fleet::tilde(&inside).as_str()),
-            "the cursor moves onto the folder's row"
-        );
-        assert_eq!(app.target_dir(), inside, "so the composer starts there");
-        assert_eq!(app.cwd, home, "the menu's own target did not move");
-        while key(&app).as_deref() != Some("menu") {
-            app.step(-1);
-        }
-        assert_eq!(app.target_dir(), home);
         app.refresh().unwrap();
         assert_eq!(
             key(&app).as_deref(),
             Some("menu"),
             "a reload keeps the menu row"
         );
-        assert!(app.menu_is("folder"), "and the picked button");
-        registry(claude, B, "/src/two", "idle", 1_757_682_872_000);
+        assert!(app.menu_is("jobs"), "and the picked button");
+    }
+
+    /// The list's last row is the only way in to a folder nothing runs in.
+    #[test]
+    fn the_last_row_takes_a_path_and_the_added_folder_takes_the_cursor() {
+        let d = dir();
+        let claude = d.path();
+        registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(claude);
         app.refresh().unwrap();
+        let home = app.cwd.clone();
+        for _ in 0..app.rows.len() {
+            if app.on_new_folder() {
+                break;
+            }
+            app.step(1);
+        }
+        assert_eq!(key(&app).as_deref(), Some("new folder"), "always a row");
+        assert_eq!(app.enter_label(), "add folder");
+        assert!(
+            matches!(app.rows.last().map(|r| &r.kind), Some(Kind::NewFolder)),
+            "and the last one"
+        );
+        let inside = claude.join("inside");
+        fs::create_dir(&inside).unwrap();
+        for c in "nowhere-such-dir".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        assert_eq!(app.text, "", "the row takes a path, not an instruction");
+        assert_eq!(app.folder.text, "nowhere-such-dir");
+        app.split = false;
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 20)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen = rows(&t, 120);
+        assert!(
+            screen.iter().any(|r| r.contains("▌ + nowhere-such-dir")),
+            "the path is typed on the row itself: {screen:?}"
+        );
+        assert!(
+            app.composer().spans.is_empty(),
+            "so the composer stays empty"
+        );
+        app.status.clear();
+        let hint = app.hint_line().to_string();
+        assert!(
+            hint.contains("enter add folder") && hint.contains("tab complete"),
+            "{hint}"
+        );
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.status.contains("not a directory"), "{}", app.status);
+        assert!(app.on_new_folder(), "a missing directory keeps the row");
+        assert_eq!(app.folder.text, "nowhere-such-dir", "and what was typed");
+        for _ in 0.."nowhere-such-dir".len() {
+            app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        }
+        for c in format!("{}/insi", claude.display()).chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert_eq!(
-            fs::read_to_string(claude.join("recent")).unwrap(),
-            "/src/two\n/src/one\n",
-            "a folder seen for the first time goes to the front"
+            app.folder.text,
+            format!("{}/", inside.display()),
+            "tab completes the name as it does in a shell"
         );
-        app.mode = Mode::Folder(Input::default());
-        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(&app.mode, Mode::Folder(t) if t.text == "/src/two"),
-            "{:?}",
-            app.status
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let inside = inside.canonicalize().unwrap();
+        assert!(app.data.folders.contains(&inside), "the pin is saved");
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(fleet::tilde(&inside).as_str()),
+            "the cursor moves onto the folder's own row"
         );
-        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Folder(t) if t.text == "/src/one"));
-        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(&app.mode, Mode::Folder(t) if t.text == "/src/two"),
-            "wraps"
-        );
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::Folder(t) if t.text == "/src/one"));
-        app.mode = Mode::Normal;
+        assert_eq!(app.target_dir(), inside, "so the composer starts there");
+        assert_eq!(app.cwd, home, "the dashboard's own target did not move");
+        assert!(app.folder.text.is_empty(), "the last row is empty again");
     }
 
     #[test]
@@ -17608,6 +17608,7 @@ mod tests {
                 A.into(),
                 "# /src/other".into(),
                 B.into(),
+                "new folder".into(),
             ],
             "the dashboard has no job row and the pinned folder has no placeholder"
         );
@@ -19092,8 +19093,8 @@ mod tests {
             .map(|r| r.chars().skip(81).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(pane.contains("recent folders"), "{pane}");
-        assert!(pane.contains("add folder › a row for a folder"), "{pane}");
+        assert!(pane.contains("new job"), "{pane}");
+        assert!(pane.contains("jobs › the jobs: start"), "{pane}");
     }
 
     #[test]
@@ -19172,9 +19173,10 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal) && app.split_active());
         assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
         assert!(app.split_active(), "full ends with the screen");
-        assert!(app.menu_is("folder"));
-        assert!(!app.key(KeyCode::Right, KeyModifiers::NONE).unwrap());
-        assert!(app.menu_is("jobs"));
+        assert!(
+            app.menu_is("jobs"),
+            "→ wraps from the last button to the first"
+        );
         t.draw(|f| app.draw(f)).unwrap();
         assert!(pane(&t).contains("new job"), "hover: {}", pane(&t));
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
@@ -19253,9 +19255,7 @@ mod tests {
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
             app.step(-1);
         }
-        for _ in 0..2 {
-            app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        }
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert!(app.menu_is("config") && app.panel_shown());
         t.draw(|f| app.draw(f)).unwrap();
         let hint = cells(&t, 39, 0..80);
@@ -19603,6 +19603,7 @@ mod tests {
             rows(t, 160).join("\n")
         };
         let s = screen(&mut app, &mut t);
+        assert!(s.contains(" jobs   config   columns   help "), "{s}");
         assert!(
             s.contains(" folder   jobs   config   columns   help "),
             "{s}"
