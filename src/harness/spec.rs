@@ -522,6 +522,7 @@ pub struct Statusline {
     pub directory: PathBuf,
     pub window_pointer: String,
     pub cost_pointer: Option<String>,
+    pub effort_pointer: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -947,6 +948,9 @@ impl HarnessSpec {
             pointer(&statusline.window_pointer)?;
             if let Some(cost) = &statusline.cost_pointer {
                 pointer(cost)?;
+            }
+            if let Some(effort) = &statusline.effort_pointer {
+                pointer(effort)?;
             }
         }
         for message in [

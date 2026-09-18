@@ -308,6 +308,8 @@ pub fn rows(pi: &Path, procs: &[Process]) -> Vec<Session> {
                 cost_usd,
                 cost_info,
                 last: t.last,
+                effort: None,
+                usage: None,
                 coordinator: false,
                 activity: t.activity,
             }
