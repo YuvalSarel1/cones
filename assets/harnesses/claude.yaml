@@ -39,6 +39,7 @@ operations:
     session_kind: bg
     prefix: [--bg]
     model: --model
+    effort: --effort
     prompt: [--, "{prompt}"]
     probe:
       args: [--help]

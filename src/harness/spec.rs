@@ -537,6 +537,8 @@ pub struct Launch {
     pub remote: Vec<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// Native reasoning-effort flag, when the harness has one of its own.
+    pub effort: Option<String>,
     pub prompt: Vec<String>,
     pub probe: Probe,
 }
@@ -979,12 +981,15 @@ impl HarnessSpec {
                     && (launch.prompt.iter().any(|a| a == "--") || named_prompt),
                 "launch must pass one prompt after --, or OpenCode's --prompt"
             );
-            for flag in [&launch.model, &launch.provider].into_iter().flatten() {
+            for flag in [&launch.model, &launch.provider, &launch.effort]
+                .into_iter()
+                .flatten()
+            {
                 ensure!(
                     flag.starts_with('-')
                         && !flag.contains(['{', '\0'])
                         && !flag.contains(char::is_whitespace),
-                    "invalid model or provider flag"
+                    "invalid model, provider or effort flag"
                 );
             }
             ensure!(

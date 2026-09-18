@@ -105,7 +105,8 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
     })
 }
 
-/// Model and provider overrides for native sessions; Claude selects its provider through env.
+/// Model, provider and effort overrides for native sessions; Claude selects its provider
+/// through env.
 pub fn session_args(
     kind: HarnessKind,
     remote: Option<(&str, &Path)>,
@@ -129,6 +130,7 @@ pub fn session_args(
     for (flag, value) in [
         (&launch.model, policy.model_for(kind)),
         (&launch.provider, policy.provider_for(kind)),
+        (&launch.effort, policy.effort_for(kind)),
     ] {
         if let (Some(flag), Some(value)) = (flag, value) {
             args.extend([OsString::from(flag), value.into()]);
@@ -632,6 +634,9 @@ impl Harness for Claude {
         if let Some(model) = &job.model {
             args.extend(["--model".into(), model.clone()]);
         }
+        if let Some(effort) = &job.effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
         args.extend(["--".into(), job.prompt.clone()]);
         // Resolve from the same PATH that launchd will use. Never rely on a shell alias.
         let env = environment(job)?;
@@ -884,6 +889,35 @@ mod tests {
                 "--",
                 "fix it"
             ]
+        );
+    }
+
+    #[test]
+    fn a_composer_launch_carries_each_harness_s_own_effort_flag() {
+        let p = Policy {
+            effort: Some("high".into()),
+            pi_thinking: Some("minimal".into()),
+            codex_model: Some("gpt-5.6-luna".into()),
+            opencode_model: Some("provider/model".into()),
+            ..Policy::default()
+        };
+        assert_eq!(
+            session_args(HarnessKind::Claude, None, "fix it", &p).unwrap(),
+            ["--bg", "--effort", "high", "--", "fix it"]
+        );
+        assert_eq!(
+            session_args(HarnessKind::Pi, None, "fix it", &p).unwrap(),
+            ["--thinking", "minimal", "--", "fix it"]
+        );
+        // Codex takes reasoning effort only through a configuration override and OpenCode
+        // takes none at all, so a level set for Claude or pi reaches neither.
+        assert_eq!(
+            session_args(HarnessKind::Codex, None, "fix it", &p).unwrap(),
+            ["-m", "gpt-5.6-luna", "--", "fix it"]
+        );
+        assert_eq!(
+            session_args(HarnessKind::Opencode, None, "fix it", &p).unwrap(),
+            ["--model", "provider/model", "--prompt=fix it"]
         );
     }
 

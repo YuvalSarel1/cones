@@ -33,7 +33,7 @@ Unknown fields and versions above `3` are rejected. Older files migrate on read,
 
 ## Job fields and defaults
 
-A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider`, `opencode_model` and one `<harness>_enabled` switch each. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
+A job's policy fields override `defaults` individually. The Default column below gives the built-in value used when neither sets one. `name`, `schedule`, `cwd`, `prompt` and `enabled` belong only to jobs. `defaults` also accepts per-harness composer settings: `codex_model`, `pi_model`, `pi_provider`, `opencode_model` and one `<harness>_enabled` switch each. Reasoning effort is named after the flag each harness takes: `effort` for Claude and `pi_thinking` for pi. Codex and OpenCode have no such flag, so neither has a key. OpenCode models use `provider/model`, as listed by `opencode models`. Claude uses `defaults.model`. A matching model default also supplies a job's omitted `model`; pi, Codex and OpenCode jobs remain unavailable. Unset model and provider values follow the harness's own configuration. The composer's initial harness is the separate [`start.harness`](#start).
 
 | Field | Default | Meaning |
 | --- | --- | --- |

@@ -65,6 +65,10 @@ pub struct Policy {
     pub pi_model: Option<String>,
     pub pi_provider: Option<String>,
     pub opencode_model: Option<String>,
+    /// Per-harness reasoning effort, named after the flag each harness takes.
+    /// Codex and OpenCode have no such flag, so neither has a key here.
+    pub effort: Option<String>,
+    pub pi_thinking: Option<String>,
     /// Harnesses the composer offers. Unset is enabled; `false` takes the harness out of
     /// the composer's cycle, and cones neither starts it nor probes it for a session.
     pub claude_enabled: Option<bool>,
@@ -91,6 +95,14 @@ impl Policy {
     }
 
     /// A harness no setting mentions is enabled, so an older file offers what it always did.
+    pub fn effort_for(&self, kind: HarnessKind) -> Option<&str> {
+        match kind {
+            HarnessKind::Claude => self.effort.as_deref(),
+            HarnessKind::Pi => self.pi_thinking.as_deref(),
+            HarnessKind::Codex | HarnessKind::Opencode => None,
+        }
+    }
+
     pub fn enabled_for(&self, kind: HarnessKind) -> bool {
         match kind {
             HarnessKind::Claude => self.claude_enabled,
@@ -812,6 +824,8 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("pi_model", d.pi_model.clone());
     put("pi_provider", d.pi_provider.clone());
     put("opencode_model", d.opencode_model.clone());
+    put("effort", d.effort.clone());
+    put("pi_thinking", d.pi_thinking.clone());
     for (key, value) in [
         ("claude_enabled", d.claude_enabled),
         ("codex_enabled", d.codex_enabled),
@@ -1047,6 +1061,7 @@ pub struct ResolvedJob {
     pub cwd: PathBuf,
     pub prompt: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub enabled: bool,
     pub archive_transcript: bool,
     pub env: Vec<String>,
@@ -1086,6 +1101,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             cwd,
             prompt: prompt.to_owned(),
             model: None,
+            effort: None,
             enabled: true,
             archive_transcript: false,
             env: vec![],
@@ -1214,6 +1230,15 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: model must be nonempty and contain no NUL",
         j.name
     );
+    // Effort has no per-job override: the harness default answers every run of it.
+    let effort = d.effort_for(kind).map(str::to_owned);
+    ensure!(
+        effort
+            .as_ref()
+            .is_none_or(|s| !s.is_empty() && !s.contains('\0')),
+        "job {}: effort must be nonempty and contain no NUL",
+        j.name
+    );
     let cwd = expand_path(&j.cwd, base)?;
     ensure!(
         cwd.is_dir(),
@@ -1258,6 +1283,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         cwd: fs::canonicalize(cwd)?,
         prompt: j.prompt,
         model,
+        effort,
         enabled: j.enabled,
         archive_transcript: j
             .archive_transcript
@@ -1562,6 +1588,8 @@ mod tests {
             pi_model: None,
             pi_provider: None,
             opencode_model: None,
+            effort: None,
+            pi_thinking: None,
             bedrock: None,
             aws_profile: None,
             aws_region: None,
@@ -2179,6 +2207,7 @@ mod tests {
             pi_model: Some("pi-native-model".into()),
             pi_provider: Some("pi-native-provider".into()),
             opencode_model: Some("opencode-provider/native-model".into()),
+            pi_thinking: Some("minimal".into()),
             ..Policy::default()
         };
         write_config(
@@ -2197,9 +2226,31 @@ mod tests {
             Some("opencode-provider/native-model")
         );
         assert_eq!(saved.provider_for(HarnessKind::Opencode), None);
+        assert_eq!(saved.effort_for(HarnessKind::Pi), Some("minimal"));
         for kind in [HarnessKind::Claude, HarnessKind::Codex] {
             assert_eq!(saved.model_for(kind), None);
             assert_eq!(saved.provider_for(kind), None);
+            assert_eq!(saved.effort_for(kind), None);
+        }
+    }
+
+    #[test]
+    fn a_claude_job_runs_at_the_configured_effort_and_no_other_harness_takes_it() {
+        let (_d, p) = file(
+            "version: 3\ndefaults:\n  effort: high\n  pi_thinking: minimal\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n  - name: x\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n",
+        );
+        let jobs = read_jobs(&p).unwrap();
+        assert_eq!(jobs[0].effort.as_deref(), Some("high"));
+        assert_eq!(
+            jobs[1].effort.as_deref(),
+            None,
+            "Codex has no effort flag, so its job passes none"
+        );
+        let saved = defaults(&p);
+        assert_eq!(saved.effort_for(HarnessKind::Claude), Some("high"));
+        assert_eq!(saved.effort_for(HarnessKind::Pi), Some("minimal"));
+        for kind in [HarnessKind::Codex, HarnessKind::Opencode] {
+            assert_eq!(saved.effort_for(kind), None);
         }
     }
 }

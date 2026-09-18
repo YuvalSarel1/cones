@@ -91,6 +91,7 @@ fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
         (1, "/operations/rename", json!(true)),
         (1, "/operations/attach", json!(null)),
         (0, "/operations/launch/provider", json!("--provider")),
+        (0, "/operations/launch/effort", json!("effort high")),
     ] {
         let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[kind].1).unwrap();
         let (parent, key) = pointer.rsplit_once('/').unwrap();

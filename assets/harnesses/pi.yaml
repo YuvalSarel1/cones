@@ -42,6 +42,7 @@ operations:
     identity: client_pid
     model: --model
     provider: --provider
+    effort: --thinking
     prompt: [--, "{prompt}"]
     probe:
       args: [--version]

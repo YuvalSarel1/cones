@@ -209,7 +209,7 @@ Historical resume uses the recorded cwd and native home. Claude background conve
 
 Codex's daemon start reports `socketPath` and is idempotent. Its remote client does not report an initial thread id, so prompt/cwd/start matching is an association limit. Ambiguous launches retain their own viewer rows; cones never chooses a thread merely because its rollout is newest. Returning to the list before discovery finishes keeps trying on later refreshes. Closing an unidentified client may leave no saved row.
 
-Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. OpenCode receives `defaults.opencode_model` through `--model`. Native session permissions remain harness-owned.
+Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. Claude receives `defaults.effort` through `--effort`, for jobs as well as composer sessions, and pi receives `defaults.pi_thinking` through `--thinking`. Codex takes reasoning effort only through a `-c model_reasoning_effort=` configuration override, and OpenCode takes none at all, so cones passes neither. OpenCode receives `defaults.opencode_model` through `--model`. Native session permissions remain harness-owned.
 
 ### Supervised execution
 

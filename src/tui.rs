@@ -2976,7 +2976,7 @@ const GROUPS: [(&str, &str); 3] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 36] = [
+const FIELDS: [Field; 38] = [
     Field {
         group: "cones",
         sub: "",
@@ -3161,6 +3161,16 @@ const FIELDS: [Field; 36] = [
     Field {
         group: "harnesses",
         sub: "claude",
+        name: "effort",
+        short: "effort",
+        hint: "How hard Claude thinks in new sessions and jobs.",
+        long: "The level passed to Claude as --effort, for jobs and for sessions the composer starts. Higher levels spend more thinking tokens on a turn, so they cost more and answer slower. system default passes nothing and Claude's own settings decide.",
+        builtin: SYSTEM,
+        input: Answer::Pick(&["-", "low", "medium", "high", "xhigh", "max"]),
+    },
+    Field {
+        group: "harnesses",
+        sub: "claude",
         name: "bedrock",
         short: "use Bedrock",
         hint: "Use Amazon Bedrock for Claude.",
@@ -3265,6 +3275,18 @@ const FIELDS: [Field; 36] = [
         long: "Passed to pi as --provider for sessions the composer starts. Empty follows pi's own provider configuration.",
         builtin: SYSTEM,
         input: Answer::Typed,
+    },
+    Field {
+        group: "harnesses",
+        sub: "pi",
+        name: "pi_thinking",
+        short: "thinking",
+        hint: "How hard pi thinks in new sessions.",
+        long: "The level passed to pi as --thinking for sessions the composer starts. Empty follows pi's own thinking configuration. Codex and OpenCode take no such flag, so neither offers this row.",
+        builtin: SYSTEM,
+        input: Answer::Pick(&[
+            "-", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+        ]),
     },
     Field {
         group: "harnesses",
@@ -3687,6 +3709,8 @@ impl ConfigForm {
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
                 "pi_model" => d.pi_model.clone().unwrap_or_default(),
                 "pi_provider" => d.pi_provider.clone().unwrap_or_default(),
+                "effort" => d.effort.clone().unwrap_or_default(),
+                "pi_thinking" => d.pi_thinking.clone().unwrap_or_default(),
                 "opencode_model" => d.opencode_model.clone().unwrap_or_default(),
                 "claude_enabled" => flag(d.claude_enabled),
                 "codex_enabled" => flag(d.codex_enabled),
@@ -3850,6 +3874,8 @@ impl ConfigForm {
             codex_model: text("codex_model"),
             pi_model: text("pi_model"),
             pi_provider: text("pi_provider"),
+            effort: text("effort"),
+            pi_thinking: text("pi_thinking"),
             opencode_model: text("opencode_model"),
             claude_enabled: flag("claude_enabled"),
             codex_enabled: flag("codex_enabled"),
