@@ -6,6 +6,9 @@ ASSETS = Path(__file__).resolve().parent
 TAGLINE = "A terminal workspace for coding agents."
 W, H = 572, 140
 WORD, PX, PITCH, GAP_CELLS, X0, Y0 = "cones", 5.1, 5.6, 2, 250, 40
+DELAY = 0.8  # empty road first, so the cones are seen before the cars arrive
+CYCLE = 12.0  # cars wait, drive past the cones, and the next pair comes in
+OFF_LEFT, OFF_RIGHT, PASS = -120, 330, 2.6
 GLYPHS = {
     "C": [".#####.", "##...##", "##.....", "##.....", "##.....", "##.....", "##.....", "##...##", ".#####."],
     "O": [".#####.", "##...##", "##...##", "##...##", "##...##", "##...##", "##...##", "##...##", ".#####."],
@@ -50,15 +53,24 @@ def little_feet(cx, pixel, blink=False):
     return art + "</g>"
 
 
-def car(x, duration, bubble=False):
+def car(x, arrive, depart, bubble=False):
+    """One car cycle: roll in from the left, idle, then drive off past the cones."""
+    t_in, t_out, t_gone = arrive / CYCLE, depart / CYCLE, (depart + PASS) / CYCLE
     art = f'''<g transform="translate({x} 25.76) scale(.77)">
-      <g>
-        <animateTransform attributeName="transform" type="translate" values="-90 0;0 0" dur="{duration}s" calcMode="spline" keySplines=".2 .8 .2 1" fill="freeze"/>
+      <g transform="translate({OFF_LEFT} 0)">
+        <animateTransform attributeName="transform" type="translate"
+          values="{OFF_LEFT} 0;0 0;0 0;{OFF_RIGHT} 0;{OFF_RIGHT} 0"
+          keyTimes="0;{t_in:.4f};{t_out:.4f};{t_gone:.4f};1"
+          calcMode="spline" keySplines=".2 .8 .2 1;0 0 1 1;.5 0 1 1;0 0 1 1"
+          begin="{DELAY}s" dur="{CYCLE}s" repeatCount="indefinite"/>
         <g transform="translate(10 82) scale(3)">{pixels(CAR)}</g>
         <text x="21" y="98" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" fill="#e2e8f0">&gt;<tspan><animate attributeName="opacity" values="1;1;0;0" dur="1s" repeatCount="indefinite"/>_</tspan></text>'''
     if bubble:
-        art += '''<g opacity="0" transform="translate(40 60)">
-          <animate attributeName="opacity" values="0;1" begin="1.4s" dur=".3s" fill="freeze"/>
+        t_say = (arrive + 0.6) / CYCLE
+        art += f'''<g opacity="0" transform="translate(40 60)">
+          <animate attributeName="opacity" values="0;0;1;1;0;0"
+            keyTimes="0;{t_say:.4f};{t_say + 0.03:.4f};{t_out:.4f};{t_out + 0.02:.4f};1"
+            begin="{DELAY}s" dur="{CYCLE}s" repeatCount="indefinite"/>
           <path d="M6 16 L12 22 L16 16 Z" fill="#e5e7eb"/>
           <rect width="38" height="18" rx="9" fill="#e5e7eb"/>
           <circle cx="11" cy="9" r="2.4" fill="#6b7280"><animate attributeName="opacity" values="1;.2;1" dur="1.2s" repeatCount="indefinite"/></circle>
@@ -100,10 +112,10 @@ svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewB
   <g clip-path="url(#scene-bounds)">
     <line x1="0" y1="112" x2="240" y2="112" stroke="#9ca3af" stroke-width="2" opacity=".6"/>
     <line x1="0" y1="124" x2="240" y2="124" stroke="#9ca3af" stroke-width="3" stroke-dasharray="14 10" opacity=".7">
-      <animate attributeName="stroke-dashoffset" values="0;-96" dur="1.4s" calcMode="spline" keySplines=".2 .8 .2 1" fill="freeze"/>
+      <animate attributeName="stroke-dashoffset" values="0;-96;-96;-240;-240" keyTimes="0;.1167;.5;.7167;1" begin="{DELAY}s" dur="{CYCLE}s" calcMode="spline" keySplines=".2 .8 .2 1;0 0 1 1;.5 0 1 1;0 0 1 1" repeatCount="indefinite"/>
     </line>
-    {car(-3, 1.8)}
-    {car(42, 1.4, bubble=True)}
+    {car(-3, 1.8, 6.6)}
+    {car(42, 1.4, 6.0, bubble=True)}
     {little_feet(224, 4.4)}
     {little_feet(193, 6.7)}
     {little_feet(143, 10, blink=True)}
