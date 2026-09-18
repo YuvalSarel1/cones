@@ -35,7 +35,7 @@ use ratatui::{
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -211,6 +211,8 @@ pub struct Data {
     pub folders: Vec<PathBuf>,
     /// Git state for pinned folders without sessions.
     pub git: BTreeMap<PathBuf, String>,
+    /// Folders that are linked worktrees, marked wherever the list names a folder.
+    pub worktrees: BTreeSet<PathBuf>,
     diagnostics: Option<LoadDiagnostics>,
 }
 
@@ -339,6 +341,17 @@ impl Data {
             .iter()
             .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
             .collect();
+        // Every folder the list can name, since the mark belongs to the column under state
+        // grouping and to the folder headings in the normal view.
+        // ponytail: one rev-parse per distinct folder per read; fold into git_state if it drags.
+        let worktrees = seen
+            .iter()
+            .chain(folders.iter())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|dir| worktree(dir))
+            .cloned()
+            .collect();
         if let Some(d) = &mut diagnostics {
             d.phase("git", git_started);
         }
@@ -362,6 +375,7 @@ impl Data {
             whole_columns,
             folders,
             git,
+            worktrees,
             diagnostics,
         })
     }
@@ -540,6 +554,7 @@ impl Data {
                     by_state,
                     sparks.get(&s.session_id).map(String::as_str),
                     self.branches.get(&s.cwd).map(String::as_str),
+                    self.worktrees.contains(&s.cwd),
                     depths
                         .get(&(s.harness.as_str(), s.session_id.as_str()))
                         .copied()
@@ -617,7 +632,7 @@ impl Data {
                         cells.push((g.clone(), plain()));
                     }
                     Row {
-                        kind: Kind::Folder(fleet::tilde(dir)),
+                        kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
                         cells,
                     }
                 }
@@ -1278,6 +1293,7 @@ fn session_cells(
     by_state: bool,
     spark: Option<&str>,
     branch: Option<&str>,
+    worktree: bool,
     depth: usize,
 ) -> Vec<(String, Style)> {
     let harness = if set.iter().any(|c| c == "harness") {
@@ -1316,6 +1332,8 @@ fn session_cells(
             .map(|c| {
                 if c == "branch" {
                     (branch.unwrap_or("-").into(), dim())
+                } else if c == "folder" {
+                    (folder_label(&s.cwd, worktree), dim())
                 } else {
                     cell(c, s, by_state, spark)
                 }
@@ -2091,6 +2109,41 @@ fn git_branch(dir: &Path) -> Option<String> {
     };
     read(&["symbolic-ref", "--quiet", "--short", "HEAD"])
         .or_else(|| read(&["rev-parse", "--short", "HEAD"]).map(|hash| format!("@{hash}")))
+}
+
+/// A linked worktree: the checkout's own git directory is not the repository's common one.
+/// Absolute output is required, because from a subdirectory of a plain checkout the two print
+/// `/repo/.git` and `../.git`, unequal as text while naming the same directory.
+fn worktree(dir: &Path) -> bool {
+    let Ok(out) = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    if !out.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    matches!((lines.next(), lines.next()), (Some(own), Some(common)) if own != common)
+}
+
+/// A folder as the list shows it, with `⑂` when it is a linked worktree.
+fn folder_label(dir: &Path, worktree: bool) -> String {
+    let shown = fleet::tilde(dir);
+    if worktree {
+        format!("{shown} ⑂")
+    } else {
+        shown
+    }
 }
 
 fn next_runs(jobs: &[ResolvedJob]) -> BTreeMap<String, chrono::DateTime<chrono::Utc>> {
@@ -5634,7 +5687,7 @@ fn column_help(name: &str) -> &'static str {
         "last_active" => "Time since the latest activity.",
         "last_reply" => "Latest reply; an explicit choice keeps it beside the pane.",
         "activity" => "Activity over the configured chart window.",
-        "folder" => "Working directory; sessions show it when grouped by state.",
+        "folder" => "Working directory; sessions show it when grouped by state. ⑂ is a worktree.",
         "branch" => "Current Git branch.",
         "started" => "Run start time, in local time.",
         "ended" => "Run end time, in local time.",
@@ -6312,12 +6365,17 @@ impl HistoryView {
             let cells = shown
                 .iter()
                 .map(|r| {
+                    let s = history_session(&r.entry);
+                    // Only folders this read already resolved: a recorded path may be gone, and a
+                    // git call per history row would spend a process on every frame.
+                    let worktree = data.worktrees.contains(&s.cwd);
                     session_cells(
-                        &history_session(&r.entry),
+                        &s,
                         &data.history_columns,
                         false,
                         Some("-"),
                         None,
+                        worktree,
                         0,
                     )
                 })
@@ -20867,8 +20925,25 @@ mod tests {
         );
         assert_eq!(git_branch(&repo).as_deref(), Some("main"));
         assert_eq!(git_branch(&worktree).as_deref(), Some("feature"));
+        // A subdirectory is what a plain text compare gets wrong: from there git prints the
+        // checkout's own git directory absolute and the common one relative.
+        let under_repo = repo.join("sub");
+        let under_worktree = worktree.join("sub");
+        fs::create_dir(&under_repo).unwrap();
+        fs::create_dir(&under_worktree).unwrap();
+        assert!(!super::worktree(&repo), "the main checkout");
+        assert!(!super::worktree(&under_repo), "a folder inside it");
+        assert!(!super::worktree(d.path()), "no repository at all");
+        assert!(super::worktree(&worktree), "the linked worktree");
+        assert!(super::worktree(&under_worktree), "a folder inside it");
+        assert_eq!(
+            folder_label(&worktree, true),
+            format!("{} ⑂", fleet::tilde(&worktree))
+        );
+        assert_eq!(folder_label(&repo, false), fleet::tilde(&repo));
         git(&worktree, &["checkout", "--detach"]);
         assert!(git_branch(&worktree).unwrap().starts_with('@'));
+        assert!(super::worktree(&worktree), "detaching keeps it a worktree");
         assert_eq!(git_branch(d.path()), None);
     }
 
