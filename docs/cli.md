@@ -63,6 +63,8 @@ The default folder is the current directory. A live coordinator record for that 
 
 The coordinator appears as a native Claude session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`. This removes its status record, while its background session remains until separately stopped. Coordination rules belong to the skill.
 
+Its roster is `cones ls --dir <folder> --json`, so who counts as a worker is decided here: unclaimed spares, Codex thread attribution, viewer and daemon processes and each harness's reported state. The skill does not read the native homes itself. An install whose `cones` predates the command makes the coordinator report the failed read instead of deriving a roster of its own.
+
 The embedded copy is under `assets/coordinator/`. The upstream orchestrator's `bin/sync.py /path/to/cones` copies the skill and helpers, retaining `__CONES_COORDINATOR_BIN__` for cones to fill at launch; `--check` detects drift. Start a fresh coordinator after updating because an existing session retains its loaded instructions.
 
 Codex delivery requires a running local app-server with native queue add/list/delete support. Requests name an exact thread and an active task. Completion closes the task; the watcher withdraws expired pending requests. Already consumed requests cannot be recalled. The helper preserves owner messages and owner-edited queue entries. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.

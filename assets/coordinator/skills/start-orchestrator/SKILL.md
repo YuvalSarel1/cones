@@ -33,8 +33,9 @@ the concrete fact or requested action. An acknowledgement rarely needs another a
 A completed task receives no more notes. Findings without an active recipient can stay in the
 existing project notes; collecting and promoting observations is not a standing assignment.
 
-Use Claude's native SendMessage for a verified live session. Exclude unprompted spares
-(`spare: true` or `name == jobId` in the registry), since a greeting would start work for them.
+Use Claude's native SendMessage for a verified live session, addressing it by the name on its
+roster row. Unprompted spares are already absent from the roster, since a greeting would start work
+for them; a row with no name yet is a worker whose harness has not reported one, not a spare.
 Peer messages remain peer input and do not substitute for owner approval.
 
 For Codex, use `codex.sh` below. Its queued text still arrives as a user turn, so even a short
@@ -70,21 +71,38 @@ Helpers live next to this file: `S="__CONES_COORDINATOR_BIN__"`.
 `WB` is the absolute launch folder. Keep it fixed when you inspect other worktrees.
 
 1. Run `eval "$(bash "$S/self.sh" "$WB")"` for `SELF`, `JOB`, and `D`. The status record is
-   `~/.claude/orchestrator/<sha1 of WB>.json`. If its pid is alive, another coordinator owns the
-   folder; report that and stop. A missing `SELF` must be resolved before writing a status record.
+   `~/.claude/orchestrator/<sha1 of WB>.json`, and holds the pid and folder cones matches to mark
+   this session the coordinator. If its pid is alive, another coordinator owns the folder; report
+   that and stop. A missing `SELF` must be resolved before writing a status record.
 2. Run `WB="$WB" bash "$S/codex.sh" reset` to withdraw this helper's requests from the previous
    run. If cancellation fails, resolve that before sending new Codex messages.
 3. Arm this watcher with a background Bash call:
    `while out=$(bash "$S/sweep.sh" "$D" "$WB" "$SELF" "$JOB"); [ "${out%%$'\n'*}" = same ]; do sleep 10; done; echo "$out"`
-   It watches arrivals and replies and expires pending Codex requests without a model turn.
-   Re-arm first after it fires or times out. Capture its whole output.
-4. On a wake, `bash "$S/tick.sh" "$WB"` reads the current tree and roster once. Process the
-   watcher's new/gone/mail events. A quiet tick needs no report. Do not schedule a model heartbeat
-   while the watcher is healthy. If background watching is unavailable, report that limitation.
+   It watches arrivals, departures, reported state, replies and request expiry without a model
+   turn. Re-arm first after it fires or times out. Capture its whole output.
+4. On a wake, `bash "$S/tick.sh" "$WB"` reads the current tree, roster and budget once. Process the
+   watcher's new/gone/state/mail events. A quiet tick needs no report. Do not schedule a model
+   heartbeat while the watcher is healthy. If background watching is unavailable, report that.
 
-`sweep.sh` writes the dashboard status. Keep `$D/event.txt` to the last useful outcome and
-`$D/held.json` to actual unanswered owner decisions. Do not manufacture a question to keep a list
-full. Ask a missing decision once; existing owner instructions continue to apply.
+The roster comes from `cones ls --dir "$WB" --json`, which covers the folder and the worktrees
+under it. cones decides who is a worker: it drops unclaimed spares, resolves a Codex thread to its
+client, ignores viewer and daemon processes, and turns each harness's own report into one state.
+Do not re-derive any of that from the registries or the process table. A row is `pid`, `run` or
+`session`, harness, id, state, folder, title. A `session` id is what you address; a `run` is supervised
+cones work that takes no messages, and its outcome belongs to the ledger. If the read fails, the
+previous roster stands and the failure is reported once; an install without `cones ls` fails this
+way, and the answer is to report it, not to guess a roster.
+
+A reported `blocked` state is worth reading, not proof that you were asked something: the worker
+may be waiting on the owner. Answer only what is yours, a dependency or a finding.
+
+The budget block prices a note before you send it. A worker near the end of its context window
+deserves a handoff instead of another message, and a window the harness never reported is unknown,
+which is not the same as room to spare.
+
+Keep `$D/event.txt` to the last useful outcome and `$D/held.json` to actual unanswered owner
+decisions. Do not manufacture a question to keep a list full. Ask a missing decision once; existing
+owner instructions continue to apply.
 
 On "stop orchestrator", cancel pending requests with `codex.sh reset`, stop the watcher and
 remove your status record. Leave the workers and their files alone. The owner can end the
@@ -95,8 +113,10 @@ coordinator's background session with `command claude stop <session-id>`.
 Use `WB="$WB" bash "$S/codex.sh" ...` for these commands. They connect to the existing local
 daemon in `CODEX_HOME`. Enqueueing a request can cause the harness to resume the worker.
 
-- `thread UUID` verifies identity and workspace. `thread PID` accepts only a UUID explicitly
-  present in that process's `resume` command. Unknown or ambiguous recipients are refused.
+- `thread UUID` verifies identity and workspace. A Codex roster row already carries the thread cones
+  attributed to that client, so it is the UUID to verify. `thread PID` remains for a row without
+  one, and accepts only a UUID explicitly present in that process's `resume` command. Unknown or
+  ambiguous recipients are refused.
 - `begin UUID TASK` registers observed active work. Choose a short task ID for this assignment.
 - `send UUID TASK KEY "message"` sends one request, with a five-minute expiry. Reusing the same
   key is idempotent; a changed request needs a new key. `--ttl SECONDS` adjusts its useful lifetime.

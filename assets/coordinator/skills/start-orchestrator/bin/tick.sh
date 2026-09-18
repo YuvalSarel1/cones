@@ -16,6 +16,10 @@ prev=$(cat "$D/tick.prev" 2>/dev/null); echo "$sig" > "$D/tick.prev"
 [ "$sig" = "$prev" ] && echo quiet || echo changed
 echo "self=$SELF job=$JOB head=$head unread_mail=$unread builds_running=$builds load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"
 echo "--- tree"; printf '%s\n' "${tree:-clean}"
-echo "--- roster (pid<TAB>name)"; printf '%s\n' "${roster:-empty}"
+echo "--- roster (pid<TAB>run|session<TAB>harness<TAB>id<TAB>state<TAB>folder<TAB>title)"; printf '%s\n' "${roster:-empty}"
+# What a message costs the recipient. A worker near the end of its window is a handoff, not another
+# note; a window the harness never reported is unknown, which is not the same as room to spare.
+echo "--- budget (id  context  cost)"
+python3 -B "$S/fleet.py" budget "$D" 2>/dev/null || echo "none reported"
 echo "--- held"; printf '%s\n' "${held:-[]}"
 echo "--- last event"; tail -n 1 "$D/event.txt" 2>/dev/null || echo none

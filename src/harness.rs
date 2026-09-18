@@ -621,8 +621,8 @@ const COORDINATOR_FILES: [(&str, &str); 8] = [
         include_str!("../assets/coordinator/skills/start-orchestrator/bin/sweep.sh"),
     ),
     (
-        "skills/start-orchestrator/bin/status.py",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/status.py"),
+        "skills/start-orchestrator/bin/fleet.py",
+        include_str!("../assets/coordinator/skills/start-orchestrator/bin/fleet.py"),
     ),
     (
         "skills/start-orchestrator/bin/codex.sh",

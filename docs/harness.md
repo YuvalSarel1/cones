@@ -98,7 +98,7 @@ Previews select user and assistant text in native order. Claude uses native mess
 
 ### Coordinator identity
 
-The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each sweep with pid, cwd and peers. Matching both pid and cwd sets `coordinator: true` in session JSON. The title is not used for identification. The [launcher](cli.md#coordinator-launch) starts a background Claude session; a hand-started coordinator can be interactive, and all other behavior follows that native kind.
+The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each sweep with the pid and cwd this reads, and nothing else. Matching both pid and cwd sets `coordinator: true` in session JSON. The title is not used for identification. The [launcher](cli.md#coordinator-launch) starts a background Claude session; a hand-started coordinator can be interactive, and all other behavior follows that native kind.
 
 ## Reports
 

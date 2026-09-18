@@ -1037,7 +1037,7 @@ fn coordinator_plugin_is_written_from_the_binary_with_its_helper_path_filled_in(
     for f in [
         "bin/self.sh",
         "bin/sweep.sh",
-        "bin/status.py",
+        "bin/fleet.py",
         "bin/codex.sh",
         "bin/codex.py",
         "bin/tick.sh",
