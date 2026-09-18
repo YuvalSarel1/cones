@@ -60,29 +60,11 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
     leave_and_return(kind)?;
-    Ok(match launch.handler {
+    let mut start = match launch.handler {
         spec::LaunchHandler::ClaudeBackground => {
             let mut c = std::process::Command::new(path);
             c.args(session_args(kind, None, prompt, policy)?)
                 .current_dir(dir);
-            // Claude settings.json `env` can override this provider switch.
-            match policy.bedrock {
-                Some(true) => {
-                    c.env("CLAUDE_CODE_USE_BEDROCK", "1");
-                    for (key, set) in [
-                        ("AWS_PROFILE", &policy.aws_profile),
-                        ("AWS_REGION", &policy.aws_region),
-                    ] {
-                        if let Some(v) = set {
-                            c.env(key, v);
-                        }
-                    }
-                }
-                Some(false) => {
-                    c.env_remove("CLAUDE_CODE_USE_BEDROCK");
-                }
-                None => {}
-            }
             Start::Background(c)
         }
         spec::LaunchHandler::CodexRemote => {
@@ -102,7 +84,46 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
             }
             Start::Foreground(c)
         }
-    })
+    };
+    let (Start::Background(c) | Start::Foreground(c)) = &mut start;
+    provider_env(
+        c,
+        launch,
+        policy.bedrock,
+        policy.aws_profile.as_deref(),
+        policy.aws_region.as_deref(),
+    );
+    Ok(start)
+}
+
+/// AWS_PROFILE and AWS_REGION go to every harness: each resolves AWS through the same
+/// chain, so a profile and region are credentials, not a Claude setting. Only the
+/// Bedrock switch belongs to one harness, and only a definition that names one gets it;
+/// a harness without one refuses `bedrock` in validation instead of ignoring it.
+/// A native settings file can still override the switch cones passes.
+fn provider_env(
+    c: &mut std::process::Command,
+    launch: &spec::Launch,
+    bedrock: Option<bool>,
+    profile: Option<&str>,
+    region: Option<&str>,
+) {
+    for (key, set) in [("AWS_PROFILE", profile), ("AWS_REGION", region)] {
+        if let Some(v) = set {
+            c.env(key, v);
+        }
+    }
+    if let Some(switch) = &launch.bedrock {
+        match bedrock {
+            Some(true) => {
+                c.env(switch, "1");
+            }
+            Some(false) => {
+                c.env_remove(switch);
+            }
+            None => {}
+        }
+    }
 }
 
 /// Model, provider and effort overrides for native sessions; Claude selects its provider
@@ -554,9 +575,15 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
             })?,
         );
     }
-    if job.bedrock == Some(true) {
-        // Inherit AWS credentials, then override profile and region with the validated job values.
-        env.insert("CLAUDE_CODE_USE_BEDROCK".into(), "1".into());
+    if job.bedrock == Some(true)
+        && let Some(switch) = spec(job.harness).bedrock_switch()
+    {
+        env.insert(switch.into(), "1".into());
+    }
+    // A configured profile or region is this job's AWS, whichever harness runs it. A run
+    // starts from a cleared environment, so inherit the credentials themselves first and
+    // let the validated values override them.
+    if job.aws_profile.is_some() || job.aws_region.is_some() {
         env.extend(std::env::vars().filter(|(k, _)| k.starts_with("AWS_")));
         for (key, set) in [
             ("AWS_PROFILE", &job.aws_profile),
@@ -940,14 +967,75 @@ mod tests {
         assert!(!env.contains_key("CLAUDE_CODE_USE_BEDROCK"));
         assert!(!env.contains_key("AWS_CONES_TEST_REGION"));
         job.bedrock = Some(true);
+        job.aws_profile = Some("claude".into());
+        job.aws_region = Some("us-east-1".into());
         let env = environment(&job).unwrap();
-        assert_eq!(env["CLAUDE_CODE_USE_BEDROCK"], "1");
+        assert_eq!(
+            env["CLAUDE_CODE_USE_BEDROCK"], "1",
+            "the switch is the one claude.yaml names"
+        );
         assert_eq!(env["AWS_CONES_TEST_REGION"], "us-west-2");
+        assert_eq!(env["AWS_PROFILE"], "claude");
+        assert_eq!(env["AWS_REGION"], "us-east-1");
+    }
+
+    #[test]
+    fn aws_credentials_reach_a_harness_that_takes_no_bedrock_switch() {
+        let dir = std::env::temp_dir();
+        let mut job = crate::config::adhoc(None, "p", &dir).unwrap();
+        job.harness = HarnessKind::Pi;
         job.aws_profile = Some("claude".into());
         job.aws_region = Some("us-east-1".into());
         let env = environment(&job).unwrap();
         assert_eq!(env["AWS_PROFILE"], "claude");
         assert_eq!(env["AWS_REGION"], "us-east-1");
+        assert!(
+            !env.keys().any(|k| k.contains("BEDROCK")),
+            "pi declares no switch, so none is invented for it"
+        );
+    }
+
+    #[test]
+    fn a_composer_session_carries_aws_to_every_harness_and_the_switch_to_claude_alone() {
+        // The definitions alone answer this, so no harness is launched or probed.
+        for kind in known() {
+            let launch = spec(*kind).launch.as_ref().expect("every harness launches");
+            let env = |bedrock| {
+                let mut c = std::process::Command::new("true");
+                provider_env(&mut c, launch, bedrock, Some("claude"), Some("us-east-1"));
+                c.get_envs()
+                    .map(|(k, v)| {
+                        (
+                            k.to_string_lossy().into_owned(),
+                            v.map(|v| v.to_string_lossy().into_owned()),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let set = env(Some(true));
+            for (key, value) in [("AWS_PROFILE", "claude"), ("AWS_REGION", "us-east-1")] {
+                assert!(
+                    set.contains(&(key.to_owned(), Some(value.to_owned()))),
+                    "{kind} resolves AWS like every other harness: {set:?}"
+                );
+            }
+            let switch = |env: &[(String, Option<String>)]| {
+                env.iter()
+                    .find(|(k, _)| k == "CLAUDE_CODE_USE_BEDROCK")
+                    .map(|(_, v)| v.clone())
+            };
+            assert_eq!(
+                switch(&set),
+                (*kind == HarnessKind::Claude).then_some(Some("1".to_owned())),
+                "{kind} gets the switch only if its definition names one"
+            );
+            // false removes the switch a native settings file may have set.
+            assert_eq!(
+                switch(&env(Some(false))),
+                (*kind == HarnessKind::Claude).then_some(None),
+            );
+            assert_eq!(switch(&env(None)), None, "unset passes no switch at all");
+        }
     }
 
     #[test]

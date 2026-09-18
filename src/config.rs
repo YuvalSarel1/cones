@@ -77,7 +77,8 @@ pub struct Policy {
     pub opencode_enabled: Option<bool>,
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
-    /// Both must be configured when `bedrock` is true; shell values do not satisfy validation.
+    /// Passed to whichever harness a run names. Both must be configured when `bedrock`
+    /// is true; shell values do not satisfy validation.
     pub aws_profile: Option<String>,
     pub aws_region: Option<String>,
     /// Default job harness; the composer starts on `Start::harness`.
@@ -1072,7 +1073,8 @@ pub struct ResolvedJob {
     pub catch_up: CatchUp,
     pub notify: bool,
     pub bedrock: Option<bool>,
-    /// Validated Bedrock profile and region; both absent unless `bedrock` is true.
+    /// Validated AWS profile and region, passed to every harness; `bedrock: true`
+    /// requires both.
     pub aws_profile: Option<String>,
     pub aws_region: Option<String>,
 }
@@ -1171,17 +1173,19 @@ pub fn read_jobs(path: &Path) -> Result<Vec<ResolvedJob>> {
 }
 
 /// Require explicit profile and region for Bedrock. Validation must not depend on
-/// the caller's environment; credentials are inherited separately at launch.
+/// the caller's environment; credentials are inherited separately at launch. Both
+/// values reach the run whichever harness it names, since every harness resolves AWS
+/// the same way; `bedrock: true` is what makes them mandatory.
 pub fn bedrock_aws(
     bedrock: Option<bool>,
     profile: Option<&str>,
     region: Option<&str>,
 ) -> Result<(Option<String>, Option<String>)> {
-    if bedrock != Some(true) {
-        return Ok((None, None));
-    }
     let set = |v: Option<&str>| v.map(str::to_owned).filter(|v| !v.trim().is_empty());
     let (profile, region) = (set(profile), set(region));
+    if bedrock != Some(true) {
+        return Ok((profile, region));
+    }
     let missing: Vec<&str> = [("aws_profile", &profile), ("aws_region", &region)]
         .iter()
         .filter(|(_, v)| v.is_none())
@@ -1260,15 +1264,24 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
     let catch_up = j.catch_up.or(d.catch_up).unwrap_or_default();
     let bedrock = j.bedrock.or(d.bedrock);
-    // Codex reaches its model through the app-server daemon, which takes its provider
-    // from the Codex configuration it started with and ignores what a thread asks for.
-    // cones cannot hold a Codex session to this switch, so it refuses to imply that it can.
+    // Only a harness whose definition names a Bedrock switch can be sent to Bedrock by
+    // cones. Codex reaches its model through the app-server daemon, which keeps the
+    // provider its configuration started with, and pi and OpenCode choose Bedrock by
+    // provider instead. cones refuses the switch rather than implying it arrives.
+    let takes_the_switch = |kind| crate::harness::spec::spec(kind).bedrock_switch().is_some();
     ensure!(
-        kind != HarnessKind::Codex || bedrock.is_none(),
-        "job {}: bedrock cannot be set on a Codex job, here or in defaults. Choose the \
-         provider in the Codex configuration instead, in a Codex home of its own when \
-         the model needs a region the daemon was not started with",
-        j.name
+        bedrock.is_none() || takes_the_switch(kind),
+        "job {}: bedrock cannot be set on a {kind} job, here or in defaults. Only {} takes \
+         a Bedrock switch from cones; on {kind}, choose the provider in its own \
+         configuration, in a native home of its own when the model needs a region it was \
+         not started with",
+        j.name,
+        crate::harness::spec::known()
+            .iter()
+            .filter(|k| takes_the_switch(**k))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let (aws_profile, aws_region) = bedrock_aws(
         bedrock,
@@ -1424,7 +1437,7 @@ mod tests {
     }
 
     #[test]
-    fn bedrock_is_refused_on_a_codex_job_rather_than_passed_and_ignored() {
+    fn bedrock_is_refused_on_a_harness_whose_definition_names_no_switch() {
         let job = |harness: &str| {
             format!(
                 "version: 1\ndefaults:\n  bedrock: true\n  aws_profile: claude\n  aws_region: us-east-1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    harness: {harness}\n"
@@ -1432,12 +1445,42 @@ mod tests {
         };
         let (_d, claude) = file(&job("claude"));
         assert_eq!(read_jobs(&claude).unwrap()[0].bedrock, Some(true));
-        let (_d, codex) = file(&job("codex"));
-        let e = format!("{:#}", read_jobs(&codex).unwrap_err());
-        assert!(
-            e.contains("bedrock cannot be set on a Codex job"),
-            "the daemon keeps its own provider, so the switch is a validation error: {e}"
-        );
+        // Codex keeps the provider its daemon started with, and pi and OpenCode choose
+        // Bedrock as a provider, so none of the three takes a switch from cones.
+        for harness in ["codex", "pi", "opencode"] {
+            let (_d, path) = file(&job(harness));
+            let e = format!("{:#}", read_jobs(&path).unwrap_err());
+            assert!(
+                e.contains(&format!("bedrock cannot be set on a {harness} job")),
+                "an ignored switch is a validation error: {e}"
+            );
+            assert!(
+                e.contains("Only claude takes a Bedrock switch"),
+                "a file that stopped loading is fixable from the message alone: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_aws_profile_and_region_reach_a_job_on_any_harness_without_bedrock() {
+        let file_for = |harness: &str| {
+            format!(
+                "version: 1\ndefaults:\n  aws_profile: claude\n  aws_region: us-east-1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    harness: {harness}\n"
+            )
+        };
+        for harness in ["claude", "codex", "pi", "opencode"] {
+            let (_d, path) = file(&file_for(harness));
+            let job = &read_jobs(&path).unwrap()[0];
+            assert_eq!(
+                (
+                    job.bedrock,
+                    job.aws_profile.as_deref(),
+                    job.aws_region.as_deref()
+                ),
+                (None, Some("claude"), Some("us-east-1")),
+                "{harness} resolves AWS itself, and the pair is not a Bedrock-only field"
+            );
+        }
     }
 
     #[test]
@@ -1475,11 +1518,15 @@ mod tests {
             }
         }
         let (_d, p) = file(
-            "version: 1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    bedrock: true\n    aws_profile: claude\n    aws_region: us-east-1\n  - name: two\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    aws_profile: unused\n",
+            "version: 1\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    bedrock: true\n    aws_profile: claude\n    aws_region: us-east-1\n  - name: two\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: go\n    aws_profile: other\n",
         );
         let jobs = read_jobs(&p).unwrap();
         assert_eq!(jobs[0].aws_profile.as_deref(), Some("claude"));
-        assert_eq!(jobs[1].aws_profile, None, "carried but not resolved");
+        assert_eq!(
+            jobs[1].aws_profile.as_deref(),
+            Some("other"),
+            "a profile without bedrock is this job's AWS, not a Bedrock-only field"
+        );
     }
 
     #[test]

@@ -52,9 +52,9 @@ A job's policy fields override `defaults` individually. The Default column below
 | `archive_transcript` | `false` | Copy the native transcript into the [run's state directory](#stored-files) when it ends. |
 | `env` | `[]` | Shell variable names to import. A job's nonempty list replaces the default list; an empty list inherits it, so opting out requires removing the name from `defaults.env`. See [environment](#environment). |
 | `codex_full_access` | `false` | Codex option; defaults reach only Codex jobs. `true` is rejected on Claude. |
-| `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Rejected on Codex jobs because the daemon keeps its configured provider and ignores a thread's override. Native pi and OpenCode composer sessions ignore this field. |
-| `aws_profile` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_PROFILE` over any imported shell value. |
-| `aws_region` | unset | Required with `bedrock: true`, ignored otherwise. Sets `AWS_REGION`; the chosen region must serve the model. |
+| `bedrock` | unset | `true` selects Amazon Bedrock for Claude; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands), so a job on any other harness is rejected rather than left to ignore the field: the Codex daemon keeps the provider it started with, and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
+| `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value, on every harness. Required with `bedrock: true`. |
+| `aws_region` | unset | Sets `AWS_REGION`, on every harness; the chosen region must serve the model. Required with `bedrock: true`. |
 
 `claude_enabled`, `codex_enabled`, `pi_enabled` and `opencode_enabled` are `defaults`-only and unset means offered. `false` takes that harness out of the composer's `shift+tab` cycle and out of the harness the dashboard comes up on, so a harness this machine does not have stops being something to land on. cones also stops scanning its native home, so its sessions and saved threads leave the list and cost nothing to skip; a viewer already open on one keeps running. A job that names the harness still runs it. The config editor's harnesses group carries the same switches and a connectivity row that runs the launch probe for every harness: it looks for the binary on cones's own launch PATH and checks that the installed version takes the flags a dashboard session needs.
 
@@ -197,7 +197,8 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | Installing or running shell | `HOME`, `USER`, `TMPDIR`, and names in `env` |
 | Fixed values | `LANG=en_US.UTF-8`, `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` |
 | Launch PATH | `~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; also used to resolve `claude` |
-| `bedrock: true` | `CLAUDE_CODE_USE_BEDROCK=1`, all shell `AWS_` variables for credentials, then the configured `AWS_PROFILE` and `AWS_REGION` over them |
+| `aws_profile` or `aws_region` | All shell `AWS_` variables for credentials, then the configured `AWS_PROFILE` and `AWS_REGION` over them; every harness resolves AWS the same way, so the pair is not Claude's alone |
+| `bedrock: true` | The switch the harness definition names, `CLAUDE_CODE_USE_BEDROCK=1` for Claude |
 
 `env` entries must be shell identifiers and cannot override execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, and prefixes `DYLD_`, `LD_` and `CLAUDE_CODE_` are rejected. Use the Bedrock fields for provider selection. An SSO profile still needs an authenticated session, such as one opened by `aws sso login --profile <name>`.
 

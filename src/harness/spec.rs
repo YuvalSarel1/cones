@@ -539,6 +539,10 @@ pub struct Launch {
     pub provider: Option<String>,
     /// Native reasoning-effort flag, when the harness has one of its own.
     pub effort: Option<String>,
+    /// Env variable that sends this harness to Amazon Bedrock, when it has one.
+    /// AWS_PROFILE and AWS_REGION are not declared here: every harness resolves
+    /// AWS the same way, so cones passes them to all of them.
+    pub bedrock: Option<String>,
     pub prompt: Vec<String>,
     pub probe: Probe,
 }
@@ -1165,6 +1169,13 @@ impl HarnessSpec {
             "supervised support requires a native execution adapter"
         );
         Ok(())
+    }
+
+    /// The env variable that sends this harness to Bedrock, when its definition names one.
+    pub fn bedrock_switch(&self) -> Option<&str> {
+        self.launch
+            .as_ref()
+            .and_then(|launch| launch.bedrock.as_deref())
     }
 
     pub fn session(&self, kind: Option<&str>) -> &SessionKind {
