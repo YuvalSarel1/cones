@@ -157,6 +157,36 @@ pub fn first_missed(
     Ok(None)
 }
 
+/// When a job's schedule was installed, from its LaunchAgent's modification time, or `None` when
+/// no agent is installed. `install_agent` rewrites a plist only when its bytes change, and a job
+/// that goes disabled, renamed or deleted loses its plist, so this is the moment the schedule now
+/// on disk started firing rather than the first time the job ever existed.
+pub fn installed_at(name: &str) -> Result<Option<DateTime<Local>>> {
+    match fs::metadata(exported_plist_path(name)?) {
+        Ok(meta) => Ok(Some(meta.modified()?.into())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The instant a catch-up looks forward from. The last tick launchd delivered is the floor, raised
+/// by a schedule installed since then: a job disabled for a fortnight was paused, not missed, and
+/// re-enabling it must not fire for that window. A rewritten plist means the cron itself changed,
+/// so ticks written under the old rule are dropped too.
+// ponytail: a month of lookback, so a Mac off since spring starts one run and not a season of
+// them. Make it a policy field if a job ever needs a different memory.
+pub fn catchup_since(
+    last_fired: DateTime<Local>,
+    installed_at: Option<DateTime<Local>>,
+    now: DateTime<Local>,
+) -> DateTime<Local> {
+    let floor = last_fired.max(now - Duration::days(31));
+    match installed_at {
+        Some(installed) => floor.max(installed),
+        None => floor,
+    }
+}
+
 /// Next configured tick, strictly after `after`. Enumerate matching calendar dates
 /// before wall-clock times, so rare schedules do not require years of minute scans.
 /// Nonexistent local times are skipped; either occurrence of a repeated time can match.
@@ -796,5 +826,49 @@ mod tests {
             first_missed("0 3 1 1 *", day(0, 0), day(9, 0)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_schedule_installed_after_the_last_run_starts_the_catch_up_window() {
+        const D: (i32, u32, u32) = (2026, 9, 16);
+        let now = at(D, 9, 0);
+        let last_fired = now - Duration::days(14);
+        // Disabled a fortnight ago, re-enabled a minute ago: the paused window is behind the mark,
+        // so a daily 02:00 job has nothing to catch up.
+        let installed = now - Duration::minutes(1);
+        assert_eq!(catchup_since(last_fired, Some(installed), now), installed);
+        assert_eq!(
+            first_missed(
+                "0 2 * * *",
+                catchup_since(last_fired, Some(installed), now),
+                now
+            )
+            .unwrap(),
+            None
+        );
+        // Enabled without interruption: the last delivered tick still marks the window, and
+        // yesterday's 02:00 is still missed.
+        let long_installed = now - Duration::days(60);
+        let since = catchup_since(last_fired, Some(long_installed), now);
+        assert_eq!(since, last_fired);
+        assert_eq!(
+            first_missed("0 2 * * *", since, now).unwrap(),
+            Some(at(D, 2, 0) - Duration::days(13))
+        );
+        // No agent on disk: the mark is the last delivered tick, as it was before install time
+        // was consulted.
+        assert_eq!(catchup_since(last_fired, None, now), last_fired);
+        // The month cap outranks a run and an install older than it.
+        let ancient = now - Duration::days(90);
+        assert_eq!(
+            catchup_since(ancient, Some(ancient), now),
+            now - Duration::days(31)
+        );
+    }
+
+    #[test]
+    fn install_time_comes_from_the_agent_and_is_absent_without_one() {
+        // No LaunchAgent for a name nothing installs, so a catch-up falls back to the ledger.
+        assert_eq!(installed_at("cones-test-absent-job").unwrap(), None);
     }
 }

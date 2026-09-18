@@ -178,7 +178,11 @@ Saving or deleting a job in the dashboard installs schedules for the file. Each 
 
 launchd coalesces ticks missed during sleep into one launch on wake; it does not wake the Mac. Ticks missed while powered off or logged out are lost. Job agents do not run merely because they were installed or the user logged in. These are launchd's documented semantics; physical sleep, reboot and login have not been verified by this project's checks.
 
-An enabled job with `catch_up: once` adds the shared login agent in the table above. For each such job, `cones catchup` walks its cron forward from the latest ledger record with trigger `schedule`, including a skipped run, looking back at most 31 days. No prior scheduled record means no catch-up, so first install cannot fire a job. A missed tick requests `launchctl kickstart` of the job's agent, retaining that agent's environment and schedule trigger. However many ticks passed, it requests only one run per job, subject to overlap admission. The catch-up decision itself appears only in `catchup.out.log`. Saving the file removes the login agent when no enabled job requests it.
+An enabled job with `catch_up: once` adds the shared login agent in the table above. For each such job, `cones catchup` walks its cron forward from the latest ledger record with trigger `schedule`, including a skipped run, looking back at most 31 days. No prior scheduled record means no catch-up, so first install cannot fire a job.
+
+A missed tick requests `launchctl kickstart` of the job's agent, retaining that agent's environment and schedule trigger. However many ticks passed, it requests only one run per job, subject to overlap admission. The catch-up decision itself appears only in `catchup.out.log`. Saving the file removes the login agent when no enabled job requests it.
+
+The walk also starts no earlier than the job's own LaunchAgent was written. A disabled job has no agent, so re-enabling one that last ran a fortnight ago catches up nothing: that window was paused, not missed. Editing a schedule rewrites the plist for the same reason, and ticks only the previous cron would have fired are dropped with it. A job left enabled and unchanged keeps its plist untouched, so its window is still the last tick launchd delivered.
 
 ### Overlap
 

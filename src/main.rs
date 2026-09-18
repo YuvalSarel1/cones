@@ -170,11 +170,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 else {
                     continue;
                 };
-                // ponytail: a month of lookback, so a Mac off since spring starts one run and not
-                // a season of them. Make it a policy field if a job ever needs a different memory.
-                let since = last
-                    .with_timezone(&Local)
-                    .max(now - chrono::Duration::days(31));
+                let since = launchd::catchup_since(
+                    last.with_timezone(&Local),
+                    launchd::installed_at(&job.name)?,
+                    now,
+                );
                 let Some(missed) = launchd::first_missed(&job.schedule, since, now)? else {
                     continue;
                 };
