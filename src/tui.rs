@@ -6443,14 +6443,23 @@ impl HistoryView {
                 .collect();
             let (head, cells) = columns(&names, cells, &mut self.widths);
             rows.push(head);
-            for (r, cells) in shown.iter().zip(cells) {
+            // Once any result carries an excerpt, every result gets a blank line above it, so an
+            // excerpt reads as part of the title it belongs to and not as the next result's.
+            let padded = shown
+                .iter()
+                .any(|r| history_excerpt(r, &self.filter).is_some());
+            for (at, (r, cells)) in shown.iter().zip(cells).enumerate() {
+                if padded && at > 0 {
+                    rows.push(Row {
+                        kind: Kind::Blank,
+                        cells: vec![],
+                    });
+                }
                 rows.push(Row {
                     kind: Kind::History(r.key.clone()),
                     cells,
                 });
-                if let Some(hit) = &r.entry.hit
-                    && !hit.snippet.is_empty()
-                {
+                if let Some(hit) = history_excerpt(r, &self.filter) {
                     let mut cells =
                         vec![(if hit.semantic { "    ≈ " } else { "    " }.into(), dim())];
                     cells.extend(highlight_search(&hit.snippet, &self.filter));
@@ -6480,6 +6489,23 @@ impl HistoryView {
         }
         rows
     }
+}
+
+/// The excerpt line a result needs to explain itself, if it needs one at all.
+fn history_excerpt<'a>(row: &'a HistoryRow, query: &str) -> Option<&'a crate::search::Hit> {
+    row.entry
+        .hit
+        .as_ref()
+        .filter(|hit| !hit.snippet.is_empty() && !title_answers(&row.entry.title, query))
+}
+
+/// A title that already carries the words explains the row; a second line only crowds the list.
+fn title_answers(title: &Option<String>, query: &str) -> bool {
+    let Some(title) = title.as_deref().map(str::to_lowercase) else {
+        return false;
+    };
+    let terms = crate::search::terms(query);
+    !terms.is_empty() && terms.iter().all(|t| title.contains(&t.to_lowercase()))
 }
 
 fn highlight_search(text: &str, query: &str) -> Vec<(String, Style)> {
@@ -15148,6 +15174,49 @@ mod tests {
         assert!(app.viewers.is_empty() && app.opening.is_none());
         assert_eq!(fs::read_to_string(path).unwrap(), records);
         assert_eq!(app.enter_label(), "resume");
+
+        // Results that carry excerpts come as padded blocks, so a line belongs to one title.
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.filter.text.is_empty() && a.history.ready && a.history.fetch.is_none()
+        });
+        for c in "reply".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none() && a.history.rows.len() == 2
+        });
+        let block = |app: &App| {
+            let first = app
+                .rows
+                .iter()
+                .position(|r| matches!(r.kind, Kind::History(_)))
+                .unwrap();
+            let last = app
+                .rows
+                .iter()
+                .rposition(|r| matches!(r.kind, Kind::History(_)))
+                .unwrap();
+            app.rows[first + 1..last]
+                .iter()
+                .map(|r| r.kind.clone())
+                .collect::<Vec<_>>()
+        };
+        let between = block(&app);
+        assert!(
+            matches!(between.as_slice(), [Kind::HistoryStatus, Kind::Blank]),
+            "{} rows between two results",
+            between.len()
+        );
+        // Browsing without a search stays as tight as the session list.
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        history_until(&mut app, &mut terminal, |a| {
+            a.filter.text.is_empty() && a.history.ready && a.history.fetch.is_none()
+        });
+        assert!(
+            !block(&app).contains(&Kind::Blank),
+            "history is padded without a search"
+        );
     }
 
     #[test]
@@ -15171,6 +15240,14 @@ mod tests {
             Some("old session 005")
         );
         assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+        // The title carries every word searched, so no excerpt line repeats it.
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| r.kind == Kind::HistoryStatus && r.text().contains("old session")),
+            "{:?}",
+            app.rows.iter().map(|r| r.text()).collect::<Vec<_>>()
+        );
 
         app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
         history_until(&mut app, &mut terminal, |a| {

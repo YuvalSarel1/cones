@@ -553,8 +553,16 @@ pub(crate) fn terms(query: &str) -> Vec<&str> {
     if kept.is_empty() { words } else { kept }
 }
 
+/// One scannable line: the match near a predictable column, whole words, no markup.
 pub(crate) fn excerpt(text: &str, terms: &[&str]) -> String {
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    const LEAD: usize = 24;
+    const WINDOW: usize = 110;
+    // Table rules, fences and emphasis read as noise here; the passage itself is in the anchor.
+    let text = text
+        .replace(['`', '*', '#', '|', '>'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let chars: Vec<_> = text.chars().collect();
     // Work in character positions; Unicode case folding can change byte lengths.
     let at = terms
@@ -566,8 +574,21 @@ pub(crate) fn excerpt(text: &str, terms: &[&str]) -> String {
                 .position(|part| part.iter().collect::<String>().to_lowercase() == word)
         })
         .unwrap_or(0);
-    let start = at.saturating_sub(45);
-    let end = (start + 180).min(chars.len());
+    let mut start = at.saturating_sub(LEAD);
+    if start > 0
+        && let Some(space) = chars[start..at].iter().position(|c| *c == ' ')
+    {
+        start += space + 1;
+    }
+    let mut end = (start + WINDOW).min(chars.len());
+    if end < chars.len()
+        && let Some(space) = chars[start..end]
+            .iter()
+            .rposition(|c| *c == ' ')
+            .filter(|space| *space > WINDOW / 2)
+    {
+        end = start + space;
+    }
     format!(
         "{}{}{}",
         if start > 0 { "…" } else { "" },
@@ -1115,5 +1136,28 @@ mod tests {
         let excerpt = excerpt("İstanbul שלום café 🐱 retry_token", &["שלום"]);
         assert!(excerpt.contains("שלום"));
         assert_eq!(cosine(&vector(0), &vec![f32::NAN; DIMENSIONS]), 0.0);
+    }
+
+    #[test]
+    fn an_excerpt_is_one_short_line_of_whole_words_around_the_match() {
+        let table = format!(
+            "| Copilot Studio (API) | 11,881 | `copilot_studio` | Microsoft 365 |\n{}",
+            "filler ".repeat(40)
+        );
+        let e = excerpt(&table, &["copilot", "studio"]);
+        assert!(!e.contains('|') && !e.contains('`'), "{e}");
+        assert!(
+            e.starts_with("Copilot Studio (API) 11,881 copilot_studio"),
+            "{e}"
+        );
+        assert!(e.chars().count() <= 111, "{e}");
+        assert!(e.ends_with('…'), "{e}");
+        // A window that opened mid-word is what made a list of results unreadable.
+        let late = excerpt(
+            &format!("{}needle in the haystack", "head ".repeat(40)),
+            &["needle"],
+        );
+        assert!(late.starts_with("…head head"), "{late}");
+        assert!(late.ends_with("needle in the haystack"), "{late}");
     }
 }
