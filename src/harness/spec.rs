@@ -1405,9 +1405,18 @@ impl Home {
             })
     }
 
-    /// Preserve the native meaning of home overrides when resuming a saved session.
+    /// Preserve the native meaning of home overrides when resuming a saved session. Naming the
+    /// default home is not the same as leaving the variable alone: Claude Code reads its global
+    /// configuration from `~/.claude.json` when `CLAUDE_CONFIG_DIR` is unset and from
+    /// `$CLAUDE_CONFIG_DIR/.claude.json` when it is set, so passing the default would start the
+    /// native session against an empty configuration and re-run onboarding.
     pub fn set_command_home(&self, command: &mut std::process::Command, home: &Path) {
         if self.env.is_empty() {
+            return;
+        }
+        let user = dirs::home_dir().unwrap_or_default();
+        let default = self.resolve_with(&user.join(crate::fleet::CLAUDE_DIR), &user, None);
+        if home == default && std::env::var_os(&self.env).is_none_or(|v| v.is_empty()) {
             return;
         }
         let value = match &self.default {

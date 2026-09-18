@@ -155,6 +155,57 @@ fn native_home_defaults_overrides_and_original_thread_homes_remain_distinct() {
 }
 
 #[test]
+fn a_launch_names_a_home_only_when_it_differs_from_the_one_the_harness_would_pick() {
+    let user = dirs::home_dir().unwrap();
+    let override_of = |home: &Home, path: &Path| {
+        let mut command = std::process::Command::new("true");
+        home.set_command_home(&mut command, path);
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(&home.env))
+            .map(|(_, value)| value.unwrap().to_owned())
+    };
+    let native = Home {
+        env: "CONES_TEST_NATIVE_HOME".into(),
+        default: HomeDefault::User {
+            path: ".native".into(),
+        },
+        siblings: None,
+    };
+    assert_eq!(override_of(&native, &user.join(".native")), None);
+    assert_eq!(
+        override_of(&native, Path::new("/isolated/.native")),
+        Some(OsString::from("/isolated/.native"))
+    );
+    let xdg = Home {
+        env: "CONES_TEST_XDG_HOME".into(),
+        default: HomeDefault::XdgData {
+            path: "native".into(),
+        },
+        siblings: None,
+    };
+    assert_eq!(override_of(&xdg, &user.join(".local/share/native")), None);
+    assert_eq!(
+        override_of(&xdg, Path::new("/isolated/share/native")),
+        Some(OsString::from("/isolated/share"))
+    );
+    // A fork or a resume against the default Claude home must leave CLAUDE_CONFIG_DIR exactly as
+    // the machine has it: naming it moves the global configuration into that directory and the
+    // native session starts with onboarding instead of the user's settings.
+    let claude = &spec(HarnessKind::Claude).home;
+    let ambient = std::env::var_os(&claude.env).filter(|v| !v.is_empty());
+    let default = user.join(crate::fleet::CLAUDE_DIR);
+    assert_eq!(
+        override_of(claude, &default),
+        ambient.map(|_| default.clone().into_os_string())
+    );
+    assert_eq!(
+        override_of(claude, Path::new("/isolated/.claude")),
+        Some(OsString::from("/isolated/.claude"))
+    );
+}
+
+#[test]
 fn probe_fixtures_preserve_success_requirements_and_reported_versions() {
     let claude = &spec(HarnessKind::Claude).launch.as_ref().unwrap().probe;
     assert!(claude.report(false, "supports --bg and attach").is_ok());
