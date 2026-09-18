@@ -203,9 +203,6 @@ pub struct Data {
     /// Applied at startup only.
     pub start: config::Start,
     pub spark: config::Activity,
-    /// The file's `defaults`, so the composer can name what a launch passes without
-    /// rereading the file on every frame.
-    pub policy: config::Policy,
     /// Seconds an armed `ctrl+x` mark stays with no key pressed; 0 keeps it until a key.
     pub confirm_secs: f64,
     /// Leave a table column out rather than draw the part of it that fits.
@@ -361,7 +358,6 @@ impl Data {
             pane,
             start,
             spark,
-            policy: offered,
             confirm_secs,
             whole_columns,
             folders,
@@ -5217,39 +5213,6 @@ fn config_field_visible(row: usize) -> bool {
         && !(f.group == "harnesses" && !f.sub.is_empty())
 }
 
-/// What a launch setting holds in the file, for the composer's prefix. Only the keys the
-/// ctrl+o picker offers, since only those say what a launch passes beyond the harness.
-fn launch_value(d: &config::Policy, name: &str) -> Option<String> {
-    match name {
-        "model" => d.model.clone(),
-        "effort" => d.effort.clone(),
-        "codex_model" => d.codex_model.clone(),
-        "codex_full_access" => d
-            .codex_full_access
-            .and_then(|on| on.then(|| "full access".into())),
-        "pi_model" => d.pi_model.clone(),
-        "pi_provider" => d.pi_provider.clone(),
-        "pi_thinking" => d.pi_thinking.clone(),
-        "opencode_model" => d.opencode_model.clone(),
-        "gemini_model" => d.gemini_model.clone(),
-        "cursor_model" => d.cursor_model.clone(),
-        "copilot_model" => d.copilot_model.clone(),
-        "kimi_model" => d.kimi_model.clone(),
-        _ => None,
-    }
-}
-
-/// The harness's own launch settings as one phrase, empty when its configuration answers
-/// for all of them.
-fn launch_identity(d: &config::Policy, harness: &str) -> String {
-    FIELDS
-        .iter()
-        .filter(|f| f.sub == harness)
-        .filter_map(|f| launch_value(d, f.name))
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 fn built_column_set(key: &str) -> Vec<String> {
     config::column_set(key)
         .1
@@ -8899,9 +8862,6 @@ impl App {
                     history_columns.as_deref(),
                 ) {
                     Ok(()) => {
-                        // The composer names what a launch passes, so it reads the saved
-                        // policy rather than waiting for the next background read.
-                        self.data.policy = *policy;
                         self.data.columns_default = columns.is_none();
                         self.data.columns = columns.unwrap_or_else(built_columns);
                         self.data.run_columns = run_columns.unwrap_or_else(built_run_columns);
@@ -11043,12 +11003,6 @@ impl App {
         let kind = harness::launchable()[self.harness].to_string();
         let style = brand(&kind).add_modifier(Modifier::BOLD);
         let mut spans = vec![Span::styled(logo(&kind), style)];
-        // What ctrl+o set, so the prefix answers what this launch passes. Nothing set means
-        // the harness's own configuration decides and the prefix stays quiet.
-        let settings = launch_identity(&self.data.policy, &kind);
-        if !settings.is_empty() {
-            spans.push(Span::styled(format!(" {settings}"), dim()));
-        }
         spans.push(Span::styled(" › ", style));
         let label = |n: usize| format!("[Image #{}]", n + 1);
         // The composer is one line; a break shows as its glyph and stays a break in the prompt.
@@ -19824,7 +19778,6 @@ mod tests {
             Some("opus")
         );
         assert_eq!(app.session_policy().model.as_deref(), Some("opus"));
-        assert_eq!(app.data.policy.model.as_deref(), Some("opus"));
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('h'), KeyModifiers::NONE).unwrap();
         assert_eq!(
@@ -19838,8 +19791,8 @@ mod tests {
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 200).join("\n");
         assert!(
-            text.contains("claude opus · high › read the tests"),
-            "the prefix names what a launch passes: {text}"
+            text.contains("claude › read the tests"),
+            "the prefix names the harness alone, not what ctrl+o set: {text}"
         );
 
         // A harness with no launch settings of its own says so instead of opening.
@@ -19900,45 +19853,6 @@ mod tests {
                 "{layout}: the key that opens it closes it"
             );
         }
-    }
-
-    #[test]
-    fn every_launch_setting_reaches_the_composer_prefix() {
-        let set = |v: &str| Some(v.to_owned());
-        let d = config::Policy {
-            model: set("opus"),
-            effort: set("high"),
-            codex_model: set("gpt-5.6-sol"),
-            codex_full_access: Some(true),
-            pi_model: set("sonnet"),
-            pi_provider: set("bedrock"),
-            pi_thinking: set("high"),
-            opencode_model: set("anthropic/claude-opus-4"),
-            gemini_model: set("gemini-3-pro"),
-            cursor_model: set("composer-1"),
-            copilot_model: set("gpt-5.6-sol"),
-            kimi_model: set("kimi-k2"),
-            ..Default::default()
-        };
-        for f in FIELDS
-            .iter()
-            .filter(|f| f.group == "harnesses" && !f.sub.is_empty())
-        {
-            assert!(
-                launch_value(&d, f.name).is_some(),
-                "{} is a picker row the prefix leaves out",
-                f.name
-            );
-        }
-        assert_eq!(launch_identity(&d, "claude"), "opus · high");
-        assert_eq!(launch_identity(&d, "codex"), "gpt-5.6-sol · full access");
-        assert_eq!(launch_identity(&d, "pi"), "sonnet · bedrock · high");
-        assert_eq!(launch_identity(&d, "amp"), "", "amp sets nothing here");
-        assert_eq!(
-            launch_identity(&config::Policy::default(), "claude"),
-            "",
-            "an unset harness keeps the prefix quiet"
-        );
     }
 
     #[test]

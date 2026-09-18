@@ -218,7 +218,7 @@ The instruction wraps to at most eight text rows. In a side-by-side pane it alig
 
 A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` or `ctrl+z` cancels pending preparation; other keys do not cancel it; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
 
-The prefix names what a launch passes: the harness, then the model and the rest of its [launch settings](#launch-settings) when they are set, dim beside the name. With none set, the harness's own configuration decides and the prefix names the harness alone. Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
+The prefix names the harness the launch starts, and nothing else: its [launch settings](#launch-settings) stay in the `ctrl+o` picker rather than beside every instruction. Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
 
 ### Launch settings
 
