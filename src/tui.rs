@@ -182,6 +182,8 @@ impl Row {
 
 pub struct Data {
     pub jobs: Vec<ResolvedJob>,
+    /// The configuration file these jobs came from; it follows the dashboard's directory.
+    pub jobs_path: PathBuf,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
     /// Session column names from jobs.yaml's `columns:`.
@@ -340,6 +342,7 @@ impl Data {
         let recent = phase!("ledger.recent", ledger.recent(&seen));
         Ok(Self {
             jobs,
+            jobs_path: jobs_path.to_owned(),
             runs,
             sessions,
             columns,
@@ -595,7 +598,12 @@ impl Data {
         }
         if jobs_view {
             if !table {
-                header(&mut out, "jobs");
+                // No job at all: name the file, since which one is read follows the
+                // dashboard's directory and an empty list otherwise looks like a loss.
+                header(
+                    &mut out,
+                    &format!("jobs · none in {}", fleet::tilde(&self.jobs_path)),
+                );
             }
             out.push(Row {
                 kind: Kind::NewJob,
@@ -13223,6 +13231,52 @@ mod tests {
         assert_eq!(rows[0]["data"]["truncated"], true);
         assert_eq!(rows[0]["data"]["operation_id"], "large-operation");
         assert!(fs::metadata(&large).unwrap().len() <= 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn an_empty_jobs_screen_names_the_configuration_file_it_read() {
+        let d = dir();
+        let jobs = d.path().join("jobs.yaml");
+        fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+        let rows = |path: &Path| {
+            Data::load(path, d.path(), d.path())
+                .unwrap()
+                .rows_excluding(false, true, false, &HashSet::new(), &mut Widths::new())
+        };
+        let header = |rows: &[Row]| {
+            rows.iter()
+                .find(|r| r.kind == Kind::Header)
+                .map(|r| r.cells[0].0.clone())
+                .expect("the jobs screen has a header")
+        };
+        assert_eq!(
+            header(&rows(&jobs)),
+            format!("jobs · none in {}", jobs.display()),
+            "an empty list says which file is empty"
+        );
+        let missing = d.path().join("elsewhere/jobs.yaml");
+        assert_eq!(
+            header(&rows(&missing)),
+            format!("jobs · none in {}", missing.display()),
+            "a file that is not there is named the same way"
+        );
+        fs::write(
+            &jobs,
+            "version: 3\njobs:\n  - name: nightly\n    schedule: 0 9 * * *\n    cwd: .\n    prompt: hello\n",
+        )
+        .unwrap();
+        let listed = rows(&jobs);
+        assert_eq!(
+            header(&listed),
+            "jobs",
+            "a listed job leaves the header bare"
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Job(name) if name == "nightly")),
+            "the job is on the screen"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@ Plain `cones` opens the dashboard. `run` starts supervised work from the shell o
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `--jobs PATH` | `jobs.yaml` | Configuration file. |
+| `--jobs PATH` | `~/.cones/jobs.yaml` | Configuration file. One per machine, like the state directory; the dashboard reads the same one from any folder. |
 | `--state-dir PATH` | `~/.cones` | Relocate cones state, including stored runs and dashboard records. |
 | `--debug` | off | Append [diagnostics](#diagnostics) to the state directory. |
 | `--trace` | off | Enable debug diagnostics plus input text, commands and individual timing samples. |

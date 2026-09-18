@@ -17,7 +17,7 @@ use std::{
 #[derive(Parser)]
 #[command(version, about = "A terminal workspace for coding agents")]
 struct Cli {
-    #[arg(long, global = true, default_value = "jobs.yaml")]
+    #[arg(long, global = true, default_value = "~/.cones/jobs.yaml")]
     jobs: PathBuf,
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
