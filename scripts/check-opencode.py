@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import sqlite3
@@ -24,6 +25,27 @@ import uuid
 
 
 REPLY = "OPENCODE_E2E_REPLY"
+
+def native_columns_shown(snapshot):
+    """Require all four columns, including the activity value named by this check."""
+    lines = [line[:110] for line in snapshot.splitlines()]
+    names = ["state", "title", "model", "last active", "cost"]
+    heading = next((line for line in lines if all(name in line for name in names)), None)
+    if heading is None:
+        return False
+    starts = [heading.index(name) for name in names]
+    if starts != sorted(starts):
+        return False
+    for line in lines:
+        cells = {name: line[start:end].strip()
+                 for name, start, end in zip(names, starts, starts[1:] + [110])}
+        if (cells["title"] == REPLY and cells["state"] == "idle"
+                and cells["model"] == "fixture/fixture"
+                and re.fullmatch(r"\d+[smhd]", cells["last active"])
+                and cells["cost"] == "$0.0000"):
+            return True
+    return False
+
 
 def worker(root):
     """Own and reap the dashboard inside tmux's controlling terminal."""
@@ -237,9 +259,7 @@ def main():
         wait("native response painted in dashboard", lambda: REPLY in screen() and bool(requests))
         initial = wait("one native OpenCode viewer", lambda: next(iter(pids())) if len(pids()) == 1 else None)
         wait("native status model activity and cost shown",
-             lambda: any(REPLY in line[:110] and "idle" in line[:110]
-                         and "fixture" in line[:110] and "$0" in line[:110]
-                         for line in screen().splitlines()))
+             lambda: native_columns_shown(screen()))
         keys("Enter")
         wait("empty native viewer focused", lambda: "← back" in screen())
         keys("Left")
