@@ -123,6 +123,8 @@ pub struct Query {
     pub include_archived: bool,
     /// Initial indexing is automatic. Later filesystem scans are explicit.
     pub refresh: bool,
+    /// Finish the meaning index for every conversation, with no query to search for.
+    pub index: bool,
     /// Request separately for the visible page after its lightweight rows have arrived.
     pub hydrate: bool,
     /// When set, hydrate only these entries within the requested page.
@@ -139,6 +141,7 @@ impl Default for Query {
             excluded: HashSet::new(),
             include_archived: false,
             refresh: false,
+            index: false,
             hydrate: false,
             hydrate_keys: None,
         }
@@ -419,6 +422,17 @@ impl Cache {
                     .total_cmp(&a.hit.as_ref().unwrap().score)
                     .then_with(|| order(a.last_activity, &a.key, b.last_activity, &b.key))
             });
+        } else if query.index && !query.hydrate {
+            // Nothing to match, so the page is the whole list; the work is the index itself.
+            if self.search.is_none() {
+                self.search = Some(search::Index::open(self.search_directory.clone())?);
+            }
+            let index = self.search.as_mut().unwrap();
+            index.sync(&matched)?;
+            let results = index.fill(query.refresh)?;
+            search_pending = results.pending;
+            search_status = results.status;
+            search_error = results.error;
         }
         let total = matched.len();
         let mut remaining = matched.into_iter().filter(|e| {

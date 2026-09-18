@@ -327,12 +327,7 @@ impl Index {
             }
         }
         if mode == Mode::Meaning && self.directory.is_some() && self.failure.is_none() {
-            let missing: i64 = self.db.query_row(
-                "SELECT count(DISTINCT p.hash) FROM passages p
-                 LEFT JOIN vectors v ON v.hash = p.hash WHERE v.hash IS NULL",
-                [],
-                |r| r.get(0),
-            )?;
+            let missing = self.missing()?;
             let query_missing = self
                 .query_vector
                 .as_ref()
@@ -353,6 +348,49 @@ impl Index {
                 "Search by meaning unavailable · shift+tab searches words · ctrl+r retries".into(),
             );
             results.error = self.failure.clone();
+        }
+        Ok(results)
+    }
+
+    /// Passages with no vector yet. The index cannot be wrong, only incomplete.
+    fn missing(&self) -> Result<i64> {
+        Ok(self.db.query_row(
+            "SELECT count(DISTINCT p.hash) FROM passages p
+             LEFT JOIN vectors v ON v.hash = p.hash WHERE v.hash IS NULL",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Embed every passage there is, with no query attached. Typing a meaning query is
+    /// otherwise the only thing that ever schedules work, so the index only finishes for a
+    /// reader who sits on the search screen long enough, which nobody does.
+    pub(crate) fn fill(&mut self, retry: bool) -> Result<Results> {
+        let mut results = Results::default();
+        if self.directory.is_none() {
+            return Ok(results);
+        }
+        if retry && self.failure.is_some() {
+            self.worker = None;
+            self.failure = None;
+        }
+        self.poll()?;
+        if self.failure.is_some() {
+            results.status = Some("Indexing unavailable · ctrl+r retries".into());
+            results.error = self.failure.clone();
+            return Ok(results);
+        }
+        let missing = self.missing()?;
+        results.pending = missing > 0;
+        results.status = Some(if missing > 0 {
+            format!("Indexing conversations · {missing} passages remaining")
+        } else {
+            "Every conversation is indexed".into()
+        });
+        if missing > 0
+            && let Err(error) = self.schedule("")
+        {
+            self.failure = Some(format!("{error:#}"));
         }
         Ok(results)
     }
@@ -1202,5 +1240,54 @@ mod tests {
         );
         assert!(late.starts_with("…head head"), "{late}");
         assert!(late.ends_with("needle in the haystack"), "{late}");
+    }
+
+    /// Only a meaning search ever scheduled embedding work, so the index finished only for a
+    /// reader who sat on the search screen. `fill` is the other way in, and it must not load a
+    /// model to tell you there is nothing left to do.
+    #[test]
+    fn filling_counts_what_is_left_and_stops_when_every_passage_has_a_vector() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let mut index = Index::open(Some(d.path().join("index"))).unwrap();
+        let entries = vec![entry(&home, "one", "the first conversation about ledgers")];
+        index.sync(&entries).unwrap();
+        let left = index.missing().unwrap();
+        assert!(left > 0, "a synced conversation has passages to embed");
+
+        // Every passage embedded, without asking the worker: the scheduling half is the same
+        // call the meaning search already makes, and loading a model here would download one.
+        let hashes: Vec<String> = index
+            .db
+            .prepare("SELECT DISTINCT hash FROM passages")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(hashes.len() as i64, left);
+        for hash in &hashes {
+            let bytes: Vec<_> = vector(0).iter().flat_map(|x| x.to_le_bytes()).collect();
+            index
+                .db
+                .execute(
+                    "INSERT OR REPLACE INTO vectors VALUES (?1, ?2)",
+                    params![hash, bytes],
+                )
+                .unwrap();
+        }
+
+        let results = index.fill(false).unwrap();
+        assert!(!results.pending, "nothing is left to embed");
+        assert_eq!(
+            results.status.as_deref(),
+            Some("Every conversation is indexed")
+        );
+        assert!(results.error.is_none());
+        assert!(
+            index.worker.is_none(),
+            "a finished index starts no embedding worker"
+        );
     }
 }

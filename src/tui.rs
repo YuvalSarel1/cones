@@ -5810,7 +5810,7 @@ const GUIDE: &[(&str, &str)] = &[
     ),
     (
         "ctrl+r",
-        "Refresh now. The list also refreshes every second.",
+        "Refresh now. The list also refreshes every second. In history it also indexes every conversation for search by meaning.",
     ),
     ("", "Composer"),
     (
@@ -6321,6 +6321,8 @@ struct HistoryView {
     error: Option<String>,
     search: crate::search::Mode,
     search_pending: bool,
+    /// Finish the meaning index in the background, asked for once and kept until it is done.
+    indexing: bool,
     search_status: Option<String>,
     updated: Option<Instant>,
     select_first: bool,
@@ -7830,6 +7832,11 @@ impl App {
                     Ok(page) => {
                         self.history.homes = page.homes;
                         self.history.search_pending = page.search_pending;
+                        // Only a page that ran the fill knows whether anything is left, so a
+                        // hydrate or a search answering for itself never ends the indexing.
+                        if !fetch.hydrate && self.history.filter.trim().is_empty() {
+                            self.history.indexing &= page.search_pending;
+                        }
                         self.history.search_status = page.search_status;
                         self.history.updated = Some(Instant::now());
                         if fetch.hydrate {
@@ -7976,6 +7983,7 @@ impl App {
             search: self.history.search,
             excluded: self.history_excluded(),
             refresh: self.history.refresh,
+            index: self.history.indexing,
             hydrate,
             hydrate_keys: hydrate.then_some(hydrate_keys),
             include_archived: true,
@@ -11933,12 +11941,21 @@ impl App {
                     KeyCode::Char('y') if ctrl => self.fork_selected(),
                     KeyCode::Char('r') if ctrl => {
                         if self.history.visible {
+                            // Refresh brings the meaning index up to date as well. Typing a
+                            // meaning query is otherwise the only thing that fills it, so it
+                            // only ever finishes for someone who sits on the search screen.
+                            // A second refresh while it runs puts the machine back to itself.
+                            self.history.indexing = !self.history.indexing;
                             self.history.select_first = searching_history;
                             self.history.reset(&self.filter.text, true);
                             self.rebuild();
                         }
                         self.invalidate();
-                        self.status = "refresh requested".into();
+                        self.status = if self.history.indexing {
+                            "refresh requested · indexing conversations".into()
+                        } else {
+                            "refresh requested".into()
+                        };
                     }
                     KeyCode::Char('v')
                         if ctrl && !self.terminal_selected() && !searching_history =>
@@ -15300,6 +15317,39 @@ mod tests {
         assert!(app.filter.text.is_empty());
         assert_eq!(app.history.rows.len(), HISTORY_PAGE);
         assert!(matches!(app.selected().unwrap().kind, Kind::History(_)));
+    }
+
+    /// The index only ever filled while a meaning query sat on screen, so it never finished.
+    /// Refresh in history is the trigger, it reports its progress where a search does, and it
+    /// stops on its own once nothing is left.
+    #[test]
+    fn refreshing_history_finishes_the_meaning_index_and_stops_when_it_is_done() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        assert!(!app.history.indexing, "browsing history indexes nothing");
+
+        app.key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.history.indexing, "refresh asks for the index");
+        assert_eq!(app.status, "refresh requested · indexing conversations");
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        // The fixture index keeps no vectors, so the first page that runs the fill reports
+        // nothing remaining and the work ends itself rather than asking every tick forever.
+        assert!(
+            !app.history.indexing,
+            "a finished index stops asking: {:?}",
+            app.history.search_status
+        );
+
+        app.key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.history.indexing);
+        app.key(KeyCode::Char('r'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.history.indexing, "a second refresh calls it off");
+        assert_eq!(app.status, "refresh requested");
     }
 
     #[test]
