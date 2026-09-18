@@ -2926,13 +2926,23 @@ impl JobForm {
                 } else {
                     format!("default: {d}")
                 };
+                // The word a one-word option is says nothing on its own, so the chosen one, or the
+                // default it inherits, explains itself here. This form has no help pane to open.
+                let chosen = if self.values[i].is_empty() {
+                    d.as_str()
+                } else {
+                    &self.values[i]
+                };
+                let means = option_help(f.name, chosen)
+                    .map(|help| format!(" · {chosen}: {help}"))
+                    .unwrap_or_default();
                 (
                     f.name,
                     match f.input {
                         Answer::PickOrType(_, w) => {
-                            format!("{}, or type {w} · {default}", f.short)
+                            format!("{}, or type {w} · {default}{means}", f.short)
                         }
-                        _ => format!("{} · {default}", f.short),
+                        _ => format!("{} · {default}{means}", f.short),
                     },
                 )
             }
@@ -2965,6 +2975,44 @@ enum Answer {
     Columns,
     /// A row that runs something instead of holding a value.
     Check,
+}
+
+/// What one word on a ring means, for the options whose word alone does not say it: field name,
+/// the value, and the clause the status line adds while that value is the one chosen. A field
+/// whose words explain themselves, `true` and `false` among them, belongs nowhere near this.
+const OPTIONS: &[(&str, &str, &str)] = &[
+    (
+        "overlap",
+        "skip",
+        "the tick is recorded skipped and the running job is left alone",
+    ),
+    (
+        "overlap",
+        "allow",
+        "a second run starts beside the first, both in the same folder",
+    ),
+    (
+        "overlap",
+        "replace",
+        "the running supervisor is asked to stop, and the tick is skipped if it does not confirm within ten seconds",
+    ),
+    (
+        "catch_up",
+        "skip",
+        "ticks lost while the Mac was off or logged out stay lost",
+    ),
+    (
+        "catch_up",
+        "once",
+        "one run at the next login, however many ticks were missed",
+    ),
+];
+
+fn option_help(field: &str, value: &str) -> Option<&'static str> {
+    OPTIONS
+        .iter()
+        .find(|(f, v, _)| *f == field && *v == value)
+        .map(|(_, _, help)| *help)
 }
 
 impl Field {
@@ -4846,6 +4894,19 @@ impl ConfigForm {
         // A row that runs something has no value, so it has no default to name either.
         if matches!(f.input, Answer::Check) {
             return Line::from(f.hint);
+        }
+        // An open ring reads as bare words, so the one under the cursor says what it does here,
+        // where the eye already is, rather than only in the help pane behind `?`.
+        if let Some(at) = self.choice
+            && let Some(word) = self.choices().get(at)
+            // The ring's empty stop is the built-in, and the built-in is a word like the others.
+            && let word = if word.is_empty() { f.builtin } else { word }
+            && let Some(help) = option_help(f.name, word)
+        {
+            return Line::from(vec![
+                Span::styled(format!("{word}: "), bold()),
+                Span::styled(help.to_owned(), dim()),
+            ]);
         }
         Line::from(vec![
             Span::raw(f.hint),
@@ -15865,6 +15926,77 @@ mod tests {
         assert!(
             c.values[field_at("check")].is_empty() && c.config().is_ok(),
             "the probe writes nothing into the file"
+        );
+    }
+
+    #[test]
+    fn a_one_word_option_says_what_it_does_where_it_is_picked() {
+        let none = KeyModifiers::NONE;
+        let mut c = ConfigForm::new(
+            &config::Policy::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        // Shut, the row reads as the field. Open, the word under the cursor answers for itself.
+        c.go(field_at("overlap"));
+        assert!(
+            c.line()
+                .to_string()
+                .contains("What to do when a job is already running")
+        );
+        c.key(KeyCode::Enter, none);
+        let mut seen = Vec::new();
+        for _ in 0..c.choices().len() {
+            let word = c.choices()[c.choice.unwrap()].clone();
+            // The empty stop is the built-in, which the line names by its own word.
+            let word = if word.is_empty() {
+                c.field().builtin.to_owned()
+            } else {
+                word
+            };
+            let answer = c.line().to_string();
+            assert!(
+                answer.starts_with(&format!("{word}: ")),
+                "the open ring explains {word}, not the field: {answer}"
+            );
+            seen.push(word);
+            c.key(KeyCode::Down, none);
+        }
+        assert_eq!(
+            seen,
+            ["skip", "allow", "replace"],
+            "every word on the ring explains itself, the default included"
+        );
+        assert!(
+            c.line().to_string().contains("ten seconds"),
+            "replace names the wait it can lose: {}",
+            c.line()
+        );
+        // The wizard has no help pane, so its one line carries the chosen word's meaning.
+        let base = tempfile::tempdir().unwrap();
+        let mut f = job_form(base.path(), None, "audit the deps");
+        let at = RUN_FIELDS.iter().position(|n| *n == "catch_up").unwrap();
+        f.go(run_row("catch_up"));
+        assert!(
+            f.line().to_string().contains("skip: ticks lost"),
+            "the default it inherits explains itself: {}",
+            f.line()
+        );
+        f.key(KeyCode::Right, none);
+        assert_eq!(f.values[at], "once");
+        assert!(
+            f.line()
+                .to_string()
+                .contains("once: one run at the next login"),
+            "and so does the word just picked: {}",
+            f.line()
         );
     }
 
