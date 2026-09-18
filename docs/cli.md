@@ -25,6 +25,21 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
+| `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
+
+### Reading runs and sessions
+
+`cones ls` prints the dashboard's rows for a script: the ledger's runs, then the live sessions no run owns. Text timestamps use your local timezone and include its UTC offset. `--job` and `--status` narrow the read; naming a job leaves the sessions out, since a session belongs to no job.
+
+`--dir` keeps the rows whose folder is that path or sits under it, so a project's worktrees stay with the project. Both sides are resolved first, so a folder reached through a symlink still matches. A row that reports no folder is not in any folder, so a scoped read leaves it out.
+
+`--json` writes one object per line. `kind` is `run` or `session` and says which of the two shapes follows: `status`, `started` and `terminal` for a run; `status` and `session` for a session. Timestamps stay UTC and native model ids are preserved.
+
+```sh
+cones ls --dir ~/src/app --json
+```
+
+The [coordinator](#coordinator-launch) reads its folder this way instead of walking the harness registries itself.
 
 ### One-off tasks
 
@@ -85,7 +100,6 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 
 | Command | Purpose |
 | --- | --- |
-| `__ls [--job NAME] [--status S] [--json]` | Read runs and live sessions. Text timestamps use your local timezone and include its UTC offset. JSON keeps UTC timestamps and is one object per line: `status`, `started`, `terminal` for runs; `status`, `session` for sessions. Native model ids are preserved. |
 | `__logs ID [--follow] [--raw]` | Read captured output. The current session renderer does not handle pi message entries. |
 | `__attach ID [--print-command]` | Open a background session or resume a finished run. |
 | `__install [--dry-run]` | Compile and install schedules. Dry run prints plist XML, including imported credentials; stderr warns when a job imports values. |

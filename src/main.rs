@@ -61,12 +61,14 @@ enum Action {
         dry_run: bool,
     },
     /// Runs and live sessions as rows; the JSON format is documented in docs/cli.md.
-    #[command(name = "__ls", hide = true)]
     Ls {
         #[arg(long)]
         job: Option<String>,
         #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","active","idle","blocked","done","stopped","exited"])]
         status: Option<String>,
+        /// Only rows in this folder or under it, so a project's worktrees stay with the project.
+        #[arg(long)]
+        dir: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -225,18 +227,43 @@ fn execute(cli: Cli) -> Result<i32> {
                 _ => 1,
             })
         }
-        Action::Ls { job, status, json } => {
+        Action::Ls {
+            job,
+            status,
+            dir,
+            json,
+        } => {
             cones::cost::init(&state, false);
             let ledger = Ledger::new(&state)?;
+            // ponytail: canonicalize both sides, so /var and /private/var compare equal on macOS
+            // and a worktree reached through a symlink still belongs to its folder. A path that
+            // cannot be resolved stays as given.
+            let real = |p: &std::path::Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+            let scope = dir.as_deref().map(real);
+            // No folder at all cannot be placed, so a scoped read leaves it out.
+            let inside = |p: Option<&std::path::Path>| match (&scope, p) {
+                (None, _) => true,
+                (Some(_), None) => false,
+                (Some(scope), Some(p)) => {
+                    let p = real(p);
+                    p == *scope || p.starts_with(scope)
+                }
+            };
             for run in ledger.runs()?.into_iter().rev().filter(|r| {
                 job.as_ref()
                     .is_none_or(|j| r.started.job.as_ref() == Some(j))
                     && status.as_ref().is_none_or(|s| r.status() == *s)
+                    && inside(
+                        r.started
+                            .cwd
+                            .as_deref()
+                            .or_else(|| r.terminal.as_ref()?.cwd.as_deref()),
+                    )
             }) {
                 if json {
                     println!(
                         "{}",
-                        serde_json::json!({"status":run.status(),"started":run.started,"terminal":run.terminal})
+                        serde_json::json!({"kind":"run","status":run.status(),"started":run.started,"terminal":run.terminal})
                     );
                 } else {
                     let last = run.terminal.as_ref().unwrap_or(&run.started);
@@ -268,10 +295,16 @@ fn execute(cli: Cli) -> Result<i32> {
                 &config::defaults(&jobs_path),
             )?
             .into_iter()
-            .filter(|s| job.is_none() && status.as_ref().is_none_or(|st| s.state == *st))
-            {
+            .filter(|s| {
+                job.is_none()
+                    && status.as_ref().is_none_or(|st| s.state == *st)
+                    && inside(Some(&s.cwd))
+            }) {
                 if json {
-                    println!("{}", serde_json::json!({"status":s.state,"session":s}));
+                    println!(
+                        "{}",
+                        serde_json::json!({"kind":"session","status":s.state,"session":s})
+                    );
                 } else {
                     println!(
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}",

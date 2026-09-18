@@ -69,14 +69,107 @@ fn run_times_display_in_the_local_timezone_and_keep_utc_in_json() {
         utc.contains("09-17 22:30:00") && utc.contains("01-17 22:30:00"),
         "{utc}"
     );
-    let ls = run("Asia/Jerusalem", &["__ls"]);
+    let ls = run("Asia/Jerusalem", &["ls"]);
     assert!(ls.contains("2026-09-18T01:30:00+03:00"), "{ls}");
     assert!(ls.contains("2026-01-18T00:30:00+02:00"), "{ls}");
-    let json = run("Asia/Jerusalem", &["__ls", "--json"]);
+    let json = run("Asia/Jerusalem", &["ls", "--json"]);
     assert!(
         json.contains("2026-09-17T22:30:00Z") && json.contains("2026-01-17T22:30:00Z"),
         "{json}"
     );
+}
+
+/// `--dir` is the coordinator's read: the folder it was launched in, plus the worktrees under it.
+#[test]
+fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
+    use cones::config::HarnessKind;
+    use std::process::Command;
+    let d = tempfile::tempdir().unwrap();
+    let jobs = d.path().join("jobs.yaml");
+    fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+    let claude = d.path().join("claude");
+    // A folder the coordinator owns, a worktree under it, and a sibling it must not report.
+    let project = d.path().join("project");
+    let worktree = project.join(".worktrees/feature");
+    let sibling = d.path().join("other");
+    for path in [&project, &worktree, &sibling] {
+        fs::create_dir_all(path).unwrap();
+    }
+    // Rows carry the resolved path while --dir gets the raw one, so /var and /private/var must
+    // still compare equal on macOS.
+    let real = |p: &std::path::Path| p.canonicalize().unwrap();
+    let ledger = Ledger::new(d.path()).unwrap();
+    for (id, cwd) in [("mine", real(&project)), ("theirs", real(&sibling))] {
+        let mut record = Record::new(id.into(), Status::Started);
+        record.job = Some(id.into());
+        record.fired_at = Some("2026-09-17T22:30:00Z".parse().unwrap());
+        record.harness = Some(HarnessKind::Claude);
+        record.cwd = Some(cwd);
+        ledger.append(&record).unwrap();
+        ledger.append(&Record::new(id.into(), Status::Ok)).unwrap();
+    }
+    let registry = claude.join("sessions");
+    fs::create_dir_all(&registry).unwrap();
+    for (name, cwd) in [
+        ("in-worktree", real(&worktree)),
+        ("elsewhere", real(&sibling)),
+    ] {
+        fs::write(
+            registry.join(format!("{name}.json")),
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": name, "cwd": cwd,
+                "kind": "interactive", "status": "idle"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args([
+                "--jobs",
+                jobs.to_str().unwrap(),
+                "--state-dir",
+                d.path().to_str().unwrap(),
+            ])
+            .args(args)
+            .env("HOME", d.path())
+            .env("CLAUDE_CONFIG_DIR", &claude)
+            .env("CODEX_HOME", d.path().join("missing-codex"))
+            .env("PI_CODING_AGENT_DIR", d.path().join("missing-pi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let all = run(&["ls"]);
+    for row in ["mine", "theirs", "in-worktree", "elsewhere"] {
+        assert!(all.contains(row), "unscoped read is missing {row}: {all}");
+    }
+    let scoped = run(&["ls", "--dir", project.to_str().unwrap()]);
+    assert!(scoped.contains("mine"), "the folder's own run: {scoped}");
+    assert!(
+        scoped.contains("in-worktree"),
+        "a session in a worktree under the folder: {scoped}"
+    );
+    assert!(
+        !scoped.contains("theirs"),
+        "a sibling folder's run leaked: {scoped}"
+    );
+    assert!(
+        !scoped.contains("elsewhere"),
+        "a sibling folder's session leaked: {scoped}"
+    );
+    let json = run(&["ls", "--dir", project.to_str().unwrap(), "--json"]);
+    let kinds: Vec<String> = json
+        .lines()
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"].to_string())
+        .collect();
+    assert_eq!(kinds, ["\"run\"", "\"session\""], "row kinds: {json}");
 }
 
 #[test]
