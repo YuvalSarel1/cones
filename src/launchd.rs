@@ -422,9 +422,11 @@ pub fn install(
         install_agent(&agents, state, &job.name, &bytes)?;
         println!("installed {}", job.name);
     }
-    // A disabled definition must not leave an older enabled LaunchAgent firing.
-    for job in jobs.iter().filter(|j| !j.enabled) {
-        uninstall_one(&job.name, &agents)?;
+    // A definition that is disabled, renamed or deleted outright must not leave a LaunchAgent
+    // firing for a job the file no longer has. Installed agents are the truth, not the file's
+    // disabled entries: a deleted job leaves no entry to read.
+    for name in stale_agents(installed_agents(&agents)?, jobs) {
+        uninstall_one(&name, &agents)?;
     }
     // The same rule for the login agent: no job asks to catch up, no agent waits at login.
     if jobs
@@ -479,6 +481,51 @@ pub fn kickstart(job: &str) -> Result<()> {
     launchctl(&["kickstart", &format!("{}/{}", domain(), label(job))])
 }
 
+/// Names of the cones LaunchAgents in `dir`. A file under the cones name whose Label says
+/// otherwise belongs to someone else, so refuse it rather than remove it.
+fn installed_agents(dir: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    if !dir.exists() {
+        return Ok(names);
+    }
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
+        let Some(name) = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|s| s.strip_prefix("local.cones."))
+            .and_then(|s| s.strip_suffix(".plist"))
+        else {
+            continue;
+        };
+        let expected = label(name);
+        if Value::from_file(&path)?
+            .as_dictionary()
+            .and_then(|d| d.get("Label"))
+            .and_then(Value::as_string)
+            != Some(&expected)
+        {
+            bail!("refusing unexpected LaunchAgent {}", path.display());
+        }
+        names.push(name.to_owned());
+    }
+    Ok(names)
+}
+
+/// Installed agents no enabled job claims. The login agent is not a job and is decided by
+/// whether any job asks to catch up, so leave it out of this.
+fn stale_agents(installed: Vec<String>, jobs: &[ResolvedJob]) -> Vec<String> {
+    let keep: BTreeSet<&str> = jobs
+        .iter()
+        .filter(|j| j.enabled)
+        .map(|j| j.name.as_str())
+        .collect();
+    installed
+        .into_iter()
+        .filter(|n| n != CATCHUP && !keep.contains(n.as_str()))
+        .collect()
+}
+
 fn uninstall_one(name: &str, dir: &Path) -> Result<()> {
     let path = dir.join(format!("{}.plist", label(name)));
     if loaded(&label(name))? {
@@ -500,29 +547,8 @@ pub fn uninstall_all() -> Result<()> {
     let dir = dirs::home_dir()
         .context("missing home directory")?
         .join("Library/LaunchAgents");
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in fs::read_dir(&dir)? {
-        let path = entry?.path();
-        if let Some(name) = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .and_then(|s| s.strip_prefix("local.cones."))
-            .and_then(|s| s.strip_suffix(".plist"))
-        {
-            let plist = Value::from_file(&path)?;
-            let expected = label(name);
-            if plist
-                .as_dictionary()
-                .and_then(|d| d.get("Label"))
-                .and_then(Value::as_string)
-                != Some(&expected)
-            {
-                bail!("refusing unexpected LaunchAgent {}", path.display());
-            }
-            uninstall_one(name, &dir)?;
-        }
+    for name in installed_agents(&dir)? {
+        uninstall_one(&name, &dir)?;
     }
     Ok(())
 }
@@ -563,6 +589,63 @@ mod tests {
         assert_eq!(
             ticks[0].as_dictionary().unwrap()["Minute"].as_signed_integer(),
             Some(0)
+        );
+    }
+
+    #[test]
+    fn install_removes_the_agent_of_a_job_the_file_no_longer_has() {
+        let d = tempfile::tempdir().unwrap();
+        let agent = |name: &str| {
+            let mut plist = Dictionary::new();
+            plist.insert("Label".into(), Value::String(label(name)));
+            Value::Dictionary(plist)
+                .to_file_xml(d.path().join(format!("{}.plist", label(name))))
+                .unwrap();
+        };
+        for name in ["update-workbench", "readme-check", CATCHUP] {
+            agent(name);
+        }
+        fs::write(d.path().join("com.example.other.plist"), "not ours").unwrap();
+        let mut installed = installed_agents(d.path()).unwrap();
+        installed.sort();
+        assert_eq!(
+            installed,
+            ["catchup", "readme-check", "update-workbench"],
+            "a foreign LaunchAgent is not one of ours"
+        );
+        let job = |name: &str, enabled: bool| {
+            let mut job = crate::config::adhoc(None, "hi", Path::new("/tmp")).unwrap();
+            job.name = name.to_owned();
+            job.enabled = enabled;
+            job
+        };
+        let jobs = [job("update-workbench", true), job("nightly", false)];
+        assert_eq!(
+            stale_agents(installed, &jobs),
+            ["readme-check"],
+            "the deleted job's agent goes; the enabled job keeps its own and the login agent is \
+             decided elsewhere"
+        );
+        assert_eq!(
+            stale_agents(vec!["nightly".to_owned()], &jobs),
+            ["nightly"],
+            "a disabled job still loses its agent"
+        );
+    }
+
+    #[test]
+    fn an_agent_under_the_cones_name_with_a_foreign_label_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let mut plist = Dictionary::new();
+        plist.insert("Label".into(), Value::String("com.someone.else".into()));
+        Value::Dictionary(plist)
+            .to_file_xml(d.path().join("local.cones.impostor.plist"))
+            .unwrap();
+        let error = installed_agents(d.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("refusing unexpected LaunchAgent")
+                && error.contains("local.cones.impostor.plist"),
+            "{error}"
         );
     }
 
