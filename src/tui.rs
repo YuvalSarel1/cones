@@ -11,9 +11,9 @@ mod stress;
 use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
-    context,
-    copy,
+    context, copy,
     fleet::{self, Session},
+    handoff,
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
@@ -6710,6 +6710,84 @@ enum Mode {
     Mcp(Box<McpPanel>),
     /// A compact list over the bottom of the session list: recent sessions, or copy actions.
     Pick(Pick),
+    /// A prepared handoff waiting for its target harness. Nothing has launched yet.
+    Handoff(Box<Handoff>),
+}
+
+/// ctrl+y's target choice. Fork and handoff are one gesture: the source's own harness is
+/// its native fork, another harness is a bounded text export into a fresh session. The
+/// export is already read when this exists, so choosing a target is all that remains and
+/// leaving the mode starts nothing.
+#[derive(Clone, Debug)]
+struct Handoff {
+    source: history::Entry,
+    export: handoff::Export,
+    /// The source's own harness first, when it forks natively, then the export targets.
+    targets: Vec<HarnessKind>,
+    at: usize,
+    top: usize,
+    /// Rows the preview had last frame, for paging.
+    height: usize,
+}
+
+impl Handoff {
+    fn target(&self) -> HarnessKind {
+        self.targets[self.at.min(self.targets.len() - 1)]
+    }
+
+    /// The source's own harness means today's native fork, not an export.
+    fn is_fork(&self) -> bool {
+        self.target().to_string() == self.source.key.harness
+    }
+
+    fn lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::from(Span::styled("hand off", lit())),
+            Line::from(Span::styled(
+                if self.is_fork() {
+                    format!(
+                        "{} fork · native, keeps the conversation",
+                        self.source.key.harness
+                    )
+                } else {
+                    format!(
+                        "{} · {} message{} exported, {} omitted{}",
+                        self.target(),
+                        self.export.included,
+                        if self.export.included == 1 { "" } else { "s" },
+                        self.export.omitted,
+                        if self.export.truncated {
+                            ", oldest cut"
+                        } else {
+                            ""
+                        }
+                    )
+                },
+                dim(),
+            )),
+            Line::default(),
+        ];
+        let body: Vec<Line<'static>> = if self.is_fork() {
+            vec![Line::from(Span::styled(
+                "A native fork continues this conversation in the same harness. Nothing is exported."
+                    .to_owned(),
+                dim(),
+            ))]
+        } else {
+            self.export
+                .text
+                .lines()
+                .map(|l| Line::from(l.to_owned()))
+                .collect()
+        };
+        lines.extend(body.into_iter().skip(self.top));
+        lines
+    }
+
+    fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.height = area.height.max(1) as usize;
+        frame.render_widget(Paragraph::new(self.lines()), area);
+    }
 }
 
 /// Recently entered sessions, or the copy menu for the selected row: one overlay with two
@@ -6792,12 +6870,14 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "ctrl+t",
         "Read the MCP servers configured for the selected session's harness and folder, and stage scoped changes.",
+    ),
+    (
         "ctrl+b",
         "List the sessions entered from here, most recent first. Press it again to return to the one before this.",
     ),
     (
         "ctrl+y",
-        "Fork the selected conversation into a new native session.",
+        "Fork the selected conversation, or hand it off to another harness as a bounded export.",
     ),
     (
         "ctrl+r",
@@ -7735,6 +7815,10 @@ struct App {
     prespawned: Option<String>,
     /// Where the list rows were drawn last, so a click finds its row.
     list_area: Rect,
+    /// Handoffs this dashboard started: source session id, target harness and launch row.
+    /// Retries are refused while the launch row is still pending, so one confirmed handoff
+    /// cannot become two targets.
+    handoffs: Vec<(String, HarnessKind, String)>,
 }
 
 const REST: Duration = Duration::from_millis(400);
@@ -8054,6 +8138,7 @@ impl App {
             rest: None,
             prespawned: None,
             list_area: Rect::default(),
+            handoffs: Vec::new(),
         })
     }
 
@@ -8194,6 +8279,7 @@ impl App {
             Mode::Guide(..) => "guide",
             Mode::Mcp(..) => "mcp",
             Mode::Pick(_) => "pick",
+            Mode::Handoff(_) => "handoff",
         };
         json!({
             "mode": mode,
@@ -11988,8 +12074,15 @@ impl App {
         let dir = self.target_dir();
         let dir = dir.canonicalize().unwrap_or(dir);
         let kind = harness::launchable()[self.harness];
-        let policy = self.session_policy();
         let prompt = self.take_prompt();
+        self.launch(kind, dir, prompt);
+    }
+
+    /// One launch path for the composer and for a handoff: the placeholder row, the ledger
+    /// record and the native command are the same whoever wrote the prompt. Returns the
+    /// placeholder row id.
+    fn launch(&mut self, kind: HarnessKind, dir: PathBuf, prompt: String) -> String {
+        let policy = self.session_policy();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
         let since = chrono::Utc::now();
         let id = self.launch_row(kind, &dir, &prompt);
@@ -12003,13 +12096,17 @@ impl App {
                 .then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
             // Use a temporary launch key until the harness reports the session's own id.
-            self.prepare_viewer(what, id, record, retry, move || {
-                match harness::start(kind, &dir, prompt.trim(), &policy)? {
+            self.prepare_viewer(
+                what,
+                id.clone(),
+                record,
+                retry,
+                move || match harness::start(kind, &dir, prompt.trim(), &policy)? {
                     Start::Foreground(command) => Ok(command),
                     Start::Background(_) => anyhow::bail!("expected a {kind} viewer"),
-                }
-            });
-            return;
+                },
+            );
+            return id;
         }
         let (tx, rx) = mpsc::channel();
         self.status = format!("starting {what}");
@@ -12061,7 +12158,8 @@ impl App {
             };
             let _ = tx.send(feedback);
         });
-        self.started.push((id, rx));
+        self.started.push((id.clone(), rx));
+        id
     }
 
     fn can_fork_selected(&self) -> bool {
@@ -12183,6 +12281,133 @@ impl App {
                 Start::Background(_) => anyhow::bail!("fork needs its own native viewer"),
             }
         });
+    }
+
+    fn fork_label(&self) -> &'static str {
+        let exports = self
+            .fork_source()
+            .is_some_and(|e| self.handoff_targets(&e).len() > 1);
+        if exports { "fork or hand off" } else { "fork" }
+    }
+
+    /// Targets ctrl+y offers for this source: its own harness when it forks natively, then
+    /// every other launchable harness when the source's conversation can be exported.
+    fn handoff_targets(&self, source: &history::Entry) -> Vec<HarnessKind> {
+        let name = &source.key.harness;
+        let mut targets: Vec<HarnessKind> = harness::by_name(name)
+            .filter(|s| s.operations.fork.is_some())
+            .map(|s| vec![s.kind])
+            .unwrap_or_default();
+        if !source.archived && handoff::source_supported(name) && source.transcript.is_file() {
+            let policy = self.session_policy();
+            targets.extend(
+                handoff::targets(name)
+                    .into_iter()
+                    .filter(|k| policy.enabled_for(*k)),
+            );
+        }
+        targets
+    }
+
+    /// ctrl+y. A handoff is the fork gesture with the target named instead of implied, so
+    /// the same source checks run first and a source that only forks natively still forks
+    /// with one key. Reading the transcript here is bounded and blocking; a conversation
+    /// that needs more than the tail window is not worth a background reader for one press.
+    fn offer_handoff(&mut self) {
+        let Some(source) = self.fork_source() else {
+            self.fork_selected();
+            return;
+        };
+        let targets = self.handoff_targets(&source);
+        match targets.len() {
+            0 => self.fork_selected(),
+            1 if targets[0].to_string() == source.key.harness => self.fork_selected(),
+            _ => {
+                let export = match self.export_for(&source) {
+                    Ok(export) => export,
+                    Err(e) => {
+                        self.status = format!("no handoff: {e:#}");
+                        return;
+                    }
+                };
+                if export.included == 0 {
+                    self.status = "no handoff: this conversation has no readable messages".into();
+                    return;
+                }
+                self.mode = Mode::Handoff(Box::new(Handoff {
+                    source,
+                    export,
+                    targets,
+                    at: 0,
+                    top: 0,
+                    height: 1,
+                }));
+                self.status = "pick a target · nothing starts until enter".into();
+            }
+        }
+    }
+
+    /// ponytail: a bounded tail read, not the paging reader the viewers use. Older
+    /// conversation is reported as omitted rather than fetched.
+    fn export_for(&self, source: &history::Entry) -> Result<handoff::Export> {
+        const TAIL: u64 = 512 * 1024;
+        let mut file = std::fs::File::open(&source.transcript)
+            .with_context(|| format!("reading {}", fleet::tilde(&source.transcript)))?;
+        let len = file.metadata()?.len();
+        let from = len.saturating_sub(TAIL);
+        let mut bytes = Vec::new();
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(from))?;
+        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        if from > 0 {
+            // A partial first line is not a message.
+            let start = bytes.iter().position(|b| *b == b'\n').map_or(0, |i| i + 1);
+            bytes.drain(..start);
+        }
+        let mut conversation = transcript::parse(&source.key.harness, &bytes);
+        conversation.earlier |= from > 0;
+        Ok(handoff::export(
+            &source.key.harness,
+            &source.key.session_id,
+            &source.cwd,
+            &conversation,
+            handoff::BUDGET,
+        ))
+    }
+
+    /// The chosen target. The source is never stopped, resumed or written to: a handoff only
+    /// launches a fresh native session whose first prompt is the export.
+    fn hand_off(&mut self, plan: Handoff) {
+        if plan.is_fork() {
+            self.fork_selected();
+            return;
+        }
+        let kind = plan.target();
+        let from = plan.source.key.session_id.clone();
+        let starting = self.handoffs.iter().any(|(source, target, row)| {
+            *source == from
+                && *target == kind
+                && self.pending.iter().any(|p| &p.session.session_id == row)
+        });
+        if starting {
+            self.status = format!("a {kind} handoff from this session is already starting");
+            return;
+        }
+        let dir = plan.source.cwd.clone();
+        let id = self.launch(kind, dir, plan.export.text.clone());
+        self.handoffs.push((from, kind, id));
+        // The launch reports itself; this reports what the target was actually given.
+        self.status = format!(
+            "{} · handed {} message{}, {} omitted{}",
+            self.status,
+            plan.export.included,
+            if plan.export.included == 1 { "" } else { "s" },
+            plan.export.omitted,
+            if plan.export.truncated {
+                ", oldest cut"
+            } else {
+                ""
+            }
+        );
     }
 
     fn terminal_selected(&self) -> bool {
@@ -12783,6 +13008,12 @@ impl App {
             Mode::Mcp(panel) => panel.hints(),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Pick(_) => hints(&[("↑ ↓", "choose"), ("enter", "use"), ("esc", "close")]),
+            Mode::Handoff(h) => hints(&[
+                ("enter", if h.is_fork() { "fork" } else { "hand off" }),
+                ("← →", "target"),
+                ("↑ ↓", "scroll"),
+                ("esc", "cancel"),
+            ]),
             Mode::Normal if self.history_selected() => {
                 let mut keys = vec![("↑ ↓", "select")];
                 if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
@@ -12797,7 +13028,7 @@ impl App {
                 keys.push(("shift+tab", &switch));
                 keys.push(("ctrl+h", "hide history"));
                 if self.can_fork_selected() {
-                    keys.push(("ctrl+y", "fork"));
+                    keys.push(("ctrl+y", self.fork_label()));
                 }
                 hints(&keys)
             }
@@ -12858,7 +13089,7 @@ impl App {
                     keys.push(("ctrl+o", "model"));
                 }
                 if self.can_fork_selected() {
-                    keys.push(("ctrl+y", "fork"));
+                    keys.push(("ctrl+y", self.fork_label()));
                 }
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
@@ -13366,6 +13597,25 @@ impl App {
                     self.status = "back to the list; no MCP file was written".into();
                 }
             }
+            Mode::Handoff(h) => match code {
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    self.status = "handoff cancelled · nothing started".into();
+                }
+                KeyCode::Left => h.at = h.at.saturating_sub(1),
+                KeyCode::Right => h.at = (h.at + 1).min(h.targets.len() - 1),
+                KeyCode::Up => h.top = h.top.saturating_sub(1),
+                KeyCode::Down => h.top += 1,
+                KeyCode::PageUp => h.top = h.top.saturating_sub(h.height),
+                KeyCode::PageDown => h.top += h.height,
+                KeyCode::Home => h.top = 0,
+                KeyCode::Enter => {
+                    let plan = h.clone();
+                    self.mode = Mode::Normal;
+                    self.hand_off(*plan);
+                }
+                _ => {}
+            },
             Mode::Normal => {
                 let armed = self.armed.take();
                 let searching_history = self.history_selected();
@@ -13570,7 +13820,7 @@ impl App {
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('t') if ctrl => self.open_mcp(),
                     KeyCode::Char('b') if ctrl => self.open_recent(),
-                    KeyCode::Char('y') if ctrl => self.fork_selected(),
+                    KeyCode::Char('y') if ctrl => self.offer_handoff(),
                     KeyCode::Char('r') if ctrl => {
                         if self.history.visible {
                             // Refresh brings the meaning index up to date as well. Typing a
@@ -13903,6 +14153,21 @@ impl App {
                 Line::from(spans)
             }
             Mode::Mcp(panel) => panel.line(),
+            Mode::Handoff(h) => Line::from(vec![
+                Span::styled("hand off › ", Style::default().fg(ORANGE)),
+                Span::styled(h.target().to_string(), Style::default().fg(ORANGE)),
+                Span::styled(
+                    format!(
+                        " · from {} {} · the source session stays as it is",
+                        h.source.key.harness,
+                        h.source
+                            .title
+                            .clone()
+                            .unwrap_or_else(|| h.source.key.session_id.clone())
+                    ),
+                    dim(),
+                ),
+            ]),
             Mode::Normal => self.composer(),
         }
     }
@@ -14077,6 +14342,8 @@ impl App {
             form.draw(frame, list);
         } else if let Mode::Mcp(panel) = &mut self.mode {
             panel.draw(frame, list);
+        } else if let Mode::Handoff(h) = &mut self.mode {
+            h.draw(frame, list);
         } else {
             self.draw_list(frame, list);
         }
@@ -24750,6 +25017,154 @@ mod tests {
         assert!(app.pending.is_empty() && app.opening.is_none());
         assert_eq!(app.data.sessions.len(), 1);
     }
+    /// A claude session with a readable conversation, selected and ready for ctrl+y.
+    fn handoff_source(app: &mut App, d: &Path) -> PathBuf {
+        let transcript = d.join("source.jsonl");
+        let line = |role: &str, text: &str| {
+            serde_json::json!({
+                "type": role,
+                "message": {"role": role, "content": [{"type": "text", "text": text}]},
+            })
+            .to_string()
+        };
+        fs::write(
+            &transcript,
+            format!(
+                "{}\n{}\n",
+                line("user", "fix the parser"),
+                line("assistant", "renamed the token type")
+            ),
+        )
+        .unwrap();
+        let mut session = placeholder(HarnessKind::Claude, A, d, "source");
+        session.state = "idle".into();
+        session.transcript_path = Some(transcript.clone());
+        app.data.sessions = vec![session];
+        app.rebuild();
+        app.select_new(A);
+        transcript
+    }
+
+    #[test]
+    fn a_handoff_preview_shows_the_exported_text_and_starts_nothing() {
+        let d = dir();
+        let mut app = app(d.path());
+        handoff_source(&mut app, d.path());
+        app.text = "unfinished instruction".into();
+        assert!(!app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap());
+        let Mode::Handoff(plan) = &app.mode else {
+            panic!("ctrl+y did not offer a target: {}", app.status);
+        };
+        assert!(plan.is_fork(), "the source's own harness comes first");
+        assert!(
+            plan.targets.len() > 1,
+            "a readable claude conversation can be handed to another harness"
+        );
+        assert_eq!(plan.export.included, 2);
+        assert_eq!((plan.export.omitted, plan.export.truncated), (0, false));
+        assert!(plan.export.text.contains(&format!("claude session {A}")));
+        assert!(plan.export.text.contains("## user\nfix the parser"));
+        assert!(plan.export.text.contains("not a continuation"));
+        assert!(app.pending.is_empty(), "previewing starts no session");
+        assert_eq!(app.data.sessions.len(), 1, "the source row is untouched");
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        let Mode::Handoff(plan) = &app.mode else {
+            unreachable!()
+        };
+        assert!(!plan.is_fork(), "→ moves to a cross-harness target");
+        let target = plan.target();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let screen: String = t
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            screen.contains("fix the parser") && screen.contains(&target.to_string()),
+            "the preview shows the target and the text it would receive: {screen}"
+        );
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.pending.is_empty() && app.opening.is_none());
+        assert_eq!(app.text, "unfinished instruction", "the draft survives");
+    }
+
+    #[test]
+    fn a_handoff_launches_the_export_in_the_source_folder_once() {
+        let d = dir();
+        let mut app = app(d.path());
+        handoff_source(&mut app, d.path());
+        app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        let Mode::Handoff(plan) = &app.mode else {
+            panic!("no target offered: {}", app.status);
+        };
+        let (target, export) = (plan.target(), plan.export.clone());
+        let plan = (**plan).clone();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        let started: Vec<_> = app
+            .pending
+            .iter()
+            .map(|p| (p.session.harness.clone(), p.session.cwd.clone()))
+            .collect();
+        assert_eq!(
+            started,
+            vec![(target.to_string(), d.path().to_path_buf())],
+            "one target, in the source's folder"
+        );
+        let source = app
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == A)
+            .expect("the source stays in the list");
+        assert!(
+            source.forked_from.is_none() && source.state == "idle",
+            "a handoff is not a fork and does not touch the source"
+        );
+        let recorded = fs::read_to_string(d.path().join("launches.jsonl")).unwrap();
+        let prompt = recorded
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .find_map(|l| l["data"]["prompt"].as_str().map(str::to_owned))
+            .expect("the launch records the prompt it was given");
+        assert_eq!(
+            prompt, export.text,
+            "the target is launched with the export"
+        );
+        assert!(app.status.contains("handed 2 messages"));
+        // A second enter on the same source and target while that launch is pending.
+        app.hand_off(plan);
+        assert_eq!(
+            app.pending.len(),
+            1,
+            "a retry does not duplicate the target"
+        );
+        assert!(app.status.contains("already starting"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_unreadable_conversation_offers_no_handoff_and_leaves_the_source_alone() {
+        let d = dir();
+        let mut app = app(d.path());
+        let transcript = handoff_source(&mut app, d.path());
+        fs::remove_file(&transcript).unwrap();
+        app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Normal),
+            "no chooser without a conversation to export"
+        );
+        assert!(app.handoffs.is_empty(), "nothing was handed off");
+        assert!(
+            app.data.sessions.iter().any(|s| s.session_id == A),
+            "the source stays in the list; ctrl+y still means the native fork"
+        );
+    }
+
     #[test]
     #[ignore = "requires an isolated HOME and an explicitly selected installed native CLI"]
     fn native_terminal_boot_without_a_model_prompt() {

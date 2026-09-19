@@ -132,7 +132,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
-| `ctrl+y` | [Fork a supported conversation](#fork-a-conversation) into a new native session. |
+| `ctrl+y` | [Fork a supported conversation](#fork-a-conversation), or [hand it off](#hand-a-conversation-to-another-harness) to another harness. |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
 | `ctrl+b` | List the sessions entered from here, most recent first; press it again to enter the highlighted one. |
 | `ctrl+r` | Reload now. |
@@ -184,6 +184,13 @@ Each row is a server with the transport and the command or address its own entry
 The prompt lists what a save will do before it happens. Saving rewrites only the servers table of the scopes named in that list, through a temporary file in the same directory, and keeps the file's mode, because `.claude.json` holds credentials. Comments and unrelated settings in `config.toml` survive. Copies are written before removals, so moving a server between scopes in one save works. A failed write leaves the file as it was and keeps the changes staged, so the same save can be retried once the cause is fixed.
 
 Saving changes files, not processes. A session that already loaded these servers keeps them until it next starts; cones never restarts a live session.
+### Hand a conversation to another harness
+
+`ctrl+y` on a conversation cones can read offers a target: the source's own harness, which is the native fork above, or another launchable harness, which is a handoff. A handoff is neither a fork nor a resume. It exports the newest part of the conversation, up to 16 KB of text, and launches a fresh session of the target harness in the same folder with that export as its first prompt. The target runs under its own native account, permissions and identity; no session id, credentials or native state cross over, and the export says so in its own first lines.
+
+The chooser previews the exact text the target will receive before anything starts. It names how many messages are included, how many are omitted and whether the oldest included message was cut; `←` and `→` change the target, `↑` and `↓` scroll the preview, `esc` leaves without starting anything. Tool calls, tool results and file contents are never exported.
+
+The source session is left alone: it is not stopped, resumed or written to, and an unreadable transcript, an unsupported target, a missing CLI or a failed launch is reported without touching it. While a handoff launch is still starting, `enter` on the same source and target is refused rather than starting a second target. The target appears as an ordinary new session; cones records no parentage for it, and the export's header is what links it back to its source.
 
 ### History
 
