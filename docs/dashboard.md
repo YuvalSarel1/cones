@@ -148,6 +148,8 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 
 `+ add folder` is the last row of the session list, always there. Select it and type: the row takes a path instead of an instruction, so the composer stays empty. Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `enter` pins the folder, `esc` clears what is typed, and a missing directory is reported without losing the text.
 
+While the row or one of its offers holds the cursor, folders are offered under it: the pinned ones and the directories this read already saw sessions in, most recently used first, with a linked worktree followed by the repository it belongs to. Each offer says why it is there: `pinned`, `worktree`, `repository` or `recent`. Typing filters them by any fragment of the path, `↓` moves onto one, `enter` pins it, `tab` puts it in the input to edit, and `esc` returns to the input. Aliases of one folder, such as a symlinked path, are offered once. The offers come from the rows this read already holds, so opening them reads no transcripts; a folder that has since been deleted is still offered and reported as missing when it is picked.
+
 The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows. `ctrl+p` also pins the selected row's folder, or the dashboard cwd from the menu.
 
 | File under the state directory | Contents |

@@ -124,6 +124,9 @@ pub enum Kind {
     Folder(String),
     /// The always-present last row of the session list: type a path to pin a folder.
     NewFolder,
+    /// A folder offered under `+ add folder`: a row key of its own, then the path as shown.
+    /// The key is not the path, so an offer never collides with the pinned folder's row.
+    Suggestion(String, String),
     NewJob,
 }
 
@@ -141,6 +144,7 @@ impl Kind {
             Self::Menu => "menu",
             Self::Folder(_) => "folder",
             Self::NewFolder => "new_folder",
+            Self::Suggestion(..) => "suggestion",
             Self::NewJob => "new_job",
         }
     }
@@ -161,6 +165,7 @@ impl Kind {
             Kind::Menu => Some("menu"),
             Kind::Folder(dir) => Some(dir),
             Kind::NewFolder => Some("new folder"),
+            Kind::Suggestion(key, _) => Some(key),
             Kind::NewJob => Some("new job"),
             _ => None,
         }
@@ -219,6 +224,8 @@ pub struct Data {
     pub git: BTreeMap<PathBuf, String>,
     /// Folders that are linked worktrees, marked wherever the list names a folder.
     pub worktrees: BTreeSet<PathBuf>,
+    /// Each of those worktrees and the repository it belongs to, for folder suggestions.
+    pub roots: BTreeMap<PathBuf, PathBuf>,
     diagnostics: Option<LoadDiagnostics>,
 }
 
@@ -350,14 +357,14 @@ impl Data {
         // Every folder the list can name, since the mark belongs to the column under state
         // grouping and to the folder headings in the normal view.
         // ponytail: one rev-parse per distinct folder per read; fold into git_state if it drags.
-        let worktrees = seen
+        let roots: BTreeMap<PathBuf, PathBuf> = seen
             .iter()
             .chain(folders.iter())
             .collect::<BTreeSet<_>>()
             .into_iter()
-            .filter(|dir| worktree(dir))
-            .cloned()
+            .filter_map(|dir| worktree_root(dir).map(|root| (dir.clone(), root)))
             .collect();
+        let worktrees = roots.keys().cloned().collect();
         if let Some(d) = &mut diagnostics {
             d.phase("git", git_started);
         }
@@ -383,6 +390,7 @@ impl Data {
             folders,
             git,
             worktrees,
+            roots,
             diagnostics,
         })
     }
@@ -396,6 +404,63 @@ impl Data {
 
     fn count(&self, state: &str) -> usize {
         self.sessions.iter().filter(|s| s.state == state).count()
+    }
+
+    /// Folders to offer under `+ add folder`: the pinned ones and the directories this read
+    /// already saw sessions in, most recently used first, each linked worktree followed by the
+    /// repository it belongs to. `query` keeps the folders whose path contains it.
+    ///
+    /// No transcript is read here; the cached rows carry every path and time this needs. Only
+    /// aliases are resolved, so a folder that has since been deleted stays on the list and the
+    /// usual path validation reports it when the offer is accepted.
+    pub fn folder_suggestions(&self, query: &str, limit: usize) -> Vec<(String, &'static str)> {
+        type At = Option<chrono::DateTime<chrono::Utc>>;
+        let mut recent: Vec<(&Path, At)> = Vec::new();
+        for s in &self.sessions {
+            let at = s.last_activity.or(s.started);
+            match recent.iter_mut().find(|(dir, _)| *dir == s.cwd.as_path()) {
+                Some(seen) => seen.1 = seen.1.max(at),
+                None => recent.push((&s.cwd, at)),
+            }
+        }
+        for dir in &self.folders {
+            if !recent.iter().any(|(d, _)| *d == dir.as_path()) {
+                recent.push((dir, None));
+            }
+        }
+        // Most recent first; a folder with no recorded activity sorts after the dated ones.
+        recent.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+        let needle = query.trim().to_lowercase();
+        let mut out: Vec<(String, &'static str)> = Vec::new();
+        let mut taken: BTreeSet<PathBuf> = BTreeSet::new();
+        for (dir, _) in recent {
+            let note = if self.folders.iter().any(|f| f == dir) {
+                "pinned"
+            } else if self.roots.contains_key(dir) {
+                "worktree"
+            } else {
+                "recent"
+            };
+            for (dir, note) in [
+                Some((dir, note)),
+                self.roots.get(dir).map(|r| (r.as_path(), "repository")),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                // Aliases of one folder are one offer: a symlinked path resolves to the same file.
+                let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+                let shown = fleet::tilde(dir);
+                let matches = needle.is_empty()
+                    || shown.to_lowercase().contains(&needle)
+                    || dir.to_string_lossy().to_lowercase().contains(&needle);
+                if matches && taken.insert(canonical) && out.len() < limit {
+                    out.push((shown, note));
+                }
+            }
+        }
+        out.truncate(limit);
+        out
     }
 
     pub fn summary(&self, frame: usize) -> Line<'static> {
@@ -834,6 +899,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
             Kind::Menu => ("menu".to_owned(), "-".to_owned()),
             Kind::Folder(dir) => ("folder".to_owned(), dir.clone()),
             Kind::NewFolder => ("new folder".to_owned(), "-".to_owned()),
+            Kind::Suggestion(_, dir) => ("suggestion".to_owned(), dir.clone()),
             Kind::NewJob => ("new job".to_owned(), "-".to_owned()),
         };
         out += &format!("{key}\t{aux}\t");
@@ -895,7 +961,7 @@ fn enter_verb(kind: Option<&Kind>, menu: usize) -> &'static str {
         Some(Kind::History(_)) => "resume",
         Some(Kind::Menu) => MENU[menu].1,
         Some(Kind::Folder(_)) => "start here",
-        Some(Kind::NewFolder) => "add folder",
+        Some(Kind::NewFolder | Kind::Suggestion(..)) => "add folder",
         Some(Kind::NewJob) => "new job",
         _ => "open",
     }
@@ -2137,11 +2203,13 @@ fn git_branch(dir: &Path) -> Option<String> {
         .or_else(|| read(&["rev-parse", "--short", "HEAD"]).map(|hash| format!("@{hash}")))
 }
 
-/// A linked worktree: the checkout's own git directory is not the repository's common one.
+/// The repository a linked worktree belongs to: the parent of its common git directory.
+/// A linked worktree is one whose own git directory is not the repository's common one.
 /// Absolute output is required, because from a subdirectory of a plain checkout the two print
 /// `/repo/.git` and `../.git`, unequal as text while naming the same directory.
-fn worktree(dir: &Path) -> bool {
-    let Ok(out) = Command::new("git")
+/// `None` for a main checkout, a folder outside any repository, or an unreadable git.
+fn worktree_root(dir: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args([
@@ -2151,15 +2219,17 @@ fn worktree(dir: &Path) -> bool {
             "--git-common-dir",
         ])
         .output()
-    else {
-        return false;
-    };
+        .ok()?;
     if !out.status.success() {
-        return false;
+        return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut lines = text.lines();
-    matches!((lines.next(), lines.next()), (Some(own), Some(common)) if own != common)
+    let (own, common) = (lines.next()?, lines.next()?);
+    (own != common)
+        .then(|| Path::new(common).parent())
+        .flatten()
+        .map(Path::to_path_buf)
 }
 
 /// A folder as the list shows it, with `⑂` when it is a linked worktree.
@@ -7237,6 +7307,8 @@ struct App {
     terminal_input: Input,
     /// The path typed on the list's last row, which pins a folder.
     folder: Input,
+    /// The query the folder offers under that row were built for, while they are shown.
+    suggested: Option<String>,
     /// Shell rows belong to this dashboard and have no harness registry.
     terminals: Vec<Session>,
     /// Background launches keyed by placeholder row id.
@@ -7301,6 +7373,10 @@ const REST: Duration = Duration::from_millis(400);
 const REST_SPLIT: Duration = Duration::from_millis(50);
 
 const WHEEL_LINES: i32 = 3;
+
+/// Folders offered under `+ add folder`. Enough to cover the day's work, short enough that
+/// the list below it stays on screen.
+const SUGGESTIONS: usize = 6;
 
 const AGENT_VIEW_TITLE: &str = "claude agents";
 
@@ -7569,6 +7645,7 @@ impl App {
             shell_startup: None,
             terminal_input: Input::default(),
             folder: Input::default(),
+            suggested: None,
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
@@ -9152,6 +9229,9 @@ impl App {
             &deleting,
             &mut self.widths,
         ));
+        if let Some(query) = self.suggested.clone() {
+            self.insert_suggestions(&query);
+        }
         let excluded = self.history_excluded();
         let history = self.history.table(&self.data, &excluded);
         if self.jobs_view {
@@ -11110,6 +11190,10 @@ impl App {
             }
             Kind::Menu => self.open_menu(),
             Kind::NewFolder => self.add_folder(),
+            Kind::Suggestion(_, dir) => {
+                let dir = dir.clone();
+                self.add_suggestion(dir);
+            }
             Kind::Folder(dir) => {
                 self.status = format!("type an instruction · enter starts a session in {dir}");
             }
@@ -11734,6 +11818,66 @@ impl App {
         matches!(self.selected().map(|r| &r.kind), Some(Kind::NewFolder))
     }
 
+    /// The folder offered by the selected row, if one is selected.
+    fn on_suggestion(&self) -> Option<String> {
+        match self.selected().map(|r| &r.kind) {
+            Some(Kind::Suggestion(_, dir)) => Some(dir.clone()),
+            _ => None,
+        }
+    }
+
+    /// Offer folders under `+ add folder` while it or one of its offers holds the cursor.
+    /// The rows are inserted outside `Data::rows` so typing changes them without a reload.
+    fn sync_suggestions(&mut self) {
+        let open = self.on_new_folder() || self.on_suggestion().is_some();
+        let query = open.then(|| self.folder.text.clone());
+        if query == self.suggested {
+            return;
+        }
+        self.suggested = query.clone();
+        let keep = self
+            .selected()
+            .and_then(|r| r.kind.key().map(str::to_owned));
+        self.rows
+            .retain(|r| !matches!(r.kind, Kind::Suggestion(..)));
+        if let Some(query) = query {
+            self.insert_suggestions(&query);
+        }
+        self.apply_filter();
+        if let Some(key) = keep
+            && let Some(i) = self
+                .visible
+                .iter()
+                .position(|&i| self.rows[i].kind.key() == Some(key.as_str()))
+        {
+            self.cursor = i;
+        }
+        self.settle();
+    }
+
+    fn insert_suggestions(&mut self, query: &str) {
+        let Some(at) = self.rows.iter().position(|r| r.kind == Kind::NewFolder) else {
+            return;
+        };
+        let rows: Vec<Row> = self
+            .data
+            .folder_suggestions(query, SUGGESTIONS)
+            .into_iter()
+            .map(|(dir, note)| Row {
+                kind: Kind::Suggestion(format!("offer {dir}"), dir.clone()),
+                cells: vec![(dir, plain()), (format!(" · {note}"), dim())],
+            })
+            .collect();
+        self.rows.splice(at + 1..at + 1, rows);
+    }
+
+    /// Pin an offered folder through the same path a typed one takes, so a folder that is
+    /// gone reports itself rather than being pinned.
+    fn add_suggestion(&mut self, dir: String) {
+        self.folder = Input::new(dir);
+        self.add_folder();
+    }
+
     /// Pin the folder typed on the last row and move the cursor to where it sorted.
     fn add_folder(&mut self) {
         let text = self.folder.text.clone();
@@ -11750,6 +11894,7 @@ impl App {
         };
         let name = fleet::tilde(&dir);
         self.folder = Input::default();
+        self.suggested = None;
         self.status = match self.pin_folder(dir) {
             Ok(()) => {
                 self.select_row(&name);
@@ -12014,6 +12159,11 @@ impl App {
                 }
                 hints(&keys)
             }
+            Mode::Normal if self.on_suggestion().is_some() => hints(&[
+                ("enter", "add folder"),
+                ("tab", "edit path"),
+                ("esc", "back"),
+            ]),
             Mode::Normal if self.on_new_folder() => hints(&[
                 ("enter", "add folder"),
                 ("tab", "complete"),
@@ -12572,6 +12722,28 @@ impl App {
                         self.filter_changed();
                         return Ok(false);
                     }
+                } else if let Some(dir) = self.on_suggestion() {
+                    // An offer is pinned the way a typed path is; the rest returns to the input.
+                    match code {
+                        KeyCode::Enter => {
+                            self.add_suggestion(dir);
+                            return Ok(false);
+                        }
+                        KeyCode::Tab => {
+                            self.folder = Input::new(dir);
+                            self.select_row("new folder");
+                            return Ok(false);
+                        }
+                        KeyCode::Esc => {
+                            self.select_row("new folder");
+                            return Ok(false);
+                        }
+                        KeyCode::Char(_) | KeyCode::Backspace if self.folder.key(code, mods) => {
+                            self.select_row("new folder");
+                            return Ok(false);
+                        }
+                        _ => {}
+                    }
                 } else if self.on_new_folder() {
                     match code {
                         KeyCode::Tab => {
@@ -12733,6 +12905,7 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        self.sync_suggestions();
         let area = frame.area();
         self.size = (area.height, area.width);
         self.pane = self.pane(area);
@@ -19021,6 +19194,163 @@ mod tests {
     }
 
     #[test]
+    fn folder_offers_rank_by_recent_use_and_resolve_aliases() {
+        let d = dir();
+        let mut app = app(d.path());
+        let repo = d.path().join("repo");
+        let tree = repo.join("worktrees/three");
+        let alpha = d.path().join("alpha");
+        let beta = d.path().join("beta");
+        let link = d.path().join("link");
+        let pinned = d.path().join("pinned");
+        for path in [&tree, &alpha, &beta, &pinned] {
+            fs::create_dir_all(path).unwrap();
+        }
+        std::os::unix::fs::symlink(&alpha, &link).unwrap();
+        let ran = |id: &str, dir: &Path, secs: i64| {
+            let mut s = session(id, "idle", "fixture", secs);
+            s.cwd = dir.to_owned();
+            s
+        };
+        const D: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        app.data.sessions = vec![
+            ran(A, &alpha, 300),
+            ran(B, &beta, 30),
+            ran(C, &link, 600),
+            ran(D, &tree, 10),
+        ];
+        app.data.folders = vec![pinned.clone()];
+        app.data.roots.insert(tree.clone(), repo.clone());
+        let shown = |query: &str, limit: usize| -> Vec<(String, &'static str)> {
+            app.data.folder_suggestions(query, limit)
+        };
+        assert_eq!(
+            shown("", 10),
+            vec![
+                (fleet::tilde(&tree), "worktree"),
+                (fleet::tilde(&repo), "repository"),
+                (fleet::tilde(&beta), "recent"),
+                (fleet::tilde(&alpha), "recent"),
+                (fleet::tilde(&pinned), "pinned"),
+            ],
+            "most recently used first, a worktree's repository beside it, \
+             the symlinked alias of alpha folded into it, and a pin nothing ran in last"
+        );
+        assert_eq!(
+            shown("alph", 10),
+            vec![(fleet::tilde(&alpha), "recent")],
+            "a path fragment filters, and the alias still does not duplicate it"
+        );
+        assert_eq!(shown("", 2).len(), 2, "the list stays short");
+        assert!(shown("no-such-fragment", 10).is_empty());
+    }
+
+    /// The offers make the common folders one keystroke away without typing a path.
+    #[test]
+    fn the_last_row_offers_folders_and_enter_pins_the_one_picked() {
+        let d = dir();
+        let claude = d.path();
+        let alpha = claude.join("alpha");
+        let gone = claude.join("gone");
+        fs::create_dir(&alpha).unwrap();
+        fs::create_dir(&gone).unwrap();
+        registry(
+            claude,
+            A,
+            alpha.to_str().unwrap(),
+            "idle",
+            1_757_682_871_000,
+        );
+        registry(claude, B, gone.to_str().unwrap(), "idle", 1_757_682_872_000);
+        let mut app = app(claude);
+        app.split = false;
+        app.refresh().unwrap();
+        // The registry carries no activity time, so date the discovered rows here.
+        for s in &mut app.data.sessions {
+            let secs = if s.cwd == gone { 10 } else { 300 };
+            s.last_activity = Some(chrono::Utc::now() - chrono::Duration::seconds(secs));
+        }
+        for _ in 0..app.rows.len() {
+            if app.on_new_folder() {
+                break;
+            }
+            app.step(1);
+        }
+        assert!(app.on_new_folder(), "the row the offers hang under");
+        let offered = |app: &App| -> Vec<String> {
+            app.rows
+                .iter()
+                .filter_map(|r| match &r.kind {
+                    Kind::Suggestion(_, dir) => Some(dir.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        app.sync_suggestions();
+        assert_eq!(
+            offered(&app),
+            vec![fleet::tilde(&gone), fleet::tilde(&alpha)],
+            "an empty query offers the folders sessions ran in, most recent first"
+        );
+        let at = app
+            .rows
+            .iter()
+            .position(|r| r.kind == Kind::NewFolder)
+            .unwrap();
+        assert!(
+            matches!(app.rows[at + 1].kind, Kind::Suggestion(..)),
+            "and they sit directly under it"
+        );
+        for c in "alph".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.sync_suggestions();
+        assert_eq!(app.folder.text, "alph", "typing a literal path still works");
+        assert_eq!(
+            offered(&app),
+            vec![fleet::tilde(&alpha)],
+            "and filters the offers by the fragment"
+        );
+        app.step(1);
+        assert_eq!(app.on_suggestion(), Some(fleet::tilde(&alpha)));
+        assert_eq!(app.enter_label(), "add folder");
+        assert!(app.hint_line().to_string().contains("esc back"));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            app.data.folders.contains(&alpha.canonicalize().unwrap()),
+            "picking an offer pins that folder"
+        );
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(fleet::tilde(&alpha.canonicalize().unwrap()).as_str()),
+            "and the cursor lands on its own row"
+        );
+        assert!(app.folder.text.is_empty());
+        assert!(
+            offered(&app).is_empty(),
+            "the offers close once the cursor leaves the row"
+        );
+        for _ in 0..app.rows.len() {
+            if app.on_new_folder() {
+                break;
+            }
+            app.step(1);
+        }
+        app.sync_suggestions();
+        fs::remove_dir(&gone).unwrap();
+        app.step(1);
+        while app.on_suggestion() != Some(fleet::tilde(&gone)) {
+            app.step(1);
+        }
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            app.status.contains("not a directory"),
+            "a folder that is gone says so: {}",
+            app.status
+        );
+    }
+
+    #[test]
     fn the_jobs_screen_lists_the_jobs_with_a_new_job_row() {
         let d = dir();
         let claude = d.path();
@@ -22222,11 +22552,23 @@ mod tests {
         let under_worktree = worktree.join("sub");
         fs::create_dir(&under_repo).unwrap();
         fs::create_dir(&under_worktree).unwrap();
-        assert!(!super::worktree(&repo), "the main checkout");
-        assert!(!super::worktree(&under_repo), "a folder inside it");
-        assert!(!super::worktree(d.path()), "no repository at all");
-        assert!(super::worktree(&worktree), "the linked worktree");
-        assert!(super::worktree(&under_worktree), "a folder inside it");
+        assert_eq!(super::worktree_root(&repo), None, "the main checkout");
+        assert_eq!(
+            super::worktree_root(&under_repo),
+            None,
+            "a folder inside it"
+        );
+        assert_eq!(super::worktree_root(d.path()), None, "no repository at all");
+        assert_eq!(
+            super::worktree_root(&worktree),
+            Some(repo.canonicalize().unwrap()),
+            "the linked worktree names the repository it belongs to"
+        );
+        assert_eq!(
+            super::worktree_root(&under_worktree),
+            Some(repo.canonicalize().unwrap()),
+            "a folder inside it"
+        );
         assert_eq!(
             folder_label(&worktree, true),
             format!("{} ⑂", fleet::tilde(&worktree))
@@ -22234,7 +22576,10 @@ mod tests {
         assert_eq!(folder_label(&repo, false), fleet::tilde(&repo));
         git(&worktree, &["checkout", "--detach"]);
         assert!(git_branch(&worktree).unwrap().starts_with('@'));
-        assert!(super::worktree(&worktree), "detaching keeps it a worktree");
+        assert!(
+            super::worktree_root(&worktree).is_some(),
+            "detaching keeps it a worktree"
+        );
         assert_eq!(git_branch(d.path()), None);
     }
 
