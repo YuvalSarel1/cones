@@ -226,6 +226,26 @@ class Delivery:
     def task_key(self, identity, task):
         return json.dumps([thread_id(identity), task])
 
+    def asked_us(self, identity, task):
+        """True once that thread wrote to this folder under this task.
+
+        An agent that opened a task with the coordinator is owed the answer it asked
+        for, and it usually goes idle while waiting. Registering that exchange is not
+        starting work: the worker chose both the task and the question.
+        """
+        inbox = delivery_dir(self.workspace) / "inbox.jsonl"
+        if not inbox.is_file():
+            return False
+        sender = f"codex:{identity}"
+        for line in inbox.read_text(errors="ignore").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if entry.get("from") == sender and entry.get("task") == task:
+                return True
+        return False
+
     def begin(self, identity, task):
         key = self.task_key(identity, task)
         if key in self.state["tasks"]:
@@ -233,7 +253,7 @@ class Delivery:
                 raise DeliveryError("task is finished; use a new task ID for new owner-directed work")
             return
         thread = read_thread(self.rpc, identity, self.workspace)
-        if thread["status"]["type"] != "active":
+        if thread["status"]["type"] != "active" and not self.asked_us(identity, task):
             raise DeliveryError("register only observed active work; an idle session is not a new task")
         self.state["tasks"][key] = {"thread": identity, "task": task, "done": False}
 

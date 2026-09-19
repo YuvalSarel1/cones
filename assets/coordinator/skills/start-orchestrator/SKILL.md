@@ -118,6 +118,8 @@ daemon in `CODEX_HOME`. Enqueueing a request can cause the harness to resume the
   one, and accepts only a UUID explicitly present in that process's `resume` command. Unknown or
   ambiguous recipients are refused.
 - `begin UUID TASK` registers observed active work. Choose a short task ID for this assignment.
+  A worker that asked a question under its own task ID is the exception: it is registered
+  even after it goes idle waiting, since answering the question it chose starts no work.
 - `send UUID TASK KEY "message"` sends one request, with a five-minute expiry. Reusing the same
   key is idempotent; a changed request needs a new key. `--ttl SECONDS` adjusts its useful lifetime.
 - `cancel UUID TASK KEY` withdraws a pending request. Cancel a superseded hold before its release.
