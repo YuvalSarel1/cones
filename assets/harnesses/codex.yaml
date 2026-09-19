@@ -67,7 +67,10 @@ operations:
     model: -m
     prompt: [--, "{prompt}"]
     probe:
-      args: [app-server, daemon, version]
+      # `daemon version` only answers while a daemon is already running, so a cold machine
+      # reads as no daemon at all. `daemon start` is idempotent, reports the same version
+      # and leaves behind the daemon the launch needs anyway.
+      args: [app-server, daemon, start]
       minimum_version: "0.154.0"
       version: {format: json_lines, pointer: /cliVersion}
       error: "this codex has no app-server daemon, so a session opened here could not be left running; Codex 0.154 or later has one"

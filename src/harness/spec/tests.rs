@@ -211,6 +211,8 @@ fn probe_fixtures_preserve_success_requirements_and_reported_versions() {
     assert!(claude.report(false, "supports --bg and attach").is_ok());
     assert!(claude.report(true, "supports --bg only").is_err());
     let codex = &spec(HarnessKind::Codex).launch.as_ref().unwrap().probe;
+    // The probe must not need a daemon already running, or a cold machine reports no daemon.
+    assert_eq!(codex.args, ["app-server", "daemon", "start"]);
     assert!(codex.report(false, "{\"cliVersion\":\"0.154\"}").is_err());
     assert!(codex.report(true, "{\"cliVersion\":\"0.153\"}").is_err());
     assert!(codex.report(true, "no version").is_err());
