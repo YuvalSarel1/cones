@@ -649,6 +649,10 @@ impl Data {
         if !jobs_view {
             // Always the last row of the session list, so a folder is one keystroke away.
             out.push(Row {
+                kind: Kind::Blank,
+                cells: vec![],
+            });
+            out.push(Row {
                 kind: Kind::NewFolder,
                 cells: vec![
                     ("+ add folder".to_owned(), lit()),
