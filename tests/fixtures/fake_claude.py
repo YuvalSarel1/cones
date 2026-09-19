@@ -9,6 +9,9 @@ import sys
 import time
 
 args = sys.argv[1:]
+if "--help" in args:
+    print("--bg  start a background session\nattach  join one\n--fork-session  fork one")
+    sys.exit(0)
 session = args[args.index("--session-id") + 1]
 mode = args[args.index("--model") + 1]
 ledger = pathlib.Path(os.environ["FAKE_LEDGER"])

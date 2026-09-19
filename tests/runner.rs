@@ -155,6 +155,64 @@ fn durable_start_success_cost_and_archived_native_resume() {
         2
     );
 }
+#[test]
+fn launch_prints_the_composer_command_for_a_named_folder() {
+    let f = Fixture::new("ok", 5.0);
+    let folder = f.dir.path().join("project");
+    fs::create_dir_all(&folder).unwrap();
+    let out = f
+        .command()
+        .args([
+            "launch",
+            "--harness",
+            "claude",
+            "--dir",
+            folder.to_str().unwrap(),
+            "--print-command",
+            "fix the tests",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let canonical = folder.canonicalize().unwrap();
+    assert!(
+        printed.contains(&format!("cd '{}'", canonical.display()))
+            && printed.contains(".local/bin/claude'")
+            && printed.contains("'--bg'")
+            && printed.contains("'--' 'fix the tests'"),
+        "the launcher starts the composer's own background command: {printed}"
+    );
+}
+
+#[test]
+fn launch_refuses_a_harness_the_configuration_turns_off() {
+    let f = Fixture::new("ok", 5.0);
+    fs::write(
+        &f.jobs,
+        format!(
+            "{}defaults:\n  claude_enabled: false\n",
+            fs::read_to_string(&f.jobs).unwrap()
+        ),
+    )
+    .unwrap();
+    let out = f
+        .command()
+        .args(["launch", "--harness", "claude", "--print-command", "hi"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("turned off"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // Timing-sensitive: it has flaked when other cargo test runs shared the machine and passed
 // alone; rerun it alone before blaming a change.
 #[test]

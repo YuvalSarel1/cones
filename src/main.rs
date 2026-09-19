@@ -48,6 +48,20 @@ enum Action {
         #[arg(long, value_enum, default_value = "manual")]
         trigger: Trigger,
     },
+    /// Start a harness session in a folder, the way the dashboard's composer does.
+    Launch {
+        /// The first instruction. Omitted, the session opens waiting for input.
+        prompt: Option<String>,
+        /// Folder to start in; defaults to the current directory.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Harness name; defaults to `defaults.harness`, else the first one configuration enables.
+        #[arg(long)]
+        harness: Option<String>,
+        /// Print the shell command instead of starting anything.
+        #[arg(long)]
+        print_command: bool,
+    },
     /// Start jobs whose ticks passed while the Mac was off or logged out. The login agent runs this.
     Catchup {
         /// Name the ticks that were missed without starting anything.
@@ -227,6 +241,63 @@ fn execute(cli: Cli) -> Result<i32> {
                 _ => 1,
             })
         }
+        Action::Launch {
+            prompt,
+            dir,
+            harness: named,
+            print_command,
+        } => {
+            let dir = cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), &cwd)?
+                .canonicalize()
+                .context("launch directory")?;
+            ensure!(dir.is_dir(), "{} is not a folder", dir.display());
+            let policy = config::defaults(&jobs_path);
+            let launchable = harness::launchable();
+            let kind = match &named {
+                Some(name) => {
+                    let kind = harness::by_name(name)
+                        .with_context(|| format!("unknown harness {name}"))?
+                        .kind;
+                    ensure!(launchable.contains(&kind), "{name} cannot start a session");
+                    kind
+                }
+                None => policy
+                    .harness
+                    .filter(|k| policy.enabled_for(*k))
+                    .or_else(|| launchable.iter().copied().find(|k| policy.enabled_for(*k)))
+                    .context("configuration enables no harness")?,
+            };
+            ensure!(
+                policy.enabled_for(kind),
+                "{kind} is turned off in the configuration"
+            );
+            let prompt = prompt.unwrap_or_default();
+            match harness::start(kind, &dir, prompt.trim(), &policy)? {
+                // Claude's launch returns once the background session is recorded; its
+                // identifier is the command's own output, as it is for the dashboard.
+                harness::Start::Background(mut command) => {
+                    if print_command {
+                        println!("{}", shell_command(dir.as_os_str(), &command));
+                        return Ok(0);
+                    }
+                    let status = command
+                        .stdin(std::process::Stdio::null())
+                        .status()
+                        .with_context(|| format!("start {kind}"))?;
+                    Ok(status.code().unwrap_or(1))
+                }
+                // Every other harness is its own terminal client, so it takes this terminal.
+                harness::Start::Foreground(mut command) => {
+                    if print_command {
+                        println!("{}", shell_command(dir.as_os_str(), &command));
+                        return Ok(0);
+                    }
+                    attach_real_tty(&mut command);
+                    let error = command.exec();
+                    bail!("{kind} failed to start: {error}")
+                }
+            }
+        }
         Action::Ls {
             job,
             status,
@@ -366,12 +437,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         adapter.resume(&s.session_id, &s.cwd)?
                     };
                     if print_command {
-                        println!(
-                            "cd {} && {} {}",
-                            quote(s.cwd.as_os_str()),
-                            quote(command.get_program()),
-                            command.get_args().map(quote).collect::<Vec<_>>().join(" ")
-                        );
+                        println!("{}", shell_command(s.cwd.as_os_str(), &command));
                         return Ok(0);
                     }
                     attach_real_tty(&mut command);
@@ -416,12 +482,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
             if print_command {
-                println!(
-                    "cd {} && {} {}",
-                    quote(cwd.as_os_str()),
-                    quote(command.get_program()),
-                    command.get_args().map(quote).collect::<Vec<_>>().join(" ")
-                );
+                println!("{}", shell_command(cwd.as_os_str(), &command));
                 return Ok(0);
             }
             attach_real_tty(&mut command);
@@ -478,6 +539,21 @@ fn attach_real_tty(command: &mut Command) {
     {
         command.stderr(e);
     }
+}
+
+/// The command as a line to paste, folder and set variables included. Variables the
+/// command clears are left out: a pasted line inherits whatever the shell already has.
+fn shell_command(cwd: &std::ffi::OsStr, command: &Command) -> String {
+    let env: String = command
+        .get_envs()
+        .filter_map(|(k, v)| Some(format!("{}={} ", k.to_string_lossy(), quote(v?))))
+        .collect();
+    format!(
+        "cd {} && {env}{} {}",
+        quote(cwd),
+        quote(command.get_program()),
+        command.get_args().map(quote).collect::<Vec<_>>().join(" ")
+    )
 }
 
 fn quote(s: &std::ffi::OsStr) -> String {

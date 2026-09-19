@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Dashboard controls](dashboard.md) · [Configuration and runs](jobs.md)
 
-Plain `cones` opens the dashboard. `run` starts supervised work from the shell or launchd; `catchup` recovers missed schedules at login.
+Plain `cones` opens the dashboard. `launch` starts a session in a folder; `run` starts supervised work from the shell or launchd; `catchup` recovers missed schedules at login.
 
 ## Global flags
 
@@ -24,6 +24,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
+| `cones launch [PROMPT] [--dir PATH] [--harness NAME] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 
@@ -40,6 +41,20 @@ cones ls --dir ~/src/app --json
 ```
 
 The [coordinator](#coordinator-launch) reads its folder this way instead of walking the harness registries itself.
+
+### Starting a session
+
+```sh
+cones launch "fix the flaky test"
+cones launch --dir ~/src/app --harness codex "rebase onto main"
+cones launch --print-command --harness claude
+```
+
+The session starts in `--dir`, otherwise the current directory, under the same configuration the composer uses: `defaults.harness` picks the harness when `--harness` is absent, and the model, effort, provider and Bedrock settings come from `defaults` as well. A harness turned off in configuration is an error rather than a silent substitution. With no prompt the session opens waiting for input.
+
+Claude starts as a background session, prints its identifier and returns, so the row is there for the dashboard to attach. Every other harness is its own terminal client and takes over this terminal, as a resumed session does. `--print-command` prints the folder, environment and command instead of starting anything.
+
+Unlike the composer, this launcher writes no recovery record, so a prompt it fails to deliver is the one in your shell history.
 
 ### One-off tasks
 
