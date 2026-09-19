@@ -11,6 +11,7 @@ mod stress;
 use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
+    context,
     fleet::{self, Session},
     harness::{self, Start},
     history, launchd,
@@ -1253,6 +1254,310 @@ impl Guide {
                 },
             ),
         ])
+    }
+}
+
+/// Read-only view of what a session's own records show: instructions, skills,
+/// MCP text and the system prompt, each labelled with where it came from.
+/// Opening it starts no harness client, sends no prompt and writes nothing.
+#[derive(Default)]
+struct Inspector {
+    target: Option<context::Target>,
+    /// Native reported totals, verbatim. Never an estimate.
+    tokens: String,
+    report: Option<Arc<context::Report>>,
+    error: Option<String>,
+    requested: bool,
+    /// 0 categories, 1 items, 2 text.
+    level: u8,
+    category: usize,
+    item: usize,
+    /// Kept per level so returning lands where the reader left.
+    item_top: usize,
+    text_top: usize,
+    height: usize,
+    width: u16,
+}
+
+impl Inspector {
+    fn categories(&self) -> &[context::Category] {
+        self.report.as_ref().map_or(&[], |r| &r.categories)
+    }
+
+    fn item(&self) -> Option<&context::Item> {
+        self.categories().get(self.category)?.items.get(self.item)
+    }
+
+    fn title(&self) -> String {
+        let harness = self.target.as_ref().map_or("", |t| t.harness.as_str());
+        match self.level {
+            0 => format!("{} · context · read only", logo(harness)),
+            _ => format!(
+                "{} · context · {}",
+                logo(harness),
+                self.categories()
+                    .get(self.category)
+                    .map_or("", |c| c.name)
+                    .to_lowercase()
+            ),
+        }
+    }
+
+    /// Body lines for the current level. The text level is wrapped to the pane.
+    fn lines(&self) -> Vec<Line<'static>> {
+        if let Some(error) = &self.error {
+            return transcript_wrap(&format!("Context unavailable: {error}"), self.width);
+        }
+        let Some(report) = &self.report else {
+            return vec![Line::styled("Reading this session's records…", dim())];
+        };
+        match self.level {
+            0 => {
+                let mut lines: Vec<Line<'static>> = report
+                    .categories
+                    .iter()
+                    .enumerate()
+                    .map(|(i, category)| {
+                        let recorded = category
+                            .items
+                            .iter()
+                            .filter(|item| item.origin != context::Origin::OnDisk)
+                            .count();
+                        let disk = category.items.len() - recorded;
+                        let mut summary = format!("{recorded} in records");
+                        if disk > 0 {
+                            summary.push_str(&format!(" · {disk} on disk only"));
+                        }
+                        if let Some(note) = &category.note {
+                            summary = if category.items.is_empty() {
+                                note.clone()
+                            } else {
+                                format!("{summary} · {note}")
+                            };
+                        }
+                        Line::from(vec![
+                            Span::styled(
+                                format!(
+                                    "{} {:<14}",
+                                    if i == self.category { "›" } else { " " },
+                                    category.name
+                                ),
+                                if i == self.category {
+                                    bold()
+                                } else {
+                                    Style::default()
+                                },
+                            ),
+                            Span::styled(summary, dim()),
+                        ])
+                    })
+                    .collect();
+                for note in &report.unsupported {
+                    lines.push(Line::default());
+                    lines.push(Line::styled(note.clone(), dim()));
+                }
+                lines
+            }
+            1 => {
+                let Some(category) = report.categories.get(self.category) else {
+                    return vec![];
+                };
+                if category.items.is_empty() {
+                    return vec![Line::styled(
+                        category
+                            .note
+                            .clone()
+                            .unwrap_or_else(|| "Nothing recorded here.".into()),
+                        dim(),
+                    )];
+                }
+                category
+                    .items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        let mut tail = item.origin.label().to_owned();
+                        if item.changed {
+                            tail.push_str(" · file changed since");
+                        }
+                        if let Some(source) = &item.source {
+                            tail.push_str(&format!(" · {source}"));
+                        }
+                        Line::from(vec![
+                            Span::styled(
+                                format!(
+                                    "{} {}  ",
+                                    if i == self.item { "›" } else { " " },
+                                    item.title
+                                ),
+                                if i == self.item {
+                                    bold()
+                                } else {
+                                    Style::default()
+                                },
+                            ),
+                            Span::styled(tail, dim()),
+                        ])
+                    })
+                    .collect()
+            }
+            _ => {
+                let Some(item) = self.item() else {
+                    return vec![];
+                };
+                let mut lines = vec![Line::styled(item.origin.label().to_owned(), dim())];
+                if item.changed {
+                    lines.push(Line::styled(
+                        "The file on disk differs from this recorded copy.",
+                        dim(),
+                    ));
+                }
+                lines.push(Line::default());
+                match &item.text {
+                    Some(text) => lines.extend(transcript_wrap(text, self.width)),
+                    None => lines.push(Line::styled(
+                        "No text for this entry in the session's records.",
+                        dim(),
+                    )),
+                }
+                lines
+            }
+        }
+    }
+
+    fn rows(&self) -> usize {
+        match self.level {
+            0 => self.categories().len(),
+            1 => self
+                .categories()
+                .get(self.category)
+                .map_or(0, |c| c.items.len()),
+            _ => 0,
+        }
+    }
+
+    fn top(&self) -> usize {
+        if self.level == 2 {
+            self.text_top
+        } else {
+            self.item_top
+        }
+    }
+
+    fn scroll(&mut self, to: usize, lines: usize) {
+        let max = lines.saturating_sub(self.height.max(1));
+        let at = to.min(max);
+        if self.level == 2 {
+            self.text_top = at;
+        } else {
+            self.item_top = at;
+        }
+    }
+
+    /// Keep the selected row in view without disturbing a scroll the reader chose.
+    fn follow(&mut self) {
+        let at = if self.level == 0 {
+            self.category
+        } else {
+            self.item
+        };
+        let height = self.height.max(1);
+        if at < self.item_top {
+            self.item_top = at;
+        } else if at >= self.item_top + height {
+            self.item_top = at + 1 - height;
+        }
+    }
+
+    fn move_by(&mut self, delta: isize) {
+        let last = self.rows().saturating_sub(1);
+        let at = if self.level == 0 {
+            &mut self.category
+        } else {
+            &mut self.item
+        };
+        let was = *at;
+        *at = at.saturating_add_signed(delta).min(last);
+        if self.level == 0 && *at != was {
+            // A different category starts at its own first item.
+            self.item = 0;
+            self.item_top = 0;
+        }
+        self.follow();
+    }
+
+    fn enter(&mut self) {
+        match self.level {
+            0 if self.rows() > 0 => {
+                self.level = 1;
+                self.item_top = 0;
+                self.follow();
+            }
+            1 if self.item().is_some() => {
+                self.level = 2;
+                self.text_top = 0;
+            }
+            _ => {}
+        }
+    }
+
+    /// Return true when ← leaves the inspector and the conversation comes back.
+    fn back(&mut self) -> bool {
+        match self.level {
+            0 => return true,
+            1 => {
+                self.level = 0;
+                self.item_top = 0;
+                self.follow();
+            }
+            _ => self.level = 1,
+        }
+        false
+    }
+
+    /// Return true when the preview should show the conversation again.
+    fn key(&mut self, code: KeyCode, lines: usize) -> bool {
+        let page = self.height.max(1);
+        match code {
+            KeyCode::Esc | KeyCode::Left => return self.back(),
+            KeyCode::Enter | KeyCode::Right => self.enter(),
+            KeyCode::Up if self.level == 2 => self.scroll(self.text_top.saturating_sub(1), lines),
+            KeyCode::Down if self.level == 2 => self.scroll(self.text_top + 1, lines),
+            KeyCode::Up => self.move_by(-1),
+            KeyCode::Down => self.move_by(1),
+            KeyCode::PageUp => self.scroll(self.top().saturating_sub(page), lines),
+            KeyCode::PageDown => self.scroll(self.top() + page, lines),
+            KeyCode::Home => self.scroll(0, lines),
+            KeyCode::End => self.scroll(lines, lines),
+            _ => {}
+        }
+        false
+    }
+
+    fn hints(&self) -> Line<'static> {
+        let mut keys = vec![("↑ ↓", if self.level == 2 { "scroll" } else { "select" })];
+        if self.level < 2 {
+            keys.push(("→", "open"));
+        }
+        keys.push((
+            "←",
+            if self.level == 0 {
+                "conversation"
+            } else {
+                "back"
+            },
+        ));
+        keys.push(("tab", "list"));
+        hints(&keys)
+    }
+}
+
+/// Reported totals only; an absent count stays unknown rather than estimated.
+fn reported_context(tokens: Option<u64>, window: Option<u64>) -> String {
+    match (tokens, window) {
+        (Some(t), Some(w)) => format!("reported context {t} of {w} tokens"),
+        (Some(t), None) => format!("reported context {t} tokens · window not reported"),
+        (None, _) => "context not reported".into(),
     }
 }
 
@@ -6483,6 +6788,10 @@ const GUIDE: &[(&str, &str)] = &[
         "Toggle the pane from the list; toggle fullscreen inside a viewer.",
     ),
     (
+        "→",
+        "In a focused preview, inspect the session's recorded instructions, skills and MCP servers.",
+    ),
+    (
         "wheel",
         "Scroll the viewer or the history list under the pointer.",
     ),
@@ -6580,6 +6889,9 @@ struct TranscriptView {
     request_cursor: Option<transcript::Cursor>,
     prepend_lines: Option<usize>,
     operation: Option<(DiagnosticOperation, transcript::Target)>,
+    /// The read-only context inspector, when the preview is showing it.
+    inspector: Option<Inspector>,
+    context_reader: Option<context::Reader>,
 }
 
 impl TranscriptView {
@@ -6603,6 +6915,7 @@ impl TranscriptView {
         self.jump_to_match = true;
         self.request_cursor = None;
         self.prepend_lines = None;
+        self.inspector = None;
     }
 
     fn max_scroll(&self) -> usize {
@@ -8249,15 +8562,105 @@ impl App {
         }
     }
 
+    /// Only Claude and Codex rows resolve to records the inspector can read.
+    fn inspector_target(&self) -> Option<(context::Target, String)> {
+        let Some(Kind::History(key)) = self.selected().map(|r| &r.kind) else {
+            return None;
+        };
+        let entry = self.history.row(key)?;
+        if !context::supported(&entry.key.harness) {
+            return None;
+        }
+        let columns = entry.columns.as_ref();
+        Some((
+            context::Target {
+                key: key.clone(),
+                harness: entry.key.harness.clone(),
+                transcript: entry.transcript.clone(),
+                cwd: entry.cwd.clone(),
+            },
+            reported_context(
+                columns.and_then(|c| c.context_tokens),
+                columns.and_then(|c| c.context_window),
+            ),
+        ))
+    }
+
+    /// Show the context inspector over the preview. It reads the previewed row's
+    /// own records on a worker thread: no client starts and nothing is written.
+    fn open_inspector(&mut self) {
+        if self.transcript.inspector.is_some() {
+            return;
+        }
+        let Some((target, tokens)) = self.inspector_target() else {
+            return;
+        };
+        if self.transcript.context_reader.is_none() {
+            match context::Reader::new() {
+                Ok(reader) => self.transcript.context_reader = Some(reader),
+                Err(error) => {
+                    self.transcript.inspector = Some(Inspector {
+                        error: Some(error.to_string()),
+                        ..Inspector::default()
+                    });
+                    return;
+                }
+            }
+        }
+        self.transcript.inspector = Some(Inspector {
+            target: Some(target),
+            tokens,
+            ..Inspector::default()
+        });
+    }
+
+    /// Poll and queue the context worker. A result for another row is dropped.
+    fn inspector_tick(&mut self) {
+        if let Some(reader) = self.transcript.context_reader.as_mut()
+            && let Some(response) = reader.poll()
+            && let Some(view) = self.transcript.inspector.as_mut()
+            && view.target.as_ref() == Some(&response.target)
+        {
+            match response.result {
+                Ok(report) => {
+                    view.report = Some(report);
+                    view.error = None;
+                }
+                Err(error) => view.error = Some(format!("{error:#}")),
+            }
+        }
+        let Some(view) = self.transcript.inspector.as_mut() else {
+            return;
+        };
+        if view.requested || view.report.is_some() || view.error.is_some() {
+            return;
+        }
+        let Some(target) = view.target.clone() else {
+            return;
+        };
+        match self
+            .transcript
+            .context_reader
+            .as_mut()
+            .map(|reader| reader.request(target))
+        {
+            Some(Ok(true)) => view.requested = true,
+            Some(Err(error)) => view.error = Some(format!("{error:#}")),
+            _ => {}
+        }
+    }
+
     fn leave_transcript(&mut self) {
         if self.transcript.focused {
             self.needs_clear |= !self.split_active();
             self.transcript.focused = false;
+            self.transcript.inspector = None;
             self.full = false;
         }
     }
 
     fn transcript_tick(&mut self) {
+        self.inspector_tick();
         let target = if self.transcript_shown() {
             self.transcript_target()
         } else {
@@ -12490,7 +12893,23 @@ impl App {
             if ctrl && code == KeyCode::Char('c') {
                 return Ok(self.quit_press());
             }
+            if self.transcript.inspector.is_some() {
+                match code {
+                    KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
+                    KeyCode::Tab => self.leave_transcript(),
+                    KeyCode::Char('z') if ctrl => self.leave_transcript(),
+                    _ => {
+                        let view = self.transcript.inspector.as_mut().unwrap();
+                        let lines = view.lines().len();
+                        if view.key(code, lines) {
+                            self.transcript.inspector = None;
+                        }
+                    }
+                }
+                return Ok(false);
+            }
             match code {
+                KeyCode::Right => self.open_inspector(),
                 KeyCode::Tab | KeyCode::Esc | KeyCode::Left => self.leave_transcript(),
                 KeyCode::Char('z') if ctrl => self.leave_transcript(),
                 KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
@@ -12974,12 +13393,54 @@ impl App {
         if self.quitting() {
             return Line::styled(QUIT_HINT, Style::default().fg(Color::Red));
         }
-        hints(&[
-            ("↑ ↓", "scroll"),
-            ("enter", self.enter_label()),
-            ("tab", "list"),
-            ("ctrl+\\", "layout"),
-        ])
+        if let Some(view) = &self.transcript.inspector {
+            return view.hints();
+        }
+        let mut keys = vec![("↑ ↓", "scroll"), ("enter", self.enter_label())];
+        if self.inspector_target().is_some() {
+            keys.push(("→", "context"));
+        }
+        keys.extend([("tab", "list"), ("ctrl+\\", "layout")]);
+        hints(&keys)
+    }
+
+    fn draw_inspector(&mut self, frame: &mut Frame, pane: Rect) {
+        let Some(view) = self.transcript.inspector.as_mut() else {
+            return;
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                clip(&view.title(), pane.width as usize),
+                dim(),
+            )),
+            Rect {
+                height: pane.height.min(1),
+                ..pane
+            },
+        );
+        if pane.height < 3 {
+            return;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::styled(clip(&view.tokens, pane.width as usize), dim())),
+            Rect {
+                y: pane.y + 1,
+                height: 1,
+                ..pane
+            },
+        );
+        let body = Rect {
+            y: pane.y + 2,
+            height: pane.height - 2,
+            ..pane
+        };
+        view.width = body.width;
+        view.height = usize::from(body.height);
+        let lines = view.lines();
+        view.scroll(view.top(), lines.len());
+        let top = view.top();
+        let shown: Vec<_> = lines.into_iter().skip(top).take(view.height).collect();
+        frame.render_widget(Paragraph::new(shown), body);
     }
 
     fn draw_transcript(&mut self, frame: &mut Frame, pane: Rect) {
@@ -12995,6 +13456,21 @@ impl App {
         } else {
             pane
         };
+        if self.transcript.inspector.is_some() {
+            // A click can change the row before the next tick clears the inspector.
+            // Never show one row's context over another row's name.
+            if self
+                .transcript
+                .inspector
+                .as_ref()
+                .and_then(|view| view.target.as_ref())
+                .is_some_and(|held| held.key == target.key)
+            {
+                self.draw_inspector(frame, pane);
+                return;
+            }
+            self.transcript.inspector = None;
+        }
         let run = matches!(self.selected().map(|r| &r.kind), Some(Kind::Run(..)));
         let (title, subtitle) = match self.selected().map(|r| &r.kind) {
             Some(Kind::Run(id, _)) => {
@@ -17060,6 +17536,157 @@ mod tests {
             1,
             "returning does not start another native client"
         );
+    }
+
+    /// Append the startup records a Claude session writes about its own context.
+    fn record_context(path: &Path, instructions: &Path, text: &str) {
+        let mut records = fs::read_to_string(path).unwrap();
+        for value in [
+            serde_json::json!({"attachment": {"type": "instructions", "files": [
+                {"path": instructions.to_string_lossy(), "type": "Project", "content": text}]}}),
+            serde_json::json!({"attachment": {"type": "skill_listing", "skillCount": 1,
+                "names": ["voice"], "content": "- voice: Write in Yuval's voice."}}),
+        ] {
+            records.push_str(&format!("{value}\n"));
+        }
+        fs::write(path, records).unwrap();
+    }
+
+    fn inspector_until(
+        app: &mut App,
+        terminal: &mut Terminal<ratatui::backend::TestBackend>,
+        done: impl Fn(&App) -> bool,
+    ) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            app.inspector_tick();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            if done(app) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "the inspector did not settle");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn the_context_inspector_drills_read_only_and_separates_records_from_disk() {
+        let (d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        let loaded = d.path().join("CLAUDE.md");
+        fs::write(&loaded, "project rules").unwrap();
+        fs::write(d.path().join("AGENTS.md"), "never loaded here").unwrap();
+        record_context(&path, &loaded, "project rules");
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.hint_line().to_string().contains("context"));
+
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        inspector_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .inspector
+                .as_ref()
+                .is_some_and(|i| i.report.is_some())
+        });
+        let shown = pane_text(&app, &terminal);
+        assert!(shown.contains("Instructions"), "{shown}");
+        assert!(shown.contains("context not reported"), "{shown}");
+        assert!(
+            app.viewers.is_empty() && app.opening.is_none(),
+            "the inspector starts no harness client"
+        );
+
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let shown = pane_text(&app, &terminal);
+        assert!(shown.contains("CLAUDE.md"), "{shown}");
+        assert!(shown.contains("in session records"), "{shown}");
+        assert!(
+            shown.contains("AGENTS.md") && shown.contains("on disk, not in records"),
+            "installed is not loaded: {shown}"
+        );
+
+        // The file on disk is inventory only, so its entry offers no text.
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let shown = pane_text(&app, &terminal);
+        assert!(shown.contains("No text for this entry"), "{shown}");
+
+        // Returning keeps the item the reader had chosen.
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.transcript.inspector.as_ref().unwrap().item, 1);
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.transcript.inspector.as_ref().unwrap().category, 1);
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(pane_text(&app, &terminal).contains("voice"));
+
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.inspector.is_none(), "← leaves the inspector");
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            pane_text(&app, &terminal).contains("reply 0"),
+            "the conversation comes back unchanged"
+        );
+        assert_eq!(fs::read_to_string(&loaded).unwrap(), "project rules");
+    }
+
+    #[test]
+    fn a_context_result_for_another_row_never_reaches_the_open_inspector() {
+        let (d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let entries: Vec<_> = app
+            .history
+            .rows
+            .iter()
+            .map(|r| (r.key.clone(), r.entry.clone()))
+            .collect();
+        for (i, (_, entry)) in entries.iter().enumerate() {
+            let file = d.path().join(format!("RULES{i}.md"));
+            fs::write(&file, format!("rules for row {i}")).unwrap();
+            record_context(&entry.transcript, &file, &format!("rules for row {i}"));
+        }
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        app.inspector_tick();
+
+        // The row changes while the first read is still in flight.
+        let (key, entry) = entries[1].clone();
+        app.transcript.inspector = Some(Inspector {
+            target: Some(context::Target {
+                key,
+                harness: entry.key.harness.clone(),
+                transcript: entry.transcript.clone(),
+                cwd: entry.cwd.clone(),
+            }),
+            ..Inspector::default()
+        });
+        // No drawing here: a draw would notice the row under the inspector changed
+        // and close it, which is what the dashboard does and not what this checks.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while app
+            .transcript
+            .inspector
+            .as_ref()
+            .is_some_and(|i| i.report.is_none())
+        {
+            app.inspector_tick();
+            assert!(Instant::now() < deadline, "the inspector did not settle");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let view = app.transcript.inspector.as_ref().unwrap();
+        let text = view.report.as_ref().unwrap().categories[0].items[0]
+            .text
+            .clone();
+        assert_eq!(text.as_deref(), Some("rules for row 1"));
     }
 
     #[test]
