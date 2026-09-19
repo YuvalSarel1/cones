@@ -4643,6 +4643,22 @@ impl ConfigForm {
         }
     }
 
+    /// The picker's ctrl+s: the values it holds, aimed at the file whether or not the
+    /// last edit changed anything.
+    fn save_action(&mut self) -> ConfigAction {
+        self.error = None;
+        self.note = None;
+        match self.config() {
+            Err(e) => {
+                self.error = Some(e);
+                ConfigAction::Stay
+            }
+            Ok((p, c, s, pn, st, m, w, rc, jc, hc)) => {
+                ConfigAction::Save(Box::new(p), c, s.map(Box::new), pn, st, m, w, rc, jc, hc)
+            }
+        }
+    }
+
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.key_with_probe(code, mods, connectivity)
     }
@@ -5258,6 +5274,9 @@ impl ConfigForm {
                 keys.push(("bksp", "reset"));
             }
         }
+        if self.scope.is_some() {
+            keys.push(("ctrl+s", "save as default"));
+        }
         keys.push(("?", "help"));
         keys.push((
             "esc",
@@ -5272,7 +5291,7 @@ impl ConfigForm {
         } else {
             self.area.width
         } as usize;
-        for omit in ["↑↓", "bksp", "←→"] {
+        for omit in ["↑↓", "bksp", "←→", "ctrl+s"] {
             if hints(&keys).width() > width {
                 keys.retain(|(key, _)| *key != omit);
             }
@@ -5481,8 +5500,14 @@ fn built_run_columns() -> Vec<String> {
 
 /// The config screen as the file has it, read fresh: the picker and the preview both need one.
 fn config_form(jobs_path: &Path) -> Box<ConfigForm> {
+    config_form_from(jobs_path, &config::defaults(jobs_path))
+}
+
+/// The same form over a policy the caller supplies, which the picker uses to show its
+/// unsaved launch choices.
+fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm> {
     Box::new(ConfigForm::new(
-        &config::defaults(jobs_path),
+        policy,
         config::file_columns(jobs_path).as_deref(),
         config::file_activity(jobs_path).as_ref(),
         config::file_pane(jobs_path).as_ref(),
@@ -6791,6 +6816,9 @@ impl LoadDiagnostics {
 struct App {
     exe: PathBuf,
     jobs_path: PathBuf,
+    /// What ctrl+o chose for the next launch, held here instead of in `jobs.yaml`:
+    /// jobs and the config screen keep the saved defaults until ctrl+s writes these.
+    launch: Option<config::Policy>,
     state: PathBuf,
     claude: PathBuf,
     /// Fallback launch directory and base for relative folder input.
@@ -7129,6 +7157,7 @@ impl App {
         Ok(Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
+            launch: None,
             state: state.to_owned(),
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
@@ -9218,6 +9247,31 @@ impl App {
         config_form(&self.jobs_path)
     }
 
+    /// The picker's form: the saved file with the unsaved launch choices already in it,
+    /// so reopening ctrl+o shows what the next launch will use.
+    fn launch_form(&self) -> Box<ConfigForm> {
+        match &self.launch {
+            Some(policy) => config_form_from(&self.jobs_path, policy),
+            None => self.config_form(),
+        }
+    }
+
+    /// A picker choice changes the next launch alone. Saving it is ctrl+s, which is the
+    /// only path from the picker to `jobs.yaml`.
+    fn stage_launch(&mut self, policy: config::Policy) {
+        let saved = config::defaults(&self.jobs_path);
+        if policy == saved {
+            self.launch = None;
+            self.status = "back to the saved default".into();
+            return;
+        }
+        self.launch = Some(policy);
+        self.status = format!(
+            "for the next launch only; ctrl+s saves it in {}",
+            fleet::tilde(&self.jobs_path)
+        );
+    }
+
     fn leave_jobs(&mut self) {
         self.jobs_view = false;
         self.rebuild();
@@ -10735,8 +10789,12 @@ impl App {
             .unwrap_or(all.len());
     }
 
+    /// What a launch from the composer uses: the saved defaults, with the picker's
+    /// unsaved choices on top.
     fn session_policy(&self) -> config::Policy {
-        config::defaults(&self.jobs_path)
+        self.launch
+            .clone()
+            .unwrap_or_else(|| config::defaults(&self.jobs_path))
     }
 
     /// The harness the composer is on, when the composer is naming one: not on the terminal,
@@ -10771,7 +10829,7 @@ impl App {
             self.status = format!("{kind} takes its model from its own configuration");
             return;
         };
-        let mut form = self.config_form();
+        let mut form = self.launch_form();
         form.scope = Some(scope);
         let first = form.fields()[0];
         form.step(first);
@@ -12014,8 +12072,29 @@ impl App {
             }
             Mode::Config(form) => {
                 let before = form.clone();
-                let action = form.key(code, mods);
-                self.config_action(action, before);
+                // The picker's choices are for the next launch; ctrl+s is the one key that
+                // sends them to the file, so a save is never a side effect of browsing.
+                let saving = form.scope.is_some()
+                    && !form.open
+                    && code == KeyCode::Char('s')
+                    && mods.contains(KeyModifiers::CONTROL);
+                let action = if saving {
+                    form.save_action()
+                } else {
+                    form.key(code, mods)
+                };
+                match action {
+                    ConfigAction::Save(policy, ..) if before.scope.is_some() && !saving => {
+                        self.stage_launch(*policy);
+                    }
+                    action => {
+                        self.config_action(action, before);
+                        // The file holds the launch choices now, unless the save failed.
+                        if saving && !matches!(&self.mode, Mode::Config(f) if f.error.is_some()) {
+                            self.launch = None;
+                        }
+                    }
+                }
             }
             Mode::Normal => {
                 let armed = self.armed.take();
@@ -13531,10 +13610,9 @@ mod tests {
         form.go(field_at("codex_full_access"));
         app.mode = Mode::Config(form);
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        assert_eq!(
-            config::defaults(&app.jobs_path).codex_full_access,
-            Some(true)
-        );
+        // The picker's row is a launch choice, not a write.
+        assert_eq!(app.session_policy().codex_full_access, Some(true));
+        assert_eq!(config::defaults(&app.jobs_path).codex_full_access, None);
         let Mode::Config(form) = &app.mode else {
             unreachable!()
         };
@@ -13544,7 +13622,8 @@ mod tests {
             "{control}"
         );
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
-        assert_eq!(config::defaults(&app.jobs_path).codex_full_access, None);
+        assert_eq!(app.session_policy().codex_full_access, None);
+        assert!(app.launch.is_none(), "back to the saved default");
         let Mode::Config(form) = &mut app.mode else {
             unreachable!()
         };
@@ -20545,23 +20624,49 @@ mod tests {
             !text.contains("[ ] group"),
             "the picker has no group tabs: {text}"
         );
-        // The choices save to defaults, so the next launch and every job on Claude use them.
+        // A choice is for the next launch: the file and every job on Claude keep what
+        // they had until ctrl+s says otherwise.
+        let before = fs::read_to_string(&app.jobs_path).unwrap_or_default();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for _ in 0..2 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.session_policy().model.as_deref(), Some("opus"));
+        assert_eq!(config::defaults(&app.jobs_path).model, None);
+        assert_eq!(
+            fs::read_to_string(&app.jobs_path).unwrap_or_default(),
+            before
+        );
+        assert!(
+            app.status.contains("ctrl+s"),
+            "the picker says where a save would go: {}",
+            app.status
+        );
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('h'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.session_policy().effort.as_deref(), Some("high"));
+        assert_eq!(config::defaults(&app.jobs_path).effort, None);
+        // Reopening shows the launch choice rather than the saved default.
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.values[field_at("model")] == "opus"),
+            "the picker reopens on the staged choice"
+        );
+        // ctrl+s is the explicit save, and it survives a restart.
+        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
         assert_eq!(
             config::defaults(&app.jobs_path).model.as_deref(),
             Some("opus")
         );
-        assert_eq!(app.session_policy().model.as_deref(), Some("opus"));
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('h'), KeyModifiers::NONE).unwrap();
         assert_eq!(
             config::defaults(&app.jobs_path).effort.as_deref(),
             Some("high")
         );
+        assert!(app.launch.is_none(), "the file holds the choices now");
+        let restarted = App::new(Path::new("cones"), &app.jobs_path, d.path(), d.path()).unwrap();
+        assert_eq!(restarted.session_policy().model.as_deref(), Some("opus"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.text, "read the tests", "the draft survives the picker");
@@ -20648,13 +20753,20 @@ mod tests {
         );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.session_policy().model.as_deref(), Some("opus[1m]"));
         let invalid = "version: 4\njobs: [\n";
         fs::write(&app.jobs_path, invalid).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Config(f) if f.scope.is_some() && f.choice.is_some() && f.values[f.row] == "opus" && f.error.is_some())
+            matches!(&app.mode, Mode::Config(f) if f.scope.is_some() && f.values[field_at("model")] == "opus[1m]" && f.error.is_some())
         );
         assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), invalid);
+        assert_eq!(
+            app.session_policy().model.as_deref(),
+            Some("opus[1m]"),
+            "a failed save keeps the launch choice"
+        );
         let Mode::Config(form) = &app.mode else {
             unreachable!()
         };
@@ -20666,7 +20778,12 @@ mod tests {
             "the picker keeps the composer in the box, so its error takes the hint row"
         );
         fs::write(&app.jobs_path, valid).unwrap();
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::defaults(&app.jobs_path).model.as_deref(),
+            Some("opus"),
+            "the previous default is intact"
+        );
+        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
         assert_eq!(
             config::defaults(&app.jobs_path).model.as_deref(),
             Some("opus[1m]")
