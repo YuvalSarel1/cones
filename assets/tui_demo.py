@@ -48,6 +48,8 @@ QUESTIONS = {
                   ("Manual approval", "Wait for an operator before promotion.")]),
 }
 FOLDERS = sorted({folder for folder, _, _, _ in CAST} | {"docs"})
+# Which scripted task a Codex thread belongs to, decided once and kept: (lock, {thread: task}).
+CODEX_THREADS = (threading.Lock(), {})
 TASKS = {task: (folder, harness, title) for folder, harness, task, title in CAST}
 
 FILES = {
@@ -435,18 +437,32 @@ def provider(root):
 
         def codex(self, body):
             history = json.dumps(body.get("input", []))
-            docs = "Write a quick-start guide" in history
-            task = "docs" if docs else next(
-                (key for _, harness, key, title in CAST if harness == "codex" and title in history),
-                "events",
-            )
-            title = "Write a quick-start guide" if docs else TASKS[task][2]
             metadata = body.get("client_metadata", {})
             turn = json.loads(metadata.get("x-codex-turn-metadata", "{}"))
+            # A thread is one task for its whole life. Reading the task out of the request
+            # text works only until another agent quotes the same words, and twelve agents
+            # share this server: matching "Write a quick-start guide" anywhere in a request
+            # sent the docs script to whichever thread happened to mention it.
             title_request = (
                 "Generate a concise, single-line task title" in history
                 or turn.get("thread_source") == "system"
             )
+            thread_id = metadata.get("thread_id")
+            with CODEX_THREADS[0]:
+                task = CODEX_THREADS[1].get(thread_id)
+            if task is None:
+                task = "docs" if "Write a quick-start guide" in history else next(
+                    (key for _, harness, key, title in CAST
+                     if harness == "codex" and title in history),
+                    "events",
+                )
+                # A title request is answered but never binds the thread: it carries the
+                # asking text and nothing that says which agent will own the conversation.
+                if thread_id is not None and not title_request:
+                    with CODEX_THREADS[0]:
+                        CODEX_THREADS[1][thread_id] = task
+            docs = task == "docs"
+            title = "Write a quick-start guide" if docs else TASKS[task][2]
             if not title_request:
                 write_json(root / "threads" / f"{task}.json", {"id": metadata["thread_id"]})
             call = f"demo_{task}"
