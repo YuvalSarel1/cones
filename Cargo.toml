@@ -23,6 +23,7 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 signal-hook = "0.3"
 tempfile = "3"
+toml_edit = "0.25"
 uuid = { version = "1", features = ["v4"] }
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

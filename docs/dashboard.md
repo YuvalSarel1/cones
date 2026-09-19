@@ -131,6 +131,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation) into a new native session. |
+| `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
 | `ctrl+r` | Reload now. |
 
 The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`confirm_secs`](jobs.md#list-settings). Confirmed deletions disappear before the native command finishes and return if it fails. A successful action clears the hint; the disappearing row is its confirmation.
@@ -158,6 +159,26 @@ The pinned folder is dropped in among the other folders in sorted order and take
 Select a live session or a history entry and press `ctrl+y`. Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open an interactive viewer, which stays alive when you return to the list and ends when that viewer or dashboard closes; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
 
 In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is absent, hidden, or in another state group, the fork remains visible with a branch mark. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
+
+### MCP servers
+
+`ctrl+t` opens the MCP panel for the selected session's harness and folder. With no session selected it uses the harness the composer names and the folder a launch would use. The panel reads native configuration files and nothing else: it starts no harness client, sends no prompt and writes nothing until you save.
+
+cones offers only the scopes it has verified for a harness. Claude Code has three: `user`, the `mcpServers` table of `.claude.json` under the native home, which reaches every project; `project`, `.mcp.json` in the folder, which is checked in with the repository; and `local`, that folder's own entry inside `.claude.json`, private to the home. Codex has one, `mcp_servers` in `config.toml` under its `CODEX_HOME`. Every other harness reports that cones has not verified where it keeps MCP configuration instead of guessing. No harness cones reads reports whether a running session actually loaded a server, so the panel states what is configured and says so.
+
+Each row is a server with the transport and the command or address its own entry states. A scope with no file says so; an unreadable or malformed file shows its parse error rather than reading as empty.
+
+| Key | Action |
+| --- | --- |
+| `x` | Stage removal of the selected server from its scope, or take that change back. |
+| `c` | Copy the selected server into another scope that stores servers the same way. `← →` choose the scope and `enter` stages it. |
+| `s` | Save the staged changes. |
+| `u` | Discard every staged change and keep the panel open. |
+| `esc` | Close the panel. Staged changes are discarded and no file is written. |
+
+The prompt lists what a save will do before it happens. Saving rewrites only the servers table of the scopes named in that list, through a temporary file in the same directory, and keeps the file's mode, because `.claude.json` holds credentials. Comments and unrelated settings in `config.toml` survive. Copies are written before removals, so moving a server between scopes in one save works. A failed write leaves the file as it was and keeps the changes staged, so the same save can be retried once the cause is fixed.
+
+Saving changes files, not processes. A session that already loaded these servers keeps them until it next starts; cones never restarts a live session.
 
 ### History
 

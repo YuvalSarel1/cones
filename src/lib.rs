@@ -8,6 +8,7 @@ pub mod harness;
 pub mod history;
 pub mod launchd;
 pub mod ledger;
+pub mod mcp;
 pub mod opencode;
 pub mod output;
 pub mod pi;
