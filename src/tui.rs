@@ -12,6 +12,7 @@ use crate::{
     codex,
     config::{self, HarnessKind, ResolvedJob},
     context,
+    copy,
     fleet::{self, Session},
     harness::{self, Start},
     history, launchd,
@@ -34,7 +35,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use serde_json::{Value, json};
 use std::{
@@ -6707,7 +6708,55 @@ enum Mode {
     Guide(Guide),
     /// Native MCP configuration for one harness and folder, with staged changes.
     Mcp(Box<McpPanel>),
+    /// A compact list over the bottom of the session list: recent sessions, or copy actions.
+    Pick(Pick),
 }
+
+/// Recently entered sessions, or the copy menu for the selected row: one overlay with two
+/// sets of rows, because both are a short list picked with the arrows.
+struct Pick {
+    title: &'static str,
+    rows: Vec<PickRow>,
+    at: usize,
+}
+
+struct PickRow {
+    label: String,
+    action: PickAction,
+}
+
+#[derive(Clone)]
+enum PickAction {
+    /// Enter the row holding this key. A key whose row has gone is never offered, so
+    /// nothing here resumes or restarts a closed session.
+    Enter(String),
+    Copy(String),
+}
+
+impl Pick {
+    fn step(&mut self, delta: isize) {
+        let n = self.rows.len() as isize;
+        if n > 0 {
+            self.at = (self.at as isize + delta).rem_euclid(n) as usize;
+        }
+    }
+
+    fn lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from(Span::styled(self.title, lit()))];
+        for (i, row) in self.rows.iter().enumerate() {
+            let chosen = i == self.at;
+            lines.push(Line::from(Span::styled(
+                format!("{} {}", if chosen { "\u{203a}" } else { " " }, row.label),
+                if chosen { bold() } else { dim() },
+            )));
+        }
+        lines
+    }
+}
+
+/// Recent sessions worth offering. Older entries are forgotten rather than kept for a
+/// dashboard that has been open for days.
+const RECENT: usize = 12;
 
 /// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
 const GUIDE: &[(&str, &str)] = &[
@@ -6743,6 +6792,8 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "ctrl+t",
         "Read the MCP servers configured for the selected session's harness and folder, and stage scoped changes.",
+        "ctrl+b",
+        "List the sessions entered from here, most recent first. Press it again to return to the one before this.",
     ),
     (
         "ctrl+y",
@@ -6794,6 +6845,10 @@ const GUIDE: &[(&str, &str)] = &[
     (
         "wheel",
         "Scroll the viewer or the history list under the pointer.",
+    ),
+    (
+        "c",
+        "In the focused preview, copy its last response, a code block from it or the row's details.",
     ),
     ("", "Config"),
     ("[ ]", "Switch between cones, harnesses and runs."),
@@ -7606,6 +7661,8 @@ struct App {
     filter: Input,
     history: HistoryView,
     transcript: TranscriptView,
+    /// Row keys of the sessions and runs entered from here, most recent first.
+    recent: Vec<String>,
     mode: Mode,
     status: String,
     /// Composer text; `caret` is a byte offset.
@@ -7948,6 +8005,7 @@ impl App {
             filter: Input::default(),
             history: HistoryView::default(),
             transcript: TranscriptView::default(),
+            recent: Vec::new(),
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
@@ -8135,6 +8193,7 @@ impl App {
             Mode::Rename(_) => "rename",
             Mode::Guide(..) => "guide",
             Mode::Mcp(..) => "mcp",
+            Mode::Pick(_) => "pick",
         };
         json!({
             "mode": mode,
@@ -8656,6 +8715,180 @@ impl App {
             self.transcript.focused = false;
             self.transcript.inspector = None;
             self.full = false;
+        }
+    }
+
+    /// Entering a row is deliberate: peeks, previews, speculative attaches and the
+    /// transcript pane never reach here, so browsing the list does not reorder this.
+    fn remember_entered(&mut self, kind: &Kind) {
+        let key = match kind {
+            Kind::Session(id, _) | Kind::Run(id, _) => id.clone(),
+            _ => return,
+        };
+        self.recent.retain(|k| k != &key);
+        self.recent.insert(0, key);
+        self.recent.truncate(RECENT);
+    }
+
+    /// Recent entries that still have a row, most recent first, with the index the cursor
+    /// uses. A session that has closed has no row and is skipped, never restarted.
+    fn recent_rows(&self) -> Vec<(String, usize)> {
+        self.recent
+            .iter()
+            .filter_map(|key| {
+                let at = self.visible.iter().position(|&i| {
+                    matches!(self.rows[i].kind, Kind::Session(..) | Kind::Run(..))
+                        && self.rows[i].kind.key() == Some(key.as_str())
+                })?;
+                Some((key.clone(), at))
+            })
+            .collect()
+    }
+
+    /// The row the dashboard is on: the focused viewer's, else the selected row's.
+    fn current_key(&self) -> Option<String> {
+        if let Some(i) = self.focus {
+            let key = self.viewers[i].key.clone();
+            return Some(key.strip_prefix("run:").unwrap_or(&key).to_owned());
+        }
+        self.selected()
+            .and_then(|r| r.kind.key())
+            .map(str::to_owned)
+    }
+
+    fn close_pick(&mut self) {
+        self.mode = Mode::Normal;
+        self.needs_clear = true;
+    }
+
+    /// Select a listed row and enter it. The composer keeps its draft: switching sessions
+    /// is navigation, not a launch.
+    fn enter_row(&mut self, at: usize) -> Result<()> {
+        if self.focus.is_some() {
+            self.unfocus();
+        }
+        self.cursor = at;
+        self.enter()
+    }
+
+    /// The recently entered sessions, without the one the dashboard is already on, so the
+    /// first row is the session to go back to. Moving through the list only previews it.
+    fn open_recent(&mut self) {
+        let current = self.current_key();
+        let rows: Vec<PickRow> = self
+            .recent_rows()
+            .into_iter()
+            .filter(|(key, _)| Some(key) != current.as_ref())
+            .map(|(key, at)| PickRow {
+                label: self.rows[self.visible[at]]
+                    .text()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                action: PickAction::Enter(key),
+            })
+            .collect();
+        if rows.is_empty() {
+            self.status = "no other session entered from here yet".into();
+            return;
+        }
+        self.mode = Mode::Pick(Pick {
+            title: "recent sessions",
+            rows,
+            at: 0,
+        });
+    }
+
+    fn open_copy_menu(&mut self) {
+        let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
+            return;
+        };
+        let rows: Vec<PickRow> = copy::items(self.row_details(&kind), self.last_reply().as_deref())
+            .into_iter()
+            .map(|item| PickRow {
+                label: item.label,
+                action: PickAction::Copy(item.text),
+            })
+            .collect();
+        self.mode = Mode::Pick(Pick {
+            title: "copy",
+            rows,
+            at: 0,
+        });
+    }
+
+    /// The last reply the read-only preview has actually read. A row whose conversation
+    /// cones has not previewed reports nothing rather than guessing at one.
+    fn last_reply(&self) -> Option<String> {
+        let document = self.transcript.document.as_ref()?;
+        document
+            .messages
+            .iter()
+            .rev()
+            .find(|m| {
+                matches!(
+                    m.role,
+                    transcript::Role::Assistant | transcript::Role::Output
+                )
+            })
+            .map(|m| m.text.clone())
+    }
+
+    /// What cones knows about a row, from the same records its columns come from.
+    fn row_details(&self, kind: &Kind) -> String {
+        match kind {
+            Kind::Session(id, state) => {
+                let Some(s) = self.data.sessions.iter().find(|s| &s.session_id == id) else {
+                    return format!("session {id} · {state}");
+                };
+                let mut out = format!(
+                    "{} · {state}\nfolder: {}\nsession: {id}",
+                    s.harness,
+                    fleet::tilde(&s.cwd)
+                );
+                if let Some(title) = &s.title {
+                    out.push_str(&format!("\ntitle: {title}"));
+                }
+                if let Some(model) = &s.model {
+                    out.push_str(&format!("\nmodel: {model}"));
+                }
+                if let Some(path) = &s.transcript_path {
+                    out.push_str(&format!("\ntranscript: {}", path.display()));
+                }
+                out
+            }
+            Kind::History(key) => {
+                let Some(entry) = self.history.row(key) else {
+                    return format!("history {key}");
+                };
+                let mut out = format!(
+                    "{} · history\nfolder: {}\nsession: {}\ntranscript: {}",
+                    entry.key.harness,
+                    fleet::tilde(&entry.cwd),
+                    entry.key.session_id,
+                    entry.transcript.display()
+                );
+                if let Some(title) = &entry.title {
+                    out.push_str(&format!("\ntitle: {title}"));
+                }
+                out
+            }
+            Kind::Run(id, state) => {
+                let mut out = format!("run {id} · {state}");
+                if let Some(run) = self.data.runs.iter().find(|r| &r.started.run_id == id) {
+                    if let Some(job) = &run.started.job {
+                        out.push_str(&format!("\njob: {job}"));
+                    }
+                    if let Some(cwd) = &run.started.cwd {
+                        out.push_str(&format!("\nfolder: {}", fleet::tilde(cwd)));
+                    }
+                }
+                out
+            }
+            _ => self
+                .selected()
+                .map(|r| r.text().split_whitespace().collect::<Vec<_>>().join(" "))
+                .unwrap_or_default(),
         }
     }
 
@@ -11469,6 +11702,7 @@ impl App {
             })
         });
         if let Some(i) = self.viewer_of(&kind) {
+            self.remember_entered(&kind);
             self.focus(i);
             return Ok(());
         }
@@ -11480,6 +11714,7 @@ impl App {
             // A running job is joined like the agent it is, so enter lands where the peek did.
             // Logs are the fallback for a run whose session cannot be joined.
             Kind::Run(id, s) if s == "started" => {
+                self.remember_entered(&Kind::Run(id.clone(), s.clone()));
                 let joined = self.run_session(&id).cloned().and_then(|session| {
                     let spec = harness::by_name(&session.harness)?;
                     let home = spec.session_home(&self.claude, &session);
@@ -11530,6 +11765,7 @@ impl App {
                 let home = spec.session_home(&self.claude, s);
                 if spec.session(s.kind.as_deref()).join == harness::spec::Join::CodexRemote {
                     let session = s.clone();
+                    self.remember_entered(&Kind::Session(id.clone(), String::new()));
                     self.prepare_viewer(spec.commands.viewer.clone(), id, None, None, move || {
                         harness::join(&session, &home, false)
                     });
@@ -11537,6 +11773,7 @@ impl App {
                 }
                 match harness::join(s, &home, false) {
                     Ok(c) => {
+                        self.remember_entered(&Kind::Session(id.clone(), String::new()));
                         self.open(self.size, c, &spec.commands.viewer, id, None);
                     }
                     Err(e) => {
@@ -11548,6 +11785,7 @@ impl App {
                 }
             }
             Kind::Run(id, _) => {
+                self.remember_entered(&Kind::Run(id.clone(), String::new()));
                 let mut c = self.me();
                 c.args(["__attach", &id]);
                 self.open(self.size, c, "attach", format!("run:{id}"), None);
@@ -12544,6 +12782,7 @@ impl App {
             Mode::Guide(guide) => guide.hints(),
             Mode::Mcp(panel) => panel.hints(),
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
+            Mode::Pick(_) => hints(&[("↑ ↓", "choose"), ("enter", "use"), ("esc", "close")]),
             Mode::Normal if self.history_selected() => {
                 let mut keys = vec![("↑ ↓", "select")];
                 if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
@@ -12889,6 +13128,42 @@ impl App {
             }
             return Ok(false);
         }
+        if let Mode::Pick(pick) = &mut self.mode {
+            // ctrl+b walks the same list it opened, so pressing it twice returns to the
+            // session entered before this one and pressing it again comes back.
+            let stepping = ctrl
+                && code == KeyCode::Char('b')
+                && matches!(
+                    pick.rows.get(pick.at).map(|r| &r.action),
+                    Some(PickAction::Enter(_))
+                );
+            let choose = code == KeyCode::Enter || stepping;
+            match code {
+                KeyCode::Up => pick.step(-1),
+                KeyCode::Down => pick.step(1),
+                _ if choose => {
+                    let action = pick.rows.get(pick.at).map(|r| r.action.clone());
+                    self.close_pick();
+                    match action {
+                        Some(PickAction::Enter(key)) => {
+                            match self.recent_rows().into_iter().find(|(k, _)| *k == key) {
+                                Some((_, at)) => self.enter_row(at)?,
+                                None => self.status = "that session is no longer listed".into(),
+                            }
+                        }
+                        Some(PickAction::Copy(text)) => {
+                            self.status = match copy::to_clipboard(&text) {
+                                Ok(()) => format!("copied {} characters", text.chars().count()),
+                                Err(e) => format!("not copied: {e:#}"),
+                            };
+                        }
+                        None => {}
+                    }
+                }
+                _ => self.close_pick(),
+            }
+            return Ok(false);
+        }
         if self.transcript.focused {
             if ctrl && code == KeyCode::Char('c') {
                 return Ok(self.quit_press());
@@ -12917,6 +13192,7 @@ impl App {
                     self.leave_transcript();
                     self.toggle_history();
                 }
+                KeyCode::Char('c') if !ctrl => self.open_copy_menu(),
                 KeyCode::Char('r') if ctrl => {
                     self.transcript.requested = false;
                     self.transcript.document = None;
@@ -13023,6 +13299,7 @@ impl App {
                     input.key(code, mods);
                 }
             },
+            Mode::Pick(_) => {}
             Mode::Job(form) if code == KeyCode::Tab && form.row == JobRow::Ask(Step::Where) => {
                 self.status = form.complete().join("  ");
             }
@@ -13292,6 +13569,7 @@ impl App {
                     KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
                     KeyCode::Char('n') if ctrl => self.rename_selected(),
                     KeyCode::Char('t') if ctrl => self.open_mcp(),
+                    KeyCode::Char('b') if ctrl => self.open_recent(),
                     KeyCode::Char('y') if ctrl => self.fork_selected(),
                     KeyCode::Char('r') if ctrl => {
                         if self.history.visible {
@@ -13376,6 +13654,7 @@ impl App {
         }
         if self.transcript.focused && self.transcript_target().is_some() {
             self.draw_transcript(frame, self.pane);
+            self.draw_pick(frame, self.pane);
             if area.height >= 2 {
                 let foot = Rect {
                     y: area.bottom() - 1,
@@ -13389,9 +13668,32 @@ impl App {
         self.draw_dashboard(frame, area);
     }
 
+    /// The overlay sits over the bottom of whatever is on screen, list or preview, so the
+    /// content it copies from or returns to stays visible above it.
+    fn draw_pick(&self, frame: &mut Frame, area: Rect) {
+        let Mode::Pick(pick) = &self.mode else {
+            return;
+        };
+        let lines = pick.lines();
+        let rows = (lines.len() as u16)
+            .min(12)
+            .min(area.height.saturating_sub(2))
+            .max(1);
+        let overlay = Rect {
+            y: area.bottom() - rows,
+            height: rows,
+            ..area
+        };
+        frame.render_widget(Clear, overlay);
+        frame.render_widget(Paragraph::new(lines), overlay);
+    }
+
     fn transcript_hints(&self) -> Line<'static> {
         if self.quitting() {
             return Line::styled(QUIT_HINT, Style::default().fg(Color::Red));
+        }
+        if let Mode::Pick(_) = self.mode {
+            return self.mode_hints(0);
         }
         if let Some(view) = &self.transcript.inspector {
             return view.hints();
@@ -13400,7 +13702,7 @@ impl App {
         if self.inspector_target().is_some() {
             keys.push(("→", "context"));
         }
-        keys.extend([("tab", "list"), ("ctrl+\\", "layout")]);
+        keys.extend([("tab", "list"), ("c", "copy"), ("ctrl+\\", "layout")]);
         hints(&keys)
     }
 
@@ -13594,6 +13896,7 @@ impl App {
                 spans.extend(input.spans("a title for the session"));
                 Line::from(spans)
             }
+            Mode::Pick(_) => self.composer(),
             Mode::Guide(guide) => {
                 let mut spans = vec![Span::styled("search › ", Style::default().fg(ORANGE))];
                 spans.extend(guide.find.spans("Type a key or topic"));
@@ -13777,6 +14080,7 @@ impl App {
         } else {
             self.draw_list(frame, list);
         }
+        self.draw_pick(frame, list);
         frame.render_widget(input, prompt);
         // A focused viewer's keys go in the list's own hint row: the pane's last row is the
         // harness's status line, and drawing over it hid the permission mode it ends with.
@@ -24745,5 +25049,168 @@ mod tests {
             app.status,
             "cones has not verified where opencode keeps MCP configuration"
         );
+    }
+    fn enter_by_key(app: &mut App, id: &str) {
+        let at = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(id))
+            .unwrap_or_else(|| panic!("{id} has no row"));
+        app.cursor = at;
+        app.enter().unwrap();
+    }
+
+    /// ctrl+b lists what was entered from here and enters the highlighted row, so two
+    /// sessions toggle. A session that has closed leaves the list rather than being revived.
+    /// The key belongs to the list: a focused client keeps every key of its own.
+    #[test]
+    fn recent_navigation_toggles_between_two_sessions_and_drops_a_closed_one() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1);
+        registry(d.path(), B, "/src/two", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_open(A, "attach", "A"));
+        app.viewers.push(viewer_open(B, "attach", "B"));
+        enter_by_key(&mut app, A);
+        enter_by_key(&mut app, B);
+        assert_eq!(app.recent, vec![B.to_owned(), A.to_owned()]);
+        app.text = "a draft".into();
+        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.focus, Some(1), "the focused client kept the key");
+        app.unfocus();
+        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        let Mode::Pick(pick) = &app.mode else {
+            panic!("no recent list: {}", app.status)
+        };
+        assert_eq!(pick.rows.len(), 1, "the session in view is not offered");
+        assert!(
+            matches!(&pick.rows[0].action, PickAction::Enter(key) if key == A),
+            "the session entered before this one comes first"
+        );
+        assert!(
+            pick.rows[0].label.contains(&A[..8]),
+            "{}",
+            pick.rows[0].label
+        );
+        assert_eq!(
+            app.recent,
+            vec![B.to_owned(), A.to_owned()],
+            "opening the list enters nothing"
+        );
+        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.recent, vec![A.to_owned(), B.to_owned()]);
+        assert_eq!(app.focus, Some(0), "A's own viewer took focus");
+        app.unfocus();
+        for _ in 0..2 {
+            app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        }
+        assert_eq!(app.focus, Some(1), "the same two sessions toggle");
+        assert_eq!(app.recent, vec![B.to_owned(), A.to_owned()]);
+        assert_eq!(app.text, "a draft", "switching sessions keeps the draft");
+        assert_eq!(app.viewers.len(), 2, "no session was started again");
+        app.unfocus();
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.close(0);
+        app.refresh().unwrap();
+        assert!(
+            !app.recent_rows().iter().any(|(key, _)| key == A),
+            "a session with no row is not offered"
+        );
+        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        if let Mode::Pick(pick) = &app.mode {
+            assert!(
+                !pick
+                    .rows
+                    .iter()
+                    .any(|r| matches!(&r.action, PickAction::Enter(key) if key == A)),
+                "the closed session left the list"
+            );
+        }
+        assert!(
+            app.viewers.len() == 1 && app.opening.is_none() && app.pending.is_empty(),
+            "the closed session is skipped, not resumed"
+        );
+    }
+
+    /// Resting on rows draws their previews. None of that is entering, so the recent list
+    /// stays empty until a row is actually opened.
+    #[test]
+    fn previewing_rows_does_not_put_them_in_the_recent_list() {
+        let (_d, mut app, mut terminal) = history_fixture(2);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        app.step(1);
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(app.recent.is_empty());
+        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "no other session entered from here yet");
+    }
+
+    /// The copy menu is the preview's own key: it offers the reply, each fenced block in it
+    /// and the row's details, as text with no terminal escapes left in it.
+    #[test]
+    fn the_focused_preview_copies_its_reply_code_blocks_and_details() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        let reply = "\u{1b}[31mhere\u{1b}[0m\n```rust\nfn one() {}\n```\nand\n```sh\necho two\n";
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":reply}]}})
+            ),
+        )
+        .unwrap();
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript
+                .document
+                .as_ref()
+                .is_some_and(|d| d.messages.iter().any(|m| m.text.contains("fn one")))
+        });
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.focused);
+        app.key(KeyCode::Char('c'), KeyModifiers::NONE).unwrap();
+        let Mode::Pick(pick) = &app.mode else {
+            panic!("no copy menu")
+        };
+        let labels: Vec<&str> = pick.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec![
+                "last response",
+                "code 1 · rust · fn one() {}",
+                "code 2 · sh · echo two · still streaming",
+                "session details",
+            ]
+        );
+        for row in &pick.rows {
+            let PickAction::Copy(text) = &row.action else {
+                panic!("{} is not a copy action", row.label)
+            };
+            assert!(!text.contains('\u{1b}'), "{}: {text:?}", row.label);
+        }
+        let PickAction::Copy(details) = &pick.rows[3].action else {
+            panic!("details")
+        };
+        assert!(details.contains("claude · history"), "{details}");
+        assert!(
+            details.contains(&app.history.rows[0].entry.key.session_id),
+            "{details}"
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let shown = rows(&terminal, 160).join("\n");
+        assert!(
+            shown.contains("copy") && shown.contains("last response"),
+            "{shown}"
+        );
+        assert!(app.hint_line().to_string().contains("choose"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "esc copies nothing");
     }
 }

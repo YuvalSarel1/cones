@@ -22,6 +22,8 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `ctrl+o` | Open the [launch settings](#launch-settings) of the harness the composer names. |
 | `ctrl+g` | Open help. |
 
+`ctrl+b` lists the sessions and runs entered from this dashboard, most recent first and without the one you are on, so the first row is the session to go back to. Pressing `ctrl+b` again enters it; the arrows choose another row and `enter` takes it. Moving through the list only highlights rows: nothing is entered until you choose it. Only entering a row records it, so resting on a row, a read-only preview and a speculative viewer leave the order alone. A session that has closed is no longer listed and is never resumed to satisfy the list. Switching sessions keeps the composer draft and every open viewer's own state.
+
 Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
 
 ## Menu
@@ -132,6 +134,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation) into a new native session. |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
+| `ctrl+b` | List the sessions entered from here, most recent first; press it again to enter the highlighted one. |
 | `ctrl+r` | Reload now. |
 
 The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`confirm_secs`](jobs.md#list-settings). Confirmed deletions disappear before the native command finishes and return if it fails. A successful action clears the hint; the disappearing row is its confirmation.
@@ -200,7 +203,9 @@ Selecting a row loads its conversation in the pane after a short cursor rest. Me
 
 These are read-only presentations based on each harness's default appearance. Native extensions, custom themes and interactive tool widgets are not reproduced.
 
-The wheel scrolls the preview without changing the selection. When focused, arrows and page-up/down scroll; home/end reach the loaded beginning or latest text. Reaching the beginning requests an older page when available. `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored. Focused `ctrl+r` rereads the preview at the bottom; `ctrl+\` changes its layout.
+The wheel scrolls the preview without changing the selection. When focused, arrows and page-up/down scroll; home/end reach the loaded beginning or latest text. Reaching the beginning requests an older page when available. `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored apart from `c`, which opens the copy menu. Focused `ctrl+r` rereads the preview at the bottom; `ctrl+\` changes its layout.
+
+`c` in a focused preview offers its last response, each fenced code block in that response and the row's own details. Blocks are named by language and first content line, and a block whose closing fence has not arrived is marked as still streaming. The chosen text goes to the system clipboard with terminal escapes stripped, since a transcript is data rather than commands.
 
 From a focused preview, `→` opens the context inspector: what instructions, skills and MCP servers the selected session's own records hold, and where each came from. It reads only those records and the folder beside them, so it starts no harness client, sends no prompt and writes nothing. Categories list their entries, `→` opens an entry and then its text, and `←` steps back and finally returns to the conversation with the same entry still selected. Every entry says whether its text is in the session records, only named by them, or merely a file on disk; installed is not loaded. A recorded file that no longer matches the copy on disk says so, and the recorded copy is what the entry shows. Token totals are the harness's own reported numbers; an unreported count stays unknown rather than estimated. Claude and Codex record different things, and a category a harness never records says that instead of appearing empty.
 
