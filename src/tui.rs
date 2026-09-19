@@ -6965,6 +6965,23 @@ impl PendingStop {
     }
 }
 
+/// The peek refusals a harness definition alone decides, apart from any row's state. A hover
+/// must leave no trace in the fleet: where a harness is discovered from the process table, the
+/// client a prespawn starts is itself a session cones reads back, so the row appears while the
+/// speculative viewer lives and vanishes when the pool closes it and browsing flickers sessions
+/// nobody started. Those rows wait for enter, which opens a viewer the reader is right to see.
+/// A client that resumes a thread its daemon holds is the exception: the reader attributes it to
+/// that thread's row, so the peek adds no row of its own. Kept here so every definition that
+/// declares a peek is checked against these, and a guard that silences one fails its test.
+fn spec_permits_prespawn(
+    spec: &harness::spec::HarnessSpec,
+) -> std::result::Result<(), &'static str> {
+    if spec.discovery.process.is_some() && spec.viewer.peek != harness::spec::Peek::ExistingDaemon {
+        return Err("client_would_be_discovered");
+    }
+    Ok(())
+}
+
 impl App {
     #[cfg(test)]
     fn new(exe: &Path, jobs_path: &Path, state: &Path, claude: &Path) -> Result<Self> {
@@ -9411,18 +9428,7 @@ impl App {
             return Err("native_kind_cannot_peek");
         }
         let spec = harness::by_name(&s.harness).ok_or("unknown_harness")?;
-        // A hover must leave no trace in the fleet. Where a harness is discovered from the
-        // process table, the client a prespawn starts is itself a session cones then reads back:
-        // the row appears while the speculative viewer lives and vanishes when the pool closes
-        // it, so browsing flickers sessions nobody started. Those rows wait for enter, which
-        // opens a viewer the reader is right to see. A client that resumes a thread its daemon
-        // holds is the exception: the reader attributes it to that thread's row, so the peek
-        // adds no row of its own.
-        if spec.discovery.process.is_some()
-            && spec.viewer.peek != harness::spec::Peek::ExistingDaemon
-        {
-            return Err("client_would_be_discovered");
-        }
+        spec_permits_prespawn(spec)?;
         let home = spec.session_home(&self.claude, s);
         if !harness::can_peek(s, &home) {
             return Err("native_viewer_unavailable");
@@ -9582,6 +9588,7 @@ impl App {
                         "explicit_open_required"
                             | "native_kind_cannot_peek"
                             | "native_viewer_unavailable"
+                            | "client_would_be_discovered"
                             | "action_pending"
                             | "hidden"
                             | "unknown_harness"
@@ -22198,6 +22205,34 @@ mod tests {
         assert_eq!(key(&app).as_deref(), Some(A));
         rested(&mut app, A, OLD);
         assert_eq!(app.prespawn_target(), None, "own terminal");
+    }
+
+    /// Peeking a row is core: the pane fills as the cursor rests, without an attach. A guard
+    /// written for one harness reaches every harness, so every definition that declares a peek
+    /// is checked against the refusals the definition alone decides. A blanket rule that
+    /// silences a declared peek fails here, naming the harness it disabled, instead of being
+    /// noticed in the dashboard days later.
+    #[test]
+    fn every_harness_that_declares_a_peek_can_still_reach_one() {
+        let declared: Vec<&harness::spec::HarnessSpec> = harness::known()
+            .iter()
+            .map(|&kind| harness::spec(kind))
+            .filter(|spec| spec.viewer.peek != harness::spec::Peek::Unavailable)
+            .collect();
+        assert!(
+            declared.iter().any(|spec| spec.name == "claude")
+                && declared.iter().any(|spec| spec.name == "codex"),
+            "claude and codex both declare a peek, so this check is never vacuous"
+        );
+        for spec in declared {
+            assert_eq!(
+                spec_permits_prespawn(spec),
+                Ok(()),
+                "{} declares peek {:?} and no row of its own could ever reach it",
+                spec.name,
+                spec.viewer.peek
+            );
+        }
     }
 
     /// A thread the daemon holds is joined, not started, so a peek pre-opens it like an attach:
