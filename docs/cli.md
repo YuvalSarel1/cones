@@ -88,7 +88,7 @@ Codex delivery requires a running local app-server with native queue add/list/de
 
 The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
 
-Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off. These recovery records contain the launch operation ID, harness, folder and submitted prompt, so a launch that fails before creating a native session can still be recovered. This file uses the same 10 MiB bound. Debug events reference the operation ID without repeating the prompt.
+Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Reviving a conversation from history starts a native session too, and is recorded there as `resume.submitted`, carrying the session it revived in place of an operation ID. These recovery records contain the operation ID, harness, folder and submitted prompt, so a launch that fails before creating a native session can still be recovered, and so the file answers what this machine started. This file uses the same 10 MiB bound. Debug events reference the operation ID without repeating the prompt.
 
 Older text records can remain in the retained log tail. For example, this prints failures from the structured records and skips older lines:
 

@@ -492,7 +492,7 @@ fn capture_config() -> Result<()> {
     let fixture = tempfile::tempdir()?;
     std::fs::write(
         fixture.path().join("jobs.yaml"),
-        "version: 3\ndefaults:\n  model: opus\njobs: []\n",
+        "version: 4\ndefaults:\n  model: opus\njobs: []\n",
     )?;
     let mut app = App::new(
         Path::new("cones"),

@@ -7,7 +7,7 @@
 ## File structure
 
 ```yaml
-version: 3
+version: 4
 defaults:
   timeout_min: 15
 jobs:
@@ -15,13 +15,12 @@ jobs:
     schedule: "0 2 * * *"
     cwd: ~/src/myrepo
     prompt: "Read the TODOs and draft TRIAGE.md."
-    write: true
     model: sonnet
 ```
 
 | Top-level field | Contents |
 | --- | --- |
-| `version` | Schema version, currently `3`. |
+| `version` | Schema version, currently `4`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
 | `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
@@ -47,7 +46,6 @@ Claude is the only harness cones can supervise, so it is the only one a job may 
 | `harness` | `claude` | Must be `claude`. Other [harness keys](#composer-harnesses) are valid in the composer settings and refused on a job. |
 | `model` | harness's own | Overrides the per-harness default. Must be nonempty and contain no NUL. |
 | `timeout_min` | `30` | Positive number of minutes, at most `10080` (one week). This is the only run limit; there is no dollar or turn cap. |
-| `write` | `false` | `false` permits Read, Grep and Glob. `true` adds Edit, Write and sandboxed Bash. No per-tool rules: Claude treats a scoped `Bash(pattern)` as pre-approval, so cones cannot enforce it as an exclusive allowlist. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`; see [overlap](#overlap). |
 | `catch_up` | `skip` | `skip` or `once`; see [sleep-and-login behavior](#sleep-login-and-reboot). |
 | `notify` | `false` | macOS notification through `osascript` when a run fails or times out. `CONES_NOTIFIER` can name a command receiving the title and message instead. |
@@ -200,25 +198,26 @@ Overlap is per job. Two jobs sharing a directory may both run; shared-file coord
 
 A run is one supervised harness process. `cones run` takes a global admission lock, reaps orphaned runs and applies skip rules. It then creates a gated worker in its own process group, appends `started`, releases the worker, and reads events until completion or termination. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
 
-On timeout, stop, replacement or permission denial, the whole worker process group receives SIGTERM, then SIGKILL after two seconds. The worker also ends itself one second beyond the configured timeout or when its supervisor disappears. A sandboxed command rejected by the OS is not a reported permission denial; the sandbox blocks it and the run continues.
+On timeout, stop, replacement or permission denial, the whole worker process group receives SIGTERM, then SIGKILL after two seconds. The worker also ends itself one second beyond the configured timeout or when its supervisor disappears.
 
 ### What the harness is told
 
 The compiled arguments, resolved policy and its hash are recorded at start. The launch PATH must contain a compatible `claude` binary.
 
+A job is a scheduled launch of the agent the owner runs by hand. It reads their settings,
+loads their MCP servers, answers no prompts and keeps every tool. cones adds no allowlist,
+no sandbox and no second permission engine; `timeout_min` is the only limit it puts on a run.
+A job can do anything the owner can do in that directory, so give a job a directory whose
+blast radius you accept.
+
 | Guarantee | Claude arguments |
 | --- | --- |
 | Headless, streamed events | `--print --output-format stream-json --verbose` |
-| No permission prompts | `--permission-mode dontAsk --permission-prompts none` |
-| Safe mode, restricted | `--safe-mode --restricted` |
-| No user or project settings | `--setting-sources ""` |
-| No MCP servers | `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` |
-| No slash commands | `--disable-slash-commands` |
-| Allowed tools | `--tools` and `--allowedTools`, both set from `write` |
+| Unattended, no prompt to answer | `--dangerously-skip-permissions` |
 | Pinned session identity | `--session-id <fresh uuid>` |
 | Job name | `--name <job>` |
-| Sandbox for write jobs | `--settings` sets `sandbox.enabled` and `sandbox.failIfUnavailable` true, `autoAllowBashIfSandboxed` and `allowUnsandboxedCommands` false, and `excludedCommands` empty |
 | Model override | `--model <m>` when set |
+| Effort override | `--effort <level>` when set |
 | Task | `-- <prompt>` |
 
 ### Environment

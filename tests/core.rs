@@ -15,7 +15,7 @@ fn run_times_display_in_the_local_timezone_and_keep_utc_in_json() {
     let jobs = d.path().join("jobs.yaml");
     fs::write(
         &jobs,
-        "version: 3\nrun_columns: [started, ended]\njobs: []\n",
+        "version: 4\nrun_columns: [started, ended]\njobs: []\n",
     )
     .unwrap();
     let ledger = Ledger::new(d.path()).unwrap();
@@ -86,7 +86,7 @@ fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
     use std::process::Command;
     let d = tempfile::tempdir().unwrap();
     let jobs = d.path().join("jobs.yaml");
-    fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+    fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
     let claude = d.path().join("claude");
     // A folder the coordinator owns, a worktree under it, and a sibling it must not report.
     let project = d.path().join("project");
@@ -241,22 +241,60 @@ fn yaml_rejects_typos_duplicates_and_unknown_fields() {
     );
 }
 #[test]
-fn policy_inherits_defaults_and_write_decides_the_allowlist() {
+fn policy_inherits_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
     let text = config_text("").replace("jobs:\n", "defaults:\n  timeout_min: 5\njobs:\n");
     fs::write(&path, text).unwrap();
-    let mut job = config::read_jobs(&path).unwrap().remove(0);
+    let job = config::read_jobs(&path).unwrap().remove(0);
     assert_eq!(job.timeout_min, 5.0);
+}
+#[test]
+fn a_job_launches_the_agent_with_the_prompt_and_no_policy_of_its_own() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("jobs.yaml");
+    fs::write(&path, config_text("    model: opus\n")).unwrap();
+    let job = config::read_jobs(&path).unwrap().remove(0);
+    let id = "13c73aaf-43d6-4b2c-af51-05763e0c6834";
+    let argv = cones::harness::adapter(job.harness)
+        .unwrap()
+        .compile(&job, id)
+        .unwrap()
+        .args;
     assert_eq!(
-        cones::harness::effective_tools(&job),
-        ["Read", "Grep", "Glob"]
+        argv,
+        [
+            "--print",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+            "--session-id",
+            id,
+            "--name",
+            "sample",
+            "--model",
+            "opus",
+            "--",
+            "test",
+        ],
+        "a job is the agent the owner runs by hand, on a schedule"
     );
-    job.write = true;
-    assert_eq!(
-        cones::harness::effective_tools(&job),
-        ["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
-    );
+    for gone in [
+        "--tools",
+        "--allowedTools",
+        "--settings",
+        "--mcp-config",
+        "--strict-mcp-config",
+        "--setting-sources",
+        "--disable-slash-commands",
+        "--safe-mode",
+        "--restricted",
+        "--permission-mode",
+        "--permission-prompts",
+    ] {
+        assert!(!argv.iter().any(|a| a == gone), "{gone} is still compiled");
+    }
 }
 #[test]
 fn plist_uses_argument_arrays_and_explicit_environment() {
@@ -366,12 +404,11 @@ fn permission_words_in_read_output_are_data_not_denials() {
 }
 
 #[test]
-fn overlap_allow_is_valid_for_writers() {
+fn overlap_allow_is_valid() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");
-    fs::write(&path, config_text("    write: true\n    overlap: allow\n")).unwrap();
+    fs::write(&path, config_text("    overlap: allow\n")).unwrap();
     let job = &config::read_jobs(&path).unwrap()[0];
-    assert!(job.write);
     assert_eq!(job.overlap, config::Overlap::Allow);
 }
 
@@ -867,19 +904,14 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     );
 }
 #[test]
-fn adhoc_job_borrows_policy_or_defaults_to_read_only() {
+fn adhoc_job_borrows_policy_or_defaults() {
     let dir = tempfile::tempdir().unwrap();
     let plain = cones::config::adhoc(None, "fix it", dir.path()).unwrap();
-    assert!(plain.name.starts_with("adhoc-") && !plain.write && plain.enabled);
-    assert_eq!(
-        cones::harness::effective_tools(&plain),
-        ["Read", "Grep", "Glob"]
-    );
+    assert!(plain.name.starts_with("adhoc-") && plain.enabled);
     let mut template = plain.clone();
-    template.write = true;
     template.timeout_min = 9.0;
     let borrowed = cones::config::adhoc(Some(&template), "ship it", dir.path()).unwrap();
-    assert!(borrowed.write && borrowed.timeout_min == 9.0 && borrowed.name != template.name);
+    assert!(borrowed.timeout_min == 9.0 && borrowed.name != template.name);
     assert_eq!(borrowed.prompt, "ship it");
     assert!(cones::config::adhoc(None, "  ", dir.path()).is_err());
 }

@@ -232,7 +232,6 @@ fn replace_waits_for_the_old_run_and_records_why_it_ended() {
 #[test]
 fn two_writer_jobs_in_one_directory_both_run() {
     let f = Fixture::new("hang", 0.5);
-    f.add_options("    write: true\n");
     let text = fs::read_to_string(&f.jobs).unwrap();
     let other = text
         .split_once("jobs:\n")

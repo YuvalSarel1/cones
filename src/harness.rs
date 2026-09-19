@@ -788,16 +788,6 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
     Ok(env)
 }
 
-/// Claude's complete tool allowlist. Scoped Bash rules only pre-approve commands;
-/// they do not enforce an exclusive allowlist.
-pub fn effective_tools(job: &ResolvedJob) -> &'static [&'static str] {
-    if job.write {
-        &["Read", "Grep", "Glob", "Edit", "Write", "Bash"]
-    } else {
-        &["Read", "Grep", "Glob"]
-    }
-}
-
 impl Harness for Claude {
     fn compile(&self, job: &ResolvedJob, session_id: &str) -> Result<Invocation> {
         ensure!(
@@ -805,28 +795,15 @@ impl Harness for Claude {
             "Claude adapter requires a Claude job"
         );
         uuid::Uuid::parse_str(session_id)?;
-        let tools = effective_tools(job).join(",");
+        // A job is a scheduled launch of the same agent the owner runs by hand: its own
+        // settings, its own MCP servers, no prompts to answer and no second permission
+        // engine here. timeout_min is the only limit cones puts on the run.
         let mut args: Vec<String> = [
             "--print",
             "--output-format",
             "stream-json",
             "--verbose",
-            "--permission-mode",
-            "dontAsk",
-            "--permission-prompts",
-            "none",
-            "--safe-mode",
-            "--restricted",
-            "--setting-sources",
-            "",
-            "--strict-mcp-config",
-            "--mcp-config",
-            "{\"mcpServers\":{}}",
-            "--disable-slash-commands",
-            "--tools",
-            &tools,
-            "--allowedTools",
-            &tools,
+            "--dangerously-skip-permissions",
             "--session-id",
             session_id,
             "--name",
@@ -835,19 +812,6 @@ impl Harness for Claude {
         .into_iter()
         .map(String::from)
         .collect();
-        if job.write {
-            // Require native filesystem/network isolation without expanding permissions
-            // through sandbox auto-approval.
-            args.extend([
-                "--settings".into(),
-                serde_json::json!({"sandbox":{
-                    "enabled":true, "failIfUnavailable":true,
-                    "autoAllowBashIfSandboxed":false, "allowUnsandboxedCommands":false,
-                    "excludedCommands":[]
-                }})
-                .to_string(),
-            ]);
-        }
         if let Some(model) = &job.model {
             args.extend(["--model".into(), model.clone()]);
         }
@@ -937,12 +901,11 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
     }
     args.pop(); // The final positional prompt is task content, not policy.
     let policy = serde_json::json!({
-        "v":3, "harness":job.harness, "program":invocation.program,
+        "v":4, "harness":job.harness, "program":invocation.program,
         "enforcement":"native-flags",
         "args":args,
-        "cwd":job.cwd, "write":job.write, "tools":effective_tools(job),
-        "permission_mode":"dontAsk", "permission_prompts":"none",
-        "safe_mode":true, "restricted":true, "mcp":false,
+        "cwd":job.cwd,
+        "permission_mode":"bypassPermissions",
         "timeout_s":invocation.timeout_s, "overlap":job.overlap,
         "model":job.model, "env_names":job.env,
     });

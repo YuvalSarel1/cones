@@ -1,7 +1,6 @@
-version: 3
+version: 4
 defaults:
   timeout_min: 5
-  write: false
 # Optional column overrides; omit them to follow category defaults. See docs/jobs.md.
 # columns: [state, context, activity, model, age, last_active, folder, last_reply]
 # run_columns: [status, started, duration, model, cost, folder, reason]

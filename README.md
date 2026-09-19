@@ -93,7 +93,7 @@ See the [dashboard guide](docs/dashboard.md) for the full controls.
 
 Open `jobs` in the menu, choose `new job`, and enter the task, folder and schedule. Saving installs the schedule. Select a job and press `Enter` to run it immediately.
 
-Scheduled jobs currently use Claude Code. The job form also exposes timeouts and write permissions. For file-based setup, start with [jobs.example.yaml](jobs.example.yaml) and the [configuration guide](docs/jobs.md).
+Scheduled jobs currently use Claude Code. A job is the agent you run by hand, on a schedule: your settings, your MCP servers, no permission prompts, and a timeout. For file-based setup, start with [jobs.example.yaml](jobs.example.yaml) and the [configuration guide](docs/jobs.md).
 
 ### Run a task from the shell
 

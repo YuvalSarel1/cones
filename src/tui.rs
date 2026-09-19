@@ -736,12 +736,7 @@ impl Data {
                         logo(&j.harness.to_string()),
                         fleet::tilde(&j.cwd)
                     ),
-                    format!(
-                        "timeout {:.0}m · write {} · overlap {:?}",
-                        j.timeout_min,
-                        if j.write { "yes" } else { "no" },
-                        j.overlap,
-                    ),
+                    format!("timeout {:.0}m · overlap {:?}", j.timeout_min, j.overlap,),
                     String::new(),
                 ];
                 out.extend(j.prompt.lines().map(str::to_owned));
@@ -2768,7 +2763,6 @@ impl JobForm {
             .find(|k| k.to_string() == self.set("harness"));
         job.model = text("model");
         job.timeout_min = num("timeout_min", "a number of minutes, as in 30")?;
-        job.write = flag("write");
         job.overlap = match self.set("overlap") {
             "skip" => Some(config::Overlap::Skip),
             "allow" => Some(config::Overlap::Allow),
@@ -3206,7 +3200,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 48] = [
+const FIELDS: [Field; 47] = [
     Field {
         group: "cones",
         sub: "",
@@ -3434,7 +3428,7 @@ const FIELDS: [Field; 48] = [
         name: "codex_full_access",
         short: "full access",
         hint: "Allow access outside the workspace sandbox.",
-        long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox; write controls file changes. Codex jobs are currently unavailable.",
+        long: "true allows all paths and network access without a sandbox. false uses the workspace sandbox. Codex jobs are currently unavailable.",
         builtin: "false",
         input: Answer::Pick(BOOL),
     },
@@ -3623,16 +3617,6 @@ const FIELDS: [Field; 48] = [
     Field {
         group: "runs",
         sub: "",
-        name: "write",
-        short: "allow file changes",
-        hint: "Allow supervised jobs to edit files.",
-        long: "false lets a job Read, Grep and Glob only. true adds Edit, Write and sandboxed Bash; a Codex job becomes workspace-write.",
-        builtin: "false",
-        input: Answer::Pick(BOOL),
-    },
-    Field {
-        group: "runs",
-        sub: "",
         name: "overlap",
         short: "already running",
         hint: "What to do when a job is already running.",
@@ -3753,12 +3737,11 @@ const ENABLED: Field = Field {
 
 /// What the wizard's settings section holds: the job's own field, then every field a default
 /// covers, in the order a job line carries them. An empty row inherits `defaults`.
-const RUN_FIELDS: [&str; 14] = [
+const RUN_FIELDS: [&str; 13] = [
     "enabled",
     "harness",
     "model",
     "timeout_min",
-    "write",
     "overlap",
     "catch_up",
     "notify",
@@ -3794,7 +3777,6 @@ fn inherited(f: &Field, d: &config::Policy) -> String {
         "harness" => d.harness.map(|h| h.to_string()),
         "model" => d.model.clone(),
         "timeout_min" => num(d.timeout_min),
-        "write" => flag(d.write),
         "overlap" => d.overlap.map(|o| overlap_word(o).to_owned()),
         "catch_up" => d.catch_up.map(|c| catch_up_word(c).to_owned()),
         "notify" => flag(d.notify),
@@ -3928,7 +3910,6 @@ fn job_value(f: &Field, j: &config::Job) -> String {
         "harness" => j.harness.map(|h| h.to_string()),
         "model" => j.model.clone(),
         "timeout_min" => num(j.timeout_min),
-        "write" => flag(j.write),
         "overlap" => j.overlap.map(|o| overlap_word(o).to_owned()),
         "catch_up" => j.catch_up.map(|c| catch_up_word(c).to_owned()),
         "notify" => flag(j.notify),
@@ -4039,7 +4020,6 @@ impl ConfigForm {
             .iter()
             .map(|f| match f.name {
                 "timeout_min" => num(d.timeout_min),
-                "write" => flag(d.write),
                 "overlap" => d
                     .overlap
                     .map(|o| match o {
@@ -4217,7 +4197,6 @@ impl ConfigForm {
         }
         let policy = config::Policy {
             timeout_min: num("timeout_min", "a number of minutes, as in 30")?,
-            write: flag("write"),
             codex_full_access: flag("codex_full_access"),
             overlap: match v("overlap") {
                 "skip" => Some(config::Overlap::Skip),
@@ -10423,6 +10402,13 @@ impl App {
                 {
                     self.status = format!("could not restore this session's row: {e:#}");
                 }
+                self.record_recovery(
+                    "resume.submitted",
+                    &entry.key.session_id,
+                    &entry.key.harness,
+                    &entry.cwd,
+                    entry.title.as_deref().unwrap_or_default(),
+                );
                 self.history.opened.insert(key.clone(), entry.clone());
                 self.prepare_viewer(what, key, record, None, move || history_command(&entry));
             }
@@ -10839,21 +10825,26 @@ impl App {
         self.status.clear();
     }
 
-    fn launch_row(&mut self, kind: HarnessKind, dir: &Path, prompt: &str) -> String {
-        self.history.select_first = false;
-        let nonce = uuid::Uuid::new_v4();
-        let id = match kind {
-            HarnessKind::Claude => format!("starting:{nonce}"),
-            _ => format!("{kind}:start:{nonce}"),
-        };
+    /// The ledger answers what this machine started. A resume starts a native session as
+    /// surely as a launch does, so it is recorded the same way; for a while only the composer
+    /// and fork wrote here, and a pair of agents on one conversation looked like the harness
+    /// duplicating itself.
+    fn record_recovery(
+        &mut self,
+        event: &str,
+        id: &str,
+        harness: &str,
+        dir: &Path,
+        prompt: &str,
+    ) -> PathBuf {
         let recovery = self.state.join("launches.jsonl");
         if let Err(error) = debug_line(
             &recovery,
             json!({
                 "v": 1, "timestamp": chrono::Utc::now().to_rfc3339(),
                 "pid": std::process::id(), "dashboard_id": self.dashboard_id,
-                "event": "launch.submitted", "level": "recovery",
-                "data": {"operation_id": id, "harness": kind, "cwd": dir.to_string_lossy(), "prompt": prompt},
+                "event": event, "level": "recovery",
+                "data": {"operation_id": id, "harness": harness, "cwd": dir.to_string_lossy(), "prompt": prompt},
             }),
         ) {
             self.event("error", "recovery.failed", || {
@@ -10862,6 +10853,18 @@ impl App {
                 })
             });
         }
+        recovery
+    }
+
+    fn launch_row(&mut self, kind: HarnessKind, dir: &Path, prompt: &str) -> String {
+        self.history.select_first = false;
+        let nonce = uuid::Uuid::new_v4();
+        let id = match kind {
+            HarnessKind::Claude => format!("starting:{nonce}"),
+            _ => format!("{kind}:start:{nonce}"),
+        };
+        let recovery =
+            self.record_recovery("launch.submitted", &id, &kind.to_string(), dir, prompt);
         self.event("debug", "launch.started", || json!({
             "operation_id": id,
             "parent_operation_id": self.input_operation.as_ref().map(|(o, _)| &o.id),
@@ -12411,7 +12414,16 @@ impl App {
     fn draw_list(&mut self, frame: &mut Frame, area: Rect) {
         self.list_area = area;
         let height = area.height as usize;
-        if self.cursor < self.scroll {
+        // The blank above the menu can never hold the cursor, so scrolling back to the first
+        // button has to uncover it too, or the buttons end up against the mascot.
+        let first = self
+            .visible
+            .iter()
+            .position(|&i| self.rows[i].kind.selectable())
+            .unwrap_or(0);
+        if self.cursor <= first && first < height {
+            self.scroll = 0;
+        } else if self.cursor < self.scroll {
             self.scroll = self.cursor;
         } else if height > 0 && self.cursor >= self.scroll + height {
             self.scroll = self.cursor + 1 - height;
@@ -13772,6 +13784,36 @@ mod tests {
         assert!(!d.path().join("tui-debug.log").exists());
     }
 
+    /// The ledger is how this machine answers what it started. Reviving a conversation starts
+    /// a native session, so a ledger that recorded only composer launches made cones look
+    /// innocent when two agents ended up on one conversation.
+    #[test]
+    fn reviving_a_conversation_is_recorded_in_the_ledger_like_a_launch() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let entry = app.history.rows[0].entry.clone();
+        app.history.select_first = false;
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::History(_)))
+            .expect("a history row");
+        app.enter().unwrap();
+        let rows = diagnostic_records(&app.state.join("launches.jsonl"));
+        let resume = rows
+            .iter()
+            .find(|r| r["event"] == "resume.submitted")
+            .expect("the revival is in the ledger");
+        assert_eq!(resume["data"]["operation_id"], entry.key.session_id);
+        assert_eq!(resume["data"]["harness"], entry.key.harness);
+        assert_eq!(
+            resume["data"]["cwd"],
+            entry.cwd.to_string_lossy().as_ref(),
+            "the folder the revived agent runs in"
+        );
+    }
+
     #[test]
     fn recovery_does_not_break_a_launch_from_a_non_utf8_folder() {
         use std::os::unix::ffi::OsStringExt;
@@ -14050,7 +14092,7 @@ mod tests {
     fn an_empty_jobs_screen_names_the_configuration_file_it_read() {
         let d = dir();
         let jobs = d.path().join("jobs.yaml");
-        fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+        fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
         let rows = |path: &Path| {
             Data::load(path, d.path(), d.path())
                 .unwrap()
@@ -14075,7 +14117,7 @@ mod tests {
         );
         fs::write(
             &jobs,
-            "version: 3\njobs:\n  - name: nightly\n    schedule: 0 9 * * *\n    cwd: .\n    prompt: hello\n",
+            "version: 4\njobs:\n  - name: nightly\n    schedule: 0 9 * * *\n    cwd: .\n    prompt: hello\n",
         )
         .unwrap();
         let listed = rows(&jobs);
@@ -14518,7 +14560,7 @@ mod tests {
         let base = dir();
         let defaults = config::Policy {
             timeout_min: Some(45.0),
-            write: Some(true),
+            archive_transcript: Some(true),
             ..Default::default()
         };
         let mut f = JobForm::new(base.path(), base.path(), None, "sweep", &defaults);
@@ -14543,15 +14585,15 @@ mod tests {
             "the file's default is on the row"
         );
         assert!(
-            row("write").contains("[true]"),
+            row("archive_transcript").contains("[true]"),
             "an empty row shows what it inherits: {}",
-            row("write")
+            row("archive_transcript")
         );
         assert!(row("enabled").contains("[true]"), "{}", row("enabled"));
-        f.go(run_row("write"));
+        f.go(run_row("archive_transcript"));
         f.key(KeyCode::Right, KeyModifiers::NONE);
         assert_eq!(
-            f.set("write"),
+            f.set("archive_transcript"),
             "false",
             "the arrows turn a row against what it inherits"
         );
@@ -14580,7 +14622,10 @@ mod tests {
         );
         match enter(&mut f) {
             FormAction::Save(None, job) => {
-                assert_eq!((job.write, job.timeout_min), (Some(false), Some(50.0)));
+                assert_eq!(
+                    (job.archive_transcript, job.timeout_min),
+                    (Some(false), Some(50.0))
+                );
                 assert_eq!(job.model.as_deref(), Some("opus[1m]"));
                 assert_eq!(job.env, vec!["LANG".to_owned()]);
                 assert_eq!(job.name, "sweep", "the name follows the task");
@@ -15674,6 +15719,42 @@ mod tests {
         }
     }
 
+    /// Reviving the same conversation twice gives one conversation two live agents, each
+    /// editing the same tree. It happened three times on 2026-09-18, once on the same row two
+    /// minutes apart, because the row only left history when the harness reported the session.
+    #[test]
+    fn a_row_that_is_already_revived_cannot_be_revived_again() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let entry = app.history.rows[0].entry.clone();
+        let viewer_key = history_key(&entry.key);
+        app.history.opened.insert(viewer_key.clone(), entry.clone());
+        app.viewers
+            .push(viewer_open(&viewer_key, "claude", "RESUMED"));
+        app.apply(Data::load(&app.jobs_path, &app.state, &app.claude).unwrap());
+        assert!(
+            app.history_excluded().contains(&entry.key),
+            "a revived row is no longer a history row to enter"
+        );
+        // The harness has reported nothing yet, which is exactly when the second resume landed.
+        assert!(
+            !app.data
+                .sessions
+                .iter()
+                .any(|s| s.session_id == entry.key.session_id && s.pid.is_some()),
+            "the stand-in is not a reported session"
+        );
+        let before = app.viewers.len();
+        app.history.select_first = false;
+        app.enter().unwrap();
+        assert_eq!(
+            app.viewers.len(),
+            before,
+            "entering again starts no second client"
+        );
+    }
+
     #[test]
     fn a_revived_session_joins_the_live_list_before_the_harness_reports_it_and_is_not_peeked() {
         let (_d, mut app, mut terminal) = history_fixture(1);
@@ -16707,7 +16788,7 @@ mod tests {
         let jobs = d.path().join("jobs.yaml");
         fs::write(
             &jobs,
-            "version: 3\ndefaults:\n  claude_enabled: false\n  pi_enabled: false\njobs: []\n",
+            "version: 4\ndefaults:\n  claude_enabled: false\n  pi_enabled: false\njobs: []\n",
         )
         .unwrap();
         let mut app = App::new(Path::new("cones"), &jobs, d.path(), d.path()).unwrap();
@@ -19942,10 +20023,10 @@ mod tests {
         }
         app.key(KeyCode::Char('5'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        go(&mut app, "write");
+        go(&mut app, "notify");
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         let saved = config::defaults(&app.jobs_path);
-        assert_eq!((saved.timeout_min, saved.write), (Some(5.0), Some(true)));
+        assert_eq!((saved.timeout_min, saved.notify), (Some(5.0), Some(true)));
         assert_eq!(
             saved.model, None,
             "the screen has no model row, so nothing here could have set one"
@@ -20202,7 +20283,7 @@ mod tests {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
-        let valid = "version: 3\ndefaults:\n  model: opus\njobs: []\n";
+        let valid = "version: 4\ndefaults:\n  model: opus\njobs: []\n";
         fs::write(&app.jobs_path, valid).unwrap();
         app.refresh().unwrap();
         app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
@@ -20212,7 +20293,7 @@ mod tests {
         );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        let invalid = "version: 3\njobs: [\n";
+        let invalid = "version: 4\njobs: [\n";
         fs::write(&app.jobs_path, invalid).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
@@ -20235,6 +20316,44 @@ mod tests {
             config::defaults(&app.jobs_path).model.as_deref(),
             Some("opus[1m]")
         );
+    }
+
+    #[test]
+    fn scrolling_back_to_the_buttons_keeps_their_blank_under_the_mascot() {
+        let d = dir();
+        for n in 0..40 {
+            let id = format!("{}{n:02}", &A[..34]);
+            registry(
+                d.path(),
+                &id,
+                &format!("/src/{n}"),
+                "idle",
+                1_757_682_871_000 + n,
+            );
+        }
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(160, 20)).unwrap();
+        let screen = |app: &mut App, t: &mut Terminal<ratatui::backend::TestBackend>| {
+            t.draw(|f| app.draw(f)).unwrap();
+            rows(t, 160).join("\n")
+        };
+        for _ in 0..30 {
+            app.step(1);
+            screen(&mut app, &mut t);
+        }
+        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Menu)) {
+            app.step(-1);
+            screen(&mut app, &mut t);
+        }
+        assert_eq!(app.scroll, 0, "the blank above the buttons scrolled away");
+        let lines: Vec<String> = screen(&mut app, &mut t)
+            .lines()
+            .map(str::to_owned)
+            .collect();
+        let left = |line: &str| line.split('│').next().unwrap().trim().to_owned();
+        assert!(left(&lines[3]).is_empty(), "{lines:#?}");
+        assert!(lines[4].contains("jobs   config   help"), "{lines:#?}");
     }
 
     #[test]
@@ -20336,7 +20455,7 @@ mod tests {
         let jobs = d.path().join("none.yaml");
         fs::write(
             &jobs,
-            "version: 3\nrun_columns: [model, context, tokens, dir, trigger, last]\njobs: []\n",
+            "version: 4\nrun_columns: [model, context, tokens, dir, trigger, last]\njobs: []\n",
         )
         .unwrap();
         let output = d.path().join("events.jsonl");
@@ -20708,7 +20827,7 @@ mod tests {
     fn columns_arrows_switch_only_on_tabs_and_left_from_a_column_returns_to_the_settings() {
         let d = dir();
         let mut app = app(d.path());
-        let original = "version: 3\ncolumns: [state, model]\njobs: []\n";
+        let original = "version: 4\ncolumns: [state, model]\njobs: []\n";
         fs::write(&app.jobs_path, original).unwrap();
         app.text = "keep this draft".into();
         let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(120, 18)).unwrap();
@@ -20748,7 +20867,7 @@ mod tests {
     fn the_columns_group_opens_each_table_and_returns_to_its_row() {
         let d = dir();
         let mut app = app(d.path());
-        fs::write(&app.jobs_path, "version: 3\ncolumns: [state]\njobs: []\n").unwrap();
+        fs::write(&app.jobs_path, "version: 4\ncolumns: [state]\njobs: []\n").unwrap();
         assert!(
             !MENU.iter().any(|(name, ..)| *name == "columns"),
             "columns are settings, not a menu button"
@@ -20780,7 +20899,7 @@ mod tests {
     fn columns_picker_failed_save_restores_the_checkmark_and_live_table() {
         let d = dir();
         let mut app = app(d.path());
-        let valid = "version: 3\ncolumns: [context, model]\njobs: []\n";
+        let valid = "version: 4\ncolumns: [context, model]\njobs: []\n";
         fs::write(&app.jobs_path, valid).unwrap();
         app.refresh().unwrap();
         app.open_columns(0, app.config_form());
@@ -20789,7 +20908,7 @@ mod tests {
             _ => unreachable!(),
         };
         let columns = app.data.columns.clone();
-        let invalid = "version: 3\njobs: [\n";
+        let invalid = "version: 4\njobs: [\n";
         fs::write(&app.jobs_path, invalid).unwrap();
         app.key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(
@@ -20883,7 +21002,7 @@ mod tests {
         for split in [true, false] {
             fs::write(
                 &app.jobs_path,
-                "version: 3\ncolumns: [context, model]\njobs: []\n",
+                "version: 4\ncolumns: [context, model]\njobs: []\n",
             )
             .unwrap();
             app.refresh().unwrap();
@@ -20934,7 +21053,7 @@ mod tests {
         let d = dir();
         fs::write(
             d.path().join("none.yaml"),
-            "version: 3\ncolumns: [state, model]\nrun_columns: [model, context]\njobs: []\n",
+            "version: 4\ncolumns: [state, model]\nrun_columns: [model, context]\njobs: []\n",
         )
         .unwrap();
         let mut app = app(d.path());
@@ -21076,7 +21195,7 @@ mod tests {
     #[test]
     fn job_and_history_pickers_reorder_hide_and_reset_independently() {
         let d = dir();
-        fs::write(d.path().join("none.yaml"), "version: 3\ncolumns: [state]\nrun_columns: [cost]\njob_columns: [schedule, next_run]\nhistory_columns: [folder, last_active]\njobs: []\n").unwrap();
+        fs::write(d.path().join("none.yaml"), "version: 4\ncolumns: [state]\nrun_columns: [cost]\njob_columns: [schedule, next_run]\nhistory_columns: [folder, last_active]\njobs: []\n").unwrap();
         let mut app = app(d.path());
         app.open_columns(0, app.config_form());
         for (key, first, second) in [
@@ -22317,7 +22436,7 @@ mod tests {
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let jobs = root.join("jobs.yaml");
-        fs::write(&jobs, "version: 3\njobs: []\n").unwrap();
+        fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
         let state = root.join("state");
         let mut app = App::new(Path::new("cones"), &jobs, &state, &root.join(".claude")).unwrap();
         app.cwd = project;

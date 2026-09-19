@@ -73,7 +73,6 @@ pub enum CatchUp {
 #[serde(deny_unknown_fields)]
 pub struct Policy {
     pub timeout_min: Option<f64>,
-    pub write: Option<bool>,
     pub codex_full_access: Option<bool>,
     pub overlap: Option<Overlap>,
     pub catch_up: Option<CatchUp>,
@@ -196,8 +195,6 @@ pub struct Job {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_min: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub write: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_full_access: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlap: Option<Overlap>,
@@ -226,7 +223,6 @@ impl Job {
             archive_transcript: None,
             env: vec![],
             timeout_min: None,
-            write: None,
             codex_full_access: None,
             overlap: None,
             catch_up: None,
@@ -560,7 +556,7 @@ impl Activity {
 }
 
 /// The schema `cones` writes and reads. Older files are migrated on the first read.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 /// What each earlier version called a setting the current one renamed: `(version, was, is)`,
 /// oldest first. A rename is the only migration a text rewrite can do, which is all the
@@ -569,7 +565,12 @@ const RENAMES: [(u32, &str, &str); 1] = [(1, "sparkline", "activity")];
 
 /// Settings a later version stopped having, `(version, key)`: their lines are deleted so a
 /// file written for the older schema still loads, since every field here is denied as unknown.
-const DROPS: [(u32, &str); 3] = [(2, "budget_usd"), (2, "daily_budget_usd"), (2, "max_turns")];
+const DROPS: [(u32, &str); 4] = [
+    (2, "budget_usd"),
+    (2, "daily_budget_usd"),
+    (2, "max_turns"),
+    (3, "write"),
+];
 
 /// Read the version alone. The whole file cannot be deserialized before migrating it,
 /// since a renamed key is an unknown field.
@@ -875,7 +876,6 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         }
     };
     put("timeout_min", d.timeout_min.map(|v| v.to_string()));
-    put("write", d.write.map(|v| v.to_string()));
     put("model", d.model.clone());
     put("codex_model", d.codex_model.clone());
     put("pi_model", d.pi_model.clone());
@@ -1123,7 +1123,6 @@ pub struct ResolvedJob {
     pub archive_transcript: bool,
     pub env: Vec<String>,
     pub timeout_min: f64,
-    pub write: bool,
     pub codex_full_access: bool,
     pub overlap: Overlap,
     pub catch_up: CatchUp,
@@ -1164,7 +1163,6 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             archive_transcript: false,
             env: vec![],
             timeout_min: 30.0,
-            write: false,
             codex_full_access: false,
             overlap: Overlap::Skip,
             catch_up: CatchUp::Skip,
@@ -1329,7 +1327,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
     for key in &env {
         env_name(key).with_context(|| format!("job {}", j.name))?;
     }
-    let write = j.write.or(d.write).unwrap_or(false);
     let overlap = j.overlap.or(d.overlap).unwrap_or_default();
     let catch_up = j.catch_up.or(d.catch_up).unwrap_or_default();
     let bedrock = j.bedrock.or(d.bedrock);
@@ -1373,7 +1370,6 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
             .unwrap_or(false),
         env,
         timeout_min: timeout,
-        write,
         codex_full_access: full,
         overlap,
         catch_up,
@@ -1399,7 +1395,7 @@ mod tests {
 
     #[test]
     fn a_column_save_preserves_other_settings_comments_and_explicit_empty_sets() {
-        let text = "version: 3\ndefaults:\n  timeout_min: 7 # keep\ncolumns:\n  - state\n  - model\n# run preferences\nrun_columns: []\njob_columns: [schedule]\nhistory_columns: [folder]\nwhole_columns: false\njobs: []\n";
+        let text = "version: 4\ndefaults:\n  timeout_min: 7 # keep\ncolumns:\n  - state\n  - model\n# run preferences\nrun_columns: []\njob_columns: [schedule]\nhistory_columns: [folder]\nwhole_columns: false\njobs: []\n";
         let (_d, p) = file(text);
         write_column_set(&p, "columns", Some(&["context".into()])).unwrap();
         assert_eq!(
@@ -1490,19 +1486,35 @@ mod tests {
         assert_eq!(read_jobs(&p).unwrap().len(), 1, "an older file still loads");
         assert_eq!(
             fs::read_to_string(&p).unwrap(),
-            "version: 3\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
+            "version: 4\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
             "the empty block goes with its settings"
         );
     }
 
     #[test]
+    fn a_version_three_file_loses_the_write_setting_and_still_loads() {
+        let (_d, p) = file(
+            "version: 3\ndefaults:\n  write: true\n  notify: true\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: write the report\n    write: false\n",
+        );
+        let jobs = read_jobs(&p).unwrap();
+        assert_eq!(jobs.len(), 1, "a file that set write still loads");
+        assert_eq!(defaults(&p).notify, Some(true), "its neighbours survive");
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("write:"), "the setting is gone: {text}");
+        assert!(
+            text.contains("prompt: write the report"),
+            "a prompt that says the word keeps it: {text}"
+        );
+    }
+
+    #[test]
     fn write_job_handles_an_empty_list_both_ways() {
-        let (_d, p) = file("version: 3\njobs: []\n");
+        let (_d, p) = file("version: 4\njobs: []\n");
         let one = Job::new("one", "0 9 * * *", Path::new("."), "first");
         write_job(&p, None, Some(&one)).unwrap();
         assert_eq!(raw_jobs(&p).unwrap().len(), 1);
         write_job(&p, Some("one"), None).unwrap();
-        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 3\njobs: []\n");
+        assert_eq!(fs::read_to_string(&p).unwrap(), "version: 4\njobs: []\n");
     }
 
     #[test]
@@ -1531,7 +1543,7 @@ mod tests {
     #[test]
     fn a_job_on_a_harness_cones_cannot_supervise_is_refused_by_name() {
         let (_d, p) = file(
-            "version: 3\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n",
+            "version: 4\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    harness: codex\n    cwd: .\n    prompt: p\n",
         );
         let e = format!("{:#}", read_jobs(&p).unwrap_err());
         assert!(
@@ -1548,7 +1560,7 @@ mod tests {
         );
         // The same refusal covers a harness reaching a job through defaults, not only a job line.
         let (_d, p) = file(
-            "version: 3\ndefaults:\n  harness: opencode\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
+            "version: 4\ndefaults:\n  harness: opencode\njobs:\n  - name: nightly\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: p\n",
         );
         let e = format!("{:#}", read_jobs(&p).unwrap_err());
         assert!(
@@ -1623,7 +1635,7 @@ mod tests {
     #[test]
     fn category_columns_preserve_each_other_and_accept_old_column_aliases() {
         let (_d, path) = file(
-            "version: 3\ncolumns: [last, folder, last_reply]\nrun_columns: [dir, took, last]\njob_columns: [next_run, schedule]\nhistory_columns: []\njobs: []\n",
+            "version: 4\ncolumns: [last, folder, last_reply]\nrun_columns: [dir, took, last]\njob_columns: [next_run, schedule]\nhistory_columns: []\njobs: []\n",
         );
         assert_eq!(columns(&path), ["last_reply", "folder"]);
         assert_eq!(run_columns(&path), ["folder", "duration", "last_reply"]);
@@ -1716,7 +1728,6 @@ mod tests {
         let d = Policy {
             timeout_min: Some(5.0),
             harness: None,
-            write: Some(true),
             overlap: Some(Overlap::Replace),
             catch_up: Some(CatchUp::Once),
             notify: Some(true),
@@ -1756,7 +1767,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\ndefaults:\n  timeout_min: 5\n  write: true\n  opencode_enabled: false\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
+            text.starts_with("version: 4\ndefaults:\n  timeout_min: 5\n  opencode_enabled: false\n  overlap: replace\n  catch_up: once\n  notify: true\n  archive_transcript: true\n  env: [FOO]\njobs:\n"),
             "{text}"
         );
         assert!(
@@ -1775,7 +1786,6 @@ mod tests {
             written.enabled_for(HarnessKind::Claude),
             "unset stays offered"
         );
-        assert!(read_jobs(&p).unwrap()[0].write);
 
         // The defaults are resolved before the file is touched, so a name the sequence
         // could not be read back from never reaches it.
@@ -1811,7 +1821,7 @@ mod tests {
         )
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
-        assert!(text.starts_with("version: 3\njobs:\n"), "{text}");
+        assert!(text.starts_with("version: 4\njobs:\n"), "{text}");
         assert!(!text.contains("columns"), "{text}");
         let d = Policy {
             notify: Some(true),
@@ -1833,7 +1843,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\ndefaults:\n  notify: true\ncolumns: []\njobs:\n"),
+            text.starts_with("version: 4\ndefaults:\n  notify: true\ncolumns: []\njobs:\n"),
             "{text}"
         );
         assert_eq!(file_columns(&p), Some(Vec::new()));
@@ -1853,7 +1863,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\ncolumns: [state, age]\njobs:\n"),
+            text.starts_with("version: 4\ncolumns: [state, age]\njobs:\n"),
             "{text}"
         );
         let err = write_config(
@@ -1881,7 +1891,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             fs::read_to_string(&missing).unwrap(),
-            "version: 3\ndefaults:\n  notify: true\njobs: []\n"
+            "version: 4\ndefaults:\n  notify: true\njobs: []\n"
         );
         let bad = Policy {
             timeout_min: Some(0.0),
@@ -1916,7 +1926,7 @@ mod tests {
         let text = fs::read_to_string(&p).unwrap();
         assert_eq!(
             text,
-            "version: 3\ncolumns: [context, activity, model]   # mine\nactivity:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
+            "version: 4\ncolumns: [context, activity, model]   # mine\nactivity:\n  metric: tokens\n  bound: row\njobs:\n  - name: one\n    schedule: \"0 9 * * *\"\n    cwd: .\n    prompt: fix the sparkline\n",
             "the file says what it means, keeping its comment and the word in the prompt: {text}"
         );
         let keep = file_activity(&p);
@@ -1961,7 +1971,7 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.starts_with("version: 3\nactivity:\n  metric: tools\n"),
+            text.starts_with("version: 4\nactivity:\n  metric: tools\n"),
             "the writer migrates what the read could not: {text}"
         );
     }
@@ -2338,7 +2348,7 @@ mod tests {
 
     #[test]
     fn native_launch_defaults_survive_config_edits_without_reaching_other_harnesses() {
-        let (_dir, path) = file("version: 3\njobs: []\n");
+        let (_dir, path) = file("version: 4\njobs: []\n");
         let policy = Policy {
             pi_model: Some("pi-native-model".into()),
             pi_provider: Some("pi-native-provider".into()),
@@ -2373,7 +2383,7 @@ mod tests {
     #[test]
     fn a_claude_job_runs_at_the_configured_effort_and_no_other_harness_takes_it() {
         let (_d, p) = file(
-            "version: 3\ndefaults:\n  effort: high\n  pi_thinking: minimal\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
+            "version: 4\ndefaults:\n  effort: high\n  pi_thinking: minimal\njobs:\n  - name: c\n    schedule: \"0 9 * * *\"\n    harness: claude\n    cwd: .\n    prompt: p\n",
         );
         let jobs = read_jobs(&p).unwrap();
         assert_eq!(jobs[0].effort.as_deref(), Some("high"));
