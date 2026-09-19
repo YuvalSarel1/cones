@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: scripts/check [all|fmt|clippy|test [cargo test arguments...]]'
+    echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|test [cargo test arguments...]|coordinator SOURCE]'
     echo 'Defaults to fmt, clippy, and all test targets. Full logs remain in TMPDIR.'
 }
 
@@ -10,15 +10,25 @@ mode=${1:-all}
 if (( $# )); then shift; fi
 case "$mode" in
     -h|--help) usage; exit 0 ;;
-    all|fmt|clippy)
+    all|fmt|clippy|reporting|stress)
         if (( $# )); then usage >&2; exit 2; fi
         ;;
     test) ;;
+    coordinator)
+        if (( $# != 1 )); then usage >&2; exit 2; fi
+        ;;
     *) usage >&2; exit 2 ;;
 esac
 
+# The parent owns admission for this entire gate. A nested fixture invocation has
+# a different parent and must acquire its own (temporary) queue, not bypass it.
+if [[ ${CONES_CHECK_PARENT:-} != "$PPID" ]]; then
+    exec python3 "$(dirname -- "${BASH_SOURCE[0]}")/check_queue.py" \
+        "${BASH_SOURCE[0]}" "$mode" "$@"
+fi
+
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
-log_dir=$(mktemp -d "${TMPDIR:-/tmp}/cones-check.XXXXXX")
+log_dir=${CONES_CHECK_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/cones-check.XXXXXX")}
 export CARGO_TERM_COLOR=never
 printf 'Logs: %s\n' "$log_dir"
 
@@ -26,9 +36,14 @@ run_check() {
     local name=$1
     shift
     local log="$log_dir/$name.log"
+    if [[ $name == test || $name == stress ]]; then
+        # Native homes must come from fixtures, including on an agent's machine.
+        set -- env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u PI_CODING_AGENT_DIR \
+            -u OPENCODE_DB -u OPENCODE_TUI_CONFIG -u XDG_DATA_HOME "$@"
+    fi
     if "$@" >"$log" 2>&1; then
         printf '%s: ok\n' "$name"
-        if [[ $name == test ]]; then
+        if [[ $name == test || $name == stress ]]; then
             awk '
                 /^[[:space:]]*Running / {
                     suite = $0
@@ -53,9 +68,22 @@ case "$mode" in
         run_check fmt cargo fmt --check
         run_check clippy cargo clippy --all-targets -- -D warnings
         run_check test cargo test --all-targets
+        run_check reporting node --test tests/reporting.mjs
         ;;
     fmt) run_check fmt cargo fmt --check ;;
     clippy) run_check clippy cargo clippy --all-targets -- -D warnings ;;
+    reporting) run_check reporting node --test tests/reporting.mjs ;;
+    stress)
+        export CONES_STRESS_OUTPUT="$log_dir/resources.json"
+        run_check stress cargo test --lib \
+            tui::stress::repeated_lifecycle_stays_responsive_and_releases_resources \
+            -- --ignored --exact --nocapture --test-threads=1
+        printf 'Resources: %s\n' "$CONES_STRESS_OUTPUT"
+        ;;
+    coordinator)
+        run_check coordinator python3 -B -m unittest discover -s "$1/tests" -q
+        run_check coordinator_sync python3 -B "$1/bin/sync.py" "$PWD" --check
+        ;;
     test)
         if (( $# == 0 )); then set -- --all-targets; fi
         run_check test cargo test "$@"

@@ -1256,28 +1256,33 @@ mod tests {
         let left = index.missing().unwrap();
         assert!(left > 0, "a synced conversation has passages to embed");
 
-        // Every passage embedded, without asking the worker: the scheduling half is the same
-        // call the meaning search already makes, and loading a model here would download one.
-        let hashes: Vec<String> = index
-            .db
-            .prepare("SELECT DISTINCT hash FROM passages")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+        // Exercise production scheduling and completion over the worker's channels.
+        // Only inference is replaced, so this test cannot download or run a model.
+        let (input, requests) = mpsc::channel();
+        let (replies, output) = mpsc::channel();
+        index.worker = Some(Embeddings {
+            input,
+            output,
+            busy: false,
+        });
+        assert!(index.fill(false).unwrap().pending);
+        let request = requests.try_recv().unwrap();
+        assert_eq!(request.query, "");
+        assert_eq!(request.chunks.len() as i64, left);
+        assert!(request.chunks.iter().all(|(_, text)| !text.is_empty()));
+        assert!(index.fill(false).unwrap().pending);
+        assert!(requests.try_recv().is_err(), "one outstanding batch");
+        replies
+            .send(Ok(EmbeddingResponse {
+                query: request.query,
+                query_vector: vector(0),
+                vectors: request
+                    .chunks
+                    .into_iter()
+                    .map(|(hash, _)| (hash, vector(0)))
+                    .collect(),
+            }))
             .unwrap();
-        assert_eq!(hashes.len() as i64, left);
-        for hash in &hashes {
-            let bytes: Vec<_> = vector(0).iter().flat_map(|x| x.to_le_bytes()).collect();
-            index
-                .db
-                .execute(
-                    "INSERT OR REPLACE INTO vectors VALUES (?1, ?2)",
-                    params![hash, bytes],
-                )
-                .unwrap();
-        }
-
         let results = index.fill(false).unwrap();
         assert!(!results.pending, "nothing is left to embed");
         assert_eq!(
@@ -1285,9 +1290,17 @@ mod tests {
             Some("Every conversation is indexed")
         );
         assert!(results.error.is_none());
+        assert_eq!(index.missing().unwrap(), 0);
+        assert!(!index.worker.as_ref().unwrap().busy);
         assert!(
-            index.worker.is_none(),
-            "a finished index starts no embedding worker"
+            requests.try_recv().is_err(),
+            "a finished index schedules no work"
         );
+        // Completed vectors are reusable after the worker disconnects.
+        drop(replies);
+        let results = index.fill(false).unwrap();
+        assert!(!results.pending);
+        assert_eq!(results.error.as_deref(), Some("embedding worker exited"));
+        assert_eq!(index.missing().unwrap(), 0);
     }
 }

@@ -4,6 +4,9 @@
 #[cfg(test)]
 #[path = "../assets/tui_capture.rs"]
 mod readme_capture;
+#[cfg(all(test, target_os = "macos"))]
+#[path = "tui/stress.rs"]
+mod stress;
 
 use crate::{
     codex,
@@ -2025,6 +2028,13 @@ fn fleet_rows_observed(
     let mut out = Vec::new();
     let mut collapsed = Vec::new();
     for s in live {
+        // Native-home fixtures already scope the archive-backed readers. The six
+        // terminal-only readers have no home to isolate: keep their test-owned
+        // clients, including native smoke launches, without importing host agents.
+        #[cfg(all(test, target_os = "macos"))]
+        if !fixture_session(&s) {
+            continue;
+        }
         if owned.contains(s.session_id.as_str()) {
             if let Some(d) = &mut diagnostics {
                 d.excluded
@@ -2074,6 +2084,22 @@ fn fleet_rows_observed(
     }
     fleet::sort(&mut out);
     Ok((out, collapsed))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+fn fixture_session(session: &Session) -> bool {
+    if !harness::by_name(&session.harness).is_some_and(|s| s.kind.terminal_only()) {
+        return true;
+    }
+    let mut pid = session.pid;
+    let mut visited = HashSet::new();
+    while let Some(current) = pid.filter(|p| *p > 1 && visited.insert(*p)) {
+        if current == std::process::id() {
+            return true;
+        }
+        pid = crate::process_info::parent(current);
+    }
+    false
 }
 
 /// Resolve `text` relative to `base`; empty text uses `fallback`. Require an existing directory.
@@ -4494,6 +4520,15 @@ impl ConfigForm {
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
+        self.key_with_probe(code, mods, connectivity)
+    }
+
+    fn key_with_probe(
+        &mut self,
+        code: KeyCode,
+        mods: KeyModifiers,
+        probe: fn() -> Vec<Line<'static>>,
+    ) -> ConfigAction {
         self.error = None;
         self.note = None;
         if let Some(top) = self.help {
@@ -4571,7 +4606,7 @@ impl ConfigForm {
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
                     if matches!(self.field().input, Answer::Check) =>
                 {
-                    self.note = Some(connectivity());
+                    self.note = Some(probe());
                 }
                 KeyCode::Backspace if matches!(self.field().input, Answer::Check) => {}
                 KeyCode::Char('[') if self.scope.is_none() => {
@@ -4628,7 +4663,7 @@ impl ConfigForm {
                         && !mods.contains(KeyModifiers::CONTROL) =>
                 {
                     self.enter();
-                    return self.key(code, mods);
+                    return self.key_with_probe(code, mods, probe);
                 }
                 KeyCode::Char(c) if !self.field().typed() => {
                     let f = self.field();
@@ -5235,15 +5270,27 @@ fn flow(spans: Vec<Span<'static>>, indent: usize, width: usize) -> Vec<Line<'sta
 /// the check a launch makes, so a harness that answers here starts a session too.
 fn connectivity() -> Vec<Line<'static>> {
     let path = harness::launch_path();
+    connectivity_results(harness::launchable().iter().map(|&kind| {
+        let installed = harness::executable(&kind.to_string(), &path).is_some();
+        (
+            kind,
+            installed.then(|| harness::leave_and_return(kind).map(|_| ())),
+        )
+    }))
+}
+
+fn connectivity_results(
+    probes: impl IntoIterator<Item = (HarnessKind, Option<Result<()>>)>,
+) -> Vec<Line<'static>> {
     let mut answers: Vec<(&'static str, String, String)> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
-    for &kind in harness::launchable() {
+    for (kind, result) in probes {
         let name = kind.to_string();
-        if harness::executable(&name, &path).is_none() {
+        let Some(result) = result else {
             missing.push(name);
             continue;
-        }
-        match harness::leave_and_return(kind) {
+        };
+        match result {
             Ok(_) => answers.push(("ok", logo_cell(&name), "can launch here".to_owned())),
             Err(e) => answers.push((
                 "failed",
@@ -16518,9 +16565,36 @@ mod tests {
                 .to_string()
                 .contains("Check which harnesses can launch")
         );
-        c.key(KeyCode::Enter, none);
+        c.key_with_probe(KeyCode::Enter, none, || {
+            connectivity_results(harness::launchable().iter().map(|&kind| {
+                (
+                    kind,
+                    match kind {
+                        HarnessKind::Claude => Some(Ok(())),
+                        HarnessKind::Codex => {
+                            Some(Err(anyhow::anyhow!("codex fixture probe failed")))
+                        }
+                        _ => None,
+                    },
+                )
+            }))
+        });
         let note = c.note.clone().expect("the probe answers");
         let answer = c.text().to_string();
+        assert_eq!(
+            note.len(),
+            3,
+            "one ready, one failed, one grouped missing row"
+        );
+        assert!(
+            note[0].to_string().contains("claude")
+                && note[0].to_string().contains("can launch here")
+        );
+        assert!(
+            note[1].to_string().contains("codex")
+                && note[1].to_string().contains("fixture probe failed")
+        );
+        assert!(note[2].to_string().contains("not installed"));
         assert_eq!(
             answer.lines().count(),
             note.len(),
@@ -16580,6 +16654,16 @@ mod tests {
         assert!(
             c.values[field_at("check")].is_empty() && c.config().is_ok(),
             "the probe writes nothing into the file"
+        );
+        let all = connectivity_results(
+            harness::launchable()
+                .iter()
+                .map(|&kind| (kind, Some(Ok(())))),
+        );
+        assert_eq!(all.len(), launchable);
+        assert!(
+            all.iter()
+                .all(|line| line.to_string().contains("can launch here"))
         );
     }
 
@@ -18787,6 +18871,20 @@ mod tests {
             let mut open = viewer_open(A, &spec.commands.viewer, &screen);
             open.harness = Some(kind);
             app.data.sessions[0].pid = Some(open.viewer.pid());
+            #[cfg(target_os = "macos")]
+            {
+                assert!(
+                    fixture_session(&app.data.sessions[0]),
+                    "{kind}: fixture child is visible"
+                );
+                let mut host = app.data.sessions[0].clone();
+                host.pid = Some(1);
+                assert_eq!(
+                    fixture_session(&host),
+                    !kind.terminal_only(),
+                    "{kind}: process-only fixtures exclude unrelated clients"
+                );
+            }
             let pid = open.viewer.pid();
             app.viewers.push(open);
             wait_paint(&mut app, 0, "VIEW");

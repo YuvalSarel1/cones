@@ -781,13 +781,16 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
     registry(dir.path(), owned, session(owned, me, "busy"));
     let dead = "33333333-3333-4333-8333-333333333333";
     registry(dir.path(), dead, session(dead, 4_000_000, "busy"));
-    let rows = cones::tui::fleet_rows(
+    let mut rows = cones::tui::fleet_rows(
         dir.path(),
         dir.path(),
         &ledger.runs().unwrap(),
         &cones::config::Policy::default(),
     )
     .unwrap();
+    // Keep every fixture identity so a failure to collapse or reject one still
+    // fails the assertion, while unrelated machine-wide clients stay out.
+    rows.retain(|s| [live, owned, dead].contains(&s.session_id.as_str()));
     assert_eq!(
         rows.iter()
             .map(|s| s.session_id.as_str())
@@ -869,8 +872,10 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "sessions are grouped by directory"
     );
     assert!(lines.iter().any(|l| l.starts_with("run-1\tstarted")));
-    let data =
+    let mut data =
         cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
+    data.sessions
+        .retain(|s| [live, owned, dead].contains(&s.session_id.as_str()));
     let by_state = data.rows(true);
     let headers: Vec<String> = by_state
         .iter()
@@ -933,8 +938,15 @@ fn session_columns_align_across_directory_groups() {
                 "status": "idle", "name": title, "startedAt": 1757682871892i64}),
         );
     }
-    let data =
+    let mut data =
         cones::tui::Data::load(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
+    data.sessions.retain(|s| {
+        [
+            "44444444-4444-4444-8444-444444444444",
+            "55555555-5555-4555-8555-555555555555",
+        ]
+        .contains(&s.session_id.as_str())
+    });
     let widths: Vec<usize> = data
         .rows(false)
         .iter()

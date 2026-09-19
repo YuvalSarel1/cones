@@ -174,7 +174,10 @@ def main():
     shim.parent.mkdir(parents=True)
     shim.symlink_to(native)
     jobs = root / "jobs.yaml"
-    jobs.write_text("version: 3\nstart:\n  harness: opencode\n"
+    other_harnesses = ("claude", "codex", "pi", "gemini", "cursor", "copilot", "amp", "droid", "kimi")
+    jobs.write_text("version: 4\ndefaults:\n"
+                    + "".join(f"  {name}_enabled: false\n" for name in other_harnesses)
+                    + "start:\n  harness: opencode\n"
                     "columns: [state, model, last_active, cost]\njobs: []\n")
     state = root / "state"
     server = f"cones-opencode-{uuid.uuid4().hex[:10]}"
@@ -243,16 +246,17 @@ def main():
             time.sleep(0.05)
         child = Dashboard(root, controller)
         wait("dashboard ready", lambda: "folder" in screen())
-        def folder_menu():
-            if "← → pick" in screen().splitlines()[-1]:
+        def folder_row():
+            if any("▌" in line[:3] and "+ add folder" in line[:110]
+                   for line in screen().splitlines()):
                 return True
-            keys("Up")
+            keys("Down")
             return False
-        wait("folder menu selected", folder_menu)
-        keys("Enter")
-        wait("folder input opened", lambda: "enter add" in screen().splitlines()[-1])
+        wait("add folder row selected", folder_row)
+        wait("folder input ready", lambda: "enter add folder" in screen().splitlines()[-1])
         keys("-l", str(root))
         keys("Enter")
+        wait("folder composer ready", lambda: "Type an instruction" in screen())
         keys("-l", "Reply briefly without using any tools.")
         wait("OpenCode composer selected", lambda: "opencode" in screen())
         keys("Enter")

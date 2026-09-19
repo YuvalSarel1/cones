@@ -349,7 +349,7 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     if !job.enabled {
         return skipped(ledger, job, trigger, "disabled", &run_id);
     }
-    let admission = ledger.admission_lock()?;
+    let admission = ledger.admission_lock(&job.name)?;
     for run in job_runs(ledger, &job.name)? {
         if reap_run(ledger, &run, false)? {
             notify(job, Status::Failed, Some("orphan"));

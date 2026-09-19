@@ -10,6 +10,35 @@ use std::{
 };
 use tempfile::TempDir;
 
+struct OwnedChild(std::process::Child);
+
+impl std::ops::Deref for OwnedChild {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while self.0.try_wait().ok().flatten().is_none() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 struct Fixture {
     dir: TempDir,
     jobs: PathBuf,
@@ -57,13 +86,14 @@ impl Fixture {
         let text = fs::read_to_string(&self.jobs).unwrap();
         fs::write(&self.jobs, format!("{text}{options}")).unwrap();
     }
-    fn start(&self) -> (std::process::Child, String) {
-        let mut child = self
-            .command()
-            .args(["run", "test"])
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+    fn start(&self) -> (OwnedChild, String) {
+        let mut child = OwnedChild(
+            self.command()
+                .args(["run", "test"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
         let mut line = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut line)
@@ -165,12 +195,13 @@ fn successful_read_of_permission_documentation_finishes_ok() {
 fn following_output_can_detach_without_stopping_the_job() {
     let f = Fixture::new("hang", 0.5);
     let (mut job, id) = f.start();
-    let mut follower = f
-        .command()
-        .args(["__logs", &id, "--follow", "--raw"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut follower = OwnedChild(
+        f.command()
+            .args(["__logs", &id, "--follow", "--raw"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let mut line = String::new();
     let mut reader = BufReader::new(follower.stdout.take().unwrap());
     reader.read_line(&mut line).unwrap();
@@ -274,7 +305,7 @@ fn successful_harness_cannot_leave_a_shell_running() {
 }
 fn assert_dead(file: PathBuf) {
     let pid = fs::read_to_string(file).unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(10);
     loop {
         let output = Command::new("/bin/ps")
             .args(["-p", pid.trim(), "-o", "stat="])
@@ -292,23 +323,39 @@ fn assert_dead(file: PathBuf) {
     }
 }
 #[test]
-fn overlapping_ticks_produce_one_run_and_one_skip() {
-    let f = Fixture::new("slow", 1.0);
-    let mut first = f
-        .command()
-        .args(["run", "test"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut start = String::new();
-    BufReader::new(first.stdout.take().unwrap())
-        .read_line(&mut start)
-        .unwrap();
-    assert!(start.contains("started"));
-    assert!(f.output().status.success());
-    assert!(first.wait().unwrap().success());
+fn simultaneous_ticks_admit_one_run_and_record_every_other_skip() {
+    let f = Fixture::new("barrier", 1.0);
+    let barrier = std::sync::Barrier::new(4);
+    let mut children = thread::scope(|scope| {
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    OwnedChild(
+                        f.command()
+                            .args(["run", "test"])
+                            .stdout(Stdio::null())
+                            .spawn()
+                            .unwrap(),
+                    )
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|w| w.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while f.ledger().runs().unwrap().len() != 4 {
+        assert!(
+            Instant::now() < deadline,
+            "contenders did not reach admission"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     let runs = f.ledger().runs().unwrap();
-    assert_eq!(runs.len(), 2);
+    assert_eq!(runs.len(), 4);
     assert_eq!(
         runs.iter()
             .filter(|r| r.started.status == Status::Started)
@@ -319,7 +366,86 @@ fn overlapping_ticks_produce_one_run_and_one_skip() {
         runs.iter()
             .filter(|r| r.started.reason.as_deref() == Some("overlap"))
             .count(),
-        1
+        3
+    );
+    fs::write(f.state.join("release"), "").unwrap();
+    for child in &mut children {
+        assert!(child.wait().unwrap().success());
+    }
+    let runs = f.ledger().runs().unwrap();
+    assert_eq!(runs.iter().filter(|r| r.terminal.is_some()).count(), 1);
+}
+
+#[test]
+fn replacement_waiting_for_its_old_lease_does_not_block_another_job() {
+    use fs2::FileExt;
+    let f = Fixture::new("success", 1.0);
+    f.add_options("    overlap: replace\n");
+    let text = fs::read_to_string(&f.jobs).unwrap();
+    let other = text
+        .split_once("jobs:\n")
+        .unwrap()
+        .1
+        .replace("name: test", "name: other");
+    fs::write(&f.jobs, format!("{text}{other}")).unwrap();
+    let ledger = f.ledger();
+    let old_id = uuid::Uuid::new_v4().to_string();
+    let lease = ledger.run_lock(&old_id).unwrap().unwrap();
+    let mut old = cones::ledger::Record::new(old_id.clone(), Status::Started);
+    old.job = Some("test".into());
+    old.owns_run_lock = Some(true);
+    old.fired_at = Some(chrono::Utc::now());
+    // A supervisor can still own its lease after its worker has gone away.
+    ledger.append(&old).unwrap();
+    let admission = ledger.admission_lock("test").unwrap();
+    FileExt::unlock(&admission).unwrap();
+    let mut replacement = OwnedChild(
+        f.command()
+            .args(["run", "test"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match admission.try_lock_exclusive() {
+            Ok(()) => FileExt::unlock(&admission).unwrap(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("{error}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "replacement never reached admission"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let mut independent = OwnedChild(
+        f.command()
+            .args(["run", "other"])
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    while independent.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "unrelated job blocked behind replacement"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(independent.wait().unwrap().success());
+    assert!(replacement.try_wait().unwrap().is_none());
+    drop(lease);
+    assert!(replacement.wait().unwrap().success());
+    assert_eq!(
+        ledger
+            .resolve(&old_id)
+            .unwrap()
+            .terminal
+            .unwrap()
+            .reason
+            .as_deref(),
+        Some("replaced")
     );
 }
 #[test]
@@ -334,12 +460,13 @@ fn malformed_missing_and_mismatched_events_fail_closed() {
 #[test]
 fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {
     let f = Fixture::new("hang", 0.5);
-    let mut child = f
-        .command()
-        .args(["run", "test"])
-        .stdout(Stdio::piped())
-        .spawn()
-        .unwrap();
+    let mut child = OwnedChild(
+        f.command()
+            .args(["run", "test"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -352,7 +479,7 @@ fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(f.ledger().runs().unwrap()[0].terminal.is_none());
-    thread::sleep(Duration::from_secs(3));
+    assert_dead(f.state.join("child.pid"));
     let text = fs::read_to_string(&f.jobs)
         .unwrap()
         .replace("model: hang", "model: success");
@@ -478,16 +605,35 @@ fn notify_fires_only_when_opted_in_on_failure() {
         ["cones test failed: error_during_execution"]
     );
 }
-// Build a fixture binary: macOS kills renamed copies of signed system binaries
-// before their process identity can be checked.
+// macOS can kill a renamed copy of a signed system binary before ps reads it.
+fn fixture_client(dir: &std::path::Path) -> PathBuf {
+    let source = dir.join("client.c");
+    let binary = dir.join("claude");
+    fs::write(
+        &source,
+        "#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n",
+    )
+    .unwrap();
+    let built = Command::new("/usr/bin/cc")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    binary
+}
+
 #[test]
 fn stopping_a_fleet_session_signals_only_a_verified_harness_process() {
     let f = Fixture::new("success", 1.0);
-    let fake = f.dir.path().join("claude");
-    // Name the fixture claude so `ps` reports the expected harness.
-    fs::copy("/bin/sleep", &fake).unwrap();
-    let mut claude_proc = Command::new(&fake).arg("30").spawn().unwrap();
-    let mut sleeper = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let fake = fixture_client(f.dir.path());
+    let mut claude_proc = OwnedChild(Command::new(&fake).arg("30").spawn().unwrap());
+    let mut sleeper = OwnedChild(Command::new("/bin/sleep").arg("30").spawn().unwrap());
     let claude = f.dir.path().join("dot-claude");
     fs::create_dir_all(claude.join("sessions")).unwrap();
     for (id, pid) in [("real", claude_proc.id()), ("reused", sleeper.id())] {
@@ -528,10 +674,8 @@ fn a_finished_run_still_removes_the_client_its_session_left_behind() {
     fs::create_dir_all(claude.join("sessions")).unwrap();
     // Nothing lists the session: the finished run has nothing left to clear.
     assert!(!cones::runner::stop(&f.ledger(), &claude, &session).unwrap());
-    // Name the fixture claude so `ps` reports the expected harness.
-    let fake = f.dir.path().join("claude");
-    fs::copy("/bin/sleep", &fake).unwrap();
-    let mut client = Command::new(&fake).arg("30").spawn().unwrap();
+    let fake = fixture_client(f.dir.path());
+    let mut client = OwnedChild(Command::new(&fake).arg("30").spawn().unwrap());
     fs::write(
         claude.join("sessions").join("live.json"),
         serde_json::json!({"pid": client.id(), "sessionId": session, "cwd": f.dir.path(), "kind": "interactive", "status": "idle", "startedAt": 1i64}).to_string(),

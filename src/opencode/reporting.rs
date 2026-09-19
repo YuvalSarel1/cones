@@ -90,11 +90,13 @@ impl Reporter {
 
     pub(crate) fn read(&self, pid: u32) -> Option<Report> {
         let mut bytes = Vec::new();
-        fs::File::open(&self.report)
-            .ok()?
-            .take(64 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
+        let file = fs::File::open(&self.report).ok()?;
+        if file.metadata().ok()?.modified().ok()?.elapsed().ok()?
+            > std::time::Duration::from_secs(5)
+        {
+            return None;
+        }
+        file.take(64 * 1024 + 1).read_to_end(&mut bytes).ok()?;
         if bytes.len() > 64 * 1024 {
             return None;
         }
@@ -350,5 +352,36 @@ mod tests {
                 .is_none()
         );
         assert!(jsonc("{ /* unfinished").is_err());
+    }
+
+    #[test]
+    fn an_expired_or_removed_report_cannot_supply_live_state() {
+        let mut command = Command::new("opencode");
+        command.env(ENABLE, "1").env_remove("OPENCODE_TUI_CONFIG");
+        let reporter = Reporter::prepare(&mut command).unwrap().unwrap();
+        fs::write(
+            &reporter.report,
+            br#"{"version":1,"pid":42,"session":null}"#,
+        )
+        .unwrap();
+        assert!(reporter.read(42).is_some());
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&reporter.report)
+            .unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(60)),
+        )
+        .unwrap();
+        assert!(reporter.read(42).is_none());
+        fs::write(
+            &reporter.report,
+            br#"{"version":1,"pid":42,"session":null}"#,
+        )
+        .unwrap();
+        assert!(reporter.read(42).is_some());
+        fs::remove_file(&reporter.report).unwrap();
+        assert!(reporter.read(42).is_none());
     }
 }

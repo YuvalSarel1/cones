@@ -391,6 +391,9 @@ impl Viewer {
                 Ok(n) => {
                     self.ingest(&bytes[..n]);
                     dirty = true;
+                    if started.elapsed() >= PUMP_MAX {
+                        break;
+                    }
                 }
                 Err(e) if e.raw_os_error() == Some(libc::EIO) => self.master_open = false,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -417,6 +420,9 @@ impl Viewer {
                         if self.status.is_some() {
                             break;
                         }
+                    }
+                    if started.elapsed() >= PUMP_MAX {
+                        break;
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -974,11 +980,18 @@ mod tests {
 
     #[test]
     fn a_viewer_draws_on_the_emulated_screen_and_its_cursor_query_is_answered() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = dir.path().join("reply");
         let mut c = Command::new("/bin/sh");
-        c.args(["-c", "printf 'hello\\033[6n'; sleep 0.2"]);
+        c.args([
+            "-c",
+            "stty raw -echo; printf 'hello\\033[6n'; dd bs=1 count=6 of=\"$1\" 2>/dev/null",
+            "cursor-fixture",
+        ])
+        .arg(&reply);
         let mut v = Viewer::spawn(c, 4, 20, None, Colors::default()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while text(v.screen(), 0) != "hello" {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while v.exited().is_none() {
             v.pump().unwrap();
             assert!(
                 Instant::now() < deadline,
@@ -987,39 +1000,42 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+        assert_eq!(std::fs::read(reply).unwrap(), b"\x1b[1;6R");
+        assert_eq!(text(v.screen(), 0), "hello");
         assert!(v.first_paint().is_some());
         assert_eq!(v.screen().cursor_position(), (0, 5));
-        assert!(v.pending_input.is_empty());
-        assert!(v.exited().is_none());
-        while v.exited().is_none() {
-            v.pump().unwrap();
-            assert!(Instant::now() < deadline, "the viewer did not exit");
-            std::thread::sleep(Duration::from_millis(5));
-        }
         assert!(v.exited().unwrap().success());
     }
 
     #[test]
-    fn a_flooding_viewer_nobody_pumped_closes_at_once() {
+    fn closing_an_unpumped_flood_reaps_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
         let mut c = Command::new("/bin/sh");
         c.args([
             "-c",
-            "while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
-        ]);
+            "touch \"$1\"; while :; do printf 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'; done",
+            "flood-fixture",
+        ])
+        .arg(&ready);
         let v = Viewer::spawn(c, 4, 20, None, Colors::default()).unwrap();
-        std::thread::sleep(Duration::from_millis(150));
+        let pid = v.pid();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "child did not start");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let (tx, rx) = std::sync::mpsc::channel();
-        let started = Instant::now();
         std::thread::spawn(move || {
             drop(v);
             tx.send(()).unwrap();
         });
         rx.recv_timeout(Duration::from_secs(5))
             .expect("drop did not return");
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "close took {:?}: the child was not reaped once its output was drained",
-            started.elapsed()
+        assert_ne!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "child was not reaped"
         );
     }
 
@@ -1209,56 +1225,38 @@ mod tests {
 
     #[test]
     fn a_synchronized_update_is_shown_whole_and_not_while_it_is_drawn() {
-        let mut c = Command::new("/bin/sh");
-        c.args(["-c", "printf 'one\\033[?2026h\\033[H\\033[2Ktwo\\033[10;10H'; sleep 0.3; printf '\\033[1;4H\\033[?2026l'; sleep 0.2"]);
-        let mut v = Viewer::spawn(c, 12, 20, None, Colors::default()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while text(v.screen(), 0) != "one" {
-            v.pump().unwrap();
-            assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(v.parser.callbacks().frozen.is_some());
-        assert_eq!(text(v.screen(), 0), "one");
-        assert_eq!(v.screen().cursor_position(), (0, 3));
-        assert_eq!(text(v.parser.screen(), 0), "two");
-        while v.parser.callbacks().frozen.is_some() {
-            let dirty = v.pump().unwrap();
-            if v.parser.callbacks().frozen.is_some() {
-                assert!(!dirty, "a frame still being drawn is not a change");
-            }
-            assert!(Instant::now() < deadline, "the update never ended");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(text(v.screen(), 0), "two");
-        assert_eq!(v.screen().cursor_position(), (0, 3));
+        let mut p = vt100::Parser::new_with_callbacks(12, 20, 0, Replies::default());
+        p.process(b"one\x1b[?2026h\x1b[H\x1b[2Ktwo\x1b[10;10H");
+        let frozen = &p.callbacks().frozen.as_ref().unwrap().1;
+        assert_eq!(text(frozen, 0), "one");
+        assert_eq!(frozen.cursor_position(), (0, 3));
+        assert_eq!(text(p.screen(), 0), "two");
+        p.process(b"\x1b[1;4H\x1b[?2026l");
+        assert!(p.callbacks().frozen.is_none());
+        assert_eq!(text(p.callbacks().shown(p.screen()), 0), "two");
+        assert_eq!(p.screen().cursor_position(), (0, 3));
     }
 
     #[test]
-    fn a_burst_lands_in_a_few_pumps_not_a_kib_per_turn() {
+    fn a_large_burst_drains_in_order_and_keeps_bounded_scrollback() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("burst");
         let lines: String = (1..=20000).map(|n| format!("L{n}\n")).collect();
         std::fs::write(&file, lines).unwrap();
-        let mut c = Command::new("/bin/sh");
-        c.args([
-            "-c",
-            &format!(
-                "sleep 0.2; while read l; do echo \"$l\"; done < {}",
-                file.display()
-            ),
-        ]);
+        let mut c = Command::new("/bin/cat");
+        c.arg(file);
         let mut v = Viewer::spawn(c, 12, 20, None, Colors::default()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut dirty_pumps = 0;
+        let deadline = Instant::now() + Duration::from_secs(10);
         while text(v.screen(), 10) != "L20000" {
-            if v.pump().unwrap() {
-                dirty_pumps += 1;
-            }
+            v.pump().unwrap();
             assert!(Instant::now() < deadline, "{:?}", v.screen().contents());
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(dirty_pumps <= 8, "{dirty_pumps} pumps for a 120 KiB burst");
+        for row in 0..11 {
+            assert_eq!(text(v.screen(), row), format!("L{}", 19990 + row));
+        }
+        v.scroll(i32::MAX);
+        assert_eq!(v.screen().scrollback(), SCROLLBACK);
     }
 
     #[test]

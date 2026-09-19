@@ -16,7 +16,7 @@ carry the native id the coordinator addresses: a Claude session id, or a Codex t
 the name a session shows, which is how a Claude worker is addressed and how a note about it reads;
 it is empty until the harness reports one, and cones withholds a name that is only the job's id.
 
-Prints nothing when the roster still holds the same pids in the same states, else the `new:`,
+Prints nothing when the roster holds the same native identities in the same states, else the `new:`,
 `gone:` and `state:` sections that changed. The caller advances roster.prev once it reports.
 """
 
@@ -70,19 +70,25 @@ def rows(stream, self_pid):
 
 def delta(previous, current):
     """The sections worth a model turn: arrivals, departures, and a state that changed."""
-    was = {row.split("\t")[0]: row for row in previous}
-    now = {row.split("\t")[0]: row for row in current}
+    # The native conversation/run is the worker's identity. A client can restart
+    # or switch conversations without its PID describing the task transition.
+    def identity(row):
+        fields = row.split("\t")
+        return tuple(fields[1:4])
+
+    was = {identity(row): row for row in previous}
+    now = {identity(row): row for row in current}
     sections = []
-    arrived = [now[pid] for pid in now if pid not in was]
-    left = [was[pid] for pid in was if pid not in now]
+    arrived = [now[key] for key in now if key not in was]
+    left = [was[key] for key in was if key not in now]
     moved = []
-    for pid, row in now.items():
-        if pid not in was:
+    for key, row in now.items():
+        if key not in was:
             continue
-        before, after = was[pid].split("\t")[4], row.split("\t")[4]
+        before, after = was[key].split("\t")[4], row.split("\t")[4]
         if before != after:
             fields = row.split("\t")
-            moved.append(f"{pid}\t{fields[1]}\t{fields[3]}\t{before} > {after}")
+            moved.append(f"{fields[0]}\t{fields[1]}\t{fields[3]}\t{before} > {after}")
     for name, lines in (("new", arrived), ("gone", left), ("state", moved)):
         if lines:
             sections.append(f"{name}:\n" + "\n".join(lines))

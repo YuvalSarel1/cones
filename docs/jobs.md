@@ -196,7 +196,7 @@ Overlap is per job. Two jobs sharing a directory may both run; shared-file coord
 
 ## Run lifecycle
 
-A run is one supervised harness process. `cones run` takes a global admission lock, reaps orphaned runs and applies skip rules. It then creates a gated worker in its own process group, appends `started`, releases the worker, and reads events until completion or termination. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
+A run is one supervised harness process. `cones run` takes an admission lock for its job, reaps orphaned runs and applies skip rules. Replacement can wait for that job's old run without blocking admission for other jobs. It then creates a gated worker in its own process group, appends `started`, releases the worker, and reads events until completion or termination. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
 
 On timeout, stop, replacement or permission denial, the whole worker process group receives SIGTERM, then SIGKILL after two seconds. The worker also ends itself one second beyond the configured timeout or when its supervisor disappears.
 

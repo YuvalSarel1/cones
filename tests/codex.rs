@@ -242,7 +242,13 @@ fn no_codex_home_means_no_process_scan() {
         assert_eq!(home(&claude), dir.path().join(".codex"));
     }
     assert!(sessions(&dir.path().join(".codex")).unwrap().is_empty());
-    assert!(cones::fleet::all(&claude).unwrap().is_empty());
+    assert!(
+        cones::fleet::all(&claude)
+            .unwrap()
+            .iter()
+            .all(|session| session.harness != "codex"),
+        "an unrelated installed harness does not give Codex a native home"
+    );
 }
 
 /// A process table that cannot be read means unknown, not "no Codex or pi client is running":

@@ -156,11 +156,13 @@ impl Ledger {
             state: state.to_owned(),
         })
     }
-    /// Serialize admission and reservations; release before concurrent execution.
-    pub fn admission_lock(&self) -> Result<File> {
+    /// Serialize admission for one job; replacement must not hold up other jobs.
+    pub fn admission_lock(&self, job: &str) -> Result<File> {
+        use sha2::{Digest, Sha256};
         let directory = self.state.join("locks").join("admission");
         private_dir(&directory)?;
-        let f = private_file(&directory.join("global.lock"))?;
+        let name = format!("{:x}.lock", Sha256::digest(job.as_bytes()));
+        let f = private_file(&directory.join(name))?;
         f.lock_exclusive()?;
         Ok(f)
     }

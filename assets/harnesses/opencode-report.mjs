@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 
 // Loaded only by a cones-owned viewer. Read OpenCode's native TUI state without
 // registering tools, changing permissions, or handling the user's input.
@@ -6,9 +6,18 @@ export default {
   id: "cones-session-report",
   async tui(api, options) {
     let previous;
+    let published = 0;
+    const invalidate = () => {
+      previous = undefined;
+      published = 0;
+      try { rmSync(options.path, { force: true }); } catch {}
+    };
     const publish = () => {
-      if (!api.state.ready) return;
       try {
+        if (!api.state.ready) {
+          invalidate();
+          return;
+        }
         const route = api.route.current;
         const id = route.name === "session" ? route.params?.sessionID : undefined;
         const session = id ? api.state.session.get(id) : undefined;
@@ -44,17 +53,24 @@ export default {
           } : undefined,
           last: reply?.text.trim().split("\n", 1)[0].slice(0, 512),
         });
-        if (report === previous) return;
+        const now = Date.now();
+        // An unchanged idle session still proves the reporter is alive.
+        if (report === previous && now - published < 1000) return;
         const temporary = `${options.path}.tmp`;
         writeFileSync(temporary, report, { mode: 0o600 });
         renameSync(temporary, options.path);
         previous = report;
+        published = now;
       } catch {
         // Reporting must not interrupt OpenCode's editor or execution.
+        invalidate();
       }
     };
     const timer = setInterval(publish, 250);
-    api.lifecycle.onDispose(() => clearInterval(timer));
+    api.lifecycle.onDispose(() => {
+      clearInterval(timer);
+      invalidate();
+    });
     publish();
   },
 };

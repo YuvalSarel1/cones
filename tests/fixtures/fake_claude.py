@@ -26,7 +26,11 @@ transcript = pathlib.Path.home() / ".claude/projects" / cwd_key / (session + ".j
 transcript.parent.mkdir(parents=True, exist_ok=True)
 transcript.write_text(json.dumps({"sessionId": session, "type": "user"}) + "\n")
 
-if mode in ("hang", "slow", "descendant"):
+if mode == "barrier":
+    while not (ledger.parent / "release").exists():
+        time.sleep(0.01)
+
+if mode in ("hang", "descendant"):
     if mode in ("hang", "descendant"):
         child = subprocess.Popen(
             ["/bin/sh", "-c", "trap '' TERM; while :; do sleep 1; done"],
@@ -37,8 +41,6 @@ if mode in ("hang", "slow", "descendant"):
     if mode == "hang":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
         time.sleep(120)
-    if mode == "slow":
-        time.sleep(2)
 
 if mode == "permission":
     emit({"type": "system", "subtype": "permission_denied", "session_id": session})
