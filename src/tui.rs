@@ -8847,6 +8847,13 @@ impl App {
         self.needs_clear = true;
     }
 
+    /// A narrowed pane reflows the frame already on screen, so the next diffed draw lands on
+    /// shifted leftovers and the dashboard appears cut off at both edges until it is resized
+    /// again. Repaint the whole screen instead of diffing against what the terminal did.
+    fn resized(&mut self) {
+        self.needs_clear = true;
+    }
+
     /// Select a listed row and enter it. The composer keeps its draft: switching sessions
     /// is navigation, not a launch.
     fn enter_row(&mut self, at: usize) -> Result<()> {
@@ -14669,6 +14676,7 @@ pub fn run(
                     }
                     Event::Paste(text) => app.paste(&text),
                     Event::Mouse(m) => app.mouse(m),
+                    Event::Resize(..) => app.resized(),
                     _ => {}
                 }
                 app.report_view("input");
@@ -20943,6 +20951,21 @@ mod tests {
             "{screen:#?}"
         );
         assert!(!screen[0].starts_with("VIEW"), "{screen:#?}");
+    }
+
+    /// A resize was the one event the loop dropped. The terminal reflows the frame already on
+    /// screen when its pane narrows, so diffing the next draw against it left the dashboard
+    /// cut off at both edges until the window was resized a second time.
+    #[test]
+    fn a_resize_repaints_the_whole_screen() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(!app.needs_clear, "a drawn frame is on screen");
+        app.resized();
+        assert!(app.needs_clear, "the next draw clears instead of diffing");
     }
 
     #[test]
