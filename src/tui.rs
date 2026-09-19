@@ -9581,17 +9581,20 @@ impl App {
                 self.diagnostic_peek = None;
                 self.prespawn(id, cwd);
             }
+            // Every refusal is a dead pane the reader cannot explain, so the log names all of
+            // them but the states browsing passes through on its way to a peek. A reason added
+            // later is diagnosed without being listed here: silence is the exception.
             Err(reason)
                 if self.log.is_some()
-                    && matches!(
+                    && !matches!(
                         reason,
-                        "explicit_open_required"
-                            | "native_kind_cannot_peek"
-                            | "native_viewer_unavailable"
-                            | "client_would_be_discovered"
-                            | "action_pending"
-                            | "hidden"
-                            | "unknown_harness"
+                        "not_browsing_sessions"
+                            | "no_viewer_target"
+                            | "cursor_rest"
+                            | "already_attempted"
+                            | "selection_changed"
+                            | "launch_pending"
+                            | "viewer_already_open"
                     ) =>
             {
                 let data = json!({"row": self.selected().map(|r| self.row_context(&r.kind)), "reason": reason});
