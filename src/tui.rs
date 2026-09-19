@@ -3236,7 +3236,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 47] = [
+const FIELDS: [Field; 57] = [
     Field {
         group: "cones",
         sub: "",
@@ -3400,6 +3400,16 @@ const FIELDS: [Field; 47] = [
     },
     Field {
         group: "harnesses",
+        sub: "",
+        name: "claude_in_picker",
+        short: "claude in picker",
+        hint: "Offer claude in the composer's launch picker.",
+        long: "true keeps claude in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning claude off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
         sub: "claude",
         name: "model",
         short: "model",
@@ -3441,6 +3451,16 @@ const FIELDS: [Field; 47] = [
     },
     Field {
         group: "harnesses",
+        sub: "",
+        name: "codex_in_picker",
+        short: "codex in picker",
+        hint: "Offer codex in the composer's launch picker.",
+        long: "true keeps codex in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning codex off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
         sub: "codex",
         name: "codex_model",
         short: "model",
@@ -3475,6 +3495,16 @@ const FIELDS: [Field; 47] = [
         short: "pi",
         hint: "Include pi in the composer and session list.",
         long: "true offers pi in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed, and a job that names it still runs it.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "pi_in_picker",
+        short: "pi in picker",
+        hint: "Offer pi in the composer's launch picker.",
+        long: "true keeps pi in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning pi off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -3522,6 +3552,16 @@ const FIELDS: [Field; 47] = [
     },
     Field {
         group: "harnesses",
+        sub: "",
+        name: "opencode_in_picker",
+        short: "opencode in picker",
+        hint: "Offer opencode in the composer's launch picker.",
+        long: "true keeps opencode in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning opencode off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
         sub: "opencode",
         name: "opencode_model",
         short: "provider/model",
@@ -3537,6 +3577,16 @@ const FIELDS: [Field; 47] = [
         short: "gemini",
         hint: "Offer gemini sessions.",
         long: "Enable terminal launch and process discovery for gemini. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "gemini_in_picker",
+        short: "gemini in picker",
+        hint: "Offer gemini in the composer's launch picker.",
+        long: "true keeps gemini in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning gemini off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -3562,6 +3612,16 @@ const FIELDS: [Field; 47] = [
     },
     Field {
         group: "harnesses",
+        sub: "",
+        name: "cursor_in_picker",
+        short: "cursor-agent in picker",
+        hint: "Offer cursor-agent in the composer's launch picker.",
+        long: "true keeps cursor-agent in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning cursor-agent off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
         sub: "cursor-agent",
         name: "cursor_model",
         short: "model",
@@ -3577,6 +3637,16 @@ const FIELDS: [Field; 47] = [
         short: "copilot",
         hint: "Offer copilot sessions.",
         long: "Enable terminal launch and process discovery for copilot. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "copilot_in_picker",
+        short: "copilot in picker",
+        hint: "Offer copilot in the composer's launch picker.",
+        long: "true keeps copilot in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning copilot off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -3603,6 +3673,16 @@ const FIELDS: [Field; 47] = [
     Field {
         group: "harnesses",
         sub: "",
+        name: "amp_in_picker",
+        short: "amp in picker",
+        hint: "Offer amp in the composer's launch picker.",
+        long: "true keeps amp in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning amp off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
         name: "droid_enabled",
         short: "droid",
         hint: "Offer droid sessions.",
@@ -3613,10 +3693,30 @@ const FIELDS: [Field; 47] = [
     Field {
         group: "harnesses",
         sub: "",
+        name: "droid_in_picker",
+        short: "droid in picker",
+        hint: "Offer droid in the composer's launch picker.",
+        long: "true keeps droid in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning droid off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
         name: "kimi_enabled",
         short: "kimi",
         hint: "Offer kimi sessions.",
         long: "Enable terminal launch and process discovery for kimi. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "kimi_in_picker",
+        short: "kimi in picker",
+        hint: "Offer kimi in the composer's launch picker.",
+        long: "true keeps kimi in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning kimi off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -4088,6 +4188,16 @@ impl ConfigForm {
                 "droid_enabled" => flag(d.droid_enabled),
                 "kimi_model" => d.kimi_model.clone().unwrap_or_default(),
                 "kimi_enabled" => flag(d.kimi_enabled),
+                "claude_in_picker" => flag(d.claude_in_picker),
+                "codex_in_picker" => flag(d.codex_in_picker),
+                "pi_in_picker" => flag(d.pi_in_picker),
+                "opencode_in_picker" => flag(d.opencode_in_picker),
+                "gemini_in_picker" => flag(d.gemini_in_picker),
+                "cursor_in_picker" => flag(d.cursor_in_picker),
+                "copilot_in_picker" => flag(d.copilot_in_picker),
+                "amp_in_picker" => flag(d.amp_in_picker),
+                "droid_in_picker" => flag(d.droid_in_picker),
+                "kimi_in_picker" => flag(d.kimi_in_picker),
 
                 "check" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
@@ -4268,6 +4378,16 @@ impl ConfigForm {
             kimi_enabled: flag("kimi_enabled"),
 
             claude_enabled: flag("claude_enabled"),
+            claude_in_picker: flag("claude_in_picker"),
+            codex_in_picker: flag("codex_in_picker"),
+            pi_in_picker: flag("pi_in_picker"),
+            opencode_in_picker: flag("opencode_in_picker"),
+            gemini_in_picker: flag("gemini_in_picker"),
+            cursor_in_picker: flag("cursor_in_picker"),
+            copilot_in_picker: flag("copilot_in_picker"),
+            amp_in_picker: flag("amp_in_picker"),
+            droid_in_picker: flag("droid_in_picker"),
+            kimi_in_picker: flag("kimi_in_picker"),
             codex_enabled: flag("codex_enabled"),
             pi_enabled: flag("pi_enabled"),
             opencode_enabled: flag("opencode_enabled"),
@@ -10599,8 +10719,8 @@ impl App {
     fn harness_at(kind: Option<HarnessKind>, policy: &config::Policy) -> usize {
         let all = harness::launchable();
         all.iter()
-            .position(|k| Some(*k) == kind && policy.enabled_for(*k))
-            .or_else(|| all.iter().position(|k| policy.enabled_for(*k)))
+            .position(|k| Some(*k) == kind && policy.in_picker(*k))
+            .or_else(|| all.iter().position(|k| policy.in_picker(*k)))
             .unwrap_or(all.len())
     }
 
@@ -10611,7 +10731,7 @@ impl App {
         let all = harness::launchable();
         self.harness = (1..=all.len() + 1)
             .map(|step| (self.harness + step) % (all.len() + 1))
-            .find(|&i| i == all.len() || policy.enabled_for(all[i]))
+            .find(|&i| i == all.len() || policy.in_picker(all[i]))
             .unwrap_or(all.len());
     }
 
@@ -14975,6 +15095,15 @@ mod tests {
             })
             .is_empty()
         );
+        assert_eq!(
+            off(config::Policy {
+                claude_in_picker: Some(false),
+                codex_in_picker: Some(false),
+                ..Default::default()
+            }),
+            ["dddd", A],
+            "hiding a launcher leaves externally started sessions listed"
+        );
     }
 
     /// Forgetting drops the saved record, but the daemon keeps the thread's writer lock for minutes
@@ -16983,6 +17112,45 @@ mod tests {
         assert!(app.terminal_selected(), "the terminal stays reachable");
         cycle(&mut app);
         assert_eq!(app.launch_name(), "codex", "the cycle wraps");
+    }
+
+    #[test]
+    fn the_composer_skips_a_hidden_launcher_and_keeps_the_terminal() {
+        let d = dir();
+        let jobs = d.path().join("jobs.yaml");
+        let write = |text: &str| fs::write(&jobs, text).unwrap();
+        write("version: 4\ndefaults:\n  claude_in_picker: false\njobs: []\n");
+        let mut app = App::new(Path::new("cones"), &jobs, d.path(), d.path()).unwrap();
+        assert_eq!(
+            app.launch_name(),
+            "codex",
+            "a hidden startup selection moves to the next launcher"
+        );
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.launch_name(), "pi");
+        // pi is the third launcher, and claude is hidden: the rest, then the terminal.
+        for _ in 2..harness::launchable().len() {
+            app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        }
+        assert!(app.terminal_selected(), "the terminal stays reachable");
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.launch_name(), "codex", "claude is never landed on");
+
+        let hidden: String = [
+            "claude", "codex", "pi", "opencode", "gemini", "cursor", "copilot", "amp", "droid",
+            "kimi",
+        ]
+        .iter()
+        .map(|k| format!("  {k}_in_picker: false\n"))
+        .collect();
+        write(&format!("version: 4\ndefaults:\n{hidden}jobs: []\n"));
+        let mut app = App::new(Path::new("cones"), &jobs, d.path(), d.path()).unwrap();
+        assert!(
+            app.terminal_selected(),
+            "every launcher hidden leaves the terminal"
+        );
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.terminal_selected(), "and the cycle stays on it");
     }
 
     #[test]

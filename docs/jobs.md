@@ -61,22 +61,22 @@ Claude is the only harness cones can supervise, so it is the only one a job may 
 
 These are `defaults` fields. Harness keys also set `start.harness`; their order here is the composer's cycle order, followed by `terminal`.
 
-| Harness key | Enabled switch | Model default |
-| --- | --- | --- |
-| `claude` | `claude_enabled` | `model` |
-| `codex` | `codex_enabled` | `codex_model` |
-| `pi` | `pi_enabled` | `pi_model` |
-| `opencode` | `opencode_enabled` | `opencode_model` |
-| `gemini` | `gemini_enabled` | `gemini_model` |
-| `cursor-agent` | `cursor_enabled` | `cursor_model` |
-| `copilot` | `copilot_enabled` | `copilot_model` |
-| `amp` | `amp_enabled` | No override; native configuration |
-| `droid` | `droid_enabled` | No override; native configuration |
-| `kimi` | `kimi_enabled` | `kimi_model` |
+| Harness key | Enabled switch | In picker | Model default |
+| --- | --- | --- | --- |
+| `claude` | `claude_enabled` | `claude_in_picker` | `model` |
+| `codex` | `codex_enabled` | `codex_in_picker` | `codex_model` |
+| `pi` | `pi_enabled` | `pi_in_picker` | `pi_model` |
+| `opencode` | `opencode_enabled` | `opencode_in_picker` | `opencode_model` |
+| `gemini` | `gemini_enabled` | `gemini_in_picker` | `gemini_model` |
+| `cursor-agent` | `cursor_enabled` | `cursor_in_picker` | `cursor_model` |
+| `copilot` | `copilot_enabled` | `copilot_in_picker` | `copilot_model` |
+| `amp` | `amp_enabled` | `amp_in_picker` | No override; native configuration |
+| `droid` | `droid_enabled` | `droid_in_picker` | No override; native configuration |
+| `kimi` | `kimi_enabled` | `kimi_in_picker` | `kimi_model` |
 
 The last six are [experimental terminal launchers](harness.md#additional-terminal-harnesses). They have no native history, activity or usage reports and cannot run supervised jobs. Their CLIs must be installed and authenticated separately; [executable lookup](cli.md#native-cli-lookup) explains where cones finds them.
 
-An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) writes them to `defaults` beside the composer, for the harness it names.
+An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An unset `_in_picker` key means offered too; `false` takes the harness out of the composer cycle and startup selection alone, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. The enabled switch wins: a harness that is off is out of the picker whatever its picker key says, and with every launcher hidden the composer comes up on the terminal. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) writes them to `defaults` beside the composer, for the harness it names.
 
 Pi also accepts `pi_provider`, and Codex accepts `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
 

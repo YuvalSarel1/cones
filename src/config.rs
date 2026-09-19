@@ -108,6 +108,20 @@ pub struct Policy {
     pub droid_enabled: Option<bool>,
     pub kimi_enabled: Option<bool>,
 
+    /// Harnesses the launch picker offers. Unset is offered; `false` takes the harness out of
+    /// the composer's cycle while discovery, history and native controls carry on. A harness
+    /// `*_enabled` turns off is out of the picker whatever this says.
+    pub claude_in_picker: Option<bool>,
+    pub codex_in_picker: Option<bool>,
+    pub pi_in_picker: Option<bool>,
+    pub opencode_in_picker: Option<bool>,
+    pub gemini_in_picker: Option<bool>,
+    pub cursor_in_picker: Option<bool>,
+    pub copilot_in_picker: Option<bool>,
+    pub amp_in_picker: Option<bool>,
+    pub droid_in_picker: Option<bool>,
+    pub kimi_in_picker: Option<bool>,
+
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Passed to whichever harness a run names. Both must be configured when `bedrock`
@@ -164,6 +178,25 @@ impl Policy {
             HarnessKind::Kimi => self.kimi_enabled,
         }
         .unwrap_or(true)
+    }
+
+    /// Whether the composer offers this harness. Hiding a launcher is a picker preference
+    /// only: its sessions stay listed and discovery keeps reading its native home.
+    pub fn in_picker(&self, kind: HarnessKind) -> bool {
+        self.enabled_for(kind)
+            && match kind {
+                HarnessKind::Claude => self.claude_in_picker,
+                HarnessKind::Codex => self.codex_in_picker,
+                HarnessKind::Pi => self.pi_in_picker,
+                HarnessKind::Opencode => self.opencode_in_picker,
+                HarnessKind::Gemini => self.gemini_in_picker,
+                HarnessKind::Cursor => self.cursor_in_picker,
+                HarnessKind::Copilot => self.copilot_in_picker,
+                HarnessKind::Amp => self.amp_in_picker,
+                HarnessKind::Droid => self.droid_in_picker,
+                HarnessKind::Kimi => self.kimi_in_picker,
+            }
+            .unwrap_or(true)
     }
 
     pub fn provider_for(&self, kind: HarnessKind) -> Option<&str> {
@@ -888,6 +921,16 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("codex_enabled", d.codex_enabled),
         ("pi_enabled", d.pi_enabled),
         ("opencode_enabled", d.opencode_enabled),
+        ("claude_in_picker", d.claude_in_picker),
+        ("codex_in_picker", d.codex_in_picker),
+        ("pi_in_picker", d.pi_in_picker),
+        ("opencode_in_picker", d.opencode_in_picker),
+        ("gemini_in_picker", d.gemini_in_picker),
+        ("cursor_in_picker", d.cursor_in_picker),
+        ("copilot_in_picker", d.copilot_in_picker),
+        ("amp_in_picker", d.amp_in_picker),
+        ("droid_in_picker", d.droid_in_picker),
+        ("kimi_in_picker", d.kimi_in_picker),
     ] {
         put(key, value.map(|v| v.to_string()));
     }
@@ -1723,6 +1766,28 @@ mod tests {
     }
 
     #[test]
+    fn hiding_a_launcher_leaves_its_harness_enabled() {
+        let (_d, p) = file(FILE);
+        let d = Policy {
+            codex_in_picker: Some(false),
+            ..Policy::default()
+        };
+        write_config(&p, &d, None, None, None, None, None, None, None, None, None).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains("  codex_in_picker: false\n"), "{text}");
+        let written = defaults(&p);
+        assert!(!written.in_picker(HarnessKind::Codex));
+        assert!(
+            written.enabled_for(HarnessKind::Codex),
+            "hiding the launcher leaves discovery and jobs alone"
+        );
+        assert!(
+            written.in_picker(HarnessKind::Claude),
+            "and leaves every other launcher in the picker"
+        );
+    }
+
+    #[test]
     fn write_config_replaces_the_blocks_creates_them_and_checks_them() {
         let (_d, p) = file(FILE);
         let d = Policy {
@@ -1785,6 +1850,14 @@ mod tests {
         assert!(
             written.enabled_for(HarnessKind::Claude),
             "unset stays offered"
+        );
+        assert!(
+            !written.in_picker(HarnessKind::Opencode),
+            "a harness that is off is out of the picker too"
+        );
+        assert!(
+            written.in_picker(HarnessKind::Claude),
+            "unset stays in the picker"
         );
 
         // The defaults are resolved before the file is touched, so a name the sequence
