@@ -122,7 +122,7 @@ states:
         description: "Show or hide history."
       - keys: ["ctrl+f"]
         action: filter
-        description: "Filter rows; enter keeps the filter and esc clears it."
+        description: "Filter rows by text, :attention or :unread; enter keeps the filter and esc clears it."
       - keys: ["ctrl+n"]
         action: rename
         description: "Rename the selected Claude session."

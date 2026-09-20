@@ -8,6 +8,12 @@
 
 The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a read failed: the previous counts and rows stay visible, with the reason in the result line, until a read succeeds. Background reads start one second after the previous read completes. Manual actions discard obsolete reads, so an older snapshot cannot undo a stop or removal.
 
+A separate `●` marks a newly observed completion you have not reviewed. The summary counts unread completions without changing native state. Entering its painted live viewer or focusing its loaded output preview clears the marker; selecting or hovering a row does not. Input requests remain until the harness reports that they are resolved.
+
+Press `ctrl+f` and type `:attention` for input requests and unread completions, or `:unread` for completions alone. Add a space and text to narrow either filter. Existing completed sessions form the first baseline instead of appearing as an unread backlog. Read markers are shared by dashboards using the same state directory and survive restart. Cones observes native state transitions and changed final replies; it cannot count turns that begin and end between reads with an identical final reply.
+
+Desktop notifications are optional, off by default. Set `start.notify: true` in Config's `cones` / `start` subsection. Newly reported input requests and completions can notify; the focused session stays quiet. This setting is separate from scheduled jobs' failure notifications.
+
 | Key | Action |
 | --- | --- |
 | `↑ ↓` | Select rows; up past the first table reaches the menu. |
@@ -25,6 +31,10 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 `ctrl+b` lists the sessions and runs entered from this dashboard, most recent first and without the one you are on, so the first row is the session to go back to. Pressing `ctrl+b` again enters it; the arrows choose another row and `enter` takes it. Moving through the list only highlights rows: nothing is entered until you choose it. Only entering a row records it, so resting on a row, a read-only preview and a speculative viewer leave the order alone. A session that has closed is no longer listed and is never resumed to satisfy the list. Switching sessions keeps the composer draft and every open viewer's own state.
 
 Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
+
+Quitting cones detaches from its hosted terminals: shells, pi, OpenCode, interactive Claude forks and experimental launchers started here. Reopen cones with the same state directory and press Enter on the row to reconnect to the same process, including its native editor draft. `ctrl+x` twice explicitly stops that terminal. Claude background sessions and Codex daemon threads retain their native ownership; their attach clients are not retained by the new host, and their draft behavior remains native.
+
+Each owned terminal has a detached host and permits one attached dashboard at a time. A second dashboard reports that it is already open; it does not steal input. Closing the first dashboard releases the connection. Processes survive dashboard crashes, but not a host crash or machine restart. Native conversation history can still be resumed afterward; arbitrary shell processes are not automatically restarted. Cones never adopts or stops unrelated external terminals on exit.
 
 The footer has two labeled lines: actions for the current selection or draft,
 then navigation and `ctrl+g help`. Session actions appear while browsing;
@@ -174,7 +184,7 @@ The pinned folder is dropped in among the other folders in sorted order and take
 
 ### Fork a conversation
 
-Select a live session or a history entry and press `ctrl+y`. Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open an interactive viewer, which stays alive when you return to the list and ends when that viewer or dashboard closes; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
+Select a live session or a history entry and press `ctrl+y`. Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open a persistent interactive terminal; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
 
 In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is hidden or in another state group, the fork remains visible with a branch mark; once the parent is gone the mark goes with it and the fork reads as an ordinary row. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
 
@@ -254,7 +264,7 @@ Type an instruction and press `enter` to start a native session in the selected 
 
 On `terminal`, type or paste a command and press `enter` to run it in a new interactive shell in that directory and focus its pane. An empty command opens the shell at its prompt. The command field supports the composer's editing keys and `shift+enter` for a new line. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
 
-From the list, Tab returns to the selected terminal in either split or full-screen layout; Enter with `terminal` selected opens another one. Shell rows survive dashboard refreshes and end when the shell exits, you close their viewer with Ctrl+X twice, or the dashboard closes. Terminal commands and agent instructions keep separate drafts when switching with `shift+tab`. Escape clears a drafted command; with the command empty, it returns to the default harness.
+From the list, Enter reconnects to a selected owned terminal when the command field is empty. Tab focuses a viewer already open in this dashboard. Select a folder to open another shell, or type a command to start one. Shell rows survive dashboard refreshes and closure; they end when the shell exits or you stop it with Ctrl+X twice. Terminal commands and agent instructions keep separate drafts when switching with `shift+tab`. Escape clears a drafted command; with the command empty, it returns to the default harness.
 
 The instruction wraps to at most eight text rows. In a side-by-side pane it aligns with Claude or pi's input box when that box is near the bottom; Codex and log viewers keep the composer at its normal position. Scrolling history does not move it.
 

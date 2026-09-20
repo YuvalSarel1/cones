@@ -9,14 +9,14 @@ mod readme_capture;
 mod stress;
 
 use crate::{
-    codex,
+    attention, codex,
     config::{self, HarnessKind, ResolvedJob},
     context, copy,
     fleet::{self, Session},
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    mcp, output, runner, terminal, transcript,
+    mcp, output, runner, terminal, terminal_host, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -199,6 +199,7 @@ pub struct Data {
     pub jobs_path: PathBuf,
     pub runs: Vec<Run>,
     pub sessions: Vec<Session>,
+    hosts: Vec<terminal_host::Record>,
     /// Live sessions a ledger run owns. Their rows collapse into the run's, so they are kept
     /// out of `sessions`; a peek still joins them the way it joins any agent.
     pub run_sessions: Vec<Session>,
@@ -276,6 +277,14 @@ impl Data {
                 operation,
             )
         );
+        let hosts: Vec<_> = terminal_host::records(state)
+            .into_iter()
+            .filter(|h| {
+                harness::by_name(&h.session.harness)
+                    .is_none_or(|spec| offered.enabled_for(spec.kind))
+            })
+            .collect();
+        merge_hosts(&mut sessions, &hosts);
         crate::forks::apply(&crate::forks::read(state)?, claude, &mut sessions);
         let reports_started = Instant::now();
         let run_reports = runs
@@ -374,6 +383,7 @@ impl Data {
             jobs_path: jobs_path.to_owned(),
             runs,
             sessions,
+            hosts,
             run_sessions,
             columns,
             columns_default,
@@ -2380,7 +2390,44 @@ pub fn fleet_rows(
     runs: &[Run],
     offered: &config::Policy,
 ) -> Result<Vec<Session>> {
-    Ok(fleet_rows_observed(claude, state, runs, offered, None, None, None)?.0)
+    let mut rows = fleet_rows_observed(claude, state, runs, offered, None, None, None)?.0;
+    let hosts: Vec<_> = terminal_host::records(state)
+        .into_iter()
+        .filter(|h| {
+            harness::by_name(&h.session.harness).is_none_or(|spec| offered.enabled_for(spec.kind))
+        })
+        .collect();
+    merge_hosts(&mut rows, &hosts);
+    Ok(rows)
+}
+
+fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
+    for host in hosts {
+        if let Some(row) = rows.iter_mut().find(|s| {
+            s.harness == host.session.harness && s.pid.is_some() && s.pid == host.session.pid
+        }) {
+            if row.harness == "opencode" {
+                let usage = row.usage;
+                *row = host.session.clone();
+                row.usage = usage;
+            } else {
+                if row.title.is_none() {
+                    row.title = host.session.title.clone();
+                }
+                if row.forked_from.is_none() && row.session_id == host.session.session_id {
+                    row.forked_from = host.session.forked_from.clone();
+                }
+            }
+        } else {
+            let mut row = host.session.clone();
+            // The host records process ownership, not agent activity. Only the
+            // native OpenCode reporter can supply state here without discovery.
+            if row.harness != "opencode" {
+                row.state = "-".into();
+            }
+            rows.push(row);
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3690,7 +3737,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 57] = [
+const FIELDS: [Field; 58] = [
     Field {
         group: "cones",
         sub: "",
@@ -3707,7 +3754,7 @@ const FIELDS: [Field; 57] = [
         name: "start.harness",
         short: "composer starts on",
         hint: "Default harness for the composer.",
-        long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex, pi and OpenCode sessions start; their jobs remain unavailable. Pi and OpenCode run in the dashboard's own viewer and end with it. Model and provider defaults are below.",
+        long: "The harness the composer is on in a new cones terminal; shift+tab changes it or selects a terminal, and cones writes nothing back. Codex, pi and OpenCode sessions start; their jobs remain unavailable. Pi and OpenCode run in persistent cones terminals. Model and provider defaults are below.",
         builtin: "claude",
         input: Answer::Pick(&[
             "-",
@@ -3722,6 +3769,16 @@ const FIELDS: [Field; 57] = [
             "droid",
             "kimi",
         ]),
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.notify",
+        short: "desktop notifications",
+        hint: "Notify when a background session needs input or completes.",
+        long: "Opt in to desktop notifications for newly reported input requests and completed work. The focused session stays quiet. Unread markers and the :attention filter work with notifications off. This does not change scheduled jobs' notify setting.",
+        builtin: "false",
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "cones",
@@ -4663,6 +4720,7 @@ impl ConfigForm {
                 "aws_region" => d.aws_region.clone().unwrap_or_default(),
                 "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
+                "start.notify" => start.map(|s| s.notify.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
                 "pane.ratio" => pane(|p| p.ratio.to_string()),
                 "activity.bars" => spark(|s| s.bars.to_string()),
@@ -4922,7 +4980,7 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        let start = if ["harness", "pane"]
+        let start = if ["harness", "pane", "notify"]
             .iter()
             .all(|f| v(&format!("start.{f}")).is_empty())
         {
@@ -4936,6 +4994,7 @@ impl ConfigForm {
                     .find(|k| k.to_string() == v("start.harness"))
                     .unwrap_or(built.harness),
                 pane: flag("start.pane").unwrap_or(built.pane),
+                notify: flag("start.notify").unwrap_or(built.notify),
             })
         };
         let mark = num("confirm_secs", "seconds, as in 2")?;
@@ -8018,6 +8077,7 @@ struct App {
     transcript: TranscriptView,
     /// Row keys of the sessions and runs entered from here, most recent first.
     recent: Vec<String>,
+    attention: attention::Tracker,
     mode: Mode,
     status: String,
     /// Composer text; `caret` is a byte offset.
@@ -8346,7 +8406,7 @@ impl App {
             .as_ref()
             .map(|l| l.dashboard_id.clone())
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        Ok(Self {
+        let mut app = Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
             state: state.to_owned(),
@@ -8367,6 +8427,7 @@ impl App {
             history: HistoryView::default(),
             transcript: TranscriptView::default(),
             recent: Vec::new(),
+            attention: attention::Tracker::default(),
             mode: Mode::Normal,
             status: String::new(),
             text: String::new(),
@@ -8415,7 +8476,9 @@ impl App {
             rest: None,
             prespawned: None,
             list_area: Rect::default(),
-        })
+        };
+        app.update_attention();
+        Ok(app)
     }
 
     fn debug(&self, msg: impl FnOnce() -> String) {
@@ -8979,6 +9042,7 @@ impl App {
             self.transcript.select(Some(target));
             self.transcript.focused = true;
             self.status.clear();
+            self.review_focused();
         }
     }
 
@@ -9807,7 +9871,21 @@ impl App {
     /// The counts, marked when they are the last good read rather than a current one. The status
     /// line carries the reason and the next action overwrites it; this stays until a read succeeds.
     fn header_summary(&self) -> Line<'static> {
-        let summary = self.data.summary(spinner_frame(self.tick));
+        let mut summary = self.data.summary(spinner_frame(self.tick));
+        let unread = self
+            .attention_observations()
+            .iter()
+            .filter(|o| self.attention.unread(o))
+            .count();
+        if unread > 0 {
+            summary.spans.insert(
+                0,
+                Span::styled(
+                    format!("● {unread} unread · "),
+                    Style::default().fg(Color::Green),
+                ),
+            );
+        }
         if !self.stale {
             return summary;
         }
@@ -9820,6 +9898,77 @@ impl App {
         )];
         spans.extend(summary.spans);
         Line::from(spans)
+    }
+
+    fn attention_observations(&self) -> Vec<attention::Observation> {
+        self.data
+            .sessions
+            .iter()
+            .filter_map(attention::Observation::session)
+            .chain(self.data.runs.iter().map(attention::Observation::run))
+            .collect()
+    }
+
+    fn attention_for(&self, id: &str) -> Option<attention::Observation> {
+        self.data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .and_then(attention::Observation::session)
+            .or_else(|| {
+                self.data
+                    .runs
+                    .iter()
+                    .find(|r| r.started.run_id == id.strip_prefix("run:").unwrap_or(id))
+                    .map(attention::Observation::run)
+            })
+    }
+
+    fn reviewed_observation(&self) -> Option<attention::Observation> {
+        if let Some(open) = self.focus.and_then(|i| self.viewers.get(i)) {
+            if open.viewer.first_paint().is_some() && !open.viewer.scrolled() {
+                return self.attention_for(&open.key);
+            }
+        } else if self.transcript.focused
+            && self.transcript.document.is_some()
+            && self.transcript.target == self.transcript_target()
+        {
+            return self
+                .selected()
+                .and_then(|r| r.kind.key())
+                .and_then(|id| self.attention_for(id));
+        }
+        None
+    }
+
+    fn update_attention(&mut self) {
+        let observations = self.attention_observations();
+        let reviewed = self
+            .reviewed_observation()
+            .map(|o| HashSet::from([o.key]))
+            .unwrap_or_default();
+        match self.attention.update(&self.state, &observations, &reviewed) {
+            Ok(notices) if self.data.start.notify => attention::notify(notices),
+            Ok(_) => {}
+            Err(error) => self.status = format!("attention markers could not be saved: {error}"),
+        }
+    }
+
+    fn review_focused(&mut self) {
+        let Some(observation) = self
+            .reviewed_observation()
+            .filter(|o| self.attention.unread(o))
+        else {
+            return;
+        };
+        match self.attention.update(
+            &self.state,
+            std::slice::from_ref(&observation),
+            &HashSet::from([observation.key.clone()]),
+        ) {
+            Ok(_) => self.rebuild_with_reason("completion_reviewed"),
+            Err(error) => self.status = format!("attention markers could not be saved: {error}"),
+        }
     }
 
     fn apply(&mut self, mut data: Data) {
@@ -9839,8 +9988,24 @@ impl App {
             .retain(|id| data.sessions.iter().any(|s| &s.session_id == id));
         data.sessions
             .retain(|s| !self.removed_sessions.contains(&s.session_id));
-        data.sessions.retain(|s| s.harness != "terminal");
-        data.sessions.extend(self.terminals.iter().cloned());
+        self.terminals.retain(|s| {
+            data.hosts
+                .iter()
+                .any(|h| h.session.session_id == s.session_id)
+                || self
+                    .viewers
+                    .iter()
+                    .any(|v| v.key == s.session_id && v.viewer.host().is_none())
+        });
+        for session in &self.terminals {
+            if !data
+                .sessions
+                .iter()
+                .any(|s| s.session_id == session.session_id)
+            {
+                data.sessions.push(session.clone());
+            }
+        }
         let on = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
@@ -9961,6 +10126,7 @@ impl App {
                 "sessions": self.data.sessions.len(), "runs": self.data.runs.len(), "jobs": self.data.jobs.len(),
             }));
         }
+        self.update_attention();
         self.rebuild_with_reason("refresh");
         if let Some(id) = on
             .as_ref()
@@ -10154,6 +10320,9 @@ impl App {
                 }
                 open.key = id.clone();
             }
+            if let Some(session) = data.sessions.iter().find(|s| s.session_id == open.key) {
+                open.viewer.update_host(session);
+            }
         }
         // The live client is still our row while discovery has no certain native identity.
         for open in &self.viewers {
@@ -10243,6 +10412,53 @@ impl App {
         } else {
             self.rows.extend(history);
         }
+        let unread: HashSet<String> = self
+            .data
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                attention::Observation::session(s)
+                    .filter(|o| self.attention.unread(o))
+                    .map(|_| s.session_id.clone())
+            })
+            .chain(
+                self.data
+                    .runs
+                    .iter()
+                    .filter(|r| self.attention.unread(&attention::Observation::run(r)))
+                    .map(|r| r.started.run_id.clone()),
+            )
+            .collect();
+        if !unread.is_empty() {
+            for table in [&mut self.rows, &mut self.other] {
+                let headers: HashSet<usize> = table
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, row)| {
+                        (row.kind == Kind::Columns
+                            && table[i + 1..]
+                                .iter()
+                                .take_while(|r| r.kind != Kind::Columns)
+                                .any(|r| matches!(r.kind, Kind::Session(..) | Kind::Run(..))))
+                        .then_some(i)
+                    })
+                    .collect();
+                for (i, row) in table.iter_mut().enumerate() {
+                    let marker = match &row.kind {
+                        Kind::Session(id, _) | Kind::Run(id, _) => {
+                            Some(if unread.contains(id) { "● " } else { "  " })
+                        }
+                        _ if headers.contains(&i) => Some("  "),
+                        _ => None,
+                    };
+                    if let Some(marker) = marker
+                        && let Some((text, _)) = row.cells.first_mut()
+                    {
+                        text.insert_str(0, marker);
+                    }
+                }
+            }
+        }
         self.apply_filter();
         if let Some(k) = &keep
             && let Some(i) = self
@@ -10279,16 +10495,42 @@ impl App {
     /// when filtering, or they can hide the header above them.
     fn apply_filter(&mut self) {
         let needle = self.filter.text.to_lowercase();
+        let (attention_filter, needle) = if let Some(rest) = needle
+            .strip_prefix(":attention")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            (Some(false), rest.trim())
+        } else if let Some(rest) = needle
+            .strip_prefix(":unread")
+            .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+        {
+            (Some(true), rest.trim())
+        } else {
+            (None, needle.as_str())
+        };
         let rows = &self.rows;
         let matched: Vec<usize> = (0..rows.len())
             .filter(|&i| {
+                if let Some(unread_only) = attention_filter {
+                    return match &rows[i].kind {
+                        Kind::Session(id, state) | Kind::Run(id, state) => {
+                            let unread = self
+                                .attention_for(id)
+                                .is_some_and(|o| self.attention.unread(&o));
+                            (unread || (!unread_only && state == "blocked"))
+                                && rows[i].text().to_lowercase().contains(needle)
+                        }
+                        Kind::Menu | Kind::Header | Kind::Columns => true,
+                        _ => false,
+                    };
+                }
                 needle.is_empty()
                     || matches!(rows[i].kind, Kind::History(_) | Kind::HistoryStatus)
                     || (!rows[i].kind.selectable() && rows[i].kind != Kind::Columns)
-                    || rows[i].text().to_lowercase().contains(&needle)
+                    || rows[i].text().to_lowercase().contains(needle)
             })
             .collect();
-        if needle.is_empty() {
+        if needle.is_empty() && attention_filter.is_none() {
             self.visible = matched;
             return;
         }
@@ -10791,6 +11033,7 @@ impl App {
         });
         self.event("debug", "viewer.focused", || data);
         self.report_view("viewer_focus");
+        self.review_focused();
     }
 
     fn open(
@@ -10846,13 +11089,66 @@ impl App {
         } else {
             Viewer::spawn
         };
-        match spawn(
-            c,
-            self.pane.height,
-            self.pane.width,
-            normal,
-            self.colors.clone(),
-        ) {
+        let owned = key.starts_with("terminal:")
+            || self.viewer_harness(&key).is_some_and(|kind| {
+                kind != HarnessKind::Codex
+                    && (kind != HarnessKind::Claude
+                        || self.pending.iter().any(|p| {
+                            p.session.session_id == key && p.session.forked_from.is_some()
+                        }))
+            });
+        // Unit fixtures use test binaries rather than the CLI. Native lifecycle
+        // integration tests exercise the detached executable and reconnect path.
+        let hosted = owned && !cfg!(test);
+        let started = if hosted {
+            let session = self
+                .data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == key)
+                .cloned()
+                .or_else(|| self.history.opened.get(&key).map(history_session))
+                .unwrap_or_else(|| {
+                    let dir = c.get_current_dir().unwrap_or(&self.cwd);
+                    let mut s = placeholder(HarnessKind::Claude, &key, dir, what);
+                    s.harness = "terminal".into();
+                    s.kind = None;
+                    s.state = "-".into();
+                    s
+                });
+            terminal_host::launch(
+                &self.exe,
+                &self.state,
+                &c,
+                session,
+                what,
+                self.pane.height,
+                self.pane.width,
+                self.colors.clone(),
+                key.starts_with("terminal:"),
+            )
+            .and_then(|record| {
+                match Viewer::attach(record.clone(), self.colors.clone()) {
+                    Ok(viewer) => {
+                        self.data.hosts.push(record);
+                        Ok(viewer)
+                    }
+                    Err(error) => {
+                        let _ = terminal_host::stop(&record);
+                        Err(error)
+                    }
+                }
+            })
+        } else {
+            spawn(
+                c,
+                self.pane.height,
+                self.pane.width,
+                normal,
+                self.colors.clone(),
+            )
+        };
+        match started {
             Ok(viewer) => {
                 if let Some(p) = self
                     .pending
@@ -10954,6 +11250,24 @@ impl App {
             .find(|r| r.started.run_id == run)?
             .started
             .harness
+    }
+
+    fn host_for(&self, key: &str) -> Option<&terminal_host::Record> {
+        let row = self.data.sessions.iter().find(|s| s.session_id == key);
+        self.viewers
+            .iter()
+            .find(|v| v.key == key)
+            .and_then(|v| v.viewer.host())
+            .or_else(|| {
+                self.data.hosts.iter().find(|host| {
+                    host.session.session_id == key
+                        || row.is_some_and(|s| {
+                            s.harness == host.session.harness
+                                && s.pid.is_some()
+                                && s.pid == host.session.pid
+                        })
+                })
+            })
     }
 
     /// Only a listed session's Claude attach makes room; a Codex client the user entered is theirs,
@@ -11249,6 +11563,7 @@ impl App {
         let closing = Instant::now();
         let had_frame = !self.split_active();
         let open = self.viewers.remove(i);
+        let persistent = open.viewer.host().is_some();
         self.remove_launch(&open.key);
         match self.focus {
             Some(f) if f == i => {
@@ -11258,7 +11573,14 @@ impl App {
             Some(f) if f > i => self.focus = Some(f - 1),
             _ => {}
         }
-        if open.is_terminal() {
+        if open.viewer.exited().is_some()
+            && let Some(host) = open.viewer.host()
+        {
+            self.retire_host(&host.id, &open.key);
+            self.rebuild_with_reason("native_terminal_exit");
+            self.invalidate();
+        }
+        if open.is_terminal() && !persistent {
             self.terminals.retain(|s| s.session_id != open.key);
             self.data.sessions.retain(|s| s.session_id != open.key);
             self.rebuild_with_reason("terminal_closed");
@@ -11271,7 +11593,8 @@ impl App {
         if open.record.is_some() && !open.recorded {
             self.record_codex(&open.key);
         }
-        let opencode_pid = (open.harness == Some(HarnessKind::Opencode)).then(|| open.viewer.pid());
+        let opencode_pid =
+            (open.harness == Some(HarnessKind::Opencode) && !persistent).then(|| open.viewer.pid());
         drop(open);
         if let Some(pid) = opencode_pid {
             // This native client has ended with its viewer. Remove its reported
@@ -11471,7 +11794,7 @@ impl App {
             Span::styled(name, plain()),
             Span::styled(" · ", dim()),
         ];
-        middle.extend(self.data.summary(spinner_frame(self.tick)).spans);
+        middle.extend(self.header_summary().spans);
         // Until the launched thread has an id, we cannot exclude its own row from input alerts.
         let has_id = open.record.is_none() || open.recorded;
         let alert = self
@@ -12009,6 +12332,12 @@ impl App {
     fn enter_label(&self) -> &'static str {
         let row = self.selected();
         if row
+            .and_then(|r| r.kind.key())
+            .is_some_and(|id| self.host_for(id).is_some())
+        {
+            return "return";
+        }
+        if row
             .and_then(|r| self.viewer_of(&r.kind))
             .is_some_and(|i| !self.viewers[i].speculative)
         {
@@ -12062,6 +12391,31 @@ impl App {
         if let Some(i) = self.viewer_of(&kind) {
             self.remember_entered(&kind);
             self.focus(i);
+            return Ok(());
+        }
+        if let Some(host) = kind.key().and_then(|id| self.host_for(id)).cloned() {
+            match Viewer::attach(host.clone(), self.colors.clone()) {
+                Ok(viewer) => {
+                    let key = kind.key().unwrap().to_owned();
+                    let harness = harness::by_name(&host.session.harness).map(|s| s.kind);
+                    self.viewers.push(Open {
+                        key,
+                        what: host.what,
+                        harness,
+                        viewer,
+                        record: None,
+                        recorded: false,
+                        fork: None,
+                        first_paint_logged: false,
+                        last_focused: Instant::now(),
+                        speculative: false,
+                        operation: None,
+                    });
+                    self.remember_entered(&kind);
+                    self.focus(self.viewers.len() - 1);
+                }
+                Err(error) => self.status = format!("return failed: {error}"),
+            }
             return Ok(());
         }
         match kind {
@@ -13337,6 +13691,16 @@ impl App {
         }
         match self.armed.take() {
             Some(armed) if armed == id => {
+                if let Some(host) = self.host_for(&id).cloned() {
+                    if let Some(i) = self.viewer_index(&id) {
+                        self.close(i);
+                    }
+                    self.queue_stop(id, "stop", move || {
+                        terminal_host::stop(&host)?;
+                        Ok(true)
+                    });
+                    return;
+                }
                 let local = self.selected().and_then(|r| self.viewer_of(&r.kind));
                 if let Some(i) = local.filter(|&i| self.viewers[i].is_terminal()) {
                     self.close(i);
@@ -13406,7 +13770,10 @@ impl App {
     ) {
         let (tx, rx) = mpsc::channel();
         let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
-        let context = self.key_context(&id);
+        let mut context = self.key_context(&id);
+        if let Some(host) = self.host_for(&id) {
+            context["terminal_host"] = json!(host.id);
+        }
         let label = self
             .data
             .sessions
@@ -13472,6 +13839,11 @@ impl App {
                 "error": result.as_ref().err().map(|e| format!("{e:#}")),
             }));
             self.status = match result {
+                Ok(true) if action.context["terminal_host"].is_string() => {
+                    let host = action.context["terminal_host"].as_str().unwrap();
+                    self.retire_host(host, &action.id);
+                    String::new()
+                }
                 // The row leaving the list says it; the hint line goes back to the keys.
                 Ok(true) if matches!(action.verb, "delete" | "forget") => {
                     self.removed_sessions.insert(action.id.clone());
@@ -13488,6 +13860,16 @@ impl App {
             self.feedback
                 .get_or_insert(("action_result_to_draw", Instant::now()));
             self.invalidate();
+        }
+    }
+
+    fn retire_host(&mut self, host: &str, row: &str) {
+        self.data.hosts.retain(|h| h.id != host);
+        self.removed_sessions.insert(row.to_owned());
+        self.data.sessions.retain(|s| s.session_id != row);
+        self.terminals.retain(|s| s.session_id != row);
+        if self.history.visible {
+            self.history.reset(&self.filter.text, true);
         }
     }
 
@@ -13968,7 +14350,16 @@ impl App {
                     }
                     KeyAction::Enter if self.terminal_selected() => {
                         self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
-                        self.start();
+                        if self.terminal_input.text.is_empty()
+                            && self
+                                .selected()
+                                .and_then(|r| r.kind.key())
+                                .is_some_and(|id| self.host_for(id).is_some())
+                        {
+                            self.enter()?;
+                        } else {
+                            self.start();
+                        }
                     }
                     // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
                     KeyAction::Enter
@@ -14272,9 +14663,9 @@ impl App {
         let focused = self.focus == Some(i);
         let open = &mut self.viewers[i];
         open.viewer.resize(pane.height, pane.width);
-        let screen = open.viewer.screen();
+        let screen = open.viewer.display_screen();
         viewer::render(screen, pane, frame.buffer_mut());
-        if focused && !screen.hide_cursor() && screen.scrollback() == 0 {
+        if focused && !screen.hide_cursor() && !open.viewer.scrolled() {
             let (row, mut col) = screen.cursor_position();
             col = col.min(pane.width.saturating_sub(1));
             if col > 0
@@ -14306,7 +14697,7 @@ impl App {
                         self.history.search.label()
                     )
                 } else {
-                    "text a row must contain".to_owned()
+                    "text, :attention or :unread".to_owned()
                 }));
                 Line::from(spans)
             }
@@ -14747,6 +15138,7 @@ pub fn run(
             let dirty = app.pump();
             app.prespawn_tick();
             app.transcript_tick();
+            app.review_focused();
             app.expire();
             app.report_view("event_loop");
             app.summarize_timings(false);
@@ -19279,6 +19671,132 @@ states:
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    #[test]
+    fn host_metadata_keeps_process_metrics_and_does_not_reparent_a_changed_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut row = placeholder(HarnessKind::Opencode, A, dir.path(), "native");
+        row.pid = Some(1234);
+        row.usage = Some(fleet::Usage {
+            cpu: 7.5,
+            rss: 123456,
+        });
+        let mut report = row.clone();
+        report.usage = None;
+        report.state = "idle".into();
+        report.model = Some("fixture/model".into());
+        let mut host = terminal_host::Record {
+            id: uuid::Uuid::new_v4().to_string(),
+            socket: dir.path().join("unused"),
+            session: report,
+            what: "opencode".into(),
+        };
+        let mut rows = vec![row.clone()];
+        merge_hosts(&mut rows, &[host.clone()]);
+        assert_eq!(rows[0].usage, row.usage);
+        assert_eq!(rows[0].model.as_deref(), Some("fixture/model"));
+        assert_eq!(rows[0].state, "idle");
+        host.session.harness = "claude".into();
+        host.session.forked_from = Some(C.into());
+        rows[0].harness = "claude".into();
+        rows[0].session_id = B.into();
+        merge_hosts(&mut rows, &[host]);
+        assert!(rows[0].forked_from.is_none());
+        assert_eq!(rows[0].session_id, B);
+    }
+
+    #[test]
+    fn stopping_a_host_releases_history_before_another_discovery_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        let mut session = placeholder(HarnessKind::Claude, A, dir.path(), "hosted");
+        session.pid = Some(4242);
+        session.state = "idle".into();
+        app.data.sessions = vec![session.clone()];
+        app.data.hosts.push(terminal_host::Record {
+            id: uuid::Uuid::new_v4().to_string(),
+            socket: dir.path().join("unused"),
+            session,
+            what: "claude".into(),
+        });
+        app.history.visible = true;
+        app.history.first = false;
+        assert!(app.history_excluded().iter().any(|k| k.session_id == A));
+        app.queue_stop(A.into(), "stop", || Ok(true));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !app.stopping.is_empty() {
+            app.poll_stops();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!app.data.sessions.iter().any(|s| s.session_id == A));
+        assert!(app.data.hosts.is_empty());
+        assert!(!app.history_excluded().iter().any(|k| k.session_id == A));
+        assert!(
+            app.history.first,
+            "an already-open history query must drop its old exclusion set"
+        );
+    }
+
+    #[test]
+    fn attention_marks_native_completion_and_filters_without_acknowledging_a_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        let mut first = placeholder(HarnessKind::Claude, A, dir.path(), "first task");
+        first.state = "active".into();
+        let mut second = placeholder(HarnessKind::Claude, B, dir.path(), "second task");
+        second.state = "blocked".into();
+        app.data.sessions = vec![first, second];
+        app.data.runs.clear();
+        app.update_attention();
+        app.data.sessions[0].state = "done".into();
+        app.data.sessions[0].last = Some("completed first task".into());
+        app.update_attention();
+        app.rebuild();
+        assert!(app.header_summary().to_string().contains("1 unread"));
+        assert!(
+            app.rows
+                .iter()
+                .find(|r| r.kind.key() == Some(A))
+                .unwrap()
+                .cells[0]
+                .0
+                .contains('●')
+        );
+        app.filter = Input::new(":attention");
+        app.apply_filter();
+        let sessions = |app: &App| {
+            app.visible
+                .iter()
+                .filter_map(|i| match &app.rows[*i].kind {
+                    Kind::Session(id, _) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sessions(&app), [A, B]);
+        app.filter = Input::new(":unread first");
+        app.apply_filter();
+        assert_eq!(sessions(&app), [A]);
+        // A prepared preview is not an explicit review.
+        app.viewers.push(viewer_open(A, "claude", "RESULT"));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while app.viewers[0].viewer.first_paint().is_none() {
+            app.pump();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.review_focused();
+        assert!(app.attention.unread(&app.attention_for(A).unwrap()));
+        app.focus(0);
+        assert!(!app.attention.unread(&app.attention_for(A).unwrap()));
+        assert_eq!(app.data.sessions[0].state, "done");
+        assert_eq!(app.data.sessions[1].state, "blocked");
+        assert!(!app.header_summary().to_string().contains("unread"));
+        app.filter = Input::new(":attention");
+        app.apply_filter();
+        assert_eq!(sessions(&app), [B]);
+    }
 
     #[test]
     fn a_session_that_just_appeared_takes_the_cursor() {

@@ -48,7 +48,7 @@ operations:
       args: [--version]
       version: {format: text}
       error: "this pi does not run, so no session could be started"
-      description: "pi {version}: a session in the dashboard's own viewer, which ends with it, since pi has no background mode, daemon or attach"
+      description: "pi {version}: a native session in a persistent cones terminal; pi has no native background mode or attach"
   fork:
     args: [--fork, "{transcript}", --session-id, "{new_id}"]
     probe:

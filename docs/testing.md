@@ -53,6 +53,8 @@ CI uses the same `scripts/check` entry point.
 scripts/check stress
 CONES_STRESS_CYCLES=100 scripts/check stress
 python3 scripts/check-opencode.py target/debug/cones /absolute/path/to/opencode
+python3 scripts/check-terminals.py target/debug/cones
+python3 scripts/check-owned-harnesses.py target/debug/cones /absolute/path/to/claude /absolute/path/to/pi
 ```
 
 Stress is separate from the default gate. It runs one ignored macOS test alone,
@@ -74,6 +76,16 @@ and native checks for changes to harness integration. The OpenCode script uses
 a loopback provider and requires tmux. Its results complement fixture tests.
 Investigate a failed budget before adjusting it. Correctness tests synchronize
 with explicit readiness signals; performance budgets belong in stress checks.
+
+The terminal integration suite starts the real detached host and exercises native
+process identity, unsent input, detached output, resize, explicit stop, malformed
+clients, concurrent attachment and custom stdin/environment. Its dashboard check
+uses an isolated zsh and verifies quit/reopen and crash/reopen with the same PID
+and draft. The OpenCode check also reconnects its native editor after dashboard
+closure. The owned-harness check uses a loopback Anthropic fixture for native
+Claude forks and pi, checking their identity, model, transcript, PID and draft.
+Fixture cleanup explicitly stops hosted terminals; closing a dashboard
+alone is no longer sufficient cleanup for those fixtures.
 
 ## Maintaining coverage
 

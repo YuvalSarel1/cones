@@ -38,6 +38,8 @@ enum Trigger {
 }
 #[derive(Subcommand)]
 enum Action {
+    #[command(name = "__terminal-host", hide = true)]
+    TerminalHost,
     /// Run a job now, or `--prompt` for a one-off task in the current directory.
     Run {
         /// Job name; with --prompt, the job whose policy the task borrows (default: the first).
@@ -125,6 +127,9 @@ fn main() {
     std::process::exit(code);
 }
 fn execute(cli: Cli) -> Result<i32> {
+    if matches!(cli.command, Some(Action::TerminalHost)) {
+        return Ok(cones::terminal_host::serve()?);
+    }
     if let Some(Action::Worker { run_id }) = &cli.command {
         return runner::worker(run_id);
     }
@@ -158,6 +163,7 @@ fn execute(cli: Cli) -> Result<i32> {
         );
     };
     match command {
+        Action::TerminalHost => unreachable!(),
         Action::Install { dry_run } => {
             launchd::install(
                 &config::read_jobs(&jobs_path)?,
@@ -294,6 +300,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
                 // Every other harness is its own terminal client, so it takes this terminal.
                 harness::Start::Foreground(mut command) => {
+                    command = harness::restore_stdin_prompt(command)?;
                     if print_command {
                         println!("{}", shell_command(dir.as_os_str(), &command));
                         return Ok(0);

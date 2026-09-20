@@ -464,6 +464,9 @@ pub struct Start {
     pub harness: HarnessKind,
     #[serde(default = "yes")]
     pub pane: bool,
+    /// Desktop notifications for newly reported input requests and completions.
+    #[serde(default)]
+    pub notify: bool,
 }
 
 fn claude() -> HarnessKind {
@@ -475,17 +478,22 @@ impl Default for Start {
         Self {
             harness: claude(),
             pane: yes(),
+            notify: false,
         }
     }
 }
 
 impl Start {
     pub fn lines(&self) -> Vec<String> {
-        vec![
+        let mut lines = vec![
             "start:".to_owned(),
             format!("  harness: {}", self.harness),
             format!("  pane: {}", self.pane),
-        ]
+        ];
+        if self.notify {
+            lines.push("  notify: true".into());
+        }
+        lines
     }
 }
 
@@ -2278,6 +2286,7 @@ mod tests {
         let st = Start {
             harness: HarnessKind::Codex,
             pane: false,
+            notify: false,
         };
         write_config(
             &p,
@@ -2305,6 +2314,7 @@ mod tests {
             Start {
                 harness: HarnessKind::Claude,
                 pane: false,
+                notify: false,
             },
         );
     }

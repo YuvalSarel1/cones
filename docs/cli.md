@@ -127,5 +127,8 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 | `__coordinator [DIR]` | [Launch the bundled coordinator](#coordinator-launch). |
 | `__list` | Render dashboard rows for a subprocess caller. |
 | `__worker --run-id ID` | Run the supervised worker. |
+| `__terminal-host` | Own one interactive PTY independently of the dashboard. Internal framed protocol on a private local socket; arguments and environment arrive through an anonymous pipe. |
+
+`STATE_DIR/terminals/` contains owned-terminal identities, reported row metadata and host locks. Native reports remain authoritative; the host supplies OpenCode's observer reports even while detached. `attention.json` holds completion fingerprints and shared read markers, protected by `attention.lock`. Raw terminal screens and launch environments are not stored in these files. Native conversations and the existing launch recovery ledger retain their usual storage.
 
 Session JSON includes `cost_info` when cost was reported or estimation was attempted. It identifies the source and coverage of `cost_usd`, including pricing snapshot metadata for calculated estimates. See [cost estimates](harness.md#cost-estimates).

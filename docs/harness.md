@@ -63,7 +63,7 @@ The [definition](../assets/harnesses/opencode.yaml) excludes service and managem
 
 Viewers launched or resumed by the dashboard load a [native TUI reporter](../assets/harnesses/opencode-report.mjs). It reads OpenCode's current route and session state through its TUI plugin API, verified against 1.18.31. Reports identify the current conversation directly, including after a session switch, and supply its status, model, timestamps, tokens and cost. Pending native questions and permission requests show as input. The dashboard matches each private report to its owned child pid.
 
-The reporter uses a temporary TUI configuration and private report file, removed with the viewer. Existing global and project settings remain native; an explicit `OPENCODE_TUI_CONFIG` is copied alongside its original so relative paths retain their meaning. Its plugins remain in the list. The reporter registers no tools or input handlers and changes no execution permissions. Existing clients must be reopened to load it. External terminals and `cones ls` retain the process and SQLite sources described above.
+The reporter uses a temporary TUI configuration and private report file, retained by the terminal host until the native client ends. Existing global and project settings remain native; an explicit `OPENCODE_TUI_CONFIG` is copied alongside its original so relative paths retain their meaning. Its plugins remain in the list. The reporter registers no tools or input handlers and changes no execution permissions. Existing clients must be reopened to load it. `cones ls` includes reports from owned hosts; unrelated external terminals retain the process and SQLite sources described above.
 
 OpenCode's normal TUI uses an in-process backend. Joining an arbitrary terminal would require a reported server address, so those rows say `own terminal`. cones currently launches the standalone TUI; attaching through OpenCode's native server is not integrated.
 
@@ -194,13 +194,15 @@ A daemon-owned session supports clients that can join and leave without ending t
 | Settled Claude background | `claude attach <short id>`, which wakes the session from its job record. Resting on the row never attaches: a peek would wake it. | The woken daemon-owned session. | `claude rm <short id>` removes the record and the row. |
 | Externally started Claude interactive, standalone Codex, pi, OpenCode or experimental CLI | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
 | Codex daemon thread | `codex --remote unix://<socket> resume <thread id>`, even with another client attached. | The thread in its daemon. | Forget the saved record, hide the id and close or signal any client on the row. A detached thread has no native stop; it remains resumable. Hiding prevents its held lock from restoring the row after restart. |
-| Interactive Claude fork or experimental CLI from the composer | Return to the owned viewer. | The owned client ends; other harness-managed work follows native behavior. | Close the owned viewer. |
-| pi from the composer | Return to its existing viewer; there is no live attach. | Nothing; pi owns that viewer's terminal and ends with it. | Close the owned viewer. |
+| Interactive Claude fork or experimental CLI from the composer | Reconnect to the cones-owned terminal. | The host keeps the native client running. | Stop the hosted terminal with `ctrl+x` twice. |
+| pi from the composer | Reconnect to the cones-owned terminal; pi has no native live attach. | The host keeps pi running. | Stop the hosted terminal with `ctrl+x` twice. |
 | Supervised run in flight | Follow captured output. | The supervised process. | [Terminate its process group](jobs.md#run-lifecycle). |
 | Finished Claude run or Claude history | `claude --bg --resume <session>`, then attach. | A new background session, also visible live. | The original finished-run row can be hidden without deleting its output. History offers no deletion. |
 | Codex history | Unarchive if needed, then native remote resume. | The thread in its daemon. | History offers no deletion. |
-| pi history | `pi --session <transcript>`. | Nothing; its resumed client owns the terminal. | History offers no deletion. |
-| OpenCode composer or history | Return to the owned viewer, or resume history with `opencode --session <id>`. | Nothing; its native client ends with the viewer. | Close the owned viewer. History offers no deletion. |
+| pi history | `pi --session <transcript>`, then reconnect to the hosted terminal. | The host keeps the resumed client running. | Stop the live terminal; history offers no deletion. |
+| OpenCode composer or history | Reconnect to the hosted terminal, or resume history with `opencode --session <id>`. | The host keeps the native client and reporter running. | Stop the live terminal; history offers no deletion. |
+
+Hosted terminals accept one dashboard attachment at a time. Their registry proves ownership with a held lock, never a saved PID alone. The host retains terminal state and scrollback in memory, answers terminal queries and relays input without changing harness permissions. A host or machine restart ends its processes; only native conversation history remains resumable. This persistence mechanism does not add native history or state reporting to experimental launchers.
 
 For harnesses with a history reader, resume uses the recorded cwd and native home. Claude background conversations remain available in `claude --resume` after removal; forgotten Codex conversations remain in `codex resume`. For shell use, invoke the native binary directly: a Claude alias that appends flags can turn `claude stop <id>` into a new prompt instead of a subcommand.
 

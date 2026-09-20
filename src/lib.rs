@@ -1,4 +1,5 @@
 pub mod agents;
+mod attention;
 pub mod codex;
 pub mod config;
 pub mod context;
@@ -19,6 +20,7 @@ mod process_info;
 pub mod runner;
 pub mod search;
 pub mod terminal;
+pub mod terminal_host;
 pub mod transcript;
 pub mod tui;
 mod viewer;

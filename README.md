@@ -23,7 +23,9 @@ Experimental terminal launchers also support Gemini CLI, Cursor Agent, Copilot C
 | | In cones |
 | --- | --- |
 | Live sessions | See running agents grouped by project, including sessions started outside cones. |
+| Attention | Find input requests and completed work you have not reviewed. |
 | Previews | Peek into supported live sessions and open their native interface when you want to respond. |
+| Persistent terminals | Keep shells and hosted agents running when closing the dashboard. |
 | History | Browse past conversations, read previews and resume a session. |
 | Projects | Add an existing folder and start an agent there from the dashboard. |
 | Settings | Adjust the layout, visible columns and model defaults in place. |
@@ -84,6 +86,8 @@ To start work in a project:
 3. Type an instruction and press `Enter`.
 
 Open a session with `Enter`; `Ctrl+Z` returns to the list. Press `Ctrl+H` to browse history, select a conversation to preview it, and press `Enter` to resume.
+
+`●` marks an unread completion. Use `Ctrl+F` with `:attention` to find input requests and unread work. Quitting cones keeps owned terminals running; reopen the dashboard and press `Enter` to reconnect. `Ctrl+X` twice explicitly stops a terminal.
 
 Press `Ctrl+Y` to [fork a supported conversation](docs/dashboard.md#fork-a-conversation). The new session appears beneath its parent with aligned columns. It uses the same folder, so file edits are shared.
 

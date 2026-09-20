@@ -15,7 +15,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::{
-        fd::{AsRawFd, FromRawFd},
+        fd::{AsRawFd, FromRawFd, IntoRawFd},
         unix::process::{CommandExt, ExitStatusExt},
     },
     process::{Child, ChildStderr, Command, ExitStatus, Stdio},
@@ -35,7 +35,7 @@ const SCROLLBACK: usize = 1000;
 const SYNC_MAX: Duration = Duration::from_millis(150);
 
 /// Real terminal colors in xterm `rgb:RRRR/GGGG/BBBB` form.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Colors {
     pub fg: String,
     pub bg: String,
@@ -198,7 +198,7 @@ impl vt100::Callbacks for Replies {
 }
 
 pub struct Viewer {
-    child: Child,
+    child: Option<Child>,
     reaped: bool,
     master: File,
     master_open: bool,
@@ -212,6 +212,15 @@ pub struct Viewer {
     first_paint: Option<Duration>,
     status: Option<ExitStatus>,
     opencode: Option<crate::opencode::reporting::Reporter>,
+    remote: Option<Remote>,
+}
+
+struct Remote {
+    record: crate::terminal_host::Record,
+    input: Vec<u8>,
+    display: Option<vt100::Parser>,
+    report: Option<crate::opencode::reporting::Report>,
+    report_at: Instant,
 }
 
 fn nonblocking(fd: i32) -> io::Result<()> {
@@ -263,13 +272,14 @@ impl Viewer {
     }
 
     fn spawn_pty(
-        mut command: Command,
+        command: Command,
         rows: u16,
         cols: u16,
         normal: Option<&libc::termios>,
         colors: Colors,
         terminal: bool,
     ) -> io::Result<Viewer> {
+        let mut command = crate::harness::restore_stdin_prompt(command)?;
         let opencode = crate::opencode::reporting::Reporter::prepare(&mut command)?;
         let (mut master, mut slave) = (-1, -1);
         let mut size = winsize(rows, cols);
@@ -318,7 +328,7 @@ impl Viewer {
             nonblocking(stderr.as_raw_fd())?;
         }
         Ok(Viewer {
-            child,
+            child: Some(child),
             reaped: false,
             master,
             master_open: true,
@@ -336,34 +346,235 @@ impl Viewer {
             first_paint: None,
             status: None,
             opencode,
+            remote: None,
         })
     }
 
     pub fn pid(&self) -> u32 {
-        self.child.id()
+        self.remote
+            .as_ref()
+            .and_then(|r| r.record.session.pid)
+            .unwrap_or_else(|| self.child.as_ref().unwrap().id())
     }
 
     pub(crate) fn opencode_report(&self) -> Option<crate::opencode::reporting::Report> {
+        if let Some(remote) = &self.remote {
+            return (remote.report_at.elapsed() < Duration::from_secs(5))
+                .then(|| {
+                    remote
+                        .report
+                        .as_ref()
+                        .map(|r| crate::opencode::reporting::Report(r.0.clone()))
+                })
+                .flatten();
+        }
         self.opencode.as_ref()?.read(self.pid())
     }
 
     fn kill(&mut self) {
-        if !self.reaped {
+        if !self.reaped
+            && let Some(child) = &mut self.child
+        {
             unsafe {
-                libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
             }
-            let _ = self.child.kill();
+            let _ = child.kill();
         }
+    }
+
+    pub(crate) fn terminate(&mut self) {
+        self.kill();
+    }
+
+    pub(crate) fn host(&self) -> Option<&crate::terminal_host::Record> {
+        self.remote.as_ref().map(|r| &r.record)
+    }
+
+    pub(crate) fn attach(record: crate::terminal_host::Record, colors: Colors) -> io::Result<Self> {
+        let stream = crate::terminal_host::connect(&record)?;
+        let master = unsafe { File::from_raw_fd(stream.into_raw_fd()) };
+        Ok(Self {
+            child: None,
+            reaped: false,
+            master,
+            master_open: true,
+            stderr: None,
+            errors: Vec::new(),
+            parser: vt100::Parser::new_with_callbacks(24, 80, SCROLLBACK, Replies::new(colors)),
+            partial: Vec::new(),
+            pending_input: Vec::new(),
+            spawned: Instant::now(),
+            first_paint: None,
+            status: None,
+            opencode: None,
+            remote: Some(Remote {
+                record,
+                input: Vec::new(),
+                display: None,
+                report: None,
+                report_at: Instant::now(),
+            }),
+        })
+    }
+
+    pub(crate) fn update_host(&mut self, session: &crate::fleet::Session) {
+        if self.remote.is_some() {
+            self.send(&crate::terminal_host::Request::Update(Box::new(
+                session.clone(),
+            )));
+        }
+    }
+
+    fn send(&mut self, request: &crate::terminal_host::Request) {
+        match crate::terminal_host::frame(request) {
+            Ok(bytes) => {
+                self.pending_input.extend(bytes);
+                self.flush();
+            }
+            Err(error) => {
+                self.errors.extend(error.to_string().bytes());
+                self.master_open = false;
+            }
+        }
+    }
+
+    fn pump_remote(&mut self) -> io::Result<bool> {
+        use crate::terminal_host::{Reply, Snapshot};
+        if !self.master_open {
+            return Err(io::Error::other("terminal connection is unavailable"));
+        }
+        self.flush();
+        let mut bytes = [0; 65536];
+        match self.master.read(&mut bytes) {
+            Ok(0) if self.status.is_none() => {
+                return Err(io::Error::other(
+                    "terminal connection closed; work may still be running",
+                ));
+            }
+            Ok(n) => self
+                .remote
+                .as_mut()
+                .unwrap()
+                .input
+                .extend_from_slice(&bytes[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) => {}
+            Err(e) => return Err(e),
+        }
+        let mut dirty = false;
+        while let Some(reply) =
+            crate::terminal_host::decode::<Reply>(&mut self.remote.as_mut().unwrap().input)?
+        {
+            match reply {
+                Reply::Screen(snapshot) => {
+                    let Snapshot {
+                        rows,
+                        cols,
+                        bytes,
+                        reset,
+                        alternate,
+                        scrolled,
+                        title,
+                        return_to_list,
+                        report,
+                        stderr,
+                        exit,
+                    } = *snapshot;
+                    if reset {
+                        self.parser.process(b"\x1bc");
+                        self.partial.clear();
+                    }
+                    self.parser.screen_mut().set_size(rows, cols);
+                    if self.parser.screen().alternate_screen() != alternate {
+                        self.parser.process(if alternate {
+                            b"\x1b[?1049h"
+                        } else {
+                            b"\x1b[?1049l"
+                        });
+                    }
+                    self.parser.process(&bytes);
+                    self.parser.callbacks_mut().out.clear();
+                    self.parser.callbacks_mut().title = title;
+                    self.parser.callbacks_mut().return_to_list |= return_to_list;
+                    if self.first_paint.is_none() && has_text(&bytes) {
+                        self.first_paint = Some(self.spawned.elapsed());
+                    }
+                    self.errors = stderr;
+                    self.status = exit.map(ExitStatus::from_raw);
+                    let remote = self.remote.as_mut().unwrap();
+                    remote.report = report.and_then(|r| {
+                        crate::opencode::reporting::Report::parse(
+                            &serde_json::to_vec(&r).ok()?,
+                            remote.record.session.pid?,
+                        )
+                    });
+                    remote.report_at = Instant::now();
+                    remote.display = scrolled.map(|bytes| {
+                        let mut parser = vt100::Parser::new(rows, cols, 0);
+                        parser.process(&bytes);
+                        parser
+                    });
+                    dirty = true;
+                }
+                Reply::Error(error) => return Err(io::Error::other(error)),
+                _ => {}
+            }
+        }
+        Ok(dirty)
+    }
+
+    pub(crate) fn display_screen(&self) -> &vt100::Screen {
+        self.remote
+            .as_ref()
+            .and_then(|r| r.display.as_ref())
+            .map_or_else(|| self.screen(), |p| p.screen())
+    }
+
+    pub(crate) fn scrolled(&self) -> bool {
+        self.screen().scrollback() != 0 || self.remote.as_ref().is_some_and(|r| r.display.is_some())
+    }
+
+    pub(crate) fn snapshot(
+        &mut self,
+        previous: Option<&vt100::Screen>,
+    ) -> (crate::terminal_host::Snapshot, vt100::Screen) {
+        let scrolled = (self.screen().scrollback() > 0).then(|| self.screen().state_formatted());
+        let mut live = self.screen().clone();
+        live.set_scrollback(0);
+        let (rows, cols) = live.size();
+        let previous = previous
+            .filter(|p| p.size() == live.size() && p.alternate_screen() == live.alternate_screen());
+        let bytes = previous.map_or_else(|| live.state_formatted(), |p| live.state_diff(p));
+        let snapshot = crate::terminal_host::Snapshot {
+            rows,
+            cols,
+            bytes,
+            reset: previous.is_none(),
+            alternate: live.alternate_screen(),
+            scrolled,
+            title: self.title().map(str::to_owned),
+            return_to_list: self.take_return_to_list(),
+            report: self.opencode_report().map(|r| r.0),
+            stderr: self.errors.clone(),
+            exit: self.status.map(ExitStatus::into_raw),
+        };
+        (snapshot, live)
     }
 
     /// Pump output, replies and queued input; return whether the screen changed.
     /// Kill stopped clients without affecting the daemon-owned agent.
     pub fn pump(&mut self) -> io::Result<bool> {
+        if self.remote.is_some() {
+            return self.pump_remote();
+        }
         if self.status.is_none() {
             let mut status = 0;
             let waited = unsafe {
                 libc::waitpid(
-                    self.child.id() as i32,
+                    self.child.as_ref().unwrap().id() as i32,
                     &mut status,
                     libc::WNOHANG | libc::WUNTRACED,
                 )
@@ -466,6 +677,10 @@ impl Viewer {
 
     /// Queue input; terminate a viewer that exceeds `INPUT_CAP` without consuming it.
     pub fn write(&mut self, bytes: &[u8]) {
+        if self.remote.is_some() {
+            self.send(&crate::terminal_host::Request::Input(bytes.to_vec()));
+            return;
+        }
         self.parser.screen_mut().set_scrollback(0);
         self.pending_input.extend_from_slice(bytes);
         self.flush();
@@ -485,11 +700,18 @@ impl Viewer {
             self.errors
                 .extend_from_slice(b"\nviewer input queue exceeded 8 MiB\n");
             self.kill();
+            if self.remote.is_some() {
+                self.master_open = false;
+            }
         }
     }
 
     /// Scroll back by `lines` (negative moves forward); return whether the view moved.
     pub fn scroll(&mut self, lines: i32) -> bool {
+        if self.remote.is_some() {
+            self.send(&crate::terminal_host::Request::Scroll(lines));
+            return lines != 0;
+        }
         let before = self.parser.screen().scrollback();
         let after = (before as i64 + i64::from(lines)).clamp(0, SCROLLBACK as i64);
         self.parser.screen_mut().set_scrollback(after as usize);
@@ -503,6 +725,13 @@ impl Viewer {
             return;
         }
         self.parser.screen_mut().set_size(size.ws_row, size.ws_col);
+        if self.remote.is_some() {
+            self.send(&crate::terminal_host::Request::Resize(
+                size.ws_row,
+                size.ws_col,
+            ));
+            return;
+        }
         unsafe {
             libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ, &size);
         }
@@ -535,11 +764,14 @@ impl Drop for Viewer {
     /// Drain the PTY while reaping: macOS can keep a killed leader in exit state
     /// until its unread output is consumed, blocking a plain wait.
     fn drop(&mut self) {
+        if self.remote.is_some() {
+            return;
+        }
         if self.reaped {
             return;
         }
         self.kill();
-        let pid = self.child.id() as i32;
+        let pid = self.child.as_ref().unwrap().id() as i32;
         let deadline = Instant::now() + REAP;
         let mut bytes = [0u8; 8192];
         loop {

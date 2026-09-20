@@ -104,7 +104,7 @@ impl Reporter {
     }
 }
 
-pub(crate) struct Report(Value);
+pub(crate) struct Report(pub(crate) Value);
 
 impl Report {
     pub(crate) fn parse(bytes: &[u8], pid: u32) -> Option<Self> {

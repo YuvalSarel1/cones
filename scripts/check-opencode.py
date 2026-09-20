@@ -15,7 +15,9 @@ from pathlib import Path
 import re
 import shutil
 import signal
+import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -194,6 +196,9 @@ def main():
     def screen():
         return tmux("capture-pane", "-p", "-t", "check")
 
+    def footer():
+        return "\n".join(screen().splitlines()[-2:])
+
     def wait(label, predicate, timeout=45):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -220,6 +225,13 @@ def main():
                 program = argv[0]
                 if Path(program).name == "opencode" and argv[1:2] not in (["--help"], ["--version"]):
                     found.add(int(words[0]))
+        for path in (state / "terminals").glob("*.json"):
+            record = json.loads(path.read_text())
+            if record["session"]["harness"] != "opencode":
+                continue
+            pid = record["session"].get("pid")
+            if pid and any(line.split(None, 1)[0] == str(pid) for line in output.splitlines() if line.split()):
+                found.add(pid)
         native_pids.update(found)
         return found
 
@@ -229,13 +241,9 @@ def main():
     def interrupted(signum, _frame):
         raise SystemExit(128 + signum)
 
-    previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGHUP)}
-    try:
-        version = subprocess.check_output([str(native), "--version"], env=env, text=True).strip()
-        (root / "launch.json").write_text(json.dumps({
-            "command": [str(binary), "--jobs", str(jobs), "--state-dir", str(state), "--debug"],
-            "env": env,
-        }))
+    def start_dashboard():
+        for name in ("dashboard.pid", "dashboard.exit"):
+            (root / name).unlink(missing_ok=True)
         tmux("new-session", "-d", "-s", "check", "-x", "220", "-y", "44",
              sys.executable, str(Path(__file__).resolve()), "--worker", str(root))
         controller = int(tmux("display-message", "-p", "-t", "check", "#{pane_pid}").strip())
@@ -244,7 +252,16 @@ def main():
             if time.monotonic() >= deadline:
                 raise AssertionError("dashboard controller did not start")
             time.sleep(0.05)
-        child = Dashboard(root, controller)
+        return Dashboard(root, controller)
+
+    previous = {sig: signal.signal(sig, interrupted) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        version = subprocess.check_output([str(native), "--version"], env=env, text=True).strip()
+        (root / "launch.json").write_text(json.dumps({
+            "command": [str(binary), "--jobs", str(jobs), "--state-dir", str(state), "--debug"],
+            "env": env,
+        }))
+        child = start_dashboard()
         wait("dashboard ready", lambda: "folder" in screen())
         def folder_row():
             if any("▌" in line[:3] and "+ add folder" in line[:110]
@@ -253,10 +270,10 @@ def main():
             keys("Down")
             return False
         wait("add folder row selected", folder_row)
-        wait("folder input ready", lambda: "enter add folder" in screen().splitlines()[-1])
+        wait("folder input ready", lambda: "enter add folder" in footer())
         keys("-l", str(root))
         keys("Enter")
-        wait("folder composer ready", lambda: "Type an instruction" in screen())
+        wait("folder composer ready", lambda: "opencode ›" in screen() and "added" in footer())
         keys("-l", "Reply briefly without using any tools.")
         wait("OpenCode composer selected", lambda: "opencode" in screen())
         keys("Enter")
@@ -268,7 +285,7 @@ def main():
         keys("Enter")
         wait("empty native viewer focused", lambda: "← back" in screen())
         keys("Left")
-        wait("Left returned to list", lambda: "enter" in screen().splitlines()[-1])
+        wait("Left returned to list", lambda: "enter" in footer())
         keys("Enter")
         wait("same viewer reopened", lambda: "← back" in screen() and pids() == {initial})
         keys("Tab")
@@ -290,8 +307,20 @@ def main():
         wait("Left stays in the native menu", lambda: "Switch" in screen() and "ctrl+z back" in screen())
         keys("Escape")
         wait("empty editor refocused", lambda: "← back" in screen())
+        keys("-l", "persistent draft")
+        wait("draft ready before dashboard closure", lambda: "persistent draft" in screen())
+        child.kill()
+        child.wait(timeout=5)
+        tmux("kill-server", check=False)
+        assert pids() == {initial}, "dashboard closure ended the native OpenCode process"
+        child = start_dashboard()
+        wait("same native session discovered after restart", lambda: native_columns_shown(screen()) and pids() == {initial})
+        keys("Enter")
+        wait("same native editor and draft restored", lambda: "persistent draft" in screen() and pids() == {initial})
+        keys("C-u")
+        wait("restored empty editor recognized", lambda: "← back" in screen())
         keys("C-z")
-        wait("Ctrl+Z returned to list", lambda: "enter" in screen().splitlines()[-1])
+        wait("Ctrl+Z returned to list", lambda: "enter" in footer())
         keys("C-x", "C-x")
         wait("native viewer stopped", lambda: not pids())
         keys("C-h")
@@ -313,7 +342,7 @@ def main():
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
             source_messages = connection.execute("SELECT id FROM message WHERE session_id=? ORDER BY id", (ids[0],)).fetchall()
         keys("C-z")
-        wait("fork offered for the resumed conversation", lambda: "ctrl+y fork" in screen())
+        wait("resumed conversation selected for fork", lambda: "enter" in footer())
         keys("C-y")
         def fork_record():
             path = state / "forks.json"
@@ -342,6 +371,17 @@ def main():
     finally:
         for sig in previous:
             signal.signal(sig, signal.SIG_IGN)
+        for path in (state / "terminals").glob("*.json"):
+            record = json.loads(path.read_text())
+            try:
+                with socket.socket(socket.AF_UNIX) as stream:
+                    stream.settimeout(3)
+                    stream.connect(record["socket"])
+                    message = json.dumps({"Stop": {"id": record["id"]}}).encode()
+                    stream.sendall(struct.pack(">I", len(message)) + message)
+                    stream.recv(4096)
+            except OSError:
+                pass
         if child is not None:
             if child.poll() is None:
                 pids()
@@ -351,7 +391,7 @@ def main():
         provider.shutdown()
         provider.server_close()
         for pid in native_pids:
-            # Closing the dashboard's PTYs should hang up all its native clients.
+            # Explicit fixture stop must reap every hosted native client.
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 try:
@@ -361,7 +401,7 @@ def main():
                 time.sleep(0.05)
             else:
                 os.kill(pid, signal.SIGKILL)
-                raise AssertionError(f"native viewer {pid} survived dashboard closure")
+                raise AssertionError(f"native viewer {pid} survived fixture stop")
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

@@ -141,6 +141,32 @@ fn native_executable(kind: HarnessKind, path: PathBuf) -> PathBuf {
 }
 
 fn stdin_prompt(mut command: std::process::Command, prompt: &str) -> Result<std::process::Command> {
+    command.env("CONES_LAUNCH_STDIN", prompt);
+    bind_stdin_prompt(command, prompt)
+}
+
+/// Restore the anonymous stdin binding when a command crosses the terminal-host
+/// boundary. Remove the transport marker before executing the native harness.
+#[doc(hidden)]
+pub fn restore_stdin_prompt(
+    mut command: std::process::Command,
+) -> std::io::Result<std::process::Command> {
+    let prompt = command
+        .get_envs()
+        .find(|(key, _)| *key == "CONES_LAUNCH_STDIN")
+        .and_then(|(_, value)| value)
+        .map(|value| value.to_string_lossy().into_owned());
+    command.env_remove("CONES_LAUNCH_STDIN");
+    match prompt {
+        Some(prompt) => bind_stdin_prompt(command, &prompt).map_err(std::io::Error::other),
+        None => Ok(command),
+    }
+}
+
+fn bind_stdin_prompt(
+    mut command: std::process::Command,
+    prompt: &str,
+) -> Result<std::process::Command> {
     use std::{
         io::{Seek, Write},
         os::{fd::AsRawFd, unix::process::CommandExt},
