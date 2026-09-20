@@ -2611,6 +2611,11 @@ pub fn git_state(dir: &Path) -> Option<String> {
     let mut lines = text.lines();
     // `## main...origin/main [ahead 1]`, `## HEAD (no branch)`, `## No commits yet on main`.
     let head = lines.next()?.strip_prefix("## ")?;
+    // A repository with no commits has nothing to report, and git puts a sentence where the
+    // branch goes. The row stays bare instead.
+    if head.starts_with("No commits yet on ") {
+        return None;
+    }
     let branch = head.split("...").next().unwrap_or(head);
     Some(match lines.count() {
         0 => format!("{branch} · clean"),
@@ -21133,6 +21138,29 @@ states:
         assert!(
             Command::new("git")
                 .args(["-C", inside.to_str().unwrap(), "init", "-q"])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(
+            git_state(&inside),
+            None,
+            "a repository with no commits reports nothing"
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-C",
+                    inside.to_str().unwrap(),
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "commit",
+                    "-qm",
+                    "first",
+                    "--allow-empty",
+                ])
                 .status()
                 .unwrap()
                 .success()
