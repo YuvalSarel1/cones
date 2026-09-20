@@ -1153,7 +1153,7 @@ mod tests {
             info.as_ref().unwrap().coverage,
             crate::cost::Coverage::Partial
         );
-        assert!(crate::cost::display(usd, info.as_ref()).ends_with(" partial"));
+        assert_eq!(crate::cost::display(usd, info.as_ref()), "~$0.0003");
 
         for (header, event, reason) in [
             (

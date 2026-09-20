@@ -137,7 +137,7 @@ The calculator matches exact provider/model keys in a cached models.dev catalog.
 
 The dashboard refreshes the public catalog asynchronously after 24 hours. Failed downloads retain the previous valid snapshot and retry no sooner than an hour later. Snapshots older than seven days become unavailable. Validated data atomically replaces `STATE_DIR/prices.json`; rendering performs no downloads. Internal CLI listings use the existing cache without fetching. Every reader invalidates cached accounting when the catalog arrives, changes or expires, including SQLite history.
 
-Calculated costs show `~$…`; known subtotals with gaps also show `partial`. When nothing can be priced, the cell stays `-`. Session details and JSON `cost_info` identify source, coverage, priced/unpriced records, reasons for gaps, and catalog fetch time and checksum. The fetch date identifies snapshot age, not verified provider billing.
+Calculated costs show `~$…`. A subtotal with gaps shows the amount it could price and nothing else; the gap is named in session details and JSON, not in the cell. When nothing can be priced, the cell stays `-`. Session details and JSON `cost_info` identify source, coverage, priced/unpriced records, reasons for gaps, and catalog fetch time and checksum. The fetch date identifies snapshot age, not verified provider billing.
 
 ### State
 

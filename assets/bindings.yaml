@@ -58,8 +58,8 @@ states:
         action: recent
         description: "List recently entered sessions. Press again to enter the highlighted session."
       - keys: ["ctrl+y"]
-        action: handoff
-        description: "Fork the selected conversation or hand it off to another harness."
+        action: fork
+        description: "Fork the selected conversation."
       - keys: ["ctrl+r"]
         action: refresh
         description: "Refresh the list. With history visible, also start or cancel meaning indexing."
@@ -669,37 +669,6 @@ states:
       - keys: ["tab"]
         action: complete
         description: "Complete the folder path."
-  - id: handoff
-    title: "Handoff"
-    when: "The conversation handoff preview has focus."
-    bindings:
-      - keys: ["esc"]
-        action: cancel
-        description: "Cancel without starting a session."
-      - keys: ["left"]
-        action: left
-        description: "Select the previous harness."
-      - keys: ["right"]
-        action: right
-        description: "Select the next harness."
-      - keys: ["up"]
-        action: up
-        description: "Scroll up a line."
-      - keys: ["down"]
-        action: down
-        description: "Scroll down a line."
-      - keys: ["pageup"]
-        action: page_up
-        description: "Scroll up a page."
-      - keys: ["pagedown"]
-        action: page_down
-        description: "Scroll down a page."
-      - keys: ["home"]
-        action: home
-        description: "Scroll to the start."
-      - keys: ["enter"]
-        action: enter
-        description: "Start the handoff with the selected harness."
   - id: text
     title: "Text editing"
     when: "A cones text field has focus. Printable characters without control are inserted; native harness drafts remain native."

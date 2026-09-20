@@ -535,7 +535,7 @@ pub(crate) mod tests {
             let info = info.unwrap();
             assert_eq!(info.coverage, crate::cost::Coverage::Partial);
             assert_eq!(info.unpriced_reasons.get(reason), Some(&1));
-            assert!(crate::cost::display(usd, Some(&info)).ends_with(" partial"));
+            assert_eq!(crate::cost::display(usd, Some(&info)), "~$0.0003");
             assert!(
                 tail_priced(&event.to_string(), Some(&catalog))
                     .costs

@@ -6,7 +6,6 @@ pub mod copy;
 pub mod cost;
 pub mod fleet;
 pub mod forks;
-pub mod handoff;
 pub mod harness;
 pub mod history;
 pub mod launchd;

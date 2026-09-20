@@ -112,7 +112,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `memory` | Agents | Resident memory of the process running the session. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
 | `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
-| `cost` | Agents, runs, history | Native dollars, or `~$…` for a catalog estimate from reported provider, model and usage. `partial` marks gaps; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
+| `cost` | Agents, runs, history | Native dollars, or `~$…` for a catalog estimate from reported provider, model and usage. A subtotal with gaps shows only what it priced; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
 | `activity` | Agents | Counts over time under the [activity settings](#activity). |
 | `age` | Agents, history | Time since session start. |
 | `last_active` | Agents, history | Time since the latest recorded activity. |

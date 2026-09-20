@@ -80,12 +80,8 @@ pub fn display(usd: Option<f64>, info: Option<&Info>) -> String {
     } else {
         ""
     };
-    let suffix = if info.is_some_and(|i| i.coverage == Coverage::Partial) {
-        " partial"
-    } else {
-        ""
-    };
-    format!("{prefix}{}{suffix}", crate::fleet::cost(usd))
+    // Gaps stay in `Info` for the details pane and JSON; the cell shows the amount alone.
+    format!("{prefix}{}", crate::fleet::cost(usd))
 }
 
 pub fn describe(usd: Option<f64>, info: Option<&Info>) -> Option<String> {
@@ -620,7 +616,7 @@ pub(crate) mod tests {
         let (usd, info) = total.report();
         assert_eq!(usd, Some(0.25));
         assert_eq!(info.as_ref().unwrap().coverage, Coverage::Partial);
-        assert_eq!(display(usd, info.as_ref()), "$0.25 partial");
+        assert_eq!(display(usd, info.as_ref()), "$0.25");
         let mut zero = Total::default();
         zero.reported(Some(0.0), false);
         assert_eq!(zero.report().0, Some(0.0));
