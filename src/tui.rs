@@ -13132,8 +13132,10 @@ impl App {
                 _ => "Menu",
             }
         };
+        // Both footer rows share a label column so the hints start at one place.
+        let label = context.chars().count().max("Navigation".len()) + 2;
         line.spans
-            .insert(0, Span::styled(format!("{context}  "), bold()));
+            .insert(0, Span::styled(format!("{context:label$}"), bold()));
         let mut keys = vec![];
         if self.tab_does().is_none()
             && (self.focusable_viewer().is_some()
@@ -13144,14 +13146,14 @@ impl App {
         }
         keys.push(("↑↓", "select"));
         keys.push(("ctrl+g", "help"));
-        let room = self.hint_width().saturating_sub(12) as usize;
+        let room = (self.hint_width() as usize).saturating_sub(label);
         while keys.len() > 1 && hints(&keys).width() > room {
             keys.remove(keys.len() - 2);
         }
         let mut navigation = hints(&keys);
         navigation
             .spans
-            .insert(0, Span::styled("Navigation  ", bold()));
+            .insert(0, Span::styled(format!("{:label$}", "Navigation"), bold()));
         vec![line, navigation]
     }
 
@@ -13262,11 +13264,11 @@ impl App {
             }
             Mode::Normal if !self.text.is_empty() => {
                 let mut keys = vec![("enter", start.as_str())];
-                if self.harness_scope().is_some() {
-                    keys.push(("ctrl+o", "settings"));
                 if let Some(does) = self.tab_does() {
                     keys.push(("tab", does));
                 }
+                if self.harness_scope().is_some() {
+                    keys.push(("ctrl+o", "settings"));
                 }
                 keys.push(("shift+tab", "harness"));
                 compact(keys)
@@ -13879,12 +13881,12 @@ impl App {
                         _ => {}
                     }
                 } else if !self.on_button() {
-                    let (text, caret) = self.composer_input_mut();
-                    if let Some(at) = edit(text, *caret, code, mods) {
                     if action == KeyAction::Tab && self.composer_path().is_some() {
                         self.complete_composer();
                         return Ok(false);
                     }
+                    let (text, caret) = self.composer_input_mut();
+                    if let Some(at) = edit(text, *caret, code, mods) {
                         *caret = at;
                         return Ok(false);
                     }
@@ -20814,8 +20816,6 @@ states:
         assert!(app.menu_is("jobs"), "and the picked button");
     }
 
-    /// The list's last row is the only way in to a folder nothing runs in.
-    #[test]
     /// Tab completes only when something is typed to complete; otherwise it reaches the pane.
     #[test]
     fn tab_completes_a_typed_path_and_otherwise_leaves_the_composer() {
@@ -20870,6 +20870,8 @@ states:
         assert_eq!(app.caret, app.text.len());
     }
 
+    /// The list's last row is the only way in to a folder nothing runs in.
+    #[test]
     fn the_last_row_takes_a_path_and_the_added_folder_takes_the_cursor() {
         let d = dir();
         let claude = d.path();
@@ -22241,7 +22243,7 @@ states:
             "which is the row the harness ruled: {screen:#?}"
         );
         assert!(
-            cells(&t, 28, 0..100).starts_with("Session  enter"),
+            cells(&t, 28, 0..100).starts_with("Session     enter"),
             "the session hints are right under it: {screen:#?}"
         );
         assert_eq!(
@@ -22530,7 +22532,7 @@ states:
             "the selected row's viewer stays on view after ctrl+z"
         );
         assert!(
-            cells(&t, 28, 0..list).starts_with("Session  enter ")
+            cells(&t, 28, 0..list).starts_with("Session     enter ")
                 && cells(&t, 29, 0..list).starts_with("Navigation  "),
             "the two hint groups return after leaving the viewer"
         );
@@ -22594,8 +22596,13 @@ states:
             terminal.draw(|f| app.draw(f)).unwrap();
             let lines = app.footer_lines();
             assert_eq!(lines.len(), 2);
-            assert!(lines[0].to_string().starts_with("Session  enter attach"));
+            assert!(lines[0].to_string().starts_with("Session     enter attach"));
             assert!(lines[1].to_string().starts_with("Navigation  "));
+            assert_eq!(
+                lines[0].spans[0].width(),
+                lines[1].spans[0].width(),
+                "both rows start their hints at one column"
+            );
             assert!(lines[1].to_string().contains("ctrl+g help"));
             assert!(!lines[0].to_string().contains("ctrl+o"));
             assert!(!lines[0].to_string().contains("shift+tab"));
@@ -22605,7 +22612,10 @@ states:
                     .all(|line| line.width() <= app.hint_width() as usize)
             );
             let screen = rows(&terminal, width as usize);
-            assert!(screen[28].contains("Session  enter attach"), "{screen:?}");
+            assert!(
+                screen[28].contains("Session     enter attach"),
+                "{screen:?}"
+            );
             assert!(screen[29].contains("Navigation"), "{screen:?}");
         }
         app.split = false;
@@ -22614,7 +22624,7 @@ states:
         assert!(
             lines[0]
                 .to_string()
-                .starts_with("New agent  enter start claude")
+                .starts_with("New agent   enter start claude")
         );
         assert!(lines[0].to_string().contains("ctrl+o settings"));
         assert!(lines[0].to_string().contains("shift+tab harness"));
