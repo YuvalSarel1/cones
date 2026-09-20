@@ -241,12 +241,12 @@ All viewers close with the dashboard. Whether that also ends the session depends
 | `ctrl+c` | Dashboard quit confirmation in an agent viewer. These clients interpret two presses as quit, and Claude's first press leaves the conversation for its agents list. Use `esc` to interrupt a turn. In a terminal, Ctrl+C interrupts the shell's foreground command. |
 | Other keys, including `esc` and `shift+tab` | Pass to the native client. Classic terminal encoding means some modified keys, including shift+enter, cannot be distinguished there. |
 | Shift-page-up/down | Scroll emulator history. |
-| Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. |
+| Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. A focused full-frame client that requests no mouse events, such as Codex, gives the mouse back to the terminal, so dragging selects text and the wheel belongs to the terminal until the list returns. |
 | Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
 
 The [experimental terminal launchers](harness.md#additional-terminal-harnesses) return with Ctrl+Z; Tab and Left stay native even with empty input. OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
 
-Typing returns to the live screen. Terminal text selection may need the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
+Typing returns to the live screen. Beside the list, and for clients that read mouse events, terminal text selection needs the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
 
 ## Composer
 

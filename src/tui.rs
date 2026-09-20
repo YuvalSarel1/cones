@@ -11546,11 +11546,16 @@ impl App {
         Line::from(spans)
     }
 
-    /// Clients without mouse reporting leave wheel scrolling to our emulator.
+    /// A pane whose client asks for no mouse reporting, such as Codex, keeps the mouse for
+    /// the terminal, so dragging selects text there exactly as it does outside cones.
+    /// Anything else the dashboard draws around the pane needs the reports.
     fn wants_mouse(&self) -> bool {
         self.split_active()
             || self.on_button()
-            || self.focus.is_some()
+            || self.focus.is_some_and(|i| {
+                self.viewers[i].viewer.screen().mouse_protocol_mode()
+                    != viewer::MouseProtocolMode::None
+            })
             || self.history.visible
             || matches!(
                 self.mode,
@@ -24451,25 +24456,30 @@ states:
         );
         assert!(!app.key(KeyCode::Char('a'), KeyModifiers::NONE).unwrap());
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
-        // Full-frame and narrow viewers need wheel reports too, even when the client
-        // leaves scrolling to the terminal.
+        // A full frame held by a client that reads no mouse leaves the reports to the
+        // terminal, so dragging over it selects text the way it does outside cones.
         app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(app.wants_mouse(), "a full-frame viewer needs wheel reports");
+        assert!(
+            !app.wants_mouse(),
+            "a mouseless client keeps the mouse for the terminal's own selection"
+        );
         app.mouse(wheel(MouseEventKind::ScrollUp, KeyModifiers::NONE));
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
         app.mouse(wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
         t.resize(Rect::new(0, 0, 80, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(app.wants_mouse(), "a narrow viewer needs wheel reports");
-        app.mouse(MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: 5,
-            row: 3,
-            modifiers: KeyModifiers::NONE,
-        });
-        assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
+        // A client that asks for mouse reports takes them back.
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", "printf '\\033[?1003h\\033[HMOUSE'; sleep 5"]);
+        app.viewers[0].viewer = Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap();
+        wait_paint(&mut app, 0, "MOUSE");
+        assert_eq!(
+            app.viewers[0].viewer.screen().mouse_protocol_mode(),
+            viewer::MouseProtocolMode::AnyMotion
+        );
+        assert!(app.wants_mouse(), "a reporting client needs the mouse");
         app.unfocus();
         assert!(!app.wants_mouse(), "the list alone releases the mouse");
     }
