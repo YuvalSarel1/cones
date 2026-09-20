@@ -26,7 +26,8 @@ For the four readers above, a missing native home skips discovery, and so does [
 | Warm workers | `spare: true` entries are omitted, as in Claude's own listing; they are workers awaiting a session. |
 | Directory | Registry `cwd` for interactive sessions. Background rows use `jobs/<jobId>/state.json`'s launch cwd; the registry cwd follows later worktrees and still locates the transcript. |
 | Transcript | `projects/<cwd with non-alphanumeric bytes replaced by '-'>/<sessionId>.jsonl`, then the job's `linkScanPath` if that path is missing. The constructed path depends on Claude's internal layout; interactive sessions supply no native path. |
-| Exit | Claude removes the registry entry. There is no retained exited row. |
+| Exit | Claude removes the registry entry. An interactive session has no retained row. |
+| Settled background session | The daemon retires a finished background session and drops its registry entry, while `jobs/<jobId>/state.json` keeps reporting `done`, `failed` or `stopped`. That record is a row with no process, in the job's launch cwd, until `claude rm` removes it. Killed jobs leave no record. A record with no terminal state and no live registry entry is not a row. |
 
 Subagents run inside their parent's process and do not get separate registry rows.
 
@@ -75,7 +76,7 @@ The native contracts come from the [CLI](https://opencode.ai/docs/cli/), [table 
 For an end-to-end check with the real OpenCode binary:
 
 ```sh
-cargo build
+scripts/check
 python3 scripts/check-opencode.py target/debug/cones /path/to/opencode
 ```
 
@@ -190,6 +191,7 @@ A daemon-owned session supports clients that can join and leave without ending t
 | Session or run | Open | What survives viewer closure | Stop or removal |
 | --- | --- | --- | --- |
 | Claude background | `claude attach <short id>` in its cwd. | The daemon-owned session. | `claude rm <short id>` removes the job record but preserves the transcript. A signal alone lets the daemon respawn it; `claude stop` leaves a stopped record. |
+| Settled Claude background | `claude attach <short id>`, which wakes the session from its job record. Resting on the row never attaches: a peek would wake it. | The woken daemon-owned session. | `claude rm <short id>` removes the record and the row. |
 | Externally started Claude interactive, standalone Codex, pi, OpenCode or experimental CLI | Refused: own terminal. | Not owned by this dashboard. | SIGTERM to the verified process. |
 | Codex daemon thread | `codex --remote unix://<socket> resume <thread id>`, even with another client attached. | The thread in its daemon. | Forget the saved record, hide the id and close or signal any client on the row. A detached thread has no native stop; it remains resumable. Hiding prevents its held lock from restoring the row after restart. |
 | Interactive Claude fork or experimental CLI from the composer | Return to the owned viewer. | The owned client ends; other harness-managed work follows native behavior. | Close the owned viewer. |
@@ -223,14 +225,14 @@ Model and provider overrides follow [configuration](jobs.md#job-fields-and-defau
 | --- | --- |
 | Claude Code | Execution adapter verifies version `>=2.1, <3` and the compiled flags against native help, then uses the [run contract](jobs.md#what-the-harness-is-told). |
 | Codex | No execution adapter: native enforcement and terminal result reporting remain unverified. |
-| pi | No execution adapter: pi offers no sandbox for the required write policy; terminal result reporting is unverified. |
+| pi | No execution adapter: supervised execution and terminal result reporting remain unverified. |
 | OpenCode | Supervised jobs are not implemented. Native enforcement and completion reporting remain unverified. Interactive sessions keep OpenCode's own permissions. |
 
-Unsupported jobs parse but fail execution validation, including installation. A direct run records the validation failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).
+Jobs naming a harness without an execution adapter are rejected when the jobs file is read, with the job's name in the error. They cannot be installed or started as configured jobs. A supported Claude job can still fail native version or capability validation at compilation; a direct run records that failure. Native discovery and control do not require an execution adapter. A new integration's schema and native handlers are described in [Harness definitions](harness-definitions.md#changing-or-adding-a-harness).
 
 ## Additional terminal harnesses
 
-Gemini CLI, Cursor Agent, GitHub Copilot CLI, Amp, Droid and Kimi have experimental terminal launch and process discovery adapters. They retain their native permission settings. No hooks, config rewriting, transcript scraping or provider credential forwarding is installed for these integrations.
+Gemini CLI, Cursor Agent, GitHub Copilot CLI, Amp, Droid and Kimi have experimental terminal launch and process discovery adapters. They retain their native permission settings. cones installs no report hooks or config rewrites and reads no transcripts for these integrations. Composer launches inherit their native environment and receive configured `AWS_PROFILE` and `AWS_REGION`, as other harness launches do.
 
 | Harness | Initial interactive instruction | Model selection |
 | --- | --- | --- |

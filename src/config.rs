@@ -901,6 +901,11 @@ pub fn defaults(path: &Path) -> Policy {
     parse(path).map(|d| d.defaults).unwrap_or_default()
 }
 
+/// Why the file will not load, for a reader that falls back to the built-in policy.
+pub fn readable(path: &Path) -> Result<()> {
+    parse(path).map(drop)
+}
+
 fn defaults_lines(d: &Policy) -> Vec<String> {
     let mut out = vec!["defaults:".to_owned()];
     let mut put = |k: &str, v: Option<String>| {
@@ -1074,6 +1079,12 @@ pub fn write_config(
         .filter(|p| !p.as_os_str().is_empty())
         .map_or_else(|| PathBuf::from("."), Path::to_owned);
     resolve(Job::new("defaults", "0 9 * * *", &base, "check"), d, &base)?;
+    // The editor falls back to the built-in policy when the file will not load, so writing
+    // every block from it would replace settings this build cannot read, such as a column
+    // or a version a newer cones wrote. Refuse the write and keep the file.
+    if path.exists() {
+        parse(path).with_context(|| format!("{} was left alone", path.display()))?;
+    }
     let text =
         fs::read_to_string(path).unwrap_or_else(|_| format!("version: {VERSION}\njobs: []\n"));
     // Migrating the text every writer edits is what lets a file cones failed to rewrite on
@@ -1983,6 +1994,35 @@ mod tests {
             "untouched"
         );
         assert!(!missing.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn a_file_this_build_cannot_read_is_left_alone_by_a_config_write() {
+        // A column or a version a newer cones wrote: the editor shows built-in defaults,
+        // and writing them back would replace the settings that are in the file.
+        for text in [
+            "version: 4\ndefaults:\n  model: opus\ncolumns: [state, invented]\njobs: []\n",
+            "version: 99\ndefaults:\n  model: opus\njobs: []\n",
+        ] {
+            let (_d, path) = file(text);
+            let error = write_config(
+                &path,
+                &Policy::default(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("was left alone"), "{error}");
+            assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        }
     }
 
     #[test]

@@ -37,7 +37,9 @@ Each harness keeps its own tools and permissions. Available previews and control
 | --- | --- |
 | [OpenCode](https://opencode.ai/docs/providers/) / [pi](https://pi.dev) | Choose your model and provider while keeping one harness. |
 | [T3 Code](https://github.com/pingdotgg/t3code) | Choose your harness while keeping T3's common interface. |
-| cones | Keep your harnesses' native terminal interfaces while adding a shared workspace. |
+| [Agent Deck](https://github.com/asheshgoplani/agent-deck) | Keep native agent CLIs while managing tmux sessions and Git worktrees. |
+| [Superset](https://github.com/superset-sh/superset) | Keep native agent CLIs in a desktop workspace with Git worktrees. |
+| cones | Keep native terminal interfaces in a shared workspace, including supported sessions started elsewhere. |
 
 ## Install
 
@@ -77,7 +79,7 @@ cones
 
 To start work in a project:
 
-1. Choose `folder` in the menu and enter an existing project directory.
+1. Select `+ add folder` at the bottom of the session list and enter an existing project directory.
 2. Use `Shift+Tab` to choose a harness.
 3. Type an instruction and press `Enter`.
 
@@ -85,7 +87,7 @@ Open a session with `Enter`; `Ctrl+Z` returns to the list. Press `Ctrl+H` to bro
 
 Press `Ctrl+Y` to [fork a supported conversation](docs/dashboard.md#fork-a-conversation). The new session appears beneath its parent with aligned columns. It uses the same folder, so file edits are shared.
 
-The `config` menu lets you change the layout, columns and model defaults. To open a shell in the selected project, choose `terminal` with `Shift+Tab` and press `Enter`.
+The `config` menu lets you change the layout, columns and shared defaults. Press `Ctrl+O` to change the selected harness's model and launch settings. To open a shell in the selected project, choose `terminal` with `Shift+Tab` and press `Enter`.
 
 See the [dashboard guide](docs/dashboard.md) for the full controls.
 
@@ -112,3 +114,5 @@ This runs a supervised Claude Code task in the current directory. See [one-off t
 | [Commands](docs/cli.md) | CLI flags, one-off tasks and diagnostics. |
 | [Harness support](docs/harness.md) | Native sources, reports and capabilities. |
 | [Harness definitions](docs/harness-definitions.md) | The built-in integration schema. |
+| [Key bindings](docs/bindings.md) | Shortcut states, actions and the embedded YAML format. |
+| [Testing](docs/testing.md) | Shared check queue, focused checks and native fixtures. |

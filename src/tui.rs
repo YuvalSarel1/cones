@@ -701,10 +701,12 @@ impl Data {
                     cells: cells.next().unwrap_or_default(),
                 },
                 Entry::Folder(dir) => {
-                    let mut cells = vec![];
-                    if let Some(g) = self.git.get(*dir) {
-                        cells.push((g.clone(), plain()));
-                    }
+                    // Outside git there is no branch line, and a row with no text at all is
+                    // an invisible line the cursor can still land on.
+                    let cells = match self.git.get(*dir) {
+                        Some(g) => vec![(g.clone(), plain())],
+                        None => vec![("no sessions here".to_owned(), dim())],
+                    };
                     Row {
                         kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
                         cells,
@@ -1067,22 +1069,25 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
 }
 
 /// Match every search word against the shortcut, explanation and section name.
-fn guide_rows(find: &str) -> Vec<&'static (&'static str, &'static str)> {
+fn guide_rows(find: &str) -> Vec<&'static (String, String)> {
     let words: Vec<String> = find.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
-        return GUIDE.iter().collect();
+        return guide_entries().iter().collect();
     }
     let mut rows = vec![];
     let mut head = None;
     let mut shown = false;
-    for entry in GUIDE {
+    for entry in guide_entries() {
         let (key, what) = entry;
         if key.is_empty() {
             head = Some(entry);
             shown = false;
         } else {
-            let text =
-                format!("{} {key} {what}", head.map_or("", |(_, title)| *title)).to_lowercase();
+            let text = format!(
+                "{} {key} {what}",
+                head.map_or("", |(_, title)| title.as_str())
+            )
+            .to_lowercase();
             if words.iter().all(|word| text.contains(word)) {
                 if !shown {
                     rows.extend(head);
@@ -1111,7 +1116,7 @@ fn guide_lines(columns: u16, find: &str) -> Vec<Line<'static>> {
         .flat_map(|line| hang(line.spans, 0, columns.max(1) as usize))
         .collect();
     }
-    let width = GUIDE
+    let width = guide_entries()
         .iter()
         .map(|(key, _)| key.chars().count())
         .max()
@@ -1123,10 +1128,18 @@ fn guide_lines(columns: u16, find: &str) -> Vec<Line<'static>> {
             if !lines.is_empty() {
                 lines.push(Line::default());
             }
-            lines.push(Line::from(Span::styled(
-                (*what).to_owned(),
-                bold().fg(ORANGE),
-            )));
+            lines.extend(hang(
+                vec![Span::styled(what.to_owned(), bold().fg(ORANGE))],
+                0,
+                columns.max(1) as usize,
+            ));
+            if let Some(state) = bindings().states.iter().find(|state| state.title == *what) {
+                lines.extend(hang(
+                    vec![Span::styled(state.when.clone(), dim())],
+                    0,
+                    columns.max(1) as usize,
+                ));
+            }
             continue;
         }
         if columns < 48 {
@@ -1177,27 +1190,30 @@ impl Guide {
 
     /// Return true only when leaving Help. Search editing never launches an action.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
-        match code {
-            KeyCode::Esc if !self.find.text.is_empty() => {
+        let action = key_action(BindingState::Guide, code, mods);
+        match action {
+            KeyAction::Cancel if !self.find.text.is_empty() => {
                 self.find = Input::default();
                 self.top = 0;
             }
-            KeyCode::Esc => return true,
-            KeyCode::Char('g') if mods.contains(KeyModifiers::CONTROL) => return true,
-            KeyCode::Left if self.find.text.is_empty() => return true,
-            KeyCode::Enter => {}
-            KeyCode::Char('/') if self.find.text.is_empty() => {}
-            KeyCode::Char('f') if mods.contains(KeyModifiers::CONTROL) => {}
-            KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
+            KeyAction::Cancel => return true,
+            KeyAction::Guide => return true,
+            KeyAction::Left if self.find.text.is_empty() => return true,
+            KeyAction::Enter => {}
+            KeyAction::Search if self.find.text.is_empty() => {}
+            KeyAction::Filter => {}
+            KeyAction::Clear => {
                 self.find = Input::default();
                 self.top = 0;
             }
-            KeyCode::Up => self.top = self.top.saturating_sub(1),
-            KeyCode::Down => self.top = (self.top + 1).min(self.max_scroll()),
-            KeyCode::PageUp => self.top = self.top.saturating_sub(self.body_height()),
-            KeyCode::PageDown => self.top = (self.top + self.body_height()).min(self.max_scroll()),
-            KeyCode::Home => self.top = 0,
-            KeyCode::End => self.top = self.max_scroll(),
+            KeyAction::Up => self.top = self.top.saturating_sub(1),
+            KeyAction::Down => self.top = (self.top + 1).min(self.max_scroll()),
+            KeyAction::PageUp => self.top = self.top.saturating_sub(self.body_height()),
+            KeyAction::PageDown => {
+                self.top = (self.top + self.body_height()).min(self.max_scroll())
+            }
+            KeyAction::Home => self.top = 0,
+            KeyAction::End => self.top = self.max_scroll(),
             _ => {
                 if self.find.key(code, mods) {
                     self.top = 0;
@@ -1518,18 +1534,19 @@ impl Inspector {
 
     /// Return true when the preview should show the conversation again.
     fn key(&mut self, code: KeyCode, lines: usize) -> bool {
+        let action = key_action(BindingState::Inspector, code, KeyModifiers::NONE);
         let page = self.height.max(1);
-        match code {
-            KeyCode::Esc | KeyCode::Left => return self.back(),
-            KeyCode::Enter | KeyCode::Right => self.enter(),
-            KeyCode::Up if self.level == 2 => self.scroll(self.text_top.saturating_sub(1), lines),
-            KeyCode::Down if self.level == 2 => self.scroll(self.text_top + 1, lines),
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
-            KeyCode::PageUp => self.scroll(self.top().saturating_sub(page), lines),
-            KeyCode::PageDown => self.scroll(self.top() + page, lines),
-            KeyCode::Home => self.scroll(0, lines),
-            KeyCode::End => self.scroll(lines, lines),
+        match action {
+            KeyAction::Cancel => return self.back(),
+            KeyAction::Enter => self.enter(),
+            KeyAction::Up if self.level == 2 => self.scroll(self.text_top.saturating_sub(1), lines),
+            KeyAction::Down if self.level == 2 => self.scroll(self.text_top + 1, lines),
+            KeyAction::Up => self.move_by(-1),
+            KeyAction::Down => self.move_by(1),
+            KeyAction::PageUp => self.scroll(self.top().saturating_sub(page), lines),
+            KeyAction::PageDown => self.scroll(self.top() + page, lines),
+            KeyAction::Home => self.scroll(0, lines),
+            KeyAction::End => self.scroll(lines, lines),
             _ => {}
         }
         false
@@ -1939,11 +1956,12 @@ impl NavigationRow {
 }
 
 fn tab_key(code: KeyCode, selected: usize, count: usize) -> Option<usize> {
-    match code {
-        KeyCode::Left | KeyCode::Char('[') => Some((selected + count - 1) % count),
-        KeyCode::Right | KeyCode::Char(']') => Some((selected + 1) % count),
-        KeyCode::Home => Some(0),
-        KeyCode::End => Some(count - 1),
+    let action = key_action(BindingState::Tabs, code, KeyModifiers::NONE);
+    match action {
+        KeyAction::Previous => Some((selected + count - 1) % count),
+        KeyAction::Next => Some((selected + 1) % count),
+        KeyAction::Home => Some(0),
+        KeyAction::End => Some(count - 1),
         _ => None,
     }
 }
@@ -2061,7 +2079,7 @@ fn word_right(text: &str, at: usize) -> usize {
 /// macOS cmd shortcuts arrive as control keys, and option shortcuts as alt keys.
 fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> Option<usize> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let alt = mods.contains(KeyModifiers::ALT);
+    let action = key_action(BindingState::Text, code, mods);
     let at = snap(text, cursor);
     // All word keys treat a word as a run of non-spaces.
     let prev = text[..at]
@@ -2074,25 +2092,24 @@ fn edit(text: &mut String, cursor: usize, code: KeyCode, mods: KeyModifiers) -> 
         text.replace_range(from..to, "");
         from
     };
-    Some(match code {
-        KeyCode::Left if ctrl || alt => wl,
-        KeyCode::Right if ctrl || alt => wr,
-        KeyCode::Char('b') if alt && !ctrl => wl,
-        KeyCode::Char('f') if alt && !ctrl => wr,
-        KeyCode::Left => prev,
-        KeyCode::Right => next,
-        KeyCode::Home => 0,
-        KeyCode::Char('a') if ctrl => 0,
-        KeyCode::End => text.len(),
-        KeyCode::Char('e') if ctrl && !text.is_empty() => text.len(),
-        KeyCode::Backspace if alt => cut(text, wl, at),
-        KeyCode::Char('w') if ctrl => cut(text, wl, at),
-        KeyCode::Backspace => cut(text, prev, at),
-        KeyCode::Delete => cut(text, at, next),
-        KeyCode::Char('d') if alt && !ctrl => cut(text, at, wr),
-        KeyCode::Char('u') if ctrl => cut(text, 0, at),
-        KeyCode::Char('k') if ctrl => cut(text, at, text.len()),
-        KeyCode::Char(c) if !ctrl => {
+    Some(match action {
+        KeyAction::WordLeft => wl,
+        KeyAction::WordRight => wr,
+        KeyAction::Left => prev,
+        KeyAction::Right => next,
+        KeyAction::Home => 0,
+        KeyAction::End => text.len(),
+        KeyAction::TextEnd if !text.is_empty() => text.len(),
+        KeyAction::DeleteWordLeft => cut(text, wl, at),
+        KeyAction::Backspace => cut(text, prev, at),
+        KeyAction::Delete => cut(text, at, next),
+        KeyAction::DeleteWordRight => cut(text, at, wr),
+        KeyAction::DeleteStart => cut(text, 0, at),
+        KeyAction::DeleteEnd => cut(text, at, text.len()),
+        KeyAction::Unbound if !ctrl && matches!(code, KeyCode::Char(_)) => {
+            let KeyCode::Char(c) = code else {
+                unreachable!()
+            };
             text.insert(at, c);
             at + c.len_utf8()
         }
@@ -2934,31 +2951,32 @@ impl JobForm {
     }
 
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> FormAction {
-        if code == KeyCode::Esc {
+        let action = key_action(BindingState::Job, code, mods);
+        if action == KeyAction::Cancel {
             return FormAction::Cancel;
         }
         self.error = None;
         // The head takes no value: it opens or shuts the section, or moves off itself.
         if self.row == JobRow::Head {
-            match code {
-                KeyCode::Enter | KeyCode::Right => self.go(JobRow::Set(0)),
-                KeyCode::Left => self.shut = true,
-                KeyCode::Up => self.walk(true),
-                KeyCode::Down | KeyCode::Tab => self.walk(false),
+            match key_action(BindingState::JobHead, code, mods) {
+                KeyAction::Enter => self.go(JobRow::Set(0)),
+                KeyAction::Left => self.shut = true,
+                KeyAction::Up => self.walk(true),
+                KeyAction::Down => self.walk(false),
                 _ => {}
             }
             return FormAction::Stay;
         }
         let mut cursor = self.cursor;
-        match code {
-            KeyCode::Enter => return self.enter(),
-            KeyCode::Up => self.walk(true),
-            KeyCode::Down | KeyCode::Tab => self.walk(false),
-            KeyCode::Left | KeyCode::Right if self.turns() => {
-                self.turn(code == KeyCode::Left);
+        match action {
+            KeyAction::Enter => return self.enter(),
+            KeyAction::Up => self.walk(true),
+            KeyAction::Down => self.walk(false),
+            KeyAction::Left | KeyAction::Right if self.turns() => {
+                self.turn(action == KeyAction::Left);
             }
             // A settings row goes back to the default; an empty answer walks back.
-            KeyCode::Backspace if self.field().is_none_or(|f| f.is_empty()) => match self.row {
+            KeyAction::Reset if self.field().is_none_or(|f| f.is_empty()) => match self.row {
                 JobRow::Set(i) if !self.values[i].is_empty() => self.values[i].clear(),
                 _ => self.walk(true),
             },
@@ -5019,22 +5037,6 @@ impl ConfigForm {
         }
     }
 
-    /// The picker's ctrl+s: the values it holds, aimed at the file whether or not the
-    /// last edit changed anything.
-    fn save_action(&mut self) -> ConfigAction {
-        self.error = None;
-        self.note = None;
-        match self.config() {
-            Err(e) => {
-                self.error = Some(e);
-                ConfigAction::Stay
-            }
-            Ok((p, c, s, pn, st, m, w, rc, jc, hc)) => {
-                ConfigAction::Save(Box::new(p), c, s.map(Box::new), pn, st, m, w, rc, jc, hc)
-            }
-        }
-    }
-
     pub fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> ConfigAction {
         self.key_with_probe(code, mods, connectivity)
     }
@@ -5045,6 +5047,18 @@ impl ConfigForm {
         mods: KeyModifiers,
         probe: fn() -> Vec<Line<'static>>,
     ) -> ConfigAction {
+        let state = if self.help.is_some() {
+            BindingState::ConfigHelp
+        } else if self.choice.is_some() {
+            BindingState::ConfigChoice
+        } else if self.open {
+            BindingState::ConfigEdit
+        } else if self.tabs {
+            BindingState::ConfigTabs
+        } else {
+            BindingState::Config
+        };
+        let action = key_action(state, code, mods);
         self.error = None;
         self.note = None;
         if let Some(top) = self.help {
@@ -5053,43 +5067,43 @@ impl ConfigForm {
                 .details()
                 .line_count(self.area.width.max(1))
                 .saturating_sub(page);
-            self.help = match code {
-                KeyCode::Esc | KeyCode::Left | KeyCode::F(1) | KeyCode::Char('?') => None,
-                KeyCode::Up => Some(top.saturating_sub(1)),
-                KeyCode::Down => Some((top + 1).min(last)),
-                KeyCode::PageUp => Some(top.saturating_sub(page)),
-                KeyCode::PageDown => Some((top + page).min(last)),
-                KeyCode::Home => Some(0),
-                KeyCode::End => Some(last),
+            self.help = match action {
+                KeyAction::Cancel => None,
+                KeyAction::Up => Some(top.saturating_sub(1)),
+                KeyAction::Down => Some((top + 1).min(last)),
+                KeyAction::PageUp => Some(top.saturating_sub(page)),
+                KeyAction::PageDown => Some((top + page).min(last)),
+                KeyAction::Home => Some(0),
+                KeyAction::End => Some(last),
                 _ => Some(top),
             };
             return ConfigAction::Stay;
         }
-        if code == KeyCode::F(1) || (!self.open && code == KeyCode::Char('?')) {
+        if action == KeyAction::Help {
             self.help = Some(0);
             return ConfigAction::Stay;
         }
         if let Some(at) = self.choice {
             let last = self.choices().len().saturating_sub(1);
             let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
-            match code {
-                KeyCode::Esc | KeyCode::Left => self.choice = None,
-                KeyCode::Enter | KeyCode::Char(' ') => return self.choose(),
-                KeyCode::Up => self.choice = Some(at.saturating_sub(1)),
-                KeyCode::Down => self.choice = Some((at + 1).min(last)),
-                KeyCode::Home => self.choice = Some(0),
-                KeyCode::End => self.choice = Some(last),
-                KeyCode::PageUp => self.choice = Some(at.saturating_sub(page)),
-                KeyCode::PageDown => self.choice = Some((at + page).min(last)),
+            match action {
+                KeyAction::Cancel => self.choice = None,
+                KeyAction::Enter => return self.choose(),
+                KeyAction::Up => self.choice = Some(at.saturating_sub(1)),
+                KeyAction::Down => self.choice = Some((at + 1).min(last)),
+                KeyAction::Home => self.choice = Some(0),
+                KeyAction::End => self.choice = Some(last),
+                KeyAction::PageUp => self.choice = Some(at.saturating_sub(page)),
+                KeyAction::PageDown => self.choice = Some((at + page).min(last)),
                 _ => {}
             }
             return ConfigAction::Stay;
         }
         // The tab row behaves like the dashboard's menu buttons: ←→ pick, ↓ enters the fields.
         if self.tabs && !self.open {
-            let tab = match code {
-                KeyCode::Esc => return ConfigAction::Cancel,
-                KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
+            let tab = match action {
+                KeyAction::Cancel => return ConfigAction::Cancel,
+                KeyAction::Enter => {
                     self.tabs = false;
                     return ConfigAction::Stay;
                 }
@@ -5103,70 +5117,68 @@ impl ConfigForm {
             return ConfigAction::Stay;
         }
         if !self.open {
-            match code {
-                KeyCode::Esc => return ConfigAction::Cancel,
+            match action {
+                KeyAction::Cancel => return ConfigAction::Cancel,
                 // The picker opens over the list, so the key that opened it and the list's
                 // own key for leaving a screen both close it.
-                KeyCode::Tab if self.scope.is_some() => return ConfigAction::Cancel,
-                KeyCode::Char('o')
-                    if self.scope.is_some() && mods.contains(KeyModifiers::CONTROL) =>
-                {
+                KeyAction::Tab if self.scope.is_some() => return ConfigAction::Cancel,
+                KeyAction::Settings if self.scope.is_some() => {
                     return ConfigAction::Cancel;
                 }
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
+                KeyAction::Enter | KeyAction::Right | KeyAction::Toggle
                     if matches!(self.field().input, Answer::Columns) =>
                 {
                     return ConfigAction::Columns(column_tab(self.field().name));
                 }
-                KeyCode::Backspace if matches!(self.field().input, Answer::Columns) => {}
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char(' ')
+                KeyAction::Reset if matches!(self.field().input, Answer::Columns) => {}
+                KeyAction::Enter | KeyAction::Right | KeyAction::Toggle
                     if matches!(self.field().input, Answer::Check) =>
                 {
                     self.note = Some(probe());
                 }
-                KeyCode::Backspace if matches!(self.field().input, Answer::Check) => {}
-                KeyCode::Char('[') if self.scope.is_none() => {
+                KeyAction::Reset if matches!(self.field().input, Answer::Check) => {}
+                KeyAction::Previous if self.scope.is_none() => {
                     self.switch(self.tab().saturating_sub(1));
                 }
-                KeyCode::Char(']') if self.scope.is_none() => {
+                KeyAction::Next if self.scope.is_none() => {
                     self.switch((self.tab() + 1).min(GROUPS.len() - 1));
                 }
-                KeyCode::Enter if self.field().picks().is_some() => {
+                KeyAction::Enter if self.field().picks().is_some() => {
                     let f = self.field();
                     let ring = f.ring(&self.values[self.row]);
                     self.choice = Some(f.stop(&ring, &self.values[self.row]));
                     self.choice_top = 0;
                 }
-                KeyCode::Char(' ') if self.field().picks().is_some() => {
+                KeyAction::Toggle if self.field().picks().is_some() => {
                     self.before = self.values[self.row].clone();
                     if self.turn(false) {
                         return self.commit();
                     }
                 }
-                KeyCode::Left | KeyCode::Right => {
+                KeyAction::Left | KeyAction::Right => {
                     self.before = self.values[self.row].clone();
-                    if self.turn(code == KeyCode::Left) {
+                    if self.turn(action == KeyAction::Left) {
                         return self.commit();
                     }
                 }
-                KeyCode::Backspace if !self.values[self.row].is_empty() => {
+                KeyAction::Reset if !self.values[self.row].is_empty() => {
                     self.before = self.values[self.row].clone();
                     self.values[self.row].clear();
                     return self.commit();
                 }
-                KeyCode::Enter
+                KeyAction::Enter
                     if matches!(self.field().input, Answer::Typed | Answer::Number(_)) =>
                 {
                     self.enter()
                 }
-                KeyCode::Enter | KeyCode::Down => self.down(),
-                KeyCode::Up => self.up(),
-                KeyCode::Home => self.step(self.fields()[0]),
-                KeyCode::End => self.step(*self.fields().last().unwrap()),
-                KeyCode::PageUp | KeyCode::PageDown => {
+                KeyAction::Enter | KeyAction::Down => self.down(),
+                KeyAction::Up => self.up(),
+                KeyAction::Home => self.step(self.fields()[0]),
+                KeyAction::End => self.step(*self.fields().last().unwrap()),
+                KeyAction::PageUp | KeyAction::PageDown => {
                     let count = self.area.height.saturating_sub(self.header_rows()).max(1);
                     for _ in 0..count {
-                        if code == KeyCode::PageUp {
+                        if action == KeyAction::PageUp {
                             self.up();
                         } else {
                             self.down();
@@ -5174,14 +5186,18 @@ impl ConfigForm {
                     }
                 }
                 // Typing on a field that also types goes into its slot.
-                KeyCode::Char(_)
-                    if matches!(self.field().input, Answer::PickOrType(..))
+                KeyAction::Unbound
+                    if matches!(code, KeyCode::Char(_))
+                        && matches!(self.field().input, Answer::PickOrType(..))
                         && !mods.contains(KeyModifiers::CONTROL) =>
                 {
                     self.enter();
                     return self.key_with_probe(code, mods, probe);
                 }
-                KeyCode::Char(c) if !self.field().typed() => {
+                KeyAction::Unbound if !self.field().typed() && matches!(code, KeyCode::Char(_)) => {
+                    let KeyCode::Char(c) = code else {
+                        unreachable!()
+                    };
                     let f = self.field();
                     let opts = f.picks().unwrap_or_default();
                     if let Some(o) = opts
@@ -5201,27 +5217,27 @@ impl ConfigForm {
             }
             return ConfigAction::Stay;
         }
-        match code {
-            KeyCode::Esc => {
+        match action {
+            KeyAction::Cancel => {
                 self.values[self.row] = std::mem::take(&mut self.before);
                 self.open = false;
             }
-            KeyCode::Enter => {
+            KeyAction::Enter => {
                 return self.commit();
             }
             // Arrows past either end of the slot step back onto the words.
-            KeyCode::Left | KeyCode::Right
+            KeyAction::Left | KeyAction::Right
                 if mods.is_empty() && matches!(self.field().input, Answer::PickOrType(..)) && {
                     let v = &self.values[self.row];
                     let at = snap(v, self.cursor);
-                    if code == KeyCode::Left {
+                    if action == KeyAction::Left {
                         at == 0
                     } else {
                         at == v.len()
                     }
                 } =>
             {
-                if self.turn(code == KeyCode::Left) {
+                if self.turn(action == KeyAction::Left) {
                     return self.commit();
                 }
             }
@@ -5650,9 +5666,6 @@ impl ConfigForm {
                 keys.push(("bksp", "reset"));
             }
         }
-        if self.scope.is_some() {
-            keys.push(("ctrl+s", "save as default"));
-        }
         keys.push(("?", "help"));
         keys.push((
             "esc",
@@ -5667,7 +5680,7 @@ impl ConfigForm {
         } else {
             self.area.width
         } as usize;
-        for omit in ["↑↓", "bksp", "←→", "ctrl+s"] {
+        for omit in ["↑↓", "bksp", "←→"] {
             if hints(&keys).width() > width {
                 keys.retain(|(key, _)| *key != omit);
             }
@@ -5876,7 +5889,15 @@ fn built_run_columns() -> Vec<String> {
 
 /// The config screen as the file has it, read fresh: the picker and the preview both need one.
 fn config_form(jobs_path: &Path) -> Box<ConfigForm> {
-    config_form_from(jobs_path, &config::defaults(jobs_path))
+    let mut form = config_form_from(jobs_path, &config::defaults(jobs_path));
+    // The rows are the built-in policy when the file will not load. Say why, rather than
+    // showing built-ins as if they were the file; a write refuses it for the same reason.
+    if jobs_path.exists()
+        && let Err(e) = config::readable(jobs_path)
+    {
+        form.error = Some(format!("{e:#}"));
+    }
+    form
 }
 
 /// The same form over a policy the caller supplies, which the picker uses to show its
@@ -5964,12 +5985,13 @@ impl ColumnForm {
     }
 
     fn key(&mut self, code: KeyCode) -> bool {
-        match code {
-            KeyCode::Up => self.at = self.at.saturating_sub(1),
-            KeyCode::Down => self.at = (self.at + 1).min(self.order.len() - 1),
-            KeyCode::Home => self.at = 0,
-            KeyCode::End => self.at = self.order.len() - 1,
-            KeyCode::Char(' ') => {
+        let action = key_action(BindingState::Columns, code, KeyModifiers::NONE);
+        match action {
+            KeyAction::Up => self.at = self.at.saturating_sub(1),
+            KeyAction::Down => self.at = (self.at + 1).min(self.order.len() - 1),
+            KeyAction::Home => self.at = 0,
+            KeyAction::End => self.at = self.order.len() - 1,
+            KeyAction::Toggle => {
                 let selected = self.selected().to_owned();
                 if !self.shown.remove(&selected) {
                     self.shown.insert(selected);
@@ -5977,8 +5999,8 @@ impl ColumnForm {
                 self.default = false;
                 return true;
             }
-            KeyCode::Char('[' | ']') if self.shown.contains(self.selected()) => {
-                let target = if code == KeyCode::Char('[') {
+            KeyAction::Previous | KeyAction::Next if self.shown.contains(self.selected()) => {
+                let target = if action == KeyAction::Previous {
                     (0..self.at)
                         .rev()
                         .find(|&i| self.shown.contains(&self.order[i]))
@@ -6049,11 +6071,20 @@ impl ColumnsPicker {
     }
 
     fn key(&mut self, code: KeyCode) -> ColumnAction {
+        let action = key_action(
+            if self.tabs {
+                BindingState::ColumnTabs
+            } else {
+                BindingState::Columns
+            },
+            code,
+            KeyModifiers::NONE,
+        );
         self.error = None;
         if self.tabs {
-            match code {
-                KeyCode::Esc => return ColumnAction::Close,
-                KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => self.tabs = false,
+            match action {
+                KeyAction::Cancel => return ColumnAction::Close,
+                KeyAction::Enter => self.tabs = false,
                 _ => {
                     if let Some(tab) = tab_key(code, self.tab, COLUMN_SETS.len()) {
                         self.tab = tab;
@@ -6062,30 +6093,30 @@ impl ColumnsPicker {
             }
             return ColumnAction::Stay;
         }
-        match code {
+        match action {
             // Both keys return to the columns group of the config screen the picker came from.
-            KeyCode::Esc | KeyCode::Left => return ColumnAction::Close,
-            KeyCode::Up if self.current().at == 0 => self.tabs = true,
+            KeyAction::Cancel => return ColumnAction::Close,
+            KeyAction::Up if self.current().at == 0 => self.tabs = true,
             _ => {
                 let before = self.current().clone();
                 let page = self.area.height.saturating_sub(self.header_rows()).max(1) as usize;
                 let form = &mut self.sets[self.tab];
-                if code == KeyCode::Backspace && !form.default {
+                if action == KeyAction::Reset && !form.default {
                     let selected = form.selected().to_owned();
                     *form = ColumnForm::new(COLUMN_SETS[self.tab].0, None);
                     form.at = form.order.iter().position(|c| *c == selected).unwrap_or(0);
                     return ColumnAction::Save(before);
                 }
-                let code = match code {
-                    KeyCode::PageUp => {
+                match action {
+                    KeyAction::PageUp => {
                         form.at = form.at.saturating_sub(page);
                         return ColumnAction::Stay;
                     }
-                    KeyCode::PageDown => {
+                    KeyAction::PageDown => {
                         form.at = (form.at + page).min(form.order.len() - 1);
                         return ColumnAction::Stay;
                     }
-                    c => c,
+                    _ => {}
                 };
                 if form.key(code) {
                     return ColumnAction::Save(before);
@@ -6432,6 +6463,15 @@ impl McpPanel {
     }
 
     fn key(&mut self, code: KeyCode) -> McpAction {
+        let action = key_action(
+            if self.copying.is_some() {
+                BindingState::McpCopy
+            } else {
+                BindingState::Mcp
+            },
+            code,
+            KeyModifiers::NONE,
+        );
         self.error = None;
         if let Some(target) = self.copying {
             let Some((from, name)) = self.selected() else {
@@ -6439,11 +6479,11 @@ impl McpPanel {
                 return McpAction::Stay;
             };
             let (name, targets) = (name.to_owned(), self.targets(from));
-            match code {
-                KeyCode::Esc => self.copying = None,
-                KeyCode::Left => self.copying = Some(target.saturating_sub(1)),
-                KeyCode::Right => self.copying = Some((target + 1).min(targets.len() - 1)),
-                KeyCode::Enter => {
+            match action {
+                KeyAction::Cancel => self.copying = None,
+                KeyAction::Left => self.copying = Some(target.saturating_sub(1)),
+                KeyAction::Right => self.copying = Some((target + 1).min(targets.len() - 1)),
+                KeyAction::Enter => {
                     let to = targets[target.min(targets.len() - 1)].name;
                     self.copying = None;
                     let change = mcp::Change::Copy {
@@ -6460,17 +6500,17 @@ impl McpPanel {
             }
             return McpAction::Stay;
         }
-        match code {
-            KeyCode::Esc => return McpAction::Close,
-            KeyCode::Up => self.at = self.at.saturating_sub(1),
-            KeyCode::Down => self.at = (self.at + 1).min(self.rows.len().saturating_sub(1)),
-            KeyCode::Home => self.at = 0,
-            KeyCode::End => self.at = self.rows.len().saturating_sub(1),
-            KeyCode::PageUp => self.at = self.at.saturating_sub(self.body().max(1)),
-            KeyCode::PageDown => {
+        match action {
+            KeyAction::Cancel => return McpAction::Close,
+            KeyAction::Up => self.at = self.at.saturating_sub(1),
+            KeyAction::Down => self.at = (self.at + 1).min(self.rows.len().saturating_sub(1)),
+            KeyAction::Home => self.at = 0,
+            KeyAction::End => self.at = self.rows.len().saturating_sub(1),
+            KeyAction::PageUp => self.at = self.at.saturating_sub(self.body().max(1)),
+            KeyAction::PageDown => {
                 self.at = (self.at + self.body().max(1)).min(self.rows.len().saturating_sub(1));
             }
-            KeyCode::Char('x') => {
+            KeyAction::Remove => {
                 if let Some((scope, name)) = self.selected() {
                     let (scope, name) = (scope.name, name.to_owned());
                     if let Some(i) = self.staged.iter().position(|c| {
@@ -6487,7 +6527,7 @@ impl McpPanel {
                     self.rebuild();
                 }
             }
-            KeyCode::Char('c') => {
+            KeyAction::Copy => {
                 if let Some((from, _)) = self.selected() {
                     if self.targets(from).is_empty() {
                         self.error = Some(format!(
@@ -6499,8 +6539,8 @@ impl McpPanel {
                     }
                 }
             }
-            KeyCode::Char('s') if !self.staged.is_empty() => self.save(),
-            KeyCode::Char('u') if !self.staged.is_empty() => {
+            KeyAction::Save if !self.staged.is_empty() => self.save(),
+            KeyAction::Undo if !self.staged.is_empty() => {
                 self.staged.clear();
                 self.note = Some("staged changes discarded; no file was written".to_owned());
                 self.rebuild();
@@ -6836,152 +6876,310 @@ impl Pick {
 /// dashboard that has been open for days.
 const RECENT: usize = 12;
 
-/// Guide entries with an empty key are headings; tests check keys against docs/dashboard.md.
-const GUIDE: &[(&str, &str)] = &[
-    ("", "Rows"),
-    (
-        "↑ ↓",
-        "Move between rows. Up past the first table reaches the menu.",
-    ),
-    (
-        "enter",
-        "Open the selected session or run, start a job, or enter a menu screen.",
-    ),
-    (
-        "shift+enter",
-        "Open a viewer over the full frame. While typing, insert a line break.",
-    ),
-    (
-        "ctrl+x twice",
-        "Stop a session or run; remove an idle job, finished run or pinned folder.",
-    ),
-    ("ctrl+e", "Edit the selected job."),
-    ("ctrl+p", "Pin the selected folder so it stays in the list."),
-    ("ctrl+s", "Group sessions by state or folder."),
-    (
-        "ctrl+h",
-        "Show or hide history. Type to search; enter resumes a saved session.",
-    ),
-    (
-        "ctrl+f",
-        "Filter rows. In history it searches saved conversations; enter keeps the search, esc clears it.",
-    ),
-    ("ctrl+n", "Rename the selected Claude session."),
-    (
-        "ctrl+t",
-        "Read the MCP servers configured for the selected session's harness and folder, and stage scoped changes.",
-    ),
-    (
-        "ctrl+b",
-        "List the sessions entered from here, most recent first. Press it again to return to the one before this.",
-    ),
-    (
-        "ctrl+y",
-        "Fork the selected conversation, or hand it off to another harness as a bounded export.",
-    ),
-    (
-        "ctrl+r",
-        "Refresh now. The list also refreshes every second. In history it also indexes every conversation for search by meaning.",
-    ),
-    ("", "Composer"),
-    (
-        "any key",
-        "Type an instruction. Enter starts a session in the selected folder.",
-    ),
-    (
-        "shift+tab",
-        "Choose Claude, Codex, pi, OpenCode or a terminal. In history, search by words or meaning.",
-    ),
-    (
-        "ctrl+o",
-        "Set the model and the rest of that harness's launch settings, beside the composer.",
-    ),
-    ("ctrl+v", "Paste a clipboard image into the instruction."),
-    (
-        "← →",
-        "Move the text cursor. Alt moves by word; ctrl+a and ctrl+e jump to either end.",
-    ),
-    (
-        "backspace",
-        "Delete a character. Ctrl+w or alt+d deletes a word; ctrl+u or ctrl+k deletes to an end.",
-    ),
-    ("", "Viewers"),
-    (
-        "tab",
-        "Focus the pane. From an empty supported prompt, return to the list.",
-    ),
-    (
-        "ctrl+z",
-        "Return to the list, keeping the viewer and its draft alive.",
-    ),
-    (
-        "ctrl+\\",
-        "Toggle the pane from the list; toggle fullscreen inside a viewer.",
-    ),
-    (
-        "→",
-        "In a focused preview, inspect the session's recorded instructions, skills and MCP servers.",
-    ),
-    (
-        "wheel",
-        "Scroll the viewer or the history list under the pointer.",
-    ),
-    (
-        "c",
-        "In the focused preview, copy its last response, a code block from it or the row's details.",
-    ),
-    ("", "Config"),
-    ("[ ]", "Switch between cones, harnesses and runs."),
-    (
-        "↑ ↓",
-        "Select a setting. Up from the first setting reaches the group tabs.",
-    ),
-    (
-        "← →",
-        "Change a value immediately. Enter opens choices or text editing.",
-    ),
-    (
-        "backspace",
-        "Reset a setting to its default. An asterisk marks a value set in config.",
-    ),
-    (
-        "?",
-        "Read the selected setting’s full explanation. F1 also works while editing.",
-    ),
-    ("", "Columns"),
-    ("↑ ↓", "Select a column."),
-    ("← →", "Switch between sessions, runs, jobs and history."),
-    (
-        "space",
-        "Show or hide the selected column. Changes save immediately.",
-    ),
-    ("[ ]", "Move a visible column earlier or later."),
-    ("backspace", "Restore this table’s default columns."),
-    ("", "Help"),
-    (
-        "/",
-        "Search this guide by shortcut, topic or section. You can also just type.",
-    ),
-    (
-        "page up",
-        "Scroll up a page. Home goes to the first result.",
-    ),
-    (
-        "page down",
-        "Scroll down a page. End goes to the last result.",
-    ),
-    ("esc", "Clear a search first, then return to the list."),
-    ("", "Leaving"),
-    (
-        "esc",
-        "Back out of the current action, prompt, screen or dashboard.",
-    ),
-    (
-        "ctrl+c twice",
-        "Quit cones. In a terminal, ctrl+c interrupts the running command.",
-    ),
-    ("ctrl+g", "Open or close this guide."),
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum BindingState {
+    List,
+    Menu,
+    History,
+    Folder,
+    FolderSuggestion,
+    AgentViewer,
+    TerminalViewer,
+    PlainViewer,
+    Preview,
+    Inspector,
+    Pick,
+    Panel,
+    Opening,
+    Filter,
+    Rename,
+    Guide,
+    Config,
+    ConfigTabs,
+    Tabs,
+    ConfigChoice,
+    ConfigEdit,
+    ConfigHelp,
+    Columns,
+    ColumnTabs,
+    Mcp,
+    McpCopy,
+    Job,
+    JobHead,
+    JobFolder,
+    Handoff,
+    Text,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum KeyAction {
+    #[default]
+    #[serde(skip)]
+    Unbound,
+    Backspace,
+    Cancel,
+    Clear,
+    Complete,
+    Copy,
+    Cycle,
+    Delete,
+    DeleteEnd,
+    DeleteStart,
+    DeleteWordLeft,
+    DeleteWordRight,
+    Down,
+    EditJob,
+    End,
+    Enter,
+    Filter,
+    Group,
+    Guide,
+    Handoff,
+    Help,
+    History,
+    Home,
+    Leave,
+    Left,
+    Mcp,
+    Next,
+    PageDown,
+    PageUp,
+    PasteImage,
+    Previous,
+    Quit,
+    Recent,
+    Refresh,
+    Remove,
+    Rename,
+    Reset,
+    Right,
+    Save,
+    Search,
+    Settings,
+    Split,
+    Stop,
+    Tab,
+    TextEnd,
+    Toggle,
+    Undo,
+    Up,
+    WordLeft,
+    WordRight,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyBindings {
+    version: u32,
+    states: Vec<StateBindings>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StateBindings {
+    id: BindingState,
+    title: String,
+    when: String,
+    extends: Option<BindingState>,
+    bindings: Vec<KeyBinding>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyBinding {
+    keys: Vec<String>,
+    action: KeyAction,
+    description: String,
+    #[serde(skip)]
+    chords: Vec<(KeyCode, KeyModifiers)>,
+}
+
+fn key_chord(code: KeyCode, mut mods: KeyModifiers) -> (KeyCode, KeyModifiers) {
+    // Crossterm can report BackTab with or without SHIFT, and printable shifted
+    // characters already carry their case or punctuation in KeyCode::Char.
+    if code == KeyCode::BackTab {
+        mods.insert(KeyModifiers::SHIFT);
+    }
+    if let KeyCode::Char(c) = code
+        && (c.is_uppercase() || !c.is_alphabetic())
+    {
+        mods.remove(KeyModifiers::SHIFT);
+    }
+    (code, mods)
+}
+
+fn parse_binding_key(key: &str) -> Result<(KeyCode, KeyModifiers)> {
+    let mut parts = key.split('+').peekable();
+    let mut mods = KeyModifiers::NONE;
+    while let Some(part) = parts.next() {
+        if parts.peek().is_some() {
+            let modifier = match part {
+                "ctrl" => KeyModifiers::CONTROL,
+                "alt" => KeyModifiers::ALT,
+                "shift" => KeyModifiers::SHIFT,
+                _ => anyhow::bail!("unknown modifier in binding {key:?}"),
+            };
+            anyhow::ensure!(!mods.contains(modifier), "repeated modifier in {key:?}");
+            mods.insert(modifier);
+            continue;
+        }
+        let code = match part {
+            "up" => KeyCode::Up,
+            "down" => KeyCode::Down,
+            "left" => KeyCode::Left,
+            "right" => KeyCode::Right,
+            "home" => KeyCode::Home,
+            "end" => KeyCode::End,
+            "pageup" => KeyCode::PageUp,
+            "pagedown" => KeyCode::PageDown,
+            "enter" => KeyCode::Enter,
+            "esc" => KeyCode::Esc,
+            "tab" if mods.contains(KeyModifiers::SHIFT) => KeyCode::BackTab,
+            "tab" => KeyCode::Tab,
+            "backspace" => KeyCode::Backspace,
+            "delete" => KeyCode::Delete,
+            "space" => KeyCode::Char(' '),
+            "f1" => KeyCode::F(1),
+            _ if part.chars().count() == 1 => KeyCode::Char(part.chars().next().unwrap()),
+            _ => anyhow::bail!("unknown key in binding {key:?}"),
+        };
+        return Ok(key_chord(code, mods));
+    }
+    anyhow::bail!("empty binding key")
+}
+
+impl KeyBindings {
+    fn parse(source: &str) -> Result<Self> {
+        let mut map: Self = serde_yaml::from_str(source).context("dashboard bindings YAML")?;
+        anyhow::ensure!(map.version == 1, "unsupported dashboard bindings version");
+        let mut states = HashSet::new();
+        for state in &mut map.states {
+            anyhow::ensure!(
+                states.insert(state.id),
+                "duplicate binding state {:?}",
+                state.id
+            );
+            anyhow::ensure!(
+                !state.title.trim().is_empty() && !state.when.trim().is_empty(),
+                "binding state needs a title and condition"
+            );
+            let mut keys = HashSet::new();
+            for binding in &mut state.bindings {
+                anyhow::ensure!(
+                    !binding.keys.is_empty() && !binding.description.trim().is_empty(),
+                    "binding needs keys and a description"
+                );
+                for key in &binding.keys {
+                    let chord = parse_binding_key(key)?;
+                    anyhow::ensure!(
+                        keys.insert(chord),
+                        "duplicate key {key:?} in {:?}",
+                        state.id
+                    );
+                    binding.chords.push(chord);
+                }
+            }
+        }
+        for state in &map.states {
+            let mut seen = HashSet::new();
+            let mut parent = Some(state.id);
+            while let Some(id) = parent {
+                anyhow::ensure!(seen.insert(id), "binding inheritance cycle at {id:?}");
+                parent = map
+                    .states
+                    .iter()
+                    .find(|s| s.id == id)
+                    .with_context(|| format!("missing binding state {id:?}"))?
+                    .extends;
+            }
+        }
+        Ok(map)
+    }
+
+    fn action(&self, state: BindingState, code: KeyCode, mods: KeyModifiers) -> KeyAction {
+        let chord = key_chord(code, mods);
+        let Some(state) = self.states.iter().find(|s| s.id == state) else {
+            return KeyAction::Unbound;
+        };
+        state
+            .bindings
+            .iter()
+            .find(|b| b.chords.contains(&chord))
+            .map_or_else(
+                || {
+                    state
+                        .extends
+                        .map_or(KeyAction::Unbound, |s| self.action(s, code, mods))
+                },
+                |b| b.action,
+            )
+    }
+}
+
+fn bindings() -> &'static KeyBindings {
+    static BINDINGS: OnceLock<KeyBindings> = OnceLock::new();
+    BINDINGS.get_or_init(|| {
+        KeyBindings::parse(include_str!("../assets/bindings.yaml"))
+            .expect("valid embedded dashboard bindings")
+    })
+}
+
+fn key_action(state: BindingState, code: KeyCode, mods: KeyModifiers) -> KeyAction {
+    bindings().action(state, code, mods)
+}
+
+fn binding_label(key: &str) -> String {
+    key.split('+')
+        .map(|part| match part {
+            "up" => "↑",
+            "down" => "↓",
+            "left" => "←",
+            "right" => "→",
+            "pageup" => "page up",
+            "pagedown" => "page down",
+            "f1" => "F1",
+            _ => part,
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
+impl KeyBindings {
+    fn guide(&self) -> Vec<(String, String)> {
+        let mut rows = Vec::new();
+        for state in &self.states {
+            rows.push((String::new(), state.title.clone()));
+            let mut seen = HashSet::new();
+            let mut current = Some(state);
+            while let Some(source) = current {
+                for binding in &source.bindings {
+                    let keys: Vec<_> = binding
+                        .keys
+                        .iter()
+                        .zip(&binding.chords)
+                        .filter(|(_, chord)| seen.insert(**chord))
+                        .map(|(key, _)| binding_label(key))
+                        .collect();
+                    if !keys.is_empty() {
+                        rows.push((keys.join(" / "), binding.description.clone()));
+                    }
+                }
+                current = source
+                    .extends
+                    .and_then(|id| self.states.iter().find(|s| s.id == id));
+            }
+        }
+        rows
+    }
+}
+
+/// Help is built from the same keys and descriptions used for dispatch.
+fn guide_entries() -> &'static [(String, String)] {
+    static GUIDE: OnceLock<Vec<(String, String)>> = OnceLock::new();
+    GUIDE.get_or_init(|| bindings().guide())
+}
 
 const HISTORY_PAGE: usize = 50;
 const HISTORY_PREFETCH: usize = 10;
@@ -7718,9 +7916,6 @@ impl LoadDiagnostics {
 struct App {
     exe: PathBuf,
     jobs_path: PathBuf,
-    /// What ctrl+o chose for the next launch, held here instead of in `jobs.yaml`:
-    /// jobs and the config screen keep the saved defaults until ctrl+s writes these.
-    launch: Option<config::Policy>,
     state: PathBuf,
     claude: PathBuf,
     /// Fallback launch directory and base for relative folder input.
@@ -7977,8 +8172,15 @@ impl Open {
     fn returns_to_list(&self, code: KeyCode, mods: KeyModifiers) -> bool {
         self.harness.map_or_else(
             || {
-                (mods.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('z'))
-                    || (!self.is_terminal() && code == KeyCode::Tab && mods.is_empty())
+                key_action(
+                    if self.is_terminal() {
+                        BindingState::TerminalViewer
+                    } else {
+                        BindingState::PlainViewer
+                    },
+                    code,
+                    mods,
+                ) == KeyAction::Leave
             },
             |kind| {
                 viewer::returns_to_list(
@@ -8071,7 +8273,6 @@ impl App {
         Ok(Self {
             exe: exe.to_owned(),
             jobs_path: jobs_path.to_owned(),
-            launch: None,
             state: state.to_owned(),
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
@@ -10430,8 +10631,15 @@ impl App {
                         self.invalidate();
                     }
                     Err(e) => {
-                        before.error = Some(format!("{e:#}"));
-                        self.mode = Mode::Config(before);
+                        // Keep the value that was entered, so the same change can be made
+                        // again once the cause is fixed.
+                        let error = Some(format!("{e:#}"));
+                        if let Mode::Config(form) = &mut self.mode {
+                            form.error = error;
+                        } else {
+                            before.error = error;
+                            self.mode = Mode::Config(before);
+                        }
                     }
                 }
             }
@@ -10440,31 +10648,6 @@ impl App {
 
     fn config_form(&self) -> Box<ConfigForm> {
         config_form(&self.jobs_path)
-    }
-
-    /// The picker's form: the saved file with the unsaved launch choices already in it,
-    /// so reopening ctrl+o shows what the next launch will use.
-    fn launch_form(&self) -> Box<ConfigForm> {
-        match &self.launch {
-            Some(policy) => config_form_from(&self.jobs_path, policy),
-            None => self.config_form(),
-        }
-    }
-
-    /// A picker choice changes the next launch alone. Saving it is ctrl+s, which is the
-    /// only path from the picker to `jobs.yaml`.
-    fn stage_launch(&mut self, policy: config::Policy) {
-        let saved = config::defaults(&self.jobs_path);
-        if policy == saved {
-            self.launch = None;
-            self.status = "back to the saved default".into();
-            return;
-        }
-        self.launch = Some(policy);
-        self.status = format!(
-            "for the next launch only; ctrl+s saves it in {}",
-            fleet::tilde(&self.jobs_path)
-        );
     }
 
     fn leave_jobs(&mut self) {
@@ -10802,6 +10985,9 @@ impl App {
         }
         let spec = harness::by_name(&s.harness).ok_or("unknown_harness")?;
         spec_permits_prespawn(spec)?;
+        if s.pid.is_none() && spec.viewer.peek == harness::spec::Peek::Join {
+            return Err("session_settled");
+        }
         let home = spec.session_home(&self.claude, s);
         if !harness::can_peek(s, &home) {
             return Err("native_viewer_unavailable");
@@ -12022,12 +12208,10 @@ impl App {
             .unwrap_or(all.len());
     }
 
-    /// What a launch from the composer uses: the saved defaults, with the picker's
-    /// unsaved choices on top.
+    /// What a launch from the composer uses: the saved defaults, which the picker
+    /// writes as each choice is made.
     fn session_policy(&self) -> config::Policy {
-        self.launch
-            .clone()
-            .unwrap_or_else(|| config::defaults(&self.jobs_path))
+        config::defaults(&self.jobs_path)
     }
 
     /// The harness the composer is on, when the composer is naming one: not on the terminal,
@@ -12062,7 +12246,7 @@ impl App {
             self.status = format!("{kind} takes its model from its own configuration");
             return;
         };
-        let mut form = self.launch_form();
+        let mut form = self.config_form();
         form.scope = Some(scope);
         let first = form.fields()[0];
         form.step(first);
@@ -12668,19 +12852,6 @@ impl App {
         self.rebuild();
         self.select_new(&fleet::tilde(&dir));
         Ok(())
-    }
-
-    fn pin_selected(&mut self) {
-        let dir = self.target_dir();
-        let name = fleet::tilde(&dir);
-        if self.data.folders.contains(&dir) {
-            self.status = format!("{name} is pinned already");
-            return;
-        }
-        self.status = match self.pin_folder(dir) {
-            Ok(()) => format!("{name} pinned · its row stays after the last session there leaves"),
-            Err(e) => format!("folder not saved: {e:#}"),
-        };
     }
 
     fn save_folders(&self) -> Result<()> {
@@ -13334,30 +13505,39 @@ impl App {
 
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
-        let ctrl = mods.contains(KeyModifiers::CONTROL);
         if let Some(open) = self.focused() {
             let terminal = open.is_terminal();
+            let action = key_action(
+                if terminal {
+                    BindingState::TerminalViewer
+                } else {
+                    BindingState::AgentViewer
+                },
+                code,
+                mods,
+            );
             if open.returns_to_list(code, mods) {
                 self.unfocus();
                 return Ok(false);
             }
             // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
-            if ctrl && matches!(code, KeyCode::Char('\\' | '4')) {
+            if action == KeyAction::Split {
                 self.toggle_split();
                 return Ok(false);
             }
             // ctrl+c never reaches agent clients: Claude Code, Codex and pi all quit on two of
             // them, and Claude Code's first one drops to the agents list. It is the
             // dashboard's quit key here as it is from the list; esc interrupts the client.
-            if !terminal && ctrl && code == KeyCode::Char('c') {
+            if action == KeyAction::Quit {
                 return Ok(self.quit_press());
             }
-            if mods.contains(KeyModifiers::SHIFT)
-                && matches!(code, KeyCode::PageUp | KeyCode::PageDown)
-            {
+            if matches!(action, KeyAction::PageUp | KeyAction::PageDown) {
                 let page = i32::from(open.viewer.screen().size().0.saturating_sub(1));
-                open.viewer
-                    .scroll(if code == KeyCode::PageUp { page } else { -page });
+                open.viewer.scroll(if action == KeyAction::PageUp {
+                    page
+                } else {
+                    -page
+                });
                 return Ok(false);
             }
             let bytes = viewer::encode_key(code, mods, open.viewer.screen().application_cursor());
@@ -13366,19 +13546,38 @@ impl App {
             }
             return Ok(false);
         }
+        let state = if self.transcript.focused {
+            if self.transcript.inspector.is_some() {
+                BindingState::Inspector
+            } else {
+                BindingState::Preview
+            }
+        } else {
+            match &self.mode {
+                Mode::Pick(_) => BindingState::Pick,
+                Mode::Filter => BindingState::Filter,
+                Mode::Rename(_) => BindingState::Rename,
+                Mode::Handoff(_) => BindingState::Handoff,
+                _ if self.on_button() => BindingState::Menu,
+                _ if self.history_selected() => BindingState::History,
+                _ if self.on_suggestion().is_some() => BindingState::FolderSuggestion,
+                _ if self.on_new_folder() => BindingState::Folder,
+                _ => BindingState::List,
+            }
+        };
+        let action = key_action(state, code, mods);
         if let Mode::Pick(pick) = &mut self.mode {
             // ctrl+b walks the same list it opened, so pressing it twice returns to the
             // session entered before this one and pressing it again comes back.
-            let stepping = ctrl
-                && code == KeyCode::Char('b')
+            let stepping = action == KeyAction::Recent
                 && matches!(
                     pick.rows.get(pick.at).map(|r| &r.action),
                     Some(PickAction::Enter(_))
                 );
-            let choose = code == KeyCode::Enter || stepping;
-            match code {
-                KeyCode::Up => pick.step(-1),
-                KeyCode::Down => pick.step(1),
+            let choose = action == KeyAction::Enter || stepping;
+            match action {
+                KeyAction::Up => pick.step(-1),
+                KeyAction::Down => pick.step(1),
                 _ if choose => {
                     let action = pick.rows.get(pick.at).map(|r| r.action.clone());
                     self.close_pick();
@@ -13403,14 +13602,13 @@ impl App {
             return Ok(false);
         }
         if self.transcript.focused {
-            if ctrl && code == KeyCode::Char('c') {
+            if action == KeyAction::Quit {
                 return Ok(self.quit_press());
             }
             if self.transcript.inspector.is_some() {
-                match code {
-                    KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
-                    KeyCode::Tab => self.leave_transcript(),
-                    KeyCode::Char('z') if ctrl => self.leave_transcript(),
+                match action {
+                    KeyAction::Split => self.toggle_split(),
+                    KeyAction::Leave => self.leave_transcript(),
                     _ => {
                         let view = self.transcript.inspector.as_mut().unwrap();
                         let lines = view.lines().len();
@@ -13421,17 +13619,16 @@ impl App {
                 }
                 return Ok(false);
             }
-            match code {
-                KeyCode::Right => self.open_inspector(),
-                KeyCode::Tab | KeyCode::Esc | KeyCode::Left => self.leave_transcript(),
-                KeyCode::Char('z') if ctrl => self.leave_transcript(),
-                KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
-                KeyCode::Char('h') if ctrl => {
+            match action {
+                KeyAction::Right => self.open_inspector(),
+                KeyAction::Leave => self.leave_transcript(),
+                KeyAction::Split => self.toggle_split(),
+                KeyAction::History => {
                     self.leave_transcript();
                     self.toggle_history();
                 }
-                KeyCode::Char('c') if !ctrl => self.open_copy_menu(),
-                KeyCode::Char('r') if ctrl => {
+                KeyAction::Copy => self.open_copy_menu(),
+                KeyAction::Refresh => {
                     self.transcript.requested = false;
                     self.transcript.document = None;
                     self.transcript.error = None;
@@ -13441,25 +13638,25 @@ impl App {
                     self.transcript.prepend_lines = None;
                     self.transcript.bottom = true;
                 }
-                KeyCode::Up => self.transcript.scroll(-1),
-                KeyCode::Down => self.transcript.scroll(1),
-                KeyCode::PageUp => self
+                KeyAction::Up => self.transcript.scroll(-1),
+                KeyAction::Down => self.transcript.scroll(1),
+                KeyAction::PageUp => self
                     .transcript
                     .scroll(-(self.transcript.height.max(1) as isize)),
-                KeyCode::PageDown => self
+                KeyAction::PageDown => self
                     .transcript
                     .scroll(self.transcript.height.max(1) as isize),
-                KeyCode::Home => {
+                KeyAction::Home => {
                     self.transcript.scroll = 0;
                     self.transcript.bottom = false;
                     self.transcript.load_older = true;
                 }
-                KeyCode::End => {
+                KeyAction::End => {
                     self.transcript.scroll = self.transcript.max_scroll();
                     self.transcript.bottom = true;
                     self.transcript.load_newer = true;
                 }
-                KeyCode::Enter => {
+                KeyAction::Enter => {
                     self.leave_transcript();
                     self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
                     self.enter()?;
@@ -13469,21 +13666,23 @@ impl App {
             return Ok(false);
         }
         self.status.clear();
-        if (code == KeyCode::Esc || (ctrl && code == KeyCode::Char('z'))) && self.cancel_opening() {
+        if key_action(BindingState::Opening, code, mods) == KeyAction::Cancel
+            && self.cancel_opening()
+        {
             return Ok(false);
         }
         if self.full && !self.pane_focused() && self.opening.is_none() {
             self.full = false;
         }
         // Forms keep tab for completion or editing; otherwise it returns to the list.
-        let tab_out = code == KeyCode::Tab
-            && mods.is_empty()
+        let panel_action = key_action(BindingState::Panel, code, mods);
+        let tab_out = panel_action == KeyAction::Tab
             && match &self.mode {
                 Mode::Config(form) => !form.open,
                 Mode::Guide(..) | Mode::Columns(_) | Mode::Mcp(_) => true,
                 _ => false,
             };
-        if (tab_out || (ctrl && code == KeyCode::Char('z'))) && self.panel_focused() {
+        if (tab_out || panel_action == KeyAction::Leave) && self.panel_focused() {
             if matches!(self.mode, Mode::Normal) {
                 self.leave_jobs();
             } else {
@@ -13493,20 +13692,20 @@ impl App {
             self.needs_clear = true;
             return Ok(false);
         }
-        if ctrl && matches!(code, KeyCode::Char('\\' | '4')) && self.panel_focused() {
+        if panel_action == KeyAction::Split && self.panel_focused() {
             self.toggle_split();
             return Ok(false);
         }
         match &mut self.mode {
             Mode::Filter => {
-                match code {
-                    KeyCode::Esc => {
+                match action {
+                    KeyAction::Cancel => {
                         self.filter = Input::default();
                         self.mode = Mode::Normal;
                     }
-                    KeyCode::Enter => self.mode = Mode::Normal,
+                    KeyAction::Enter => self.mode = Mode::Normal,
                     // Nothing to the left of an empty prompt, so ← leaves it.
-                    KeyCode::Left if self.filter.text.is_empty() => self.mode = Mode::Normal,
+                    KeyAction::Left if self.filter.text.is_empty() => self.mode = Mode::Normal,
                     _ => {
                         self.filter.key(code, mods);
                     }
@@ -13518,9 +13717,9 @@ impl App {
                     self.mode = Mode::Normal;
                 }
             }
-            Mode::Rename(input) => match code {
-                KeyCode::Esc => self.mode = Mode::Normal,
-                KeyCode::Enter => {
+            Mode::Rename(input) => match action {
+                KeyAction::Cancel => self.mode = Mode::Normal,
+                KeyAction::Enter => {
                     let name = input.text.trim().to_owned();
                     let Some(session) = self.selected_session() else {
                         self.mode = Mode::Normal;
@@ -13538,7 +13737,10 @@ impl App {
                 }
             },
             Mode::Pick(_) => {}
-            Mode::Job(form) if code == KeyCode::Tab && form.row == JobRow::Ask(Step::Where) => {
+            Mode::Job(form)
+                if key_action(BindingState::JobFolder, code, mods) == KeyAction::Complete
+                    && form.row == JobRow::Ask(Step::Where) =>
+            {
                 self.status = form.complete().join("  ");
             }
             Mode::Job(form) => match form.key(code, mods) {
@@ -13572,29 +13774,10 @@ impl App {
             }
             Mode::Config(form) => {
                 let before = form.clone();
-                // The picker's choices are for the next launch; ctrl+s is the one key that
-                // sends them to the file, so a save is never a side effect of browsing.
-                let saving = form.scope.is_some()
-                    && !form.open
-                    && code == KeyCode::Char('s')
-                    && mods.contains(KeyModifiers::CONTROL);
-                let action = if saving {
-                    form.save_action()
-                } else {
-                    form.key(code, mods)
-                };
-                match action {
-                    ConfigAction::Save(policy, ..) if before.scope.is_some() && !saving => {
-                        self.stage_launch(*policy);
-                    }
-                    action => {
-                        self.config_action(action, before);
-                        // The file holds the launch choices now, unless the save failed.
-                        if saving && !matches!(&self.mode, Mode::Config(f) if f.error.is_some()) {
-                            self.launch = None;
-                        }
-                    }
-                }
+                // Every change writes `jobs.yaml`, in the picker as on the config screen,
+                // so the next launch and the next run both start from what was chosen.
+                let action = form.key(code, mods);
+                self.config_action(action, before);
             }
             Mode::Mcp(panel) => {
                 if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
@@ -13604,19 +13787,19 @@ impl App {
                     self.status = "back to the list; no MCP file was written".into();
                 }
             }
-            Mode::Handoff(h) => match code {
-                KeyCode::Esc => {
+            Mode::Handoff(h) => match action {
+                KeyAction::Cancel => {
                     self.mode = Mode::Normal;
                     self.status = "handoff cancelled · nothing started".into();
                 }
-                KeyCode::Left => h.at = h.at.saturating_sub(1),
-                KeyCode::Right => h.at = (h.at + 1).min(h.targets.len() - 1),
-                KeyCode::Up => h.top = h.top.saturating_sub(1),
-                KeyCode::Down => h.top += 1,
-                KeyCode::PageUp => h.top = h.top.saturating_sub(h.height),
-                KeyCode::PageDown => h.top += h.height,
-                KeyCode::Home => h.top = 0,
-                KeyCode::Enter => {
+                KeyAction::Left => h.at = h.at.saturating_sub(1),
+                KeyAction::Right => h.at = (h.at + 1).min(h.targets.len() - 1),
+                KeyAction::Up => h.top = h.top.saturating_sub(1),
+                KeyAction::Down => h.top += 1,
+                KeyAction::PageUp => h.top = h.top.saturating_sub(h.height),
+                KeyAction::PageDown => h.top += h.height,
+                KeyAction::Home => h.top = 0,
+                KeyAction::Enter => {
                     let plan = h.clone();
                     self.mode = Mode::Normal;
                     self.hand_off(*plan);
@@ -13626,16 +13809,17 @@ impl App {
             Mode::Normal => {
                 let armed = self.armed.take();
                 let searching_history = self.history_selected();
-                if self.on_button() && matches!(code, KeyCode::Left | KeyCode::Right) {
+                if self.on_button() && matches!(action, KeyAction::Left | KeyAction::Right) {
                     let n = MENU.len();
-                    self.menu = (self.menu + if code == KeyCode::Right { 1 } else { n - 1 }) % n;
+                    self.menu =
+                        (self.menu + if action == KeyAction::Right { 1 } else { n - 1 }) % n;
                     return Ok(false);
                 }
                 // Right on a row with nothing typed goes to the agent: into the pane when it is
                 // open, over the whole frame when it is closed.
                 if !self.on_button()
                     && !self.on_new_folder()
-                    && code == KeyCode::Right
+                    && action == KeyAction::Right
                     && mods.is_empty()
                     && if searching_history {
                         self.filter.text.is_empty()
@@ -13661,7 +13845,7 @@ impl App {
                 }
                 // ← leaves the jobs screen the way tab and ctrl+z do, with nothing typed.
                 if self.jobs_view
-                    && code == KeyCode::Left
+                    && action == KeyAction::Left
                     && mods.is_empty()
                     && !self.on_button()
                     && self.composer_text().is_empty()
@@ -13677,37 +13861,37 @@ impl App {
                     }
                 } else if let Some(dir) = self.on_suggestion() {
                     // An offer is pinned the way a typed path is; the rest returns to the input.
-                    match code {
-                        KeyCode::Enter => {
+                    match action {
+                        KeyAction::Enter => {
                             self.add_suggestion(dir);
                             return Ok(false);
                         }
-                        KeyCode::Tab => {
+                        KeyAction::Tab => {
                             self.folder = Input::new(dir);
                             self.select_row("new folder");
                             return Ok(false);
                         }
-                        KeyCode::Esc => {
+                        KeyAction::Cancel => {
                             self.select_row("new folder");
                             return Ok(false);
                         }
-                        KeyCode::Char(_) | KeyCode::Backspace if self.folder.key(code, mods) => {
+                        KeyAction::Unbound if self.folder.key(code, mods) => {
                             self.select_row("new folder");
                             return Ok(false);
                         }
                         _ => {}
                     }
                 } else if self.on_new_folder() {
-                    match code {
-                        KeyCode::Tab => {
+                    match action {
+                        KeyAction::Tab => {
                             self.status = self.folder.complete(&self.cwd).join("  ");
                             return Ok(false);
                         }
-                        KeyCode::Enter => {
+                        KeyAction::Enter => {
                             self.add_folder();
                             return Ok(false);
                         }
-                        KeyCode::Esc if !self.folder.text.is_empty() => {
+                        KeyAction::Cancel if !self.folder.text.is_empty() => {
                             self.folder = Input::default();
                             return Ok(false);
                         }
@@ -13721,18 +13905,18 @@ impl App {
                         return Ok(false);
                     }
                 }
-                match code {
-                    KeyCode::Char('c') if ctrl => {
+                match action {
+                    KeyAction::Quit => {
                         if self.quit_press() {
                             return Ok(true);
                         }
                     }
-                    KeyCode::Char('x') if ctrl => {
+                    KeyAction::Stop => {
                         self.armed = armed;
                         self.stop();
                     }
-                    KeyCode::Char('o') if ctrl => self.open_harness_settings(),
-                    KeyCode::Esc => {
+                    KeyAction::Settings => self.open_harness_settings(),
+                    KeyAction::Cancel => {
                         if armed.is_some() {
                             self.status = "kept".into();
                         } else if searching_history && !self.filter.text.is_empty() {
@@ -13756,15 +13940,15 @@ impl App {
                             return Ok(true);
                         }
                     }
-                    KeyCode::Up => self.step(-1),
-                    KeyCode::Down => self.step(1),
-                    KeyCode::PageUp | KeyCode::PageDown if self.history.visible => {
-                        let delta = if code == KeyCode::PageDown { 1 } else { -1 };
+                    KeyAction::Up => self.step(-1),
+                    KeyAction::Down => self.step(1),
+                    KeyAction::PageUp | KeyAction::PageDown if self.history.visible => {
+                        let delta = if action == KeyAction::PageDown { 1 } else { -1 };
                         for _ in 0..self.list_area.height.saturating_sub(1).max(1) {
                             self.step(delta);
                         }
                     }
-                    KeyCode::Tab => match self.focusable_viewer() {
+                    KeyAction::Tab => match self.focusable_viewer() {
                         Some(i) => self.focus(i),
                         None if self.transcript_target().is_some() => self.focus_transcript(),
                         None if self.jobs_view => self.leave_jobs(),
@@ -13772,22 +13956,22 @@ impl App {
                         None => self.status = "nothing in the pane".into(),
                     },
                     // In history the composer is not on screen, so its harness cycle is free.
-                    KeyCode::BackTab if searching_history => {
+                    KeyAction::Cycle if searching_history => {
                         self.history.search = self.history.search.other();
                         self.history.select_first = true;
                         self.history.reset(&self.filter.text, false);
                         self.status = format!("searching by {}", self.history.search.label());
                         self.rebuild();
                     }
-                    KeyCode::BackTab => self.cycle_harness(),
-                    KeyCode::Enter if searching_history => {
+                    KeyAction::Cycle => self.cycle_harness(),
+                    KeyAction::Enter if searching_history => {
                         if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
                             self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
                             self.enter()?;
                         }
                     }
                     // With a draft, shift+enter adds a line for either launch type.
-                    KeyCode::Enter
+                    KeyAction::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
                             && !self.composer_text().trim().is_empty() =>
                     {
@@ -13796,12 +13980,12 @@ impl App {
                         text.insert(at, '\n');
                         *caret = at + 1;
                     }
-                    KeyCode::Enter if self.terminal_selected() => {
+                    KeyAction::Enter if self.terminal_selected() => {
                         self.full = mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
                         self.start();
                     }
                     // Terminals may encode shift+enter as ESC CR, which crossterm reports as alt+enter.
-                    KeyCode::Enter
+                    KeyAction::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
                             && self.text.trim().is_empty() =>
                     {
@@ -13809,26 +13993,25 @@ impl App {
                         self.full = true;
                         self.enter()?;
                     }
-                    KeyCode::Enter if self.text.trim().is_empty() => {
+                    KeyAction::Enter if self.text.trim().is_empty() => {
                         self.full = false;
                         self.enter()?;
                     }
-                    KeyCode::Enter => self.start(),
-                    KeyCode::Char('s') if ctrl => {
+                    KeyAction::Enter => self.start(),
+                    KeyAction::Group => {
                         self.by_state = !self.by_state;
                         self.rebuild();
                     }
-                    KeyCode::Char('p') if ctrl => self.pin_selected(),
-                    KeyCode::Char('\\' | '4') if ctrl => self.toggle_split(),
-                    KeyCode::Char('e') if ctrl => self.edit_job(),
-                    KeyCode::Char('f') if ctrl => self.mode = Mode::Filter,
-                    KeyCode::Char('g') if ctrl => self.mode = Mode::Guide(Guide::default()),
-                    KeyCode::Char('h') if ctrl && !self.jobs_view => self.toggle_history(),
-                    KeyCode::Char('n') if ctrl => self.rename_selected(),
-                    KeyCode::Char('t') if ctrl => self.open_mcp(),
-                    KeyCode::Char('b') if ctrl => self.open_recent(),
-                    KeyCode::Char('y') if ctrl => self.offer_handoff(),
-                    KeyCode::Char('r') if ctrl => {
+                    KeyAction::Split => self.toggle_split(),
+                    KeyAction::EditJob => self.edit_job(),
+                    KeyAction::Filter => self.mode = Mode::Filter,
+                    KeyAction::Guide => self.mode = Mode::Guide(Guide::default()),
+                    KeyAction::History if !self.jobs_view => self.toggle_history(),
+                    KeyAction::Rename => self.rename_selected(),
+                    KeyAction::Mcp => self.open_mcp(),
+                    KeyAction::Recent => self.open_recent(),
+                    KeyAction::Handoff => self.offer_handoff(),
+                    KeyAction::Refresh => {
                         if self.history.visible {
                             // Refresh brings the meaning index up to date as well. Typing a
                             // meaning query is otherwise the only thing that fills it, so it
@@ -13846,9 +14029,7 @@ impl App {
                             "refresh requested".into()
                         };
                     }
-                    KeyCode::Char('v')
-                        if ctrl && !self.terminal_selected() && !searching_history =>
-                    {
+                    KeyAction::PasteImage if !self.terminal_selected() && !searching_history => {
                         self.attach_image()
                     }
                     _ => {}
@@ -15267,9 +15448,12 @@ mod tests {
         form.go(field_at("codex_full_access"));
         app.mode = Mode::Config(form);
         app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
-        // The picker's row is a launch choice, not a write.
+        // The picker's row reaches the file as it is changed.
         assert_eq!(app.session_policy().codex_full_access, Some(true));
-        assert_eq!(config::defaults(&app.jobs_path).codex_full_access, None);
+        assert_eq!(
+            config::defaults(&app.jobs_path).codex_full_access,
+            Some(true)
+        );
         let Mode::Config(form) = &app.mode else {
             unreachable!()
         };
@@ -15280,7 +15464,11 @@ mod tests {
         );
         app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
         assert_eq!(app.session_policy().codex_full_access, None);
-        assert!(app.launch.is_none(), "back to the saved default");
+        assert_eq!(
+            config::defaults(&app.jobs_path).codex_full_access,
+            None,
+            "back to the saved default"
+        );
         let Mode::Config(form) = &mut app.mode else {
             unreachable!()
         };
@@ -15306,6 +15494,227 @@ mod tests {
         assert_eq!((form.values.clone(), form.cursor), (before, cursor));
         form.key(KeyCode::Char('?'), KeyModifiers::NONE);
         assert_eq!(form.values[form.row], "x?");
+    }
+
+    #[test]
+    fn bindings_resolve_contexts_aliases_and_native_passthrough() {
+        let map = bindings();
+        for (state, code, mods, expected) in [
+            (
+                BindingState::List,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                KeyAction::Quit,
+            ),
+            (
+                BindingState::AgentViewer,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                KeyAction::Quit,
+            ),
+            (
+                BindingState::TerminalViewer,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+                KeyAction::Unbound,
+            ),
+            (
+                BindingState::TerminalViewer,
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+                KeyAction::Unbound,
+            ),
+            (
+                BindingState::AgentViewer,
+                KeyCode::Left,
+                KeyModifiers::ALT,
+                KeyAction::Unbound,
+            ),
+            (
+                BindingState::Text,
+                KeyCode::Left,
+                KeyModifiers::ALT,
+                KeyAction::WordLeft,
+            ),
+            (
+                BindingState::List,
+                KeyCode::Char('4'),
+                KeyModifiers::CONTROL,
+                KeyAction::Split,
+            ),
+            (
+                BindingState::List,
+                KeyCode::Char('\\'),
+                KeyModifiers::CONTROL,
+                KeyAction::Split,
+            ),
+            (
+                BindingState::Config,
+                KeyCode::Char(' '),
+                KeyModifiers::NONE,
+                KeyAction::Toggle,
+            ),
+            (
+                BindingState::ConfigChoice,
+                KeyCode::Char(' '),
+                KeyModifiers::NONE,
+                KeyAction::Enter,
+            ),
+            (
+                BindingState::Config,
+                KeyCode::Char('?'),
+                KeyModifiers::SHIFT,
+                KeyAction::Help,
+            ),
+            (
+                BindingState::ConfigEdit,
+                KeyCode::Char('?'),
+                KeyModifiers::SHIFT,
+                KeyAction::Unbound,
+            ),
+            (
+                BindingState::List,
+                KeyCode::BackTab,
+                KeyModifiers::NONE,
+                KeyAction::Cycle,
+            ),
+            (
+                BindingState::List,
+                KeyCode::BackTab,
+                KeyModifiers::SHIFT,
+                KeyAction::Cycle,
+            ),
+            (
+                BindingState::List,
+                KeyCode::Char('g'),
+                KeyModifiers::ALT,
+                KeyAction::Unbound,
+            ),
+            (
+                BindingState::Folder,
+                KeyCode::Char('s'),
+                KeyModifiers::CONTROL,
+                KeyAction::Group,
+            ),
+        ] {
+            assert_eq!(
+                map.action(state, code, mods),
+                expected,
+                "{state:?} {code:?} {mods:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bindings_remap_lookup_and_help_together_without_changing_other_states() {
+        let source = include_str!("../assets/bindings.yaml");
+        let changed = source.replacen("\"ctrl+g\"", "\"ctrl+j\"", 1);
+        assert_ne!(source, changed);
+        let map = KeyBindings::parse(&changed).unwrap();
+        assert_eq!(
+            map.action(
+                BindingState::List,
+                KeyCode::Char('g'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Unbound
+        );
+        assert_eq!(
+            map.action(
+                BindingState::List,
+                KeyCode::Char('j'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Guide
+        );
+        assert_eq!(
+            map.action(
+                BindingState::Menu,
+                KeyCode::Char('j'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Guide
+        );
+        assert_eq!(
+            map.action(
+                BindingState::Guide,
+                KeyCode::Char('g'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Guide
+        );
+        let guide = map.guide();
+        assert!(
+            guide
+                .iter()
+                .any(|(key, description)| key == "ctrl+j" && description == "Open Help.")
+        );
+        assert!(
+            !guide
+                .iter()
+                .any(|(key, description)| key == "ctrl+g" && description == "Open Help.")
+        );
+        assert!(
+            guide
+                .iter()
+                .any(|(key, description)| key == "ctrl+g" && description == "Close Help.")
+        );
+    }
+
+    #[test]
+    fn bindings_reject_invalid_definitions_before_dispatch() {
+        let source = r#"
+version: 1
+states:
+  - id: list
+    title: Rows
+    when: The list has focus.
+    bindings:
+      - keys: ["ctrl+g"]
+        action: guide
+        description: Open Help.
+"#;
+        KeyBindings::parse(source).unwrap();
+        for (from, to, message) in [
+            ("version: 1", "version: 2", "version"),
+            ("version: 1", "version: 1\nextra: true", "unknown field"),
+            ("id: list", "id: typo", "unknown variant"),
+            ("action: guide", "action: typo", "unknown variant"),
+            ("\"ctrl+g\"", "\"super+g\"", "unknown modifier"),
+            ("\"ctrl+g\"", "\"ctrl+ctrl+g\"", "repeated modifier"),
+            ("\"ctrl+g\"", "\"escape\"", "unknown key"),
+            ("\"ctrl+g\"", "\"ctrl+g\", \"ctrl+g\"", "duplicate key"),
+            (
+                "\"ctrl+g\"",
+                "\"shift+tab\", \"shift+tab\"",
+                "duplicate key",
+            ),
+            ("[\"ctrl+g\"]", "[]", "needs keys"),
+            ("description: Open Help.", "description: ''", "description"),
+            ("when: The list has focus.", "when: ''", "condition"),
+            (
+                "title: Rows",
+                "title: Rows\n    extends: guide",
+                "missing binding state",
+            ),
+            (
+                "title: Rows",
+                "title: Rows\n    extends: list",
+                "inheritance cycle",
+            ),
+        ] {
+            let changed = source.replace(from, to);
+            assert_ne!(source, changed);
+            let error = KeyBindings::parse(&changed)
+                .err()
+                .expect("invalid binding accepted");
+            assert!(format!("{error:#}").contains(message), "{error:#}");
+        }
+        let repeated = format!("{source}{}", source.split_once("states:\n").unwrap().1);
+        let error = KeyBindings::parse(&repeated)
+            .err()
+            .expect("duplicate state accepted");
+        assert!(error.to_string().contains("duplicate binding state"));
     }
 
     #[test]
@@ -15371,11 +15780,27 @@ mod tests {
     }
 
     #[test]
-    fn guide_keys_are_documented() {
-        let docs = include_str!("../docs/dashboard.md");
-        for (key, _) in super::GUIDE {
-            for word in key.split_whitespace() {
-                assert!(docs.contains(word), "{word} is not in docs/dashboard.md");
+    fn guide_keys_come_from_the_binding_definitions() {
+        let guide = guide_entries();
+        for state in &bindings().states {
+            assert!(
+                guide
+                    .iter()
+                    .any(|(key, title)| key.is_empty() && title == &state.title)
+            );
+            for binding in &state.bindings {
+                let label = binding
+                    .keys
+                    .iter()
+                    .map(|key| binding_label(key))
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                assert!(
+                    guide
+                        .iter()
+                        .any(|(key, description)| key == &label
+                            && description == &binding.description)
+                );
             }
         }
         let d = dir();
@@ -15393,7 +15818,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(
-            text.contains("Viewers") && text.contains("Type to search"),
+            text.contains("Rows") && text.contains("Type to search"),
             "{text}"
         );
         assert!(
@@ -16954,6 +17379,28 @@ mod tests {
             ["input", "idle", names[0].as_str()],
             "by state the pinned folder trails"
         );
+    }
+
+    /// A folder outside git has no branch to show, and the row still has to be visible:
+    /// a blank line the cursor lands on reads as a rendering fault.
+    #[test]
+    fn a_pinned_folder_outside_git_still_shows_a_row() {
+        let d = dir();
+        let claude = d.path();
+        let work = claude.join("work");
+        fs::create_dir(&work).unwrap();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        app.pin_folder(work.clone()).unwrap();
+        app.refresh().unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        let name = fleet::tilde(&work);
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.kind == Kind::Folder(name.clone()))
+            .expect("the pinned folder has a row");
+        assert_eq!(row.text(), "no sessions here");
     }
 
     /// A pending delete already hides the row, so its pinned folder must take the same
@@ -20747,8 +21194,7 @@ mod tests {
 
         app.select_new(A);
         assert_eq!(key(&app).as_deref(), Some(A));
-        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
-        assert!(app.status.contains("pinned"), "{}", app.status);
+        app.pin_folder(PathBuf::from("/src/one")).unwrap();
         assert_eq!(
             key(&app).as_deref(),
             Some(A),
@@ -20760,8 +21206,6 @@ mod tests {
                 .any(|r| r.kind == Kind::Folder("/src/one".into())),
             "no placeholder while the session runs"
         );
-        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
-        assert!(app.status.contains("already"), "{}", app.status);
         fs::remove_file(claude.join("sessions").join(format!("{A}.json"))).unwrap();
         app.refresh().unwrap();
         assert!(
@@ -20786,7 +21230,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(claude.join("folders")).unwrap(),
             "/src/one\n",
-            "the folder ctrl+p pinned stays"
+            "the other pinned folder stays"
         );
     }
 
@@ -22380,7 +22824,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal), "the list keeps the key");
         assert!(app.text.is_empty(), "a ctrl key types nothing");
         assert!(
-            !GUIDE.iter().any(|(k, _)| *k == "ctrl+q"),
+            !guide_entries().iter().any(|(k, _)| k == "ctrl+q"),
             "no key the guide leaves out does anything"
         );
     }
@@ -22604,47 +23048,36 @@ mod tests {
             !text.contains("[ ] group"),
             "the picker has no group tabs: {text}"
         );
-        // A choice is for the next launch: the file and every job on Claude keep what
-        // they had until ctrl+s says otherwise.
-        let before = fs::read_to_string(&app.jobs_path).unwrap_or_default();
+        // A choice reaches the file as it is made, with no separate save key.
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for _ in 0..2 {
             app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.session_policy().model.as_deref(), Some("opus"));
-        assert_eq!(config::defaults(&app.jobs_path).model, None);
         assert_eq!(
-            fs::read_to_string(&app.jobs_path).unwrap_or_default(),
-            before
+            config::defaults(&app.jobs_path).model.as_deref(),
+            Some("opus")
         );
         assert!(
-            app.status.contains("ctrl+s"),
-            "the picker says where a save would go: {}",
+            app.status.contains("config saved to"),
+            "the picker says where the choice went: {}",
             app.status
         );
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('h'), KeyModifiers::NONE).unwrap();
         assert_eq!(app.session_policy().effort.as_deref(), Some("high"));
-        assert_eq!(config::defaults(&app.jobs_path).effort, None);
-        // Reopening shows the launch choice rather than the saved default.
-        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
-        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
-        assert!(
-            matches!(&app.mode, Mode::Config(f) if f.values[field_at("model")] == "opus"),
-            "the picker reopens on the staged choice"
-        );
-        // ctrl+s is the explicit save, and it survives a restart.
-        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
-        assert_eq!(
-            config::defaults(&app.jobs_path).model.as_deref(),
-            Some("opus")
-        );
         assert_eq!(
             config::defaults(&app.jobs_path).effort.as_deref(),
             Some("high")
         );
-        assert!(app.launch.is_none(), "the file holds the choices now");
+        // Reopening shows the saved choice, and it survives a restart.
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.values[field_at("model")] == "opus"),
+            "the picker reopens on the saved choice"
+        );
         let restarted = App::new(Path::new("cones"), &app.jobs_path, d.path(), d.path()).unwrap();
         assert_eq!(restarted.session_policy().model.as_deref(), Some("opus"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -22719,7 +23152,7 @@ mod tests {
     }
 
     #[test]
-    fn config_failed_save_keeps_the_saved_choice_and_the_picker_open() {
+    fn config_failed_save_keeps_the_typed_value_and_the_picker_open() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
@@ -22731,21 +23164,18 @@ mod tests {
             matches!(&app.mode, Mode::Config(f) if f.scope == Some("claude") && f.field().name == "model"),
             "ctrl+o opens the rows of the harness the composer names"
         );
+        let invalid = "version: 4\njobs: [\n";
+        fs::write(&app.jobs_path, invalid).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.session_policy().model.as_deref(), Some("opus[1m]"));
-        let invalid = "version: 4\njobs: [\n";
-        fs::write(&app.jobs_path, invalid).unwrap();
-        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
         assert!(
             matches!(&app.mode, Mode::Config(f) if f.scope.is_some() && f.values[field_at("model")] == "opus[1m]" && f.error.is_some())
         );
-        assert_eq!(fs::read_to_string(&app.jobs_path).unwrap(), invalid);
         assert_eq!(
-            app.session_policy().model.as_deref(),
-            Some("opus[1m]"),
-            "a failed save keeps the launch choice"
+            fs::read_to_string(&app.jobs_path).unwrap(),
+            invalid,
+            "a failed write leaves the file alone"
         );
         let Mode::Config(form) = &app.mode else {
             unreachable!()
@@ -22757,16 +23187,30 @@ mod tests {
             error,
             "the picker keeps the composer in the box, so its error takes the hint row"
         );
+        // Reopening on the same file says why its rows are the built-in defaults.
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.error.is_some()),
+            "a file the build cannot read is reported, not shown as built-ins"
+        );
         fs::write(&app.jobs_path, valid).unwrap();
         assert_eq!(
             config::defaults(&app.jobs_path).model.as_deref(),
             Some("opus"),
             "the previous default is intact"
         );
-        app.key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        // With the file readable again, the next choice reaches it.
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        assert!(form.error.is_none(), "{:?}", form.error);
         assert_eq!(
-            config::defaults(&app.jobs_path).model.as_deref(),
-            Some("opus[1m]")
+            config::defaults(&app.jobs_path).model,
+            Some(form.values[field_at("model")].clone())
         );
     }
 
@@ -24400,6 +24844,158 @@ mod tests {
     }
 
     const OLD: Duration = Duration::from_millis(500);
+
+    fn settled_fixture(d: &Path) -> (PathBuf, PathBuf) {
+        let one = d.join("one");
+        fs::create_dir(&one).unwrap();
+        registry_bg(d, A, one.to_str().unwrap(), "idle", 1);
+        let job = d.join("jobs").join(&A[..8]);
+        fs::create_dir_all(&job).unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({
+                "state": "done", "tempo": "idle", "sessionId": A, "cwd": one, "name": "model bars"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        (one, job)
+    }
+
+    /// The daemon settles a finished background session and drops its registry entry, and the
+    /// row went with it: an hour of work in a folder, and the list showed nothing there. The job
+    /// record still reports the terminal state, so the row stays in its folder until `claude rm`.
+    #[test]
+    fn a_settled_background_session_keeps_its_row_in_its_folder_until_removed() {
+        let d = dir();
+        let (one, job) = settled_fixture(d.path());
+        let mut app = app(d.path());
+        app.split = false;
+        app.refresh().unwrap();
+        app.pin_folder(one.clone()).unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        let name = fleet::tilde(&one);
+        let session_row = |app: &App| {
+            app.rows.iter().find_map(|r| match &r.kind {
+                Kind::Session(id, state) if id == A => Some(state.clone()),
+                _ => None,
+            })
+        };
+        assert_eq!(session_row(&app).as_deref(), Some("done"));
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(
+            session_row(&app).as_deref(),
+            Some("done"),
+            "the row survives the registry entry"
+        );
+        let s = app
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == A)
+            .unwrap();
+        assert_eq!((s.pid, s.title.as_deref()), (None, Some("model bars")));
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Header && r.text() == name),
+            "under its folder's heading"
+        );
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Folder(name.clone())),
+            "the folder shows the session, not the empty placeholder"
+        );
+        assert_eq!(app.session_verb(A), "delete", "ctrl+x offers `claude rm`");
+        assert_eq!(
+            enter_verb(Some(&Kind::Session(A.into(), "done".into())), 0),
+            "attach"
+        );
+        fs::remove_dir_all(&job).unwrap();
+        app.refresh().unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        assert_eq!(
+            session_row(&app),
+            None,
+            "`claude rm` took the record and the row"
+        );
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| r.kind == Kind::Folder(name.clone())),
+            "and the pinned folder's placeholder is back"
+        );
+    }
+
+    /// Joining a settled session wakes a worker, which a hover must never do: like a saved
+    /// Codex thread whose daemon is gone, it waits for enter.
+    #[test]
+    fn a_settled_background_session_is_never_a_prespawn_target() {
+        let d = dir();
+        let (one, _) = settled_fixture(d.path());
+        let mut app = app(d.path());
+        app.split = false;
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        rested(&mut app, A, OLD);
+        assert_eq!(
+            app.prespawn_target(),
+            Some((A.to_owned(), one.clone())),
+            "while it lives, a finished session is peeked like any agent"
+        );
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        rested(&mut app, A, OLD);
+        assert_eq!(app.prespawn_decision(), Err("session_settled"));
+        let s = app
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == A)
+            .unwrap();
+        assert!(
+            !harness::can_peek(s, d.path()),
+            "the harness layer refuses too, for every peek path"
+        );
+    }
+
+    /// Every row starts at the list's left edge: the mascot at column 1, folder headings at
+    /// column 0, selectable rows two columns in. A dashboard missing its left columns lost them
+    /// outside this buffer.
+    #[test]
+    fn the_list_draws_from_its_left_edge() {
+        let d = dir();
+        let one = d.path().join("one");
+        fs::create_dir(&one).unwrap();
+        registry_bg(d.path(), A, one.to_str().unwrap(), "idle", 1);
+        let mut app = app(d.path());
+        app.split = false;
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let lines = rows(&t, 120);
+        let first = |line: &str| line.chars().position(|c| c != ' ');
+        assert_eq!(first(&lines[1]), Some(1), "mascot: {:?}", lines[1]);
+        let line = |word: &str| lines.iter().find(|l| l.contains(word)).unwrap().clone();
+        assert_eq!(
+            first(&line("config")),
+            Some(3),
+            "menu: {:?}",
+            line("config")
+        );
+        let folder = line(&fleet::tilde(&one));
+        assert_eq!(first(&folder), Some(0), "folder heading: {folder:?}");
+        assert_eq!(
+            first(&line("add folder")),
+            Some(2),
+            "{:?}",
+            line("add folder")
+        );
+    }
 
     #[test]
     fn a_rested_claude_session_row_is_the_prespawn_target_and_nothing_else_is() {

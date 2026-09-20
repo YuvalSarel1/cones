@@ -85,7 +85,7 @@ A probe declares its command, success requirement, required output strings, vers
 
 `operations.launch.model`, `provider` and `effort` name native flags. Their values come from the [per-harness defaults](jobs.md#composer-harnesses). Pi additionally uses `defaults.pi_provider`. Effort comes from `defaults.effort` for Claude and `defaults.pi_thinking` for pi; no other harness currently declares an effort flag. Unset values pass no flag. Codex's daemon provider remains native adapter behavior; a pi provider binding cannot be claimed for that adapter.
 
-`operations.launch.bedrock` names the environment variable that sends this harness to Amazon Bedrock. Claude declares `CLAUDE_CODE_USE_BEDROCK`; Codex, pi and OpenCode declare none, so `defaults.bedrock` is a [validation error](jobs.md#job-fields-and-defaults) on them rather than a switch they would ignore. `defaults.aws_profile` and `defaults.aws_region` are not declared per harness: every harness resolves AWS through the same chain, so cones passes `AWS_PROFILE` and `AWS_REGION` to all of them, and a new harness reaching Bedrock through its own provider setting needs no definition change to authenticate. A new definition declares a switch only when the harness reads one, and a switch it declares must be one the harness itself acts on.
+`operations.launch.bedrock` names the environment variable that sends this harness to Amazon Bedrock. Claude declares `CLAUDE_CODE_USE_BEDROCK`; Codex, pi and OpenCode declare none. Composer launches pass this switch only to a harness that declares it; other harnesses keep their native provider selection. Supervised jobs on those harnesses are already [rejected when read](jobs.md#job-fields-and-defaults). `defaults.aws_profile` and `defaults.aws_region` are not declared per harness: cones passes `AWS_PROFILE` and `AWS_REGION` to all of them, so a harness reaching Bedrock through its own provider setting receives those configured values too. A new definition declares a switch only when the harness reads one, and a switch it declares must be one the harness itself acts on.
 
 ## Viewers and input
 
@@ -104,7 +104,7 @@ viewer:
       - {key: left, when: empty_prompt}
 ```
 
-Omitted keys pass through to the native client. Unknown keys, duplicate bindings and lists with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain dashboard controls; Shift+Tab and modified arrows remain native keys. An opened viewer records its harness identity, so input behavior does not depend on its title or the selected row.
+Omitted keys pass through to the native client. Unknown keys, duplicate bindings and lists with no unconditional way back are rejected. Quit, layout switching and emulator scroll keys remain [dashboard controls](bindings.md), defined in `assets/bindings.yaml`; Shift+Tab and modified arrows remain native keys. An opened viewer records its harness identity, so input behavior does not depend on its title or the selected row.
 
 The default `marker` profile recognizes Claude and Codex's prompt markers before a visible terminal caret and ignores their braille spinner cells. Pi selects `bordered` and disables braille filtering. Its profile recognizes one empty row between horizontal borders with an inverse-video software caret at the terminal cursor. Text, multiline drafts, missing carets and non-editor screens keep Tab and Left in pi.
 

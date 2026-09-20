@@ -2,6 +2,11 @@
 
 Checked on 2026-09-17 against cones' Rust/Ratatui dashboard. This survey covers 32 projects and components, including related forks and predecessors. The tables link to the sources used. Capability claims describe the checked source trees; released versions can differ.
 
+The recommended in-process renderer is now implemented with `tui-markdown`.
+See [history previews](dashboard.md#history) for current behavior. The comparison
+and prototype observations below remain a dated research record; they have not
+been rechecked against newer upstream releases.
+
 Use **tui-markdown** inside the existing pane and keep cones' transcript readers. It provides the reusable part we need immediately: Markdown converted to Ratatui text. The pane can show chronological conversations, start at the bottom, and load older messages without another executable, session catalog or harness launch.
 
 This library does **not** supply Claude, Codex or pi skins. That presentation remains cones code, guided by native prompt markers, spacing and themes. Codex's history cells and pi's message components are useful primary references. None of the checked terminal viewers is a drop-in reproduction of all three native interfaces.

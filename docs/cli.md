@@ -32,7 +32,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 
 `cones ls` prints the dashboard's rows for a script: the ledger's runs, then the live sessions no run owns. Text timestamps use your local timezone and include its UTC offset. `--job` and `--status` narrow the read; naming a job leaves the sessions out, since a session belongs to no job.
 
-`--dir` keeps the rows whose folder is that path or sits under it, so a project's worktrees stay with the project. Both sides are resolved first, so a folder reached through a symlink still matches. A row that reports no folder is not in any folder, so a scoped read leaves it out.
+`--dir` keeps the rows whose folder is that path or sits under it. This includes worktrees stored inside the directory; linked worktrees elsewhere are not included merely because they share a repository. Both sides are resolved first, so a folder reached through a symlink still matches. A row that reports no folder is not in any folder, so a scoped read leaves it out.
 
 `--json` writes one object per line. `kind` is `run` or `session` and says which of the two shapes follows: `status`, `started` and `terminal` for a run; `status` and `session` for a session. Timestamps stay UTC and native model ids are preserved.
 
@@ -50,7 +50,9 @@ cones launch --dir ~/src/app --harness codex "rebase onto main"
 cones launch --print-command --harness claude
 ```
 
-The session starts in `--dir`, otherwise the current directory, under the same configuration the composer uses: `defaults.harness` picks the harness when `--harness` is absent, and the model, effort, provider and Bedrock settings come from `defaults` as well. A harness turned off in configuration is an error rather than a silent substitution. With no prompt the session opens waiting for input.
+The session starts in `--dir`, otherwise the current directory. An explicit `--harness` selects that harness and errors if it is disabled. Without it, an enabled `defaults.harness` wins, otherwise the first enabled launchable harness is used. No enabled harness is an error. The model, effort, provider and Bedrock settings come from `defaults`.
+
+This CLI selection is separate from the dashboard's `start.harness`. The `_in_picker` switches affect the dashboard cycle, not `cones launch`. With no prompt the session opens waiting for input.
 
 Claude starts as a background session, prints its identifier and returns, so the row is there for the dashboard to attach. Every other harness is its own terminal client and takes over this terminal, as a resumed session does. `--print-command` prints the folder, environment and command instead of starting anything.
 
@@ -103,7 +105,9 @@ Codex delivery requires a running local app-server with native queue add/list/de
 
 The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
 
-Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Reviving a conversation from history starts a native session too, and is recorded there as `resume.submitted`, carrying the session it revived in place of an operation ID. These recovery records contain the operation ID, harness, folder and submitted prompt, so a launch that fails before creating a native session can still be recovered, and so the file answers what this machine started. This file uses the same 10 MiB bound. Debug events reference the operation ID without repeating the prompt.
+Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered.
+
+Reviving a conversation from history records `resume.submitted` in the same file. For that event, `data.operation_id` contains the source session id and `data.prompt` contains its saved title, or an empty string; the title is not sent as a new instruction. The record describes the resume request, not proof that it succeeded. This file uses the same 10 MiB bound. Debug launch events reference the operation ID without repeating the prompt.
 
 Older text records can remain in the retained log tail. For example, this prints failures from the structured records and skips older lines:
 

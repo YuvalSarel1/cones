@@ -28,7 +28,7 @@ Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click g
 
 ## Menu
 
-The menu has `jobs`, `config`, `columns` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size.
+The menu has `jobs`, `config` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size. Column pickers open from Config.
 
 Menu and section buttons shift horizontally to keep the selected button visible in narrow panes. Clicks follow the visible buttons; gaps do not select anything. An oversized selected label is clipped to the available space.
 
@@ -52,18 +52,18 @@ Save validates the whole file and changes only the selected job block, preservin
 
 ### Columns
 
-`columns` opens a picker for Sessions, Runs, Jobs and History, starting on the table you came from. Its table tabs use the same button row as Config: `↑` past the first column reaches the buttons, `← →` switch tables and wrap around, and `↓`, `enter` or space returns to the columns. Each table remembers its selected column. Config's `columns` link opens the same picker; `esc` returns to that link. The picker uses the existing pane or the full frame, like the other menu screens.
+Config's column settings open a picker for Sessions, Runs, Jobs and History, starting on the selected setting's table. Its table tabs use the same button row as Config: `↑` past the first column reaches the buttons, `← →` switch tables and wrap around, and `↓`, `enter` or space returns to the columns. Each table remembers its selected column. `esc` returns to the Config setting. The picker uses the existing pane or the full frame, like the other menu screens.
 
 | Key | Action |
 | --- | --- |
 | `↑ ↓` | Select a column; `↑` past the first reaches the table buttons. Movement stops at the last column. |
 | `← →` on the table buttons | Switch tables and wrap around. |
-| `←` on a column | Return to the dashboard list, including when opened from Config. `→` does nothing on a column. |
+| `←` on a column | Return to the column setting in Config. `→` does nothing on a column. |
 | `space` | Show or hide the selected column without moving its row. |
 | `[` `]` | Move a shown column earlier or later; the cursor follows it. |
 | `backspace` | Restore the current table's defaults. |
 | `home`, `end`, `page up`, `page down` | Navigate longer lists and short panes. |
-| `esc` | Return to Config when opened there, otherwise close the picker. |
+| `esc` | Return to the column setting in Config. |
 | `tab`, `ctrl+z` | Return to the dashboard list. |
 
 The `›` marker and shaded row show keyboard focus; `[x]` and `[ ]` show visibility. The order number records a shown column's position in its saved set. State/status and the harness name retain their places beside the row's identity, as their descriptions explain. `defaults` or `custom` identifies where the selection comes from, independently of visibility.
@@ -93,13 +93,15 @@ A fixed two-line hint stays below the list and names the default or reset value.
 | Columns | `enter`, `→` or space opens the [column picker](#columns). |
 | Connectivity | `enter`, `→` or space runs the launch probe for every harness and answers on the explanation line: the binary on cones's own launch PATH, and whether the installed version takes the flags a dashboard session needs. It writes nothing, and the next key clears the answer. |
 
-Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write restores the preceding value and shows the error.
+Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write keeps the value that was entered and shows the error, so the same change can be made again once the cause is fixed. A `jobs.yaml` this build cannot read, such as one holding a column or a version a newer cones wrote, is reported on the hint row instead of being shown as the built-in defaults, and a write onto it is refused rather than replacing the settings it holds.
 
 Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
 
 ### Help
 
 `help` and `ctrl+g` open the built-in guide. The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f` also start search. Each search word must match the shortcut, description or section name, regardless of case. For example, `config reset` finds reset in the Config section. The guide shows the match count and explains how to recover from an empty result.
+
+The guide's shortcuts, state descriptions and action explanations come from the same [YAML definitions](bindings.md) used for input handling. Each section says when its bindings apply. These defaults are embedded at build time; user overrides are not available yet.
 
 `↑ ↓` and the wheel scroll by rendered lines. `page up` and `page down` scroll a page; `home` and `end` reach the first and last results. Shortcuts stack above their descriptions in narrow panes. Left and right edit a nonempty search, and `enter` keeps its results visible. `esc` or `ctrl+u` clears the search; with an empty search, `esc` or `←` returns to the list. `ctrl+g` closes Help directly.
 
@@ -126,7 +128,6 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | Key | List action |
 | --- | --- |
 | `ctrl+x twice` | Confirm the selected row's removal or stop. |
-| `ctrl+p` | Pin its folder. |
 | `ctrl+s` | Group by state or directory. |
 | `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
@@ -142,6 +143,7 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 | Selected row | Confirmed action |
 | --- | --- |
 | Live session | The [native stop or removal](harness.md#native-actions) for its kind. |
+| Settled Claude background session | `claude rm`; the row goes with the job record, the transcript stays. |
 | Run in flight, or job with a live run | Stop the run. |
 | Finished run | Hide the row; retain its ledger, output and transcript. Restore through the [`hidden` file](jobs.md#stored-files). |
 | Job with no live run | Delete the job and reinstall schedules. |
@@ -153,7 +155,7 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 
 While the row or one of its offers holds the cursor, folders are offered under it: the pinned ones and the directories this read already saw sessions in, most recently used first, with a linked worktree followed by the repository it belongs to. Each offer says why it is there: `pinned`, `worktree`, `repository` or `recent`. Typing filters them by any fragment of the path, `↓` moves onto one, `enter` pins it, `tab` puts it in the input to edit, and `esc` returns to the input. Aliases of one folder, such as a symlinked path, are offered once. The offers come from the rows this read already holds, so opening them reads no transcripts; a folder that has since been deleted is still offered and reported as missing when it is picked.
 
-The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows. `ctrl+p` also pins the selected row's folder, or the dashboard cwd from the menu.
+The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows.
 
 | File under the state directory | Contents |
 | --- | --- |
@@ -255,13 +257,13 @@ The instruction wraps to at most eight text rows. In a side-by-side pane it alig
 
 A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` or `ctrl+z` cancels pending preparation; other keys do not cancel it; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
 
-The prefix names the harness the launch starts, and nothing else: its [launch settings](#launch-settings) stay in the `ctrl+o` picker rather than beside every instruction. Native sessions retain their harness permissions; timeouts and tool restrictions belong to supervised runs. [Launch identity](harness.md#composer-identity) explains attribution limits.
+The prefix names the harness the launch starts, and nothing else: its [launch settings](#launch-settings) stay in the `ctrl+o` picker rather than beside every instruction. Native sessions retain their harness permissions. Supervised runs add a timeout and use the [unattended run contract](jobs.md#what-the-harness-is-told). [Launch identity](harness.md#composer-identity) explains attribution limits.
 
 ### Launch settings
 
 `ctrl+o` opens the selected harness's own settings under the list, with the composer and its draft still in place: Claude's model and effort, Codex's model and full access, pi's model, provider and thinking, and one model row for every other harness that takes one. Amp and droid define none, so `ctrl+o` says so and opens nothing. It is unavailable on the terminal, a menu button, the folder row, a history search and the jobs screen, where the composer names no harness.
 
-The rows are the [config editor's](#config) own controls, and a change applies to the next launch from the composer alone: it stays in the dashboard and leaves `jobs.yaml` untouched, so scheduled jobs keep the [defaults they had](jobs.md#job-fields-and-defaults). `ctrl+s`, which groups the list elsewhere, saves here: it writes the picker's current values to `defaults` in `jobs.yaml`, the only path from the picker to the file; the hint row names the key and the status line names the file. A saved default survives a restart, and reopening `ctrl+o` shows the launch choice rather than the saved value until then. `↑ ↓` select a row, `enter` opens the choices or text editing, `backspace` restores the harness default, and `?` explains the selected setting. `esc`, `tab` or another `ctrl+o` closes the picker and keeps the draft and the selection. A failed save keeps the picker open with its launch choices, leaves the previous default intact and shows the error in the hint row.
+The rows are the [config editor's](#config) own controls, and a change is written to `defaults` in `jobs.yaml` as it is made, so there is no save key and nothing to lose by closing the picker; the status line names the file. Scheduled jobs pick the new value up on their next run, and a running session keeps what it started with. The saved choice survives a restart, and reopening `ctrl+o` shows it. `↑ ↓` select a row, `enter` opens the choices or text editing, `backspace` restores the harness default, and `?` explains the selected setting. `esc`, `tab` or another `ctrl+o` closes the picker and keeps the draft and the selection. A failed write keeps the picker open with the value that was typed, leaves the previous default intact and shows the error in the hint row.
 
 ### Text and images
 

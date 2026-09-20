@@ -28,7 +28,7 @@ jobs:
 | `start` | [Initial dashboard settings](#start). |
 | `activity` | [Activity chart settings](#activity). |
 
-Unknown fields and versions above `3` are rejected. Older files migrate on read, preserving comments and layout: version 1's `sparkline` column and block become `activity`; version 2's `budget_usd`, `daily_budget_usd` and `max_turns` fields are removed. If the file cannot be rewritten, it still loads and the next save migrates it.
+Unknown fields and versions above `4` are rejected. Older files migrate on read, preserving unrelated comments and layout: version 1's `sparkline` column and block become `activity`; version 2's `budget_usd`, `daily_budget_usd` and `max_turns` fields are removed; version 3's `write` field is removed. If the file cannot be rewritten, it still loads and the next save migrates it.
 
 ## Job fields and defaults
 
@@ -55,7 +55,7 @@ Claude is the only harness cones can supervise, so it is the only one a job may 
 | `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value. Required with `bedrock: true`. |
 | `aws_region` | unset | Sets `AWS_REGION`; the chosen region must serve the model. Required with `bedrock: true`. |
 
-`codex_full_access` is a Codex setting and Codex has no jobs, so the only thing it can do on a job line is fail validation. It is still read from `defaults`, where nothing consumes it yet: no run and no composer launch passes it on today.
+`codex_full_access: true` is rejected on a Claude job; `false` has no effect. The setting is still read from `defaults`, where nothing consumes it yet: no run and no composer launch passes it on today.
 
 ### Composer harnesses
 
@@ -76,7 +76,7 @@ These are `defaults` fields. Harness keys also set `start.harness`; their order 
 
 The last six are [experimental terminal launchers](harness.md#additional-terminal-harnesses). They have no native history, activity or usage reports and cannot run supervised jobs. Their CLIs must be installed and authenticated separately; [executable lookup](cli.md#native-cli-lookup) explains where cones finds them.
 
-An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An unset `_in_picker` key means offered too; `false` takes the harness out of the composer cycle and startup selection alone, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. The enabled switch wins: a harness that is off is out of the picker whatever its picker key says, and with every launcher hidden the composer comes up on the terminal. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) sets them beside the composer, for the harness it names. A picker choice applies to the next launch only; its `ctrl+s` writes these keys to `defaults`, and until then a job's defaults are unchanged.
+An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An unset `_in_picker` key means offered too; `false` takes the harness out of the composer cycle and startup selection alone, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. The enabled switch wins: a harness that is off is out of the picker whatever its picker key says, and with every launcher hidden the composer comes up on the terminal. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) sets them beside the composer, for the harness it names. A picker choice is written to `defaults` as it is made, so a job's next run uses it.
 
 Pi also accepts `pi_provider`, and Codex accepts `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
 
@@ -228,7 +228,7 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | --- | --- |
 | Installing or running shell | `HOME`, `USER`, `TMPDIR`, and names in `env` |
 | Fixed values | `LANG=en_US.UTF-8`, `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` |
-| Launch PATH | `~/.local/bin`, `~/.cargo/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; also used to resolve `claude` |
+| Launch PATH | `~/.local/bin`, `~/.cargo/bin`, `~/.opencode/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; also used to resolve `claude` |
 | `aws_profile` or `aws_region` | All shell `AWS_` variables for credentials, then the configured `AWS_PROFILE` and `AWS_REGION` over them; every harness resolves AWS the same way, so the pair is not Claude's alone |
 | `bedrock: true` | The switch the harness definition names, `CLAUDE_CODE_USE_BEDROCK=1` for Claude |
 

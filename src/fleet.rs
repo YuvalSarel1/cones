@@ -230,6 +230,9 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
                 s
             }),
     );
+    let live: HashSet<&str> = out.iter().map(|s| s.session_id.as_str()).collect();
+    let settled = settled(claude, &live, true);
+    out.extend(settled);
     sort(&mut out);
     Ok(out)
 }
@@ -422,22 +425,77 @@ fn session(
     if v["procStart"].as_str().is_some_and(|s| s.trim() != start) {
         return None;
     }
-    // The id names a transcript file, so it is checked before it becomes a path.
-    if id.is_empty()
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+    if !valid_id(id) {
         return None;
     }
-    let cwd = PathBuf::from(v["cwd"].as_str().unwrap_or(""));
-    // The short job id becomes a directory name, so it is checked first.
-    let job: Value = v["jobId"]
-        .as_str()
+    let job = job_state(dir, v["jobId"].as_str());
+    Some(build(dir, id, v, &job, Some(pid), read_transcript))
+}
+
+/// The id names a transcript file, so it is checked before it becomes a path.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// A background job's own record. The short job id becomes a directory name, so it is checked first.
+fn job_state(dir: &Path, short: Option<&str>) -> Value {
+    short
         .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric()))
         .and_then(|s| fs::read(dir.join("jobs").join(s).join("state.json")).ok())
         .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+/// Background jobs the daemon has settled. Their registry entries are gone, and
+/// `jobs/<jobId>/state.json` keeps reporting the terminal state until `claude rm` removes the
+/// record; killed jobs leave no record. See docs/harness.md.
+fn settled(dir: &Path, live: &HashSet<&str>, read_transcript: bool) -> Vec<Session> {
+    let Ok(entries) = fs::read_dir(dir.join("jobs")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let short = entry.file_name();
+        let Some(short) = short.to_str() else {
+            continue;
+        };
+        let job = job_state(dir, Some(short));
+        let Some(id) = job["sessionId"].as_str().filter(|id| valid_id(id)) else {
+            continue;
+        };
+        if live.contains(id) {
+            continue;
+        }
+        // No process reports for it, so only a terminal report makes a row: a record a crash
+        // left mid-turn says nothing cones can show as a state.
+        if !matches!(state(&job, "-").as_str(), "done" | "failed" | "stopped") {
+            continue;
+        }
+        // The fields a registry entry would carry; the launch cwd comes from the job.
+        let registry = serde_json::json!({"kind": "bg", "jobId": short});
+        out.push(build(dir, id, &registry, &job, None, read_transcript));
+    }
+    out
+}
+
+/// A row from a registry entry `v`, possibly synthesized, and the job record it names.
+fn build(
+    dir: &Path,
+    id: &str,
+    v: &Value,
+    job: &Value,
+    pid: Option<u32>,
+    read_transcript: bool,
+) -> Session {
+    let cwd = PathBuf::from(
+        v["cwd"]
+            .as_str()
+            .or_else(|| job["cwd"].as_str())
+            .unwrap_or(""),
+    );
     // Claude keeps transcripts under projects/<cwd with every non-alphanumeric byte as '-'>.
     let transcript = crate::harness::spec(crate::config::HarnessKind::Claude)
         .transcript
@@ -459,17 +517,17 @@ fn session(
     };
     let (window, cost, effort) = statusline_values(dir, id);
     let (cost_usd, cost_info) = d.report.costs.report(cost);
-    Some(Session {
+    Session {
         session_id: id.into(),
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
         // Keep background jobs grouped by launch cwd when their registry cwd moves into a worktree.
         cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
-        state: state(&job, v["status"].as_str().unwrap_or("-")),
+        state: state(job, v["status"].as_str().unwrap_or("-")),
         started: d.report.started,
         last_activity: d.report.last_activity,
         model: d.report.model,
-        pid: Some(pid),
+        pid,
         transcript_path: transcript,
         tokens_in: d.report.tokens_in,
         tokens_out: d.report.tokens_out,
@@ -499,7 +557,7 @@ fn session(
         coordinator: false,
         forked_from: None,
         activity: d.report.activity,
-    })
+    }
 }
 
 /// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
@@ -1187,12 +1245,22 @@ pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<
                 };
                 if value["sessionId"].as_str() == Some(session_id) {
                     let starts = process_starts(value["pid"].as_u64().into_iter())?;
-                    return Ok(session(claude, &value, &starts, false));
+                    if let Some(s) = session(claude, &value, &starts, false) {
+                        return Ok(Some(s));
+                    }
+                    // A dead pid leaves a stale entry; the job record may still answer below.
+                    break;
                 }
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
+    }
+    if let Some(s) = settled(claude, &HashSet::new(), false)
+        .into_iter()
+        .find(|s| s.session_id == session_id)
+    {
+        return Ok(Some(s));
     }
     for &kind in crate::harness::known() {
         let spec = crate::harness::spec(kind);
@@ -1846,6 +1914,68 @@ mod tests {
         });
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), id);
         task.join().unwrap();
+    }
+
+    /// The daemon settles a finished background session and drops its registry entry, while
+    /// the job record keeps reporting the terminal state until `claude rm`. The row stays.
+    #[test]
+    fn a_settled_background_job_keeps_a_row_without_a_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let job = dir.path().join("jobs/aaaaaaaa");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        fs::write(dir.path().join("jobs/pins.json"), "[]").unwrap();
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let record = |state: &str| {
+            serde_json::json!({
+                "state": state, "tempo": "idle", "sessionId": id, "cwd": "/src/example",
+                "name": "model bars", "detail": "opened the report",
+            })
+            .to_string()
+        };
+        fs::write(job.join("state.json"), record("done")).unwrap();
+        let rows = sessions(dir.path()).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let s = &rows[0];
+        assert_eq!(
+            (s.state.as_str(), s.pid, s.kind.as_deref()),
+            ("done", None, Some("bg"))
+        );
+        assert_eq!(s.cwd, Path::new("/src/example"));
+        assert_eq!(s.session_id, id);
+        assert_eq!(s.title.as_deref(), Some("model bars"));
+        assert_eq!(s.last.as_deref(), Some("opened the report"));
+        assert_eq!(
+            control_session(dir.path(), id).unwrap().map(|s| s.pid),
+            Some(None),
+            "an action finds it by id, so `claude rm` can remove the record"
+        );
+        // While the session lives, its registry row is the only one.
+        let entry = registry.join("entry.json");
+        fs::write(
+            &entry,
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
+                "kind": "bg", "jobId": "aaaaaaaa", "status": "idle"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let rows = sessions(dir.path()).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].pid.is_some(), "the live row, not the record");
+        fs::remove_file(&entry).unwrap();
+        // A record a crash left mid-turn reports no state cones can show.
+        fs::write(job.join("state.json"), record("working")).unwrap();
+        assert!(sessions(dir.path()).unwrap().is_empty());
+        for terminal in ["failed", "stopped"] {
+            fs::write(job.join("state.json"), record(terminal)).unwrap();
+            assert_eq!(sessions(dir.path()).unwrap()[0].state, terminal);
+        }
+        // `claude rm` removes the record and the row with it.
+        fs::remove_dir_all(&job).unwrap();
+        assert!(sessions(dir.path()).unwrap().is_empty());
     }
 
     #[test]

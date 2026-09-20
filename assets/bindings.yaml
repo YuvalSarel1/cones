@@ -1,0 +1,745 @@
+# Built-in dashboard bindings. Embedded at build time; no user override file yet.
+# State precedence is selected by the dashboard. Unhandled text and native input stay native.
+version: 1
+states:
+  - id: list
+    title: "Rows"
+    when: "The dashboard list has focus. Text editing gets first refusal in the composer."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Move between rows toward the menu."
+      - keys: ["down"]
+        action: down
+        description: "Move to the next row."
+      - keys: ["enter", "shift+enter", "alt+enter"]
+        action: enter
+        description: "Open the selected row or launch the typed instruction. Shift or alt inserts a line break in a draft, otherwise opens fullscreen."
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel a pending stop, clear a draft, leave jobs or quit the empty dashboard."
+      - keys: ["tab"]
+        action: tab
+        description: "Focus the pane, or leave the jobs screen."
+      - keys: ["left"]
+        action: left
+        description: "Leave jobs when the composer is empty."
+      - keys: ["right"]
+        action: right
+        description: "With an empty composer, focus the pane or enter a session."
+      - keys: ["shift+tab"]
+        action: cycle
+        description: "Choose the next enabled harness or terminal."
+      - keys: ["ctrl+c"]
+        action: quit
+        description: "Press twice to quit cones; another key cancels confirmation."
+      - keys: ["ctrl+x"]
+        action: stop
+        description: "Press twice to stop a session or remove a job, finished run or pinned folder."
+      - keys: ["ctrl+e"]
+        action: edit_job
+        description: "Edit the selected job when the composer is empty."
+      - keys: ["ctrl+s"]
+        action: group
+        description: "Group sessions by state or folder."
+      - keys: ["ctrl+h"]
+        action: history
+        description: "Show or hide history."
+      - keys: ["ctrl+f"]
+        action: filter
+        description: "Filter rows; enter keeps the filter and esc clears it."
+      - keys: ["ctrl+n"]
+        action: rename
+        description: "Rename the selected Claude session."
+      - keys: ["ctrl+t"]
+        action: mcp
+        description: "Inspect MCP servers and stage scoped changes."
+      - keys: ["ctrl+b"]
+        action: recent
+        description: "List recently entered sessions. Press again to enter the highlighted session."
+      - keys: ["ctrl+y"]
+        action: handoff
+        description: "Fork the selected conversation or hand it off to another harness."
+      - keys: ["ctrl+r"]
+        action: refresh
+        description: "Refresh the list. With history visible, also start or cancel meaning indexing."
+      - keys: ["ctrl+o"]
+        action: settings
+        description: "Open launch settings for the selected harness."
+      - keys: ["ctrl+v"]
+        action: paste_image
+        description: "Paste a clipboard image into an agent instruction."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle the preview pane."
+      - keys: ["ctrl+g"]
+        action: guide
+        description: "Open Help."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page while history is visible."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page while history is visible."
+  - id: menu
+    title: "Menu"
+    when: "A dashboard menu button is selected."
+    extends: list
+    bindings:
+      - keys: ["left"]
+        action: left
+        description: "Select the previous menu button, wrapping around."
+      - keys: ["right"]
+        action: right
+        description: "Select the next menu button, wrapping around."
+  - id: history
+    title: "History"
+    when: "A history row is selected. Typing edits the history search."
+    extends: list
+    bindings:
+      - keys: ["shift+tab"]
+        action: cycle
+        description: "Switch search between words and meaning."
+      - keys: ["enter", "shift+enter", "alt+enter"]
+        action: enter
+        description: "Resume the selected conversation; shift or alt opens fullscreen."
+      - keys: ["esc"]
+        action: cancel
+        description: "Clear the search, then close history."
+  - id: folder
+    title: "Add folder"
+    when: "The add-folder prompt is selected."
+    extends: list
+    bindings:
+      - keys: ["tab"]
+        action: tab
+        description: "Complete the typed path."
+      - keys: ["enter"]
+        action: enter
+        description: "Pin the typed folder."
+      - keys: ["esc"]
+        action: cancel
+        description: "Clear the typed path first."
+  - id: folder_suggestion
+    title: "Folder suggestions"
+    when: "A suggested folder is selected."
+    extends: list
+    bindings:
+      - keys: ["enter"]
+        action: enter
+        description: "Pin the suggested folder."
+      - keys: ["tab"]
+        action: tab
+        description: "Copy the suggestion into the folder prompt."
+      - keys: ["esc"]
+        action: cancel
+        description: "Return to the folder prompt."
+  - id: agent_viewer
+    title: "Viewers"
+    when: "A native agent viewer has focus. Other input reaches the harness; return keys depend on its native prompt."
+    bindings:
+      - keys: ["ctrl+c"]
+        action: quit
+        description: "Press twice to quit cones. Esc remains native input."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle fullscreen for this viewer."
+      - keys: ["shift+pageup"]
+        action: page_up
+        description: "Scroll viewer history up a page."
+      - keys: ["shift+pagedown"]
+        action: page_down
+        description: "Scroll viewer history down a page."
+  - id: terminal_viewer
+    title: "Terminal"
+    when: "A shell terminal has focus. Other keys, including ctrl+c and tab, reach the shell."
+    bindings:
+      - keys: ["ctrl+z"]
+        action: leave
+        description: "Return to the list, keeping the terminal alive."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle fullscreen for this terminal."
+      - keys: ["shift+pageup"]
+        action: page_up
+        description: "Scroll terminal history up a page."
+      - keys: ["shift+pagedown"]
+        action: page_down
+        description: "Scroll terminal history down a page."
+  - id: plain_viewer
+    title: "Other viewers"
+    when: "A viewer without a harness definition has focus."
+    extends: agent_viewer
+    bindings:
+      - keys: ["ctrl+z", "tab"]
+        action: leave
+        description: "Return to the list, keeping the viewer alive."
+  - id: preview
+    title: "Preview"
+    when: "A read-only transcript or run output has focus."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Scroll up one line."
+      - keys: ["down"]
+        action: down
+        description: "Scroll down one line."
+      - keys: ["home"]
+        action: home
+        description: "Scroll to the start and request older transcript content."
+      - keys: ["end"]
+        action: end
+        description: "Scroll to the end and follow new content."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Scroll up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Scroll down a page."
+      - keys: ["right"]
+        action: right
+        description: "Inspect recorded instructions, skills and MCP servers."
+      - keys: ["tab", "esc", "left", "ctrl+z"]
+        action: leave
+        description: "Return to the dashboard list."
+      - keys: ["ctrl+c"]
+        action: quit
+        description: "Press twice to quit cones."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle the pane or fullscreen."
+      - keys: ["ctrl+h"]
+        action: history
+        description: "Return to the list and toggle history."
+      - keys: ["c"]
+        action: copy
+        description: "Copy the last response, a code block or row details."
+      - keys: ["ctrl+r"]
+        action: refresh
+        description: "Reload the transcript and follow its bottom."
+      - keys: ["enter", "shift+enter", "alt+enter"]
+        action: enter
+        description: "Open the selected session; shift or alt opens fullscreen."
+  - id: inspector
+    title: "Recorded context"
+    when: "The recorded context inspector has focus."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous item, or scroll up while reading one."
+      - keys: ["down"]
+        action: down
+        description: "Select the next item, or scroll down while reading one."
+      - keys: ["home"]
+        action: home
+        description: "Go to the start of the current list or text."
+      - keys: ["end"]
+        action: end
+        description: "Go to the end of the current list or text."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page."
+      - keys: ["esc", "left"]
+        action: cancel
+        description: "Go back one level, then return to the conversation."
+      - keys: ["enter", "right"]
+        action: enter
+        description: "Open the selected section or item."
+      - keys: ["tab", "ctrl+z"]
+        action: leave
+        description: "Return to the dashboard list."
+      - keys: ["ctrl+c"]
+        action: quit
+        description: "Press twice to quit cones."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle the pane or fullscreen."
+  - id: pick
+    title: "Session and copy menus"
+    when: "A recent-session or copy menu is open."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous item."
+      - keys: ["down"]
+        action: down
+        description: "Select the next item."
+      - keys: ["enter"]
+        action: enter
+        description: "Choose the selected item."
+      - keys: ["ctrl+b"]
+        action: recent
+        description: "Enter the highlighted recent session. Other keys close the menu."
+  - id: panel
+    title: "Panel focus"
+    when: "A dashboard panel is focused. Ctrl+z leaves any panel; tab leaves Help, Columns, MCP and Config when not editing."
+    bindings:
+      - keys: ["ctrl+z"]
+        action: leave
+        description: "Return to the dashboard list."
+      - keys: ["tab"]
+        action: tab
+        description: "Return to the list when the panel is not using tab for editing or completion."
+      - keys: ["ctrl+\\", "ctrl+4"]
+        action: split
+        description: "Toggle the pane or fullscreen."
+  - id: opening
+    title: "Opening a viewer"
+    when: "An asynchronous viewer launch is pending."
+    bindings:
+      - keys: ["esc", "ctrl+z"]
+        action: cancel
+        description: "Cancel the pending launch."
+  - id: filter
+    title: "Filter"
+    when: "The row-filter prompt has focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Clear the filter and return to the list."
+      - keys: ["enter"]
+        action: enter
+        description: "Keep the filter and return to the list."
+      - keys: ["left"]
+        action: left
+        description: "Leave the filter when empty; otherwise move the cursor."
+  - id: rename
+    title: "Rename"
+    when: "The session-name prompt has focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel the rename."
+      - keys: ["enter"]
+        action: enter
+        description: "Save the session name."
+  - id: guide
+    title: "Help"
+    when: "Help is open. Unhandled typing edits its search."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Scroll up one line."
+      - keys: ["down"]
+        action: down
+        description: "Scroll down one line."
+      - keys: ["home"]
+        action: home
+        description: "Scroll to the start."
+      - keys: ["end"]
+        action: end
+        description: "Scroll to the end."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Scroll up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Scroll down a page."
+      - keys: ["esc"]
+        action: cancel
+        description: "Clear the search first, then return to the list."
+      - keys: ["ctrl+g"]
+        action: guide
+        description: "Close Help."
+      - keys: ["left"]
+        action: left
+        description: "Leave when search is empty; otherwise move the cursor."
+      - keys: ["enter"]
+        action: enter
+        description: "Keep the current search results."
+      - keys: ["/"]
+        action: search
+        description: "Start search when empty; otherwise insert a slash."
+      - keys: ["ctrl+f"]
+        action: filter
+        description: "Focus the search."
+      - keys: ["ctrl+u"]
+        action: clear
+        description: "Clear the whole search."
+  - id: config
+    title: "Config"
+    when: "Settings are selected, outside text editing, choices and group tabs."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous setting; above the first, focus the group buttons."
+      - keys: ["down"]
+        action: down
+        description: "Select the next setting."
+      - keys: ["home"]
+        action: home
+        description: "Go to the first row."
+      - keys: ["end"]
+        action: end
+        description: "Go to the last row."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page."
+      - keys: ["esc"]
+        action: cancel
+        description: "Close settings."
+      - keys: ["f1", "?"]
+        action: help
+        description: "Read the selected setting explanation."
+      - keys: ["enter"]
+        action: enter
+        description: "Open a choice, edit text, activate a link or move to the next setting."
+      - keys: ["space"]
+        action: toggle
+        description: "Cycle a choice or activate a link."
+      - keys: ["left"]
+        action: left
+        description: "Select the previous value."
+      - keys: ["right"]
+        action: right
+        description: "Select the next value or activate a link."
+      - keys: ["backspace"]
+        action: reset
+        description: "Reset a setting to its default."
+      - keys: ["["]
+        action: previous
+        description: "Switch to the previous settings group."
+      - keys: ["]"]
+        action: next
+        description: "Switch to the next settings group."
+      - keys: ["tab"]
+        action: tab
+        description: "Close launch settings."
+      - keys: ["ctrl+o"]
+        action: settings
+        description: "Close launch settings."
+  - id: config_tabs
+    title: "Settings groups"
+    when: "The settings group buttons have focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Close settings."
+      - keys: ["f1", "?"]
+        action: help
+        description: "Read the selected setting explanation."
+      - keys: ["down", "enter", "space"]
+        action: enter
+        description: "Return to the selected setting."
+  - id: tabs
+    title: "Group navigation"
+    when: "Settings or column group buttons have focus."
+    bindings:
+      - keys: ["left", "["]
+        action: previous
+        description: "Select the previous group, wrapping around."
+      - keys: ["right", "]"]
+        action: next
+        description: "Select the next group, wrapping around."
+      - keys: ["home"]
+        action: home
+        description: "Select the first group."
+      - keys: ["end"]
+        action: end
+        description: "Select the last group."
+  - id: config_choice
+    title: "Setting choices"
+    when: "A setting choice list is open."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous row."
+      - keys: ["down"]
+        action: down
+        description: "Select the next row."
+      - keys: ["home"]
+        action: home
+        description: "Go to the first row."
+      - keys: ["end"]
+        action: end
+        description: "Go to the last row."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page."
+      - keys: ["esc", "left"]
+        action: cancel
+        description: "Return without changing the setting."
+      - keys: ["enter", "space"]
+        action: enter
+        description: "Save the selected choice."
+      - keys: ["f1", "?"]
+        action: help
+        description: "Read the setting explanation."
+  - id: config_edit
+    title: "Setting text"
+    when: "A setting is being edited. Other keys use Text editing."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Restore the previous value."
+      - keys: ["enter"]
+        action: enter
+        description: "Validate and save the entered value."
+      - keys: ["f1"]
+        action: help
+        description: "Read the setting explanation."
+      - keys: ["left"]
+        action: left
+        description: "Move left; at the boundary of a choice-or-text value, step onto the choices."
+      - keys: ["right"]
+        action: right
+        description: "Move right; at the boundary of a choice-or-text value, step onto the choices."
+  - id: config_help
+    title: "Setting explanation"
+    when: "The explanation for a setting is open."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Scroll up one line."
+      - keys: ["down"]
+        action: down
+        description: "Scroll down one line."
+      - keys: ["home"]
+        action: home
+        description: "Scroll to the start."
+      - keys: ["end"]
+        action: end
+        description: "Scroll to the end."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Scroll up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Scroll down a page."
+      - keys: ["esc", "left", "f1", "?"]
+        action: cancel
+        description: "Return to the setting."
+  - id: columns
+    title: "Columns"
+    when: "A column row is selected."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous column; above the first, focus the table buttons."
+      - keys: ["down"]
+        action: down
+        description: "Select the next column."
+      - keys: ["home"]
+        action: home
+        description: "Go to the first row."
+      - keys: ["end"]
+        action: end
+        description: "Go to the last row."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page."
+      - keys: ["esc", "left"]
+        action: cancel
+        description: "Return to the column setting in Config."
+      - keys: ["space"]
+        action: toggle
+        description: "Show or hide the selected column."
+      - keys: ["["]
+        action: previous
+        description: "Move a shown column earlier."
+      - keys: ["]"]
+        action: next
+        description: "Move a shown column later."
+      - keys: ["backspace"]
+        action: reset
+        description: "Restore this table's default columns."
+  - id: column_tabs
+    title: "Column tables"
+    when: "The column table buttons have focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Return to the column setting in Config."
+      - keys: ["down", "enter", "space"]
+        action: enter
+        description: "Return to the selected column."
+  - id: mcp
+    title: "MCP servers"
+    when: "The MCP server list has focus. Changes are staged until saved."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous row."
+      - keys: ["down"]
+        action: down
+        description: "Select the next row."
+      - keys: ["home"]
+        action: home
+        description: "Go to the first row."
+      - keys: ["end"]
+        action: end
+        description: "Go to the last row."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Move up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Move down a page."
+      - keys: ["esc"]
+        action: cancel
+        description: "Close without writing staged changes."
+      - keys: ["x"]
+        action: remove
+        description: "Stage removal or undo the staged change for this server."
+      - keys: ["c"]
+        action: copy
+        description: "Choose a destination scope for a copy."
+      - keys: ["s"]
+        action: save
+        description: "Save staged changes."
+      - keys: ["u"]
+        action: undo
+        description: "Discard all staged changes."
+  - id: mcp_copy
+    title: "MCP copy destination"
+    when: "A destination scope is being selected."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel choosing a destination."
+      - keys: ["left"]
+        action: left
+        description: "Select the previous scope."
+      - keys: ["right"]
+        action: right
+        description: "Select the next scope."
+      - keys: ["enter"]
+        action: enter
+        description: "Stage the copy to the selected scope."
+  - id: job
+    title: "Job editor"
+    when: "A job field has focus. Unhandled typing edits the field or selects a choice by its initial."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel editing the job."
+      - keys: ["enter"]
+        action: enter
+        description: "Accept the field, save the job or start a one-off run."
+      - keys: ["up"]
+        action: up
+        description: "Select the previous field."
+      - keys: ["down", "tab"]
+        action: down
+        description: "Select the next field. Tab in the folder field completes its path."
+      - keys: ["left"]
+        action: left
+        description: "Select the previous choice; in text, move left."
+      - keys: ["right"]
+        action: right
+        description: "Select the next choice; in text, move right."
+      - keys: ["backspace"]
+        action: reset
+        description: "Delete in text; on an empty field, restore its default or move back."
+  - id: job_head
+    title: "Job settings heading"
+    when: "The job settings section heading has focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel editing the job."
+      - keys: ["enter", "right"]
+        action: enter
+        description: "Open the settings section."
+      - keys: ["left"]
+        action: left
+        description: "Collapse the settings section."
+      - keys: ["up"]
+        action: up
+        description: "Select the previous field."
+      - keys: ["down", "tab"]
+        action: down
+        description: "Select the next field."
+  - id: job_folder
+    title: "Job folder completion"
+    when: "The job editor folder field has focus."
+    bindings:
+      - keys: ["tab"]
+        action: complete
+        description: "Complete the folder path."
+  - id: handoff
+    title: "Handoff"
+    when: "The conversation handoff preview has focus."
+    bindings:
+      - keys: ["esc"]
+        action: cancel
+        description: "Cancel without starting a session."
+      - keys: ["left"]
+        action: left
+        description: "Select the previous harness."
+      - keys: ["right"]
+        action: right
+        description: "Select the next harness."
+      - keys: ["up"]
+        action: up
+        description: "Scroll up a line."
+      - keys: ["down"]
+        action: down
+        description: "Scroll down a line."
+      - keys: ["pageup"]
+        action: page_up
+        description: "Scroll up a page."
+      - keys: ["pagedown"]
+        action: page_down
+        description: "Scroll down a page."
+      - keys: ["home"]
+        action: home
+        description: "Scroll to the start."
+      - keys: ["enter"]
+        action: enter
+        description: "Start the handoff with the selected harness."
+  - id: text
+    title: "Text editing"
+    when: "A cones text field has focus. Printable characters without control are inserted; native harness drafts remain native."
+    bindings:
+      - keys: ["ctrl+left", "alt+left", "alt+b"]
+        action: word_left
+        description: "Move to the previous word."
+      - keys: ["ctrl+right", "alt+right", "alt+f"]
+        action: word_right
+        description: "Move to the next word."
+      - keys: ["left"]
+        action: left
+        description: "Move left one character."
+      - keys: ["right"]
+        action: right
+        description: "Move right one character."
+      - keys: ["home", "ctrl+a"]
+        action: home
+        description: "Move to the start."
+      - keys: ["end"]
+        action: end
+        description: "Move to the end."
+      - keys: ["ctrl+e"]
+        action: text_end
+        description: "Move to the end when text is nonempty; otherwise leave the shortcut to the screen."
+      - keys: ["alt+backspace", "ctrl+w"]
+        action: delete_word_left
+        description: "Delete the previous word."
+      - keys: ["backspace"]
+        action: backspace
+        description: "Delete the previous character."
+      - keys: ["delete"]
+        action: delete
+        description: "Delete the next character."
+      - keys: ["alt+d"]
+        action: delete_word_right
+        description: "Delete the next word."
+      - keys: ["ctrl+u"]
+        action: delete_start
+        description: "Delete to the start."
+      - keys: ["ctrl+k"]
+        action: delete_end
+        description: "Delete to the end."
