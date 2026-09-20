@@ -49,12 +49,14 @@ def rows(stream, self_pid):
         else:
             continue
         pid = record.get("pid")
-        if not pid or str(pid) == self_pid:
+        if pid is not None and str(pid) == self_pid:
             continue
+        # A Codex worker is its thread, and cones reports no pid for one. Requiring a pid here
+        # dropped every Codex row from the roster, so arrivals were never reported.
         out.append(
             "\t".join(
                 [
-                    str(pid),
+                    str(pid) if pid is not None else "-",
                     kind,
                     str(record.get("harness") or "?"),
                     str(ident),
@@ -64,7 +66,11 @@ def rows(stream, self_pid):
                 ]
             )
         )
-    out.sort(key=lambda row: int(row.split("\t")[0]))
+    def order(row):
+        pid = row.split("\t")[0]
+        return (0, int(pid), "") if pid.isdigit() else (1, 0, row)
+
+    out.sort(key=order)
     return out
 
 

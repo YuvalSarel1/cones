@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Task-scoped Codex delivery through the native app-server queue API."""
+"""Codex delivery through the native app-server queue API, and the folder's mail.
+
+A session is greeted once and keeps that registration through any number of tasks.
+A task is one owner-directed assignment. A request is one message inside a task,
+answered by a reply that quotes its ID. Reading mail never acknowledges it.
+"""
 
 import argparse
 import base64
@@ -195,6 +200,65 @@ def delivery_dir(workspace):
     return home / "orchestrator" / digest
 
 
+def inbox_lines(workspace):
+    """The folder's mail. Reading it is not handling it, so this moves no cursor."""
+    path = delivery_dir(workspace) / "inbox.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch(exist_ok=True)
+    return path.read_text().splitlines()
+
+
+def acknowledged(workspace, total):
+    """How far the coordinator has durably handled, kept beside the inbox so a new job
+    recovers it. Reading is never acknowledgement, so this writes nothing: an unreadable
+    or absent position replays the mail rather than skipping it. `self.sh` sets the
+    position once at startup, which is where a pre-existing inbox is accounted for."""
+    path = delivery_dir(workspace) / "inbox.ack"
+    try:
+        return max(0, min(total, int(path.read_text().strip())))
+    except (OSError, ValueError):
+        return 0
+
+
+def answered_request(state, line):
+    """The request a reply answers, or None. Sender, task and request ID must all
+    match: an uncorrelated finding is still readable, but it closes nothing."""
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    sender, answers = record.get("from"), record.get("reply_to")
+    if not (isinstance(sender, str) and sender.startswith("codex:") and answers):
+        return None
+    thread = sender.split(":", 1)[1]
+    for request in state["requests"].values():
+        if (request["thread"] == thread and request["task"] == record.get("task")
+                and request["id"] == answers):
+            return request
+    return None
+
+
+def acknowledge(workspace, state, through):
+    lines = inbox_lines(workspace)
+    seen = acknowledged(workspace, len(lines))
+    if not seen < through <= len(lines):
+        raise DeliveryError(f"acknowledge a line between {seen + 1} and {len(lines)}")
+    answered, uncorrelated = [], 0
+    for line in lines[seen:through]:
+        request = answered_request(state, line)
+        if request is None:
+            uncorrelated += 1
+            continue
+        # An answer retires its own request. Expiring it lets the watcher withdraw any
+        # copy still queued, so an answered question cannot cost the worker a later turn.
+        # It does not finish the task: only the worker's own report of the required
+        # result does that.
+        request["answered"] = True
+        request["expires"] = 0
+        answered.append(request["key"])
+    return answered, uncorrelated
+
+
 @contextmanager
 def state_file(directory):
     directory.mkdir(parents=True, exist_ok=True)
@@ -218,33 +282,16 @@ def state_file(directory):
 class Delivery:
     def __init__(self, state, rpc, workspace, now=None, save=lambda: None):
         self.state, self.rpc = state, rpc
-        self.state.setdefault("briefed", [])
+        # Registration outlives every task in the session, so it is recorded per thread.
+        self.state.setdefault("greeted", {})
+        for identity in self.state.pop("briefed", []):
+            self.state["greeted"].setdefault(identity, {"id": None, "input": None, "submitted": True})
         self.workspace = str(Path(workspace).resolve())
         self.now = time.time() if now is None else now
         self.save = save
 
     def task_key(self, identity, task):
         return json.dumps([thread_id(identity), task])
-
-    def asked_us(self, identity, task):
-        """True once that thread wrote to this folder under this task.
-
-        An agent that opened a task with the coordinator is owed the answer it asked
-        for, and it usually goes idle while waiting. Registering that exchange is not
-        starting work: the worker chose both the task and the question.
-        """
-        inbox = delivery_dir(self.workspace) / "inbox.jsonl"
-        if not inbox.is_file():
-            return False
-        sender = f"codex:{identity}"
-        for line in inbox.read_text(errors="ignore").splitlines():
-            try:
-                entry = json.loads(line)
-            except ValueError:
-                continue
-            if entry.get("from") == sender and entry.get("task") == task:
-                return True
-        return False
 
     def begin(self, identity, task):
         key = self.task_key(identity, task)
@@ -253,27 +300,72 @@ class Delivery:
                 raise DeliveryError("task is finished; use a new task ID for new owner-directed work")
             return
         thread = read_thread(self.rpc, identity, self.workspace)
-        if thread["status"]["type"] != "active" and not self.asked_us(identity, task):
-            raise DeliveryError("register only observed active work; an idle session is not a new task")
+        if thread["status"]["type"] not in ("active", "idle"):
+            raise DeliveryError("register only a reachable session; a thread that has ended is not a new task")
         self.state["tasks"][key] = {"thread": identity, "task": task, "done": False}
 
-    def withdraw(self, request):
-        cursor = None
-        matches = []
+    def queued(self, thread, identifier, text):
+        """Our own still-queued copies of one message. IDs are recorded before
+        enqueueing, so a lost response is recoverable. A user edit changes input
+        and takes ownership of that queued item."""
+        cursor, matches = None, []
         while True:
             result = self.rpc.call("thread/queue/list", {
-                "threadId": request["thread"], "cursor": cursor, "limit": 100,
+                "threadId": thread, "cursor": cursor, "limit": 100,
             })
-            for item in result["data"]:
-                # IDs are recorded before enqueueing, so a lost response is recoverable.
-                # A user edit changes input and takes ownership of that queued item.
-                if (item["clientUserMessageId"] == request["id"]
-                        and item["input"] == request["input"]):
-                    matches.append(item["id"])
+            matches += [item["id"] for item in result["data"]
+                        if item["clientUserMessageId"] == identifier and item["input"] == text]
             cursor = result.get("nextCursor")
             if not cursor:
-                break
-        for identifier in matches:
+                return matches
+
+    def reachable(self, identity):
+        thread = read_thread(self.rpc, identity, self.workspace)
+        if (thread["status"]["type"] not in ("active", "idle")
+                or thread.get("canAcceptDirectInput") is False):
+            raise DeliveryError("thread cannot receive input; nothing queued for a future client")
+        return thread
+
+    def reply_protocol(self, identity, task=None, request=None):
+        line = {"from": f"codex:{identity}", "task": task or "<task>", "text": "<reply>"}
+        if request:
+            line["reply_to"] = request
+        return (f"Reply by appending one JSON line to {delivery_dir(self.workspace)}/inbox.jsonl: "
+                + json.dumps(line))
+
+    def greet(self, identity, text):
+        """One session-level introduction, outliving every task it carries. It is not
+        a task, so no task rule suppresses it and no later assignment repeats it."""
+        entry = self.state["greeted"].get(identity)
+        if entry and entry["submitted"]:
+            return None
+        self.reachable(identity)
+        if entry and self.queued(identity, entry["id"], entry["input"]):
+            entry["submitted"] = True  # The receipt was lost; the message was not.
+            return entry["id"]
+        identifier = entry["id"] if entry else str(uuid.uuid4())
+        message = (
+            f"[orchestrator, not the owner; session introduction] {text}\n"
+            + self.reply_protocol(identity)
+            + ", quoting reply_to from a request's header when you answer one. Report a new "
+            "assignment or a change of scope the same way. Coordination does not expand your "
+            "owner's task and is not a permission gate on work it already covers."
+        )
+        record = {
+            "id": identifier,
+            "input": [{"type": "text", "text": message, "text_elements": []}],
+            "submitted": False,
+        }
+        self.state["greeted"][identity] = record
+        self.save()
+        self.rpc.call("thread/queue/add", {
+            "threadId": identity, "clientUserMessageId": identifier, "input": record["input"],
+        })
+        record["submitted"] = True
+        return identifier
+
+    def withdraw(self, request):
+        for identifier in self.queued(request["thread"], request["id"], request["input"]):
             self.rpc.call("thread/queue/delete", {
                 "threadId": request["thread"], "queuedSubmissionId": identifier,
             })
@@ -296,8 +388,8 @@ class Delivery:
     def sweep(self, reset=False):
         count = 0
         if reset:
-            for task in self.state["tasks"].values():
-                task["done"] = True
+            # Cleaning up after an interrupted coordinator withdraws stale requests.
+            # It is not evidence that the owner's work finished, so tasks keep their state.
             for request in self.state["requests"].values():
                 request["expires"] = 0
             self.save()
@@ -324,20 +416,17 @@ class Delivery:
             if not previous.get("submitted"):
                 raise DeliveryError("delivery was not confirmed; cancel this request before revising it")
             return previous["id"]  # Retrying never wakes the worker twice.
-        thread = read_thread(self.rpc, identity, self.workspace)
-        if thread["status"]["type"] not in ("active", "idle") or thread.get("canAcceptDirectInput") is False:
-            raise DeliveryError("thread cannot receive input; nothing queued for a future client")
+        self.reachable(identity)
         identifier = str(uuid.uuid4())
         until = datetime.fromtimestamp(self.now + ttl, timezone.utc).isoformat(timespec="seconds")
-        message = f"[orchestrator, not the owner; task={task}; request={key}; expires={until}] {text}"
-        if identity not in self.state["briefed"]:
-            inbox = delivery_dir(self.workspace) / "inbox.jsonl"
-            message += (
-                "\nReply only if needed, by appending one JSON line to "
-                f"{inbox}: " + json.dumps({"from": f"codex:{identity}", "task": task, "text": "<reply>"})
-                + ". This coordination request does not expand your owner's task. "
-                "If it has expired or the task is finished, disregard it."
-            )
+        # reply_to travels with every request, so two open requests to one task stay
+        # distinguishable in the answers.
+        message = (
+            f"[orchestrator, not the owner; task={task}; request={key}; reply_to={identifier}; "
+            f"expires={until}] {text}\n"
+            + self.reply_protocol(identity, task, identifier)
+            + ". Answer only if the request asks for one; if it has expired, disregard it."
+        )
         request = {
             "id": identifier, "thread": identity, "task": task, "key": key,
             "text": text, "input": [{"type": "text", "text": message, "text_elements": []}],
@@ -349,8 +438,6 @@ class Delivery:
             "threadId": identity, "clientUserMessageId": identifier, "input": request["input"],
         })
         request["submitted"] = True
-        if identity not in self.state["briefed"]:
-            self.state["briefed"].append(identity)
         return identifier
 
 
@@ -360,6 +447,13 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     lookup = commands.add_parser("thread", help="resolve an explicit UUID or a resume PID")
     lookup.add_argument("identity")
+    introduce = commands.add_parser("greet", help="introduce the coordinator to a session, once")
+    introduce.add_argument("identity", type=thread_id)
+    introduce.add_argument("text")
+    commands.add_parser("inbox", help="print the folder's coordinator directory")
+    commands.add_parser("mail", help="print unacknowledged replies; consumes nothing")
+    handled = commands.add_parser("ack", help="record replies through line N as handled")
+    handled.add_argument("through", type=int)
     for name in ("begin", "send", "finish", "cancel"):
         command = commands.add_parser(name)
         command.add_argument("identity", type=thread_id)
@@ -381,6 +475,26 @@ def main():
     if args.command == "send" and not 1 <= args.ttl <= 3600:
         raise DeliveryError("ttl must be between 1 and 3600 seconds")
     directory = delivery_dir(args.workspace)
+    if args.command == "inbox":
+        # One resolver for both languages: the shell helpers ask rather than repeat the
+        # digest, so a symlinked folder or a custom home cannot split the two views.
+        print(directory)
+        return
+    if args.command == "mail":
+        lines = inbox_lines(args.workspace)
+        seen = acknowledged(args.workspace, len(lines))
+        for number, line in enumerate(lines[seen:], seen + 1):  # `ack` takes this number
+            print(f"{number}\t{line}")
+        return
+    if args.command == "ack":
+        with state_file(directory) as (state, save):
+            answered, uncorrelated = acknowledge(args.workspace, state, args.through)
+            save()
+            # The position moves only after the answers it explains are durable.
+            (directory / "inbox.ack").write_text(f"{args.through}\n")
+        print(f"acknowledged through {args.through}: "
+              f"{len(answered)} answered ({', '.join(answered) or 'none'}), {uncorrelated} other")
+        return
     if args.command in ("sweep", "reset") and not (directory / "delivery.json").exists():
         return
     with state_file(directory) as (state, save):
@@ -392,7 +506,9 @@ def main():
             return
         with RPC() as rpc:
             delivery = Delivery(state, rpc, args.workspace, save=save)
-            if args.command == "begin":
+            if args.command == "greet":
+                print(delivery.greet(args.identity, args.text) or "already introduced")
+            elif args.command == "begin":
                 delivery.begin(args.identity, args.task)
             elif args.command == "send":
                 print(delivery.send(args.identity, args.task, args.key, args.text, args.ttl))
