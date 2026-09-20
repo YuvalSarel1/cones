@@ -3,8 +3,81 @@
 version: 1
 states:
   - id: list
-    title: "Rows"
-    when: "The dashboard list has focus. Text editing gets first refusal in the composer."
+    title: "List navigation"
+    when: "Shared controls while the dashboard list has focus. Row-specific actions are described below."
+    sections:
+      - title: "List navigation"
+        when: "Shared controls while the dashboard list has focus. Row-specific actions are described below."
+        bindings:
+          - action: up
+          - action: down
+          - action: tab
+          - action: right
+          - action: left
+          - action: cancel
+          - action: quit
+          - action: group
+          - action: history
+          - action: filter
+          - action: recent
+          - action: refresh
+          - action: split
+          - action: guide
+          - action: page_up
+          - action: page_down
+      - title: "Session rows"
+        when: "An agent session is selected in the main list, with no instruction typed."
+        bindings:
+          - action: enter
+            description: "Join the selected session when its harness supports it; shift or alt opens fullscreen."
+          - action: stop
+            description: "Press twice to confirm the displayed action: stop, delete or forget, depending on the session."
+          - action: rename
+          - action: fork
+          - action: mcp
+      - title: "Terminal rows"
+        when: "An existing shell terminal is selected in the list."
+        bindings:
+          - action: enter
+            description: "Focus the terminal; shift or alt opens fullscreen. Keys inside the shell are listed under Terminal."
+          - action: stop
+            description: "Press twice to close the terminal."
+      - title: "Folder rows"
+        when: "A pinned folder heading is selected. Its composer starts new work in that directory."
+        bindings:
+          - action: enter
+            description: "With an empty instruction, show how to start work here. Type an instruction first to launch an agent in this folder."
+          - action: stop
+            description: "Press twice to remove the folder from the dashboard. Its files stay on disk."
+          - action: cycle
+            description: "Choose a harness or terminal for new work in this folder."
+          - action: settings
+      - title: "Job rows"
+        when: "A saved job is selected on the jobs screen, with no instruction typed."
+        bindings:
+          - action: enter
+            description: "Request a run of the selected job. On new job, open the job form."
+          - action: edit_job
+          - action: stop
+            description: "Press twice to stop the job's latest running run. If none is running, delete the job."
+      - title: "Run rows"
+        when: "A supervised run is selected, with no instruction typed."
+        bindings:
+          - action: enter
+            description: "Join a running run's session, or follow its logs if it cannot be joined. Open the output of a finished run."
+          - action: stop
+            description: "Press twice to stop a running run or hide a finished run from the dashboard."
+      - title: "Composer"
+        when: "The instruction or terminal-command field below the list. Folder prompts and history search have their own controls."
+        bindings:
+          - action: enter
+            description: "Submit the typed instruction or command. Shift or alt inserts a line break in a nonempty draft."
+          - action: cycle
+          - action: settings
+          - action: paste_image
+          - action: mcp
+          - action: cancel
+            description: "Clear the draft. Text editing shortcuts are listed under Text editing."
     bindings:
       - keys: ["up"]
         action: up
@@ -83,7 +156,7 @@ states:
         description: "Move down a page while history is visible."
   - id: menu
     title: "Menu"
-    when: "A dashboard menu button is selected."
+    when: "A jobs, config or help menu button is selected. Shared List navigation controls also apply."
     extends: list
     bindings:
       - keys: ["left"]
@@ -92,9 +165,12 @@ states:
       - keys: ["right"]
         action: right
         description: "Select the next menu button, wrapping around."
+      - keys: ["enter", "shift+enter", "alt+enter"]
+        action: enter
+        description: "Open the selected menu screen; shift or alt opens fullscreen."
   - id: history
-    title: "History"
-    when: "A history row is selected. Typing edits the history search."
+    title: "History rows"
+    when: "A past conversation is selected. Typing searches history. Shared List navigation controls also apply."
     extends: list
     bindings:
       - keys: ["shift+tab"]
@@ -106,9 +182,12 @@ states:
       - keys: ["esc"]
         action: cancel
         description: "Clear the search, then close history."
+      - keys: ["ctrl+y"]
+        action: fork
+        description: "Fork the selected past conversation when its harness supports it."
   - id: folder
     title: "Add folder"
-    when: "The add-folder prompt is selected."
+    when: "The add-folder prompt is selected. Type a directory path; shared List navigation controls also apply."
     extends: list
     bindings:
       - keys: ["tab"]
@@ -122,7 +201,7 @@ states:
         description: "Clear the typed path first."
   - id: folder_suggestion
     title: "Folder suggestions"
-    when: "A suggested folder is selected."
+    when: "A suggested folder is selected below the add-folder prompt. Shared List navigation controls also apply."
     extends: list
     bindings:
       - keys: ["enter"]

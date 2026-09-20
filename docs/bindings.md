@@ -16,6 +16,7 @@ The file has `version: 1` and a `states` list. Each state has:
 | `when` | Explanation of when the state applies, shown in Help. |
 | `extends` | Optional state whose bindings are inherited. |
 | `bindings` | Keys, action names and explanations for this state. |
+| `sections` | Optional Help sections grouping actions by selected row type or task. |
 
 Each binding has a `keys` list, an `action` and a `description`. For example:
 
@@ -27,7 +28,15 @@ Each binding has a `keys` list, an `action` and a `description`. For example:
 
 Aliases share one action and description. In a state with `extends`, a local
 key replaces that inherited key; other inherited keys remain available.
-Help includes the effective inherited bindings.
+Help shows list controls once, split into navigation, sessions, terminals,
+folders, jobs, runs and the composer. Menu, history and folder-entry sections
+show their specific controls and refer back to shared navigation.
+
+A Help section has a `title`, a `when` explanation and `bindings` entries
+referencing an `action` in the state's bindings. Each entry can override the
+Help `description` for that context. Shortcut labels come from the referenced
+action's keys, so remapping an action updates every section that uses it.
+Sections only organize Help; they do not change input handling.
 
 Keys use lowercase names: `up`, `down`, `left`, `right`, `home`, `end`,
 `pageup`, `pagedown`, `enter`, `esc`, `tab`, `backspace`, `delete`, `space`
@@ -40,7 +49,8 @@ same input that way. Unlisted modifier combinations do not match a binding.
 Loading rejects unknown fields, states, actions and key names, unsupported
 versions, repeated modifiers, duplicate states or keys within a state, missing
 parent states and inheritance cycles. Keys and descriptions cannot be empty;
-states also need a title and condition. Action names refer to Rust handlers:
+states and Help sections also need a title and condition. Section references
+must name an action defined in that state. Action names refer to Rust handlers:
 adding a new behavior still requires code.
 
 ## Input precedence

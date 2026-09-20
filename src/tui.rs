@@ -1147,9 +1147,9 @@ fn guide_lines(columns: u16, find: &str) -> Vec<Line<'static>> {
                 0,
                 columns.max(1) as usize,
             ));
-            if let Some(state) = bindings().states.iter().find(|state| state.title == *what) {
+            if let Some(condition) = bindings().condition(what) {
                 lines.extend(hang(
-                    vec![Span::styled(state.when.clone(), dim())],
+                    vec![Span::styled(condition.to_owned(), dim())],
                     0,
                     columns.max(1) as usize,
                 ));
@@ -1685,7 +1685,7 @@ fn job_cell(
                 .map_or_else(|| "-".into(), fleet::age),
             dim(),
         ),
-        "folder" => (fleet::tilde(&j.cwd), dim()),
+        "folder" => (elide_folder(fleet::tilde(&j.cwd)), dim()),
         _ => ("-".into(), dim()),
     }
 }
@@ -1736,7 +1736,7 @@ fn session_cells(
                 if c == "branch" {
                     (branch.unwrap_or("-").into(), dim())
                 } else if c == "folder" {
-                    (folder_label(&s.cwd, worktree), dim())
+                    (folder_cell(&s.cwd, worktree), dim())
                 } else {
                     cell(c, s, by_state, spark)
                 }
@@ -1761,7 +1761,7 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
         "age" => (since(s.started), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
-        "folder" => (fleet::tilde(&s.cwd), dim()),
+        "folder" => (elide_folder(fleet::tilde(&s.cwd)), dim()),
         "last_active" => (since(s.last_activity), dim()),
         "cost" => (
             crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
@@ -2568,13 +2568,55 @@ fn worktree_root(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// A folder as the list shows it, with `⑂` when it is a linked worktree.
+/// The widest a folder cell grows before it loses its middle.
+const FOLDER_WIDTH: usize = 28;
+
+/// A folder as the list names it, with `⑂` when it is a linked worktree.
+///
+/// This is also a folder row's identity, so it never drops anything: two folders that share
+/// a leading path and a name must not read as one row.
 fn folder_label(dir: &Path, worktree: bool) -> String {
     let shown = fleet::tilde(dir);
     if worktree {
         format!("{shown} ⑂")
     } else {
         shown
+    }
+}
+
+/// A folder as a table cell shows it, short enough to leave the later columns in view.
+///
+/// A column stays as wide as its widest cell for the rest of the session, so a single
+/// temporary directory or nested worktree would push every row's remaining columns right.
+/// Past `FOLDER_WIDTH` the cell keeps as much of the leading path as fits and the folder's
+/// own name, which is what the eye reads, and elides what lies between them.
+fn folder_cell(dir: &Path, worktree: bool) -> String {
+    let shown = elide_folder(fleet::tilde(dir));
+    if worktree {
+        format!("{shown} ⑂")
+    } else {
+        shown
+    }
+}
+
+fn elide_folder(shown: String) -> String {
+    let parts: Vec<_> = shown.split('/').collect();
+    match parts.as_slice() {
+        // ponytail: counts chars, not display width; a path of wide glyphs still overflows.
+        [head @ .., leaf] if shown.chars().count() > FOLDER_WIDTH && head.len() > 1 => {
+            let room = FOLDER_WIDTH.saturating_sub("/…/".chars().count() + leaf.chars().count());
+            let mut kept = 0;
+            let mut used = 0;
+            for part in head {
+                used += part.chars().count() + usize::from(kept > 0);
+                if used > room {
+                    break;
+                }
+                kept += 1;
+            }
+            format!("{}/…/{leaf}", head[..kept.max(1)].join("/"))
+        }
+        _ => shown,
     }
 }
 
@@ -6923,6 +6965,24 @@ struct StateBindings {
     when: String,
     extends: Option<BindingState>,
     bindings: Vec<KeyBinding>,
+    #[serde(default)]
+    sections: Vec<BindingSection>,
+}
+
+/// Help can distinguish selected row types without creating new input states.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingSection {
+    title: String,
+    when: String,
+    bindings: Vec<BindingExplanation>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BindingExplanation {
+    action: KeyAction,
+    description: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -7033,6 +7093,29 @@ impl KeyBindings {
                     .with_context(|| format!("missing binding state {id:?}"))?
                     .extends;
             }
+            for section in &state.sections {
+                anyhow::ensure!(
+                    !section.title.trim().is_empty() && !section.when.trim().is_empty(),
+                    "help section needs a title and condition"
+                );
+                for explanation in &section.bindings {
+                    anyhow::ensure!(
+                        state
+                            .bindings
+                            .iter()
+                            .any(|b| b.action == explanation.action),
+                        "help section references missing action {:?}",
+                        explanation.action
+                    );
+                    anyhow::ensure!(
+                        explanation
+                            .description
+                            .as_ref()
+                            .is_none_or(|s| !s.trim().is_empty()),
+                        "help explanation needs a description"
+                    );
+                }
+            }
         }
         Ok(map)
     }
@@ -7086,9 +7169,65 @@ fn binding_label(key: &str) -> String {
 }
 
 impl KeyBindings {
+    fn condition(&self, title: &str) -> Option<&str> {
+        self.states.iter().find_map(|state| {
+            if state.title == title {
+                Some(state.when.as_str())
+            } else {
+                state
+                    .sections
+                    .iter()
+                    .find(|s| s.title == title)
+                    .map(|s| s.when.as_str())
+            }
+        })
+    }
+
     fn guide(&self) -> Vec<(String, String)> {
-        let mut rows = Vec::new();
+        let mut rows = vec![
+            (String::new(), "Editing bindings".into()),
+            (
+                "source".into(),
+                "Edit shortcuts in assets/bindings.yaml, then rebuild and restart cones.".into(),
+            ),
+            (
+                "availability".into(),
+                "No user override file, jobs.yaml setting or in-app binding editor yet.".into(),
+            ),
+            (
+                "native return keys".into(),
+                "Edit viewer.input.return_to_list in assets/harnesses/ definitions, then rebuild."
+                    .into(),
+            ),
+        ];
         for state in &self.states {
+            if !state.sections.is_empty() {
+                for section in &state.sections {
+                    rows.push((String::new(), section.title.clone()));
+                    for explanation in &section.bindings {
+                        for binding in state
+                            .bindings
+                            .iter()
+                            .filter(|b| b.action == explanation.action)
+                        {
+                            rows.push((
+                                binding
+                                    .keys
+                                    .iter()
+                                    .map(|key| binding_label(key))
+                                    .collect::<Vec<_>>()
+                                    .join(" / "),
+                                explanation
+                                    .description
+                                    .as_ref()
+                                    .unwrap_or(&binding.description)
+                                    .clone(),
+                            ));
+                        }
+                    }
+                }
+                continue;
+            }
             rows.push((String::new(), state.title.clone()));
             let mut seen = HashSet::new();
             let mut current = Some(state);
@@ -7107,7 +7246,9 @@ impl KeyBindings {
                 }
                 current = source
                     .extends
-                    .and_then(|id| self.states.iter().find(|s| s.id == id));
+                    .and_then(|id| self.states.iter().find(|s| s.id == id))
+                    // These controls are documented once, by row type.
+                    .filter(|s| s.sections.is_empty());
             }
         }
         rows
@@ -12286,34 +12427,6 @@ impl App {
         id
     }
 
-    fn can_fork_selected(&self) -> bool {
-        let supported =
-            |name: &str| harness::by_name(name).is_some_and(|s| s.operations.fork.is_some());
-        match self.selected().map(|r| &r.kind) {
-            Some(Kind::History(key)) => self
-                .history
-                .row(key)
-                .is_some_and(|e| !e.archived && supported(&e.key.harness)),
-            Some(Kind::Session(id, _))
-                if !self.pending.iter().any(|p| &p.session.session_id == id) =>
-            {
-                self.data
-                    .sessions
-                    .iter()
-                    .find(|s| &s.session_id == id)
-                    .is_some_and(|s| {
-                        supported(&s.harness)
-                            && !s
-                                .pid
-                                .is_some_and(|pid| s.session_id == format!("{}-{pid}", s.harness))
-                            && (s.transcript_path.is_some()
-                                || (s.harness == "opencode" && s.session_id.starts_with("ses_")))
-                    })
-            }
-            _ => false,
-        }
-    }
-
     fn fork_source(&self) -> Option<history::Entry> {
         match self.selected().map(|r| &r.kind) {
             Some(Kind::History(key)) => self.history.row(key).cloned(),
@@ -12884,7 +12997,12 @@ impl App {
         let show = |t: &str| expand(t, label).replace('\n', "⏎");
         let shown = show(&self.text);
         let caret = show(&self.text[..snap(&self.text, self.caret)]).len();
-        spans.extend(typed(&shown, caret, "Type an instruction…"));
+        let placeholder = if self.menu_is("jobs") || self.on_new_job() {
+            "Type to create a new job…"
+        } else {
+            "Type to start a new agent…"
+        };
+        spans.extend(typed(&shown, caret, placeholder));
         Line::from(spans)
     }
 
@@ -12940,16 +13058,75 @@ impl App {
         line
     }
 
-    /// Drop global hints from the end until they fit; keep the selected row's action and exit key.
+    fn two_line_footer(&self) -> bool {
+        self.focus.is_none() && !self.transcript.focused && matches!(self.mode, Mode::Normal)
+    }
+
+    fn footer_lines(&self) -> Vec<Line<'static>> {
+        let mut line = self.hint_line();
+        if !self.two_line_footer() {
+            return vec![line];
+        }
+        let context = if self.history_selected() {
+            "History"
+        } else if self.on_new_folder() || self.on_suggestion().is_some() {
+            "Add folder"
+        } else if self.terminal_selected() {
+            "New terminal"
+        } else if !self.text.is_empty() {
+            if self.menu_is("jobs") || self.on_new_job() {
+                "New job"
+            } else {
+                "New agent"
+            }
+        } else {
+            match self.selected().map(|r| &r.kind) {
+                Some(Kind::Session(..)) => "Session",
+                Some(Kind::Run(..)) => "Run",
+                Some(Kind::Job(_) | Kind::NewJob) => "Job",
+                Some(Kind::Folder(_)) => "Folder",
+                _ => "Menu",
+            }
+        };
+        line.spans
+            .insert(0, Span::styled(format!("{context}  "), bold()));
+        let mut keys = vec![];
+        if self.focusable_viewer().is_some()
+            || self.panel_shown()
+            || self.transcript_target().is_some()
+        {
+            keys.push(("tab", "pane"));
+        }
+        keys.push(("↑↓", "select"));
+        keys.push(("ctrl+g", "help"));
+        let room = self.hint_width().saturating_sub(12) as usize;
+        while keys.len() > 1 && hints(&keys).width() > room {
+            keys.remove(keys.len() - 2);
+        }
+        let mut navigation = hints(&keys);
+        navigation
+            .spans
+            .insert(0, Span::styled("Navigation  ", bold()));
+        vec![line, navigation]
+    }
+
+    /// Show only the current selection or draft's controls.
     fn mode_hints(&self, taken: usize) -> Line<'static> {
         let start = if !self.terminal_selected() && (self.menu_is("jobs") || self.on_new_job()) {
             "new job with it".to_owned()
         } else {
-            format!(
-                "start {} in {}",
-                self.launch_name(),
-                fleet::tilde(&self.target_dir())
-            )
+            format!("start {}", self.launch_name())
+        };
+        let compact = |mut keys: Vec<(&str, &str)>| {
+            let room = (self.hint_width() as usize)
+                .saturating_sub(taken + 14)
+                .min(62);
+            let mut line = hints(&keys);
+            while keys.len() > 1 && line.width() > room {
+                keys.pop();
+                line = hints(&keys);
+            }
+            line
         };
         match &self.mode {
             Mode::Filter => hints(&[
@@ -12993,22 +13170,22 @@ impl App {
             Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
             Mode::Pick(_) => hints(&[("↑ ↓", "choose"), ("enter", "use"), ("esc", "close")]),
             Mode::Normal if self.history_selected() => {
-                let mut keys = vec![("↑ ↓", "select")];
+                let mut keys = vec![];
                 if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
                     keys.push(("enter", self.enter_label()));
-                    keys.push(("tab", "pane"));
-                }
-                if !self.filter.text.is_empty() {
-                    keys.push(("esc", "clear filter"));
                 }
                 let other = self.history.search.other();
-                let switch = format!("search by {}", other.label());
+                let switch = format!("{} search", other.label());
                 keys.push(("shift+tab", &switch));
-                keys.push(("ctrl+h", "hide history"));
-                if self.can_fork_selected() {
-                    keys.push(("ctrl+y", "fork"));
-                }
-                hints(&keys)
+                keys.push((
+                    "esc",
+                    if self.filter.text.is_empty() {
+                        "back"
+                    } else {
+                        "clear search"
+                    },
+                ));
+                compact(keys)
             }
             Mode::Normal if self.on_suggestion().is_some() => hints(&[
                 ("enter", "add folder"),
@@ -13028,66 +13205,32 @@ impl App {
                 ),
             ]),
             Mode::Normal if self.terminal_selected() => {
-                let mut keys = vec![("enter", start.as_str())];
-                if self.focusable_viewer().is_some() {
-                    keys.push(("tab", "pane"));
-                }
-                if let Some(verb) = self.stop_verb() {
-                    keys.push(("ctrl+x", verb));
-                }
-                keys.push(("shift+tab", "session"));
-                keys.push(("esc", "back"));
-                hints(&keys)
+                compact(vec![("enter", start.as_str()), ("shift+tab", "harness")])
             }
             Mode::Normal if !self.text.is_empty() => {
-                hints(&[("enter", &start), ("shift+tab", "session")])
+                let mut keys = vec![("enter", start.as_str())];
+                if self.harness_scope().is_some() {
+                    keys.push(("ctrl+o", "settings"));
+                }
+                keys.push(("shift+tab", "harness"));
+                compact(keys)
             }
             Mode::Normal => {
                 let mut keys = vec![];
-                if self.selected().is_some() {
+                let folder = matches!(self.selected().map(|r| &r.kind), Some(Kind::Folder(_)));
+                if self.selected().is_some() && !folder {
                     keys.push(("enter", self.enter_label()));
-                }
-                if !self.jobs_view {
-                    keys.push((
-                        "ctrl+h",
-                        if self.history.visible {
-                            "hide history"
-                        } else {
-                            "history"
-                        },
-                    ));
                 }
                 if self.menu_is(MENU[self.menu].0) {
                     keys.push(("← →", "pick"));
                 }
-                if let Some(verb) = self.stop_verb() {
-                    keys.push(("ctrl+x", verb));
-                }
-                if self.harness_scope().is_some() {
-                    keys.push(("ctrl+o", "model"));
-                }
-                if self.can_fork_selected() {
-                    keys.push(("ctrl+y", "fork"));
-                }
                 if let Some(Kind::Job(_)) = self.selected().map(|r| &r.kind) {
                     keys.push(("ctrl+e", "edit"));
                 }
-                if self.focusable_viewer().is_some()
-                    || self.panel_shown()
-                    || self.transcript_target().is_some()
-                {
-                    keys.push(("tab", "pane"));
-                    keys.push(("ctrl+\\", "layout"));
+                if let Some(verb) = self.stop_verb() {
+                    keys.push(("ctrl+x", verb));
                 }
-                keys.push(("shift+tab", "session"));
-                keys.push(("esc", if self.jobs_view { "back" } else { "quit" }));
-                let room = (self.hint_width() as usize).saturating_sub(taken);
-                let mut line = hints(&keys);
-                while keys.len() > 2 && line.width() > room {
-                    keys.remove(keys.len() - 2);
-                    line = hints(&keys);
-                }
-                line
+                compact(keys)
             }
         }
     }
@@ -14176,7 +14319,7 @@ impl App {
         let [body, foot, hint] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(rows),
-            Constraint::Length(1),
+            Constraint::Length(if self.two_line_footer() { 2 } else { 1 }),
         ])
         .areas(pane);
         match (&mut self.mode, name) {
@@ -14261,9 +14404,12 @@ impl App {
         let (input, rows) = self.framed(text, area.width);
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
-            Constraint::Min(5),
+            Constraint::Min(if self.two_line_footer() { 4 } else { 5 }),
             Constraint::Length(rows),
-            Constraint::Length(self.foot_rows()),
+            Constraint::Length(
+                self.foot_rows()
+                    .max(if self.two_line_footer() { 2 } else { 1 }),
+            ),
         ])
         .areas(area);
         frame.render_widget(
@@ -14303,7 +14449,7 @@ impl App {
         // A focused viewer's keys go in the list's own hint row: the pane's last row is the
         // harness's status line, and drawing over it hid the permission mode it ends with.
         if !(self.split_active() && self.panel_focused()) {
-            frame.render_widget(Paragraph::new(self.hint_line()), foot);
+            frame.render_widget(Paragraph::new(self.footer_lines()), foot);
         }
     }
 
@@ -15371,7 +15517,10 @@ mod tests {
     #[test]
     fn bindings_remap_lookup_and_help_together_without_changing_other_states() {
         let source = include_str!("../assets/bindings.yaml");
-        let changed = source.replacen("\"ctrl+g\"", "\"ctrl+j\"", 1);
+        let changed =
+            source
+                .replacen("\"ctrl+g\"", "\"ctrl+j\"", 1)
+                .replacen("\"ctrl+x\"", "\"ctrl+w\"", 1);
         assert_ne!(source, changed);
         let map = KeyBindings::parse(&changed).unwrap();
         assert_eq!(
@@ -15422,6 +15571,35 @@ mod tests {
                 .iter()
                 .any(|(key, description)| key == "ctrl+g" && description == "Close Help.")
         );
+        assert_eq!(
+            map.action(
+                BindingState::List,
+                KeyCode::Char('w'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Stop
+        );
+        for (title, expected) in [
+            ("Session rows", "forget"),
+            ("Terminal rows", "close the terminal"),
+            ("Folder rows", "files stay on disk"),
+            ("Job rows", "delete the job"),
+            ("Run rows", "hide a finished run"),
+        ] {
+            let section: Vec<_> = guide
+                .iter()
+                .skip_while(|(key, text)| !key.is_empty() || text != title)
+                .skip(1)
+                .take_while(|(key, _)| !key.is_empty())
+                .collect();
+            assert!(
+                section
+                    .iter()
+                    .any(|(key, text)| key == "ctrl+w" && text.contains(expected)),
+                "{title}: {section:?}"
+            );
+            assert!(section.iter().all(|(key, _)| key != "ctrl+x"), "{title}");
+        }
     }
 
     #[test]
@@ -15464,6 +15642,16 @@ states:
                 "title: Rows",
                 "title: Rows\n    extends: list",
                 "inheritance cycle",
+            ),
+            (
+                "title: Rows",
+                "title: Rows\n    sections:\n      - title: Sessions\n        when: A session is selected.\n        bindings:\n          - action: stop",
+                "missing action",
+            ),
+            (
+                "title: Rows",
+                "title: Rows\n    sections:\n      - title: ''\n        when: A session is selected.\n        bindings: []",
+                "title and condition",
             ),
         ] {
             let changed = source.replace(from, to);
@@ -15558,12 +15746,35 @@ states:
                     .map(|key| binding_label(key))
                     .collect::<Vec<_>>()
                     .join(" / ");
-                assert!(
-                    guide
-                        .iter()
-                        .any(|(key, description)| key == &label
+                if state.sections.is_empty() {
+                    assert!(
+                        guide.iter().any(|(key, description)| key == &label
                             && description == &binding.description)
-                );
+                    );
+                } else {
+                    let explanations: Vec<_> = state
+                        .sections
+                        .iter()
+                        .flat_map(|s| &s.bindings)
+                        .filter(|b| b.action == binding.action)
+                        .collect();
+                    assert!(
+                        !explanations.is_empty(),
+                        "{:?} has no Help section",
+                        binding.action
+                    );
+                    for explanation in explanations {
+                        let description = explanation
+                            .description
+                            .as_ref()
+                            .unwrap_or(&binding.description);
+                        assert!(
+                            guide
+                                .iter()
+                                .any(|(key, text)| key == &label && text == description)
+                        );
+                    }
+                }
             }
         }
         let d = dir();
@@ -15581,9 +15792,21 @@ states:
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(
-            text.contains("Rows") && text.contains("Type to search"),
+            text.contains("List navigation") && text.contains("Type to search"),
             "{text}"
         );
+        for phrase in [
+            "Editing bindings",
+            "assets/bindings.yaml",
+            "rebuild and restart",
+            "No user override",
+        ] {
+            assert!(text.contains(phrase), "{phrase}: {text}");
+        }
+        let matches = guide_rows("job rows delete");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].1, "Job rows");
+        assert_eq!(matches[1].0, "ctrl+x");
         assert!(
             text.contains("↑↓ scroll · pgup/dn page · esc back"),
             "{text}"
@@ -17306,7 +17529,7 @@ states:
         app.rebuild();
         let before = app.data.summary(0).to_string();
         assert!(app.history.rows.is_empty());
-        assert!(app.hint_line().to_string().contains("ctrl+h"));
+        assert!(app.footer_lines()[1].to_string().contains("ctrl+g help"));
         app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
         history_until(&mut app, &mut terminal, |a| {
             a.history.ready && a.history.rows.iter().any(|r| r.entry.columns.is_some())
@@ -17630,7 +17853,7 @@ states:
         assert!(app.mode_line().to_string().starts_with("history words / "));
         let keys = app.mode_hints(0).to_string();
         assert!(
-            keys.contains("shift+tab") && keys.contains("search by meaning"),
+            keys.contains("shift+tab") && keys.contains("meaning search"),
             "{keys}"
         );
 
@@ -17645,7 +17868,7 @@ states:
         );
         let keys = app.mode_hints(0).to_string();
         assert!(
-            keys.contains("shift+tab") && keys.contains("search by words"),
+            keys.contains("shift+tab") && keys.contains("words search"),
             "{keys}"
         );
         history_until(&mut app, &mut terminal, |a| {
@@ -19437,7 +19660,11 @@ states:
                 assert_eq!(app.text, "keep this agent instruction");
             }
             app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
-            assert!(app.hint_line().to_string().contains("tab pane"));
+            assert!(
+                app.footer_lines()
+                    .iter()
+                    .any(|line| line.to_string().contains("tab pane"))
+            );
         }
     }
 
@@ -20254,9 +20481,7 @@ states:
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            hint.starts_with(
-                "enter start job · ctrl+x delete · ctrl+e edit · shift+tab session · esc back"
-            ),
+            hint.starts_with("enter start job · ctrl+e edit · ctrl+x delete"),
             "a job row offers its own keys first: {hint}"
         );
         app.stop();
@@ -20458,10 +20683,7 @@ states:
         );
         let hint = text(app.hint_line());
         assert!(
-            hint.starts_with("enter jobs")
-                && hint.contains("ctrl+h history")
-                && hint.contains("← → pick")
-                && hint.ends_with("esc quit"),
+            hint == "enter jobs · ← → pick",
             "an empty dashboard opens on the menu row, jobs picked: {hint}"
         );
         app.text = "fix the tests".into();
@@ -20487,11 +20709,8 @@ states:
                 composer.starts_with(&format!("{prefix} \u{203a} ")),
                 "{composer}"
             );
-            assert!(
-                hint.starts_with(&format!("enter start {name} in ")),
-                "{hint}"
-            );
-            assert!(hint.contains("shift+tab session"), "{hint}");
+            assert!(hint.starts_with(&format!("enter start {name}")), "{hint}");
+            assert!(hint.contains("shift+tab harness"), "{hint}");
         }
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(text(app.composer()).starts_with(">_ codex \u{203a} "));
@@ -20849,7 +21068,7 @@ states:
         );
         assert!(text.contains("sonnet"), "{text}");
         assert!(
-            text.contains(&fleet::tilde(&cwd)),
+            text.contains(&elide_folder(fleet::tilde(&cwd))),
             "the jobs screen shows each job's directory: {text}"
         );
         let names = app
@@ -20865,13 +21084,7 @@ states:
                 && !names.contains("context"),
             "the jobs screen has a job's columns, not a session's: {names}"
         );
-        let hint: String = app
-            .hint_line()
-            .spans
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect();
-        assert!(hint.ends_with("esc back"), "{hint}");
+        assert!(app.footer_lines()[1].to_string().contains("ctrl+g help"));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.jobs_view, "esc leaves the jobs screen");
         assert!(app.rows.iter().all(|r| !matches!(r.kind, Kind::Job(_))));
@@ -21162,7 +21375,9 @@ states:
         let screen = rows(&t, 80);
         assert!(screen[0].starts_with("VIEW"), "{screen:#?}");
         assert!(
-            !screen.iter().any(|r| r.contains("Type an instruction…")),
+            !screen
+                .iter()
+                .any(|r| r.contains("Type to start a new agent…")),
             "the composer is not drawn under a viewer: {screen:#?}"
         );
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
@@ -21177,7 +21392,9 @@ states:
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 80);
         assert!(
-            screen.iter().any(|r| r.contains("Type an instruction…")),
+            screen
+                .iter()
+                .any(|r| r.contains("Type to start a new agent…")),
             "{screen:#?}"
         );
         assert!(!screen[0].starts_with("VIEW"), "{screen:#?}");
@@ -21909,8 +22126,8 @@ states:
             "which is the row the harness ruled: {screen:#?}"
         );
         assert!(
-            cells(&t, 28, 0..100).starts_with("enter"),
-            "the hint line is right under it: {screen:#?}"
+            cells(&t, 28, 0..100).starts_with("Session  enter"),
+            "the session hints are right under it: {screen:#?}"
         );
         assert_eq!(
             cells(&t, 29, 101..105),
@@ -22064,7 +22281,8 @@ states:
         let screen = rows(&t, 200);
         let left: Vec<String> = (0..30).map(|y| cells(&t, y, 0..list)).collect();
         assert!(
-            left.iter().any(|r| r.contains("Type an instruction…")),
+            left.iter()
+                .any(|r| r.contains("Type to start a new agent…")),
             "the composer is in the list column: {left:#?}"
         );
         assert!(
@@ -22096,8 +22314,8 @@ states:
             left[29]
         );
         assert!(
-            left[29].contains("ctrl+\\ layout"),
-            "the layout key is listed whenever there is a pane: {:?}",
+            left[29].contains("Navigation") && left[29].contains("ctrl+g help"),
+            "navigation and Help stay separate from session actions: {:?}",
             left[29]
         );
 
@@ -22197,9 +22415,9 @@ states:
             "the selected row's viewer stays on view after ctrl+z"
         );
         assert!(
-            cells(&t, 29, 0..list).starts_with("enter "),
-            "the key hints come back: {:?}",
-            cells(&t, 29, 0..list)
+            cells(&t, 28, 0..list).starts_with("Session  enter ")
+                && cells(&t, 29, 0..list).starts_with("Navigation  "),
+            "the two hint groups return after leaving the viewer"
         );
         assert!(
             reversed(&t),
@@ -22248,41 +22466,45 @@ states:
     }
 
     #[test]
-    fn the_hint_line_drops_keys_from_its_end_to_fit_the_list_column() {
+    fn the_footer_separates_selection_launch_and_navigation_and_fits_the_list() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 1);
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
-        app.size = (30, 130);
+        for (width, split) in [(40, false), (80, false), (140, true), (200, false)] {
+            app.split = split;
+            let mut terminal =
+                Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let lines = app.footer_lines();
+            assert_eq!(lines.len(), 2);
+            assert!(lines[0].to_string().starts_with("Session  enter attach"));
+            assert!(lines[1].to_string().starts_with("Navigation  "));
+            assert!(lines[1].to_string().contains("ctrl+g help"));
+            assert!(!lines[0].to_string().contains("ctrl+o"));
+            assert!(!lines[0].to_string().contains("shift+tab"));
+            assert!(
+                lines
+                    .iter()
+                    .all(|line| line.width() <= app.hint_width() as usize)
+            );
+            let screen = rows(&terminal, width as usize);
+            assert!(screen[28].contains("Session  enter attach"), "{screen:?}");
+            assert!(screen[29].contains("Navigation"), "{screen:?}");
+        }
         app.split = false;
-        let wide = app.hint_line().to_string();
-        assert!(wide.ends_with("shift+tab session · esc quit"), "{wide}");
-        let keys = |line: &str| line.split(" · ").map(str::to_owned).collect::<Vec<_>>();
-        app.size = (30, 140);
-        app.split = true;
-        app.filter = Input::new("x".repeat(30));
-        let fitted = app.hint_line();
-        let fitted = Line::from(fitted.spans[1..].to_vec());
-        assert!(fitted.width() <= 70, "{fitted}");
-        let fitted = fitted.to_string();
+        app.text = "fix the tests".into();
+        let lines = app.footer_lines();
         assert!(
-            fitted.starts_with("enter attach · "),
-            "the selected row's key stays: {fitted}"
-        );
-        assert!(fitted.ends_with(" · esc quit"), "quit stays: {fitted}");
-        assert!(
-            keys(&fitted).iter().all(|k| keys(&wide).contains(k)),
-            "only whole keys go: {fitted}"
-        );
-        app.filter = Input::new("one");
-        let filtered = app.hint_line();
-        assert!(filtered.width() <= 70, "{filtered}");
-        assert!(
-            filtered
+            lines[0]
                 .to_string()
-                .starts_with("filter: one  enter attach")
+                .starts_with("New agent  enter start claude")
         );
+        assert!(lines[0].to_string().contains("ctrl+o settings"));
+        assert!(lines[0].to_string().contains("shift+tab harness"));
+        assert!(!lines[0].to_string().contains("ctrl+x"));
+        assert!(lines[1].to_string().contains("ctrl+g help"));
     }
 
     #[test]
@@ -22391,7 +22613,7 @@ states:
         );
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
         assert!(
-            !left(&t).contains("Type an instruction…"),
+            !left(&t).contains("Type to start a new agent…"),
             "the list is on a button, which takes no instruction: {}",
             left(&t)
         );
@@ -22817,13 +23039,13 @@ states:
         app.refresh().unwrap();
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 24)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(
-            app.hint_line().to_string().contains("ctrl+o"),
-            "the composer offers the key: {}",
-            app.hint_line()
-        );
         app.text = "read the tests".to_owned();
         app.caret = app.text.len();
+        assert!(
+            app.hint_line().to_string().contains("ctrl+o"),
+            "the draft offers launch settings: {}",
+            app.hint_line()
+        );
         app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 200).join("\n");
@@ -23943,10 +24165,49 @@ states:
             .iter()
             .find(|r| matches!(r.kind, Kind::History(_)))
             .unwrap();
-        assert_eq!(row.cells[3].0.trim(), fleet::tilde(&entry.cwd));
+        assert_eq!(row.cells[3].0.trim(), folder_cell(&entry.cwd, false));
         assert_eq!(
             row.cells[4].0.trim(),
             fleet::age(entry.last_activity.unwrap())
+        );
+    }
+
+    #[test]
+    fn a_long_folder_cell_keeps_its_leading_path_and_its_own_name() {
+        let home = dirs::home_dir().unwrap();
+        let short = home.join("personal/cones");
+        assert_eq!(folder_cell(&short, false), "~/personal/cones");
+        assert_eq!(folder_cell(&short, true), "~/personal/cones ⑂");
+        let nested = home.join("personal/cones/.claude/worktrees/deck-4");
+        assert_eq!(
+            folder_cell(&nested, true),
+            "~/personal/cones/…/deck-4 ⑂",
+            "the repository and the worktree survive, the plumbing between them does not"
+        );
+        assert_eq!(
+            folder_label(&nested, true),
+            format!("{} ⑂", fleet::tilde(&nested)),
+            "a folder row keeps the whole path, which is its identity"
+        );
+        assert_eq!(
+            folder_cell(
+                Path::new("/private/var/folders/bq/k6h/T/agent-rewind-smoke-4ab/opencode"),
+                false
+            ),
+            "/private/var/…/opencode"
+        );
+        for shown in [
+            folder_cell(&home.join("a/b/c/d/e/f/g/h/i/j/k"), false),
+            folder_cell(Path::new("/one/two/three/four/five/six/seven/eight"), false),
+        ] {
+            assert!(shown.chars().count() <= FOLDER_WIDTH, "{shown}");
+        }
+        // A single segment longer than the budget is left whole: there is nothing to elide.
+        let leaf = "x".repeat(FOLDER_WIDTH * 2);
+        assert_eq!(
+            folder_cell(&home.join(&leaf), false),
+            format!("~/{leaf}"),
+            "no middle to drop"
         );
     }
 
@@ -24552,7 +24813,11 @@ states:
             !screen.iter().any(|r| r.contains("VIEW")),
             "unfocused with the pane off the list is alone: {screen:#?}"
         );
-        assert!(screen.iter().any(|r| r.contains("Type an instruction…")));
+        assert!(
+            screen
+                .iter()
+                .any(|r| r.contains("Type to start a new agent…"))
+        );
         assert_eq!(app.pane, Rect::new(0, 0, 120, 29));
         app.enter().unwrap();
         assert_eq!(app.focus, Some(0));
@@ -24566,7 +24831,11 @@ states:
             "the strip: {:?}",
             screen[29]
         );
-        assert!(!screen.iter().any(|r| r.contains("Type an instruction…")));
+        assert!(
+            !screen
+                .iter()
+                .any(|r| r.contains("Type to start a new agent…"))
+        );
         assert_eq!(app.viewers[0].viewer.screen().size(), (29, 120));
     }
 

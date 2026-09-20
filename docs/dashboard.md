@@ -26,6 +26,11 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 
 Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
 
+The footer has two labeled lines: actions for the current selection or draft,
+then navigation and `ctrl+g help`. Session actions appear while browsing;
+launch settings and harness selection appear while drafting new work. Narrow
+panes drop secondary hints. The composer starts a new agent in the selected folder.
+
 ## Menu
 
 The menu has `jobs`, `config` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size. Column pickers open from Config.
@@ -101,7 +106,13 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 `help` and `ctrl+g` open the built-in guide. The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f` also start search. Each search word must match the shortcut, description or section name, regardless of case. For example, `config reset` finds reset in the Config section. The guide shows the match count and explains how to recover from an empty result.
 
-The guide's shortcuts, state descriptions and action explanations come from the same [YAML definitions](bindings.md) used for input handling. Each section says when its bindings apply. These defaults are embedded at build time; user overrides are not available yet.
+The guide separates shared navigation, session rows, terminal rows, folder
+rows, job rows, run rows, history and the composer. Each section says when its
+controls apply, including what Enter and stop do for that selection.
+
+Shortcuts come from the same [YAML definitions](bindings.md) used for input
+handling. Help explains how to edit `assets/bindings.yaml` and rebuild and
+restart cones. There is no user override file or in-app binding editor yet.
 
 `↑ ↓` and the wheel scroll by rendered lines. `page up` and `page down` scroll a page; `home` and `end` reach the first and last results. Shortcuts stack above their descriptions in narrow panes. Left and right edit a nonempty search, and `enter` keeps its results visible. `esc` or `ctrl+u` clears the search; with an empty search, `esc` or `←` returns to the list. `ctrl+g` closes Help directly.
 
