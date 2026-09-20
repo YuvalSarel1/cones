@@ -72,6 +72,8 @@ states:
         bindings:
           - action: enter
             description: "Submit the typed instruction or command. Shift or alt inserts a line break in a nonempty draft."
+          - action: tab
+            description: "Complete the path being typed, or focus the pane when no path is under the cursor."
           - action: cycle
           - action: settings
           - action: paste_image
@@ -93,7 +95,7 @@ states:
         description: "Cancel a pending stop, clear a draft, leave jobs or quit the empty dashboard."
       - keys: ["tab"]
         action: tab
-        description: "Focus the pane, or leave the jobs screen."
+        description: "Complete a path being typed, otherwise focus the pane or leave the jobs screen."
       - keys: ["left"]
         action: left
         description: "Leave jobs when the composer is empty."

@@ -12545,6 +12545,45 @@ impl App {
         }
     }
 
+    /// The path being typed in the composer, as byte bounds, when tab should complete it.
+    fn composer_path(&self) -> Option<(usize, usize)> {
+        let (text, at) = if self.terminal_selected() {
+            (&self.terminal_input.text, self.terminal_input.at)
+        } else {
+            (&self.text, self.caret)
+        };
+        let at = snap(text, at);
+        let start = text[..at].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+        text[start..at].contains('/').then_some((start, at))
+    }
+
+    /// Grow the composer's path, or list what it could still become.
+    fn complete_composer(&mut self) {
+        let Some((start, at)) = self.composer_path() else {
+            return;
+        };
+        let word = self.composer_text()[start..at].to_owned();
+        let (grown, names) = complete_dir(&word, &self.target_dir());
+        if grown == word {
+            self.status = names.join("  ");
+            return;
+        }
+        let (text, caret) = self.composer_input_mut();
+        text.replace_range(start..at, &grown);
+        *caret = start + grown.len();
+    }
+
+    /// What tab does before it reaches the pane, so the hints and the key agree.
+    fn tab_does(&self) -> Option<&'static str> {
+        if self.on_suggestion().is_some() {
+            return Some("edit path");
+        }
+        if self.on_new_folder() {
+            return (!self.folder.text.is_empty()).then_some("complete");
+        }
+        (!self.on_button() && self.composer_path().is_some()).then_some("complete")
+    }
+
     fn launch_name(&self) -> String {
         if self.terminal_selected() {
             "terminal".into()
@@ -13096,9 +13135,10 @@ impl App {
         line.spans
             .insert(0, Span::styled(format!("{context}  "), bold()));
         let mut keys = vec![];
-        if self.focusable_viewer().is_some()
-            || self.panel_shown()
-            || self.transcript_target().is_some()
+        if self.tab_does().is_none()
+            && (self.focusable_viewer().is_some()
+                || self.panel_shown()
+                || self.transcript_target().is_some())
         {
             keys.push(("tab", "pane"));
         }
@@ -13197,25 +13237,36 @@ impl App {
                 ("tab", "edit path"),
                 ("esc", "back"),
             ]),
-            Mode::Normal if self.on_new_folder() => hints(&[
-                ("enter", "add folder"),
-                ("tab", "complete"),
-                (
+            Mode::Normal if self.on_new_folder() => {
+                let mut keys = vec![("enter", "add folder")];
+                if let Some(does) = self.tab_does() {
+                    keys.push(("tab", does));
+                }
+                keys.push((
                     "esc",
                     if self.folder.text.is_empty() {
                         "quit"
                     } else {
                         "clear"
                     },
-                ),
-            ]),
+                ));
+                hints(&keys)
+            }
             Mode::Normal if self.terminal_selected() => {
-                compact(vec![("enter", start.as_str()), ("shift+tab", "harness")])
+                let mut keys = vec![("enter", start.as_str())];
+                if let Some(does) = self.tab_does() {
+                    keys.push(("tab", does));
+                }
+                keys.push(("shift+tab", "harness"));
+                compact(keys)
             }
             Mode::Normal if !self.text.is_empty() => {
                 let mut keys = vec![("enter", start.as_str())];
                 if self.harness_scope().is_some() {
                     keys.push(("ctrl+o", "settings"));
+                if let Some(does) = self.tab_does() {
+                    keys.push(("tab", does));
+                }
                 }
                 keys.push(("shift+tab", "harness"));
                 compact(keys)
@@ -13811,7 +13862,8 @@ impl App {
                     }
                 } else if self.on_new_folder() {
                     match action {
-                        KeyAction::Tab => {
+                        // An empty path has nothing to complete, so tab reaches the pane.
+                        KeyAction::Tab if !self.folder.text.is_empty() => {
                             self.status = self.folder.complete(&self.cwd).join("  ");
                             return Ok(false);
                         }
@@ -13829,6 +13881,10 @@ impl App {
                 } else if !self.on_button() {
                     let (text, caret) = self.composer_input_mut();
                     if let Some(at) = edit(text, *caret, code, mods) {
+                    if action == KeyAction::Tab && self.composer_path().is_some() {
+                        self.complete_composer();
+                        return Ok(false);
+                    }
                         *caret = at;
                         return Ok(false);
                     }
@@ -20760,6 +20816,60 @@ states:
 
     /// The list's last row is the only way in to a folder nothing runs in.
     #[test]
+    /// Tab completes only when something is typed to complete; otherwise it reaches the pane.
+    #[test]
+    fn tab_completes_a_typed_path_and_otherwise_leaves_the_composer() {
+        let d = dir();
+        let claude = d.path();
+        registry(
+            claude,
+            A,
+            claude.to_str().unwrap(),
+            "idle",
+            1_757_682_871_000,
+        );
+        let mut app = app(claude);
+        app.cwd = claude.to_path_buf();
+        app.size = (40, 160);
+        app.refresh().unwrap();
+        fs::create_dir(claude.join("inside-here")).unwrap();
+        while !app.on_new_folder() {
+            app.step(1);
+        }
+        assert_eq!(
+            app.tab_does(),
+            None,
+            "an empty path has nothing to complete"
+        );
+        let hint = app.hint_line().to_string();
+        assert!(!hint.contains("tab"), "so the hint offers no tab: {hint}");
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.status, "nothing in the pane",
+            "tab reaches the pane the way it does on any other row"
+        );
+        assert_eq!(app.folder.text, "", "and completes nothing");
+        app.key(KeyCode::Char('i'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.tab_does(), Some("complete"));
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.folder.text, "inside-here/", "now tab completes");
+
+        app.select_row(A);
+        assert_eq!(app.tab_does(), None, "an empty instruction is not a path");
+        app.text = "read ins".to_owned();
+        app.caret = app.text.len();
+        assert_eq!(app.tab_does(), None, "nor is a bare word");
+        app.text = "read ./ins".to_owned();
+        app.caret = app.text.len();
+        assert_eq!(app.tab_does(), Some("complete"));
+        let hint = app.hint_line().to_string();
+        assert!(hint.contains("tab complete"), "{hint}");
+        app.status.clear();
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.text, "read ./inside-here/", "the path grows in place");
+        assert_eq!(app.caret, app.text.len());
+    }
+
     fn the_last_row_takes_a_path_and_the_added_folder_takes_the_cursor() {
         let d = dir();
         let claude = d.path();

@@ -13,7 +13,7 @@ The summary counts working, input, idle and done sessions, jobs and runs. `! sta
 | `↑ ↓` | Select rows; up past the first table reaches the menu. |
 | `enter` | With an empty composer, act on the selection: open a session or finished run, follow a running run, start a job, or open a menu screen. With text, submit the instruction. |
 | `shift+enter` | Open the selection over the whole frame once; returning restores the prior layout. With text, insert a line break. Terminals reporting alt+enter use the same action. |
-| `tab` | Enter the pane from the list. Return when an agent's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells and forms keep Tab for their own input. |
+| `tab` | Complete the directory path being typed in the composer, the one under the cursor when the instruction holds several. With nothing to complete, enter the pane from the list. Return when an agent's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells and forms keep Tab for their own input. |
 | `→` | With an empty composer, go to the agent: into the pane when it is open, over the whole frame when it is closed. On the menu row it picks a button. |
 | `ctrl+z` | Return from a viewer or menu screen; the viewer keeps running. |
 | `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
@@ -162,7 +162,7 @@ The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`c
 
 ### Add a folder
 
-`+ add folder` is the last row of the session list, always there. Select it and type: the row takes a path instead of an instruction, so the composer stays empty. Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. Hidden names need a `.` prefix. `enter` pins the folder, `esc` clears what is typed, and a missing directory is reported without losing the text.
+`+ add folder` is the last row of the session list, always there. Select it and type: the row takes a path instead of an instruction, so the composer stays empty. Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. An empty input has nothing to complete, so `tab` enters the pane there as it does elsewhere in the list. Hidden names need a `.` prefix. `enter` pins the folder, `esc` clears what is typed, and a missing directory is reported without losing the text.
 
 While the row or one of its offers holds the cursor, folders are offered under it: the pinned ones and the directories this read already saw sessions in, most recently used first, with a linked worktree followed by the repository it belongs to. Each offer says why it is there: `pinned`, `worktree`, `repository` or `recent`. Typing filters them by any fragment of the path, `↓` moves onto one, `enter` pins it, `tab` puts it in the input to edit, and `esc` returns to the input. Aliases of one folder, such as a symlinked path, are offered once. The offers come from the rows this read already holds, so opening them reads no transcripts; a folder that has since been deleted is still offered and reported as missing when it is picked.
 
