@@ -142,6 +142,12 @@ fn execute(cli: Cli) -> Result<i32> {
             std::io::stdout().is_terminal(),
             "the dashboard is what plain `cones` does, and it needs a terminal"
         );
+        // An install replaces the binary the agents name, which leaves launchd holding a code
+        // requirement no new build can satisfy. Starting the dashboard is the moment after an
+        // install that cones gets to run, so it is where the agents are made launchable again.
+        if let Err(e) = launchd::relearn_signatures() {
+            eprintln!("cones: schedules may not fire: {e:#}");
+        }
         return cones::tui::run(
             &std::env::current_exe()?,
             &jobs_path,

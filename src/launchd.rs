@@ -379,12 +379,19 @@ fn domain() -> String {
     format!("gui/{}", unsafe { libc::getuid() })
 }
 fn loaded(label: &str) -> Result<bool> {
-    Ok(Command::new("/bin/launchctl")
+    Ok(service_running(label)?.is_some())
+}
+/// `None` when launchd has no such service, otherwise whether it has a process alive.
+fn service_running(label: &str) -> Result<Option<bool>> {
+    let out = Command::new("/bin/launchctl")
         .args(["print", &format!("{}/{}", domain(), label)])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?
-        .success())
+        .output()?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(&out.stdout).contains("state = running"),
+    ))
 }
 fn launchctl(args: &[&str]) -> Result<()> {
     let output = Command::new("/bin/launchctl").args(args).output()?;
@@ -444,9 +451,7 @@ pub fn install(
     );
     crate::private_dir(state)?;
     crate::private_dir(&state.join("logs"))?;
-    let agents = dirs::home_dir()
-        .context("missing home directory")?
-        .join("Library/LaunchAgents");
+    let agents = agents_dir()?;
     fs::create_dir_all(&agents)?;
     for (job, bytes) in prepared {
         install_agent(&agents, state, &job.name, &bytes)?;
@@ -496,6 +501,53 @@ fn install_agent(agents: &Path, state: &Path, name: &str, bytes: &[u8]) -> Resul
         private_file(&state.join("logs").join(format!("{name}.{suffix}.log")))?;
     }
     if !same || !is_loaded {
+        launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+    }
+    Ok(())
+}
+
+/// What a relearn has to do to one agent, from what launchd says about it.
+#[derive(Debug, PartialEq)]
+enum Relearn {
+    Skip,
+    Bootstrap,
+    Reload,
+}
+fn relearn_action(running: Option<bool>) -> Relearn {
+    match running {
+        // A tick in flight owns its agent. Booting it out would kill the run, and a run cannot
+        // be started from a binary that is already gone, so it has nothing to relearn.
+        Some(true) => Relearn::Skip,
+        Some(false) => Relearn::Reload,
+        None => Relearn::Bootstrap,
+    }
+}
+
+/// Bootstrap every installed agent again, so launchd relearns the code signature of the program
+/// it launches.
+///
+/// launchd pins a lightweight code requirement to the binary it bootstrapped, and keeps it across
+/// a reboot. Replacing that binary, which installing cones does, leaves the pin behind, and the
+/// kernel kills the next tick with `OS_REASON_CODESIGNING` before cones runs: no run, no ledger
+/// row, no log line, nothing in the job's own logs to find it by. Bootstrapping again drops the
+/// pin. The dashboard does this on the way up because nothing else runs after an install.
+// ponytail: unconditional, since launchd does not expose the pin to compare a binary against.
+// Two launchctl calls per job at startup; compare code signatures if that ever shows in timing.
+pub fn relearn_signatures() -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let agents = agents_dir()?;
+    for name in installed_agents(&agents)? {
+        let label = label(&name);
+        let action = relearn_action(service_running(&label)?);
+        if action == Relearn::Skip {
+            continue;
+        }
+        if action == Relearn::Reload {
+            launchctl(&["bootout", &format!("{}/{}", domain(), label)])?;
+        }
+        let path = agents.join(format!("{label}.plist"));
         launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
     }
     Ok(())
@@ -574,25 +626,34 @@ pub fn uninstall_all() -> Result<()> {
         cfg!(target_os = "macos"),
         "uninstall requires macOS launchd"
     );
-    let dir = dirs::home_dir()
-        .context("missing home directory")?
-        .join("Library/LaunchAgents");
+    let dir = agents_dir()?;
     for name in installed_agents(&dir)? {
         uninstall_one(&name, &dir)?;
     }
     Ok(())
 }
 
-pub fn exported_plist_path(name: &str) -> Result<PathBuf> {
+fn agents_dir() -> Result<PathBuf> {
     Ok(dirs::home_dir()
         .context("missing home directory")?
-        .join("Library/LaunchAgents")
-        .join(format!("{}.plist", label(name))))
+        .join("Library/LaunchAgents"))
+}
+
+pub fn exported_plist_path(name: &str) -> Result<PathBuf> {
+    Ok(agents_dir()?.join(format!("{}.plist", label(name))))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relearn_reloads_an_idle_agent_installs_a_missing_one_and_leaves_a_run_alone() {
+        assert_eq!(relearn_action(Some(false)), Relearn::Reload);
+        assert_eq!(relearn_action(None), Relearn::Bootstrap);
+        // Booting out an agent whose tick is in flight would kill the run it is reporting.
+        assert_eq!(relearn_action(Some(true)), Relearn::Skip);
+    }
 
     #[test]
     fn plist_schedules_one_interval_per_tick_and_never_runs_at_load() {
