@@ -171,4 +171,5 @@ an answered question or an exited process. Never poll a rollout just to demand a
 Cancellation affects only pending requests this helper recorded, preserving owner messages and
 owner-edited queue entries. A request already consumed by the harness cannot be recalled.
 Expiry depends on the watcher; restart cleanup handles requests left by an interrupted run.
-See the repository README for transport requirements and the failure-case tests.
+See `docs/architecture.md` in the cones repository for transport requirements, and
+`assets/coordinator/tests` for the failure-case tests.

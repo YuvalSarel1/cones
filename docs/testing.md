@@ -37,13 +37,12 @@ expected to be excluded, so unrelated live clients cannot change their counts.
 scripts/check test --lib viewer::tests
 scripts/check test --test runner
 scripts/check reporting
-scripts/check coordinator /absolute/path/to/orchestrator
+scripts/check coordinator
 ```
 
-The coordinator mode runs the upstream Python suite and verifies that its runtime
-files match the embedded copy. Run it when changing embedded coordinator helpers.
-Tests remain in the upstream repository; this check takes an explicit source
-checkout and does not depend on a developer's personal directory layout.
+The coordinator mode runs the Python suite for the coordinator skill's helpers in
+`assets/coordinator/tests`. The helpers and their tests live here, so the full gate
+runs them and no second checkout has to be kept in step.
 The normal gate requires Python 3 and Node.js 22 or later alongside Rust.
 CI uses the same `scripts/check` entry point.
 

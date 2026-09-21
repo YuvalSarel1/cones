@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|test [cargo test arguments...]|coordinator SOURCE]'
+    echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|test [cargo test arguments...]|coordinator]'
     echo 'Defaults to fmt, clippy, and all test targets. Full logs remain in TMPDIR.'
 }
 
@@ -10,13 +10,10 @@ mode=${1:-all}
 if (( $# )); then shift; fi
 case "$mode" in
     -h|--help) usage; exit 0 ;;
-    all|fmt|clippy|reporting|stress)
+    all|fmt|clippy|reporting|stress|coordinator)
         if (( $# )); then usage >&2; exit 2; fi
         ;;
     test) ;;
-    coordinator)
-        if (( $# != 1 )); then usage >&2; exit 2; fi
-        ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -69,6 +66,7 @@ case "$mode" in
         run_check clippy cargo clippy --all-targets -- -D warnings
         run_check test cargo test --all-targets
         run_check reporting node --test tests/reporting.mjs
+        run_check coordinator python3 -B -m unittest discover -s assets/coordinator/tests -q
         ;;
     fmt) run_check fmt cargo fmt --check ;;
     clippy) run_check clippy cargo clippy --all-targets -- -D warnings ;;
@@ -80,10 +78,7 @@ case "$mode" in
             -- --ignored --exact --nocapture --test-threads=1
         printf 'Resources: %s\n' "$CONES_STRESS_OUTPUT"
         ;;
-    coordinator)
-        run_check coordinator python3 -B -m unittest discover -s "$1/tests" -q
-        run_check coordinator_sync python3 -B "$1/bin/sync.py" "$PWD" --check
-        ;;
+    coordinator) run_check coordinator python3 -B -m unittest discover -s assets/coordinator/tests -q ;;
     test)
         if (( $# == 0 )); then set -- --all-targets; fi
         run_check test cargo test "$@"

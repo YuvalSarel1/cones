@@ -1,56 +1,140 @@
-# Coordinator architecture
+# Architecture
 
-The coordinator is a Claude Code session running the `start-orchestrator` skill. It schedules
-nothing and executes nothing. It reads who is working in a folder, carries facts between those
-workers, and lands their finished changes. Everything it knows comes from cones, and everything
-it does to a worker goes through that worker's own harness.
+cones is one binary. It schedules and supervises agent runs, keeps the ledger those runs write,
+and draws a dashboard over every agent session on the machine. It never executes an agent's tools
+and never decides an agent's permissions: that belongs to the harness, and the boundary is the
+single most load-bearing rule in the codebase.
 
-This document covers the coordinator only. For the supervisor that runs jobs, see
-[jobs.md](jobs.md); for what each harness reports, see [harness.md](harness.md).
+This document is the map. Per-area detail lives in [dashboard.md](dashboard.md),
+[jobs.md](jobs.md), [harness.md](harness.md) and [harness-definitions.md](harness-definitions.md).
+
+## The boundary
+
+| cones owns | The harness owns |
+| --- | --- |
+| Scheduling and catch-up | Running the agent |
+| Supervision and `timeout_min` | Tool calls and permissions |
+| The ledger and captured output | Session identity and state |
+| Discovery, drawing, navigation | Stopping, removing, renaming |
+
+`timeout_min` is the only limit cones puts on a run. cones never intercepts a harness tool call
+and never adds a second permission engine. A policy the harness cannot enforce natively is a
+validation error rather than a best effort, because a guarantee cones cannot keep is worse than
+a refusal the user can see.
+
+Reported facts are read, never estimated. State, context window and usage come from what the
+harness itself reports; a value it never reported stays absent rather than inferred.
 
 ## Components
 
-| Component | Runs | Owns |
-| --- | --- | --- |
-| Coordinator session | Claude Code | Decisions, messages, integration |
-| Skill helpers | bash, python | Roster diffing, delivery, wake gating |
-| `cones ls --dir --json` | Rust binary | Who is a worker, and their state |
-| Harness | Claude Code, Codex | Execution, permissions, the edits |
-| `scripts/check` | cargo | Whether a combined tree is sound |
-
-The split matters because only one of these costs money. The coordinator session is a model. The
-helpers, the roster read and the check are ordinary processes. A design that moves work out of the
-session and into a helper makes the coordinator cheaper without making it dumber.
-
 ```mermaid
 flowchart TB
-    Owner["Owner<br/>scope, approvals, pushes"]
-    Coord["Coordinator session<br/>MODEL"]
-    Helpers["Skill helpers<br/>self.sh sweep.sh tick.sh codex.sh"]
-    Cones["cones ls --dir --json<br/>the roster"]
-    Harness["Harness<br/>execution and permissions"]
-    Workers["Workers<br/>MODEL, one per session"]
-    Check["scripts/check"]
+    subgraph binary ["the cones binary"]
+        CLI["main.rs<br/>run launch ls logs attach<br/>install catchup coordinator worker"]
+        TUI["tui.rs<br/>dashboard, config screen, Help"]
+        RUN["runner.rs + ledger.rs<br/>supervision, records, output"]
+        HAR["harness.rs + harness/spec.rs<br/>definitions, adapters, capabilities"]
+        FLEET["fleet.rs + codex.rs + agents.rs<br/>discovery from native records"]
+        VIEW["viewer.rs + terminal_host.rs<br/>PTY viewers, detached hosts"]
+        READ["history search context<br/>transcript cost attention forks"]
+    end
+    LAUNCHD["launchd agents"]
+    HARNESS["Claude Code, Codex,<br/>OpenCode, pi, others"]
+    COORD["coordinator skill<br/>assets/coordinator"]
 
-    Owner -->|start orchestrator| Coord
-    Owner -->|assigns tasks| Workers
-    Coord -->|shells out, no model| Helpers
-    Helpers --> Cones
-    Cones -->|roster rows| Helpers
-    Helpers -->|events| Coord
-    Coord -->|greeting, finding, hold| Workers
-    Workers -->|scope, questions, results| Coord
-    Workers --> Harness
-    Harness -->|edits| Check
-    Coord -->|integrates| Check
+    LAUNCHD -->|scheduled tick| CLI
+    CLI --> RUN
+    CLI --> TUI
+    RUN --> HAR --> HARNESS
+    HARNESS -->|registries, transcripts,<br/>rollouts, databases| FLEET
+    FLEET --> TUI
+    VIEW --> TUI
+    READ --> TUI
+    CLI -->|cones coordinator| COORD
+    COORD -->|cones ls --json| FLEET
 
-    classDef model fill:#4c1d95,stroke:#a78bfa,color:#fff
-    classDef plain fill:#1e293b,stroke:#64748b,color:#e2e8f0
-    class Coord,Workers model
-    class Helpers,Cones,Harness,Check,Owner plain
+    classDef owned fill:#1e293b,stroke:#64748b,color:#e2e8f0
+    classDef foreign fill:#3f2d1a,stroke:#b58150,color:#f5e6d3
+    class CLI,TUI,RUN,HAR,FLEET,VIEW,READ,COORD owned
+    class HARNESS,LAUNCHD foreign
 ```
 
-## Where the model calls are
+Everything in the dark box is this binary. The harness and launchd are outside it, and the arrows
+crossing that line are the whole integration surface.
+
+## Runs and the ledger
+
+A job is the agent you would run by hand, on a schedule: your settings, your MCP servers, no
+permission prompts, and a timeout. `jobs.yaml` holds them, `cones install` writes the LaunchAgents,
+and a tick runs `cones run`. `cones catchup` covers ticks that passed while the Mac was off.
+
+```mermaid
+flowchart LR
+    Tick["launchd tick<br/>or cones run"] --> Supervise["runner::run"]
+    Supervise --> Worker["spawn_worker<br/>separate process group"]
+    Worker --> Agent["harness command"]
+    Agent --> Output["captured output"]
+    Supervise --> Record["ledger record<br/>status, reason, usage"]
+    Record --> Rows["run rows in the dashboard"]
+    Output --> Preview["read-only preview"]
+```
+
+The worker runs in its own process group so a supervised run outlives the process that started it
+and can be stopped as a unit. The ledger keeps the record, the captured output and the reason,
+which is what a run row shows long after its agent is gone. A resumed run keeps its place in the
+run list: the session the harness reports for it belongs to that row, not to a new agent.
+
+## Harness definitions
+
+`assets/harnesses/*.yaml` declares each harness: where it keeps sessions, what it reports, and
+which operations it supports. `harness/spec.rs` validates a definition and compiles the values its
+consumers use, so unknown fields, inconsistent capabilities and invalid command operands are
+errors rather than surprises at runtime.
+
+An operation needs a native adapter behind it. Declaring `rename: true` means the harness has a
+native rename cones can hand off to; only the compiled Claude execution adapter can authorize a
+supervised run. Unverified support is named `unknown` rather than assumed.
+
+## Discovery
+
+The fleet is built from records the harnesses own: Claude's session registry and transcripts,
+Codex's processes, writer locks, thread database and rollouts, OpenCode's SQLite storage. cones
+reads them and reports one state per session. It starts no client to ask.
+
+A process is not a conversation. A harness launched into a terminal with no archive adapter gives
+a row with a folder and a title, and its identity, state and accounting stay absent rather than
+guessed. A Codex agent is its thread rather than its pid, so a client restart is not an exit.
+
+## The dashboard
+
+`tui.rs` draws sessions, runs, jobs and history as rows, with a preview pane beside them. It is
+one file because its `App` holds the shared state every screen reads; a split into per-screen
+modules was tried and folded back.
+
+Viewers are PTY-backed and rendered through vt100 into the pane, so viewer output never reaches
+the real terminal directly. A live pane is the native client, not an emulation of one, which is
+why controls in a pane follow the harness's own capabilities. Historical rows get read-only
+transcript previews instead. `terminal_host.rs` keeps one detached PTY owner per interactive
+terminal, so work survives the dashboard closing; it runs no agent tools and makes no permission
+decisions.
+
+The read-only side of the dashboard is deliberately large: history, search, context inspection,
+cost provenance, attention markers and fork parentage are all observers over native records.
+Search keeps text and cached passage embeddings in SQLite and runs inference on a separate worker,
+so neither a draw nor a test starts a model.
+
+## The coordinator
+
+The coordinator is a Claude Code session running the `start-orchestrator` skill, which ships in
+this repository under `assets/coordinator`. `cones coordinator` writes the plugin out of the
+binary, with the helper path substituted in, and starts one background session for a folder. The
+skill and its helpers are native to cones: they are compiled in with `include_str!`, their Python
+suite is in `assets/coordinator/tests`, and the full gate runs it.
+
+It schedules nothing and executes nothing. It reads who is working in a folder, carries facts
+between those workers, and lands their finished changes.
+
+### Where the model calls are
 
 Three places, and only three.
 
@@ -59,28 +143,20 @@ Three places, and only three.
    is a real cost charged to someone else's budget.
 3. A worker does its own work, which is the point and not the coordinator's concern.
 
-Nothing else spends a model. The sweep loop, the roster read, the mail check, the delivery
-helper and the validation gate are all plain processes. The `tick.sh` read that starts a wake is
-free; what costs is the wake itself.
+The sweep loop, the roster read, the mail check, the delivery helper and the validation gate are
+plain processes. This is why the wake gate is the most load-bearing piece of the design: a gate
+that fires when nothing happened turns a ten second sleep into a model call every ten seconds.
 
-This is why the wake gate is the most load-bearing piece of the design. A gate that fires when
-nothing happened turns a ten second sleep into a model call every ten seconds.
-
-## The wake loop
-
-The watcher is a shell loop, armed once as a background command. It calls `sweep.sh`, which
-prints `same` or `changed` followed by the sections that moved. While the answer is `same` the
-loop sleeps and calls again. No model is involved until the loop exits.
+### The wake loop
 
 ```mermaid
 flowchart TB
     Arm([arm watcher]) --> Sweep
     Sweep["sweep.sh<br/>bash, no model"]
     Sweep --> Q{"anything moved?"}
-    Q -->|"same"| Sleep["sleep 10"]
-    Sleep --> Sweep
-    Q -->|"changed"| Wake["Coordinator wakes<br/>MODEL CALL"]
-    Wake --> Tick["tick.sh<br/>tree, roster, budget, mail<br/>no model"]
+    Q -->|"same"| Sleep["sleep 10"] --> Sweep
+    Q -->|"changed"| Wake["coordinator wakes<br/>MODEL CALL"]
+    Wake --> Tick["tick.sh<br/>tree, roster, budget, mail"]
     Tick --> Act{"act on it"}
     Act -->|"dependency or finding"| Msg["message a worker<br/>costs that worker a turn"]
     Act -->|"work is ready"| Integ["integration queue"]
@@ -104,65 +180,30 @@ The mail gate needs both halves of its condition. `inbox.ack` is what the coordi
 handled and only `codex.sh ack` moves it. `inbox.shown` is the watcher's own note of what it
 already put in front of the model, so one pending batch wakes it once rather than every pass. A
 fresh job starts without `inbox.shown`, so gating on that file alone treats an inbox's entire
-acknowledged history as new on every pass, forever. The test for this is
+acknowledged history as new on every pass, forever. The test is
 `the_coordinator_watcher_wakes_for_unacknowledged_mail_and_stays_quiet_otherwise` in
 `tests/core.rs`.
 
-## Who enforces what
+### Roster and messaging
 
-| Guarantee | Enforced by |
-| --- | --- |
-| Who counts as a worker | `cones ls` |
-| Permissions and execution | the harness |
-| One coordinator per folder | the status record's live pid |
-| A wake means something moved | `sweep.sh` |
-| A request is not sent twice | `codex.py` request keys |
-| Mail is handled, not just read | `codex.sh ack` |
-| A combined tree is sound | `scripts/check` |
-| Scope, config, pushing | the owner |
-
-The coordinator enforces none of these itself. It has no permission engine and never intercepts
-a harness tool call. When it wants a worker to stop, it asks, and the worker's harness decides
-what that worker is allowed to do. A coordinator that tried to enforce a policy the harness
-cannot enforce natively would be lying about a guarantee it cannot keep.
-
-## Discovery
-
-The roster is one read of `cones ls --dir --json`, covering the folder and the worktrees under
-it. cones decides who is a worker: it drops unclaimed spares, resolves a Codex thread to its
-client, ignores viewer and daemon processes, and turns each harness's own report into one state.
-
-The coordinator does not re-derive any of that. It does not read the session registries, scan
-rollouts or walk the process table, because a second implementation of discovery drifts from the
-first and the disagreement surfaces as a worker that exists in one view and not the other. A read
-that fails keeps the previous roster and reports the failure once. An install without `cones ls`
-fails here too, which makes this the version check.
-
-A reported state is what the harness said, not an inference. `blocked` may mean the worker is
-waiting on the owner rather than on the coordinator. Idle and exit are not completion signals;
-completion is a worker's own report or a landed result.
-
-## Messaging
+The roster is one read of `cones ls --dir --json`, covering the folder and the worktrees under it.
+cones decides who is a worker: it drops unclaimed spares, resolves a Codex thread to its client,
+ignores viewer and daemon processes, and turns each harness's own report into one state. The
+coordinator does not re-derive any of that, because a second implementation of discovery drifts
+from the first and the disagreement surfaces as a worker that exists in one view and not the
+other. A read that fails keeps the previous roster and reports the failure once.
 
 Two transports, because the harnesses differ.
 
 ```mermaid
 flowchart LR
-    Coord["Coordinator<br/>MODEL"]
-    subgraph claude ["Claude peers"]
-        SM["SendMessage<br/>by roster name"]
-        CS["Worker session"]
-    end
-    subgraph codex ["Codex threads"]
-        CX["codex.sh send<br/>request key + expiry"]
-        Daemon["local daemon queue"]
-        CT["Worker thread"]
-        Inbox["inbox.jsonl"]
-    end
-    Coord --> SM --> CS
+    Coord["coordinator<br/>MODEL"]
+    SM["SendMessage"] --> CS["Claude worker"]
+    CX["codex.sh send<br/>request key + expiry"] --> Daemon["local daemon queue"] --> CT["Codex worker"]
+    CT -->|reply| Inbox["inbox.jsonl"]
+    Coord --> SM
+    Coord --> CX
     CS -->|reply| Coord
-    Coord --> CX --> Daemon --> CT
-    CT -->|reply| Inbox
     Inbox -->|next sweep| Coord
 
     classDef model fill:#4c1d95,stroke:#a78bfa,color:#fff
@@ -171,7 +212,7 @@ flowchart LR
 
 A Claude reply arrives in the coordinator's conversation and costs it a turn immediately. A Codex
 reply lands in the folder's inbox and costs nothing until the next wake. Delivery is not reading:
-a message can reach a session whose agent never answers. That is why the greeting asks for an
+a message can reach a session whose agent never answers, which is why the greeting asks for an
 acknowledgement. Without one, a worker that read the greeting and a worker that never received it
 look identical.
 
@@ -179,41 +220,64 @@ Every Codex request carries its own `reply_to`, so two open requests to one task
 distinguishable, and reusing a key is idempotent so a replayed reply cannot produce a second
 follow-up.
 
-## State
+The Codex transport needs Python 3 and a running local Codex app-server with `thread/read` and
+`thread/queue` add, list and delete support. It was verified against Codex 0.154.0, and the full
+greet, request, reply, acknowledge, reset and finish cycle against a live 0.155.1 daemon and
+client. `codex.sh` discovers the daemon's Unix WebSocket address with `codex app-server daemon
+version` under the selected `CODEX_HOME`, and uses the native queue operations rather than
+editing the database. Enqueueing a request can cause the harness to resume the worker, and an
+unknown recipient is refused rather than guessed.
+
+A session, a task and a request have separate lifetimes. A greeting introduces the coordinator to
+the session once and is never repeated, so finishing a task cannot suppress the message that asks
+the worker to report its next assignment. A reachable thread registers a task whether it is
+active or idle, and only a thread that has ended is refused.
+
+### Coordinator state
 
 | File | Lives in | Survives the job |
 | --- | --- | --- |
-| Status record | `~/.claude/orchestrator/<sha1>.json` | yes |
+| Status record | `<claude dir>/orchestrator/<sha1>.json` | yes |
 | `inbox.jsonl` | the folder's coordinator dir | yes |
 | `inbox.ack` | beside the inbox | yes |
 | `inbox.shown` | this job's working dir | no |
 | `roster.prev` | this job's working dir | no |
 | `integration.json` | this job's working dir | no |
 
-The split is deliberate. A reply must outlive the job that received it, so the inbox and the
-acknowledged position sit in the folder's own directory and a replacement coordinator sees
-anything still pending. The watcher's note of what it already displayed is per job, because a new
-job has not displayed anything.
+A reply must outlive the job that received it, so the inbox and the acknowledged position sit in
+the folder's own directory and a replacement coordinator sees anything still pending. The
+watcher's note of what it already displayed is per job, because a new job has not displayed
+anything.
 
-The status record holds the pid and folder that cones matches to mark a session the coordinator.
-A live pid in that record means another coordinator owns the folder. It is written under
-`CLAUDE_CONFIG_DIR` when that is set, the same home the roster read resolves, and through a
-per-process temporary file. Two coordinators write this record legitimately, a replacement
-overlapping the one it takes over from and a watcher left armed from an earlier arm, and one
-shared temporary name means the second writer's rename deletes the first writer's source. The
-writer that loses dies, and it takes its watcher down with it. The test is
+The status record holds the pid and folder cones matches to mark a session the coordinator, under
+`CLAUDE_CONFIG_DIR` when that is set, the same home the roster read resolves. It is written
+through a per-process temporary: two coordinators write this record legitimately, a replacement
+overlapping the one it takes over from among them, and one shared temporary name means the second
+writer's rename deletes the first writer's source. The writer that loses dies and takes its
+watcher with it. The test is
 `concurrent_coordinators_can_write_the_status_record_without_destroying_each_other`.
 
-## Integration
+### Integration
 
 Workers commit on the base they checked and hand over the hash. The coordinator keeps one ordered
-queue, reads the diff and the author's checks, rebases in a clean checkout, runs the project's
-required checks on the combined tree, and advances main only while it still has the expected base.
+queue, reads the diff and the author's checks, rebases in a clean checkout, runs the required
+checks on the combined tree, and advances main only while it still has the expected base. A clean
+rebase does not prove the combined result passed, which is why the check runs after the rebase.
 
-A clean rebase does not prove the combined result passed, which is why the check runs after the
-rebase and not before it. Work goes back to its author only when a conflict or a failed check
-requires revising that contribution.
+On a shared checkout the coordinator never stashes and never resets. Staging by path commits every
+author's hunks in a file, so a commit comes from a diff trimmed to one author's hunks.
 
-On a shared checkout the coordinator never stashes and never resets. Staging by path commits
-every author's hunks in a file, so a commit comes from a diff trimmed to one author's hunks, with
-the staged hunk headers compared against what that author reported.
+## Who enforces what
+
+| Guarantee | Enforced by |
+| --- | --- |
+| A job's policy is one the harness can keep | `harness/spec.rs` validation |
+| A run stops at its limit | `runner.rs` and `timeout_min` |
+| What a run did | the ledger record and captured output |
+| Permissions and execution | the harness |
+| Who counts as a worker | `cones ls` |
+| One coordinator per folder | the status record's live pid |
+| A coordinator wake means something moved | `sweep.sh` |
+| Mail is handled, not just read | `codex.sh ack` |
+| A combined tree is sound | `scripts/check` |
+| Scope, config, pushing | the owner |
