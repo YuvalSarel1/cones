@@ -381,10 +381,10 @@ impl Data {
         let worktrees = roots.keys().cloned().collect();
         if let Some(d) = &mut diagnostics {
             d.phase("git", git_started);
+            d.observation = crate::observe::snapshot();
         }
         Ok(Self {
             jobs,
-            d.observation = crate::observe::snapshot();
             jobs_path: jobs_path.to_owned(),
             runs,
             sessions,
@@ -8496,6 +8496,8 @@ struct LoadDiagnostics {
     sources: HashMap<String, Value>,
     excluded: HashMap<String, &'static str>,
     warnings: Vec<String>,
+    /// What this refresh spent observing, by operation. See `crate::observe`.
+    observation: BTreeMap<&'static str, crate::observe::Counts>,
 }
 
 impl LoadDiagnostics {
@@ -8578,6 +8580,8 @@ struct App {
     log: Option<Diagnostics>,
     dashboard_id: String,
     timing_summary: RefCell<BTreeMap<String, TimingSummary>>,
+    /// Observation work since the last summary, accumulated across this interval's refreshes.
+    observation_summary: BTreeMap<&'static str, crate::observe::Counts>,
     summary_at: Instant,
     diagnostic_view: Option<Value>,
     diagnostic_peek: Option<Value>,
@@ -8726,8 +8730,6 @@ fn hydrate_pi_forks(data: &mut Data, forks: &[(u32, String, PathBuf, String)]) {
             *row = reported;
         }
     }
-    /// What this refresh spent observing, by operation. See `crate::observe`.
-    observation: BTreeMap<&'static str, crate::observe::Counts>,
 }
 
 struct ForkedSession {
@@ -8813,8 +8815,6 @@ struct Opening {
     command: mpsc::Receiver<Result<Command>>,
     record: Option<(PathBuf, chrono::DateTime<chrono::Utc>)>,
     prompt: Option<String>,
-    /// Observation work since the last summary, accumulated across this interval's refreshes.
-    observation_summary: BTreeMap<&'static str, crate::observe::Counts>,
     operation: Option<DiagnosticOperation>,
 }
 
@@ -8929,6 +8929,7 @@ impl App {
             log,
             dashboard_id,
             timing_summary: RefCell::new(BTreeMap::new()),
+            observation_summary: BTreeMap::new(),
             summary_at: Instant::now(),
             diagnostic_view: None,
             diagnostic_peek: None,
@@ -9019,6 +9020,10 @@ impl App {
                 json!({
                     "interval_ms": self.summary_at.elapsed().as_secs_f64() * 1000.0,
                     "phases": phases,
+                    // Subprocesses cones launched to observe over this interval, which with the
+                    // discovery pass count is the per-refresh cost.
+                    "processes": processes,
+                    "observation": by_operation,
                 })
             });
         }
@@ -9175,7 +9180,6 @@ impl App {
                                 self.loading_operation.as_ref().map(|o| &o.id)
                             } else {
                                 self.input_operation.as_ref().map(|(o, _)| &o.id)
-            observation_summary: BTreeMap::new(),
                             },
                         })
                     },
@@ -9254,10 +9258,6 @@ impl App {
     }
 
     #[cfg(test)]
-                    // Subprocesses cones launched to observe over this interval, which with the
-                    // discovery pass count is the per-refresh cost.
-                    "processes": processes,
-                    "observation": by_operation,
     fn refresh(&mut self) -> Result<()> {
         let mut data = Data::load(&self.jobs_path, &self.state, &self.claude)?;
         hydrate_pi_forks(&mut data, &self.owned_pi_forks());
@@ -9320,6 +9320,14 @@ impl App {
         let Some(d) = &self.data.diagnostics else {
             return;
         };
+        for (op, counts) in &d.observation {
+            let entry = self.observation_summary.entry(op).or_default();
+            entry.spawns += counts.spawns;
+            entry.reads += counts.reads;
+            entry.failures += counts.failures;
+            entry.shared += counts.shared;
+            entry.ms += counts.ms;
+        }
         for (phase, ms) in &d.phases {
             self.measured(phase, *ms, || {
                 json!({
@@ -9554,14 +9562,6 @@ impl App {
             reported_context(
                 columns.and_then(|c| c.context_tokens),
                 columns.and_then(|c| c.context_window),
-        for (op, counts) in &d.observation {
-            let entry = self.observation_summary.entry(op).or_default();
-            entry.spawns += counts.spawns;
-            entry.reads += counts.reads;
-            entry.failures += counts.failures;
-            entry.shared += counts.shared;
-            entry.ms += counts.ms;
-        }
             ),
         ))
     }
@@ -26055,6 +26055,143 @@ states:
         assert_eq!(git_branch(d.path()), None);
     }
 
+    // A folder column once cost three git processes per folder per refresh: two for the branch
+    // and one for the worktree mark. With a dozen folders on screen that was the dashboard's
+    // largest recurring spawn source after discovery itself.
+    #[test]
+    fn a_folder_costs_one_git_read_a_refresh_reuses_it_and_a_branch_costs_none() {
+        let d = dir();
+        let repo = d.path().join("repo");
+        fs::create_dir(&repo).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(dir)
+                    .args(args)
+                    .env("GIT_AUTHOR_NAME", "Fixture")
+                    .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
+                    .env("GIT_COMMITTER_NAME", "Fixture")
+                    .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
+        };
+        git(&repo, &["init", "-b", "main"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        );
+        let worktree = d.path().join("worktree");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                worktree.to_str().unwrap(),
+            ],
+        );
+
+        crate::observe::reset();
+        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::GIT),
+            1,
+            "the first read of a folder asks git where the repository is"
+        );
+        assert_eq!(super::worktree_root(&repo), None);
+        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(git_branch(&worktree).as_deref(), Some("feature"));
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::GIT),
+            2,
+            "one read a folder: the branch itself is the repository's own HEAD file"
+        );
+
+        // A later refresh is a new pass and still spends nothing on an unchanged folder.
+        crate::observe::reset();
+        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
+        assert_eq!(super::worktree_root(&repo), None);
+        assert_eq!(
+            super::worktree_root(&worktree),
+            Some(repo.canonicalize().unwrap())
+        );
+        let counts = crate::observe::snapshot()[crate::observe::op::GIT];
+        assert_eq!((counts.spawns, counts.shared), (0, 3));
+
+        // Switching branches must still show, because HEAD is read every time.
+        git(&repo, &["checkout", "-b", "other"]);
+        assert_eq!(git_branch(&repo).as_deref(), Some("other"));
+        // Detaching is the one case git alone can shorten a hash for.
+        crate::observe::reset();
+        git(&repo, &["checkout", "--detach"]);
+        assert!(git_branch(&repo).unwrap().starts_with('@'));
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::GIT),
+            2,
+            "checking out rewrites the git directory, so the layout is read again, \
+             and only a detached head needs git to shorten its hash"
+        );
+
+        // The validity rule is the folder's own .git entry, so losing it is read again at once.
+        crate::observe::reset();
+        fs::remove_file(worktree.join(".git")).unwrap();
+        assert_eq!(
+            super::worktree_root(&worktree),
+            None,
+            "a folder that is no longer a worktree loses its mark without waiting"
+        );
+        assert_eq!(crate::observe::spawns_of(crate::observe::op::GIT), 1);
+        crate::observe::reset();
+    }
+
+    // The whole process table is what every native adapter needs and what a refresh must not
+    // read more than once, however many harnesses are offered.
+    #[test]
+    fn one_refresh_acquires_the_process_table_once() {
+        let d = dir();
+        let jobs = d.path().join("jobs.yaml");
+        Data::load(&jobs, d.path(), d.path()).unwrap();
+        let counts = crate::observe::snapshot();
+        assert_eq!(
+            counts[crate::observe::op::PROCESS_TABLE].spawns,
+            1,
+            "one table for the whole refresh"
+        );
+        assert!(
+            counts[crate::observe::op::PROCESS_TABLE].shared > 0,
+            "and at least one other adapter read it from the pass"
+        );
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::SQLITE),
+            0,
+            "native databases are read in process"
+        );
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::LIVENESS),
+            0,
+            "and so is whether a daemon is alive"
+        );
+        Data::load(&jobs, d.path(), d.path()).unwrap();
+        assert_eq!(
+            crate::observe::snapshot()[crate::observe::op::PROCESS_TABLE].spawns,
+            1,
+            "the next refresh is a new pass with its own single read"
+        );
+        crate::observe::reset();
+    }
+
     #[test]
     fn the_columns_picker_arranges_the_table_and_keeps_the_order_in_jobs_yaml() {
         let d = dir();
@@ -26463,143 +26600,6 @@ while True:
         );
         assert!(
             !app.viewers[0]
-    // A folder column once cost three git processes per folder per refresh: two for the branch
-    // and one for the worktree mark. With a dozen folders on screen that was the dashboard's
-    // largest recurring spawn source after discovery itself.
-    #[test]
-    fn a_folder_costs_one_git_read_a_refresh_reuses_it_and_a_branch_costs_none() {
-        let d = dir();
-        let repo = d.path().join("repo");
-        fs::create_dir(&repo).unwrap();
-        let git = |dir: &Path, args: &[&str]| {
-            assert!(
-                Command::new("git")
-                    .arg("-C")
-                    .arg(dir)
-                    .args(args)
-                    .env("GIT_AUTHOR_NAME", "Fixture")
-                    .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
-                    .env("GIT_COMMITTER_NAME", "Fixture")
-                    .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
-            );
-        };
-        git(&repo, &["init", "-b", "main"]);
-        git(
-            &repo,
-            &[
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--allow-empty",
-                "-m",
-                "fixture",
-            ],
-        );
-        let worktree = d.path().join("worktree");
-        git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature",
-                worktree.to_str().unwrap(),
-            ],
-        );
-
-        crate::observe::reset();
-        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::GIT),
-            1,
-            "the first read of a folder asks git where the repository is"
-        );
-        assert_eq!(super::worktree_root(&repo), None);
-        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
-        assert_eq!(git_branch(&worktree).as_deref(), Some("feature"));
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::GIT),
-            2,
-            "one read a folder: the branch itself is the repository's own HEAD file"
-        );
-
-        // A later refresh is a new pass and still spends nothing on an unchanged folder.
-        crate::observe::reset();
-        assert_eq!(git_branch(&repo).as_deref(), Some("main"));
-        assert_eq!(super::worktree_root(&repo), None);
-        assert_eq!(
-            super::worktree_root(&worktree),
-            Some(repo.canonicalize().unwrap())
-        );
-        let counts = crate::observe::snapshot()[crate::observe::op::GIT];
-        assert_eq!((counts.spawns, counts.shared), (0, 3));
-
-        // Switching branches must still show, because HEAD is read every time.
-        git(&repo, &["checkout", "-b", "other"]);
-        assert_eq!(git_branch(&repo).as_deref(), Some("other"));
-        // Detaching is the one case git alone can shorten a hash for.
-        crate::observe::reset();
-        git(&repo, &["checkout", "--detach"]);
-        assert!(git_branch(&repo).unwrap().starts_with('@'));
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::GIT),
-            2,
-            "checking out rewrites the git directory, so the layout is read again, \
-             and only a detached head needs git to shorten its hash"
-        );
-
-        // The validity rule is the folder's own .git entry, so losing it is read again at once.
-        crate::observe::reset();
-        fs::remove_file(worktree.join(".git")).unwrap();
-        assert_eq!(
-            super::worktree_root(&worktree),
-            None,
-            "a folder that is no longer a worktree loses its mark without waiting"
-        );
-        assert_eq!(crate::observe::spawns_of(crate::observe::op::GIT), 1);
-        crate::observe::reset();
-    }
-
-    // The whole process table is what every native adapter needs and what a refresh must not
-    // read more than once, however many harnesses are offered.
-    #[test]
-    fn one_refresh_acquires_the_process_table_once() {
-        let d = dir();
-        let jobs = d.path().join("jobs.yaml");
-        Data::load(&jobs, d.path(), d.path()).unwrap();
-        let counts = crate::observe::snapshot();
-        assert_eq!(
-            counts[crate::observe::op::PROCESS_TABLE].spawns,
-            1,
-            "one table for the whole refresh"
-        );
-        assert!(
-            counts[crate::observe::op::PROCESS_TABLE].shared > 0,
-            "and at least one other adapter read it from the pass"
-        );
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::SQLITE),
-            0,
-            "native databases are read in process"
-        );
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::LIVENESS),
-            0,
-            "and so is whether a daemon is alive"
-        );
-        Data::load(&jobs, d.path(), d.path()).unwrap();
-        assert_eq!(
-            crate::observe::snapshot()[crate::observe::op::PROCESS_TABLE].spawns,
-            1,
-            "the next refresh is a new pass with its own single read"
-        );
-        crate::observe::reset();
-    }
-
                 .viewer
                 .screen()
                 .contents()
