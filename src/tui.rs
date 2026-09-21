@@ -1988,13 +1988,40 @@ fn on_row(lines: &mut [Line<'static>], columns: u16) {
     }
 }
 
+/// Wrapped rows the text takes up to and including the block cursor, counted with the same
+/// wrapper that draws it. Without a cursor this is the whole text.
+fn caret_rows(text: &Text<'static>, width: u16) -> u16 {
+    let mut kept: Vec<Line<'static>> = vec![];
+    for line in &text.lines {
+        let mut spans = vec![];
+        for span in &line.spans {
+            let cursor = span.style.add_modifier.contains(Modifier::REVERSED);
+            spans.push(span.clone());
+            if cursor {
+                kept.push(Line::from(spans));
+                return rows_of(kept, width);
+            }
+        }
+        kept.push(Line::from(spans));
+    }
+    rows_of(kept, width)
+}
+
+fn rows_of(lines: Vec<Line<'static>>, width: u16) -> u16 {
+    Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .line_count(width) as u16
+}
+
 /// Render the cursor at a byte offset, or on the placeholder when empty.
 fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
     let block = Modifier::REVERSED;
     if !value.is_empty() {
         let (before, rest) = value.split_at(snap(value, cursor));
         let mut rest = rest.chars();
-        let under = rest.next().map_or(" ".to_owned(), |c| c.to_string());
+        // At the end the cursor is a space, and a wrap drops a space that lands past the edge,
+        // leaving the block on the rule below. A no-break space wraps with the word instead.
+        let under = rest.next().map_or("\u{a0}".to_owned(), |c| c.to_string());
         return vec![
             Span::raw(before.to_owned()),
             Span::styled(under, Style::default().add_modifier(block)),
@@ -14686,7 +14713,8 @@ impl App {
             } else {
                 dim()
             });
-        let input = Paragraph::new(line.into())
+        let text: Text<'static> = line.into();
+        let input = Paragraph::new(text.clone())
             .wrap(Wrap { trim: false })
             .block(rules);
         // line_count already counts the two rules, so this is the whole framed box.
@@ -14701,7 +14729,10 @@ impl App {
         {
             rows = form.prompt_rows(width);
         }
-        (input, rows)
+        // A draft taller than the box scrolls to the row the cursor is on, so what is typed stays
+        // in view.
+        let scroll = caret_rows(&text, width).saturating_sub(rows.saturating_sub(2));
+        (input.scroll((scroll, 0)), rows)
     }
 
     fn draw_panel(&mut self, frame: &mut Frame, name: &str, pane: Rect) {
@@ -21178,6 +21209,43 @@ states:
             snap("héllo", 2),
             1,
             "a stale offset lands on a character boundary"
+        );
+    }
+
+    /// A draft that fills the row exactly used to lose its block cursor to the rule below, and a
+    /// draft taller than the box hid the row being typed on.
+    #[test]
+    fn the_composer_keeps_its_cursor_visible_when_the_draft_fills_the_box() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        app.refresh().unwrap();
+        // The cursor's row and the text on it, for whatever is drafted.
+        let cursor_row = |app: &mut App| {
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 24)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            t.backend()
+                .buffer()
+                .content()
+                .chunks(40)
+                .find(|row| row.iter().any(|c| c.modifier.contains(Modifier::REVERSED)))
+                .map(|row| row.iter().map(|c| c.symbol()).collect::<String>())
+        };
+        // 11 columns of prompt and 29 of text fill the 40-column frame exactly.
+        app.text = "ab ab ab ab ab ab ab ab ab xx".into();
+        app.caret = app.text.len();
+        let row = cursor_row(&mut app);
+        assert_eq!(
+            row.as_deref().map(str::trim_end),
+            Some("xx"),
+            "the last word carries the cursor to its own row instead of dropping it on the rule"
+        );
+        app.text = "ab ".repeat(80) + "LAST";
+        app.caret = app.text.len();
+        let row = cursor_row(&mut app);
+        assert!(
+            row.as_deref().is_some_and(|r| r.contains("LAST")),
+            "a draft past the box's ten rows scrolls to the row being typed on: {row:?}"
         );
     }
 
