@@ -16,7 +16,7 @@ use crate::{
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    mcp, output, runner, terminal, terminal_host, transcript,
+    mcp, output, runner, search, terminal, terminal_host, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -1144,6 +1144,42 @@ fn guide_keys(guide: &[GuideGroup], title: &str) -> Vec<(String, String)> {
         .unwrap_or_default()
 }
 
+/// Every shortcut as one searchable line, in the order Help draws them, so a result
+/// position names a place in the tree. Both search modes read the same text.
+struct GuideCorpus {
+    /// The group, section and key each line came from.
+    places: Vec<(usize, usize, usize)>,
+    lines: search::Corpus,
+}
+
+fn guide_corpus() -> &'static GuideCorpus {
+    static CORPUS: OnceLock<GuideCorpus> = OnceLock::new();
+    CORPUS.get_or_init(|| {
+        let mut places = vec![];
+        let mut texts = vec![];
+        for (g, group) in guide_groups().iter().enumerate() {
+            for (s, section) in group.sections.iter().enumerate() {
+                for (k, (key, what)) in section.keys.iter().enumerate() {
+                    places.push((g, s, k));
+                    texts.push(format!("{} {} {key} {what}", group.title, section.title));
+                }
+            }
+        }
+        GuideCorpus {
+            places,
+            lines: search::Corpus { texts },
+        }
+    })
+}
+
+/// Where one shortcut sits in the flat corpus.
+fn guide_position(group: usize, section: usize, key: usize) -> Option<usize> {
+    guide_corpus()
+        .places
+        .iter()
+        .position(|place| *place == (group, section, key))
+}
+
 fn guide_key_width() -> usize {
     guide_groups()
         .iter()
@@ -1178,6 +1214,13 @@ struct Guide {
     /// dashboard fits on one screen; `new` opens the place Help was pressed from.
     open: HashSet<GuideHead>,
     cursor: usize,
+    /// Words or meaning, the same two searches history offers, on the same key.
+    search: search::Mode,
+    /// Shortcut positions the current search found, and the search that found them.
+    hits: HashSet<usize>,
+    found: Option<(String, search::Mode)>,
+    /// What the meaning search is doing, when it has something to say.
+    status: Option<String>,
 }
 
 impl Guide {
@@ -1215,15 +1258,53 @@ impl Guide {
         !self.find.text.trim().is_empty()
     }
 
+    /// Word search answers itself: the corpus is in the binary and no model is involved.
+    fn refresh_words(&mut self) {
+        let query = self.find.text.trim().to_owned();
+        self.status = None;
+        if query.is_empty() {
+            self.hits.clear();
+            self.found = None;
+            return;
+        }
+        match guide_corpus().lines.words(&query) {
+            Ok(hits) => self.hits = hits,
+            Err(error) => {
+                self.hits.clear();
+                self.status = Some(format!("Search failed: {error:#}"));
+            }
+        }
+        self.found = Some((query, search::Mode::Words));
+    }
+
+    /// Bring the results up to date. Meaning arrives over several frames, so the dashboard
+    /// calls this every frame while Help is open rather than only on a keystroke.
+    fn refresh(&mut self, topics: &mut search::Topics) {
+        let query = self.find.text.trim().to_owned();
+        if query.is_empty() {
+            self.hits.clear();
+            self.found = None;
+            self.status = None;
+            return;
+        }
+        match self.search {
+            search::Mode::Words => {
+                if self.found.as_ref() != Some(&(query, search::Mode::Words)) {
+                    self.refresh_words();
+                }
+            }
+            search::Mode::Meaning => {
+                let found = topics.search(&guide_corpus().lines, &query);
+                self.hits = found.scores.keys().copied().collect();
+                self.status = found.status;
+                self.found = Some((query, search::Mode::Meaning));
+            }
+        }
+    }
+
     fn view(&self, columns: u16) -> GuideView {
         let columns = columns.max(1) as usize;
-        let words: Vec<String> = self
-            .find
-            .text
-            .split_whitespace()
-            .map(str::to_lowercase)
-            .collect();
-        let searching = !words.is_empty();
+        let searching = self.searching();
         let width = guide_key_width();
         let indent = 4 + width + 2;
         let mut view = GuideView {
@@ -1244,11 +1325,11 @@ impl Guide {
                     let keys: Vec<_> = section
                         .keys
                         .iter()
-                        .filter(|(key, what)| {
-                            let text = format!("{} {} {key} {what}", group.title, section.title)
-                                .to_lowercase();
-                            words.iter().all(|word| text.contains(word))
+                        .enumerate()
+                        .filter(|(k, _)| {
+                            guide_position(g, s, *k).is_some_and(|at| self.hits.contains(&at))
                         })
+                        .map(|(_, pair)| pair)
                         .collect();
                     (!keys.is_empty()).then_some((s, keys))
                 })
@@ -1342,7 +1423,10 @@ impl Guide {
                     "Try a key or topic, such as config, clipboard or pane.",
                     dim(),
                 )),
-                Line::from(Span::styled("Esc clears the search.", dim())),
+                Line::from(Span::styled(
+                    "Shift+Tab searches by meaning instead of words. Esc clears the search.",
+                    dim(),
+                )),
             ]
             .into_iter()
             .flat_map(|line| hang(line.spans, 0, columns))
@@ -1401,6 +1485,28 @@ impl Guide {
         true
     }
 
+    /// Set the search the way typing would, results included.
+    #[cfg(test)]
+    fn typed(&mut self, query: &str) {
+        self.find = Input::default();
+        for c in query.chars() {
+            self.key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+    }
+
+    /// The query or the mode changed, so what the last search found no longer holds.
+    /// Words are answered here; meaning has to wait for the model worker.
+    fn reindex(&mut self) {
+        self.found = None;
+        self.top = 0;
+        if self.search == search::Mode::Words {
+            self.refresh_words();
+        } else {
+            self.hits.clear();
+            self.status = self.searching().then(|| "Searching by meaning…".into());
+        }
+    }
+
     /// Return true only when leaving Help. Search editing never launches an action.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         let action = key_action(BindingState::Guide, code, mods);
@@ -1408,7 +1514,7 @@ impl Guide {
         match action {
             KeyAction::Cancel if !self.find.text.is_empty() => {
                 self.find = Input::default();
-                self.top = 0;
+                self.reindex();
                 self.follow();
             }
             KeyAction::Cancel => return true,
@@ -1429,8 +1535,13 @@ impl Guide {
             KeyAction::Filter => {}
             KeyAction::Clear => {
                 self.find = Input::default();
-                self.top = 0;
+                self.reindex();
                 self.follow();
+            }
+            // Help is not a place to launch anything, so its cycle key is free for search.
+            KeyAction::Cycle => {
+                self.search = self.search.other();
+                self.reindex();
             }
             KeyAction::Up if searching => self.top = self.top.saturating_sub(1),
             KeyAction::Down if searching => self.top = (self.top + 1).min(self.max_scroll()),
@@ -1450,7 +1561,7 @@ impl Guide {
             KeyAction::End => self.top = self.max_scroll(),
             _ => {
                 if self.find.key(code, mods) {
-                    self.top = 0;
+                    self.reindex();
                 }
             }
         }
@@ -1474,14 +1585,21 @@ impl Guide {
             visible.push(Line::from(Span::styled("help", lit())));
             visible.push(Line::from(Span::styled(
                 if self.searching() {
+                    let found = self.status.clone().unwrap_or_else(|| {
+                        format!(
+                            "{} {}",
+                            view.matches,
+                            if view.matches == 1 {
+                                "match"
+                            } else {
+                                "matches"
+                            }
+                        )
+                    });
                     format!(
-                        "{} {} · esc clears search",
-                        view.matches,
-                        if view.matches == 1 {
-                            "match"
-                        } else {
-                            "matches"
-                        }
+                        "{found} · {} · shift+tab {} · esc clears",
+                        self.search.label(),
+                        self.search.other().label(),
                     )
                 } else {
                     format!(
@@ -1526,7 +1644,8 @@ impl Guide {
 
     fn hints(&self) -> Line<'static> {
         if self.searching() {
-            return hints(&[("↑↓", "scroll"), ("esc", "clear")]);
+            let switch = format!("{} search", self.search.other().label());
+            return hints(&[("↑↓", "scroll"), ("shift+tab", &switch), ("esc", "clear")]);
         }
         hints(&[
             ("↑↓", "heading"),
@@ -8314,6 +8433,8 @@ struct App {
     claude: PathBuf,
     /// Fallback launch directory and base for relative folder input.
     cwd: PathBuf,
+    /// The model behind Help's meaning search. Nothing loads until a reader asks for it.
+    topics: search::Topics,
     /// Index into `MENU`.
     menu: usize,
     data: Data,
@@ -8676,6 +8797,8 @@ impl App {
             state: state.to_owned(),
             claude: claude.to_owned(),
             cwd: std::env::current_dir().context("dashboard working directory")?,
+            // Fixtures never load or download a model, as history's fixture reader does not.
+            topics: search::Topics::new((!cfg!(test)).then(|| state.join("search"))),
             menu: 0,
             split: start.pane,
             data,
@@ -12331,7 +12454,7 @@ impl App {
             let at = snap(&guide.find.text, guide.find.at);
             guide.find.text.insert_str(at, &pasted);
             guide.find.at = at + pasted.len();
-            guide.top = 0;
+            guide.reindex();
             return;
         }
         if self.focus.is_none()
@@ -14868,6 +14991,10 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         self.sync_suggestions();
+        // Meaning arrives from the worker between keystrokes, so Help refreshes per frame.
+        if let Mode::Guide(guide) = &mut self.mode {
+            guide.refresh(&mut self.topics);
+        }
         let area = frame.area();
         self.size = (area.height, area.width);
         self.pane = self.pane(area);
@@ -16608,7 +16735,7 @@ states:
     fn guide_search_matches_topics_and_scrolls_to_the_last_wrapped_line() {
         let mut guide = Guide::new(&["Session rows"]);
         guide.area = Rect::new(0, 0, 80, 20);
-        guide.find.text = "CONFIG reset".into();
+        guide.typed("CONFIG reset");
         let found = guide.view(80);
         assert_eq!(found.matches, 1, "one shortcut resets a setting");
         let text: Vec<String> = found.lines.iter().map(ToString::to_string).collect();
@@ -16621,7 +16748,7 @@ states:
             !text.iter().any(|line| line.contains("Session rows")),
             "searching ignores what was open: {text:#?}"
         );
-        guide.find.text = "config clipboard".into();
+        guide.typed("config clipboard");
         assert_eq!(guide.view(80).matches, 0);
         guide.find = Input::default();
         for width in [12, 32, 60, 120] {
@@ -16820,6 +16947,94 @@ states:
     }
 
     #[test]
+    fn help_words_search_stems_and_drops_filler_like_history() {
+        let mut guide = Guide::new(&["List navigation"]);
+        guide.area = Rect::new(0, 0, 80, 24);
+        let found = |guide: &Guide| {
+            guide
+                .view(80)
+                .lines
+                .iter()
+                .map(ToString::to_string)
+                .filter(|line| line.contains("Reset a setting to its default."))
+                .count()
+        };
+        // The literal words are "Reset a setting to its default"; both endings stem to it.
+        guide.typed("resetting settings");
+        assert_eq!(found(&guide), 1, "{:#?}", guide.view(80).lines);
+        guide.typed("reset");
+        let whole = guide.view(80).matches;
+        guide.typed("how do I reset a setting");
+        assert_eq!(found(&guide), 1, "filler words are not searched for");
+        assert!(guide.view(80).matches <= whole);
+        guide.typed("rese");
+        assert_eq!(
+            found(&guide),
+            1,
+            "a prefix matches while the reader is still typing"
+        );
+        guide.typed("resets");
+        assert_eq!(guide.search, search::Mode::Words);
+    }
+
+    #[test]
+    fn help_meaning_search_answers_shift_tab_with_the_model() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        app.mode = Mode::Guide(Guide::new(&["List navigation"]));
+        app.paste("abandon a runaway agent");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 72).join("\n");
+        assert!(
+            text.contains("0 matches · words · shift+tab meaning"),
+            "words find nothing and name the other search: {text}"
+        );
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        let Mode::Guide(guide) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(guide.search, search::Mode::Meaning);
+        // Stand in for the model: the stop shortcut is what this query means.
+        let corpus = guide_corpus();
+        let stop = corpus
+            .lines
+            .texts
+            .iter()
+            .position(|text| text.contains("Press twice to stop the job"))
+            .expect("a stop shortcut to find");
+        let unit = |on: usize| {
+            let mut v = vec![0.0; search::DIMENSIONS];
+            v[on] = 1.0;
+            v
+        };
+        app.topics.preload(
+            &corpus.lines,
+            ("abandon runaway agent", unit(0)),
+            (0..corpus.places.len())
+                .map(|i| unit(if i == stop { 0 } else { 1 }))
+                .collect(),
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 72).join("\n");
+        assert!(
+            text.contains("1 match · meaning · shift+tab words"),
+            "meaning reports its own count: {text}"
+        );
+        assert!(
+            text.contains("Press twice to stop the job"),
+            "the shortcut the query means is shown: {text}"
+        );
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(
+            rows(&t, 72).join("\n").contains("0 matches · words"),
+            "shift+tab goes back to words"
+        );
+    }
+
+    #[test]
     fn guide_keys_come_from_the_binding_definitions() {
         let guide = guide_groups();
         let all = guide_pairs(guide);
@@ -16902,7 +17117,7 @@ states:
             );
         }
         let mut searched = Guide::default();
-        searched.find.text = "job rows delete".into();
+        searched.typed("job rows delete");
         let found = searched.view(120);
         assert_eq!(found.matches, 1);
         let lines: Vec<String> = found.lines.iter().map(ToString::to_string).collect();

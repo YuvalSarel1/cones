@@ -126,11 +126,17 @@ its controls apply, including what Enter and stop do for that selection, and
 names the state whose keys also work there instead of repeating them.
 
 The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f`
-also start search. Each search word must match the shortcut, description,
-heading or group name, regardless of case. For example, `config reset` finds
-reset under Config. Searching flattens the tree and shows every match with its
-heading, and `↑ ↓` scroll while it is active. The guide shows the match count
-and explains how to recover from an empty result.
+also start search. It searches by the same two rules as [history](#history),
+and `shift+tab` switches between them. By words, the default, every word typed
+must appear in one shortcut's key, description, heading or group name; endings
+and prefixes are stemmed, so `resetting settings` finds `Reset a setting to
+its default`, and common English filler is dropped. By meaning, shortcuts
+close to the query are shown instead, so `abandon a runaway agent` reaches the
+stop keys without naming them. Meaning uses the same local MiniLM model
+history uses and needs it downloaded once; words never load it. Searching
+flattens the tree and shows every match with its heading, and `↑ ↓` scroll
+while it is active. The prompt names the active search, its match count and
+how to recover from an empty result.
 
 `page up` and `page down` scroll a page; `home` and `end` reach the first and
 last lines, and the wheel scrolls by rendered line. Shortcuts stack above their

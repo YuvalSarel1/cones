@@ -456,6 +456,9 @@ states:
       - keys: ["ctrl+f"]
         action: filter
         description: "Focus the search."
+      - keys: ["shift+tab"]
+        action: cycle
+        description: "Switch search between words and meaning."
       - keys: ["ctrl+u"]
         action: clear
         description: "Clear the whole search."

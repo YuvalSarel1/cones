@@ -26,7 +26,7 @@ const BATCH: usize = 256;
 /// Sequences per forward pass. Activations are this many by 256 tokens by 384 floats,
 /// so a wider pass buys little and costs memory.
 const FORWARD: usize = 32;
-const DIMENSIONS: usize = 384;
+pub(crate) const DIMENSIONS: usize = 384;
 /// MiniLM puts unrelated English prose around 0.3, so anything lower is noise, not a result.
 const SEMANTIC_FLOOR: f32 = 0.5;
 const MODEL_REVISION: &str = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41";
@@ -457,6 +457,188 @@ impl Index {
             .context("embedding worker exited")?;
         worker.busy = true;
         Ok(())
+    }
+}
+
+/// A corpus small enough to live in the binary, searched by the same rules the history
+/// index uses. Help is the only one: a few hundred shortcut lines that never change.
+pub(crate) struct Corpus {
+    pub texts: Vec<String>,
+}
+
+/// What a meaning search found so far. Scores are by corpus position.
+#[derive(Default)]
+pub(crate) struct Meaning {
+    pub scores: HashMap<usize, f32>,
+    pub pending: bool,
+    pub status: Option<String>,
+}
+
+impl Corpus {
+    /// Word search with the history index's tokenizer, stemming and prefix rules, so the
+    /// same wording finds the same lines in both places. The table is built per search
+    /// because the corpus is tiny and a search only happens on a keystroke.
+    pub(crate) fn words(&self, query: &str) -> Result<HashSet<usize>> {
+        let mut found = HashSet::new();
+        let terms = terms(query);
+        if terms.is_empty() {
+            return Ok(found);
+        }
+        // Quote each token. User input is always data, never an FTS expression.
+        let expression = terms
+            .iter()
+            .map(|s| format!("\"{}\"*", s.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let db = Connection::open_in_memory()?;
+        db.execute_batch(
+            "CREATE VIRTUAL TABLE lines USING fts5(text, tokenize = 'porter unicode61');",
+        )?;
+        {
+            let mut insert = db.prepare("INSERT INTO lines (rowid, text) VALUES (?1, ?2)")?;
+            for (i, text) in self.texts.iter().enumerate() {
+                insert.execute(params![i as i64 + 1, text])?;
+            }
+        }
+        let mut statement = db.prepare("SELECT rowid FROM lines WHERE lines MATCH ?1")?;
+        let mut rows = statement.query([expression])?;
+        while let Some(row) = rows.next()? {
+            let row: i64 = row.get(0)?;
+            found.insert(row as usize - 1);
+        }
+        Ok(found)
+    }
+}
+
+/// Meaning search over a `Corpus`. Everything is embedded in one pass and kept in memory:
+/// the text ships with the binary, so there is no file to watch and nothing to persist.
+#[derive(Default)]
+pub(crate) struct Topics {
+    directory: Option<PathBuf>,
+    worker: Option<Embeddings>,
+    vectors: HashMap<String, Vec<f32>>,
+    query_vector: Option<(String, Vec<f32>)>,
+    failure: Option<String>,
+}
+
+impl Topics {
+    /// Without a directory there is nowhere to keep the model, so meaning stays off.
+    /// Fixtures pass none and never load or download one.
+    pub(crate) fn new(directory: Option<PathBuf>) -> Self {
+        Self {
+            directory,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn search(&mut self, corpus: &Corpus, query: &str) -> Meaning {
+        let mut meaning = Meaning::default();
+        let cleaned = terms(query).join(" ");
+        if cleaned.is_empty() {
+            return meaning;
+        }
+        self.poll();
+        if self.directory.is_none() {
+            meaning.status = Some("Search by meaning is unavailable here".into());
+            return meaning;
+        }
+        if self.failure.is_some() {
+            meaning.status =
+                Some("Search by meaning unavailable · shift+tab searches words".into());
+            return meaning;
+        }
+        let hashes: Vec<String> = corpus.texts.iter().map(|t| digest(t)).collect();
+        let missing: Vec<(String, String)> = hashes
+            .iter()
+            .zip(&corpus.texts)
+            .filter(|(hash, _)| !self.vectors.contains_key(*hash))
+            .map(|(hash, text)| (hash.clone(), text.clone()))
+            .collect();
+        let stale = self
+            .query_vector
+            .as_ref()
+            .is_none_or(|(q, _)| *q != cleaned);
+        if let Some((_, vector)) = self.query_vector.as_ref().filter(|(q, _)| *q == cleaned) {
+            for (i, hash) in hashes.iter().enumerate() {
+                let Some(other) = self.vectors.get(hash) else {
+                    continue;
+                };
+                let score = cosine(vector, other);
+                if score >= SEMANTIC_FLOOR {
+                    meaning.scores.insert(i, score);
+                }
+            }
+        }
+        meaning.pending = !missing.is_empty() || stale;
+        if meaning.pending {
+            meaning.status = Some("Searching by meaning…".into());
+            if let Err(error) = self.schedule(&cleaned, missing) {
+                self.failure = Some(format!("{error:#}"));
+            }
+        }
+        meaning
+    }
+
+    fn poll(&mut self) {
+        let Some(worker) = &mut self.worker else {
+            return;
+        };
+        match worker.output.try_recv() {
+            Ok(Ok(response)) => {
+                worker.busy = false;
+                self.query_vector = Some((response.query, response.query_vector));
+                self.vectors.extend(
+                    response
+                        .vectors
+                        .into_iter()
+                        .filter(|(_, v)| v.len() == DIMENSIONS && v.iter().all(|x| x.is_finite())),
+                );
+            }
+            Ok(Err(error)) => {
+                worker.busy = false;
+                self.failure = Some(error);
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.failure = Some("embedding worker exited".into());
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
+    fn schedule(&mut self, query: &str, chunks: Vec<(String, String)>) -> Result<()> {
+        if self.worker.is_none() {
+            self.worker = Some(Embeddings::new(
+                self.directory.as_ref().unwrap().join("models"),
+            )?);
+        }
+        let worker = self.worker.as_mut().unwrap();
+        if worker.busy {
+            return Ok(());
+        }
+        worker
+            .input
+            .send(EmbeddingRequest {
+                query: query.into(),
+                chunks: chunks.into_iter().take(BATCH).collect(),
+            })
+            .context("embedding worker exited")?;
+        worker.busy = true;
+        Ok(())
+    }
+
+    /// Stand in for the model in tests: the vectors a finished pass would have produced.
+    #[cfg(test)]
+    pub(crate) fn preload(
+        &mut self,
+        corpus: &Corpus,
+        query: (&str, Vec<f32>),
+        vectors: Vec<Vec<f32>>,
+    ) {
+        self.directory = Some(PathBuf::from("/nonexistent"));
+        self.query_vector = Some((terms(query.0).join(" "), query.1));
+        for (text, vector) in corpus.texts.iter().zip(vectors) {
+            self.vectors.insert(digest(text), vector);
+        }
     }
 }
 
