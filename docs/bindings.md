@@ -12,7 +12,8 @@ The file has `version: 1` and a `states` list. Each state has:
 | Field | Meaning |
 | --- | --- |
 | `id` | State selected by the dashboard's input router. |
-| `title` | Section name in Help. |
+| `group` | Place in Help this state is filed under. States sharing one open and close together. |
+| `title` | Heading name in Help. |
 | `when` | Explanation of when the state applies, shown in Help. |
 | `extends` | Optional state whose bindings are inherited. |
 | `bindings` | Keys, action names and explanations for this state. |
@@ -27,10 +28,13 @@ Each binding has a `keys` list, an `action` and a `description`. For example:
 ```
 
 Aliases share one action and description. In a state with `extends`, a local
-key replaces that inherited key; other inherited keys remain available.
-Help shows list controls once, split into navigation, sessions, terminals,
-folders, jobs, runs and the composer. Menu, history and folder-entry sections
-show their specific controls and refer back to shared navigation.
+key replaces that inherited key; other inherited keys remain available. Help
+names the inherited state under the heading instead of repeating its keys.
+
+Groups are what Help opens and closes, so a new state joins an existing group
+unless it is a place of its own. The current set is the list, viewers, the
+preview, menus, Help, config, columns, MCP servers, jobs and text editing. The
+list group holds the row types, the composer and the prompts that replace it.
 
 A Help section has a `title`, a `when` explanation and `bindings` entries
 referencing an `action` in the state's bindings. Each entry can override the
@@ -49,7 +53,8 @@ same input that way. Unlisted modifier combinations do not match a binding.
 Loading rejects unknown fields, states, actions and key names, unsupported
 versions, repeated modifiers, duplicate states or keys within a state, missing
 parent states and inheritance cycles. Keys and descriptions cannot be empty;
-states and Help sections also need a title and condition. Section references
+states also need a group, a title and a condition, and Help sections a title
+and a condition. Section references
 must name an action defined in that state. Action names refer to Rust handlers:
 adding a new behavior still requires code.
 

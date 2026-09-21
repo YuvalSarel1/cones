@@ -114,17 +114,34 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide. The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f` also start search. Each search word must match the shortcut, description or section name, regardless of case. For example, `config reset` finds reset in the Config section. The guide shows the match count and explains how to recover from an empty result.
+`help` and `ctrl+g` open the built-in guide. It opens on where you pressed it
+from: the heading for the selected row, or the composer when an instruction is
+typed. Everything else stays collapsed, so the whole dashboard reads as ten
+places on one screen. The groups are the list, viewers, the preview, menus,
+Help, config, columns, MCP servers, jobs and text editing.
 
-The guide separates shared navigation, session rows, terminal rows, folder
-rows, job rows, run rows, history and the composer. Each section says when its
-controls apply, including what Enter and stop do for that selection.
+`↑ ↓` move between headings and `enter` opens or closes the one under the
+cursor; `→` opens it and `←` closes it before leaving. An open heading says when
+its controls apply, including what Enter and stop do for that selection, and
+names the state whose keys also work there instead of repeating them.
+
+The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f`
+also start search. Each search word must match the shortcut, description,
+heading or group name, regardless of case. For example, `config reset` finds
+reset under Config. Searching flattens the tree and shows every match with its
+heading, and `↑ ↓` scroll while it is active. The guide shows the match count
+and explains how to recover from an empty result.
+
+`page up` and `page down` scroll a page; `home` and `end` reach the first and
+last lines, and the wheel scrolls by rendered line. Shortcuts stack above their
+descriptions in narrow panes. `esc` or `ctrl+u` clears the search; with an empty
+search, `esc` returns to the list. `ctrl+g` closes Help directly.
 
 Shortcuts come from the same [YAML definitions](bindings.md) used for input
-handling. Help explains how to edit `assets/bindings.yaml` and rebuild and
-restart cones. There is no user override file or in-app binding editor yet.
-
-`↑ ↓` and the wheel scroll by rendered lines. `page up` and `page down` scroll a page; `home` and `end` reach the first and last results. Shortcuts stack above their descriptions in narrow panes. Left and right edit a nonempty search, and `enter` keeps its results visible. `esc` or `ctrl+u` clears the search; with an empty search, `esc` or `←` returns to the list. `ctrl+g` closes Help directly.
+handling. Edit `assets/bindings.yaml`, then rebuild and restart cones; the
+native keys that return to the list are `viewer.input.return_to_list` in the
+`assets/harnesses/` definitions. There is no user override file, `jobs.yaml`
+setting or in-app binding editor yet.
 
 ## Sessions and runs
 

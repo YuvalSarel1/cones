@@ -531,9 +531,10 @@ fn capture_config() -> Result<()> {
         ("help-empty", "not-a-shortcut", 60, 24),
         ("help-narrow", "viewer", 40, 28),
     ] {
+        let origin = app.guide_origin();
         app.mode = Mode::Guide(Guide {
             find: Input::new(query),
-            ..Guide::default()
+            ..Guide::new(&origin)
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height))?;
         terminal.draw(|frame| app.draw(frame))?;
