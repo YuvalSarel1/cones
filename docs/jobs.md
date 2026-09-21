@@ -24,6 +24,7 @@ jobs:
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
 | `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
+| `folders` | [Pinned folders](dashboard.md#add-a-folder). |
 | `pane` | [Viewer position and size](#pane). |
 | `start` | [Initial dashboard settings](#start). |
 | `activity` | [Activity chart settings](#activity). |
@@ -96,6 +97,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `history_columns` | `[last_active, folder, model, context, last_reply]` |
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
+| `folders` | `[]`: folders pinned in the session list, each absolute or under `~`. The config screen holds them on one comma-separated row; `+ add folder` and `ctrl+x` on a pinned row write the same list. A path carrying a comma, a quote or a bracket is refused. |
 
 The agent `folder` column appears when grouped by state. Normal folder groups identify it in their headings. Agent defaults hide `last_reply` while the preview pane is open; explicitly selecting it in `columns` keeps it visible. Grouping never changes last reply into a folder. History always uses its own selection, independently of grouping and pane visibility.
 

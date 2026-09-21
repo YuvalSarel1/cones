@@ -178,9 +178,7 @@ While the row or one of its offers holds the cursor, folders are offered under i
 
 The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows.
 
-| File under the state directory | Contents |
-| --- | --- |
-| `folders` | Pinned paths, one per line. Sessions replace the empty-folder placeholder while present; it returns when they leave. |
+Pins are the [`folders` setting](jobs.md#list-settings) in `jobs.yaml`, so the config screen holds the same list on one row and either place can edit it. Sessions replace the empty-folder placeholder while present; it returns when they leave. A list an older cones left in the state directory is imported the first time a file without the setting is read.
 
 ### Fork a conversation
 

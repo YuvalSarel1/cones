@@ -302,6 +302,9 @@ pub struct JobsFile {
     /// Leave out a table column the list's right edge would cut through.
     #[serde(default)]
     pub whole_columns: Option<bool>,
+    /// Folders pinned in the list, kept as rows when they hold no session.
+    #[serde(default)]
+    pub folders: Option<Vec<String>>,
 }
 
 pub const WHOLE_COLUMNS: bool = true;
@@ -765,6 +768,32 @@ pub fn file_whole_columns(path: &Path) -> Option<bool> {
     parse(path).ok().and_then(|d| d.whole_columns)
 }
 
+/// Read the pinned folders as written; missing or invalid files return `None`.
+pub fn file_folders(path: &Path) -> Option<Vec<String>> {
+    parse(path).ok().and_then(|d| d.folders)
+}
+
+/// Pinned folders as paths, with `~` expanded. A path the file states relatively is left
+/// to the reader's own base, since the file outlives the directory cones was started in.
+pub fn folders(path: &Path) -> Vec<PathBuf> {
+    file_folders(path)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|f| folder_path(f).ok())
+        .collect()
+}
+
+/// One pinned path, `~` expanded. Relative paths are refused rather than resolved against
+/// whatever directory happens to be current.
+pub fn folder_path(folder: &str) -> Result<PathBuf> {
+    let folder = folder.trim();
+    ensure!(
+        folder.starts_with('/') || folder.starts_with('~'),
+        "folders: {folder}: an absolute path, or one under ~"
+    );
+    expand_path(Path::new(folder), Path::new("/")).map_err(|e| e.context("folders"))
+}
+
 /// Read columns, falling back to built-ins if missing or invalid.
 pub fn columns(path: &Path) -> Vec<String> {
     parse(path)
@@ -1042,6 +1071,12 @@ pub fn write_column_set(path: &Path, key: &str, columns: Option<&[String]>) -> R
             );
         }
     }
+    write_flow_list(path, key, names.as_deref())
+}
+
+/// Replace one top-level flow list, preserving every other setting and the job blocks.
+/// `None` removes the key, restoring whatever the built-in says.
+fn write_flow_list(path: &Path, key: &str, items: Option<&[String]>) -> Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1058,11 +1093,29 @@ pub fn write_column_set(path: &Path, key: &str, columns: Option<&[String]>) -> R
     {
         end -= 1;
     }
-    let replacement = names
-        .map(|names| vec![format!("{key}: [{}]", names.join(", "))])
+    let replacement = items
+        .map(|items| vec![format!("{key}: [{}]", items.join(", "))])
         .unwrap_or_default();
     out.splice(start..end, replacement);
     save(path, out.join("\n") + "\n")
+}
+
+/// Replace the pinned folders, preserving every other setting and the job blocks. Paths are
+/// quoted, so one holding a colon or a leading `~` reads back as the string it was written as.
+pub fn write_folders(path: &Path, folders: &[String]) -> Result<()> {
+    let mut items = Vec::new();
+    for folder in folders {
+        let folder = folder.trim();
+        folder_path(folder)?;
+        // The config editor holds the list as one comma-separated line, and the file states it
+        // as a flow sequence; a path carrying either punctuation could not survive both.
+        ensure!(
+            !folder.contains([',', '"', '\\', '[', ']']),
+            "folders: {folder}: a path cones cannot keep in a list"
+        );
+        items.push(format!("\"{folder}\""));
+    }
+    write_flow_list(path, "folders", (!items.is_empty()).then_some(&items[..]))
 }
 
 /// Validate and replace dashboard settings and defaults while preserving job blocks.
@@ -2363,6 +2416,46 @@ mod tests {
         .unwrap();
         assert!(!fs::read_to_string(&p).unwrap().contains("whole_columns"));
         assert!(whole_columns(&p));
+    }
+
+    #[test]
+    fn pinned_folders_are_read_checked_and_written_beside_the_other_settings() {
+        let (_d, p) = file(FILE);
+        assert_eq!(file_folders(&p), None, "no key means nothing pinned");
+        assert!(folders(&p).is_empty());
+        write_folders(&p, &["~/work".to_owned(), "/src/one".to_owned()]).unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("folders: [\"~/work\", \"/src/one\"]\n"),
+            "the paths are quoted: {text}"
+        );
+        assert!(text.contains("timeout_min: 5   # quick"), "{text}");
+        assert!(text.contains("columns: [state]"), "{text}");
+        assert_eq!(read_jobs(&p).unwrap().len(), 2, "the job blocks are intact");
+        assert_eq!(
+            file_folders(&p),
+            Some(vec!["~/work".to_owned(), "/src/one".to_owned()])
+        );
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            folders(&p),
+            vec![home.join("work"), PathBuf::from("/src/one")]
+        );
+        for bad in ["work", "./work", "a,b"] {
+            let e = write_folders(&p, &[bad.to_owned()]).unwrap_err();
+            assert!(
+                format!("{e:#}").starts_with("folders:"),
+                "{bad} is refused before the line is written: {e:#}"
+            );
+        }
+        assert_eq!(
+            file_folders(&p),
+            Some(vec!["~/work".to_owned(), "/src/one".to_owned()]),
+            "and the file keeps what it had"
+        );
+        write_folders(&p, &[]).unwrap();
+        assert!(!fs::read_to_string(&p).unwrap().contains("folders:"));
+        assert_eq!(file_folders(&p), None);
     }
 
     #[test]

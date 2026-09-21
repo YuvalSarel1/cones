@@ -275,6 +275,7 @@ impl Ledger {
             .map(str::to_owned)
             .collect())
     }
+    /// Pins an older cones left in the state directory; `jobs.yaml` holds them now.
     pub fn folders(&self) -> Result<Vec<PathBuf>> {
         Ok(std::fs::read_to_string(self.state.join("folders"))
             .unwrap_or_default()
@@ -282,14 +283,6 @@ impl Ledger {
             .filter(|l| !l.is_empty())
             .map(PathBuf::from)
             .collect())
-    }
-    pub fn write_folders(&self, folders: &[PathBuf]) -> Result<()> {
-        let mut f = private_file(&self.state.join("folders"))?;
-        f.set_len(0)?;
-        for p in folders {
-            writeln!(f, "{}", p.display())?;
-        }
-        Ok(())
     }
     pub fn resolve(&self, id: &str) -> Result<Run> {
         let candidates: Vec<_> = self

@@ -312,7 +312,18 @@ impl Data {
             d.phase("run_reports", reports_started);
         }
         let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
-        let folders = phase!("ledger.folders", ledger.folders());
+        // Pins live in `jobs.yaml` so the config editor holds them. A list the ledger's state
+        // directory still carries is imported the first time cones reads a file without the key.
+        let folders = match config::file_folders(jobs_path) {
+            Some(_) => config::folders(jobs_path),
+            None => {
+                let old = phase!("ledger.folders", ledger.folders());
+                if !old.is_empty() {
+                    let _ = config::write_folders(jobs_path, &tilde_all(&old));
+                }
+                old
+            }
+        };
         let config_started = Instant::now();
         let jobs = match config::read_jobs(jobs_path) {
             Ok(jobs) => jobs,
@@ -3530,6 +3541,11 @@ impl JobForm {
     }
 }
 
+/// Pinned folders as the file states them: `~` form, so a home that moves keeps its pins.
+fn tilde_all(folders: &[PathBuf]) -> Vec<String> {
+    folders.iter().map(|p| fleet::tilde(p)).collect()
+}
+
 /// A config field's grouping, display text, default and input control.
 struct Field {
     group: &'static str,
@@ -3723,7 +3739,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 58] = [
+const FIELDS: [Field; 59] = [
     Field {
         group: "cones",
         sub: "",
@@ -3733,6 +3749,16 @@ const FIELDS: [Field; 58] = [
         long: "Seconds an armed ctrl+x waits for its second press with no key pressed, up to 600. 0 keeps the mark until the next key.",
         builtin: "2",
         input: Answer::Number(1.0),
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "folders",
+        short: "pinned folders",
+        hint: "Folders the list keeps a row for.",
+        long: "Paths pinned in the session list, separated by commas, each absolute or under ~. A pinned folder keeps its row while it holds no session, so an instruction can start there. `+ add folder` at the foot of the list writes the same setting, and ctrl+x on a pinned row removes one.",
+        builtin: "",
+        input: Answer::Typed,
     },
     Field {
         group: "cones",
@@ -4696,7 +4722,7 @@ impl ConfigForm {
                 "droid_in_picker" => flag(d.droid_in_picker),
                 "kimi_in_picker" => flag(d.kimi_in_picker),
 
-                "check" => String::new(),
+                "check" | "folders" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -6008,7 +6034,7 @@ fn config_form(jobs_path: &Path) -> Box<ConfigForm> {
 /// The same form over a policy the caller supplies, which the picker uses to show its
 /// unsaved launch choices.
 fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm> {
-    Box::new(ConfigForm::new(
+    let mut form = Box::new(ConfigForm::new(
         policy,
         config::file_columns(jobs_path).as_deref(),
         config::file_activity(jobs_path).as_ref(),
@@ -6019,7 +6045,11 @@ fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm
         config::file_run_columns(jobs_path).as_deref(),
         config::file_job_columns(jobs_path).as_deref(),
         config::file_history_columns(jobs_path).as_deref(),
-    ))
+    ));
+    form.values[field_at("folders")] = config::file_folders(jobs_path)
+        .unwrap_or_default()
+        .join(", ");
+    form
 }
 
 const COLUMN_SETS: [(&str, &str); 4] = [
@@ -10906,6 +10936,35 @@ impl App {
                 job_columns,
                 history_columns,
             ) => {
+                // The pin list is written on its own, the way the column sets are: it is the
+                // one setting the session list also edits, and the folder rows follow it.
+                if let Mode::Config(form) = &self.mode {
+                    let typed: Vec<String> = form.values[field_at("folders")]
+                        .split(',')
+                        .map(|f| f.trim().to_owned())
+                        .filter(|f| !f.is_empty())
+                        .collect();
+                    if typed != tilde_all(&self.data.folders) {
+                        match typed
+                            .iter()
+                            .map(|f| config::folder_path(f))
+                            .collect::<Result<Vec<_>>>()
+                            .and_then(|paths| {
+                                config::write_folders(&self.jobs_path, &typed).map(|()| paths)
+                            }) {
+                            Ok(paths) => {
+                                self.data.folders = paths;
+                                self.rebuild();
+                            }
+                            Err(e) => {
+                                if let Mode::Config(form) = &mut self.mode {
+                                    form.error = Some(format!("{e:#}"));
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
                 match config::write_config(
                     &self.jobs_path,
                     &policy,
@@ -13156,7 +13215,7 @@ impl App {
     }
 
     fn save_folders(&self) -> Result<()> {
-        Ledger::new(&self.state).and_then(|l| l.write_folders(&self.data.folders))
+        config::write_folders(&self.jobs_path, &tilde_all(&self.data.folders))
     }
 
     fn on_new_folder(&self) -> bool {
@@ -21885,8 +21944,9 @@ states:
             "the folder keeps a row after the session leaves"
         );
         assert_eq!(
-            fs::read_to_string(claude.join("folders")).unwrap(),
-            format!("{}\n/src/one\n", picked.display())
+            config::file_folders(&claude.join("none.yaml")).unwrap(),
+            vec![name.clone(), "/src/one".to_owned()],
+            "both pins are in the config file the editor shows"
         );
 
         app.cursor = folder_row(&app).unwrap();
@@ -21898,10 +21958,81 @@ states:
         app.refresh().unwrap();
         assert!(folder_row(&app).is_none(), "and after a reload");
         assert_eq!(
-            fs::read_to_string(claude.join("folders")).unwrap(),
-            "/src/one\n",
+            config::file_folders(&claude.join("none.yaml")).unwrap(),
+            vec!["/src/one".to_owned()],
             "the other pinned folder stays"
         );
+    }
+
+    #[test]
+    fn the_config_screen_holds_the_pinned_folders() {
+        let d = dir();
+        let claude = d.path();
+        let jobs = claude.join("none.yaml");
+        // A list an older cones left in the state directory moves into the file on the first read.
+        fs::write(claude.join("folders"), "/src/one\n").unwrap();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        assert_eq!(
+            config::file_folders(&jobs),
+            Some(vec!["/src/one".to_owned()]),
+            "the pin is in the file the config screen reads"
+        );
+
+        app.mode = Mode::Config(app.config_form());
+        let value = |app: &App| match &app.mode {
+            Mode::Config(f) => f.values[f.row].clone(),
+            _ => unreachable!("the config screen is open"),
+        };
+        let set = |app: &mut App, text: &str| {
+            if let Mode::Config(f) = &mut app.mode {
+                f.values[f.row] = text.to_owned();
+            }
+        };
+        if let Mode::Config(f) = &mut app.mode {
+            f.go(field_at("folders"));
+        }
+        assert_eq!(value(&app), "/src/one", "the row shows what is pinned");
+
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        set(&mut app, "/src/one, /src/two");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::file_folders(&jobs),
+            Some(vec!["/src/one".to_owned(), "/src/two".to_owned()])
+        );
+        assert_eq!(
+            app.data.folders,
+            vec![PathBuf::from("/src/one"), PathBuf::from("/src/two")],
+            "and the list pins it without a reload"
+        );
+
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        set(&mut app, "/src/one, two");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.error.as_ref().is_some_and(|e| e.starts_with("folders:"))),
+            "a relative path is refused on the row: {:?}",
+            match &app.mode {
+                Mode::Config(f) => f.error.clone(),
+                _ => None,
+            }
+        );
+        assert_eq!(
+            config::file_folders(&jobs),
+            Some(vec!["/src/one".to_owned(), "/src/two".to_owned()]),
+            "and nothing is written"
+        );
+
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        set(&mut app, "");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            config::file_folders(&jobs),
+            None,
+            "an empty row unpins both"
+        );
+        assert!(app.data.folders.is_empty());
     }
 
     #[test]
