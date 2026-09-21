@@ -23,7 +23,7 @@ jobs:
 | `version` | Schema version, currently `4`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `confirm_secs` | [List settings](#list-settings). |
 | `folders` | [Pinned folders](dashboard.md#add-a-folder). |
 | `pane` | [Viewer position and size](#pane). |
 | `start` | [Initial dashboard settings](#start). |
@@ -96,8 +96,9 @@ Each category has an independent column picker. Visible columns can be reordered
 | `job_columns` | `[status, schedule, next_run, model, last_run, folder]` |
 | `history_columns` | `[last_active, folder, model, context, last_reply]` |
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
+| `highlight` | `magenta`: colour of a session row highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
-| `folders` | `[]`: folders pinned in the session list, each absolute or under `~`. The config screen holds them on one comma-separated row; `+ add folder` and `ctrl+x` on a pinned row write the same list. A path carrying a comma, a quote or a bracket is refused. |
+| `folders` | `[]`: folders pinned in the session list, each absolute or under `~`. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it; `+ add folder` and `ctrl+x` on a pinned row in the session list write the same setting. A path carrying a comma, a quote or a bracket is refused. |
 
 The agent `folder` column appears when grouped by state. Normal folder groups identify it in their headings. Agent defaults hide `last_reply` while the preview pane is open; explicitly selecting it in `columns` keeps it visible. Grouping never changes last reply into a folder. History always uses its own selection, independently of grouping and pane visibility.
 

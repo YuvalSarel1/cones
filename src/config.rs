@@ -334,9 +334,27 @@ pub struct JobsFile {
     /// Folders pinned in the list, kept as rows when they hold no session.
     #[serde(default)]
     pub folders: Option<Vec<String>>,
+    /// Colour of a session row marked in the dashboard with ctrl+p.
+    #[serde(default)]
+    pub highlight: Option<String>,
 }
 
 pub const WHOLE_COLUMNS: bool = true;
+
+/// Colour of a highlighted session row. Distinct from the states' green, yellow and red and
+/// from the coordinator's orange, so a mark is never read as a reported state.
+pub const HIGHLIGHT: &str = "magenta";
+
+pub const HIGHLIGHTS: [&str; 6] = ["magenta", "cyan", "blue", "green", "yellow", "red"];
+
+pub fn check_highlight(name: &str) -> Result<()> {
+    ensure!(
+        HIGHLIGHTS.contains(&name),
+        "highlight {name}: one of {}",
+        HIGHLIGHTS.join(", ")
+    );
+    Ok(())
+}
 
 pub const CONFIRM_SECS: f64 = 2.0;
 
@@ -797,6 +815,19 @@ pub fn file_whole_columns(path: &Path) -> Option<bool> {
     parse(path).ok().and_then(|d| d.whole_columns)
 }
 
+/// Read the highlight colour, falling back to the built-in if missing or invalid.
+pub fn highlight(path: &Path) -> String {
+    file_highlight(path).unwrap_or_else(|| HIGHLIGHT.to_owned())
+}
+
+/// Read without applying defaults; missing or invalid files return `None`.
+pub fn file_highlight(path: &Path) -> Option<String> {
+    parse(path)
+        .ok()
+        .and_then(|d| d.highlight)
+        .filter(|name| check_highlight(name).is_ok())
+}
+
 /// Read the pinned folders as written; missing or invalid files return `None`.
 pub fn file_folders(path: &Path) -> Option<Vec<String>> {
     parse(path).ok().and_then(|d| d.folders)
@@ -1106,6 +1137,16 @@ pub fn write_column_set(path: &Path, key: &str, columns: Option<&[String]>) -> R
 /// Replace one top-level flow list, preserving every other setting and the job blocks.
 /// `None` removes the key, restoring whatever the built-in says.
 fn write_flow_list(path: &Path, key: &str, items: Option<&[String]>) -> Result<()> {
+    write_top_level(
+        path,
+        key,
+        items.map(|items| format!("{key}: [{}]", items.join(", "))),
+    )
+}
+
+/// Replace one top-level line, preserving every other setting and the job blocks.
+/// `None` removes the key, restoring whatever the built-in says.
+fn write_top_level(path: &Path, key: &str, line: Option<String>) -> Result<()> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1122,11 +1163,21 @@ fn write_flow_list(path: &Path, key: &str, items: Option<&[String]>) -> Result<(
     {
         end -= 1;
     }
-    let replacement = items
-        .map(|items| vec![format!("{key}: [{}]", items.join(", "))])
-        .unwrap_or_default();
-    out.splice(start..end, replacement);
+    out.splice(start..end, line);
     save(path, out.join("\n") + "\n")
+}
+
+/// Replace the highlight colour, preserving every other setting and the job blocks.
+/// An empty name removes the key and restores the built-in.
+pub fn write_highlight(path: &Path, name: &str) -> Result<()> {
+    if !name.is_empty() {
+        check_highlight(name)?;
+    }
+    write_top_level(
+        path,
+        "highlight",
+        (!name.is_empty()).then(|| format!("highlight: {name}")),
+    )
 }
 
 /// Replace the pinned folders, preserving every other setting and the job blocks. Paths are
@@ -2399,6 +2450,30 @@ mod tests {
                 notify: false,
             },
         );
+    }
+
+    #[test]
+    fn the_highlight_colour_is_written_alone_and_an_unknown_name_is_refused() {
+        let (_d, p) = file(FILE);
+        assert_eq!(highlight(&p), HIGHLIGHT, "the built-in without a line");
+        assert_eq!(file_highlight(&p), None);
+        write_highlight(&p, "cyan").unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\nhighlight: cyan\n"), "written: {text}");
+        assert!(text.contains("name: two"), "the jobs are kept: {text}");
+        assert_eq!(
+            (highlight(&p), file_highlight(&p)),
+            ("cyan".to_owned(), Some("cyan".to_owned()))
+        );
+        let err = format!("{:#}", write_highlight(&p, "puce").unwrap_err());
+        assert!(err.contains("highlight puce: one of magenta"), "{err}");
+        assert_eq!(file_highlight(&p), Some("cyan".to_owned()), "left alone");
+        write_highlight(&p, "").unwrap();
+        assert_eq!(file_highlight(&p), None, "an empty name removes the line");
+        assert_eq!(highlight(&p), HIGHLIGHT);
+        let (_d, bad) = file("version: 1\nhighlight: puce\njobs: []\n");
+        assert_eq!(file_highlight(&bad), None, "an unreadable name is ignored");
+        assert_eq!(highlight(&bad), HIGHLIGHT);
     }
 
     #[test]

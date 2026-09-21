@@ -107,11 +107,12 @@ A fixed two-line hint stays below the list and names the default or reset value.
 | Numbers | Confirmation time and bar count step by 1, timeout by 5 minutes. Steps stay on their grid and never go below zero; field validation may reject zero. Unset nonnumeric values step from zero. |
 | Text | `enter` or clicking the value starts editing; `enter` accepts and `esc` restores the previous value. Long values scroll within the row to keep the cursor visible. Environment names use commas. Empty values omit overrides. |
 | Columns | `enter`, `→` or space opens the [column picker](#columns). |
+| Folders | The pinned folders row counts them. `enter`, `→` or space opens the list, one folder per row with `+ add folder` past the last. `↑ ↓` select, `enter` edits the selected folder or types a new one, `ctrl+x` removes one, and `esc` returns to the settings. Each change is written at once; a refused path keeps the list open on the entry so it can be corrected. |
 | Connectivity | `enter`, `→` or space runs the launch probe for every harness and answers on the explanation line: the binary on cones's own launch PATH, and whether the installed version takes the flags a dashboard session needs. It writes nothing, and the next key clears the answer. |
 
 Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write keeps the value that was entered and shows the error, so the same change can be made again once the cause is fixed. A `jobs.yaml` this build cannot read, such as one holding a column or a version a newer cones wrote, is reported on the hint row instead of being shown as the built-in defaults, and a write onto it is refused rather than replacing the settings it holds.
 
-Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
+Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. `folders` and `highlight` are written on their own. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
 
 ### Help
 
@@ -178,6 +179,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
 | `ctrl+n` | Rename a Claude or Codex session. Type a name, or submit the empty field to open native `/rename`: Claude generates a name; Codex opens its native naming prompt, which can suggest a name. |
+| `ctrl+p` | Highlight the selected session, or remove its highlight. The colour is [`highlight`](jobs.md#list-settings); marks last while the dashboard is open and are never written to the file. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation). |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
 | `ctrl+b` | List the sessions entered from here, most recent first; press it again to enter the highlighted one. |
@@ -204,7 +206,7 @@ While the row or one of its offers holds the cursor, folders are offered under i
 
 The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows.
 
-Pins are the [`folders` setting](jobs.md#list-settings) in `jobs.yaml`, so the config screen holds the same list on one row and either place can edit it. Sessions replace the empty-folder placeholder while present; it returns when they leave. A list an older cones left in the state directory is imported the first time a file without the setting is read.
+Pins are the [`folders` setting](jobs.md#list-settings) in `jobs.yaml`, so the config screen holds the same list, one folder per row, and either place can edit it. Sessions replace the empty-folder placeholder while present; it returns when they leave. A list an older cones left in the state directory is imported the first time a file without the setting is read.
 
 ### Fork a conversation
 

@@ -34,6 +34,7 @@ states:
           - action: stop
             description: "Press twice to confirm the displayed action: stop, delete or forget, depending on the session."
           - action: rename
+          - action: highlight
           - action: fork
           - action: mcp
       - title: "Terminal rows"
@@ -128,6 +129,9 @@ states:
       - keys: ["ctrl+n"]
         action: rename
         description: "Rename the selected Claude or Codex session. Enter an empty name for native naming."
+      - keys: ["ctrl+p"]
+        action: highlight
+        description: "Highlight the selected session, or remove its highlight. The colour is the config's highlight setting."
       - keys: ["ctrl+t"]
         action: mcp
         description: "Inspect MCP servers and stage scoped changes."
@@ -582,6 +586,35 @@ states:
       - keys: ["enter", "space"]
         action: enter
         description: "Save the selected choice."
+      - keys: ["f1", "?"]
+        action: help
+        description: "Read the setting explanation."
+  - id: config_pins
+    group: "Config"
+    title: "Pinned folders"
+    when: "The pinned folder list is open."
+    bindings:
+      - keys: ["up"]
+        action: up
+        description: "Select the previous folder."
+      - keys: ["down"]
+        action: down
+        description: "Select the next folder."
+      - keys: ["home"]
+        action: home
+        description: "Go to the first folder."
+      - keys: ["end"]
+        action: end
+        description: "Go to the add row."
+      - keys: ["esc", "left"]
+        action: cancel
+        description: "Return to the settings list."
+      - keys: ["enter"]
+        action: enter
+        description: "Edit the selected folder, or add one on the add row."
+      - keys: ["ctrl+x"]
+        action: remove
+        description: "Remove the selected folder."
       - keys: ["f1", "?"]
         action: help
         description: "Read the setting explanation."

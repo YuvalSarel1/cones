@@ -220,6 +220,8 @@ pub struct Data {
     pub confirm_secs: f64,
     /// Leave a table column out rather than draw the part of it that fits.
     pub whole_columns: bool,
+    /// Colour of the rows highlighted with ctrl+p.
+    pub highlight: Color,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
     /// Folders that are linked worktrees, marked wherever the list names a folder.
@@ -346,6 +348,7 @@ impl Data {
         let spark = config::activity(jobs_path);
         let confirm_secs = config::confirm_secs(jobs_path);
         let whole_columns = config::whole_columns(jobs_path);
+        let highlight = highlight_colour(&config::highlight(jobs_path));
         if let Some(d) = &mut diagnostics {
             d.phase("configuration", config_started);
         }
@@ -403,6 +406,7 @@ impl Data {
             spark,
             confirm_secs,
             whole_columns,
+            highlight,
             folders,
             worktrees,
             roots,
@@ -2352,6 +2356,19 @@ fn lit() -> Style {
     Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
 }
 
+/// The configured highlight colour. An unknown name cannot reach here: the config rejects it
+/// and the reader falls back to the built-in.
+fn highlight_colour(name: &str) -> Color {
+    match name {
+        "cyan" => Color::Cyan,
+        "blue" => Color::Blue,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "red" => Color::Red,
+        _ => Color::Magenta,
+    }
+}
+
 /// Pad an editor row out to the pane and shade it, so the row the cursor is on reads as one line.
 fn on_row(lines: &mut [Line<'static>], columns: u16) {
     for l in lines {
@@ -2966,31 +2983,6 @@ pub fn launch_dir(text: &str, base: &Path, fallback: &Path) -> Result<PathBuf, S
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn git_branch(dir: &Path) -> Option<String> {
-    let head = std::fs::read_to_string(git_dirs(dir)?.own.join("HEAD")).ok()?;
-    let head = head.trim();
-    if let Some(reference) = head.strip_prefix("ref: ") {
-        let short = reference
-            .strip_prefix("refs/heads/")
-            .or_else(|| reference.strip_prefix("refs/"))
-            .unwrap_or(reference);
-        return (!short.is_empty()).then(|| short.to_owned());
-    }
-    // Detached: git decides how many characters of the hash are unambiguous, so ask it.
-    let out = crate::observe::spawn(
-        crate::observe::op::GIT,
-        Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(["rev-parse", "--short", "HEAD"]),
-    )
-    .ok()
-    .filter(|out| out.status.success())?;
-    let hash = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    (!hash.is_empty()).then(|| format!("@{hash}"))
-}
-
-/// The repository a linked worktree belongs to: the parent of its common git directory.
 /// Where a folder's repository keeps its data: the folder's own git directory and the
 /// repository's common one. Absolute, because from a subdirectory of a plain checkout the two
 /// print `/repo/.git` and `../.git`, unequal as text while naming the same directory.
@@ -3077,6 +3069,31 @@ fn git_dirs(dir: &Path) -> Option<GitDirs> {
 /// The branch a folder has checked out, read from the repository's `HEAD` rather than asked
 /// for: the file is what `git symbolic-ref` prints, and a refresh must not launch a process
 /// per folder per pass. A detached head still costs one `rev-parse`, which is rare and short.
+fn git_branch(dir: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(git_dirs(dir)?.own.join("HEAD")).ok()?;
+    let head = head.trim();
+    if let Some(reference) = head.strip_prefix("ref: ") {
+        let short = reference
+            .strip_prefix("refs/heads/")
+            .or_else(|| reference.strip_prefix("refs/"))
+            .unwrap_or(reference);
+        return (!short.is_empty()).then(|| short.to_owned());
+    }
+    // Detached: git decides how many characters of the hash are unambiguous, so ask it.
+    let out = crate::observe::spawn(
+        crate::observe::op::GIT,
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["rev-parse", "--short", "HEAD"]),
+    )
+    .ok()
+    .filter(|out| out.status.success())?;
+    let hash = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!hash.is_empty()).then(|| format!("@{hash}"))
+}
+
+/// The repository a linked worktree belongs to: the parent of its common git directory.
 /// A linked worktree is one whose own git directory is not the repository's common one.
 /// Absolute output is required, because from a subdirectory of a plain checkout the two print
 /// `/repo/.git` and `../.git`, unequal as text while naming the same directory.
@@ -3487,7 +3504,7 @@ impl JobForm {
         match self.row {
             JobRow::Ask(Step::When) => true,
             JobRow::Set(i) => match run_field(i).input {
-                Answer::Typed | Answer::Columns | Answer::Check => false,
+                Answer::Typed | Answer::Columns | Answer::Folders | Answer::Check => false,
                 Answer::Number(_) | Answer::Pick(_) => true,
                 Answer::PickOrType(..) => run_field(i).picked(&self.values[i]),
             },
@@ -4015,6 +4032,8 @@ enum Answer {
     Pick(&'static [&'static str]),
     PickOrType(&'static [&'static str], &'static str),
     Columns,
+    /// A list held one entry per row, edited on its own rows rather than as one line.
+    Folders,
     /// A row that runs something instead of holding a value.
     Check,
 }
@@ -4074,7 +4093,11 @@ impl Field {
 
     fn picks(&self) -> Option<&'static [&'static str]> {
         match self.input {
-            Answer::Typed | Answer::Number(_) | Answer::Columns | Answer::Check => None,
+            Answer::Typed
+            | Answer::Number(_)
+            | Answer::Columns
+            | Answer::Folders
+            | Answer::Check => None,
             Answer::Pick(o) | Answer::PickOrType(o, _) => Some(o),
         }
     }
@@ -4082,7 +4105,7 @@ impl Field {
     fn typed(&self) -> bool {
         !matches!(
             self.input,
-            Answer::Pick(_) | Answer::Columns | Answer::Check
+            Answer::Pick(_) | Answer::Columns | Answer::Folders | Answer::Check
         )
     }
 
@@ -4189,7 +4212,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 59] = [
+const FIELDS: [Field; 60] = [
     Field {
         group: "cones",
         sub: "",
@@ -4203,12 +4226,22 @@ const FIELDS: [Field; 59] = [
     Field {
         group: "cones",
         sub: "",
+        name: "highlight",
+        short: "highlight colour",
+        hint: "Colour of a session row highlighted with ctrl+p.",
+        long: "Colour ctrl+p paints the selected session row in, so rows you are watching stand out from the rest. The mark itself lasts as long as the dashboard is open and is never written to the file; only the colour is.",
+        builtin: "magenta",
+        input: Answer::Pick(&["-", "magenta", "cyan", "blue", "green", "yellow", "red"]),
+    },
+    Field {
+        group: "cones",
+        sub: "",
         name: "folders",
         short: "pinned folders",
         hint: "Folders the list keeps a row for.",
-        long: "Paths pinned in the session list, separated by commas, each absolute or under ~. A pinned folder keeps its row while it holds no session, so an instruction can start there. `+ add folder` at the foot of the list writes the same setting, and ctrl+x on a pinned row removes one.",
+        long: "Paths pinned in the session list, one folder per row, each absolute or under ~. Enter opens the list: enter edits the selected folder or adds one under `+ add folder`, and ctrl+x removes the selected folder. A pinned folder keeps its row while it holds no session, so an instruction can start there. `+ add folder` at the foot of the session list writes the same setting, and ctrl+x on a pinned row removes one.",
         builtin: "",
-        input: Answer::Typed,
+        input: Answer::Folders,
     },
     Field {
         group: "cones",
@@ -5071,6 +5104,11 @@ pub struct ConfigForm {
     selected: [usize; GROUPS.len()],
     /// A choice list is separate from text editing; browsing never changes the value.
     choice: Option<usize>,
+    /// The pinned folders, open on the folders row: the selected entry, where the entry past
+    /// the last folder is `+ add folder`.
+    pins: Option<usize>,
+    /// The folder being typed, the selected folder's own path or empty for a new one.
+    draft: String,
     /// Focus is on the group tabs, the button row the dashboard menu uses.
     tabs: bool,
     /// One harness's subheading, when the form is the composer's picker rather than the
@@ -5172,7 +5210,7 @@ impl ConfigForm {
                 "droid_in_picker" => flag(d.droid_in_picker),
                 "kimi_in_picker" => flag(d.kimi_in_picker),
 
-                "check" | "folders" => String::new(),
+                "check" | "folders" | "highlight" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -5207,6 +5245,8 @@ impl ConfigForm {
                 FIELDS.iter().position(|f| f.group == GROUPS[i].0).unwrap()
             }),
             choice: None,
+            pins: None,
+            draft: String::new(),
             tabs: false,
             scope: None,
             note: None,
@@ -5250,6 +5290,7 @@ impl ConfigForm {
         self.row = row;
         self.cursor = usize::MAX;
         self.choice = None;
+        self.pins = None;
         self.help = None;
     }
 
@@ -5562,6 +5603,28 @@ impl ConfigForm {
         }
     }
 
+    /// The pinned folders the folders row holds, one per entry.
+    fn pin_list(&self) -> Vec<String> {
+        self.values[field_at("folders")]
+            .split(',')
+            .map(|f| f.trim().to_owned())
+            .filter(|f| !f.is_empty())
+            .collect()
+    }
+
+    /// Write the folder rows back into the folders row and save them. The written paths are
+    /// checked where the setting is written, so a bad one comes back as this screen's error.
+    fn set_pins(&mut self, list: &[String]) -> ConfigAction {
+        let row = field_at("folders");
+        self.before = self.values[row].clone();
+        self.values[row] = list.join(", ");
+        let at = self.pins;
+        let action = self.commit();
+        // A validation error elsewhere takes the cursor with it; otherwise the list stays open.
+        self.pins = if self.error.is_some() { None } else { at };
+        action
+    }
+
     fn choices(&self) -> Vec<String> {
         let mut choices = self.field().ring(&self.values[self.row]);
         if matches!(self.field().input, Answer::PickOrType(..)) {
@@ -5630,6 +5693,8 @@ impl ConfigForm {
     ) -> ConfigAction {
         let state = if self.help.is_some() {
             BindingState::ConfigHelp
+        } else if self.pins.is_some() && !self.open {
+            BindingState::ConfigPins
         } else if self.choice.is_some() {
             BindingState::ConfigChoice
         } else if self.open {
@@ -5662,6 +5727,55 @@ impl ConfigForm {
         }
         if action == KeyAction::Help {
             self.help = Some(0);
+            return ConfigAction::Stay;
+        }
+        if let Some(at) = self.pins {
+            let mut list = self.pin_list();
+            if self.open {
+                match action {
+                    KeyAction::Cancel => {
+                        self.open = false;
+                        self.draft.clear();
+                    }
+                    KeyAction::Enter => {
+                        self.open = false;
+                        let folder = std::mem::take(&mut self.draft).trim().to_owned();
+                        if folder.is_empty() {
+                            return ConfigAction::Stay;
+                        }
+                        match list.get_mut(at) {
+                            Some(entry) => *entry = folder,
+                            None => list.push(folder),
+                        }
+                        return self.set_pins(&list);
+                    }
+                    _ => {
+                        if let Some(cursor) = edit(&mut self.draft, self.cursor, code, mods) {
+                            self.cursor = cursor;
+                        }
+                    }
+                }
+                return ConfigAction::Stay;
+            }
+            match action {
+                KeyAction::Cancel => self.pins = None,
+                KeyAction::Up => self.pins = Some(at.saturating_sub(1)),
+                KeyAction::Down => self.pins = Some((at + 1).min(list.len())),
+                KeyAction::Home => self.pins = Some(0),
+                KeyAction::End => self.pins = Some(list.len()),
+                // Enter edits the selected folder in place; on `+ add folder` it types a new one.
+                KeyAction::Enter => {
+                    self.draft = list.get(at).cloned().unwrap_or_default();
+                    self.cursor = usize::MAX;
+                    self.open = true;
+                }
+                KeyAction::Remove if at < list.len() => {
+                    list.remove(at);
+                    self.pins = Some(at.min(list.len()));
+                    return self.set_pins(&list);
+                }
+                _ => {}
+            }
             return ConfigAction::Stay;
         }
         if let Some(at) = self.choice {
@@ -5712,6 +5826,14 @@ impl ConfigForm {
                     return ConfigAction::Columns(column_tab(self.field().name));
                 }
                 KeyAction::Reset if matches!(self.field().input, Answer::Columns) => {}
+                KeyAction::Enter | KeyAction::Right | KeyAction::Toggle
+                    if matches!(self.field().input, Answer::Folders) =>
+                {
+                    self.pins = Some(0);
+                    self.choice_top = 0;
+                }
+                // Backspace belongs to a folder row inside the list, not to the whole setting.
+                KeyAction::Reset if matches!(self.field().input, Answer::Folders) => {}
                 KeyAction::Enter | KeyAction::Right | KeyAction::Toggle
                     if matches!(self.field().input, Answer::Check) =>
                 {
@@ -5844,7 +5966,7 @@ impl ConfigForm {
             return u16::from(self.area.height > 2);
         }
         match self.area.height {
-            1..=3 if self.tabs && self.choice.is_none() => 1,
+            1..=3 if self.tabs && self.choice.is_none() && self.pins.is_none() => 1,
             0..=3 => 0,
             4..=7 => 2,
             _ => 4,
@@ -5889,6 +6011,34 @@ impl ConfigForm {
     fn lines(&self, columns: u16) -> (Vec<Line<'static>>, usize) {
         let mut lines = vec![];
         let mut at = 0;
+        if let Some(pin) = self.pins {
+            let list = self.pin_list();
+            // One row per folder, and one past them for the folder being added.
+            for i in 0..=list.len() {
+                let selected = i == pin;
+                let style = if selected { lit() } else { plain() };
+                let mut spans = vec![Span::styled(if selected { "› " } else { "  " }, lit())];
+                if selected && self.open {
+                    spans.push(Span::styled("[ ", lit()));
+                    spans.extend(typed(&self.draft, self.cursor, "a path"));
+                    spans.push(Span::styled(" ]", lit()));
+                } else if i == list.len() {
+                    spans.push(Span::styled(
+                        "+ add folder",
+                        if selected { lit() } else { dim() },
+                    ));
+                } else {
+                    spans.push(Span::styled(list[i].clone(), style));
+                }
+                let mut line = Line::from(fit(spans, columns as usize));
+                if selected {
+                    at = lines.len();
+                    on_row(std::slice::from_mut(&mut line), columns);
+                }
+                lines.push(line);
+            }
+            return (lines, at);
+        }
         if let Some(choice) = self.choice {
             let f = self.field();
             let choices = self.choices();
@@ -5993,7 +6143,7 @@ impl ConfigForm {
         let header = self.header_rows();
         let (body, at) = self.lines(area.width);
         let height = area.height.saturating_sub(header) as usize;
-        let top = if self.choice.is_some() {
+        let top = if self.choice.is_some() || self.pins.is_some() {
             &mut self.choice_top
         } else {
             &mut self.top
@@ -6005,6 +6155,8 @@ impl ConfigForm {
         let top = *top;
         let (position, count) = if let Some(choice) = self.choice {
             (choice + 1, self.choices().len())
+        } else if let Some(pin) = self.pins {
+            (pin + 1, self.pin_list().len() + 1)
         } else {
             let fields = self.fields();
             (
@@ -6014,7 +6166,7 @@ impl ConfigForm {
         };
         let mut lines = if let Some(sub) = self.scope {
             let mut label = sub.to_owned();
-            if self.choice.is_some() {
+            if self.choice.is_some() || self.pins.is_some() {
                 label.push_str(" / ");
                 label.push_str(self.field().short);
             }
@@ -6022,7 +6174,7 @@ impl ConfigForm {
                 Span::styled(label, brand(sub).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("  {position}/{count}    * set"), dim()),
             ])]
-        } else if self.choice.is_some() {
+        } else if self.choice.is_some() || self.pins.is_some() {
             vec![
                 Line::from(vec![
                     Span::styled("config / ", dim()),
@@ -6030,7 +6182,14 @@ impl ConfigForm {
                 ]),
                 Line::from(Span::styled(self.field().name, dim())),
                 Line::from(Span::styled(
-                    format!("↑↓ choose    {position} / {count}"),
+                    format!(
+                        "{}    {position} / {count}",
+                        if self.pins.is_some() {
+                            "↑↓ folder"
+                        } else {
+                            "↑↓ choose"
+                        }
+                    ),
                     dim(),
                 )),
                 Line::default(),
@@ -6064,6 +6223,34 @@ impl ConfigForm {
         let (f, value) = (&FIELDS[i], &self.values[i]);
         if matches!(f.input, Answer::Check) {
             return vec![Span::styled("[ check ]", button())];
+        }
+        // The folders are kept one per row behind the arrow, so the row itself counts them.
+        if matches!(f.input, Answer::Folders) {
+            let count = self.pin_list().len();
+            let style = if i == self.row && !self.tabs {
+                lit()
+            } else if count > 0 {
+                bold()
+            } else {
+                dim()
+            };
+            let mut spans = vec![
+                Span::styled("[ ", dim()),
+                Span::styled(
+                    match count {
+                        0 => "none".to_owned(),
+                        1 => "1 folder".to_owned(),
+                        n => format!("{n} folders"),
+                    },
+                    style,
+                ),
+                Span::styled(" ]", dim()),
+            ];
+            if count > 0 {
+                spans.push(Span::styled(" *", lit()));
+            }
+            spans.push(Span::styled(" →", dim()));
+            return fit(spans, width);
         }
         if i == self.row && self.open {
             let cursor = snap(value, self.cursor);
@@ -6151,6 +6338,16 @@ impl ConfigForm {
         if matches!(f.input, Answer::Check) {
             return Line::from(f.hint);
         }
+        if let Some(at) = self.pins {
+            let list = self.pin_list();
+            return Line::from(match list.get(at) {
+                Some(folder) if !self.open => vec![
+                    Span::styled(folder.clone(), bold()),
+                    Span::styled(" · enter edits it, ctrl+x removes it", dim()),
+                ],
+                _ => vec![Span::styled("a folder, absolute or under ~", dim())],
+            });
+        }
         // An open ring reads as bare words, so the one under the cursor says what it does here,
         // where the eye already is, rather than only in the help pane behind `?`.
         if let Some(at) = self.choice
@@ -6207,7 +6404,28 @@ impl ConfigForm {
             return hints(&[("↑↓", "scroll"), ("esc", "back")]);
         }
         if self.open {
-            return hints(&[("enter", "keep"), ("esc", "revert")]);
+            return hints(&[
+                ("enter", if self.pins.is_some() { "save" } else { "keep" }),
+                ("esc", "revert"),
+            ]);
+        }
+        if let Some(at) = self.pins {
+            let mut keys = vec![
+                ("↑↓", "folder"),
+                (
+                    "enter",
+                    if at < self.pin_list().len() {
+                        "edit"
+                    } else {
+                        "add"
+                    },
+                ),
+            ];
+            if at < self.pin_list().len() {
+                keys.push(("ctrl+x", "remove"));
+            }
+            keys.push(("esc", "back"));
+            return hints(&keys);
         }
         if self.choice.is_some() {
             return hints(&[
@@ -6229,6 +6447,8 @@ impl ConfigForm {
         let mut keys = vec![("↑↓", "field")];
         if matches!(f.input, Answer::Columns) {
             keys.push(("enter", "picker"));
+        } else if matches!(f.input, Answer::Folders) {
+            keys.push(("enter", "folders"));
         } else if matches!(f.input, Answer::Check) {
             keys.push(("enter", "run"));
         } else {
@@ -6310,6 +6530,7 @@ impl ConfigForm {
                 let y = ev.row.saturating_sub(self.area.y);
                 let header = self.header_rows();
                 if self.choice.is_none()
+                    && self.pins.is_none()
                     && self.scope.is_none()
                     && NavigationRow::header_line(header) == Some(y)
                 {
@@ -6319,7 +6540,12 @@ impl ConfigForm {
                         return ConfigAction::Stay;
                     }
                 } else if y >= header {
-                    if self.choice.is_some() {
+                    if self.pins.is_some() {
+                        let at = self.choice_top + (y - header) as usize;
+                        if at <= self.pin_list().len() {
+                            self.pins = Some(at);
+                        }
+                    } else if self.choice.is_some() {
                         let at = self.choice_top + (y - header) as usize;
                         if at < self.choices().len() {
                             self.choice = Some(at);
@@ -6499,6 +6725,7 @@ fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm
     form.values[field_at("folders")] = config::file_folders(jobs_path)
         .unwrap_or_default()
         .join(", ");
+    form.values[field_at("highlight")] = config::file_highlight(jobs_path).unwrap_or_default();
     form
 }
 
@@ -7406,6 +7633,7 @@ enum BindingState {
     ConfigTabs,
     Tabs,
     ConfigChoice,
+    ConfigPins,
     ConfigEdit,
     ConfigHelp,
     Columns,
@@ -7445,6 +7673,7 @@ enum KeyAction {
     Group,
     Guide,
     Help,
+    Highlight,
     History,
     Home,
     Leave,
@@ -8573,6 +8802,9 @@ struct App {
     /// Successful delete/forget commands take effect here before the registry catches up.
     removed_sessions: HashSet<String>,
     feedback: Option<(&'static str, Instant)>,
+    /// Session ids marked with ctrl+p, drawn in the configured highlight colour.
+    /// ponytail: kept for the dashboard's lifetime only; persist it if marks are missed.
+    highlighted: HashSet<String>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     armed_at: Instant,
@@ -8924,6 +9156,7 @@ impl App {
             stopping: Vec::new(),
             removed_sessions: HashSet::new(),
             feedback: None,
+            highlighted: HashSet::new(),
             armed: None,
             armed_at: Instant::now(),
             quit_armed: None,
@@ -11275,6 +11508,19 @@ impl App {
         self.data.sessions.iter().find(|s| &s.session_id == id)
     }
 
+    /// Mark or unmark the selected session. The mark is the dashboard's own, so it follows
+    /// the session id rather than anything a harness reports.
+    fn highlight_selected(&mut self) {
+        let Some(id) = self.selected_session().map(|s| s.session_id.clone()) else {
+            self.status = "ctrl+p highlights the selected session".into();
+            return;
+        };
+        if !self.highlighted.remove(&id) {
+            self.highlighted.insert(id);
+        }
+        self.invalidate();
+    }
+
     fn rename_selected(&mut self) {
         match self.selected_session() {
             Some(s) if harness::by_name(&s.harness).is_some_and(|spec| spec.operations.rename) => {
@@ -11556,14 +11802,24 @@ impl App {
                 job_columns,
                 history_columns,
             ) => {
+                // The highlight colour is written on its own, as the pin list is: the marks
+                // it paints live in the dashboard and never reach the file.
+                if let Mode::Config(form) = &self.mode {
+                    let typed = form.values[field_at("highlight")].clone();
+                    if typed != config::file_highlight(&self.jobs_path).unwrap_or_default() {
+                        if let Err(e) = config::write_highlight(&self.jobs_path, &typed) {
+                            if let Mode::Config(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                            return;
+                        }
+                        self.data.highlight = highlight_colour(&config::highlight(&self.jobs_path));
+                    }
+                }
                 // The pin list is written on its own, the way the column sets are: it is the
                 // one setting the session list also edits, and the folder rows follow it.
                 if let Mode::Config(form) = &self.mode {
-                    let typed: Vec<String> = form.values[field_at("folders")]
-                        .split(',')
-                        .map(|f| f.trim().to_owned())
-                        .filter(|f| !f.is_empty())
-                        .collect();
+                    let typed = form.pin_list();
                     if typed != tilde_all(&self.data.folders) {
                         match typed
                             .iter()
@@ -15083,6 +15339,7 @@ impl App {
                         self.mode = Mode::Guide(Guide::new(&self.guide_origin()));
                     }
                     KeyAction::History if !self.jobs_view => self.toggle_history(),
+                    KeyAction::Highlight => self.highlight_selected(),
                     KeyAction::Rename => self.rename_selected(),
                     KeyAction::Mcp => self.open_mcp(),
                     KeyAction::Fork => self.fork_selected(),
@@ -15737,6 +15994,8 @@ impl App {
                     .armed
                     .as_deref()
                     .is_some_and(|a| row.kind.key() == Some(a));
+                let marked = matches!(row.kind, Kind::Session(..))
+                    && row.kind.key().is_some_and(|k| self.highlighted.contains(k));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 let mut mark = 0;
                 if row.kind.selectable() {
@@ -15769,7 +16028,11 @@ impl App {
                     };
                     drawn.push(Span::styled(
                         text,
-                        if armed { style.fg(Color::Red) } else { style },
+                        match () {
+                            () if armed => style.fg(Color::Red),
+                            () if marked => style.fg(self.data.highlight),
+                            () => style,
+                        },
                     ));
                 }
                 // Only a table has columns; a menu or hint row keeps every cell it has.
@@ -22959,23 +23222,56 @@ states:
         );
 
         app.mode = Mode::Config(app.config_form());
-        let value = |app: &App| match &app.mode {
-            Mode::Config(f) => f.values[f.row].clone(),
+        let form = |app: &App| match &app.mode {
+            Mode::Config(f) => (f.pins, f.pin_list(), f.error.clone()),
             _ => unreachable!("the config screen is open"),
         };
-        let set = |app: &mut App, text: &str| {
-            if let Mode::Config(f) = &mut app.mode {
-                f.values[f.row] = text.to_owned();
+        let control = |app: &App| match &app.mode {
+            Mode::Config(f) => Line::from(f.control(f.row, 40)).to_string(),
+            _ => unreachable!("the config screen is open"),
+        };
+        let rows = |app: &mut App| match &mut app.mode {
+            Mode::Config(f) => f.lines(40).0[f.pins.unwrap()].to_string(),
+            _ => unreachable!("the config screen is open"),
+        };
+        let key = |app: &mut App, code: KeyCode, mods: KeyModifiers| {
+            app.key(code, mods).unwrap();
+        };
+        let type_in = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
             }
         };
         if let Mode::Config(f) = &mut app.mode {
             f.go(field_at("folders"));
         }
-        assert_eq!(value(&app), "/src/one", "the row shows what is pinned");
+        assert_eq!(
+            form(&app).1,
+            vec!["/src/one".to_owned()],
+            "the row holds what is pinned"
+        );
+        let shown = control(&app);
+        assert!(
+            shown.contains("1 folder") && shown.contains('→') && !shown.contains("/src/one"),
+            "the row counts the folders behind an arrow rather than spelling them out: {shown}"
+        );
 
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        set(&mut app, "/src/one, /src/two");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(form(&app).0, Some(0), "enter opens the folder list");
+        assert!(
+            rows(&mut app).contains("/src/one"),
+            "one folder per row: {}",
+            rows(&mut app)
+        );
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert!(
+            rows(&mut app).contains("+ add folder"),
+            "the row past the last folder adds one: {}",
+            rows(&mut app)
+        );
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        type_in(&mut app, "/src/two");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(
             config::file_folders(&jobs),
             Some(vec!["/src/one".to_owned(), "/src/two".to_owned()])
@@ -22985,33 +23281,52 @@ states:
             vec![PathBuf::from("/src/one"), PathBuf::from("/src/two")],
             "and the list pins it without a reload"
         );
+        assert_eq!(
+            form(&app).0,
+            Some(1),
+            "the list stays open on the new folder"
+        );
 
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        set(&mut app, "/src/one, two");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(
+            config::file_folders(&jobs),
+            Some(vec!["/src/two".to_owned()]),
+            "ctrl+x removes the selected folder"
+        );
+        assert_eq!(app.data.folders, vec![PathBuf::from("/src/two")]);
+
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        type_in(&mut app, "two");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let (at, list, error) = form(&app);
         assert!(
-            matches!(&app.mode, Mode::Config(f) if f.error.as_ref().is_some_and(|e| e.starts_with("folders:"))),
-            "a relative path is refused on the row: {:?}",
-            match &app.mode {
-                Mode::Config(f) => f.error.clone(),
-                _ => None,
-            }
+            error.is_some_and(|e| e.starts_with("folders:")),
+            "a relative path is refused"
         );
         assert_eq!(
             config::file_folders(&jobs),
-            Some(vec!["/src/one".to_owned(), "/src/two".to_owned()]),
+            Some(vec!["/src/two".to_owned()]),
             "and nothing is written"
         );
+        assert_eq!(at, Some(1), "the list stays open on the refused folder");
+        assert_eq!(
+            list,
+            vec!["/src/two".to_owned(), "two".to_owned()],
+            "and the entry is kept so it can be corrected"
+        );
 
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        set(&mut app, "");
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(
             config::file_folders(&jobs),
             None,
-            "an empty row unpins both"
+            "removing every row unpins both"
         );
         assert!(app.data.folders.is_empty());
+        assert!(control(&app).contains("none"), "{}", control(&app));
     }
 
     #[test]
@@ -23987,6 +24302,52 @@ states:
         app.focus = Some(0);
         wait_paint(&mut app, 0, "PI");
         assert_eq!(app.foot_rows(), 1);
+    }
+
+    #[test]
+    fn ctrl_p_paints_the_selected_session_in_the_configured_colour_until_it_is_pressed_again() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.select_first_session();
+        assert_eq!(
+            app.selected_session().map(|s| s.session_id.clone()),
+            Some(A.to_owned()),
+            "the fixture session is the selected row"
+        );
+        // Every cell of the session's row, by the title cones falls back to for an unnamed one.
+        let painted = |app: &App| -> Vec<Option<Color>> {
+            app.row_lines(&app.rows, &app.visible, None, 0, 40, 200)
+                .iter()
+                .find(|l| l.to_string().contains(&A[..8]))
+                .expect("the session has a row")
+                .spans
+                .iter()
+                .map(|s| s.style.fg)
+                .collect()
+        };
+        assert_eq!(app.data.highlight, Color::Magenta, "the built-in colour");
+        let plain = painted(&app);
+        assert!(
+            !plain.contains(&Some(Color::Magenta)),
+            "an unmarked row keeps its own colours: {plain:?}"
+        );
+        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.highlighted.contains(A));
+        let marked = painted(&app);
+        assert!(
+            marked[1..].iter().all(|fg| *fg == Some(Color::Magenta)),
+            "every cell of the marked row is drawn in the colour: {marked:?}"
+        );
+        app.data.highlight = Color::Cyan;
+        assert!(
+            painted(&app)[1..].iter().all(|fg| *fg == Some(Color::Cyan)),
+            "the configured colour is what the row is painted in"
+        );
+        app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert!(app.highlighted.is_empty(), "the second press unmarks it");
+        assert_eq!(painted(&app), plain, "and the row returns to its colours");
     }
 
     #[test]
