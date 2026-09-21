@@ -17,7 +17,9 @@ the name a session shows, which is how a Claude worker is addressed and how a no
 it is empty until the harness reports one, and cones withholds a name that is only the job's id.
 
 Prints nothing when the roster holds the same native identities in the same states, else the `new:`,
-`gone:` and `state:` sections that changed. The caller advances roster.prev once it reports.
+`gone:` and `state:` sections that changed. Which of those is worth waking a coordinator is
+sweep.sh's decision, not this module's: it wakes for `new:` alone. The caller advances roster.prev
+every pass, so a change nobody woke for cannot come back as news later.
 """
 
 import hashlib

@@ -95,6 +95,14 @@ Helpers live next to this file: `S="__CONES_COORDINATOR_BIN__"`.
    run. If cancellation fails, resolve that before sending new Codex messages. Cleanup is not a
    completion report: tasks keep their state, so unfinished work survives the restart and its
    worker stays reachable about it.
+A wake costs a model call, so only two things earn one: a worker arrived and has not been
+greeted, and a worker reached out. A departure, a state moving between active, idle and blocked,
+and an edit to the tree are facts to read from `tick.sh` once you are already awake. Waking for
+them spends a call to learn that somebody else is still working, and a session going idle and
+active again is not news. An arrival that never acknowledges its greeting is worth noticing when
+you next wake; it is not worth waking for. `sweep.sh` enforces this, so do not widen the loop
+condition to fire on its other sections.
+
 3. Arm this watcher with a background Bash call:
    `while out=$(bash "$S/sweep.sh" "$D" "$WB" "$SELF" "$JOB"); [ "${out%%$'\n'*}" = same ]; do sleep 10; done; echo "$out"`
    It watches arrivals, departures, reported state, replies and request expiry without a model

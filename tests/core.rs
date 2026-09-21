@@ -1189,6 +1189,84 @@ fn the_coordinator_watcher_wakes_for_unacknowledged_mail_and_stays_quiet_otherwi
     );
 }
 
+/// A wake costs a model call, so the watcher spends one on a worker that arrived and on a worker
+/// that reached out. A worker going idle and active again, or leaving, is read from the roster
+/// when the coordinator is already awake; waking for it buys nothing.
+#[test]
+fn the_coordinator_watcher_wakes_for_an_arrival_and_not_for_a_state_change() {
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let job = tempfile::tempdir().unwrap();
+    let skill = cones::harness::coordinator_plugin(state.path())
+        .unwrap()
+        .join("skills/start-orchestrator");
+
+    // A stand-in for `cones ls --dir --json`, reading whatever roster the test last wrote.
+    let roster = state.path().join("roster.json");
+    let fake = state.path().join("cones");
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\ncat {}\n", roster.to_str().unwrap()),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &fake,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+
+    // `cones ls --json` is one object per line, and the row's fields sit under `session`.
+    let row = |state_name: &str| {
+        format!(
+            concat!(
+                r#"{{"kind":"session","status":"{}","session":{{"pid":4242,"#,
+                r#""session_id":"a-worker","harness":"claude","cwd":"{}","title":"worker"}}}}"#,
+                "\n"
+            ),
+            state_name,
+            work.path().to_str().unwrap()
+        )
+    };
+    let sweep = || -> String {
+        let out = std::process::Command::new("bash")
+            .arg(skill.join("bin/sweep.sh"))
+            .args([job.path(), work.path()])
+            .arg("1")
+            .env("CLAUDE_CONFIG_DIR", home.path())
+            .env("CONES", &fake)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    std::fs::write(&roster, "").unwrap();
+    sweep();
+    sweep();
+
+    std::fs::write(&roster, row("active")).unwrap();
+    let arrival = sweep();
+    assert!(arrival.contains("new:"), "an arrival wakes it: {arrival}");
+    assert!(arrival.contains("a-worker"), "naming the worker: {arrival}");
+
+    std::fs::write(&roster, row("idle")).unwrap();
+    assert_eq!(
+        sweep(),
+        "same\n",
+        "active to idle is not worth a model call"
+    );
+    std::fs::write(&roster, row("active")).unwrap();
+    assert_eq!(sweep(), "same\n", "and idle back to active is not either");
+    std::fs::write(&roster, "").unwrap();
+    assert_eq!(sweep(), "same\n", "nor is the worker leaving");
+    std::fs::write(&roster, row("active")).unwrap();
+    let again = sweep();
+    assert!(
+        again.contains("new:"),
+        "a worker that comes back is an arrival again: {again}"
+    );
+}
+
 /// Two coordinators can write the folder's status record at once: a replacement overlapping the
 /// one it takes over from, or a watcher left armed from an earlier arm. A single fixed temporary
 /// name made the second writer's rename delete the first writer's source, killing that process

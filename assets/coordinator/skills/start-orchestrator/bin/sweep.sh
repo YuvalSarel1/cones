@@ -55,7 +55,13 @@ ack=$(cat "$ACK" 2>/dev/null); ack=${ack:-0}
 shown=$(cat "$D/inbox.shown" 2>/dev/null); shown=${shown:-0}
 mail=""; [ "$have" -gt "$ack" ] && mail=$(awk -v seen="$ack" 'NR>seen{print NR "\t" $0}' "$INBOX")
 arrived=0; [ -n "$mail" ] && [ "$have" -gt "$shown" ] && arrived=1
-if [ -z "$delta" ] && [ "$arrived" = 0 ] && [ "$delivery_changed" = 0 ] && [ "$roster_changed" = 0 ]; then
+# Only two things are worth a model turn: a worker that arrived and has not been greeted, and a
+# worker that reached out. A departure, and a state moving between active, idle and blocked, are
+# facts the coordinator reads from `tick.sh` when it is already awake; waking for them spends a
+# call to learn that somebody else is still working. The roster position advances either way, so
+# an ungreeted arrival is reported once rather than on every pass.
+arrivals=0; printf '%s' "$delta" | grep -q '^new:' && arrivals=1
+if [ "$arrivals" = 0 ] && [ "$arrived" = 0 ] && [ "$delivery_changed" = 0 ] && [ "$roster_changed" = 0 ]; then
   echo same
 else
   echo changed
@@ -67,5 +73,7 @@ else
     printf '%s\n' "$mail"
     echo "$have" > "$D/inbox.shown"
   fi
-  cp "$D/roster.now" "$D/roster.prev"
 fi
+# Outside the wake decision: a change the coordinator did not wake for is still consumed, so it
+# cannot come back as news once something else wakes it.
+cp "$D/roster.now" "$D/roster.prev"

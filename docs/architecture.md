@@ -171,10 +171,15 @@ flowchart TB
     class Wake model
 ```
 
-`sweep.sh` reports four kinds of movement: a roster delta from `cones ls`, unacknowledged mail
-that has not been shown yet, a change in the delivery helper's error, and a change in the roster
-read's error. Errors are reported on the edge, once, so a persistent failure does not wake the
-coordinator repeatedly.
+`sweep.sh` reports a roster delta from `cones ls`, unacknowledged mail that has not been shown
+yet, and changes in the delivery and roster errors. It wakes the coordinator for two of them: a
+worker that arrived and has not been greeted, and a worker that reached out. A departure and a
+state moving between active, idle and blocked are read from `tick.sh` when the coordinator is
+already awake, because waking to learn that somebody else is still working spends a call for
+nothing. The roster position advances on every pass either way, so a change nobody woke for
+cannot return as news. Errors are reported on the edge, once: a read that keeps failing would
+otherwise wake the coordinator forever, and a coordinator that cannot read the roster can never
+see an arrival, which is why that one failure is still worth a call.
 
 The mail gate needs both halves of its condition. `inbox.ack` is what the coordinator durably
 handled and only `codex.sh ack` moves it. `inbox.shown` is the watcher's own note of what it
