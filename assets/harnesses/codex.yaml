@@ -60,6 +60,7 @@ transcript:
     - {path: sessions, archived: false}
     - {path: archived_sessions, archived: true}
 operations:
+  rename: true
   launch:
     identity: reported_thread
     session_kind: daemon

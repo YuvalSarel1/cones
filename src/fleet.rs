@@ -845,8 +845,9 @@ pub fn rename(session: &Session, name: &str) -> Result<()> {
     let name = name.trim();
     ensure!(!name.is_empty(), "a title is needed");
     ensure!(
-        crate::harness::by_name(&session.harness).is_some_and(|spec| spec.operations.rename),
-        "this harness has no rename operation"
+        session.harness == "claude"
+            && crate::harness::by_name(&session.harness).is_some_and(|spec| spec.operations.rename),
+        "this harness requires its native client to rename"
     );
     let path = session
         .transcript_path

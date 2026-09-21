@@ -1166,7 +1166,8 @@ impl HarnessSpec {
         validate_args(&self.commands.remove, &["id", "short_id"])?;
         validate_args(&self.commands.unarchive, &["id"])?;
         ensure!(
-            !self.operations.rename || self.kind == HarnessKind::Claude,
+            !self.operations.rename
+                || matches!(self.kind, HarnessKind::Claude | HarnessKind::Codex),
             "rename requires a native rename adapter"
         );
         for kind in self.session_kinds.values().chain([&self.default_session]) {

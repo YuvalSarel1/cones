@@ -8346,6 +8346,7 @@ struct App {
     /// Immediate rows until discovery reports the launched sessions.
     pending: Vec<Pending>,
     opening: Option<Opening>,
+    rename: Option<NativeRename>,
     tick: usize,
     refreshed: Instant,
     loading: Option<mpsc::Receiver<Result<Data>>>,
@@ -8603,6 +8604,14 @@ struct Opening {
     operation: Option<DiagnosticOperation>,
 }
 
+struct NativeRename {
+    id: String,
+    harness: HarnessKind,
+    command: String,
+    started: Instant,
+    typed: bool,
+}
+
 impl PendingStop {
     fn message(&self) -> String {
         let action = match self.verb {
@@ -8688,6 +8697,7 @@ impl App {
             started: Vec::new(),
             pending: Vec::new(),
             opening: None,
+            rename: None,
             tick: 0,
             refreshed: Instant::now(),
             loading: None,
@@ -11009,18 +11019,141 @@ impl App {
 
     fn rename_selected(&mut self) {
         match self.selected_session() {
-            Some(s)
-                if harness::by_name(&s.harness).is_some_and(|spec| spec.operations.rename)
-                    && s.transcript_path.is_some() =>
-            {
-                self.mode = Mode::Rename(Input::new(s.title.clone().unwrap_or_default()));
-            }
             Some(s) if harness::by_name(&s.harness).is_some_and(|spec| spec.operations.rename) => {
-                self.status = "this session has no transcript yet".into();
+                self.mode = Mode::Rename(Input::default());
             }
-            Some(_) => self.status = "only Claude sessions can be renamed here".into(),
+            Some(_) => self.status = "rename is supported for Claude and Codex sessions".into(),
             None => self.status = "ctrl+n renames the selected session".into(),
         }
+    }
+
+    fn submit_rename(&mut self, name: &str) -> Result<()> {
+        self.mode = Mode::Normal;
+        let Some(session) = self.selected_session() else {
+            return Ok(());
+        };
+        let spec = harness::by_name(&session.harness).context("unknown session harness")?;
+        if !spec.operations.rename {
+            self.status = "this harness has no rename operation".into();
+            return Ok(());
+        }
+        if name.chars().any(char::is_control) {
+            self.status = "a session name must be a single line without control characters".into();
+            return Ok(());
+        }
+        let kind = Kind::Session(session.session_id.clone(), String::new());
+        // External interactive Claude clients cannot be joined. Keep the existing
+        // manual title operation there; generation needs the native client.
+        if session.harness == "claude"
+            && session.own_terminal()
+            && self.viewer_of(&kind).is_none()
+            && self.host_for(&session.session_id).is_none()
+            && !name.is_empty()
+        {
+            self.status = match fleet::rename(session, name) {
+                Ok(()) => format!("renamed to {name}"),
+                Err(e) => format!("not renamed: {e:#}"),
+            };
+            self.invalidate();
+            return Ok(());
+        }
+        let pending = NativeRename {
+            id: session.session_id.clone(),
+            harness: spec.kind,
+            command: if name.is_empty() {
+                "/rename".into()
+            } else {
+                format!("/rename {name}")
+            },
+            started: Instant::now(),
+            typed: false,
+        };
+        self.enter()?;
+        if self.viewer_of(&kind).is_some()
+            || self.opening.as_ref().is_some_and(|o| o.key == pending.id)
+        {
+            self.rename = Some(pending);
+            self.status = "opening native rename · any key cancels the handoff".into();
+        }
+        Ok(())
+    }
+
+    /// Native clients must paint their empty editor before receiving a command.
+    /// Submit only after they echo our text, on a separate pump from typing it.
+    fn poll_rename(&mut self) -> bool {
+        let Some(pending) = &self.rename else {
+            return false;
+        };
+        if pending.started.elapsed() > Duration::from_secs(10) {
+            self.rename = None;
+            self.status = "native rename was not submitted · return to the prompt and retry".into();
+            return true;
+        }
+        let kind = Kind::Session(pending.id.clone(), String::new());
+        let Some(i) = self.viewer_of(&kind) else {
+            if self.opening.as_ref().is_none_or(|o| o.key != pending.id) {
+                self.rename = None;
+            }
+            return false;
+        };
+        let open = &mut self.viewers[i];
+        if self.focus != Some(i) || open.harness != Some(pending.harness) {
+            self.rename = None;
+            return false;
+        }
+        let screen = open.viewer.screen();
+        if pending.typed {
+            let Some((row, col)) = viewer::command_cursor(screen) else {
+                return false;
+            };
+            let echoed = (0..=row).rev().find_map(|start| {
+                let first = screen.contents_between(start, 0, start, screen.size().1);
+                let text = first.trim_start();
+                if !text.starts_with(['❯', '›']) {
+                    return None;
+                }
+                Some(
+                    (start..=row)
+                        .map(|r| {
+                            screen.contents_between(
+                                r,
+                                0,
+                                r,
+                                if r == row { col } else { screen.size().1 },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                        .trim_start_matches(|c: char| {
+                            c.is_whitespace()
+                                || matches!(c, '❯' | '›')
+                                || (harness::spec(pending.harness).input.ignore_braille
+                                    && ('\u{2800}'..='\u{28ff}').contains(&c))
+                        })
+                        .to_owned(),
+                )
+            });
+            // Native editors indent wrapped lines. Whitespace in the echo can
+            // differ at those wraps; the bytes we submit remain the user's name.
+            if !echoed.is_some_and(|text| {
+                text.chars()
+                    .filter(|c| !c.is_whitespace())
+                    .eq(pending.command.chars().filter(|c| !c.is_whitespace()))
+            }) {
+                return false;
+            }
+            open.viewer.write(b"\r");
+            self.rename = None;
+            self.status = "native rename opened".into();
+            self.invalidate();
+        } else {
+            if !viewer::at_empty_command_prompt(screen, &harness::spec(pending.harness).input) {
+                return false;
+            }
+            open.viewer.write(pending.command.as_bytes());
+            self.rename.as_mut().unwrap().typed = true;
+        }
+        true
     }
 
     fn panel(&self) -> Option<&'static str> {
@@ -12029,7 +12162,7 @@ impl App {
             self.close_for(i, "native_exit");
             self.invalidate();
         }
-        dirty
+        dirty | self.poll_rename()
     }
 
     fn focused(&mut self) -> Option<&mut Open> {
@@ -12161,6 +12294,7 @@ impl App {
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
     /// to a viewer, or read the clipboard for the composer.
     fn paste(&mut self, text: &str) {
+        self.rename = None;
         if self.transcript.focused {
             return;
         }
@@ -12243,6 +12377,9 @@ impl App {
     /// Clamp drags and releases outside the pane so the viewer sees buttons released.
     /// Shift-wheel or clients without mouse reporting scroll the emulator.
     fn mouse(&mut self, ev: MouseEvent) {
+        if !matches!(ev.kind, MouseEventKind::Moved) {
+            self.rename = None;
+        }
         if let Mode::Guide(guide) = &mut self.mode
             && guide.area.contains((ev.column, ev.row).into())
         {
@@ -14164,6 +14301,7 @@ impl App {
 
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
+        self.rename = None;
         if let Some(open) = self.focused() {
             let terminal = open.is_terminal();
             let action = key_action(
@@ -14379,16 +14517,7 @@ impl App {
                 KeyAction::Cancel => self.mode = Mode::Normal,
                 KeyAction::Enter => {
                     let name = input.text.trim().to_owned();
-                    let Some(session) = self.selected_session() else {
-                        self.mode = Mode::Normal;
-                        return Ok(false);
-                    };
-                    self.status = match fleet::rename(session, &name) {
-                        Ok(()) => format!("renamed to {name}"),
-                        Err(e) => format!("not renamed: {e:#}"),
-                    };
-                    self.mode = Mode::Normal;
-                    self.invalidate();
+                    self.submit_rename(&name)?;
                 }
                 _ => {
                     input.key(code, mods);
@@ -14986,7 +15115,7 @@ impl App {
             Mode::Columns(f) => f.line(),
             Mode::Rename(input) => {
                 let mut spans = vec![Span::styled("rename › ", Style::default().fg(ORANGE))];
-                spans.extend(input.spans("a title for the session"));
+                spans.extend(input.spans("a name, or enter for native rename"));
                 Line::from(spans)
             }
             Mode::Pick(_) => self.composer(),
@@ -25823,8 +25952,8 @@ states:
         assert_eq!(key(&app).as_deref(), Some(A));
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(
-            matches!(&app.mode, Mode::Rename(i) if i.text == "Old title"),
-            "the prompt opens on the current title"
+            matches!(&app.mode, Mode::Rename(i) if i.text.is_empty()),
+            "empty enter must request native naming without clearing the old title"
         );
         app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for c in "Ship it".chars() {
@@ -25845,10 +25974,261 @@ states:
             "the row shows the new title on the next read"
         );
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(&app.mode, Mode::Rename(i) if i.text == "Ship it"));
+        assert!(matches!(&app.mode, Mode::Rename(i) if i.text.is_empty()));
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(fs::read_to_string(&transcript).unwrap(), text);
+    }
+
+    #[test]
+    fn rename_hands_empty_and_explicit_names_to_the_selected_native_client() {
+        for harness in [HarnessKind::Claude, HarnessKind::Codex] {
+            for name in [
+                "",
+                "Ship it",
+                "בדיקת שם 🚀",
+                &format!("{}end", "long name ".repeat(15)),
+            ] {
+                let d = dir();
+                let mut app = app(d.path());
+                let result = d.path().join("received");
+                let mut command = Command::new("python3");
+                command
+                    .args([
+                        "-u",
+                        "-c",
+                        r#"
+import os, sys, tty
+from pathlib import Path
+tty.setraw(0)
+os.write(1, "READY\r\n› ".encode())
+text = b""
+while True:
+    b = os.read(0, 1)
+    if b == b"\r":
+        Path(sys.argv[1]).write_bytes(text)
+        os.write(1, b"\r\nNATIVE RENAME\r\n")
+        text = b""
+    else:
+        text += b
+        os.write(1, b)
+"#,
+                    ])
+                    .arg(&result);
+                app.data.sessions = vec![placeholder(harness, A, d.path(), "Old title")];
+                app.rebuild();
+                app.cursor = app
+                    .visible
+                    .iter()
+                    .position(|&i| app.rows[i].kind.key() == Some(A))
+                    .unwrap();
+                let mut open = viewer_open(A, &harness.to_string(), "unused");
+                open.viewer =
+                    Viewer::spawn(command, 12, 120, None, viewer::Colors::default()).unwrap();
+                app.viewers.push(open);
+                wait_paint(&mut app, 0, "READY");
+                app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+                assert!(matches!(&app.mode, Mode::Rename(i) if i.text.is_empty()));
+                for c in name.chars() {
+                    app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+                }
+                app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.focus, Some(0));
+                assert!(!result.exists(), "handoff waits for the native editor");
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !result.exists() {
+                    app.pump();
+                    assert!(Instant::now() < deadline, "native rename was not delivered");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert_eq!(
+                    fs::read_to_string(&result).unwrap(),
+                    if name.is_empty() {
+                        "/rename".into()
+                    } else {
+                        format!("/rename {name}")
+                    },
+                    "{harness}"
+                );
+                assert!(app.rename.is_none(), "the command is sent once");
+                assert_eq!(
+                    app.selected_session().unwrap().title.as_deref(),
+                    Some("Old title"),
+                    "cones waits for the harness to report the applied name"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rename_handoff_keeps_drafts_and_cancels_when_the_user_takes_over() {
+        let (_d, mut app, _t) = split_setup(200);
+        app.viewers[0] = viewer_open(A, "claude", "READY\\r\\n❯ draft\\033[3G");
+        wait_paint(&mut app, 0, "READY");
+        app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.rename.is_some());
+        app.pump();
+        assert!(
+            !app.rename.as_ref().unwrap().typed,
+            "Home in a draft is not empty"
+        );
+        assert!(app.viewers[0].viewer.screen().contents().contains("draft"));
+        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(
+            app.rename.is_none(),
+            "user input cancels deferred injection"
+        );
+        assert!(
+            !app.viewers[0]
+                .viewer
+                .screen()
+                .contents()
+                .contains("/rename")
+        );
+    }
+
+    #[test]
+    #[ignore = "run through python3 scripts/check-rename.py; installed CLIs and a loopback provider"]
+    fn native_rename_round_trip() {
+        let root = PathBuf::from(std::env::var("CONES_RENAME_FIXTURE").unwrap());
+        let env: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(root.join("env.json")).unwrap()).unwrap();
+        for kind in [HarnessKind::Claude, HarnessKind::Codex] {
+            let d = dir();
+            let mut app = app(d.path());
+            app.claude = root.join(".claude");
+            app.size = (32, 120);
+            app.pane = Rect::new(0, 0, 120, 31);
+            let mut command = Command::new(root.join(".local/bin").join(kind.to_string()));
+            if kind == HarnessKind::Codex {
+                let capture: Value =
+                    serde_json::from_slice(&fs::read(root.join("capture.json")).unwrap()).unwrap();
+                let native = capture["viewers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|v| v["harness"] == "codex")
+                    .unwrap()["command"]
+                    .as_array()
+                    .unwrap();
+                let remote = native.iter().position(|v| v == "--remote").unwrap();
+                command.args(["--remote", native[remote + 1].as_str().unwrap()]);
+            }
+            command
+                .env_clear()
+                .envs(&env)
+                .current_dir(root.join("projects/api"))
+                .arg("Discuss a cache invalidation bug. Do not use tools.");
+            let mut open = viewer_open(A, &kind.to_string(), "unused");
+            open.viewer = Viewer::spawn(command, 31, 120, None, viewer::Colors::default()).unwrap();
+            app.viewers.push(open);
+            let until = |app: &mut App, done: &dyn Fn(&App) -> bool| {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while !done(app) {
+                    app.pump();
+                    assert!(
+                        Instant::now() < deadline && !app.viewers.is_empty(),
+                        "{kind}: {}\n{}",
+                        app.status,
+                        app.viewers
+                            .first()
+                            .map(|v| v.viewer.screen().contents())
+                            .unwrap_or_default()
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            };
+            until(&mut app, &|app| {
+                app.viewers[0]
+                    .viewer
+                    .screen()
+                    .contents()
+                    .contains("Fixture title")
+                    && viewer::at_empty_command_prompt(
+                        app.viewers[0].viewer.screen(),
+                        &harness::spec(kind).input,
+                    )
+            });
+            let session = match kind {
+                HarnessKind::Claude => fleet::sessions(&root.join(".claude"))
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.cwd == root.join("projects/api"))
+                    .unwrap(),
+                HarnessKind::Codex => {
+                    until(&mut app, &|_| {
+                        codex::index(&root.join(".codex"))
+                            .threads
+                            .values()
+                            .any(|(_, cwd)| *cwd == root.join("projects/api"))
+                    });
+                    let index = codex::index(&root.join(".codex"));
+                    let (id, (transcript, cwd)) = index
+                        .threads
+                        .iter()
+                        .find(|(_, (_, cwd))| *cwd == root.join("projects/api"))
+                        .unwrap();
+                    let mut session = placeholder(kind, id, cwd, "");
+                    session.transcript_path = Some(transcript.clone());
+                    session.title = index.titles.get(id).cloned();
+                    session
+                }
+                _ => unreachable!(),
+            };
+            let id = session.session_id.clone();
+            app.viewers[0].key = id.clone();
+            app.data.sessions = vec![session];
+            app.rebuild();
+            app.cursor = app
+                .visible
+                .iter()
+                .position(|&i| app.rows[i].kind.key() == Some(&id))
+                .unwrap();
+            let title = || match kind {
+                HarnessKind::Claude => fleet::find(&root.join(".claude"), &id)
+                    .unwrap()
+                    .and_then(|s| s.title),
+                HarnessKind::Codex => codex::index(&root.join(".codex")).titles.get(&id).cloned(),
+                _ => unreachable!(),
+            };
+            for name in [
+                "",
+                "Manual fixture",
+                &format!("{}end", "Long native fixture ".repeat(8)),
+            ] {
+                app.unfocus();
+                app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+                for c in name.chars() {
+                    app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+                }
+                app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                until(&mut app, &|app| app.rename.is_none());
+                if name.is_empty() && kind == HarnessKind::Codex {
+                    until(&mut app, &|app| {
+                        let screen = app.viewers[0].viewer.screen();
+                        let (row, _) = screen.cursor_position();
+                        screen
+                            .contents()
+                            .contains("Suggested from this conversation")
+                            && screen
+                                .contents_between(row, 0, row, screen.size().1)
+                                .contains("Fixture title")
+                    });
+                    app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                }
+                let expected = match (name.is_empty(), kind) {
+                    (true, HarnessKind::Claude) => "fixture-title",
+                    (true, _) => "Fixture title",
+                    (false, _) => name,
+                };
+                until(&mut app, &|_| title().as_deref() == Some(expected));
+                println!(
+                    "PASS {kind}: Ctrl+N {:?} persisted as {expected:?} for {id}",
+                    name
+                );
+            }
+        }
     }
 
     #[test]

@@ -953,6 +953,77 @@ pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Inp
     marks.peek().is_some() && marks.all(|c| input.markers.contains(c))
 }
 
+/// Claude's fullscreen client draws an inverse software caret with the terminal
+/// cursor hidden. Codex uses the terminal cursor.
+pub fn command_cursor(screen: &vt100::Screen) -> Option<(u16, u16)> {
+    if screen.scrollback() != 0 {
+        return None;
+    }
+    if !screen.hide_cursor() {
+        return Some(screen.cursor_position());
+    }
+    let (height, width) = screen.size();
+    let mut candidates = (0..height).flat_map(|row| {
+        (0..width).filter_map(move |col| {
+            let cell = screen.cell(row, col)?;
+            (cell.inverse()
+                && (0..=row)
+                    .rev()
+                    .map(|r| screen.contents_between(r, 0, r, width))
+                    .take_while(|line| !line.trim_start().starts_with('─'))
+                    .any(|line| line.trim_start().starts_with('❯')))
+            .then_some((row, col))
+        })
+    });
+    let cursor = candidates.next()?;
+    candidates.next().is_none().then_some(cursor)
+}
+
+/// Command injection also checks the right of the caret and continuation rows.
+/// Navigation's left-of-caret check alone would accept Home in a populated draft.
+/// Native placeholder and footer text are dim or coloured; draft text is plain.
+pub fn at_empty_command_prompt(
+    screen: &vt100::Screen,
+    input: &crate::harness::spec::Input,
+) -> bool {
+    let Some((row, col)) = command_cursor(screen) else {
+        return false;
+    };
+    let left = screen.contents_between(row, 0, row, col);
+    let marks: Vec<_> = left
+        .chars()
+        .filter(|c| {
+            !c.is_whitespace() && !(input.ignore_braille && ('\u{2800}'..='\u{28ff}').contains(c))
+        })
+        .collect();
+    if marks.is_empty() || !marks.iter().all(|c| input.markers.contains(*c)) {
+        return false;
+    }
+    let (height, width) = screen.size();
+    if row + 1 >= height {
+        return false;
+    }
+    let empty = |c: char| {
+        c.is_whitespace() || (input.ignore_braille && ('\u{2800}'..='\u{28ff}').contains(&c))
+    };
+    let next = screen.contents_between(row + 1, 0, row + 1, width);
+    if !next.chars().all(|c| empty(c) || c == '─') {
+        return false;
+    }
+    let blank = |cell: &vt100::Cell| cell.contents().chars().all(empty);
+    (col..width).all(|c| {
+        screen
+            .cell(row, c)
+            .is_none_or(|cell| blank(cell) || cell.dim())
+    }) && (row + 1..height).all(|r| {
+        (0..width).all(|c| {
+            screen.cell(r, c).is_none_or(|cell| {
+                blank(cell) || cell.dim() || cell.fgcolor() != vt100::Color::Default
+            })
+        })
+    })
+}
+
 /// OpenCode's standard session editor has a left bar, one padding row above and
 /// below the input, a model row, and a block underline. Check the whole input row
 /// so moving to the start of a draft cannot turn Left into dashboard navigation.
@@ -1588,6 +1659,35 @@ mod tests {
             !at_empty_prompt(p.screen(), input),
             "a historical prompt cannot return focus"
         );
+    }
+
+    #[test]
+    fn rename_command_requires_an_empty_editor_including_text_after_the_caret() {
+        let input = &crate::harness::spec(crate::config::HarnessKind::Codex).input;
+        let at = |text: &str| {
+            let mut p = vt100::Parser::new(8, 80, 0);
+            p.process(text.as_bytes());
+            at_empty_command_prompt(p.screen(), input)
+        };
+        assert!(at("› "));
+        assert!(at("› \x1b[2mAsk Codex to do anything\x1b[0m\x1b[1;3H"));
+        assert!(at("› \r\n\r\n\x1b[2mdefault · folder\x1b[0m\x1b[1;3H"));
+        assert!(at("›⠁ \r\n ⠄ ⢀\r\n\x1b[2mdefault · folder\x1b[0m\x1b[1;3H"));
+        assert!(!at("› draft"));
+        assert!(!at("› draft\x1b[1;3H"), "Home does not erase a draft");
+        assert!(
+            !at("› \r\n  draft\x1b[1;3H"),
+            "a continuation is still input"
+        );
+        assert!(
+            !at("› \r\n\r\n  draft\x1b[1;3H"),
+            "blank draft lines are input"
+        );
+        assert!(!at("› \x1b[?25l"), "a hidden caret is not a ready editor");
+        assert!(at("❯ \x1b[7m \x1b[0m\x1b[?25l"));
+        assert!(!at("❯ \x1b[7md\x1b[0mraft\x1b[?25l"));
+        assert!(!at("❯ draft\x1b[7m \x1b[0m\x1b[?25l"));
+        assert!(!at("› \r\n  \x1b[36m@draft\x1b[0m\x1b[1;3H"));
     }
 
     #[test]

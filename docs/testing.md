@@ -55,6 +55,7 @@ CONES_STRESS_CYCLES=100 scripts/check stress
 python3 scripts/check-opencode.py target/debug/cones /absolute/path/to/opencode
 python3 scripts/check-terminals.py target/debug/cones
 python3 scripts/check-owned-harnesses.py target/debug/cones /absolute/path/to/claude /absolute/path/to/pi
+python3 scripts/check-rename.py
 ```
 
 Stress is separate from the default gate. It runs one ignored macOS test alone,
@@ -86,6 +87,11 @@ closure. The owned-harness check uses a loopback Anthropic fixture for native
 Claude forks and pi, checking their identity, model, transcript, PID and draft.
 Fixture cleanup explicitly stops hosted terminals; closing a dashboard
 alone is no longer sufficient cleanup for those fixtures.
+
+The rename check uses the installed Claude and Codex CLIs with disposable homes
+and a loopback provider. It exercises Ctrl+N through the dashboard handler for
+manual names and empty submissions, accepts Codex's generated suggestion, and
+checks the persisted native names for the exact discovered session IDs.
 
 ## Maintaining coverage
 

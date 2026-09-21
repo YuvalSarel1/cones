@@ -33,6 +33,9 @@ fn every_registered_harness_has_a_valid_definition_and_explicit_capabilities() {
     let claude = spec(HarnessKind::Claude);
     let codex = spec(HarnessKind::Codex);
     let pi = spec(HarnessKind::Pi);
+    assert!(claude.operations.rename);
+    assert!(codex.operations.rename);
+    assert!(!pi.operations.rename);
     assert_eq!(claude.session(Some("interactive")).join, Join::Unavailable);
     assert_eq!(claude.session(Some("bg")).stop, Stop::Remove);
     assert_eq!(codex.session(Some("daemon")).join, Join::CodexRemote);
@@ -94,7 +97,7 @@ fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
             "/viewer/input",
             json!({"return_to_list":[{"key":"left","when":"empty_prompt"}]}),
         ),
-        (1, "/operations/rename", json!(true)),
+        (2, "/operations/rename", json!(true)),
         (1, "/operations/attach", json!(null)),
         (0, "/operations/launch/provider", json!("--provider")),
         (0, "/operations/launch/effort", json!("effort high")),

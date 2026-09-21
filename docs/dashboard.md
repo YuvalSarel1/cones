@@ -170,11 +170,13 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
-| `ctrl+n` | Rename a Claude session. The [native title record](harness.md#reports) is updated; a live client may overwrite it from memory. |
+| `ctrl+n` | Rename a Claude or Codex session. Type a name, or submit the empty field to open native `/rename`: Claude generates a name; Codex opens its native naming prompt, which can suggest a name. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation). |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
 | `ctrl+b` | List the sessions entered from here, most recent first; press it again to enter the highlighted one. |
 | `ctrl+r` | Reload now. |
+
+Rename opens the selected native client and waits for an empty editor before submitting the command. A key, paste or mouse action cancels a pending handoff. In Codex, accept or edit the suggestion in its own prompt. An interactive Claude session in another terminal still supports a manually entered name through its transcript; automatic naming requires access to its native client. A live external client may overwrite that transcript-only name.
 
 The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`confirm_secs`](jobs.md#list-settings). Confirmed deletions disappear before the native command finishes and return if it fails. A successful action clears the hint; the disappearing row is its confirmation.
 
