@@ -23,6 +23,13 @@ Completion is a worker's report or a known landed result; idle and exit are not 
 
 ## Communication
 
+Greeting an in-scope worker that has not been greeted is always the first thing you do. It comes
+ahead of integration, ahead of the finding you are drafting, and ahead of any edit of your own.
+The greeting costs one message; skipping it costs a surprise edit you never saw coming, and a
+worker that does not know how to reach you. Re-arm the watcher before anything else too: a wake
+you consume without re-arming leaves you blind to every arrival after it, and nothing tells you
+that you are blind.
+
 Greet a new worker once per session, not once per task: identify yourself, ask which functions
 its current work touches, and explain how to reply if its harness needs that. Keep it brief. When
 its identity or task is uncertain, resolve that from the launcher or existing records first.
