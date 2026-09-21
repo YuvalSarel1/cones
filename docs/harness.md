@@ -99,7 +99,11 @@ Previews select user and assistant text in native order. Claude uses native mess
 
 ### Coordinator identity
 
-The skill writes `<Claude home>/orchestrator/<sha1 of absolute cwd>.json` each sweep with the pid and cwd this reads, and nothing else. Matching both pid and cwd sets `coordinator: true` in session JSON. The title is not used for identification. The [launcher](cli.md#coordinator-launch) starts a background Claude session; a hand-started coordinator can be interactive, and all other behavior follows that native kind.
+`cones coordinator claim` writes the pid and folder it read into the folder's [coordinator state](cli.md#state), and nothing else. Matching both pid and folder sets `coordinator: true` in session JSON. The title is not used for identification, and the mark is applied to every harness's rows, so the role is not tied to one harness. The [launcher](cli.md#launch) starts a background Claude session; a hand-started coordinator can be interactive, and all other behavior follows that native kind.
+
+### Message delivery
+
+A harness definition may declare a `message` operation beside `attach` and `fork`, giving the native command that queues one note to a live session. Placeholders are `{id}`, `{text}` and, where the harness talks to a daemon, `{remote}`. Codex declares `codex queue --thread`, verified against 0.154.0, resolved against the daemon of the home holding the thread. A harness without the block cannot be written to from cones and says so: cones does not type into a session's terminal to approximate it.
 
 ## Reports
 

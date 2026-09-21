@@ -125,14 +125,23 @@ so neither a draw nor a test starts a model.
 
 ## The coordinator
 
-The coordinator is a Claude Code session running the `start-orchestrator` skill, which ships in
-this repository under `assets/coordinator`. `cones coordinator` writes the plugin out of the
-binary, with the helper path substituted in, and starts one background session for a folder. The
-skill and its helpers are native to cones: they are compiled in with `include_str!`, their Python
-suite is in `assets/coordinator/tests`, and the full gate runs it.
+The coordinator is one agent session running the `start-orchestrator` skill, which ships in this
+repository under `assets/coordinator` and is compiled into the binary with `include_str!`.
+`cones __coordinator` writes the plugin out and starts a background Claude session for a folder.
+
+The skill is prose. Everything it needs a program for is `cones coordinator`, a subcommand group
+in `src/coordinator.rs`: `claim`, `wait`, `mail`, `send` and `tick`. That split is the point.
+Judgment about overlaps, findings and integration belongs to the model reading the skill; the
+claim on a folder, the wake gate, the mail positions and delivery are mechanism, and mechanism
+in a prompt is a second implementation nobody tests.
 
 It schedules nothing and executes nothing. It reads who is working in a folder, carries facts
 between those workers, and lands their finished changes.
+
+The plumbing is harness-neutral. State lives under the state directory rather than a harness's
+home, identity comes from the roster rather than one harness's registry, and delivery comes from
+the harness definition. So the role is not Claude's to hold, even though today's launcher starts
+a Claude session to fill it.
 
 ### Where the model calls are
 
@@ -143,124 +152,122 @@ Three places, and only three.
    is a real cost charged to someone else's budget.
 3. A worker does its own work, which is the point and not the coordinator's concern.
 
-The sweep loop, the roster read, the mail check, the delivery helper and the validation gate are
-plain processes. This is why the wake gate is the most load-bearing piece of the design: a gate
-that fires when nothing happened turns a ten second sleep into a model call every ten seconds.
+`cones coordinator` makes none. This is why the wake gate is the most load-bearing piece of the
+design: a gate that fires when nothing happened turns a ten second sleep into a model call every
+ten seconds.
 
 ### The wake loop
 
 ```mermaid
 flowchart TB
-    Arm([arm watcher]) --> Sweep
-    Sweep["sweep.sh<br/>bash, no model"]
-    Sweep --> Q{"anything moved?"}
-    Q -->|"same"| Sleep["sleep 10"] --> Sweep
-    Q -->|"changed"| Wake["coordinator wakes<br/>MODEL CALL"]
-    Wake --> Tick["tick.sh<br/>tree, roster, budget, mail"]
+    Arm([arm watcher]) --> Wait["cones coordinator wait<br/>blocks, no model"]
+    Wait --> Q{"arrival or mail?"}
+    Q -->|"no"| Sleep["sleep 10"] --> Wait
+    Q -->|"yes"| Wake["coordinator wakes<br/>MODEL CALL"]
+    Wake --> Tick["cones coordinator tick<br/>head, tree, roster, mail"]
     Tick --> Act{"act on it"}
-    Act -->|"dependency or finding"| Msg["message a worker<br/>costs that worker a turn"]
+    Act -->|"ungreeted worker"| Greet["send --greet"]
+    Act -->|"dependency or finding"| Msg["send<br/>costs that worker a turn"]
     Act -->|"work is ready"| Integ["integration queue"]
-    Act -->|"owner decision"| Hold["hold, ask once"]
+    Act -->|"handled a reply"| Ack["mail --ack N"]
     Act -->|"nothing to report"| Rearm([re-arm])
+    Greet --> Rearm
     Msg --> Rearm
     Integ --> Rearm
-    Hold --> Rearm
-    Rearm --> Sweep
+    Ack --> Rearm
+    Rearm --> Wait
 
     classDef model fill:#4c1d95,stroke:#a78bfa,color:#fff
     class Wake model
 ```
 
-`sweep.sh` reports a roster delta from `cones ls`, unacknowledged mail that has not been shown
-yet, and changes in the delivery and roster errors. It wakes the coordinator for two of them: a
-worker that arrived and has not been greeted, and a worker that reached out. A departure and a
-state moving between active, idle and blocked are read from `tick.sh` when the coordinator is
-already awake, because waking to learn that somebody else is still working spends a call for
-nothing. The roster position advances on every pass either way, so a change nobody woke for
-cannot return as news. Errors are reported on the edge, once: a read that keeps failing would
-otherwise wake the coordinator forever, and a coordinator that cannot read the roster can never
-see an arrival, which is why that one failure is still worth a call.
+`wait` returns for exactly two things: a session on the folder's roster that it has not shown
+before, and a line appended to the folder's inbox. A departure, a state moving between active,
+idle and blocked, and an edit to the tree are read from `tick` when the coordinator is already
+awake, because waking to learn that somebody else is still working spends a call for nothing.
+The rule lives in one function, so there is no loop condition in the prompt for a coordinator to
+widen. `wait` records what it returned before returning it, so a change nobody woke for cannot
+come back as news, and one pending batch of mail wakes the coordinator once rather than on every
+pass. The first arm records the folder as it stands and keeps waiting: everything already there
+was read by the tick that came before it, and is not an arrival.
 
-The mail gate needs both halves of its condition. `inbox.ack` is what the coordinator durably
-handled and only `codex.sh ack` moves it. `inbox.shown` is the watcher's own note of what it
-already put in front of the model, so one pending batch wakes it once rather than every pass. A
-fresh job starts without `inbox.shown`, so gating on that file alone treats an inbox's entire
-acknowledged history as new on every pass, forever. The test is
-`the_coordinator_watcher_wakes_for_unacknowledged_mail_and_stays_quiet_otherwise` in
-`tests/core.rs`.
+A `claim` counts mail that predates it as handled, so a coordinator arriving in a folder with
+history does not treat that history as a backlog it was asked to answer. Reading mail never
+moves the acknowledged position; only `mail --ack N` does. That is what lets a replaced
+coordinator see a reply the one before it read and never acted on.
+
+The tests are `the_coordinator_wakes_for_an_arrival_and_for_mail_and_for_nothing_else` and
+`mail_stays_pending_until_it_is_acknowledged` in `tests/core.rs`.
 
 ### Roster and messaging
 
-The roster is one read of `cones ls --dir --json`, covering the folder and the worktrees under it.
-cones decides who is a worker: it drops unclaimed spares, resolves a Codex thread to its client,
-ignores viewer and daemon processes, and turns each harness's own report into one state. The
-coordinator does not re-derive any of that, because a second implementation of discovery drifts
-from the first and the disagreement surfaces as a worker that exists in one view and not the
-other. A read that fails keeps the previous roster and reports the failure once.
+The roster is the same read `cones ls --dir --json` prints, covering the folder and the worktrees
+under it. cones decides who is a worker: it drops unclaimed spares, resolves a Codex thread to
+its client, ignores viewer and daemon processes, and turns each harness's own report into one
+state. The coordinator does not re-derive any of that, because a second implementation of
+discovery drifts from the first and the disagreement surfaces as a worker that exists in one
+view and not the other.
 
-Two transports, because the harnesses differ.
+Delivery is a harness operation, declared beside `attach` and `fork`:
+
+```yaml
+  message:
+    args: [--remote, "{remote}", queue, --thread, "{id}", --message, "{text}"]
+```
+
+A harness with no `message` block cannot be written to, and `send` says so rather than
+approximating it. Typing into a session's terminal would put the coordinator's words in the
+owner's own input line, which is not a message from a peer.
 
 ```mermaid
 flowchart LR
     Coord["coordinator<br/>MODEL"]
-    SM["SendMessage"] --> CS["Claude worker"]
-    CX["codex.sh send<br/>request key + expiry"] --> Daemon["local daemon queue"] --> CT["Codex worker"]
+    SM["native SendMessage<br/>Claude to Claude"] --> CS["Claude worker"]
+    CX["cones coordinator send"] --> Op["harness message operation"]
+    Op --> CT["worker"]
     CT -->|reply| Inbox["inbox.jsonl"]
     Coord --> SM
     Coord --> CX
     CS -->|reply| Coord
-    Inbox -->|next sweep| Coord
+    Inbox -->|next wait| Coord
 
     classDef model fill:#4c1d95,stroke:#a78bfa,color:#fff
     class Coord model
 ```
 
-A Claude reply arrives in the coordinator's conversation and costs it a turn immediately. A Codex
-reply lands in the folder's inbox and costs nothing until the next wake. Delivery is not reading:
-a message can reach a session whose agent never answers, which is why the greeting asks for an
-acknowledgement. Without one, a worker that read the greeting and a worker that never received it
-look identical.
+A Claude reply arrives in the coordinator's conversation and costs it a turn immediately. A
+worker with no native way back appends one JSON line to the folder's inbox, which costs nothing
+until the next wake; `send` tells it the path and the shape. Delivery is not reading: a message
+can reach a session whose agent never answers, which is why the greeting asks for an
+acknowledgement. Without one, a worker that read the greeting and a worker that never received
+it look identical.
 
-Every Codex request carries its own `reply_to`, so two open requests to one task come back
-distinguishable, and reusing a key is idempotent so a replayed reply cannot produce a second
-follow-up.
+A greeting introduces the coordinator to the session once and is recorded, so repeating one is a
+no-op rather than a second interruption, and finishing a task cannot suppress the message that
+asks the worker to report its next assignment.
 
-The Codex transport needs Python 3 and a running local Codex app-server with `thread/read` and
-`thread/queue` add, list and delete support. It was verified against Codex 0.154.0, and the full
-greet, request, reply, acknowledge, reset and finish cycle against a live 0.155.1 daemon and
-client. `codex.sh` discovers the daemon's Unix WebSocket address with `codex app-server daemon
-version` under the selected `CODEX_HOME`, and uses the native queue operations rather than
-editing the database. Enqueueing a request can cause the harness to resume the worker, and an
-unknown recipient is refused rather than guessed.
-
-A session, a task and a request have separate lifetimes. A greeting introduces the coordinator to
-the session once and is never repeated, so finishing a task cannot suppress the message that asks
-the worker to report its next assignment. A reachable thread registers a task whether it is
-active or idle, and only a thread that has ended is refused.
+Codex delivery goes through `codex queue --thread`, against the daemon that owns the thread
+rather than the ambient one, because a home pinned to another provider region keeps its own
+daemon. It was verified against Codex 0.154.0. An unknown recipient is refused rather than
+guessed, and enqueueing can cause the harness to resume the worker.
 
 ### Coordinator state
 
-| File | Lives in | Survives the job |
-| --- | --- | --- |
-| Status record | `<claude dir>/orchestrator/<sha1>.json` | yes |
-| `inbox.jsonl` | the folder's coordinator dir | yes |
-| `inbox.ack` | beside the inbox | yes |
-| `inbox.shown` | this job's working dir | no |
-| `roster.prev` | this job's working dir | no |
-| `integration.json` | this job's working dir | no |
+Everything for one folder lives in `<state dir>/coordinator/folders/<sha256 of the folder>`:
+the claim in `status.json`, the inbox and its acknowledged position, the watcher's position in
+`wait.json`, and the greeted sessions. It is under cones' own directory rather than a harness's
+home because any harness can hold the role, and it is per folder rather than per session because
+a reply must outlive the session that asked for it.
 
-A reply must outlive the job that received it, so the inbox and the acknowledged position sit in
-the folder's own directory and a replacement coordinator sees anything still pending. The
-watcher's note of what it already displayed is per job, because a new job has not displayed
-anything.
+Records are replaced through a per-process temporary, never a shared name: two coordinators write
+this record legitimately, a replacement overlapping the one it takes over from among them, and
+one shared temporary means the second writer's rename deletes the first writer's source, so the
+writer that loses dies and takes its watcher with it. The test is
+`concurrent_claims_leave_one_valid_record_and_no_temporaries`.
 
-The status record holds the pid and folder cones matches to mark a session the coordinator, under
-`CLAUDE_CONFIG_DIR` when that is set, the same home the roster read resolves. It is written
-through a per-process temporary: two coordinators write this record legitimately, a replacement
-overlapping the one it takes over from among them, and one shared temporary name means the second
-writer's rename deletes the first writer's source. The writer that loses dies and takes its
-watcher with it. The test is
-`concurrent_coordinators_can_write_the_status_record_without_destroying_each_other`.
+A claim names the process and the folder, and that pair is what marks a roster row as the
+coordinator. Never a title: a session that merely mentions the word is not the role, and a pid
+reused in another folder is not either.
 
 ### Integration
 
@@ -281,8 +288,9 @@ author's hunks in a file, so a commit comes from a diff trimmed to one author's 
 | What a run did | the ledger record and captured output |
 | Permissions and execution | the harness |
 | Who counts as a worker | `cones ls` |
-| One coordinator per folder | the status record's live pid |
-| A coordinator wake means something moved | `sweep.sh` |
-| Mail is handled, not just read | `codex.sh ack` |
+| Whether a worker can be written to | the harness's `message` operation |
+| One coordinator per folder | the claim's live pid |
+| A coordinator wake means something moved | `cones coordinator wait` |
+| Mail is handled, not just read | `cones coordinator mail --ack` |
 | A combined tree is sound | `scripts/check` |
 | Scope, config, pushing | the owner |

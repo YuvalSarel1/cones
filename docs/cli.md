@@ -40,7 +40,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 cones ls --dir ~/src/app --json
 ```
 
-The [coordinator](#coordinator-launch) reads its folder this way instead of walking the harness registries itself.
+The [coordinator](#coordinator) reads its folder this way instead of walking the harness registries itself.
 
 ### Starting a session
 
@@ -67,24 +67,52 @@ cones run nightly-triage --prompt "summarize the failures"
 
 The task runs in the current directory under the named job's policy, otherwise the first job's. With no readable, valid jobs file or no template job, it uses the [built-in policy defaults](jobs.md#job-fields-and-defaults). An explicit unknown job name is an error. Each task gets a fresh `adhoc-<8 hex>` name, so overlap is checked per task.
 
-## Coordinator launch
+## Coordinator
 
-The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orchestrator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker. Its launcher is currently internal, hidden from `--help`, with no dashboard button:
+The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orchestrator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker.
+
+### Launch
+
+The launcher is internal, hidden from `--help`, with no dashboard button:
 
 ```sh
 cones __coordinator
 cones __coordinator ~/src/app
 ```
 
-The default folder is the current directory. A live coordinator record for that folder is printed and the launcher exits; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` there. The skill also checks for duplicates. Nothing is installed in the user's plugin directory.
+The default folder is the current directory. A live claim on that folder is printed and the launcher exits; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
 
-The coordinator appears as a native Claude session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`. This removes its status record, while its background session remains until separately stopped. Coordination rules belong to the skill.
+The coordinator appears as a native session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`, which releases its claim; its background session remains until separately stopped. Coordination rules belong to the skill.
 
-Its roster is `cones ls --dir <folder> --json`, so who counts as a worker is decided here: unclaimed spares, Codex thread attribution, viewer and daemon processes and each harness's reported state. The skill does not read the native homes itself. An install whose `cones` predates the command makes the coordinator report the failed read instead of deriving a roster of its own.
+### Commands
 
-The embedded copy is under `assets/coordinator/`. The upstream orchestrator's `bin/sync.py /path/to/cones` copies the skill and helpers, retaining `__CONES_COORDINATOR_BIN__` for cones to fill at launch; `--check` detects drift. Start a fresh coordinator after updating because an existing session retains its loaded instructions.
+The skill's plumbing is a public subcommand group. `--dir` defaults to the current directory and covers the worktrees under it. None of these call a model.
 
-Codex delivery requires a running local app-server with native queue add/list/delete support. Requests name an exact thread and an active task. Completion closes the task; the watcher withdraws expired pending requests. Already consumed requests cannot be recalled. The helper preserves owner messages and owner-edited queue entries. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
+```sh
+cones coordinator --dir ~/src/app claim [--release]
+cones coordinator --dir ~/src/app wait [--timeout SECONDS]
+cones coordinator --dir ~/src/app tick
+cones coordinator --dir ~/src/app send SESSION_ID "text" [--greet]
+cones coordinator --dir ~/src/app mail [--ack N]
+```
+
+`claim` records the session running it as the folder's coordinator, identified by walking the process chain to the first pid on the folder's roster, so the role does not depend on which harness holds it. A folder another live coordinator holds is refused. Mail that predates the claim is counted as handled rather than replayed. `--release` hands the folder back and is refused for somebody else's claim.
+
+`wait` blocks without a model turn and returns only for a roster session it has not shown before or a line appended to the folder's inbox. Departures, state changes and tree edits are read from `tick`. It exits 2 printing `timeout` when `--timeout` passes. See [the wake loop](architecture.md#the-wake-loop).
+
+`tick` prints HEAD, the working tree, the roster with each worker's context use and cost, and pending mail, in one read.
+
+`send` delivers one note through the recipient's own harness [message operation](harness.md#message-delivery); a harness without one is refused. `--greet` is the once-per-session introduction and repeating it is a no-op. A recipient outside the folder's roster is refused.
+
+`mail` prints replies nobody has acted on and consumes nothing, so a restarted coordinator still sees them. Only `--ack N` moves the handled position.
+
+Its roster is the `cones ls --dir <folder> --json` read, so who counts as a worker is decided here: unclaimed spares, Codex thread attribution, viewer and daemon processes and each harness's reported state. The skill does not read the native homes itself.
+
+### State
+
+One directory per folder, `STATE_DIR/coordinator/folders/<sha256 of absolute folder>`, holding `status.json` (the claim), `inbox.jsonl`, `inbox.ack`, `wait.json` and `greeted.json`. It is under the state directory rather than a harness home because any harness can hold the role, and per folder rather than per session because a reply must outlive the session that asked for it.
+
+Codex delivery requires a running local app-server daemon with `queue --thread`. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
 
 ## Diagnostics
 
@@ -124,7 +152,7 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 | `__logs ID [--follow] [--raw]` | Read captured output. The current session renderer does not handle pi message entries. |
 | `__attach ID [--print-command]` | Open a background session or resume a finished run. |
 | `__install [--dry-run]` | Compile and install schedules. Dry run prints plist XML, including imported credentials; stderr warns when a job imports values. |
-| `__coordinator [DIR]` | [Launch the bundled coordinator](#coordinator-launch). |
+| `__coordinator [DIR]` | [Launch the bundled coordinator](#launch). |
 | `__list` | Render dashboard rows for a subprocess caller. |
 | `__worker --run-id ID` | Run the supervised worker. |
 | `__terminal-host` | Own one interactive PTY independently of the dashboard. Internal framed protocol on a private local socket; arguments and environment arrive through an anonymous pipe. |

@@ -765,16 +765,23 @@ fn version_flag_prints_the_crate_version() {
 fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
     let f = Fixture::new("success", 1.0);
     let dir = f.dir.path().canonicalize().unwrap();
-    let status = f.dir.path().join(".claude/orchestrator");
-    fs::create_dir_all(&status).unwrap();
-    let live = serde_json::json!({"cwd": dir, "pid": std::process::id(), "jobId": "8077985c"});
-    fs::write(status.join("x.json"), live.to_string()).unwrap();
+    let claimed = cones::coordinator::directory(&f.state, &dir);
+    fs::create_dir_all(&claimed).unwrap();
+    let live = serde_json::json!({"cwd": dir, "pid": std::process::id(), "session": "8077985c"});
+    fs::write(claimed.join("status.json"), live.to_string()).unwrap();
     let out = f
         .command()
         .args(["__coordinator", dir.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("already running"));
-    assert!(!f.state.join("coordinator").exists());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(shown.contains("already running"), "{shown}");
+    assert!(shown.contains("8077985c"), "{shown}");
+    // No plugin is written for a folder somebody else is already coordinating.
+    assert!(!f.state.join("coordinator/plugin").exists());
 }

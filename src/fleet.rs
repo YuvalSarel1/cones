@@ -62,7 +62,7 @@ pub struct Session {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<String>,
-    /// Matched by pid and cwd against the coordinator skill's status file, never by title.
+    /// Matched by pid and folder against the coordinator's own claim, never by title.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub coordinator: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,17 +218,10 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
         .filter_map(|b| serde_json::from_slice(&b).ok())
         .collect();
     let starts = process_starts(values.iter().filter_map(|v| v["pid"].as_u64()))?;
-    let coordinators = coordinators(claude);
     out.extend(
         values
             .iter()
-            .filter_map(|v| session(claude, v, &starts, true))
-            .map(|mut s| {
-                s.coordinator = s
-                    .pid
-                    .is_some_and(|p| coordinators.contains(&(p, s.cwd.clone())));
-                s
-            }),
+            .filter_map(|v| session(claude, v, &starts, true)),
     );
     let live: HashSet<&str> = out.iter().map(|s| s.session_id.as_str()).collect();
     let settled = settled(claude, &live, true);
@@ -237,17 +230,13 @@ pub fn sessions(claude: &Path) -> Result<Vec<Session>> {
     Ok(out)
 }
 
-/// Match coordinator records by both pid and folder.
-fn coordinators(claude: &Path) -> HashSet<(u32, PathBuf)> {
-    fs::read_dir(claude.join("orchestrator"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let v: Value = serde_json::from_slice(&fs::read(e.path()).ok()?).ok()?;
-            Some((v["pid"].as_u64()? as u32, PathBuf::from(v["cwd"].as_str()?)))
-        })
-        .collect()
+/// Whether a folder holds a path: the same place, or somewhere under it. Both sides are
+/// canonicalized, so /var and /private/var compare equal on macOS and a worktree reached
+/// through a symlink still belongs to its project. A path that cannot be resolved stays as given.
+pub fn contains(folder: &Path, path: &Path) -> bool {
+    let real = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let (folder, path) = (real(folder), real(path));
+    path == folder || path.starts_with(&folder)
 }
 
 /// The whole process table, which is how Codex and pi clients are discovered at all.
@@ -1920,44 +1909,6 @@ mod tests {
             .map(|s| (s.session_id.as_str(), s.forked_from.as_deref()))
             .collect();
         assert_eq!(parentage, [(parent, None), (child, Some(parent))]);
-    }
-
-    #[test]
-    fn the_orchestrator_status_file_marks_its_session_by_pid_and_folder() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("sessions")).unwrap();
-        fs::create_dir_all(dir.path().join("orchestrator")).unwrap();
-        // Two live entries share this process's pid; only the one in the status file's folder
-        // is the orchestrator, so a reused pid in another folder is not.
-        for (name, cwd) in [("aaaaaaaa", "/src/example"), ("bbbbbbbb", "/src/other")] {
-            fs::write(
-                dir.path().join(format!("sessions/{name}.json")),
-                serde_json::json!({
-                    "pid": std::process::id(), "sessionId": format!("{name}-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
-                    "cwd": cwd, "kind": "bg", "jobId": name, "status": "idle"
-                })
-                .to_string(),
-            )
-            .unwrap();
-        }
-        fs::write(
-            dir.path().join("orchestrator/status.json"),
-            serde_json::json!({"cwd": "/src/example", "pid": std::process::id(), "peers": []})
-                .to_string(),
-        )
-        .unwrap();
-        let marks: Vec<(String, bool)> = sessions(dir.path())
-            .unwrap()
-            .into_iter()
-            .map(|s| (s.cwd.display().to_string(), s.coordinator))
-            .collect();
-        assert_eq!(
-            marks,
-            [
-                ("/src/example".to_owned(), true),
-                ("/src/other".to_owned(), false)
-            ]
-        );
     }
 
     #[test]

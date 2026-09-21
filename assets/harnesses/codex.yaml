@@ -88,6 +88,14 @@ operations:
       description: "codex: native session forks"
   resume:
     args: [--remote, "{remote}", resume, --, "{id}"]
+  message:
+    args: [--remote, "{remote}", queue, --thread, "{id}", --message, "{text}"]
+    probe:
+      args: [queue, --help]
+      require_success: false
+      contains: ["--thread", "--message"]
+      error: "this codex has no `queue --thread`, so a coordinator could not deliver a note to a thread"
+      description: "codex: queue one note to a live thread"
   unarchive:
     args: [unarchive, --, "{id}"]
   sessions:

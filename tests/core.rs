@@ -1070,39 +1070,33 @@ fn doctor_probes_only_the_switches_the_compiler_emits() {
 }
 
 #[test]
-fn coordinator_plugin_is_written_from_the_binary_with_its_helper_path_filled_in() {
+fn coordinator_plugin_is_the_skill_and_nothing_else() {
     let state = tempfile::tempdir().unwrap();
     let plugin = cones::harness::coordinator_plugin(state.path()).unwrap();
     let skill = plugin.join("skills/start-orchestrator");
     let text = std::fs::read_to_string(skill.join("SKILL.md")).unwrap();
     assert!(text.starts_with("---\nname: start-orchestrator\n"));
-    assert!(text.contains(&format!("S=\"{}\"", skill.join("bin").display())));
+    // The plumbing is `cones coordinator` now, so the skill ships no helpers and no path to
+    // substitute into. A leftover from an older build would be a second, drifting runtime.
     assert!(!text.contains("__CONES_"));
-    for f in [
-        "bin/self.sh",
-        "bin/sweep.sh",
-        "bin/fleet.py",
-        "bin/codex.sh",
-        "bin/codex.py",
-        "bin/tick.sh",
-    ] {
-        assert!(skill.join(f).is_file(), "{f}");
-    }
-    let help = std::process::Command::new("python3")
-        .arg(skill.join("bin/codex.py"))
-        .arg("--help")
-        .output()
-        .unwrap();
-    assert!(
-        help.status.success(),
-        "{}",
-        String::from_utf8_lossy(&help.stderr)
-    );
-    std::fs::write(skill.join("bin/codex.py"), "stale helper").unwrap();
+    let stale = skill.join("bin/codex.py");
+    std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+    std::fs::write(&stale, "yesterday's helper").unwrap();
     cones::harness::coordinator_plugin(state.path()).unwrap();
+    assert!(
+        !skill.join("bin").exists(),
+        "an upgrade must take helpers away"
+    );
+    let files: Vec<String> = walk(&plugin)
+        .iter()
+        .map(|p| p.strip_prefix(&plugin).unwrap().display().to_string())
+        .collect();
     assert_eq!(
-        std::fs::read_to_string(skill.join("bin/codex.py")).unwrap(),
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.py")
+        files,
+        [
+            ".claude-plugin/plugin.json",
+            "skills/start-orchestrator/SKILL.md"
+        ]
     );
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(plugin.join(".claude-plugin/plugin.json")).unwrap())
@@ -1110,239 +1104,397 @@ fn coordinator_plugin_is_written_from_the_binary_with_its_helper_path_filled_in(
     assert_eq!(manifest["name"], "cones");
 }
 
-/// The watcher must stay quiet on a folder whose inbox is already acknowledged. Gating a wake on
-/// the watcher's own `inbox.shown` alone woke the coordinator on every pass, forever, because a
-/// fresh job starts without that file while the inbox keeps its history: one model call per sleep.
-#[test]
-fn the_coordinator_watcher_wakes_for_unacknowledged_mail_and_stays_quiet_otherwise() {
-    let state = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let work = tempfile::tempdir().unwrap();
-    let job = tempfile::tempdir().unwrap();
-    let skill = cones::harness::coordinator_plugin(state.path())
-        .unwrap()
-        .join("skills/start-orchestrator");
+fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(dir).unwrap().flatten() {
+        match entry.path().is_dir() {
+            true => out.extend(walk(&entry.path())),
+            false => out.push(entry.path()),
+        }
+    }
+    out.sort();
+    out
+}
 
-    let sweep = |label: &str| -> String {
-        let out = std::process::Command::new("bash")
-            .arg(skill.join("bin/sweep.sh"))
-            .args([job.path(), work.path()])
-            .arg("1")
-            .env("CLAUDE_CONFIG_DIR", home.path())
-            // No roster source: the first pass reports that once, later passes must not repeat it.
-            .env("CONES", "/usr/bin/false")
-            .output()
-            .unwrap();
-        assert!(out.status.success(), "{label}: {:?}", out.status);
-        String::from_utf8(out.stdout).unwrap()
-    };
+/// One coordinated folder with one worker already in it, and a way to run coordinator commands
+/// against it. The worker's pid is the test's own, so the roster row is live and the parent
+/// chain from a spawned `cones` reaches it, which is how a claim identifies itself.
+struct Coordinated {
+    dir: tempfile::TempDir,
+    work: std::path::PathBuf,
+    registry: std::path::PathBuf,
+    jobs: std::path::PathBuf,
+}
 
-    let inbox = String::from_utf8(
-        std::process::Command::new("python3")
-            .arg(skill.join("bin/codex.py"))
-            .args(["--workspace", work.path().to_str().unwrap(), "inbox"])
-            .env("CLAUDE_CONFIG_DIR", home.path())
+impl Coordinated {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("project");
+        let registry = dir.path().join("claude/sessions");
+        let jobs = dir.path().join("jobs.yaml");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&registry).unwrap();
+        fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
+        let this = Self {
+            dir,
+            work,
+            registry,
+            jobs,
+        };
+        this.worker("worker-one");
+        this
+    }
+
+    fn worker(&self, id: &str) {
+        fs::write(
+            self.registry.join(format!("{id}.json")),
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": id,
+                "cwd": self.work.canonicalize().unwrap(), "kind": "interactive", "status": "idle"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args([
+                "--jobs",
+                self.jobs.to_str().unwrap(),
+                "--state-dir",
+                self.dir.path().to_str().unwrap(),
+                "coordinator",
+                "--dir",
+                self.work.to_str().unwrap(),
+            ])
+            .args(args)
+            .env("HOME", self.dir.path())
+            .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
+            .env("CODEX_HOME", self.dir.path().join("missing-codex"))
+            .env("PI_CODING_AGENT_DIR", self.dir.path().join("missing-pi"))
             .output()
             .unwrap()
-            .stdout,
-    )
-    .unwrap();
-    let inbox = std::path::Path::new(inbox.trim());
-    std::fs::create_dir_all(inbox).unwrap();
-    // History this coordinator already handled: three replies, acknowledged to the last line.
-    std::fs::write(
-        inbox.join("inbox.jsonl"),
-        "{\"text\":\"one\"}\n{\"text\":\"two\"}\n{\"text\":\"three\"}\n",
-    )
-    .unwrap();
-    std::fs::write(inbox.join("inbox.ack"), "3\n").unwrap();
+    }
 
-    sweep("first");
-    assert_eq!(
-        sweep("second"),
-        "same\n",
-        "an acknowledged inbox is not news"
-    );
-    assert_eq!(
-        sweep("third"),
-        "same\n",
-        "and it does not become news later"
-    );
+    fn run(&self, args: &[&str]) -> String {
+        let out = self.command(args);
+        assert!(
+            out.status.success(),
+            "cones coordinator {}: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    }
 
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(inbox.join("inbox.jsonl"))
-        .unwrap();
-    std::io::Write::write_all(&mut f, b"{\"text\":\"four\"}\n").unwrap();
-    drop(f);
-    let woken = sweep("after mail arrives");
+    /// The folder's own directory, as the claim reports it.
+    fn coordinator_dir(&self) -> std::path::PathBuf {
+        let claimed = self.run(&["claim"]);
+        let dir = claimed
+            .lines()
+            .next()
+            .unwrap()
+            .split("dir=")
+            .nth(1)
+            .unwrap();
+        std::path::PathBuf::from(dir)
+    }
+}
+
+/// The wake rule, which is the whole reason the watcher exists: a model call is earned by an
+/// arrival that has not been shown and by a worker writing, and by nothing else. Gating on a
+/// count the watcher kept per job instead woke the coordinator every ten seconds, forever, on
+/// any folder whose inbox already had acknowledged history.
+#[test]
+fn the_coordinator_wakes_for_an_arrival_and_for_mail_and_for_nothing_else() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    let inbox = dir.join("inbox.jsonl");
+    let quiet = |f: &Coordinated, why: &str| {
+        let out = f.command(&["wait", "--timeout", "1"]);
+        assert_eq!(out.status.code(), Some(2), "{why}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "timeout\n", "{why}");
+    };
+    // The first arm has the worker already on the roster: it was read before the watcher was
+    // armed, so it is not an arrival.
+    quiet(
+        &f,
+        "a worker present before the watcher was armed is not an arrival",
+    );
+    quiet(&f, "nothing moved");
+
+    f.worker("worker-two");
+    let woken = f.run(&["wait", "--timeout", "30"]);
     assert!(
-        woken.starts_with("changed\n"),
-        "real mail wakes it: {woken}"
+        woken.starts_with("new: worker-two\tclaude\t"),
+        "an arrival wakes the coordinator: {woken}"
     );
-    assert!(woken.contains("mail:"), "and it says so: {woken}");
-    assert!(woken.contains("four"), "showing the new line: {woken}");
-    assert_eq!(
-        sweep("after the batch was shown"),
-        "same\n",
-        "one pending batch wakes the coordinator once, not every ten seconds"
+    quiet(&f, "an arrival already shown is not shown again");
+
+    // A state change is a fact to read from a tick, not a reason to spend a model call.
+    fs::write(
+        f.registry.join("worker-two.json"),
+        serde_json::json!({
+            "pid": std::process::id(), "sessionId": "worker-two",
+            "cwd": f.work.canonicalize().unwrap(), "kind": "interactive", "status": "busy"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    quiet(&f, "a state change is not worth a model call");
+
+    // A departure is read from a tick too.
+    fs::remove_file(f.registry.join("worker-two.json")).unwrap();
+    quiet(&f, "a departure is not worth a model call");
+
+    fs::write(&inbox, "{\"from\":\"codex:abc\",\"text\":\"done\"}\n").unwrap();
+    let woken = f.run(&["wait", "--timeout", "30"]);
+    assert!(
+        woken.contains("mail:"),
+        "mail wakes the coordinator: {woken}"
+    );
+    assert!(woken.contains("1\t{\"from\":\"codex:abc\""), "{woken}");
+    quiet(
+        &f,
+        "one pending batch wakes the coordinator once, not every ten seconds",
     );
 }
 
-/// A wake costs a model call, so the watcher spends one on a worker that arrived and on a worker
-/// that reached out. A worker going idle and active again, or leaving, is read from the roster
-/// when the coordinator is already awake; waking for it buys nothing.
+/// The claim is what marks a row as the coordinator, matched by process and folder and never
+/// by a title. cones' own record holds it rather than one harness's home, so the role is not
+/// Claude's to hold: the mark is applied where every harness's rows are already in hand.
 #[test]
-fn the_coordinator_watcher_wakes_for_an_arrival_and_not_for_a_state_change() {
-    let state = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let work = tempfile::tempdir().unwrap();
-    let job = tempfile::tempdir().unwrap();
-    let skill = cones::harness::coordinator_plugin(state.path())
-        .unwrap()
-        .join("skills/start-orchestrator");
-
-    // A stand-in for `cones ls --dir --json`, reading whatever roster the test last wrote.
-    let roster = state.path().join("roster.json");
-    let fake = state.path().join("cones");
-    std::fs::write(
-        &fake,
-        format!("#!/bin/sh\ncat {}\n", roster.to_str().unwrap()),
+fn a_claim_marks_its_row_and_only_in_the_folder_it_claimed() {
+    let f = Coordinated::new();
+    // A second folder sharing this pid: the same process, somewhere it never claimed.
+    let elsewhere = f.dir.path().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(
+        f.registry.join("worker-elsewhere.json"),
+        serde_json::json!({
+            "pid": std::process::id(), "sessionId": "worker-elsewhere",
+            "cwd": elsewhere.canonicalize().unwrap(), "kind": "interactive", "status": "idle"
+        })
+        .to_string(),
     )
     .unwrap();
-    std::fs::set_permissions(
-        &fake,
-        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
-    )
-    .unwrap();
-
-    // `cones ls --json` is one object per line, and the row's fields sit under `session`.
-    let row = |state_name: &str| {
-        format!(
-            concat!(
-                r#"{{"kind":"session","status":"{}","session":{{"pid":4242,"#,
-                r#""session_id":"a-worker","harness":"claude","cwd":"{}","title":"worker"}}}}"#,
-                "\n"
-            ),
-            state_name,
-            work.path().to_str().unwrap()
-        )
-    };
-    let sweep = || -> String {
-        let out = std::process::Command::new("bash")
-            .arg(skill.join("bin/sweep.sh"))
-            .args([job.path(), work.path()])
-            .arg("1")
-            .env("CLAUDE_CONFIG_DIR", home.path())
-            .env("CONES", &fake)
+    let marks = || {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args([
+                "--jobs",
+                f.jobs.to_str().unwrap(),
+                "--state-dir",
+                f.dir.path().to_str().unwrap(),
+                "ls",
+                "--json",
+                "--dir",
+                f.dir.path().to_str().unwrap(),
+            ])
+            .env("HOME", f.dir.path())
+            .env("CLAUDE_CONFIG_DIR", f.dir.path().join("claude"))
+            .env("CODEX_HOME", f.dir.path().join("missing-codex"))
+            .env("PI_CODING_AGENT_DIR", f.dir.path().join("missing-pi"))
             .output()
             .unwrap();
-        String::from_utf8(out.stdout).unwrap()
-    };
-
-    std::fs::write(&roster, "").unwrap();
-    sweep();
-    sweep();
-
-    std::fs::write(&roster, row("active")).unwrap();
-    let arrival = sweep();
-    assert!(arrival.contains("new:"), "an arrival wakes it: {arrival}");
-    assert!(arrival.contains("a-worker"), "naming the worker: {arrival}");
-
-    std::fs::write(&roster, row("idle")).unwrap();
-    assert_eq!(
-        sweep(),
-        "same\n",
-        "active to idle is not worth a model call"
-    );
-    std::fs::write(&roster, row("active")).unwrap();
-    assert_eq!(sweep(), "same\n", "and idle back to active is not either");
-    std::fs::write(&roster, "").unwrap();
-    assert_eq!(sweep(), "same\n", "nor is the worker leaving");
-    std::fs::write(&roster, row("active")).unwrap();
-    let again = sweep();
-    assert!(
-        again.contains("new:"),
-        "a worker that comes back is an arrival again: {again}"
-    );
-
-    // A coordinator that restarts gets a new job directory. The roster position lives beside the
-    // inbox instead, so the worker it already greeted is not announced to it a second time.
-    let restarted = tempfile::tempdir().unwrap();
-    let after_restart = {
-        let out = std::process::Command::new("bash")
-            .arg(skill.join("bin/sweep.sh"))
-            .args([restarted.path(), work.path()])
-            .arg("1")
-            .env("CLAUDE_CONFIG_DIR", home.path())
-            .env("CONES", &fake)
-            .output()
-            .unwrap();
-        String::from_utf8(out.stdout).unwrap()
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let mut rows: Vec<(String, bool)> = String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .map(|v| {
+                (
+                    v["session"]["session_id"].as_str().unwrap().to_owned(),
+                    v["session"]["coordinator"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
     };
     assert_eq!(
-        after_restart, "same\n",
-        "a restart does not re-announce a known worker: {after_restart}"
+        marks(),
+        [
+            ("worker-elsewhere".to_owned(), false),
+            ("worker-one".to_owned(), false)
+        ]
+    );
+    f.run(&["claim"]);
+    assert_eq!(
+        marks(),
+        [
+            ("worker-elsewhere".to_owned(), false),
+            ("worker-one".to_owned(), true)
+        ],
+        "a reused pid in a folder nobody claimed is not the coordinator"
+    );
+    f.run(&["claim", "--release"]);
+    assert_eq!(
+        marks(),
+        [
+            ("worker-elsewhere".to_owned(), false),
+            ("worker-one".to_owned(), false)
+        ],
+        "releasing the folder gives the role up"
     );
 }
 
-/// Two coordinators can write the folder's status record at once: a replacement overlapping the
-/// one it takes over from, or a watcher left armed from an earlier arm. A single fixed temporary
-/// name made the second writer's rename delete the first writer's source, killing that process
-/// and the watcher it was running inside.
+/// Reading mail is not handling it. The position moves only on an explicit acknowledgement, so
+/// a replaced coordinator still sees a reply the one before it read and never acted on.
 #[test]
-fn concurrent_coordinators_can_write_the_status_record_without_destroying_each_other() {
-    let state = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
-    let skill = cones::harness::coordinator_plugin(state.path())
-        .unwrap()
-        .join("skills/start-orchestrator");
-    let driver = state.path().join("write.py");
-    std::fs::write(
-        &driver,
-        r#"import importlib.util, sys
-spec = importlib.util.spec_from_file_location("fleetmod", sys.argv[1])
-fleet = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(fleet)
-for _ in range(60):
-    fleet.write_status(sys.argv[2], int(sys.argv[3]))
-"#,
+fn mail_stays_pending_until_it_is_acknowledged() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    fs::write(
+        dir.join("inbox.jsonl"),
+        "{\"text\":\"one\"}\n{\"text\":\"two\"}\n",
     )
     .unwrap();
+    for _ in 0..2 {
+        let pending = f.run(&["mail"]);
+        assert!(pending.contains("1\t{\"text\":\"one\"}"), "{pending}");
+        assert!(pending.contains("2\t{\"text\":\"two\"}"), "{pending}");
+    }
+    assert!(f.run(&["tick"]).contains("2\t{\"text\":\"two\"}"));
+    assert!(f.run(&["mail", "--ack", "1"]).contains("through line 1"));
+    let pending = f.run(&["mail"]);
+    assert!(!pending.contains("\"one\""), "{pending}");
+    assert!(pending.contains("2\t{\"text\":\"two\"}"), "{pending}");
+    // Out of range in either direction: nothing handled, nothing beyond what has arrived.
+    for n in ["1", "3"] {
+        let out = f.command(&["mail", "--ack", n]);
+        assert!(!out.status.success(), "--ack {n} should be refused");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("between 2 and 2"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(f.run(&["mail", "--ack", "2"]).contains("through line 2"));
+    assert_eq!(f.run(&["mail"]), "mail: none pending\n");
+}
 
+/// Mail already in the folder when a coordinator claims it is history, not a backlog it was
+/// asked to answer. It is counted as handled once, and the claim says so.
+#[test]
+fn a_claim_does_not_replay_the_mail_that_predates_it() {
+    let f = Coordinated::new();
+    let dir = cones::coordinator::directory(f.dir.path(), &f.work.canonicalize().unwrap());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("inbox.jsonl"), "{\"text\":\"old\"}\n").unwrap();
+    assert!(
+        f.run(&["claim"])
+            .contains("1 inbox entries predate this claim")
+    );
+    assert_eq!(f.run(&["mail"]), "mail: none pending\n");
+}
+
+/// A second coordinator in a folder someone else holds is told to stand down. Without that the
+/// workers get two sets of notes, each costing a turn, and the two can contradict each other.
+#[test]
+fn a_claim_is_refused_while_another_live_coordinator_holds_the_folder() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    let record = dir.join("status.json");
+    let mine: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    assert_eq!(mine["pid"], std::process::id());
+    assert_eq!(mine["session"], "worker-one");
+    // Re-claiming your own folder is fine; it is how a coordinator recovers after a restart.
+    f.run(&["claim"]);
+
+    // launchd is pid 1 on macOS: alive, and certainly not in this process's parent chain.
+    fs::write(
+        &record,
+        serde_json::json!({"cwd": f.work.canonicalize().unwrap(), "pid": 1, "session": "someone"})
+            .to_string(),
+    )
+    .unwrap();
+    for args in [["claim"], ["claim"]] {
+        let out = f.command(&args);
+        assert!(!out.status.success());
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("another coordinator owns"),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = f.command(&["claim", "--release"]);
+    assert!(
+        !out.status.success(),
+        "a peer's claim is not yours to clear"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("held by pid 1"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(record.is_file());
+}
+
+/// A harness cones cannot write to says so. Faking delivery by typing into the session's
+/// terminal would put the coordinator's words in the owner's own input line.
+#[test]
+fn a_note_is_refused_for_a_harness_with_no_delivery_command() {
+    let f = Coordinated::new();
+    f.run(&["claim"]);
+    let out = f.command(&["send", "worker-one", "hello"]);
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(error.contains("has no message operation"), "{error}");
+    // An unknown recipient is refused before any harness is consulted.
+    let out = f.command(&["send", "nobody", "hello"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("not on this folder's roster"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Two coordinators can write the folder's record at once: a replacement overlapping the one it
+/// takes over from, or a watcher left armed from an earlier arm. A shared temporary name means
+/// the second writer's rename destroys the first writer's source, and that process dies.
+#[test]
+fn concurrent_claims_leave_one_valid_record_and_no_temporaries() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
     let writers: Vec<_> = (0..6)
-        .map(|i| {
-            std::process::Command::new("python3")
-                .arg(&driver)
-                .arg(skill.join("bin/fleet.py"))
-                .arg("/tmp/a-folder-two-coordinators-share")
-                .arg((4000 + i).to_string())
-                .env("CLAUDE_CONFIG_DIR", home.path())
+        .map(|_| {
+            std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+                .args([
+                    "--jobs",
+                    f.jobs.to_str().unwrap(),
+                    "--state-dir",
+                    f.dir.path().to_str().unwrap(),
+                    "coordinator",
+                    "--dir",
+                    f.work.to_str().unwrap(),
+                    "claim",
+                ])
+                .env("HOME", f.dir.path())
+                .env("CLAUDE_CONFIG_DIR", f.dir.path().join("claude"))
+                .env("CODEX_HOME", f.dir.path().join("missing-codex"))
+                .env("PI_CODING_AGENT_DIR", f.dir.path().join("missing-pi"))
                 .spawn()
                 .unwrap()
         })
         .collect();
-    for (i, mut w) in writers.into_iter().enumerate() {
-        let out = w.wait().unwrap();
-        assert!(out.success(), "writer {i} died: {out:?}");
+    for mut writer in writers {
+        let status = writer.wait().unwrap();
+        assert!(status.success(), "a concurrent claim died: {status}");
     }
-
-    // The record cones matches on, honouring CLAUDE_CONFIG_DIR the way the roster read does,
-    // and left complete rather than half-written by whichever writer finished last.
-    let dir = home.path().join("orchestrator");
-    let record = std::fs::read_dir(&dir)
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("status.json")).unwrap()).unwrap();
+    assert_eq!(record["pid"], std::process::id());
+    let leftovers: Vec<_> = fs::read_dir(&dir)
         .unwrap()
-        .map(|e| e.unwrap().path())
-        .find(|p| p.extension().is_some_and(|e| e == "json"))
-        .expect("a status record under CLAUDE_CONFIG_DIR");
-    let status: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
-    assert_eq!(status["cwd"], "/tmp/a-folder-two-coordinators-share");
-    assert!((4000..4006).contains(&status["pid"].as_u64().unwrap()));
-    let leftovers: Vec<_> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name())
-        .filter(|n| n.to_string_lossy().ends_with(".tmp"))
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with('.'))
         .collect();
     assert!(
         leftovers.is_empty(),

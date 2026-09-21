@@ -31,6 +31,37 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Action>,
 }
+#[derive(Subcommand)]
+enum CoordinatorTask {
+    /// Record this session as the folder's coordinator, or hand the folder back with --release.
+    Claim {
+        #[arg(long)]
+        release: bool,
+    },
+    /// Block until a worker arrives or a worker writes; nothing else is worth a model call.
+    Wait {
+        /// Give up after this many seconds and exit 2, rather than waiting indefinitely.
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// Replies nobody has acted on, or --ack N once you have acted on them.
+    Mail {
+        #[arg(long)]
+        ack: Option<usize>,
+    },
+    /// One note to a live worker, through its own harness's delivery command.
+    Send {
+        /// The session id as the roster prints it.
+        id: String,
+        text: String,
+        /// The once-per-session introduction. Repeating it is a no-op, not a second message.
+        #[arg(long)]
+        greet: bool,
+    },
+    /// Head, tree, roster and pending mail in one read: everything to check before acting.
+    Tick,
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Trigger {
     Manual,
@@ -106,7 +137,17 @@ enum Action {
     },
     /// The folder's coordinator: the embedded start-orchestrator skill in one background session.
     #[command(name = "__coordinator", hide = true)]
-    Coordinator { dir: Option<PathBuf> },
+    StartCoordinator { dir: Option<PathBuf> },
+    /// What a coordinator needs a program for: its claim on a folder, its wake gate, its mail
+    /// and its notes. Coordination itself is the skill's judgment, not a command.
+    Coordinator {
+        /// The coordinated folder; defaults to the current directory. Worktrees under it belong
+        /// to it, so a worker that moves into one stays on the same roster.
+        #[arg(long, global = true)]
+        dir: Option<PathBuf>,
+        #[command(subcommand)]
+        task: CoordinatorTask,
+    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -502,16 +543,14 @@ fn execute(cli: Cli) -> Result<i32> {
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
-        Action::Coordinator { dir } => {
-            let dir = cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), &cwd)?
-                .canonicalize()
-                .context("coordinator directory")?;
-            if let Some(status) = harness::coordinator_status(&dir) {
+        Action::StartCoordinator { dir } => {
+            let dir = coordinated(dir, &cwd)?;
+            if let Some(status) = harness::coordinator_status(&state, &dir) {
                 println!(
                     "coordinator already running in {} (pid {}, session {})",
                     dir.display(),
                     status["pid"],
-                    status["jobId"].as_str().unwrap_or("-")
+                    status["session"].as_str().unwrap_or("-")
                 );
                 return Ok(0);
             }
@@ -520,8 +559,46 @@ fn execute(cli: Cli) -> Result<i32> {
                 .context("start claude")?;
             Ok(status.code().unwrap_or(1))
         }
+        Action::Coordinator { dir, task } => {
+            cones::cost::init(&state, false);
+            let folder = cones::coordinator::Folder {
+                state: state.clone(),
+                claude: claude.clone(),
+                jobs: jobs_path.clone(),
+                path: coordinated(dir, &cwd)?,
+            };
+            match task {
+                CoordinatorTask::Claim { release } => {
+                    println!("{}", cones::coordinator::claim(&folder, release)?);
+                }
+                CoordinatorTask::Wait { timeout } => {
+                    let limit = timeout.map(std::time::Duration::from_secs);
+                    let Some(woken) = cones::coordinator::wait(&folder, limit)? else {
+                        println!("timeout");
+                        return Ok(2);
+                    };
+                    print!("{woken}");
+                }
+                CoordinatorTask::Mail { ack } => {
+                    print!("{}", cones::coordinator::mail(&folder, ack)?);
+                }
+                CoordinatorTask::Send { id, text, greet } => {
+                    print!("{}", cones::coordinator::send(&folder, &id, &text, greet)?);
+                }
+                CoordinatorTask::Tick => print!("{}", cones::coordinator::tick(&folder)?),
+            }
+            Ok(0)
+        }
         Action::Worker { .. } => unreachable!(),
     }
+}
+
+/// The folder a coordinator command acts on. It must already exist: a coordinator claims a
+/// folder agents are working in, never one it would create.
+fn coordinated(dir: Option<PathBuf>, cwd: &std::path::Path) -> Result<PathBuf> {
+    cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), cwd)?
+        .canonicalize()
+        .context("coordinator directory")
 }
 
 /// Launchers such as fzf hand children the `/dev/tty` clone device. Bun-based harnesses

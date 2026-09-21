@@ -2801,6 +2801,16 @@ fn fleet_rows_observed(
             s.usage = Some(*u);
         }
     }
+    // The coordinator's claim is cones' own record, not a harness's, so the mark is applied
+    // here where every harness's rows are in hand. Any harness can hold the role.
+    let claims = crate::coordinator::claims(state);
+    if !claims.is_empty() {
+        for s in &mut out {
+            s.coordinator = s
+                .pid
+                .is_some_and(|pid| claims.contains(&(pid, s.cwd.clone())));
+        }
+    }
     fleet::sort(&mut out);
     Ok((out, collapsed))
 }

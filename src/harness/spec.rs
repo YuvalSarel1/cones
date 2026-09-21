@@ -143,6 +143,9 @@ pub struct Operations {
     pub fork: Option<Operation>,
     pub remove: Option<Operation>,
     pub unarchive: Option<Operation>,
+    /// Deliver one note to a live session. `{id}`, `{text}` and, where the harness talks to a
+    /// daemon, `{remote}`. A harness without it cannot be written to from cones.
+    pub message: Option<Operation>,
     #[serde(default)]
     pub rename: bool,
     #[serde(default)]

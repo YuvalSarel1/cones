@@ -3,6 +3,7 @@ mod attention;
 pub mod codex;
 pub mod config;
 pub mod context;
+pub mod coordinator;
 pub mod copy;
 pub mod cost;
 pub mod fleet;
@@ -16,7 +17,7 @@ pub mod opencode;
 pub mod output;
 pub mod pi;
 #[cfg(target_os = "macos")]
-mod process_info;
+pub(crate) mod process_info;
 pub mod runner;
 pub mod search;
 pub mod terminal;

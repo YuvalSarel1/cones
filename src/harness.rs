@@ -455,6 +455,56 @@ fn codex_client(
     Ok(c)
 }
 
+/// The native home a row was discovered in. A Codex thread names its own through the rollout
+/// it writes, because a home pinned to another provider region keeps its own daemon.
+pub fn home_of(session: &crate::fleet::Session, claude: &Path) -> PathBuf {
+    if session.harness == HarnessKind::Codex.to_string()
+        && let Some(rollout) = &session.transcript_path
+        && let Some(home) = crate::codex::home_of(rollout)
+    {
+        return home.to_owned();
+    }
+    by_name(&session.harness).map_or_else(|| claude.to_owned(), |spec| spec.home.resolve(claude))
+}
+
+/// One note to a live session, through the delivery command its harness declares.
+///
+/// A harness with no `message` operation cannot be written to from here and says so. Faking it
+/// by typing into the session's terminal would put words in the owner's input line, which is
+/// not a message from a peer and is not cones' to do.
+pub fn message(
+    session: &crate::fleet::Session,
+    home: &Path,
+    text: &str,
+) -> Result<std::process::Command> {
+    let spec = by_name(&session.harness).context("unknown session harness")?;
+    check_operation(spec, &spec.operations.message, "message")?;
+    let template = &spec.operations.message.as_ref().expect("checked").args;
+    let name = spec.kind.to_string();
+    let path = executable(&name, &launch_path())
+        .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
+    // Codex delivery goes to the daemon that owns the thread, the address its resume already
+    // uses. Every other harness addresses the session directly and needs no socket.
+    let (path, remote) = match spec.kind {
+        HarnessKind::Codex => codex_remote(&path, home)?,
+        _ => (path, String::new()),
+    };
+    let mut c = std::process::Command::new(path);
+    if !spec.home.env.is_empty() {
+        c.env(&spec.home.env, home);
+    }
+    c.args(spec::args(
+        template,
+        &[
+            ("remote", remote.as_ref()),
+            ("id", session.session_id.as_ref()),
+            ("text", text.as_ref()),
+        ],
+    )?)
+    .current_dir(&session.cwd);
+    Ok(c)
+}
+
 /// One native join contract for Enter and hover. Hover is forbidden from launching a session.
 pub fn join(
     session: &crate::fleet::Session,
@@ -685,9 +735,10 @@ pub fn launch_path() -> String {
     .join(":")
 }
 
-/// Embedded coordinator plugin, loaded only for the session that starts it.
+/// Embedded coordinator plugin, loaded only for the session that starts it. The skill is prose
+/// and nothing else: the plumbing it used to ship as shell and Python is `cones coordinator`.
 pub const COORDINATOR_SKILL: &str = "start-orchestrator";
-const COORDINATOR_FILES: [(&str, &str); 8] = [
+const COORDINATOR_FILES: [(&str, &str); 2] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
@@ -696,56 +747,25 @@ const COORDINATOR_FILES: [(&str, &str); 8] = [
         "skills/start-orchestrator/SKILL.md",
         include_str!("../assets/coordinator/skills/start-orchestrator/SKILL.md"),
     ),
-    (
-        "skills/start-orchestrator/bin/self.sh",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/self.sh"),
-    ),
-    (
-        "skills/start-orchestrator/bin/sweep.sh",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/sweep.sh"),
-    ),
-    (
-        "skills/start-orchestrator/bin/fleet.py",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/fleet.py"),
-    ),
-    (
-        "skills/start-orchestrator/bin/codex.sh",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.sh"),
-    ),
-    (
-        "skills/start-orchestrator/bin/codex.py",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/codex.py"),
-    ),
-    (
-        "skills/start-orchestrator/bin/tick.sh",
-        include_str!("../assets/coordinator/skills/start-orchestrator/bin/tick.sh"),
-    ),
 ];
 
-/// Find the skill's live coordinator record, including coordinators started outside cones.
-pub fn coordinator_status(dir: &Path) -> Option<Value> {
-    let files = std::fs::read_dir(crate::fleet::claude_dir().ok()?.join("orchestrator")).ok()?;
-    files.flatten().find_map(|entry| {
-        let status: Value = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
-        let pid = status.get("pid")?.as_u64()? as u32;
-        (status.get("cwd")?.as_str()? == dir.to_str()? && crate::fleet::alive(pid))
-            .then_some(status)
-    })
+/// The folder's live coordinator record, including one claimed outside cones.
+pub fn coordinator_status(state: &Path, dir: &Path) -> Option<Value> {
+    crate::coordinator::status(state, dir)
 }
 
 /// Rewrite the embedded plugin on each start so upgrades include the current skill.
 pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
     let plugin = state.join("coordinator/plugin");
-    let bin = plugin.join("skills").join(COORDINATOR_SKILL).join("bin");
+    // An upgrade that drops a file must take it away as well: a coordinator loading a plugin
+    // directory left with yesterday's helpers would follow instructions this build no longer has.
+    let _ = std::fs::remove_dir_all(plugin.join("skills").join(COORDINATOR_SKILL).join("bin"));
     for (rel, text) in COORDINATOR_FILES {
         let path = plugin.join(rel);
         std::fs::create_dir_all(path.parent().unwrap())?;
-        // A coordinator may be reading a helper while another folder starts one.
+        // A coordinator may be reading the skill while another folder starts one.
         let temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-        std::fs::write(
-            temporary.path(),
-            text.replace("__CONES_COORDINATOR_BIN__", &bin.to_string_lossy()),
-        )?;
+        std::fs::write(temporary.path(), text)?;
         temporary.persist(&path)?;
     }
     Ok(plugin)

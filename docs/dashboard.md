@@ -161,7 +161,7 @@ Selecting a run previews its captured output, including tool activity and stderr
 | `stopped` | `▁` | stopped | dim |
 | `-` | `–` | `-` | dim |
 
-Harness marks and the mascot stay still. A coordinator has an orange title prefixed with `★`; its identity comes from the [skill's status record](harness.md#coordinator-identity). Sessions that need their original terminal say `own terminal` in the footer.
+Harness marks and the mascot stay still. A coordinator has an orange title prefixed with `★`; its identity comes from [its claim on the folder](harness.md#coordinator-identity). Sessions that need their original terminal say `own terminal` in the footer.
 
 | Key | List action |
 | --- | --- |

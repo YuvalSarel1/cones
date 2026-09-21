@@ -37,12 +37,12 @@ expected to be excluded, so unrelated live clients cannot change their counts.
 scripts/check test --lib viewer::tests
 scripts/check test --test runner
 scripts/check reporting
-scripts/check coordinator
+scripts/check test --test core coordinator
 ```
 
-The coordinator mode runs the Python suite for the coordinator skill's helpers in
-`assets/coordinator/tests`. The helpers and their tests live here, so the full gate
-runs them and no second checkout has to be kept in step.
+The coordinator is part of the binary, so its checks are Cargo's. `cones coordinator`
+covers the claim, the wake gate, mail and delivery; the skill that reads them ships as
+prose alone and has no helpers of its own to test.
 The normal gate requires Python 3 and Node.js 22 or later alongside Rust.
 CI uses the same `scripts/check` entry point.
 

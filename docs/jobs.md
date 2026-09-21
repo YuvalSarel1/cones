@@ -189,7 +189,7 @@ The walk also starts no earlier than the job's own LaunchAgent was written. A di
 
 ### Overlap
 
-Overlap is per job. Two jobs sharing a directory may both run; shared-file coordination belongs to the [coordinator skill](cli.md#coordinator-launch).
+Overlap is per job. Two jobs sharing a directory may both run; shared-file coordination belongs to the [coordinator skill](cli.md#coordinator).
 
 | `overlap` | Behavior while a previous run is alive |
 | --- | --- |
