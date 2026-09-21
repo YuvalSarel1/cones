@@ -515,6 +515,9 @@ fn build(
     } else {
         Details::default()
     };
+    let parent = read_transcript
+        .then(|| transcript.as_deref().and_then(|t| transcript_parent(t, id)))
+        .flatten();
     let (window, cost, effort) = statusline_values(dir, id);
     let (cost_usd, cost_info) = d.report.costs.report(cost);
     Session {
@@ -555,9 +558,40 @@ fn build(
             .map(Into::into)
             .or(d.last),
         coordinator: false,
-        forked_from: None,
+        forked_from: parent,
         activity: d.report.activity,
     }
+}
+
+/// Claude copies the parent's records into a fork, keeping the `session_id` they were written
+/// with while the file's own id moves to `sessionId`. The first record that names a session
+/// names the parent, and it never changes, so read it once per transcript.
+fn transcript_parent(transcript: &Path, id: &str) -> Option<String> {
+    static CACHE: Mutex<Option<HashMap<PathBuf, Option<String>>>> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some(parent) = cache.get(transcript) {
+        return parent.clone();
+    }
+    let mut parent = None;
+    if let Ok(file) = fs::File::open(transcript) {
+        // ponytail: the header is a handful of records; stop at the first that names a session.
+        for line in std::io::BufReader::new(file)
+            .lines()
+            .take(200)
+            .map_while(Result::ok)
+        {
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if let Some(named) = v["session_id"].as_str() {
+                parent = (named != id).then(|| named.to_owned());
+                break;
+            }
+        }
+    }
+    cache.insert(transcript.to_owned(), parent.clone());
+    parent
 }
 
 /// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
@@ -1841,6 +1875,51 @@ mod tests {
             sessions(dir.path()).unwrap()[0].title.as_deref(),
             Some("Publish the dashboard")
         );
+    }
+
+    /// A fork Claude made on its own, with no cones fork operation behind it, still reports its
+    /// parent: the records it copied keep the session they were written with.
+    #[test]
+    fn a_claude_fork_reports_the_parent_its_copied_records_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let project = dir.path().join("projects/-src-example");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        let parent = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let child = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        for id in [parent, child] {
+            fs::write(
+                registry.join(format!("{id}.json")),
+                serde_json::json!({
+                    "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
+                    "kind": "interactive", "status": "idle"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let record = |named: &str, text: &str| {
+            format!(
+                "{{\"type\":\"user\",\"session_id\":\"{named}\",\"message\":{{\"content\":\"{text}\"}}}}\n"
+            )
+        };
+        fs::write(
+            project.join(format!("{parent}.jsonl")),
+            record(parent, "first prompt"),
+        )
+        .unwrap();
+        fs::write(
+            project.join(format!("{child}.jsonl")),
+            record(parent, "first prompt") + &record(child, "a new turn"),
+        )
+        .unwrap();
+        let rows = sessions(dir.path()).unwrap();
+        let parentage: Vec<(&str, Option<&str>)> = rows
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.forked_from.as_deref()))
+            .collect();
+        assert_eq!(parentage, [(parent, None), (child, Some(parent))]);
     }
 
     #[test]
