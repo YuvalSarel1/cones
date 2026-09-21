@@ -12989,11 +12989,19 @@ impl App {
         };
         let open = &mut self.viewers[i];
         let mode = open.viewer.screen().mouse_protocol_mode();
+        // A pane showing scrollback keeps the mouse for the emulator. The rows under the
+        // pointer left the client's screen, so a report would name whatever the live screen
+        // holds at that row, and the write would snap the view back to the bottom first.
+        let scrolled = open.viewer.scrolled();
         if let Some(lines) = wheel
-            && (mode == viewer::MouseProtocolMode::None
+            && (scrolled
+                || mode == viewer::MouseProtocolMode::None
                 || ev.modifiers.contains(KeyModifiers::SHIFT))
         {
             open.viewer.scroll(lines);
+            return;
+        }
+        if scrolled {
             return;
         }
         let bytes = viewer::encode_mouse(ev, (pane.x, pane.y), mode);
@@ -23382,8 +23390,12 @@ states:
     }
 
     fn viewer_open(key: &str, what: &str, text: &str) -> Open {
+        viewer_script(key, what, &format!("printf '\\033[H{text}'; sleep 5"))
+    }
+
+    fn viewer_script(key: &str, what: &str, script: &str) -> Open {
         let mut c = Command::new("/bin/sh");
-        c.args(["-c", &format!("printf '\\033[H{text}'; sleep 5")]);
+        c.args(["-c", script]);
         Open {
             key: key.into(),
             what: what.into(),
@@ -24414,6 +24426,67 @@ states:
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         (d, app, t)
+    }
+
+    #[test]
+    fn a_click_on_a_pane_showing_scrollback_stays_with_the_emulator() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.viewers.push(viewer_script(
+            A,
+            "attach",
+            "printf '\\033[?1000h\\033[?1006h'; seq 1 60; sleep 5",
+        ));
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !app.viewers[0].viewer.scroll(1) {
+            app.pump();
+            assert!(
+                Instant::now() < deadline,
+                "the viewer never filled its scrollback"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        app.viewers[0].viewer.scroll(-1);
+        assert_ne!(
+            app.viewers[0].viewer.screen().mouse_protocol_mode(),
+            viewer::MouseProtocolMode::None,
+            "the client asked for mouse reports"
+        );
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        app.enter().unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let (column, row) = (app.pane.x + 5, app.pane.y + 5);
+        let at = |kind, modifiers| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers,
+        };
+        app.mouse(at(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
+        assert!(
+            app.viewers[0].viewer.scrolled(),
+            "shift-wheel scrolls the emulator"
+        );
+        app.mouse(at(MouseEventKind::ScrollUp, KeyModifiers::NONE));
+        assert!(
+            app.viewers[0].viewer.scrolled(),
+            "the wheel keeps scrolling the emulator rather than reaching the client"
+        );
+        app.mouse(at(
+            MouseEventKind::Down(MouseButton::Left),
+            KeyModifiers::NONE,
+        ));
+        app.mouse(at(
+            MouseEventKind::Up(MouseButton::Left),
+            KeyModifiers::NONE,
+        ));
+        assert!(
+            app.viewers[0].viewer.scrolled(),
+            "a click on scrollback reports nothing, so the pane stays where it was"
+        );
     }
 
     #[test]

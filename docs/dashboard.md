@@ -277,6 +277,7 @@ All viewers close with the dashboard. Whether that also ends the session depends
 | `ctrl+c` | Dashboard quit confirmation in an agent viewer. These clients interpret two presses as quit, and Claude's first press leaves the conversation for its agents list. Use `esc` to interrupt a turn. In a terminal, Ctrl+C interrupts the shell's foreground command. |
 | Other keys, including `esc` and `shift+tab` | Pass to the native client. Classic terminal encoding means some modified keys, including shift+enter, cannot be distinguished there. |
 | Shift-page-up/down | Scroll emulator history. |
+| Clicks in scrolled history | Stay with the emulator. The lines under the pointer left the client's screen, so a report would name whatever the live screen holds at that row; the wheel keeps scrolling history instead. Return to the bottom to click the client again. |
 | Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. A focused full-frame client that requests no mouse events, such as Codex, gives the mouse back to the terminal, so dragging selects text and the wheel belongs to the terminal until the list returns. |
 | Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
 
