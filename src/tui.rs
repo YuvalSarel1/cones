@@ -7428,6 +7428,7 @@ enum KeyAction {
     Cancel,
     Clear,
     Complete,
+    Coordinate,
     Copy,
     Cycle,
     Delete,
@@ -13504,6 +13505,23 @@ impl App {
         }
     }
 
+    /// The coordinator for the selected row's folder, started the way `cones coordinator
+    /// start` does. The live claim is read here so the list can name the session already
+    /// holding the folder; the command refuses it again for a shell caller.
+    fn coordinate_selected(&mut self) {
+        let dir = self.target_dir();
+        if let Some(live) = crate::coordinator::status(&self.state, &dir) {
+            self.status = format!(
+                "{} already has a coordinator (session {})",
+                dir.display(),
+                live["session"].as_str().unwrap_or("-")
+            );
+            return;
+        }
+        let what = format!("coordinator starting in {}", dir.display());
+        self.spawn(&["coordinator", "start"], Some(&dir), &what);
+    }
+
     fn fork_selected(&mut self) {
         let entry = self.fork_source();
         let Some(entry) = entry else {
@@ -15068,6 +15086,7 @@ impl App {
                     KeyAction::Rename => self.rename_selected(),
                     KeyAction::Mcp => self.open_mcp(),
                     KeyAction::Fork => self.fork_selected(),
+                    KeyAction::Coordinate => self.coordinate_selected(),
                     KeyAction::Recent => self.open_recent(),
                     KeyAction::Refresh => {
                         if self.history.visible {
@@ -20682,6 +20701,34 @@ states:
         merge_hosts(&mut rows, &[host]);
         assert!(rows[0].forked_from.is_none());
         assert_eq!(rows[0].session_id, B);
+    }
+
+    #[test]
+    fn ctrl_d_refuses_a_folder_that_already_has_a_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        app.cwd = dir.path().canonicalize().unwrap();
+        let claimed = crate::coordinator::directory(&app.state, &app.cwd);
+        std::fs::create_dir_all(&claimed).unwrap();
+        std::fs::write(
+            claimed.join("status.json"),
+            json!({"cwd": app.cwd, "pid": std::process::id(), "session": "8077985c"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            key_action(
+                BindingState::List,
+                KeyCode::Char('d'),
+                KeyModifiers::CONTROL
+            ),
+            KeyAction::Coordinate
+        );
+        app.key(KeyCode::Char('d'), KeyModifiers::CONTROL).unwrap();
+        assert!(
+            app.status.contains("already has a coordinator") && app.status.contains("8077985c"),
+            "{}",
+            app.status
+        );
     }
 
     #[test]

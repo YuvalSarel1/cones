@@ -148,7 +148,7 @@ so neither a draw nor a test starts a model.
 
 The coordinator is one agent session running the `start-orchestrator` skill, which ships in this
 repository under `assets/coordinator` and is compiled into the binary with `include_str!`.
-`cones __coordinator` writes the plugin out and starts a background Claude session for a folder.
+`cones coordinator start` writes the plugin out and starts a background Claude session for a folder.
 
 The skill is prose. Everything it needs a program for is `cones coordinator`, a subcommand group
 in `src/coordinator.rs`: `claim`, `wait`, `mail`, `send` and `tick`. That split is the point.

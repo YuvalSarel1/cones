@@ -844,7 +844,7 @@ fn version_flag_prints_the_crate_version() {
 }
 
 #[test]
-fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
+fn coordinator_start_fails_while_the_folder_has_a_live_coordinator() {
     let f = Fixture::new("success", 1.0);
     let dir = f.dir.path().canonicalize().unwrap();
     let claimed = cones::coordinator::directory(&f.state, &dir);
@@ -853,15 +853,14 @@ fn coordinator_start_is_a_no_op_while_the_folder_has_a_live_coordinator() {
     fs::write(claimed.join("status.json"), live.to_string()).unwrap();
     let out = f
         .command()
-        .args(["__coordinator", dir.to_str().unwrap()])
+        .args(["coordinator", "--dir", dir.to_str().unwrap(), "start"])
         .output()
         .unwrap();
     assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "a second coordinator must be refused"
     );
-    let shown = String::from_utf8_lossy(&out.stdout);
+    let shown = String::from_utf8_lossy(&out.stderr);
     assert!(shown.contains("already running"), "{shown}");
     assert!(shown.contains("8077985c"), "{shown}");
     // No plugin is written for a folder somebody else is already coordinating.

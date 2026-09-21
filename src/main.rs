@@ -33,6 +33,9 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum CoordinatorTask {
+    /// Start the folder's coordinator: one background Claude session on the embedded skill.
+    /// A folder another live coordinator holds is refused, not joined.
+    Start,
     /// Record this session as the folder's coordinator, or hand the folder back with --release.
     Claim {
         #[arg(long)]
@@ -142,9 +145,6 @@ enum Action {
         #[arg(long)]
         print_command: bool,
     },
-    /// The folder's coordinator: the embedded start-orchestrator skill in one background session.
-    #[command(name = "__coordinator", hide = true)]
-    StartCoordinator { dir: Option<PathBuf> },
     /// What a coordinator needs a program for: its claim on a folder, its wake gate, its mail
     /// and its notes. Coordination itself is the skill's judgment, not a command.
     Coordinator {
@@ -563,22 +563,6 @@ fn execute(cli: Cli) -> Result<i32> {
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
-        Action::StartCoordinator { dir } => {
-            let dir = coordinated(dir, &cwd)?;
-            if let Some(status) = harness::coordinator_status(&state, &dir) {
-                println!(
-                    "coordinator already running in {} (pid {}, session {})",
-                    dir.display(),
-                    status["pid"],
-                    status["session"].as_str().unwrap_or("-")
-                );
-                return Ok(0);
-            }
-            let status = harness::coordinator(&dir, &state)?
-                .status()
-                .context("start claude")?;
-            Ok(status.code().unwrap_or(1))
-        }
         Action::Coordinator { dir, task } => {
             cones::cost::init(&state, false);
             let folder = cones::coordinator::Folder {
@@ -588,6 +572,20 @@ fn execute(cli: Cli) -> Result<i32> {
                 path: coordinated(dir, &cwd)?,
             };
             match task {
+                CoordinatorTask::Start => {
+                    if let Some(status) = harness::coordinator_status(&state, &folder.path) {
+                        bail!(
+                            "coordinator already running in {} (pid {}, session {})",
+                            folder.path.display(),
+                            status["pid"],
+                            status["session"].as_str().unwrap_or("-")
+                        );
+                    }
+                    let started = harness::coordinator(&folder.path, &state)?
+                        .status()
+                        .context("start claude")?;
+                    return Ok(started.code().unwrap_or(1));
+                }
                 CoordinatorTask::Claim { release } => {
                     println!("{}", cones::coordinator::claim(&folder, release)?);
                 }

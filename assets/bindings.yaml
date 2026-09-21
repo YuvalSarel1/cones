@@ -52,6 +52,7 @@ states:
             description: "Press twice to remove the folder from the dashboard. Its files stay on disk."
           - action: cycle
             description: "Choose a harness or terminal for new work in this folder."
+          - action: coordinate
           - action: settings
       - title: "Job rows"
         when: "A saved job is selected on the jobs screen, with no instruction typed."
@@ -136,6 +137,9 @@ states:
       - keys: ["ctrl+y"]
         action: fork
         description: "Fork the selected conversation."
+      - keys: ["ctrl+d"]
+        action: coordinate
+        description: "Start the coordinator for the selected row's folder. A folder that already has one is refused."
       - keys: ["ctrl+r"]
         action: refresh
         description: "Refresh the list. With history visible, also start or cancel meaning indexing."

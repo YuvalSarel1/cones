@@ -75,14 +75,14 @@ The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orches
 
 ### Launch
 
-The launcher is internal, hidden from `--help`, with no dashboard button:
-
 ```sh
-cones __coordinator
-cones __coordinator ~/src/app
+cones coordinator start
+cones coordinator --dir ~/src/app start
 ```
 
-The default folder is the current directory. A live claim on that folder is printed and the launcher exits; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
+`ctrl+d` in the dashboard does the same for the selected row's folder.
+
+The default folder is the current directory. A folder another live coordinator holds is refused with an error naming its pid and session, and nothing is started; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
 
 The coordinator appears as a native session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`, which releases its claim; its background session remains until separately stopped. Coordination rules belong to the skill.
 
@@ -91,6 +91,7 @@ The coordinator appears as a native session; [the dashboard](dashboard.md#sessio
 The skill's plumbing is a public subcommand group. `--dir` defaults to the current directory and covers the worktrees under it. None of these call a model.
 
 ```sh
+cones coordinator --dir ~/src/app start
 cones coordinator --dir ~/src/app claim [--release]
 cones coordinator --dir ~/src/app wait [--timeout SECONDS]
 cones coordinator --dir ~/src/app tick
@@ -154,7 +155,6 @@ The dashboard and runner start these subprocesses. They are hidden from `--help`
 | `__logs ID [--follow] [--raw]` | Read captured output. The current session renderer does not handle pi message entries. |
 | `__attach ID [--print-command]` | Open a background session or resume a finished run. |
 | `__install [--dry-run]` | Compile and install schedules. Dry run prints plist XML, including imported credentials; stderr warns when a job imports values. |
-| `__coordinator [DIR]` | [Launch the bundled coordinator](#launch). |
 | `__list` | Render dashboard rows for a subprocess caller. |
 | `__worker --run-id ID` | Run the supervised worker. |
 | `__terminal-host` | Own one interactive PTY independently of the dashboard. Internal framed protocol on a private local socket; arguments and environment arrive through an anonymous pipe. |

@@ -26,6 +26,7 @@ Desktop notifications are optional, off by default. Set `start.notify: true` in 
 | `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
 | `ctrl+c twice` | Quit within a 1.5-second confirmation window, from the list or an agent viewer. In a terminal, Ctrl+C interrupts commands. |
 | `ctrl+o` | Open the [launch settings](#launch-settings) of the harness the composer names. |
+| `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected row's folder. A folder that already has one is refused, naming the session that holds it. |
 | `ctrl+g` | Open help. |
 
 `ctrl+b` lists the sessions and runs entered from this dashboard, most recent first and without the one you are on, so the first row is the session to go back to. Pressing `ctrl+b` again enters it; the arrows choose another row and `enter` takes it. Moving through the list only highlights rows: nothing is entered until you choose it. Only entering a row records it, so resting on a row, a read-only preview and a speculative viewer leave the order alone. A session that has closed is no longer listed and is never resumed to satisfy the list. Switching sessions keeps the composer draft and every open viewer's own state.
