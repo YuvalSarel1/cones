@@ -24,7 +24,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
-| `cones launch [PROMPT] [--dir PATH] [--harness NAME] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
+| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 
@@ -45,12 +45,14 @@ The [coordinator](#coordinator) reads its folder this way instead of walking the
 ### Starting a session
 
 ```sh
-cones launch "fix the flaky test"
+cones launch --dir ~/src/app "fix the flaky test"
 cones launch --dir ~/src/app --harness codex "rebase onto main"
-cones launch --print-command --harness claude
+cones launch --dir ~/src/app --harness claude --model opus --effort high
 ```
 
-The session starts in `--dir`, otherwise the current directory. An explicit `--harness` selects that harness and errors if it is disabled. Without it, an enabled `defaults.harness` wins, otherwise the first enabled launchable harness is used. No enabled harness is an error. The model, effort, provider and Bedrock settings come from `defaults`.
+`--dir` is required: an agent started in whatever folder your shell happens to sit in edits files you did not mean to touch. An explicit `--harness` selects that harness and errors if it is disabled. Without it, an enabled `defaults.harness` wins, otherwise the first enabled launchable harness is used. No enabled harness is an error.
+
+`--model` and `--effort` are what the dashboard's `ctrl+o` sets, for one session. A harness with no such flag, such as `--effort` for Codex, is an error rather than a silent no-op. Unset, they and the provider and Bedrock settings come from `defaults`.
 
 This CLI selection is separate from the dashboard's `start.harness`. The `_in_picker` switches affect the dashboard cycle, not `cones launch`. With no prompt the session opens waiting for input.
 

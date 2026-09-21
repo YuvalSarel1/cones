@@ -164,6 +164,35 @@ impl Policy {
         }
     }
 
+    /// Override the model for one harness, as `cones launch --model` does. False when the
+    /// harness takes no model flag, which is a CLI error rather than a silent no-op.
+    pub fn set_model_for(&mut self, kind: HarnessKind, model: String) -> bool {
+        let field = match kind {
+            HarnessKind::Claude => &mut self.model,
+            HarnessKind::Codex => &mut self.codex_model,
+            HarnessKind::Pi => &mut self.pi_model,
+            HarnessKind::Opencode => &mut self.opencode_model,
+            HarnessKind::Gemini => &mut self.gemini_model,
+            HarnessKind::Cursor => &mut self.cursor_model,
+            HarnessKind::Copilot => &mut self.copilot_model,
+            HarnessKind::Kimi => &mut self.kimi_model,
+            HarnessKind::Amp | HarnessKind::Droid => return false,
+        };
+        *field = Some(model);
+        true
+    }
+
+    /// Override the reasoning effort for one harness, as `cones launch --effort` does.
+    pub fn set_effort_for(&mut self, kind: HarnessKind, effort: String) -> bool {
+        let field = match kind {
+            HarnessKind::Claude => &mut self.effort,
+            HarnessKind::Pi => &mut self.pi_thinking,
+            _ => return false,
+        };
+        *field = Some(effort);
+        true
+    }
+
     pub fn enabled_for(&self, kind: HarnessKind) -> bool {
         match kind {
             HarnessKind::Claude => self.claude_enabled,

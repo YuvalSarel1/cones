@@ -85,12 +85,19 @@ enum Action {
     Launch {
         /// The first instruction. Omitted, the session opens waiting for input.
         prompt: Option<String>,
-        /// Folder to start in; defaults to the current directory.
+        /// Folder to start in. Required: an agent started in the ambient directory edits
+        /// whatever happens to be there.
         #[arg(long)]
-        dir: Option<PathBuf>,
+        dir: PathBuf,
         /// Harness name; defaults to `defaults.harness`, else the first one configuration enables.
         #[arg(long)]
         harness: Option<String>,
+        /// Native model id, as the dashboard's ctrl+o picks; defaults to the one in `defaults`.
+        #[arg(long)]
+        model: Option<String>,
+        /// Reasoning effort, for a harness that takes one; defaults to the one in `defaults`.
+        #[arg(long)]
+        effort: Option<String>,
         /// Print the shell command instead of starting anything.
         #[arg(long)]
         print_command: bool,
@@ -298,13 +305,15 @@ fn execute(cli: Cli) -> Result<i32> {
             prompt,
             dir,
             harness: named,
+            model,
+            effort,
             print_command,
         } => {
-            let dir = cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), &cwd)?
+            let dir = cones::expand_path(&dir, &cwd)?
                 .canonicalize()
                 .context("launch directory")?;
             ensure!(dir.is_dir(), "{} is not a folder", dir.display());
-            let policy = config::defaults(&jobs_path);
+            let mut policy = config::defaults(&jobs_path);
             let launchable = harness::launchable();
             let kind = match &named {
                 Some(name) => {
@@ -324,6 +333,17 @@ fn execute(cli: Cli) -> Result<i32> {
                 policy.enabled_for(kind),
                 "{kind} is turned off in the configuration"
             );
+            if let Some(model) = model {
+                ensure!(!model.is_empty(), "--model cannot be empty");
+                ensure!(policy.set_model_for(kind, model), "{kind} takes no --model");
+            }
+            if let Some(effort) = effort {
+                ensure!(!effort.is_empty(), "--effort cannot be empty");
+                ensure!(
+                    policy.set_effort_for(kind, effort),
+                    "{kind} takes no --effort"
+                );
+            }
             let prompt = prompt.unwrap_or_default();
             match harness::start(kind, &dir, prompt.trim(), &policy)? {
                 // Claude's launch returns once the background session is recorded; its

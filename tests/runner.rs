@@ -190,6 +190,80 @@ fn launch_prints_the_composer_command_for_a_named_folder() {
 }
 
 #[test]
+fn launch_puts_the_model_and_effort_on_the_native_command() {
+    let f = Fixture::new("ok", 5.0);
+    let out = f
+        .command()
+        .args([
+            "launch",
+            "--harness",
+            "claude",
+            "--dir",
+            f.dir.path().to_str().unwrap(),
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "--print-command",
+            "hi",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        printed.contains("'--model' 'opus'") && printed.contains("'--effort' 'high'"),
+        "the launcher passes the flags ctrl+o sets: {printed}"
+    );
+}
+
+#[test]
+fn launch_refuses_an_effort_the_harness_has_no_flag_for() {
+    let f = Fixture::new("ok", 5.0);
+    let out = f
+        .command()
+        .args([
+            "launch",
+            "--harness",
+            "codex",
+            "--dir",
+            f.dir.path().to_str().unwrap(),
+            "--effort",
+            "high",
+            "--print-command",
+            "hi",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("takes no --effort"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn launch_requires_a_folder_rather_than_taking_the_current_one() {
+    let f = Fixture::new("ok", 5.0);
+    let out = f
+        .command()
+        .args(["launch", "--harness", "claude", "--print-command", "hi"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--dir"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn launch_refuses_a_harness_the_configuration_turns_off() {
     let f = Fixture::new("ok", 5.0);
     fs::write(
@@ -202,7 +276,15 @@ fn launch_refuses_a_harness_the_configuration_turns_off() {
     .unwrap();
     let out = f
         .command()
-        .args(["launch", "--harness", "claude", "--print-command", "hi"])
+        .args([
+            "launch",
+            "--harness",
+            "claude",
+            "--dir",
+            f.dir.path().to_str().unwrap(),
+            "--print-command",
+            "hi",
+        ])
         .output()
         .unwrap();
     assert!(!out.status.success());
