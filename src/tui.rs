@@ -10327,7 +10327,11 @@ impl App {
             }
         }
         self.pending.retain(|p| {
-            !replaced.contains_key(&p.session.session_id)
+            // A hosted client is reported under the placeholder id by its own terminal host,
+            // which maps the launch onto itself. Only a native id retires the placeholder.
+            !replaced
+                .get(&p.session.session_id)
+                .is_some_and(|id| id != &p.session.session_id)
                 && (p.at.elapsed() < PENDING_TTL
                     || self.viewers.iter().any(|o| o.key == p.session.session_id)
                     || self
@@ -10335,8 +10339,20 @@ impl App {
                         .as_ref()
                         .is_some_and(|o| o.key == p.session.session_id))
         });
-        data.sessions
-            .extend(self.pending.iter().map(|p| p.session.clone()));
+        // The terminal host reports a hosted client under the placeholder id, so the row can
+        // already be there; a placeholder never doubles it.
+        let placeholders: Vec<_> = self
+            .pending
+            .iter()
+            .filter(|p| {
+                !data
+                    .sessions
+                    .iter()
+                    .any(|s| s.session_id == p.session.session_id)
+            })
+            .map(|p| p.session.clone())
+            .collect();
+        data.sessions.extend(placeholders);
         if let Some(d) = &mut data.diagnostics {
             for p in &self.pending {
                 d.sources.insert(
@@ -27542,6 +27558,75 @@ while True:
             "switching conversations must not manufacture another fork"
         );
         assert_eq!(crate::forks::read(d.path()).unwrap().len(), 1);
+    }
+    /// A hosted fork is reported by its own terminal host under the placeholder id before the
+    /// registry names the conversation. That echo is not the native session: taking it as the
+    /// launch's arrival retires the placeholder early, and the fork then loses its parent.
+    #[test]
+    fn a_hosted_forks_placeholder_echo_does_not_stand_in_for_its_native_session() {
+        let d = dir();
+        let mut app = app(d.path());
+        let key = "starting:ef9ab208-aa8e-41fa-b9ff-2bf36735863b";
+        let mut viewer = viewer_open(key, "claude", "FORK");
+        viewer.harness = Some(HarnessKind::Claude);
+        viewer.fork = Some(ForkedSession {
+            parent: A.into(),
+            home: d.path().into(),
+            requested: None,
+            reported: None,
+            saved: false,
+        });
+        let pid = viewer.viewer.pid();
+        app.viewers.push(viewer);
+        let make = |id: &str, pid: Option<u32>| -> Session {
+            serde_json::from_value(json!({"session_id":id, "harness":"claude", "cwd":d.path(), "state":"-", "pid":pid})).unwrap()
+        };
+        let mut pending = make(key, Some(pid));
+        pending.forked_from = Some(A.into());
+        app.data.sessions = vec![make(A, None), pending.clone()];
+        app.pending.push(Pending {
+            session: pending,
+            short: None,
+            fork_home: Some(d.path().into()),
+            at: Instant::now(),
+        });
+        let snapshot = |sessions| {
+            let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+            data.sessions = sessions;
+            data
+        };
+        app.apply(snapshot(vec![make(A, None), make(key, Some(pid))]));
+        assert_eq!(
+            app.pending.len(),
+            1,
+            "the host's echo of the placeholder is not the fork's native session"
+        );
+        assert_eq!(
+            app.data
+                .sessions
+                .iter()
+                .filter(|s| s.session_id == key)
+                .count(),
+            1,
+            "the echo and the placeholder are one row"
+        );
+        app.apply(snapshot(vec![make(A, None), make(B, Some(pid))]));
+        assert!(app.pending.is_empty());
+        assert_eq!(app.viewers[0].key, B, "the viewer follows the native id");
+        assert_eq!(
+            app.data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == B)
+                .unwrap()
+                .forked_from
+                .as_deref(),
+            Some(A),
+            "the fork keeps its parent"
+        );
+        let links = crate::forks::read(d.path()).unwrap();
+        assert_eq!(links.len(), 1, "the fork is recorded for later refreshes");
+        assert_eq!((links[0].parent.as_str(), links[0].child.as_str()), (A, B));
     }
     #[test]
     fn typing_during_preparation_does_not_cancel_a_launch() {
