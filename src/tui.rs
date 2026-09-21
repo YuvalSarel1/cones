@@ -260,7 +260,6 @@ impl Data {
         let ledger = phase!("ledger.open", Ledger::new(state));
         let hidden = phase!("ledger.hidden", ledger.hidden());
         let mut runs = phase!("ledger.runs", ledger.runs());
-        runs.retain(|r| !hidden.contains(&r.started.run_id));
         // Read before discovery: the harnesses config offers decide what is scanned.
         let offered = config::defaults(jobs_path);
         let (mut sessions, run_sessions) = phase!(
@@ -275,6 +274,10 @@ impl Data {
                 operation,
             )
         );
+        // Hiding a run row is not reviving its session: discovery has already handed that
+        // session to the ledger, so drop the row after the hand-off instead of before it,
+        // or the hidden run comes back as an agent row for the user to delete again.
+        runs.retain(|r| !hidden.contains(&r.started.run_id));
         let hosts: Vec<_> = terminal_host::records(state)
             .into_iter()
             .filter(|h| {
@@ -11267,8 +11270,8 @@ impl App {
                     && o.harness.is_some_and(|kind| {
                         harness::spec(kind).viewer.retention == harness::spec::Retention::EvictLive
                     })
-                    // A finished run's viewer is the resume the user asked for; a still-running
-                    // run's is a join like any agent's and makes room the same way.
+                    // A run's viewer over a live session is a join like any agent's and makes
+                    // room the same way; a resume the user asked for is theirs to keep.
                     && o.key
                         .strip_prefix("run:")
                         .is_none_or(|run| self.run_session(run).is_some())
@@ -11317,11 +11320,11 @@ impl App {
         if self.prespawned.as_deref() == Some(rested.as_str()) {
             return Err("already_attempted");
         }
-        // A run that is still going is an agent with a ledger row: peek it the way any agent is
+        // A run with a live session is an agent with a ledger row: peek it the way any agent is
         // peeked, from the session the run owns, and leave the row in the run list.
         let id = match self.selected().map(|r| &r.kind) {
             Some(Kind::Session(id, _)) => id.clone(),
-            Some(Kind::Run(id, state)) if state == "started" => {
+            Some(Kind::Run(id, _)) => {
                 self.run_session(id).ok_or("run_session_unavailable")?;
                 format!("run:{id}")
             }
@@ -11366,14 +11369,11 @@ impl App {
         Ok((id.clone(), s.cwd.clone()))
     }
 
-    /// The live session a started run owns, absent from `sessions` because its row is the run's.
+    /// The live session a run owns, absent from `sessions` because its row is the run's.
+    /// A finished run whose client is still up has one too: joining it is the real pane,
+    /// where resuming would start another agent.
     fn run_session(&self, run_id: &str) -> Option<&Session> {
-        let run = self
-            .data
-            .runs
-            .iter()
-            .find(|r| r.started.run_id == run_id)
-            .filter(|r| r.status() == "started")?;
+        let run = self.data.runs.iter().find(|r| r.started.run_id == run_id)?;
         let session = run.started.session_id.as_deref()?;
         self.data
             .run_sessions
@@ -11488,9 +11488,10 @@ impl App {
     }
 
     fn close_orphan_speculative(&mut self) {
-        let gone = self.viewers.iter().position(|o| {
-            o.speculative && !self.data.sessions.iter().any(|s| s.session_id == o.key)
-        });
+        let gone = self
+            .viewers
+            .iter()
+            .position(|o| o.speculative && self.peek_session(&o.key).is_none());
         if let Some(i) = gone {
             let key = self.viewers[i].key.clone();
             self.event(
@@ -12406,9 +12407,10 @@ impl App {
             // run's own row reports whether it started or was skipped.
             Kind::Job(name) => self.spawn(&["run", &name], None, &format!("run {name} requested")),
             Kind::NewJob => self.new_job(),
-            // A running job is joined like the agent it is, so enter lands where the peek did.
-            // Logs are the fallback for a run whose session cannot be joined.
-            Kind::Run(id, s) if s == "started" => {
+            // A run whose session is up is joined like the agent it is, so enter lands where
+            // the peek did. A still-running run with no joinable session falls back to its
+            // logs, a finished one to the resume `__attach` performs.
+            Kind::Run(id, s) => {
                 self.remember_entered(&Kind::Run(id.clone(), s.clone()));
                 let joined = self.run_session(&id).cloned().and_then(|session| {
                     let spec = harness::by_name(&session.harness)?;
@@ -12422,10 +12424,15 @@ impl App {
                     Some((c, what)) => {
                         self.open(self.size, c, &what, format!("run:{id}"), None);
                     }
-                    None => {
+                    None if s == "started" => {
                         let mut c = self.me();
                         c.args(["__logs", &id, "--follow"]);
                         self.open(self.size, c, "logs", format!("run:{id}"), None);
+                    }
+                    None => {
+                        let mut c = self.me();
+                        c.args(["__attach", &id]);
+                        self.open(self.size, c, "attach", format!("run:{id}"), None);
                     }
                 }
             }
@@ -12478,12 +12485,6 @@ impl App {
                         self.status = format!("attach failed: {e:#}");
                     }
                 }
-            }
-            Kind::Run(id, _) => {
-                self.remember_entered(&Kind::Run(id.clone(), String::new()));
-                let mut c = self.me();
-                c.args(["__attach", &id]);
-                self.open(self.size, c, "attach", format!("run:{id}"), None);
             }
             Kind::History(key) => {
                 let Some(entry) = self.history.row(&key).cloned() else {
@@ -21150,6 +21151,53 @@ states:
         assert_eq!(ledger.runs().unwrap().len(), 1, "the ledger keeps it");
     }
 
+    /// Hiding a run is one decision, not two: the session the run owns must not resurface in
+    /// the agent list for the user to delete again.
+    #[test]
+    fn hiding_a_run_takes_its_session_with_it() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(B.into(), crate::ledger::Status::Started);
+        start.fired_at = Some(chrono::Utc::now());
+        start.session_id = Some(A.into());
+        start.harness = Some(HarnessKind::Claude);
+        start.job = Some("nightly".into());
+        ledger.append(&start).unwrap();
+        ledger
+            .append(&crate::ledger::Record::new(
+                B.into(),
+                crate::ledger::Status::Ok,
+            ))
+            .unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        assert!(
+            app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Run(id, _) if id == B)),
+            "the run is listed before it is hidden"
+        );
+        ledger.hide(B).unwrap();
+        app.refresh().unwrap();
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Run(id, _) if id == B)),
+            "the hidden run is gone"
+        );
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Session(id, _) if id == A)),
+            "and its session does not take the row's place"
+        );
+        assert!(
+            app.data.run_sessions.iter().any(|s| s.session_id == A),
+            "the session is still the run's, so a peek can still find it"
+        );
+    }
+
     #[test]
     fn the_composer_edits_where_the_cursor_is() {
         let d = tempfile::tempdir().unwrap();
@@ -25930,10 +25978,46 @@ states:
         app.rebuild();
         assert_eq!(
             app.prespawn_target(),
-            None,
-            "a finished run would have to resume, so it waits for enter"
+            Some((format!("run:{B}"), PathBuf::from("/src/one"))),
+            "a finished run whose client is still up is peeked, not resumed"
         );
         assert_eq!(app.enter_label(), "attach");
+        app.data.run_sessions.clear();
+        assert_eq!(
+            app.prespawn_target(),
+            None,
+            "a settled run would have to resume, so it waits for enter"
+        );
+        assert_eq!(app.enter_label(), "attach");
+    }
+
+    /// A peek keyed by its run is not an orphan: the session it joined is the run's, held
+    /// outside the agent list, so the sweep that closes viewers whose session left discovery
+    /// must look it up the same way the peek did.
+    #[test]
+    fn a_run_peek_survives_the_orphan_sweep_until_its_session_leaves() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(B.into(), crate::ledger::Status::Started);
+        start.fired_at = Some(chrono::Utc::now());
+        start.session_id = Some(A.into());
+        start.harness = Some(HarnessKind::Claude);
+        start.job = Some("nightly".into());
+        ledger.append(&start).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut peek = silent_open(&format!("run:{B}"));
+        peek.speculative = true;
+        app.viewers.push(peek);
+        app.close_orphan_speculative();
+        assert_eq!(app.viewers.len(), 1, "the run's own session holds the peek");
+        app.data.run_sessions.clear();
+        app.close_orphan_speculative();
+        assert!(
+            app.viewers.is_empty(),
+            "a session that left closes the peek"
+        );
     }
 
     /// `cones __attach` execs the harness in place, so the session a resumed run reports carries
