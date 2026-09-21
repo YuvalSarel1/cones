@@ -47,11 +47,14 @@ mkdir -p "$I"; touch "$INBOX"
 # is this watcher's own note of what it already put in front of the model, so one pending batch
 # does not wake it every ten seconds. Showing mail is not handling it. self.sh carries a previous
 # job's position into inbox.ack once, before this watcher is armed.
+# A wake needs mail worth showing, not just an inbox longer than this job's own note of it: a
+# fresh job starts with no `inbox.shown`, so gating on that alone woke the coordinator on every
+# pass, forever, in any folder whose inbox already had acknowledged history.
 have=$(wc -l < "$INBOX" | tr -d ' ')
 ack=$(cat "$ACK" 2>/dev/null); ack=${ack:-0}
 shown=$(cat "$D/inbox.shown" 2>/dev/null); shown=${shown:-0}
 mail=""; [ "$have" -gt "$ack" ] && mail=$(awk -v seen="$ack" 'NR>seen{print NR "\t" $0}' "$INBOX")
-arrived=0; [ "$have" -gt "$shown" ] && arrived=1
+arrived=0; [ -n "$mail" ] && [ "$have" -gt "$shown" ] && arrived=1
 if [ -z "$delta" ] && [ "$arrived" = 0 ] && [ "$delivery_changed" = 0 ] && [ "$roster_changed" = 0 ]; then
   echo same
 else

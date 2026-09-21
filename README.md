@@ -120,3 +120,4 @@ This runs a supervised Claude Code task in the current directory. See [one-off t
 | [Harness definitions](docs/harness-definitions.md) | The built-in integration schema. |
 | [Key bindings](docs/bindings.md) | Shortcut states, actions and the embedded YAML format. |
 | [Testing](docs/testing.md) | Shared check queue, focused checks and native fixtures. |
+| [Coordinator architecture](docs/architecture.md) | How the workspace coordinator reads, messages and integrates. |

@@ -26,6 +26,9 @@ Completion is a worker's report or a known landed result; idle and exit are not 
 Greet a new worker once per session, not once per task: identify yourself, ask which functions
 its current work touches, and explain how to reply if its harness needs that. Keep it brief. When
 its identity or task is uncertain, resolve that from the launcher or existing records first.
+Ask for an acknowledgement in the greeting, one line, even from a worker with nothing to report:
+delivery tells you the message reached the session, not that the agent read it or accepted the
+arrangement, and an unanswered greeting otherwise looks the same as one that never arrived.
 
 The greeting registers the session and outlives every task in it. Do not invent a task to carry
 one, and do not tell a worker to disregard it once its current task is finished: the whole point

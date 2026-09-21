@@ -724,7 +724,7 @@ const COORDINATOR_FILES: [(&str, &str); 8] = [
 
 /// Find the skill's live coordinator record, including coordinators started outside cones.
 pub fn coordinator_status(dir: &Path) -> Option<Value> {
-    let files = std::fs::read_dir(dirs::home_dir()?.join(".claude/orchestrator")).ok()?;
+    let files = std::fs::read_dir(crate::fleet::claude_dir().ok()?.join("orchestrator")).ok()?;
     files.flatten().find_map(|entry| {
         let status: Value = serde_json::from_slice(&std::fs::read(entry.path()).ok()?).ok()?;
         let pid = status.get("pid")?.as_u64()? as u32;

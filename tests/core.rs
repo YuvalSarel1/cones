@@ -1109,3 +1109,146 @@ fn coordinator_plugin_is_written_from_the_binary_with_its_helper_path_filled_in(
             .unwrap();
     assert_eq!(manifest["name"], "cones");
 }
+
+/// The watcher must stay quiet on a folder whose inbox is already acknowledged. Gating a wake on
+/// the watcher's own `inbox.shown` alone woke the coordinator on every pass, forever, because a
+/// fresh job starts without that file while the inbox keeps its history: one model call per sleep.
+#[test]
+fn the_coordinator_watcher_wakes_for_unacknowledged_mail_and_stays_quiet_otherwise() {
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let job = tempfile::tempdir().unwrap();
+    let skill = cones::harness::coordinator_plugin(state.path())
+        .unwrap()
+        .join("skills/start-orchestrator");
+
+    let sweep = |label: &str| -> String {
+        let out = std::process::Command::new("bash")
+            .arg(skill.join("bin/sweep.sh"))
+            .args([job.path(), work.path()])
+            .arg("1")
+            .env("CLAUDE_CONFIG_DIR", home.path())
+            // No roster source: the first pass reports that once, later passes must not repeat it.
+            .env("CONES", "/usr/bin/false")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{label}: {:?}", out.status);
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let inbox = String::from_utf8(
+        std::process::Command::new("python3")
+            .arg(skill.join("bin/codex.py"))
+            .args(["--workspace", work.path().to_str().unwrap(), "inbox"])
+            .env("CLAUDE_CONFIG_DIR", home.path())
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let inbox = std::path::Path::new(inbox.trim());
+    std::fs::create_dir_all(inbox).unwrap();
+    // History this coordinator already handled: three replies, acknowledged to the last line.
+    std::fs::write(
+        inbox.join("inbox.jsonl"),
+        "{\"text\":\"one\"}\n{\"text\":\"two\"}\n{\"text\":\"three\"}\n",
+    )
+    .unwrap();
+    std::fs::write(inbox.join("inbox.ack"), "3\n").unwrap();
+
+    sweep("first");
+    assert_eq!(
+        sweep("second"),
+        "same\n",
+        "an acknowledged inbox is not news"
+    );
+    assert_eq!(
+        sweep("third"),
+        "same\n",
+        "and it does not become news later"
+    );
+
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(inbox.join("inbox.jsonl"))
+        .unwrap();
+    std::io::Write::write_all(&mut f, b"{\"text\":\"four\"}\n").unwrap();
+    drop(f);
+    let woken = sweep("after mail arrives");
+    assert!(
+        woken.starts_with("changed\n"),
+        "real mail wakes it: {woken}"
+    );
+    assert!(woken.contains("mail:"), "and it says so: {woken}");
+    assert!(woken.contains("four"), "showing the new line: {woken}");
+    assert_eq!(
+        sweep("after the batch was shown"),
+        "same\n",
+        "one pending batch wakes the coordinator once, not every ten seconds"
+    );
+}
+
+/// Two coordinators can write the folder's status record at once: a replacement overlapping the
+/// one it takes over from, or a watcher left armed from an earlier arm. A single fixed temporary
+/// name made the second writer's rename delete the first writer's source, killing that process
+/// and the watcher it was running inside.
+#[test]
+fn concurrent_coordinators_can_write_the_status_record_without_destroying_each_other() {
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let skill = cones::harness::coordinator_plugin(state.path())
+        .unwrap()
+        .join("skills/start-orchestrator");
+    let driver = state.path().join("write.py");
+    std::fs::write(
+        &driver,
+        r#"import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fleetmod", sys.argv[1])
+fleet = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fleet)
+for _ in range(60):
+    fleet.write_status(sys.argv[2], int(sys.argv[3]))
+"#,
+    )
+    .unwrap();
+
+    let writers: Vec<_> = (0..6)
+        .map(|i| {
+            std::process::Command::new("python3")
+                .arg(&driver)
+                .arg(skill.join("bin/fleet.py"))
+                .arg("/tmp/a-folder-two-coordinators-share")
+                .arg((4000 + i).to_string())
+                .env("CLAUDE_CONFIG_DIR", home.path())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for (i, mut w) in writers.into_iter().enumerate() {
+        let out = w.wait().unwrap();
+        assert!(out.success(), "writer {i} died: {out:?}");
+    }
+
+    // The record cones matches on, honouring CLAUDE_CONFIG_DIR the way the roster read does,
+    // and left complete rather than half-written by whichever writer finished last.
+    let dir = home.path().join("orchestrator");
+    let record = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.extension().is_some_and(|e| e == "json"))
+        .expect("a status record under CLAUDE_CONFIG_DIR");
+    let status: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&record).unwrap()).unwrap();
+    assert_eq!(status["cwd"], "/tmp/a-folder-two-coordinators-share");
+    assert!((4000..4006).contains(&status["pid"].as_u64().unwrap()));
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .filter(|n| n.to_string_lossy().ends_with(".tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temporaries left behind: {leftovers:?}"
+    );
+}

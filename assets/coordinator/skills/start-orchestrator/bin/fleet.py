@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 
 
 def rows(stream, self_pid):
@@ -109,13 +110,26 @@ def write_status(workspace, self_pid):
     """
     if not self_pid:
         return
-    directory = os.path.expanduser("~/.claude/orchestrator")
+    # Same home the roster read uses. cones resolves the Claude directory from
+    # CLAUDE_CONFIG_DIR before the default, so a record written under a hard-coded
+    # ~/.claude would be invisible to it under a custom home.
+    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    directory = os.path.join(home, "orchestrator")
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, hashlib.sha1(workspace.encode()).hexdigest() + ".json")
-    temporary = path + ".tmp"
-    with open(temporary, "w") as out:
-        json.dump({"cwd": workspace, "pid": int(self_pid)}, out)
-    os.replace(temporary, path)
+    # A per-process temporary, not a fixed `.json.tmp`: a replacement coordinator overlapping the
+    # one it takes over from, or a watcher left armed from an earlier arm, writes the same record.
+    # With one shared name the second writer's rename destroys the first writer's source and that
+    # process dies on os.replace, taking its watcher down with it.
+    handle, temporary = tempfile.mkstemp(dir=directory, prefix=".status.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w") as out:
+            json.dump({"cwd": workspace, "pid": int(self_pid)}, out)
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def budget(path):
