@@ -105,6 +105,27 @@ A process is not a conversation. A harness launched into a terminal with no arch
 a row with a folder and a title, and its identity, state and accounting stay absent rather than
 guessed. A Codex agent is its thread rather than its pid, so a client restart is not an exit.
 
+## Observation cost
+
+A refresh is one observation pass. It runs on its own thread, and everything it acquires is
+acquired once and shared with every reader in that pass: the whole process table is read once
+however many harnesses are offered, and a native index is read once however many consumers of
+that home ask for it. `observe.rs` holds the accounting, which is thread-local for that reason.
+
+What a pass keeps beyond itself needs a source and a rule that says when it is stale. A Codex
+index is reread when its home's index file, state database or write-ahead log changes. A
+folder's repository layout is reread when the folder's own `.git` entry changes or a minute
+passes, and its branch is read from `HEAD` every time rather than asked for. Liveness and
+control never reuse an observation: a pid is checked against the kernel before anything signals
+it. An unreadable source is an error, never an empty one, and the failure is shared across the
+pass so four adapters are not four retries.
+
+Native databases are read in process, read-only, one statement at a time; no read creates,
+migrates or writes one, and none holds a transaction open across a refresh. The accounting is
+diagnostic: it counts what cones launched to observe, it never wraps a harness's execution, and
+it imposes no limit on a run. `--debug` reports it in `timing.summary` as `processes` and a
+per-operation `observation` block, so a dashboard's recurring cost is readable from its own log.
+
 ## The dashboard
 
 `tui.rs` draws sessions, runs, jobs and history as rows, with a preview pane beside them. It is

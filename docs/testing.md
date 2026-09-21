@@ -51,6 +51,7 @@ CI uses the same `scripts/check` entry point.
 ```sh
 scripts/check stress
 CONES_STRESS_CYCLES=100 scripts/check stress
+CONES_STRESS_SECONDS=3600 CONES_STRESS_INTERVAL_MS=1000 scripts/check stress
 python3 scripts/check-opencode.py target/debug/cones /absolute/path/to/opencode
 python3 scripts/check-terminals.py target/debug/cones
 python3 scripts/check-owned-harnesses.py target/debug/cones /absolute/path/to/claude /absolute/path/to/pi
@@ -70,6 +71,22 @@ threads and leave no owned viewer process; final RSS may retain up to 16 MiB ove
 the warm baseline. Maximum pump, close and input latency budgets are 500 ms,
 1000 ms and 1000 ms.
 The wrapper stops a stalled stress gate after five minutes.
+
+The second stress test measures observation rather than lifecycle: several dashboards
+refreshing a populated fixture fleet at once, with pinned folders and worktrees.
+Every refresh is checked against a fixed budget as it happens, so a regression names
+the pass that broke it: one whole-table read, no subprocess for a database or for
+liveness, and no more than three processes plus one per folder. The printed
+`observation.json` records passes, spawns per pass and per second by operation,
+worst refresh latency, CPU and retained resources.
+
+`CONES_STRESS_SECONDS` sets the duration, `CONES_STRESS_DASHBOARDS` how many
+refresh at once, and `CONES_STRESS_INTERVAL_MS` how long each waits between
+refreshes; the defaults keep the gate short and unpaced, which is what checks the
+per-refresh budget. A soak sets the interval to the cadence a dashboard really
+refreshes at, because what it measures is what accumulates over an hour. The soak is an hour, which spans
+the interval a churning dashboard wedged this machine over, and the wrapper's
+five-minute cap extends with the duration asked for.
 
 Run stress for changes to worker lifetimes, output pumping, caches or concurrency,
 and native checks for changes to harness integration. The OpenCode script uses

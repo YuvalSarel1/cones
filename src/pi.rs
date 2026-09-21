@@ -68,7 +68,7 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
     if !pi.is_dir() {
         return Ok(Vec::new());
     }
-    let table = crate::fleet::process_table(ps)?;
+    let table = crate::fleet::pass_table(ps)?;
     let mut procs = processes(&table);
     if procs.is_empty() {
         return Ok(Vec::new());
@@ -93,12 +93,14 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
     let lsof = if list.is_empty() {
         String::new()
     } else {
-        Command::new("/usr/sbin/lsof")
-            .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
-            .stdin(Stdio::null())
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
+        crate::observe::spawn(
+            crate::observe::op::OPEN_FILES,
+            Command::new("/usr/sbin/lsof")
+                .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
+                .stdin(Stdio::null()),
+        )
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
     };
     let cwds = crate::codex::cwds(&lsof);
     for p in &mut procs {

@@ -8,26 +8,13 @@ use crate::{
 };
 use anyhow::Result;
 use serde_json::Value;
-use std::{
-    path::Path,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
-
-static PROCESSES: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+use std::path::Path;
 
 #[cfg(target_os = "macos")]
 pub fn sessions(kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
-    let table = {
-        let mut cached = PROCESSES.lock().unwrap_or_else(|e| e.into_inner());
-        if cached
-            .as_ref()
-            .is_none_or(|(at, _)| at.elapsed() > Duration::from_millis(100))
-        {
-            *cached = Some((Instant::now(), crate::fleet::process_table("/bin/ps")?));
-        }
-        cached.as_ref().expect("process table").1.clone()
-    };
+    // One table per pass, shared with every other adapter, rather than a table per adapter
+    // kept for a hundred milliseconds: a refresh is the scope that shares an observation.
+    let table = crate::fleet::pass_table("/bin/ps")?;
     let mut processes = harness::spec(kind).discovery.processes(&table);
     if kind == HarnessKind::Copilot {
         let loaders: std::collections::HashSet<_> = processes

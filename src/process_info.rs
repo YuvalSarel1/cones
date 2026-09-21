@@ -35,7 +35,17 @@ fn path(value: &libc::vnode_info_path) -> Option<PathBuf> {
         .then(|| PathBuf::from(OsString::from_vec(bytes)))
 }
 
+/// A process's working directory, read from the kernel. Counted as an open-file read: a pass
+/// asks once per process it found, and the fallback for a process it may not read is `lsof`.
 pub fn cwd(pid: u32) -> Option<PathBuf> {
+    crate::observe::read(
+        crate::observe::op::OPEN_FILES,
+        || cwd_of(pid),
+        Option::is_some,
+    )
+}
+
+fn cwd_of(pid: u32) -> Option<PathBuf> {
     let pid = i32::try_from(pid).ok().filter(|&p| p > 1)?;
     let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
@@ -73,6 +83,14 @@ pub struct OpenFile {
 }
 
 pub fn open_files(pid: u32) -> io::Result<Vec<OpenFile>> {
+    crate::observe::read(
+        crate::observe::op::OPEN_FILES,
+        || open_files_of(pid),
+        Result::is_ok,
+    )
+}
+
+fn open_files_of(pid: u32) -> io::Result<Vec<OpenFile>> {
     let pid = i32::try_from(pid)
         .ok()
         .filter(|&p| p > 1)

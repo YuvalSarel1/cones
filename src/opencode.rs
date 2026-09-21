@@ -16,7 +16,7 @@ use std::{
     io::Read,
     os::unix::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     time::SystemTime,
 };
 
@@ -104,26 +104,12 @@ fn query(db: &Path, sql: &str) -> Result<Vec<Value>> {
     } else {
         db.as_os_str().to_owned()
     };
-    let output = Command::new("sqlite3")
-        .args(["-readonly", "-json", "-cmd", ".timeout 1000"])
-        .arg(path)
-        .arg(sql)
-        .stdin(Stdio::null())
-        .output()
-        .context("reading OpenCode database with sqlite3")?;
-    ensure!(
-        output.status.success(),
-        "reading OpenCode database: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
+    let rows = crate::sqlite::query(&path, sql).context("reading the OpenCode database")?;
     ensure!(
         fingerprint(&db)? == before,
         "OpenCode database changed while reading; retry"
     );
-    if output.stdout.is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_slice(&output.stdout).context("reading OpenCode database results")
+    Ok(rows)
 }
 
 fn valid_id(id: &str) -> bool {
@@ -503,7 +489,7 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
     if !home.is_dir() {
         return Ok(Vec::new());
     }
-    let mut procs = processes(&fleet::process_table("/bin/ps")?);
+    let mut procs = processes(&fleet::pass_table("/bin/ps")?);
     let own = fleet::own_home_processes(
         "/bin/ps",
         HarnessKind::Opencode,
@@ -521,9 +507,10 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
         .collect::<Vec<_>>()
         .join(",");
     if !missing.is_empty() {
-        let output = Command::new("/usr/sbin/lsof")
-            .args(["-nPw", "-a", "-p", &missing, "-d", "cwd", "-Fn"])
-            .output();
+        let output = crate::observe::spawn(
+            crate::observe::op::OPEN_FILES,
+            Command::new("/usr/sbin/lsof").args(["-nPw", "-a", "-p", &missing, "-d", "cwd", "-Fn"]),
+        );
         if let Ok(output) = output {
             let cwds = crate::codex::cwds(&String::from_utf8_lossy(&output.stdout));
             for process in &mut procs {

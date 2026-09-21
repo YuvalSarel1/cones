@@ -6,11 +6,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     fs,
     io::{BufRead, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    rc::Rc,
     sync::Mutex,
 };
 
@@ -246,15 +248,17 @@ pub fn contains(folder: &Path, path: &Path) -> bool {
 /// rows flicker back on the next one. `ps` is a parameter so a test can point it at one that
 /// cannot run.
 pub fn process_table(ps: &str) -> Result<String> {
-    let out = Command::new(ps)
-        .env("TZ", "UTC")
-        // lstart is locale text: under a non-English LANG ps prints its own month names,
-        // which never match the start a harness recorded, so every live session is dropped.
-        .env("LC_ALL", "C")
-        .args(["-axww", "-o", "pid=,lstart=,command="])
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("reading the process table with {ps}"))?;
+    let out = crate::observe::spawn(
+        crate::observe::op::PROCESS_TABLE,
+        Command::new(ps)
+            .env("TZ", "UTC")
+            // lstart is locale text: under a non-English LANG ps prints its own month names,
+            // which never match the start a harness recorded, so every live session is dropped.
+            .env("LC_ALL", "C")
+            .args(["-axww", "-o", "pid=,lstart=,command="])
+            .stdin(Stdio::null()),
+    )
+    .with_context(|| format!("reading the process table with {ps}"))?;
     // Listing every process has no empty case, so a nonzero exit is a failure like any other.
     ensure!(
         out.status.success(),
@@ -262,6 +266,45 @@ pub fn process_table(ps: &str) -> Result<String> {
         String::from_utf8_lossy(&out.stderr).trim()
     );
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The process table this pass holds, acquired once however many adapters ask for it.
+///
+/// A refresh runs on its own thread, so the pass is that thread and the table lives no longer
+/// than the refresh that read it. A failure is shared too: four adapters retrying an
+/// unreadable table within one pass is the retry storm, not a recovery.
+pub fn pass_table(ps: &str) -> Result<Rc<String>> {
+    /// The pass it was read in, the `ps` it was read with, and the table or why not.
+    type Held = Option<(u64, String, std::result::Result<Rc<String>, String>)>;
+    thread_local! {
+        static HELD: RefCell<Held> = const { RefCell::new(None) };
+    }
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        let pass = crate::observe::pass();
+        if let Some((at, for_ps, value)) = held.as_ref()
+            && *at == pass
+            && for_ps == ps
+        {
+            crate::observe::shared(crate::observe::op::PROCESS_TABLE);
+            return value.clone().map_err(|e| anyhow::anyhow!(e));
+        }
+        let read = process_table(ps).map(Rc::new).map_err(|e| format!("{e:#}"));
+        *held = Some((pass, ps.to_owned(), read.clone()));
+        read.map_err(|e| anyhow::anyhow!(e))
+    })
+}
+
+/// pid to argv from a table this pass already holds, so naming a client's home costs no
+/// second `ps`. An unreadable table leaves the map empty, which keeps every pid.
+fn pass_argv(ps: &str) -> HashMap<u32, String> {
+    let Ok(table) = pass_table(ps) else {
+        return HashMap::new();
+    };
+    process_lines(&table)
+        .into_iter()
+        .map(|line| (line.pid, line.command.to_owned()))
+        .collect()
 }
 
 /// The pids among `pids` running against a home this fleet reads. Process discovery names a
@@ -291,7 +334,8 @@ pub fn own_home_processes(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    let argv = process_column(ps, &list, "-wwp");
+    // argv comes from the table this pass already read; only the environment needs its own.
+    let argv = pass_argv(ps);
     let with_environment = process_column(ps, &list, "-wwEp");
     pids.iter()
         .copied()
@@ -321,12 +365,14 @@ fn process_column(ps: &str, list: &str, flags: &str) -> HashMap<u32, String> {
     if list.is_empty() {
         return HashMap::new();
     }
-    let out = Command::new(ps)
-        .args([flags, list, "-o", "pid=,command="])
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let out = crate::observe::spawn(
+        crate::observe::op::PROCESS_ENV,
+        Command::new(ps)
+            .args([flags, list, "-o", "pid=,command="])
+            .stdin(Stdio::null()),
+    )
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
     out.lines()
         .filter_map(|line| {
             let (pid, rest) = line.trim_start().split_once(' ')?;
@@ -368,6 +414,11 @@ fn process_starts(pids: impl Iterator<Item = u64>) -> Result<HashMap<u32, String
     starts_from("/bin/ps", pids)
 }
 
+/// Start times for named pids, for a caller that has to agree with what the table reports.
+pub fn starts(pids: &[u64]) -> Result<HashMap<u32, String>> {
+    process_starts(pids.iter().copied())
+}
+
 /// `process_starts` against a named `ps`, so a test can point it at one that cannot run.
 fn starts_from(ps: &str, pids: impl Iterator<Item = u64>) -> Result<HashMap<u32, String>> {
     // ps rejects the whole list when one pid is above the kernel's maximum (99998 on macOS);
@@ -380,15 +431,17 @@ fn starts_from(ps: &str, pids: impl Iterator<Item = u64>) -> Result<HashMap<u32,
     if list.is_empty() {
         return Ok(HashMap::new());
     }
-    let out = Command::new(ps)
-        .env("TZ", "UTC")
-        // lstart is locale text: under a non-English LANG ps prints its own month names,
-        // which never match the start a harness recorded, so every live session is dropped.
-        .env("LC_ALL", "C")
-        .args(["-o", "pid=,lstart=", "-p", &list])
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("reading the process table with {ps}"))?;
+    let out = crate::observe::spawn(
+        crate::observe::op::PROCESS_START,
+        Command::new(ps)
+            .env("TZ", "UTC")
+            // lstart is locale text: under a non-English LANG ps prints its own month names,
+            // which never match the start a harness recorded, so every live session is dropped.
+            .env("LC_ALL", "C")
+            .args(["-o", "pid=,lstart=", "-p", &list])
+            .stdin(Stdio::null()),
+    )
+    .with_context(|| format!("reading the process table with {ps}"))?;
     Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| {
@@ -1176,12 +1229,14 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
     if list.is_empty() {
         return HashMap::new();
     }
-    let out = Command::new(ps)
-        .args(["-o", "pid=,%cpu=,rss=", "-p", &list])
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let out = crate::observe::spawn(
+        crate::observe::op::PROCESS_USAGE,
+        Command::new(ps)
+            .args(["-o", "pid=,%cpu=,rss=", "-p", &list])
+            .stdin(Stdio::null()),
+    )
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
     out.lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
@@ -1210,6 +1265,9 @@ pub(crate) fn all_observed(
     offered: &crate::config::Policy,
     mut observe: impl FnMut(&str, &Path, std::time::Duration, &Result<Vec<Session>>),
 ) -> Result<Vec<Session>> {
+    // The shared fleet boundary is where an observation pass begins: what the adapters below
+    // acquire is acquired once and shared between them, and nothing older is reused.
+    crate::observe::reset();
     let mut out = Vec::new();
     for &kind in crate::harness::known() {
         if !offered.enabled_for(kind) {
@@ -1247,6 +1305,9 @@ pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
 
 /// Validate current pid/start identity without loading every transcript.
 pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<Session>> {
+    // Control is not observation: begin a pass so no adapter answers from a table read for an
+    // earlier one. A pid that has been reused since must not be signalled on an old reading.
+    crate::observe::reset();
     match fs::read_dir(
         claude.join(
             crate::harness::spec(crate::config::HarnessKind::Claude)
@@ -2208,6 +2269,88 @@ mod tests {
             Some("C UTC"),
             "and so are the starts of named pids"
         );
+    }
+
+    // The aggregate cost of a refresh is the point of the shared table: four native adapters
+    // once cost four whole-table reads each pass, and several dashboards multiplied that.
+    #[test]
+    fn a_pass_reads_the_whole_table_once_and_shares_the_failure_too() {
+        crate::observe::reset();
+        let first = pass_table("/bin/ps").unwrap();
+        for _ in 0..5 {
+            let again = pass_table("/bin/ps").unwrap();
+            assert_eq!(*again, *first, "every adapter sees the same observation");
+        }
+        let counts = crate::observe::snapshot()[crate::observe::op::PROCESS_TABLE];
+        assert_eq!(
+            (counts.spawns, counts.shared, counts.failures),
+            (1, 5, 0),
+            "one acquisition, five reuses"
+        );
+
+        crate::observe::reset();
+        assert!(pass_table("/bin/ps").is_ok(), "a new pass reads again");
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::PROCESS_TABLE),
+            1
+        );
+
+        crate::observe::reset();
+        for _ in 0..4 {
+            assert!(
+                pass_table("/nonexistent/ps").is_err(),
+                "an unreadable table stays an error for every adapter in the pass"
+            );
+        }
+        let counts = crate::observe::snapshot()[crate::observe::op::PROCESS_TABLE];
+        assert_eq!(
+            (counts.spawns, counts.shared, counts.failures),
+            (1, 3, 1),
+            "a failure is shared as well, so four adapters are not four retries"
+        );
+        crate::observe::reset();
+    }
+
+    // Naming the home a client runs against used to cost two reads for the listed pids: the
+    // command line, which the pass already holds, and the environment, which it does not.
+    #[test]
+    fn attributing_a_home_reads_the_environment_only() {
+        crate::observe::reset();
+        let me = std::process::id();
+        let own = own_home_processes("/bin/ps", crate::config::HarnessKind::Codex, &[me]);
+        assert!(
+            own.contains(&me),
+            "this test process has no Codex home set, so it is not excluded"
+        );
+        let counts = crate::observe::snapshot();
+        assert_eq!(
+            counts[crate::observe::op::PROCESS_ENV].spawns,
+            1,
+            "one environment read for the listed pids"
+        );
+        assert_eq!(
+            counts[crate::observe::op::PROCESS_TABLE].spawns,
+            1,
+            "and the command lines come from the pass's own table"
+        );
+        assert!(
+            own_home_processes("/bin/ps", crate::config::HarnessKind::Pi, &[me]).contains(&me),
+            "a second adapter in the same pass"
+        );
+        let counts = crate::observe::snapshot();
+        assert_eq!(counts[crate::observe::op::PROCESS_TABLE].spawns, 1);
+        assert_eq!(counts[crate::observe::op::PROCESS_TABLE].shared, 1);
+        assert_eq!(counts[crate::observe::op::PROCESS_ENV].spawns, 2);
+        assert_eq!(
+            own_home_processes("/bin/ps", crate::config::HarnessKind::Codex, &[]),
+            HashSet::new(),
+            "no pids is no reads"
+        );
+        assert_eq!(
+            crate::observe::spawns_of(crate::observe::op::PROCESS_ENV),
+            2
+        );
+        crate::observe::reset();
     }
 
     // An empty table is how a pid is reported dead, so a table that could not be read must not

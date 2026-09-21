@@ -86,11 +86,19 @@ def main():
             start_new_session=True,
             pass_fds=(fd,),
         )
-        deadline = time.monotonic() + 300 if sys.argv[2] == "stress" else float("inf")
+        # A soak is asked for explicitly and runs as long as it was asked to, with the
+        # five-minute cap left in place for the ordinary stress gate around it.
+        stress_cap = 300 + 2 * float(env.get("CONES_STRESS_SECONDS", 0))
+        deadline = (
+            time.monotonic() + stress_cap if sys.argv[2] == "stress" else float("inf")
+        )
         try:
             while child.poll() is None and not cancelled:
                 if time.monotonic() >= deadline:
-                    print("check: stress exceeded five minutes; stopping its process group", flush=True)
+                    print(
+                        f"check: stress exceeded {stress_cap:.0f}s; stopping its process group",
+                        flush=True,
+                    )
                     cancelled = signal.SIGTERM
                     break
                 time.sleep(0.05)

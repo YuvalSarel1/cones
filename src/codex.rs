@@ -13,7 +13,7 @@ use std::{
     io::{BufRead, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 /// Honor `CODEX_HOME`, otherwise use `.codex` beside the Claude directory.
@@ -225,7 +225,7 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
     if !codex.is_dir() {
         return Ok(Vec::new());
     }
-    let table = crate::fleet::process_table(ps)?;
+    let table = crate::fleet::pass_table(ps)?;
     let mut procs = processes(&table);
     if procs.is_empty() {
         return Ok(Vec::new());
@@ -250,12 +250,14 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
     let lsof = if list.is_empty() {
         String::new()
     } else {
-        Command::new("/usr/sbin/lsof")
-            .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
-            .stdin(Stdio::null())
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
+        crate::observe::spawn(
+            crate::observe::op::OPEN_FILES,
+            Command::new("/usr/sbin/lsof")
+                .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
+                .stdin(Stdio::null()),
+        )
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
     };
     let cwds = cwds(&lsof);
     for p in &mut procs {
@@ -514,13 +516,26 @@ pub struct Index {
     pub threads: HashMap<String, (PathBuf, PathBuf)>,
 }
 
-pub fn index(codex: &Path) -> Index {
-    let mut out = Index {
-        titles: fs::read_to_string(codex.join("session_index.jsonl"))
-            .map(|t| titles(&t))
-            .unwrap_or_default(),
-        threads: HashMap::new(),
+/// What the index was read from, so an unchanged home is not read again: the index file, the
+/// state database, and the database's write-ahead log, which is where a running daemon's
+/// newest threads sit until it checkpoints. A file that is absent is part of the answer too.
+type Sources = Vec<Option<(std::time::SystemTime, u64)>>;
+
+fn sources(codex: &Path) -> Sources {
+    let stat = |p: PathBuf| {
+        let m = fs::metadata(p).ok()?;
+        Some((m.modified().ok()?, m.len()))
     };
+    let db = state_db(codex);
+    vec![
+        stat(codex.join("session_index.jsonl")),
+        db.clone().and_then(stat),
+        db.map(|p| p.with_extension("sqlite-wal")).and_then(stat),
+    ]
+}
+
+/// The newest state database in a home, which is the one its daemon writes.
+fn state_db(codex: &Path) -> Option<PathBuf> {
     let mut dbs: Vec<PathBuf> = fs::read_dir(codex)
         .into_iter()
         .flatten()
@@ -533,17 +548,54 @@ pub fn index(codex: &Path) -> Index {
         })
         .collect();
     dbs.sort();
-    let Some(db) = dbs.pop() else { return out };
-    let Ok(run) = Command::new("sqlite3")
-        .args(["-readonly", "-json"])
-        .arg(&db)
-        .arg("select id, coalesce(name, title) as t, rollout_path, cwd from threads")
-        .stderr(Stdio::null())
-        .output()
-    else {
+    dbs.pop()
+}
+
+/// The index for a home, read again only when the home's own sources changed.
+///
+/// Live rows and saved-thread rows both need it, and several homes are read in one refresh,
+/// so a pass would otherwise open the same database two or three times. The rule is the
+/// sources, not elapsed time: an appending daemon moves its database or its log, and a home
+/// nobody has touched is not reparsed at the refresh cadence.
+pub(crate) fn shared_index(codex: &Path) -> Arc<Index> {
+    type Held = HashMap<PathBuf, (Sources, Arc<Index>)>;
+    static HELD: Mutex<Option<Held>> = Mutex::new(None);
+    let now = sources(codex);
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    let held = held.get_or_insert_with(HashMap::new);
+    if let Some((was, index)) = held.get(codex)
+        && *was == now
+    {
+        crate::observe::shared(crate::observe::op::SQLITE);
+        return index.clone();
+    }
+    let index = Arc::new(index(codex));
+    // Homes come from configuration and a fixture's home is gone once its test ends; the map
+    // is bounded by how many a machine has, and a run of fixtures cannot grow it without end.
+    if held.len() >= 64 {
+        held.clear();
+    }
+    held.insert(codex.to_owned(), (now, index.clone()));
+    index
+}
+
+pub fn index(codex: &Path) -> Index {
+    let mut out = Index {
+        titles: fs::read_to_string(codex.join("session_index.jsonl"))
+            .map(|t| titles(&t))
+            .unwrap_or_default(),
+        threads: HashMap::new(),
+    };
+    let Some(db) = state_db(codex) else {
         return out;
     };
-    for v in serde_json::from_slice::<Vec<Value>>(&run.stdout).unwrap_or_default() {
+    let Ok(rows) = crate::sqlite::query(
+        db.as_os_str(),
+        "select id, coalesce(name, title) as t, rollout_path, cwd from threads",
+    ) else {
+        return out;
+    };
+    for v in rows {
         let Some(id) = v["id"].as_str() else { continue };
         if let Some(first) = v["t"].as_str().and_then(crate::fleet::headline) {
             out.titles.insert(id.to_owned(), first);
@@ -618,13 +670,15 @@ fn locks_with_lsof(files: &[PathBuf], pids: &[u32]) -> HashMap<String, u32> {
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    let lsof = Command::new("/usr/sbin/lsof")
-        .args(["-nPw", "-a", "-p", &pids, "-Fpn"])
-        .args(files)
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
+    let lsof = crate::observe::spawn(
+        crate::observe::op::OPEN_FILES,
+        Command::new("/usr/sbin/lsof")
+            .args(["-nPw", "-a", "-p", &pids, "-Fpn"])
+            .args(files)
+            .stdin(Stdio::null()),
+    )
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
     parse_locks(&lsof)
 }
 
@@ -647,13 +701,13 @@ pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
 pub fn daemon_pid(codex: &Path) -> Option<u32> {
     let text = fs::read_to_string(codex.join(&daemon_files().pid)).ok()?;
     let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
-    Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stderr(Stdio::null())
-        .status()
-        .ok()?
-        .success()
-        .then_some(pid)
+    // Signal 0 through the kernel, not `/bin/kill`: liveness is read once per pass per home.
+    crate::observe::read(
+        crate::observe::op::LIVENESS,
+        || crate::fleet::alive(pid),
+        |_| true,
+    )
+    .then_some(pid)
 }
 
 /// Prefer the database rollout path; fall back to `sessions/**/*-<id>.jsonl`.
@@ -715,7 +769,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     let Some(since) = procs.iter().map(|p| p.started).min() else {
         return Vec::new();
     };
-    let index = index(codex);
+    let index = shared_index(codex);
     let daemon = daemon_pid(codex);
     let pids: Vec<u32> = procs.iter().map(|p| p.pid).chain(daemon).collect();
     let locks = locks(codex, &pids);
@@ -880,7 +934,7 @@ pub(crate) fn thread_rows_observed(
     removed: &BTreeSet<String>,
     mut source: impl FnMut(&str, &str),
 ) -> Vec<Session> {
-    let index = index(codex);
+    let index = shared_index(codex);
     let daemon = daemon_pid(codex);
     let mut ids: Vec<(String, Option<Thread>)> =
         locks(codex, &daemon.into_iter().collect::<Vec<_>>())
@@ -1610,25 +1664,18 @@ mod tests {
             r#"{"id":"dddd","thread_name":"fix the build","updated_at":"x"}"#,
         )
         .unwrap();
-        if Command::new("sqlite3")
-            .arg("-version")
-            .stdout(Stdio::null())
-            .status()
-            .is_ok()
         {
-            let db = home.join("state_5.sqlite");
-            let sql = "create table threads(id text, name text, title text, rollout_path text, cwd text); insert into threads values('dddd', null, 'fix the build', '', ''), ('eeee', 'Green CI', 'x', '', '');";
-            assert!(
-                Command::new("sqlite3")
-                    .arg(&db)
-                    .arg(sql)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+            let db = rusqlite::Connection::open(home.join("state_5.sqlite")).unwrap();
+            db.execute_batch(
+                "create table threads(id text, name text, title text, rollout_path text, cwd text);
+                 insert into threads values('dddd', null, 'fix the build', '', ''),
+                                           ('eeee', 'Green CI', 'x', '', '');",
+            )
+            .unwrap();
             assert_eq!(
                 index(&home).titles.get("eeee").map(String::as_str),
-                Some("Green CI")
+                Some("Green CI"),
+                "the state database names a thread the index file does not"
             );
         }
         let rows = thread_rows(&home, &state, &[], &BTreeSet::new());

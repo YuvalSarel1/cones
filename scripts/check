@@ -72,10 +72,11 @@ case "$mode" in
     reporting) run_check reporting node --test tests/reporting.mjs ;;
     stress)
         export CONES_STRESS_OUTPUT="$log_dir/resources.json"
-        run_check stress cargo test --lib \
-            tui::stress::repeated_lifecycle_stays_responsive_and_releases_resources \
-            -- --ignored --exact --nocapture --test-threads=1
+        export CONES_STRESS_OBSERVATION_OUTPUT="$log_dir/observation.json"
+        run_check stress cargo test --lib tui::stress:: \
+            -- --ignored --nocapture --test-threads=1
         printf 'Resources: %s\n' "$CONES_STRESS_OUTPUT"
+        printf 'Observation: %s\n' "$CONES_STRESS_OBSERVATION_OUTPUT"
         ;;
     test)
         if (( $# == 0 )); then set -- --all-targets; fi
