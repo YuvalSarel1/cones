@@ -222,8 +222,6 @@ pub struct Data {
     pub whole_columns: bool,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
-    /// Git state for pinned folders without sessions.
-    pub git: BTreeMap<PathBuf, String>,
     /// Folders that are linked worktrees, marked wherever the list names a folder.
     pub worktrees: BTreeSet<PathBuf>,
     /// Each of those worktrees and the repository it belongs to, for folder suggestions.
@@ -356,17 +354,9 @@ impl Data {
             d.phase("branches_and_schedule", branches_started);
         }
         let git_started = Instant::now();
-        // Every added folder, not just the ones standing empty right now: a deletion shows the
-        // folder's row before the registry drops the session, and a row that gains its branch on
-        // the next read reads as a flicker.
-        // ponytail: one git status per added folder per read; cache by mtime if a read drags.
-        let git = folders
-            .iter()
-            .filter_map(|f| git_state(f).map(|g| (f.clone(), g)))
-            .collect();
         // Every folder the list can name, since the mark belongs to the column under state
         // grouping and to the folder headings in the normal view.
-        // ponytail: one rev-parse per distinct folder per read; fold into git_state if it drags.
+        // ponytail: one rev-parse per distinct folder per read; cache by mtime if it drags.
         let roots: BTreeMap<PathBuf, PathBuf> = seen
             .iter()
             .chain(folders.iter())
@@ -399,7 +389,6 @@ impl Data {
             confirm_secs,
             whole_columns,
             folders,
-            git,
             worktrees,
             roots,
             diagnostics,
@@ -724,18 +713,12 @@ impl Data {
                     kind: Kind::Job(j.name.clone()),
                     cells: cells.next().unwrap_or_default(),
                 },
-                Entry::Folder(dir) => {
-                    // Outside git there is no branch line, and a row with no text at all is
-                    // an invisible line the cursor can still land on.
-                    let cells = match self.git.get(*dir) {
-                        Some(g) => vec![(g.clone(), plain())],
-                        None => vec![("no sessions here".to_owned(), dim())],
-                    };
-                    Row {
-                        kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
-                        cells,
-                    }
-                }
+                Entry::Folder(dir) => Row {
+                    // A row with no text at all is an invisible line the cursor can still
+                    // land on.
+                    kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
+                    cells: vec![("no sessions here".to_owned(), dim())],
+                },
             };
             out.push(row);
         }
@@ -2697,33 +2680,6 @@ fn next_runs(jobs: &[ResolvedJob]) -> BTreeMap<String, chrono::DateTime<chrono::
             next.map(|next| (j.name.clone(), next))
         })
         .collect()
-}
-
-pub fn git_state(dir: &Path) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["status", "--porcelain", "--branch"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let mut lines = text.lines();
-    // `## main...origin/main [ahead 1]`, `## HEAD (no branch)`, `## No commits yet on main`.
-    let head = lines.next()?.strip_prefix("## ")?;
-    // A repository with no commits has nothing to report, and git puts a sentence where the
-    // branch goes. The row stays bare instead.
-    if head.starts_with("No commits yet on ") {
-        return None;
-    }
-    let branch = head.split("...").next().unwrap_or(head);
-    Some(match lines.count() {
-        0 => format!("{branch} · clean"),
-        1 => format!("{branch} · 1 change"),
-        n => format!("{branch} · {n} changes"),
-    })
 }
 
 /// Complete to the longest shared directory prefix; append `/` for a single match.
@@ -17901,8 +17857,8 @@ states:
         app.queue_stop(A.into(), "delete", || Ok(true));
         let text = row(&app).unwrap_or_default();
         assert_eq!(
-            text, "main · clean",
-            "the folder row is there with its git state before the next read: {text}"
+            text, "no sessions here",
+            "the folder row is there before the next read: {text}"
         );
         assert!(
             !app.rows
@@ -21741,37 +21697,6 @@ states:
         registry(claude, A, "/src/one", "idle", 1_757_682_871_000);
         let inside = claude.join("inside");
         fs::create_dir(&inside).unwrap();
-        assert!(
-            Command::new("git")
-                .args(["-C", inside.to_str().unwrap(), "init", "-q"])
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert_eq!(
-            git_state(&inside),
-            None,
-            "a repository with no commits reports nothing"
-        );
-        assert!(
-            Command::new("git")
-                .args([
-                    "-C",
-                    inside.to_str().unwrap(),
-                    "-c",
-                    "user.name=t",
-                    "-c",
-                    "user.email=t@t",
-                    "commit",
-                    "-qm",
-                    "first",
-                    "--allow-empty",
-                ])
-                .status()
-                .unwrap()
-                .success()
-        );
-        fs::write(inside.join("new.txt"), "").unwrap();
         let mut app = app(claude);
         app.refresh().unwrap();
         let picked = launch_dir(&inside.display().to_string(), &app.cwd, &app.cwd).unwrap();
@@ -21785,15 +21710,10 @@ states:
         assert!(folder_row(&app).is_some(), "the folder has a row at once");
         app.refresh().unwrap();
         let row = &app.rows[app.visible[folder_row(&app).unwrap()]];
-        assert!(
-            row.text().ends_with(" · 1 change"),
-            "the row leads with the branch and the tree state: {}",
-            row.text()
-        );
         assert_eq!(
-            git_state(Path::new("/")),
-            None,
-            "outside a repository, nothing"
+            row.text(),
+            "no sessions here",
+            "an empty folder says so and nothing else"
         );
         assert!(
             app.rows
