@@ -23,7 +23,13 @@ fi
 # previous roster: reporting every worker gone would greet them all again on recovery. An install
 # without `cones ls` fails here too, which is the version check — the coordinator reports it
 # rather than falling back to a second, drifting implementation of discovery.
-touch "$D/roster.prev"
+# The roster position belongs to the folder, not to this job, for the same reason the inbox's
+# acknowledged position does: a coordinator that restarts, or one that replaces another, must not
+# re-announce every worker it already knows about as a fresh arrival.
+I=$(python3 -B "$S/codex.py" --workspace "$WB" inbox) || exit 1
+mkdir -p "$I"
+touch "$I/roster.prev"
+cp "$I/roster.prev" "$D/roster.prev"
 roster_error=""
 delta=""
 if fleet=$("$CONES" ls --dir "$WB" --json 2>&1); then
@@ -39,9 +45,8 @@ if [ "$roster_error" != "$previous_roster_error" ]; then
   printf '%s' "$roster_error" > "$D/roster.error"
   roster_changed=1
 fi
-I=$(python3 -B "$S/codex.py" --workspace "$WB" inbox) || exit 1
 INBOX="$I/inbox.jsonl"; ACK="$I/inbox.ack"
-mkdir -p "$I"; touch "$INBOX"
+touch "$INBOX"
 # Two positions, deliberately. `inbox.ack` is what the coordinator durably handled; only
 # `codex.sh ack` moves it, and it lives beside the inbox so a new job recovers it. `inbox.shown`
 # is this watcher's own note of what it already put in front of the model, so one pending batch
@@ -76,4 +81,4 @@ else
 fi
 # Outside the wake decision: a change the coordinator did not wake for is still consumed, so it
 # cannot come back as news once something else wakes it.
-cp "$D/roster.now" "$D/roster.prev"
+cp "$D/roster.now" "$I/roster.prev"

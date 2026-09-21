@@ -1265,6 +1265,25 @@ fn the_coordinator_watcher_wakes_for_an_arrival_and_not_for_a_state_change() {
         again.contains("new:"),
         "a worker that comes back is an arrival again: {again}"
     );
+
+    // A coordinator that restarts gets a new job directory. The roster position lives beside the
+    // inbox instead, so the worker it already greeted is not announced to it a second time.
+    let restarted = tempfile::tempdir().unwrap();
+    let after_restart = {
+        let out = std::process::Command::new("bash")
+            .arg(skill.join("bin/sweep.sh"))
+            .args([restarted.path(), work.path()])
+            .arg("1")
+            .env("CLAUDE_CONFIG_DIR", home.path())
+            .env("CONES", &fake)
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    assert_eq!(
+        after_restart, "same\n",
+        "a restart does not re-announce a known worker: {after_restart}"
+    );
 }
 
 /// Two coordinators can write the folder's status record at once: a replacement overlapping the
