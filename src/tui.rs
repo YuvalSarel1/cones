@@ -13928,6 +13928,13 @@ impl App {
             keys.push(("tab", "pane"));
         }
         keys.push(("↑↓", "select"));
+        if self
+            .selected_session()
+            .and_then(|s| harness::by_name(&s.harness))
+            .is_some_and(|spec| spec.operations.rename)
+        {
+            keys.push(("ctrl+n", "rename"));
+        }
         keys.push(("ctrl+g", "help"));
         let room = (self.hint_width() as usize).saturating_sub(label);
         while keys.len() > 1 && hints(&keys).width() > room {
@@ -13997,7 +14004,17 @@ impl App {
             Mode::Config(form) => form.hints(),
             Mode::Guide(guide) => guide.hints(),
             Mode::Mcp(panel) => panel.hints(),
-            Mode::Rename(_) => hints(&[("enter", "rename"), ("esc", "cancel")]),
+            Mode::Rename(input) => hints(&[
+                (
+                    "enter",
+                    if input.text.is_empty() {
+                        "rename in the client"
+                    } else {
+                        "rename"
+                    },
+                ),
+                ("esc", "cancel"),
+            ]),
             Mode::Pick(_) => hints(&[("↑ ↓", "choose"), ("enter", "use"), ("esc", "close")]),
             Mode::Normal if self.history_selected() => {
                 let mut keys = vec![];
@@ -25966,15 +25983,31 @@ states:
         let mut app = app(d.path());
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
+        app.split = false;
+        assert!(
+            app.footer_lines()[1].to_string().contains("ctrl+n rename"),
+            "navigation names the rename key on a session that supports it"
+        );
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(
             matches!(&app.mode, Mode::Rename(i) if i.text.is_empty()),
             "empty enter must request native naming without clearing the old title"
         );
+        assert!(
+            app.footer_lines()[0]
+                .to_string()
+                .contains("enter rename in the client"),
+            "an empty name hands the rename to the client"
+        );
         app.key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
         for c in "Ship it".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
+        let hint = app.footer_lines()[0].to_string();
+        assert!(
+            hint.contains("enter rename") && !hint.contains("in the client"),
+            "a typed name renames here: {hint}"
+        );
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.status, "renamed to Ship it");
