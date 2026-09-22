@@ -200,9 +200,13 @@ Overlap is per job. Two jobs sharing a directory may both run; shared-file coord
 
 ## Run lifecycle
 
-A run is one supervised harness process. `cones run` takes an admission lock for its job, reaps orphaned runs and applies skip rules. Replacement can wait for that job's old run without blocking admission for other jobs. It then creates a gated worker in its own process group, appends `started`, releases the worker, and reads events until completion or termination. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
+A run is one supervised background session. `cones run` takes an admission lock for its job, reaps orphaned runs and applies skip rules. Replacement can wait for that job's old run without blocking admission for other jobs. It then creates a gated worker in its own process group, appends `started`, and releases the worker. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
 
-On timeout, stop, replacement or permission denial, the whole worker process group receives SIGTERM, then SIGKILL after two seconds. The worker also ends itself one second beyond the configured timeout or when its supervisor disappears.
+The worker starts the session with `--bg` and watches it. The harness's daemon owns the agent, so the worker has no child to wait on: it reads the state the harness reports for that session every three seconds and reports the first terminal one as the run's result. A session that never reaches the harness's roster within ten seconds fails the run, as does a launch that prints no background id or names a session other than the run's.
+
+While a run works, its session is a live agent like any other: the dashboard peeks it in a native viewer and enter joins the conversation to steer it. The run ends the session when it ends, so a scheduled job leaves no agent behind; the conversation stays resumable from the run row.
+
+On timeout, stop or replacement the worker removes the session with `claude rm`, and the whole worker process group receives SIGTERM, then SIGKILL after two seconds. A run reaped as an orphan removes its session too, because killing a supervisor never stops the agent the daemon holds.
 
 ### What the harness is told
 
@@ -216,7 +220,7 @@ blast radius you accept.
 
 | Guarantee | Claude arguments |
 | --- | --- |
-| Headless, streamed events | `--print --output-format stream-json --verbose` |
+| Background session, peekable while it runs | `--bg` |
 | Unattended, no prompt to answer | `--dangerously-skip-permissions` |
 | Pinned session identity | `--session-id <fresh uuid>` |
 | Job name | `--name <job>` |
@@ -243,20 +247,20 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | Status | Reason | When | Exit |
 | --- | --- | --- | --- |
 | `started` | | Running; a saved status line may supply live cost. | |
-| `ok` | | Exit 0 with a `success` result and reported cost. | 0 |
+| `ok` | | The harness reported the session done. | 0 |
 | `skipped` | `disabled`, `overlap`, `replace_unconfirmed` | Admission refused the run for the reason above. | 0 |
 | `timeout` | `timeout` | The clock ran out. | 124 |
 | `timeout` | `replaced` | A later run replaced this one. | 124 |
 | `failed` | `interrupted` | Dashboard stop, or SIGTERM/SIGINT to the supervisor. | 1 |
-| `failed` | `permission` | A result has `permission_denials`, or a system event has subtype `permission_denied`. | 1 |
+| `failed` | `session_failed`, `session_stopped` | The harness reported the session as failed, or as stopped by something other than this run. | 1 |
 | `failed` | `session_mismatch` | An event's session id differs from the pinned id. | 1 |
-| `failed` | `missing_result`, `missing_cost` | No result, or no `total_cost_usd` on it. | 1 |
+| `failed` | `missing_result` | The supervisor ended without an account of the session. | 1 |
 | `failed` | `validation: ...`, `spawn: ...`, `runner: ...` | Compilation, worker launch or supervision failed. | 1 |
 | `failed` | `exit`, or native result subtype | Nonzero exit without another explanation, or a result other than `success`, recorded verbatim. | 1 |
 | `failed` | `orphan` | A later run of the job reaped a dead supervisor. | |
 | `crashed` | | Derived on read: no terminal record more than five seconds beyond the run's timeout. | |
 
-A run can report more than one result: Claude ends its answer, then answers again when one of its own background tasks completes. The last result decides the status and reason, and `tokens_in`, `tokens_out` and `cost_usd` are the totals across every result.
+A background session reports no totals of its own, so `tokens_in`, `tokens_out` and `cost_usd` come from the session's own records the way every other session's do: the saved status line first, then the conversation's reported usage. A machine with no `statusLine` command has no reported cost for a run, only the estimate from usage.
 
 The start record contains `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. Session id, job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
 

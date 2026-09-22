@@ -862,11 +862,12 @@ impl Harness for Claude {
         // A job is a scheduled launch of the same agent the owner runs by hand: its own
         // settings, its own MCP servers, no prompts to answer and no second permission
         // engine here. timeout_min is the only limit cones puts on the run.
+        //
+        // It runs as a background session rather than a headless print, so the run is the
+        // agent: the dashboard peeks it in a native viewer while it works and enter joins
+        // the conversation to steer it, exactly as it does for a session the owner started.
         let mut args: Vec<String> = [
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--verbose",
+            "--bg",
             "--dangerously-skip-permissions",
             "--session-id",
             session_id,
@@ -972,7 +973,7 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
     }
     args.pop(); // The final positional prompt is task content, not policy.
     let policy = serde_json::json!({
-        "v":4, "harness":job.harness, "program":invocation.program,
+        "v":5, "harness":job.harness, "program":invocation.program,
         "enforcement":"native-flags",
         "args":args,
         "cwd":job.cwd,
@@ -1010,6 +1011,14 @@ impl Outcome {
         }
         if event["type"] == "system" && event["subtype"] == "permission_denied" {
             self.permission_denied = true;
+        }
+        // A background session prints no headless result. Its supervisor watches the state
+        // the harness reports for the session and says how that session ended.
+        if event["type"] == "cones_result" {
+            self.result_seen = true;
+            let state = event["state"].as_str().unwrap_or("unreported");
+            self.failed = state != "done";
+            self.reason = (state != "done").then(|| format!("session_{state}"));
         }
         if event["type"] == "result" {
             // Claude ends a headless turn with a result and then answers again when a

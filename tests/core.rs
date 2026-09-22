@@ -264,10 +264,7 @@ fn a_job_launches_the_agent_with_the_prompt_and_no_policy_of_its_own() {
     assert_eq!(
         argv,
         [
-            "--print",
-            "--output-format",
-            "stream-json",
-            "--verbose",
+            "--bg",
             "--dangerously-skip-permissions",
             "--session-id",
             id,

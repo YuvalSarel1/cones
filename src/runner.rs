@@ -5,8 +5,9 @@ use crate::{
     output::RunOutput,
     private_dir, private_file,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::Utc;
+use serde_json::json;
 use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1};
 use std::{
     fs,
@@ -114,6 +115,15 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
             "cannot safely identify orphan process group {pgid}; refusing a new run"
         );
         cleanup(pgid);
+    }
+    // The worker is not the agent. A run whose supervisor died left its session with the
+    // harness's daemon, still working, so reaping the record ends the session too.
+    if run.started.attach_mode.as_deref() == Some("session")
+        && let Some(session_id) = run.started.session_id.as_deref()
+        && let Ok(home) = crate::fleet::claude_dir()
+        && crate::fleet::control_session(&home, session_id)?.is_some()
+    {
+        crate::fleet::stop(&home, session_id)?;
     }
     let mut terminal = Record::new(
         run.started.run_id.clone(),
@@ -382,7 +392,7 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     initial.timeout_s = Some(job.timeout_min * 60.0);
     initial.output = Some(output.events_path.clone());
     initial.stderr = Some(output.stderr_path.clone());
-    initial.attach_mode = Some("events".into());
+    initial.attach_mode = Some("session".into());
     let prepared = (|| -> Result<_> {
         let harness = harness::adapter(job.harness)?;
         let invocation = harness.compile(job, &session_id)?;
@@ -505,9 +515,38 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
         let _ =
             output.record(&serde_json::json!({"type":"cones_error","message":format!("{e:#}")}));
     }
+    // The daemon owns a background session, so killing the worker does not end the agent.
+    // A run that ends without its supervisor's account removes the session here, and says
+    // so rather than leaving an agent nothing is watching.
+    let background = invocation.args.iter().any(|a| a == "--bg");
+    if background && !outcome.result_seen {
+        let remove =
+            |home: std::path::PathBuf| match crate::fleet::control_session(&home, &session_id)? {
+                Some(_) => crate::fleet::stop(&home, &session_id).map(|_| ()),
+                None => Ok(()),
+            };
+        if let Err(e) = crate::fleet::claude_dir().and_then(remove) {
+            terminal.reason = Some(match terminal.reason.take() {
+                Some(had) => format!("{had}; session not removed: {e:#}"),
+                None => format!("session not removed: {e:#}"),
+            });
+        }
+    }
     terminal.tokens_in = outcome.tokens_in;
     terminal.tokens_out = outcome.tokens_out;
     terminal.cost_usd = outcome.cost_usd;
+    // A background session reports no totals of its own: what it spent is in its conversation.
+    if background {
+        let columns = crate::fleet::claude_dir().ok().map(|home| {
+            let transcript = harness.transcript(&session_id, &job.cwd).ok();
+            crate::fleet::run_columns(transcript.as_deref(), &home, Some(&session_id))
+        });
+        if let Some(columns) = columns {
+            terminal.tokens_in = terminal.tokens_in.or(columns.tokens_in);
+            terminal.tokens_out = terminal.tokens_out.or(columns.tokens_out);
+            terminal.cost_usd = terminal.cost_usd.or(columns.cost_usd);
+        }
+    }
     if job.archive_transcript {
         match archive(ledger, &run_id, &session_id, &job.cwd, harness.as_ref()) {
             Ok(path) => terminal.transcript = Some(path),
@@ -613,6 +652,119 @@ fn archive(
     Ok(dest)
 }
 
+/// How often the supervisor asks the harness what its session is doing.
+const WATCH: Duration = Duration::from_secs(3);
+/// How long a launched session has to reach the harness's own roster before the run is
+/// reported as never started. The launch has already returned by then.
+const REGISTER: Duration = Duration::from_secs(10);
+
+/// Run a job as a background session and watch it to its end.
+///
+/// `claude --bg` hands the session to the harness's daemon and returns, so there is no child
+/// to wait on and no event stream to read: the harness's own state for the session is the
+/// only account of the run, and this reports it as the one result the ledger records. The
+/// session outlives a normal run on purpose, which is what lets the dashboard peek it and
+/// join it. Only a run cones ends early removes it.
+fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i32) -> Result<i32> {
+    let session_id = invocation
+        .args
+        .iter()
+        .position(|a| a == "--session-id")
+        .and_then(|i| invocation.args.get(i + 1))
+        .context("background run compiled without a session id")?
+        .clone();
+    let home = invocation
+        .env
+        .get("CLAUDE_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .map_or_else(crate::fleet::claude_dir, Ok)?;
+    let out = Command::new(&invocation.program)
+        .args(&invocation.args)
+        .env_clear()
+        .envs(&invocation.env)
+        .current_dir(&invocation.cwd)
+        .stdin(Stdio::null())
+        .output()
+        .context("spawn harness")?;
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    ensure!(
+        out.status.success(),
+        "claude --bg exited {}: {}",
+        out.status.code().unwrap_or(-1),
+        stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("no error output")
+    );
+    let short = crate::launch::background_id(&stdout)
+        .context("claude --bg started but printed no background id")?;
+    // The run's identity is the session id cones passed, so a harness that named the session
+    // something else has not started the run cones recorded, and nothing here may pretend it did.
+    ensure!(
+        session_id.starts_with(&short),
+        "claude --bg ignored --session-id {session_id} and named the session {short}"
+    );
+    report(&json!({"type": "cones_launch", "session_id": session_id, "background_id": short}))?;
+    let start = Instant::now();
+    let mut seen = false;
+    let mut checked = Instant::now() - WATCH;
+    loop {
+        if checked.elapsed() >= WATCH {
+            checked = Instant::now();
+            let session = crate::fleet::find(&home, &session_id)?;
+            seen |= session.is_some();
+            match session.as_ref().map(|s| s.state.as_str()) {
+                Some(state @ ("done" | "failed" | "stopped")) => {
+                    // The session is the run, so the run ending ends it. What it did is in
+                    // its conversation, which `claude rm` leaves resumable.
+                    let state = state.to_owned();
+                    let removed = crate::fleet::stop(&home, &session_id);
+                    report(&json!({
+                        "type": "cones_result", "state": state,
+                        "removed": removed.as_ref().copied().unwrap_or(false),
+                        "error": removed.err().map(|e| format!("{e:#}")),
+                    }))?;
+                    return Ok(0);
+                }
+                // A session that reached the roster and left it was removed under the run.
+                None if seen => {
+                    report(&json!({"type": "cones_result", "state": "stopped"}))?;
+                    return Ok(0);
+                }
+                None if start.elapsed() > REGISTER => {
+                    bail!("the harness never listed session {session_id} after backgrounding it")
+                }
+                _ => {}
+            }
+        }
+        if cancelled.load(Ordering::Relaxed)
+            || unsafe { libc::getppid() } != parent
+            || start.elapsed().as_secs_f64() > invocation.timeout_s + 1.0
+        {
+            // The daemon owns this session, so ending the worker would leave the agent
+            // working. Removing the session is the only way a run actually stops.
+            let stopped = crate::fleet::stop(&home, &session_id);
+            report(&json!({
+                "type": "cones_result", "state": "stopped",
+                "removed": stopped.as_ref().copied().unwrap_or(false),
+                "error": stopped.err().map(|e| format!("{e:#}")),
+            }))?;
+            return Ok(124);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn report(event: &serde_json::Value) -> Result<()> {
+    let mut out = std::io::stdout();
+    writeln!(out, "{event}")?;
+    out.flush()?;
+    Ok(())
+}
+
 pub fn worker(run_id: &str) -> Result<i32> {
     uuid::Uuid::parse_str(run_id)?;
     let mut gate = BufReader::new(std::io::stdin());
@@ -639,6 +791,9 @@ pub fn worker(run_id: &str) -> Result<i32> {
     signal_hook::flag::register(SIGTERM, Arc::clone(&cancelled))?;
     signal_hook::flag::register(SIGINT, Arc::clone(&cancelled))?;
     let parent = unsafe { libc::getppid() };
+    if invocation.args.iter().any(|a| a == "--bg") {
+        return background_worker(&invocation, &cancelled, parent);
+    }
     let mut child = Command::new(&invocation.program)
         .args(&invocation.args)
         .env_clear()

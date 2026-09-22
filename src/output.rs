@@ -157,6 +157,20 @@ pub fn describe(event: &Value) -> Vec<String> {
                 }
             }
         }
+        // A background run's log is its supervisor's account: the session it started and how
+        // the harness said that session ended.
+        Some("cones_launch") => lines.push(format!(
+            "Session: {}",
+            event["session_id"].as_str().unwrap_or("unnamed")
+        )),
+        Some("cones_result") => lines.push(format!(
+            "Session {}{}",
+            event["state"].as_str().unwrap_or("unreported"),
+            event["error"]
+                .as_str()
+                .map(|e| format!("  (not removed: {e})"))
+                .unwrap_or_default()
+        )),
         Some("cones_error") => lines.push(format!(
             "Error: {}",
             event["message"].as_str().unwrap_or("unknown error")

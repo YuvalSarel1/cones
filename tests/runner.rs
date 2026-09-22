@@ -51,11 +51,6 @@ impl Fixture {
         fs::create_dir_all(&bin).unwrap();
         let fake = bin.join("claude");
         fs::write(&fake, include_bytes!("fixtures/fake_claude.py")).unwrap();
-        fs::write(
-            bin.join("claude-read-permissions.jsonl"),
-            include_bytes!("fixtures/claude-read-permissions.jsonl"),
-        )
-        .unwrap();
         fs::set_permissions(fake, fs::Permissions::from_mode(0o700)).unwrap();
         let state = dir.path().join("state");
         fs::create_dir_all(&state).unwrap();
@@ -298,14 +293,14 @@ fn launch_refuses_a_harness_the_configuration_turns_off() {
 // Timing-sensitive: it has flaked when other cargo test runs shared the machine and passed
 // alone; rerun it alone before blaming a change.
 #[test]
-fn policy_denial_stops_a_running_harness_promptly() {
-    let f = Fixture::new("permission", 1.0);
+fn a_session_the_harness_reports_failed_ends_the_run_promptly() {
+    let f = Fixture::new("failed", 1.0);
     let start = Instant::now();
     assert!(!f.output().status.success());
-    assert!(start.elapsed() < Duration::from_secs(6));
+    assert!(start.elapsed() < Duration::from_secs(20));
     let r = f.ledger().runs().unwrap().remove(0).terminal.unwrap();
     assert_eq!(r.status, Status::Failed);
-    assert_eq!(r.reason.as_deref(), Some("permission"));
+    assert_eq!(r.reason.as_deref(), Some("session_failed"));
 }
 #[test]
 fn timeout_kills_descendants_that_ignore_sigterm() {
@@ -317,18 +312,37 @@ fn timeout_kills_descendants_that_ignore_sigterm() {
 }
 
 #[test]
-fn successful_read_of_permission_documentation_finishes_ok() {
-    let f = Fixture::new("read-permissions", 1.0);
+fn a_finished_run_leaves_no_session_behind_and_keeps_its_log() {
+    let f = Fixture::new("success", 1.0);
     assert!(f.output().status.success());
     let run = f.ledger().runs().unwrap().remove(0);
     assert_eq!(run.terminal.unwrap().status, Status::Ok);
+    // The session the run held is gone: peeking it is for while the run is working.
+    let left = cones::fleet::find(
+        &f.dir.path().join(".claude"),
+        run.started.session_id.as_ref().unwrap(),
+    )
+    .unwrap();
+    assert!(left.is_none(), "{left:?}");
     let logs = f
         .command()
         .args(["__logs", &run.started.run_id])
         .output()
         .unwrap();
-    assert!(logs.status.success());
-    assert!(String::from_utf8_lossy(&logs.stdout).contains("permission denied"));
+    assert!(
+        logs.status.success(),
+        "{}",
+        String::from_utf8_lossy(&logs.stderr)
+    );
+    let text = String::from_utf8_lossy(&logs.stdout);
+    assert!(
+        text.contains(&format!(
+            "Session: {}",
+            run.started.session_id.as_ref().unwrap()
+        )),
+        "{text}"
+    );
+    assert!(text.contains("Session done"), "{text}");
 }
 
 #[test]
@@ -345,7 +359,7 @@ fn following_output_can_detach_without_stopping_the_job() {
     let mut line = String::new();
     let mut reader = BufReader::new(follower.stdout.take().unwrap());
     reader.read_line(&mut line).unwrap();
-    assert!(line.contains("\"type\":\"system\""));
+    assert!(line.contains("\"type\":\"cones_launch\""), "{line}");
     unsafe {
         libc::kill(follower.id() as i32, libc::SIGINT);
     }
@@ -589,8 +603,11 @@ fn replacement_waiting_for_its_old_lease_does_not_block_another_job() {
     );
 }
 #[test]
-fn malformed_missing_and_mismatched_events_fail_closed() {
-    for mode in ["malformed", "missing", "mismatch", "failed", "oversized"] {
+fn a_launch_cones_cannot_watch_fails_closed() {
+    // refused: the harness would not start. unnamed: it started something and named nothing.
+    // mismatch: it named a session that is not the run's. missing: it named one and never
+    // listed it. failed: the session itself ended badly.
+    for mode in ["refused", "unnamed", "mismatch", "missing", "failed"] {
         let f = Fixture::new(mode, 1.0);
         assert!(!f.output().status.success(), "{mode}");
         let r = f.ledger().runs().unwrap().remove(0);
@@ -742,7 +759,7 @@ fn notify_fires_only_when_opted_in_on_failure() {
     let lines = fs::read_to_string(&log).unwrap();
     assert_eq!(
         lines.lines().collect::<Vec<_>>(),
-        ["cones test failed: error_during_execution"]
+        ["cones test failed: session_failed"]
     );
 }
 // macOS can kill a renamed copy of a signed system binary before ps reads it.
