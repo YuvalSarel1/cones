@@ -512,6 +512,18 @@ impl Data {
             .filter(|s| !matches!(s.state.as_str(), "exited" | "done" | "stopped"))
     }
 
+    /// The state a run's row reports: its agent's when one is live, the ledger's otherwise. A
+    /// run the ledger still calls started keeps that word, because the actions the row offers
+    /// and its pulse both read it.
+    fn run_state(&self, run: &Run) -> String {
+        let ledger = run.status();
+        if ledger == "started" {
+            return ledger;
+        }
+        self.live_run(&run.started.run_id)
+            .map_or(ledger, |s| s.state.clone())
+    }
+
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
         self.rows_excluding(by_state, false, false, &HashSet::new(), &mut Widths::new())
     }
@@ -795,7 +807,7 @@ impl Data {
                     // A resumed run is working again; the ledger's terminal record stays in the
                     // reason column, where it says why it was resumed from.
                     let live = self.live_run(&r.started.run_id);
-                    let status = live.map_or_else(|| r.status(), |s| s.state.clone());
+                    let status = self.run_state(r);
                     let h = r.started.harness.map(|h| h.to_string()).unwrap_or_default();
                     let harness = if h.is_empty() {
                         "-".into()
@@ -823,7 +835,7 @@ impl Data {
             out.push(names);
             for (r, cells) in runs.iter().zip(cells) {
                 out.push(Row {
-                    kind: Kind::Run(r.started.run_id.clone(), r.status()),
+                    kind: Kind::Run(r.started.run_id.clone(), self.run_state(r)),
                     cells,
                 });
             }
@@ -28516,11 +28528,15 @@ while True:
         data
     }
 
-    fn run_row_cells(app: &App) -> Vec<(String, Style)> {
+    fn row_for_run(app: &App) -> &Row {
         app.rows
             .iter()
             .find(|r| matches!(&r.kind, Kind::Run(id, _) if id == A))
             .expect("the run keeps its row")
+    }
+
+    fn run_row_cells(app: &App) -> Vec<(String, Style)> {
+        row_for_run(app)
             .cells
             .iter()
             .map(|(t, style)| (t.trim().to_owned(), *style))
@@ -28551,7 +28567,7 @@ while True:
                 data.run_sessions.push(s);
             }
             app.apply(data);
-            run_row_cells(app)
+            (run_row_cells(app), row_for_run(app).working())
         };
         for pane in [true, false] {
             for (state, shown) in [
@@ -28559,9 +28575,14 @@ while True:
                 ("blocked", "input"),
                 ("idle", "idle"),
             ] {
-                let row = render(&mut app, pane, state);
+                let (row, pulsing) = render(&mut app, pane, state);
                 let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
                 let at = format!("pane={pane} state={state}");
+                assert_eq!(
+                    pulsing,
+                    state == "active",
+                    "{at}: only an agent that is working pulses its bar"
+                );
                 assert!(
                     text.contains(&shown),
                     "{at}: the row says what its agent is doing now: {text:?}"
@@ -28577,9 +28598,10 @@ while True:
                 );
             }
             for state in ["exited", "done", "stopped"] {
-                let row = render(&mut app, pane, state);
+                let (row, pulsing) = render(&mut app, pane, state);
                 let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
                 let at = format!("pane={pane} state={state}");
+                assert!(!pulsing, "{at}: a row with no agent in it is still");
                 assert_eq!(
                     text.iter().filter(|c| **c == "timeout").count(),
                     2,
@@ -28602,6 +28624,7 @@ while True:
         let mut app = timed_out_run(d.path(), None);
         let data = priced_load(&app);
         app.apply(data);
+        assert!(!row_for_run(&app).working(), "nothing is running in it");
         let row = run_row_cells(&app);
         let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(
