@@ -223,6 +223,34 @@ For harnesses with a history reader, resume uses the recorded cwd and native hom
 
 Codex's daemon start reports `socketPath` and is idempotent. Its remote client does not report an initial thread id, so prompt/cwd/start matching is an association limit. Ambiguous launches retain their own viewer rows; cones never chooses a thread merely because its rollout is newest. Returning to the list before discovery finishes keeps trying on later refreshes. Closing an unidentified client may leave no saved row.
 
+### Detached launch
+
+[`cones launch`](cli.md#starting-a-session) leaves its session running after the launching shell exits and prints one identifier for the other commands. It adds no new mechanism: Claude keeps its native background daemon, and every other terminal harness is given the same persistent host the composer uses. What differs per harness is the identifier, and how long it stays the name of that conversation.
+
+| Harness | Detached by | Identifier returned | How long it names the session |
+| --- | --- | --- | --- |
+| Claude | Its own daemon, from `claude --bg`. | Native session id, resolved from the returned short id through the registry. | Permanently: it survives the daemon, cones and the machine. |
+| OpenCode | A cones-owned terminal host. | The host's own id, which the roster prefers over the process row. | The host's lifetime. |
+| pi | A cones-owned terminal host. | `pi-<pid>`, or pi's own session id once pi has written its session file. | Until pi writes that file, after which the roster carries pi's id; re-read with `cones ls --dir PATH --json`. |
+| Gemini, Cursor Agent, Copilot, Amp, Droid, Kimi | A cones-owned terminal host. | `<harness>-<pid>`, a client process rather than a conversation. | The client process's lifetime. |
+| Codex | Not detached. It keeps the launching terminal, as before. | None. | — |
+
+A hosted launch waits up to five seconds for the harness's own process row before it answers, because that is the id the roster keeps; a harness process discovery never reports keeps the cones-owned id, which its host record holds for as long as the host runs.
+
+Identity comes from a key the launch owns, never from prompt, folder or start time: Claude's returned background id, or the pid of the client the host has just spawned. Concurrent identical prompts in one folder therefore stay distinct, and cones never resolves a launch by choosing the newest thread or session. Naming is bounded at twenty seconds; that bound is on naming alone, and expiring reports an unnamed launch rather than stopping the session, which is already running by then. A wait is not a run timeout.
+
+An unattended session that is waiting for input stays waiting. cones does not answer it, does not treat quiet output as an ended turn, and does not retire a host for silence. Its native state is what reports the wait, and ending it explicitly is [`cones stop`](cli.md#stopping-a-session).
+
+Codex is unsupported for detached launch. Against codex-cli 0.155.1 on September 22, 2026, no subcommand creates a thread and reports its id: `codex --remote <addr> -- <instruction>` opens a TUI client that reports none, `codex agents` is a browser, `codex app-server daemon` manages the daemon rather than its threads, and `codex exec` is a non-interactive run rather than a session to join. A detached Codex session also has no supported stop: `archive` and `delete` are history operations, and `remote-control stop` and `app-server daemon stop` end the daemon that owns every thread. Since exact identity and continued execution cannot both be established, cones reports no detached launch for it rather than returning an identity it would have to guess.
+
+A hosted terminal has one known gap. `cones stop` resolves a Claude background session and a cones-owned terminal, but a roster row it cannot trace back to a host record is refused as a harness with no declared native stop, so `cones stop pi-<pid>` is refused even though cones owns that terminal. Stop such a session from the dashboard, with `ctrl+x` twice on its row. This is a missing lookup from roster row to host record, not a missing capability.
+
+Hosting an experimental launcher gives it a lifetime, nothing else. Their [declared limits](#additional-terminal-harnesses) are unchanged: no transcript, no message delivery, no state, model, context or cost, and a process row rather than a conversation. A cones-owned terminal does not turn a process into a reported session.
+
+Detached launch is exercised in `tests/launch.rs` against disposable homes and fixture launch targets, covering the returned identity, concurrent identical prompts in one folder, survival of the launcher's exit for both a background and a hosted session, a native launch failure, a launch that reports no identity, `--print-command`, refused harnesses and refused folders.
+
+Claude was checked live on September 22, 2026 with Claude Code 2.1.278, a disposable home and a loopback provider: `cones launch` returned the full session id for a real `claude --bg`, the registry agreed and the eight characters the CLI prints were its prefix, the session was listed as `active` after the launcher exited, two concurrent identical prompts in one folder produced two ids and two transcripts, and each session reached the loopback provider and then stopped. Unverified: detach and rejoin of a hosted client through a live dashboard, resume of a detached session, OpenCode's identifier, whose table row follows from how the roster merges host records rather than from a live launch, and hosting for the experimental launchers, which were checked only through the composer.
+
 Model and provider overrides follow [configuration](jobs.md#job-fields-and-defaults). A Codex daemon keeps the provider from its own configuration; a different provider region requires another native home. Pi receives `defaults.pi_model` through `--model` and `defaults.pi_provider` through `--provider` when set. Claude receives `defaults.effort` through `--effort`, for jobs as well as composer sessions, and pi receives `defaults.pi_thinking` through `--thinking`. Codex takes reasoning effort only through a `-c model_reasoning_effort=` configuration override, and OpenCode takes none at all, so cones passes neither. OpenCode receives `defaults.opencode_model` through `--model`. Native session permissions remain harness-owned.
 
 ### Supervised execution

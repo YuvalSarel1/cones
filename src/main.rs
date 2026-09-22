@@ -402,24 +402,35 @@ fn execute(cli: Cli) -> Result<i32> {
                 println!("{}", shell_command(dir.as_os_str(), &command));
                 return Ok(0);
             }
-            match start {
-                // Claude's launch returns once the background session is recorded; its
-                // identifier is the command's own output, as it is for the dashboard.
-                harness::Start::Background(mut command) => {
-                    let status = command
-                        .stdin(std::process::Stdio::null())
-                        .status()
-                        .with_context(|| format!("start {kind}"))?;
-                    Ok(status.code().unwrap_or(1))
-                }
-                // Every other harness is its own terminal client, so it takes this terminal.
-                harness::Start::Foreground(mut command) => {
-                    command = harness::restore_stdin_prompt(command)?;
-                    attach_real_tty(&mut command);
-                    let error = command.exec();
-                    bail!("{kind} failed to start: {error}")
-                }
+            // A detached launch outlives this shell and prints one id for the other
+            // commands. Which kind of id that is depends on the harness; see docs/cli.md.
+            if cones::launch::detaches(kind) {
+                let started = cones::launch::detached(
+                    &state,
+                    &claude,
+                    kind,
+                    &dir,
+                    prompt.trim(),
+                    &policy,
+                    start,
+                )?;
+                eprintln!(
+                    "{} running detached, {}",
+                    started.harness,
+                    started.identity.describe()
+                );
+                println!("{}", started.id);
+                return Ok(0);
             }
+            // Codex is a client of its own daemon and reports no thread at launch, so it
+            // keeps the old behaviour: this terminal, and no id to hand anyone.
+            let harness::Start::Foreground(mut command) = start else {
+                bail!("{kind} has neither a detached launch nor a terminal client")
+            };
+            command = harness::restore_stdin_prompt(command)?;
+            attach_real_tty(&mut command);
+            let error = command.exec();
+            bail!("{kind} failed to start: {error}")
         }
         Action::Ls {
             job,

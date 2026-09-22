@@ -8966,7 +8966,7 @@ fn short_id(status: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session {
+pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session {
     Session {
         session_id: id.to_owned(),
         harness: kind.to_string(),
@@ -16266,7 +16266,7 @@ fn executable_identity(exe: &Path) -> Value {
     })
 }
 
-fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> {
+pub(crate) fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> {
     use fs2::FileExt;
     use std::io::{Read, Seek, SeekFrom, Write};
 

@@ -24,7 +24,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
-| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
+| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a detached session](#starting-a-session) the way the dashboard's composer does, and print its identifier. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones show ID [--tail N] [--all]` | [Read a session's conversation](#reading-a-conversation). |
@@ -78,9 +78,19 @@ cones launch --dir ~/src/app --harness claude --model opus --effort high
 
 This CLI selection is separate from the dashboard's `start.harness`. The `_in_picker` switches affect the dashboard cycle, not `cones launch`. With no prompt the session opens waiting for input.
 
-Claude starts as a background session, prints its identifier and returns, so the row is there for the dashboard to attach. Every other harness is its own terminal client and takes over this terminal, as a resumed session does. `--print-command` prints the folder, environment and command instead of starting anything.
+A launch detaches. The session keeps running once the shell that started it exits, and the command prints one identifier on stdout for the other commands to take. The harness and which kind of identifier it is go to stderr, so `id=$(cones launch --dir ~/src/app "fix the flaky test")` is the whole of it.
 
-Unlike the composer, this launcher writes no recovery record, so a prompt it fails to deliver is the one in your shell history.
+| Harness | Where the session runs | Identifier printed |
+| --- | --- | --- |
+| Claude | Its own background daemon. | Its native session id, in full rather than the eight characters the harness prints. |
+| pi, OpenCode, [experimental launchers](harness.md#additional-terminal-harnesses) | A cones-owned terminal host, the one the dashboard uses. | The id the roster carries for that client, usually `<harness>-<pid>`. The stderr line says whether it is the harness's own name or a client process; see [detached launch](harness.md#detached-launch) for how long each stays valid. |
+| Codex | This terminal, as before. | None. Codex reports no thread at launch, so it has no detached launch. |
+
+Returning an identifier means the roster carried it before the command exited, so `cones ls`, `cones show`, `cones comms send` and `cones stop` take it. Two identical prompts launched into one folder at the same instant get two identifiers: they are told apart by Claude's returned background id, or by the pid of the client the host just spawned, never by prompt, folder or start time. A launch that starts a session cones cannot then name exits non-zero and prints no identifier, naming what the harness printed instead and where to look. It never guesses, and it never stops the session it started.
+
+Every launch is recorded in `STATE_DIR/launches.jsonl` before anything starts, as `launch.submitted`, and again as `launch.identified` or `launch.unnamed`. A launcher killed between the two leaves the first record, so the prompt and folder survive it and a retry is a duplicate you can see.
+
+`--print-command` prints the folder, environment and command instead of starting anything, and records nothing.
 
 ### One-off tasks
 
@@ -211,7 +221,7 @@ A dispatcher works in the folder it launched into. If no live coordinator holds 
 
 The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
 
-Every prompt submitted to start a harness session from the dashboard is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered.
+Every prompt submitted to start a harness session, from the dashboard or from [`cones launch`](#starting-a-session), is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered. A CLI launch has no `dashboard_id` and adds a second record, `launch.identified` with the resolved `session_id` or `launch.unnamed` with the `error`.
 
 Reviving a conversation from history records `resume.submitted` in the same file. For that event, `data.operation_id` contains the source session id and `data.prompt` contains its saved title, or an empty string; the title is not sent as a new instruction. The record describes the resume request, not proof that it succeeded. This file uses the same 10 MiB bound. Debug launch events reference the operation ID without repeating the prompt.
 
