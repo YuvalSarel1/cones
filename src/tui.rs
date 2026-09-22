@@ -226,7 +226,7 @@ pub struct Data {
     pub folders: Vec<PathBuf>,
     /// Folders that are linked worktrees, marked wherever the list names a folder.
     pub worktrees: BTreeSet<PathBuf>,
-    /// Each of those worktrees and the repository it belongs to, for folder suggestions.
+    /// Each worktree's repository, for session grouping and folder suggestions.
     pub roots: BTreeMap<PathBuf, PathBuf>,
     diagnostics: Option<LoadDiagnostics>,
 }
@@ -371,9 +371,7 @@ impl Data {
             d.phase("branches_and_schedule", branches_started);
         }
         let git_started = Instant::now();
-        // Every folder the list can name, since the mark belongs to the column under state
-        // grouping and to the folder headings in the normal view.
-        // ponytail: one rev-parse per distinct folder per read; cache by mtime if it drags.
+        // Resolve session groups and worktree marks together, reusing the cached git read.
         let roots: BTreeMap<PathBuf, PathBuf> = seen
             .iter()
             .chain(folders.iter())
@@ -416,9 +414,11 @@ impl Data {
 
     /// A pending deletion is already hidden, so its folder must not stay covered by it.
     fn has_rows_in(&self, dir: &Path, deleting: &HashSet<&str>) -> bool {
-        self.sessions
-            .iter()
-            .any(|s| s.cwd == dir && !deleting.contains(s.session_id.as_str()))
+        let repository = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+        self.sessions.iter().any(|s| {
+            !deleting.contains(s.session_id.as_str())
+                && (s.cwd == dir || self.roots.get(&s.cwd) == Some(&repository))
+        })
     }
 
     fn count(&self, state: &str) -> usize {
@@ -546,6 +546,14 @@ impl Data {
         };
         // Sort folders case-insensitively; state groups use a rank prefix to put input first.
         let folder = |dir: &Path| {
+            // Git reports canonical repository paths. Match a main checkout reached through
+            // an alias to the same heading as its worktrees, without rewriting session cwds.
+            let real = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+            let dir = self
+                .roots
+                .values()
+                .find(|root| **root == real)
+                .map_or(dir, PathBuf::as_path);
             let name = if dir.as_os_str().is_empty() {
                 "no directory".to_owned()
             } else {
@@ -575,7 +583,7 @@ impl Data {
                 };
                 ranked(rank, label(&s.state))
             } else {
-                folder(&s.cwd)
+                folder(self.roots.get(&s.cwd).unwrap_or(&s.cwd))
             };
             groups.entry(key).or_default().push(Entry::Session(s));
         }
@@ -2110,6 +2118,11 @@ fn session_cells(
             .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
         40,
     );
+    let title = if worktree {
+        format!("⑂ {title}")
+    } else {
+        title
+    };
     let title = match fork {
         Some(depth) => format!("{}↳ {title}", "  ".repeat(depth.min(8))),
         None => title,
@@ -26607,7 +26620,7 @@ states:
     }
 
     #[test]
-    fn branch_reads_identify_worktrees_and_detached_checkouts() {
+    fn worktree_sessions_share_the_repository_heading_and_keep_their_own_targets() {
         let d = dir();
         let repo = d.path().join("repo");
         let worktree = d.path().join("worktree");
@@ -26688,6 +26701,97 @@ states:
             "detaching keeps it a worktree"
         );
         assert_eq!(git_branch(d.path()), None);
+
+        let nested = repo.join(".claude/worktrees/agent");
+        git(
+            &repo,
+            &["worktree", "add", "-b", "agent", nested.to_str().unwrap()],
+        );
+        let alias = d.path().join("repo-alias");
+        std::os::unix::fs::symlink(&repo, &alias).unwrap();
+        let sub_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+        for (id, cwd) in [
+            (A, &alias),
+            (B, &nested),
+            (C, &under_worktree),
+            (sub_id, &under_repo),
+        ] {
+            registry(d.path(), id, cwd.to_str().unwrap(), "idle", 1);
+        }
+        let mut app = app(d.path());
+        app.data.columns = vec!["state".into(), "folder".into()];
+        app.data.folders = vec![repo.clone(), nested.clone()];
+        for s in &mut app.data.sessions {
+            s.title = Some(format!("session {}", &s.session_id[..8]));
+        }
+        // Grouping belongs to the dashboard, independent of the harness.
+        app.data
+            .sessions
+            .iter_mut()
+            .find(|s| s.session_id == C)
+            .unwrap()
+            .harness = "codex".into();
+        app.rebuild();
+        let headers = |app: &App| {
+            app.rows
+                .iter()
+                .filter(|r| r.kind == Kind::Header)
+                .map(Row::text)
+                .collect::<Vec<_>>()
+        };
+        let repo_label = fleet::tilde(&repo.canonicalize().unwrap());
+        assert_eq!(
+            headers(&app),
+            [repo_label.clone(), fleet::tilde(&under_repo)],
+            "nested and external worktrees share the repository heading; ordinary subfolders keep theirs"
+        );
+        assert!(
+            app.rows.iter().all(|r| !matches!(r.kind, Kind::Folder(_))),
+            "populated worktrees and their pinned repository have no empty placeholders"
+        );
+        for (id, cwd, marked) in [
+            (A, &alias, false),
+            (B, &nested, true),
+            (C, &under_worktree, true),
+            (sub_id, &under_repo, false),
+        ] {
+            app.select_new(id);
+            assert_eq!(app.target_dir(), *cwd, "actions retain the actual cwd");
+            let row = app.selected().unwrap();
+            assert_eq!(row.cells[3].0.contains('⑂'), marked, "{}", row.text());
+        }
+
+        // The repository stays the heading even when all of its sessions are in worktrees.
+        app.data
+            .sessions
+            .retain(|s| [B, C].contains(&s.session_id.as_str()));
+        app.rebuild();
+        assert_eq!(headers(&app), [repo_label]);
+        app.by_state = true;
+        app.rebuild();
+        assert_eq!(headers(&app), ["idle"]);
+        for (id, cwd) in [(B, &nested), (C, &under_worktree)] {
+            app.select_new(id);
+            let row = app.selected().unwrap();
+            assert!(row.cells[3].0.contains('⑂'), "{}", row.text());
+            assert_eq!(row.cells[4].0.trim(), folder_cell(cwd, true));
+            assert_eq!(app.target_dir(), *cwd);
+        }
+
+        // Hiding the final sessions restores both explicitly pinned folders.
+        let hidden = HashSet::from([B, C]);
+        let rows = app
+            .data
+            .rows_excluding(false, false, false, &hidden, &mut Widths::new());
+        assert_eq!(
+            rows.iter()
+                .filter_map(|r| match &r.kind {
+                    Kind::Folder(dir) => Some(dir.clone()),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([folder_label(&repo, false), folder_label(&nested, true)])
+        );
     }
 
     // A folder column once cost three git processes per folder per refresh: two for the branch
