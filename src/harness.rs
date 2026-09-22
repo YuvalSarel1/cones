@@ -930,21 +930,28 @@ impl Harness for Claude {
         Ok(cmd)
     }
     fn transcript(&self, session_id: &str, cwd: &Path) -> Result<PathBuf> {
-        uuid::Uuid::parse_str(session_id)?;
-        let project: String = cwd
-            .to_string_lossy()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
         let home = dirs::home_dir()
             .context("missing home directory")?
             .join(".claude");
-        Ok(spec(HarnessKind::Claude)
-            .transcript
-            .live_path(&home)
-            .join(project)
-            .join(format!("{session_id}.jsonl")))
+        claude_transcript(&home, session_id, cwd)
     }
+}
+
+/// Where Claude keeps one session's conversation under a given native home. Separate from
+/// the adapter method so a caller that already knows the home, such as a dashboard reading
+/// a custom `CLAUDE_CONFIG_DIR`, does not have to assume `~/.claude`.
+pub fn claude_transcript(home: &Path, session_id: &str, cwd: &Path) -> Result<PathBuf> {
+    uuid::Uuid::parse_str(session_id)?;
+    let project: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    Ok(spec(HarnessKind::Claude)
+        .transcript
+        .live_path(home)
+        .join(project)
+        .join(format!("{session_id}.jsonl")))
 }
 
 pub fn policy_hash(job: &ResolvedJob, invocation: &Invocation) -> Result<String> {

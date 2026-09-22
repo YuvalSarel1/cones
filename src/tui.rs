@@ -9717,6 +9717,30 @@ impl App {
             .collect()
     }
 
+    /// The conversation a run's preview should show, or `None` when only the raw log exists.
+    ///
+    /// `archive_transcript` makes the runner keep a copy, and that copy is the answer when
+    /// it is there. A job that does not ask for one still has a conversation: the harness's
+    /// own transcript for the session id the runner passed. Either way the file has to
+    /// exist, because a transcript that was never written or has since been deleted leaves
+    /// the raw log as the only record of the run.
+    fn run_conversation(&self, run: &Run) -> Option<PathBuf> {
+        if let Some(path) = run.terminal.as_ref().and_then(|r| r.transcript.clone()) {
+            return path.is_file().then_some(path);
+        }
+        let started = &run.started;
+        if started.harness? != HarnessKind::Claude {
+            return None;
+        }
+        let path = harness::claude_transcript(
+            &self.claude,
+            started.session_id.as_deref()?,
+            started.cwd.as_deref()?,
+        )
+        .ok()?;
+        // ponytail: one stat per draw. Cache it if the preview ever shows up in a profile.
+        path.is_file().then_some(path)
+    }
     fn transcript_target(&self) -> Option<transcript::Target> {
         if self.focus.is_some() || self.panel().is_some() {
             return None;
@@ -9753,17 +9777,16 @@ impl App {
             }
             Kind::Run(id, _) => {
                 let run = self.data.runs.iter().find(|r| &r.started.run_id == id)?;
-                // A finished run reads like any other session: show the archived
-                // conversation, and keep the raw log for runs that never archived one.
-                let source =
-                    if let Some(path) = run.terminal.as_ref().and_then(|r| r.transcript.as_ref()) {
-                        transcript::Source::Conversation(path.clone())
-                    } else {
-                        transcript::Source::Run {
-                            events: run.started.output.clone(),
-                            stderr: run.started.stderr.clone(),
-                        }
-                    };
+                // A finished run reads like any other session: show the conversation, and
+                // keep the raw log for runs that never wrote one.
+                let source = if let Some(path) = self.run_conversation(run) {
+                    transcript::Source::Conversation(path)
+                } else {
+                    transcript::Source::Run {
+                        events: run.started.output.clone(),
+                        stderr: run.started.stderr.clone(),
+                    }
+                };
                 Some(transcript::Target {
                     key: format!("run:{id}"),
                     harness: run
@@ -15578,11 +15601,7 @@ impl App {
                     run.started.job.as_deref().unwrap_or("run"),
                     run.status()
                 );
-                let archived = run
-                    .terminal
-                    .as_ref()
-                    .is_some_and(|r| r.transcript.is_some());
-                let mut subtitle = if archived {
+                let mut subtitle = if self.run_conversation(run).is_some() {
                     "conversation · read only".to_owned()
                 } else {
                     "output · read only".to_owned()
@@ -20745,6 +20764,63 @@ states:
         let text = pane_text(&app, &terminal);
         assert!(text.contains("archived question"), "{text}");
         assert!(text.contains("archived answer"), "{text}");
+        assert!(!text.contains("raw log line"), "{text}");
+        assert!(text.contains("conversation · read only"), "{text}");
+        assert!(text.contains("update-workbench · timeout"), "{text}");
+    }
+
+    #[test]
+    fn a_run_that_archived_nothing_previews_the_session_it_launched() {
+        // The shape a scheduled job actually leaves in the ledger: a started record naming
+        // the session id and cwd the runner passed, and an ended record with no transcript,
+        // because `archive_transcript` is off and cones kept no copy of its own.
+        let (d, mut app, mut terminal) = history_fixture(0);
+        let session = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        let output = d.path().join("events.jsonl");
+        fs::write(
+            &output,
+            format!(
+                "{}\n",
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"raw log line"}]}})
+            ),
+        )
+        .unwrap();
+        let cwd = d.path().join("workbench");
+        fs::create_dir_all(&cwd).unwrap();
+        let live = crate::harness::claude_transcript(d.path(), session, &cwd).unwrap();
+        fs::create_dir_all(live.parent().unwrap()).unwrap();
+        fs::write(
+            &live,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"user","message":{"content":"scheduled question"}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"scheduled answer"}]}})
+            ),
+        )
+        .unwrap();
+        let mut started = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        started.fired_at = Some(chrono::Utc::now());
+        started.output = Some(output);
+        started.job = Some("update-workbench".into());
+        started.harness = Some(HarnessKind::Claude);
+        started.session_id = Some(session.into());
+        started.cwd = Some(cwd);
+        let mut ended = crate::ledger::Record::new(A.into(), crate::ledger::Status::Timeout);
+        ended.reason = Some("timeout".into());
+        app.data.runs.push(Run {
+            started,
+            terminal: Some(ended),
+        });
+        app.rebuild();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::Run(..)))
+            .unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(text.contains("scheduled question"), "{text}");
+        assert!(text.contains("scheduled answer"), "{text}");
         assert!(!text.contains("raw log line"), "{text}");
         assert!(text.contains("conversation · read only"), "{text}");
         assert!(text.contains("update-workbench · timeout"), "{text}");
