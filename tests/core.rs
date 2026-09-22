@@ -404,6 +404,45 @@ fn permission_words_in_read_output_are_data_not_denials() {
 }
 
 #[test]
+fn a_run_answering_its_own_background_task_totals_every_result() {
+    // What Claude actually streams when a background task finishes after the first answer:
+    // a second init and a second result on the same session. Both answers are the run's.
+    let id = "95fbd320-db69-420e-a16b-cdf050eb8830";
+    let result_line = |cost: f64, tokens_in: u64, tokens_out: u64| {
+        serde_json::json!({"type":"result","subtype":"success","is_error":false,"session_id":id,
+            "total_cost_usd":cost,
+            "usage":{"input_tokens":tokens_in,"cache_read_input_tokens":0,"output_tokens":tokens_out}})
+        .to_string()
+    };
+    let mut result = Outcome::default();
+    for line in [
+        result_line(0.88, 100, 10),
+        serde_json::json!({"type":"system","subtype":"init","session_id":id}).to_string(),
+        result_line(1.29, 200, 20),
+    ] {
+        result.observe(&line, id).unwrap();
+    }
+    assert!(result.result_seen && !result.failed && !result.session_mismatch);
+    assert_eq!(result.cost_usd, Some(2.17));
+    assert_eq!(result.tokens_in, Some(300));
+    assert_eq!(result.tokens_out, Some(30));
+
+    // The last result is the verdict: an error after a success fails the run.
+    let mut result = Outcome::default();
+    result.observe(&result_line(0.88, 100, 10), id).unwrap();
+    result
+        .observe(
+            &serde_json::json!({"type":"result","subtype":"error_max_turns","is_error":true,"session_id":id})
+                .to_string(),
+            id,
+        )
+        .unwrap();
+    assert!(result.failed);
+    assert_eq!(result.reason.as_deref(), Some("error_max_turns"));
+    assert_eq!(result.cost_usd, Some(0.88));
+}
+
+#[test]
 fn overlap_allow_is_valid() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("jobs.yaml");

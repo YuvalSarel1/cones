@@ -256,6 +256,8 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | `failed` | `orphan` | A later run of the job reaped a dead supervisor. | |
 | `crashed` | | Derived on read: no terminal record more than five seconds beyond the run's timeout. | |
 
+A run can report more than one result: Claude ends its answer, then answers again when one of its own background tasks completes. The last result decides the status and reason, and `tokens_in`, `tokens_out` and `cost_usd` are the totals across every result.
+
 The start record contains `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. Session id, job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
 
 ### Stored files

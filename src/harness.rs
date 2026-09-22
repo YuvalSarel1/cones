@@ -1012,7 +1012,9 @@ impl Outcome {
             self.permission_denied = true;
         }
         if event["type"] == "result" {
-            ensure!(!self.result_seen, "duplicate Claude result");
+            // Claude ends a headless turn with a result and then answers again when a
+            // background task of its own completes, so one run can report several. The last
+            // result is the run's verdict; the totals are what every result spent together.
             self.result_seen = true;
             self.session_mismatch |= event["session_id"].as_str() != Some(session_id);
             self.failed =
@@ -1021,14 +1023,17 @@ impl Outcome {
                 .as_str()
                 .filter(|s| *s != "success")
                 .map(str::to_owned);
-            self.cost_usd = event["total_cost_usd"]
+            let cost = event["total_cost_usd"]
                 .as_f64()
                 .filter(|v| v.is_finite() && *v >= 0.0);
-            if !self.failed && self.cost_usd.is_none() {
+            if !self.failed && cost.is_none() {
                 self.failed = true;
                 self.reason = Some("missing_cost".into());
             }
-            self.tokens_in = event["usage"]["input_tokens"].as_u64().map(|n| {
+            if let Some(cost) = cost {
+                *self.cost_usd.get_or_insert(0.0) += cost;
+            }
+            let tokens_in = event["usage"]["input_tokens"].as_u64().map(|n| {
                 n.saturating_add(
                     event["usage"]["cache_creation_input_tokens"]
                         .as_u64()
@@ -1040,7 +1045,14 @@ impl Outcome {
                         .unwrap_or(0),
                 )
             });
-            self.tokens_out = event["usage"]["output_tokens"].as_u64();
+            if let Some(tokens) = tokens_in {
+                let total = self.tokens_in.get_or_insert(0);
+                *total = total.saturating_add(tokens);
+            }
+            if let Some(tokens) = event["usage"]["output_tokens"].as_u64() {
+                let total = self.tokens_out.get_or_insert(0);
+                *total = total.saturating_add(tokens);
+            }
         }
         Ok(())
     }
