@@ -22,7 +22,7 @@ use crate::{
 use anyhow::{Context, Result};
 use ratatui::{
     Frame,
-    backend::Backend,
+    backend::{Backend, CrosstermBackend},
     crossterm::{
         SynchronizedUpdate,
         event::{
@@ -13948,6 +13948,13 @@ impl App {
     /// start` does. The live claim is read here so the list can name the session already
     /// holding the folder; the command refuses it again for a shell caller.
     fn coordinate_selected(&mut self) {
+        self.coordinate_with(harness::coordinator);
+    }
+
+    fn coordinate_with(
+        &mut self,
+        command: impl FnOnce(&Path, &Path) -> Result<Command> + Send + 'static,
+    ) {
         let dir = self.target_dir();
         if let Some(live) = crate::coordinator::status(&self.state, &dir) {
             self.status = format!(
@@ -13971,7 +13978,7 @@ impl App {
             "coordinator".into(),
             what,
             Some(Box::new(move || {
-                Ok(Start::Background(harness::coordinator(&folder, &state)?))
+                Ok(Start::Background(command(&folder, &state)?))
             })),
         );
         // The row stands in for the session from the keystroke, already marked with the role it
@@ -16347,14 +16354,26 @@ pub fn run(
         let mut t: libc::termios = std::mem::zeroed();
         (libc::tcgetattr(0, &mut t) == 0).then_some(t)
     });
-    let mut terminal = ratatui::init();
-    // Ratatui restores raw mode; also disable the reporting modes cones enabled.
+    // Restore without printing errors to a tty that may have closed.
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        ratatui::restore();
+        let _ = ratatui::try_restore();
         hand_back_tty();
         hook(info);
     }));
+    let initialized = (|| {
+        ratatui::crossterm::terminal::enable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            ratatui::crossterm::terminal::EnterAlternateScreen
+        )?;
+        let output: Box<dyn std::io::Write> = Box::new(std::io::stdout());
+        ratatui::Terminal::new(CrosstermBackend::new(output))
+    })();
+    let mut terminal = initialized.inspect_err(|_| {
+        let _ = ratatui::try_restore();
+        hand_back_tty();
+    })?;
     // Before crossterm's first poll, so the replies do not land as keystrokes.
     app.colors = viewer::probe_colors(Duration::from_millis(150));
     app.event(
@@ -16475,8 +16494,10 @@ pub fn run(
     })();
     // Hand the terminal back before reaping. Viewers draw on their own ptys, so a slow
     // reap has nothing left to say to this screen, and quitting feels immediate.
-    ratatui::restore();
+    let _ = ratatui::try_restore();
     hand_back_tty();
+    // Cursor restoration was attempted above. Terminal::drop must not print errors to a dead tty.
+    *terminal.backend_mut() = CrosstermBackend::new(Box::new(std::io::sink()));
     // Viewers die with the dashboard: their process groups, never the agents behind them.
     let reaping = Instant::now();
     for open in &app.viewers {
@@ -21368,9 +21389,21 @@ states:
         let dir = tempfile::tempdir().unwrap();
         let mut app = app(dir.path());
         app.cwd = dir.path().canonicalize().unwrap();
-        // The command itself must not run here; the row is written before it is spawned.
-        app.exe = dir.path().join("no-such-cones");
-        app.key(KeyCode::Char('d'), KeyModifiers::CONTROL).unwrap();
+        let expected_dir = app.cwd.clone();
+        let expected_state = app.state.clone();
+        let (ready, prepared) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        // Stub the native command itself. The coordinator no longer launches through app.exe.
+        app.coordinate_with(move |folder, state| {
+            assert_eq!(folder, expected_dir);
+            assert_eq!(state, expected_state);
+            ready.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(5))?;
+            let mut command = Command::new("/usr/bin/printf");
+            command.arg("fixture coordinator started");
+            Ok(command)
+        });
+        prepared.recv_timeout(Duration::from_secs(5)).unwrap();
         let row = app
             .data
             .sessions
@@ -21389,6 +21422,11 @@ states:
             title.iter().any(|(text, _)| text.starts_with(COORDINATOR)),
             "{title:?}"
         );
+        release.send(()).unwrap();
+        let (_, result) = app.started.pop().expect("pending coordinator launch");
+        let (message, retry) = result.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(message.contains("fixture coordinator started"), "{message}");
+        assert!(retry.is_none(), "{retry:?}");
     }
 
     #[test]

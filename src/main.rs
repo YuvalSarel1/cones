@@ -216,7 +216,8 @@ fn main() {
     let code = match execute(Cli::parse()) {
         Ok(code) => code,
         Err(e) => {
-            eprintln!("cones: {e:#}");
+            // A dashboard can fail because its terminal closed; reporting that must not panic.
+            let _ = writeln!(std::io::stderr(), "cones: {e:#}");
             1
         }
     };

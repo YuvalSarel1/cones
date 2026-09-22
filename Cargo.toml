@@ -13,6 +13,8 @@ candle-nn = "0.11"
 candle-transformers = "0.11"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+# The poll backend returns on terminal EOF; the mio backend in 0.29 spins inside read.
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 dirs = "6"
 fs2 = "0.4"
 libc = "0.2"

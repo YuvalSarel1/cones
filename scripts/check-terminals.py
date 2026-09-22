@@ -45,12 +45,14 @@ def main(binary):
         screens = []
         hosts = {}
 
-        def start():
+        def start(controlling_tty=False):
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 35, 140, 0, 0))
             child = subprocess.Popen([binary, "--jobs", str(config), "--state-dir", str(state), "--debug"],
                                      cwd=project, env=env, stdin=slave, stdout=slave, stderr=slave,
-                                     start_new_session=True)
+                                     start_new_session=True,
+                                     preexec_fn=(lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
+                                     if controlling_tty else None)
             os.close(slave)
             children.append((child, master))
             return child, master
@@ -141,6 +143,26 @@ def main(binary):
             else:
                 raise AssertionError("stop left the native shell alive")
             print("PASS: native shell draft, quit/reopen, crash/reopen, same PID, and explicit stop")
+            quit_dashboard(child, fd)
+            for controlling_tty in [False, True]:
+                screens.clear()
+                child, fd = start(controlling_tty)
+                wait_draw(fd)
+                # Interrupt an incomplete input event while crossterm is reading it.
+                # Closing a controlling tty sends SIGHUP; closing a fixture tty need not.
+                os.write(fd, b"\x1b[200~unfinished paste")
+                for _ in range(4):
+                    drain(fd)
+                children[-1] = (child, None)
+                os.close(fd)
+                try:
+                    code = child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    raise AssertionError(
+                        f"dashboard survived terminal hangup (controlling={controlling_tty})"
+                    ) from None
+                assert code in [0, 1], f"dashboard died without cleanup: {code}"
+            print("PASS: terminal hangup exits during incomplete input, with and without SIGHUP")
         finally:
             for record in hosts.values():
                 try:
@@ -156,7 +178,8 @@ def main(binary):
                 if child.poll() is None:
                     child.kill()
                 child.wait(timeout=5)
-                os.close(fd)
+                if fd is not None:
+                    os.close(fd)
 
 
 if __name__ == "__main__":
