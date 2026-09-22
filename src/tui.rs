@@ -14432,9 +14432,9 @@ impl App {
             format!("start {}", self.launch_name())
         };
         let compact = |mut keys: Vec<(&str, &str)>| {
-            let room = (self.hint_width() as usize)
-                .saturating_sub(taken + 14)
-                .min(62);
+            // As wide as the bar actually is: every key that fits is shown, and `compact`
+            // drops from the tail only when they do not.
+            let room = (self.hint_width() as usize).saturating_sub(taken + 14);
             let mut line = hints(&keys);
             while keys.len() > 1 && line.width() > room {
                 keys.pop();
@@ -27056,9 +27056,18 @@ states:
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
         app.split = false;
+        let row_keys = |app: &App| app.footer_lines()[0].to_string();
+        app.size = (24, 120);
+        let wide = row_keys(&app);
         assert!(
-            app.footer_lines()[0].to_string().contains("ctrl+n rename"),
-            "the session row names the rename key on a session that supports it"
+            wide.contains("ctrl+n rename") && wide.contains("ctrl+p highlight"),
+            "a bar with the room shows every key the row has: {wide}"
+        );
+        app.size = (24, 80);
+        let narrow = row_keys(&app);
+        assert!(
+            narrow.contains("ctrl+n rename") && !narrow.contains("ctrl+p highlight"),
+            "a bar without the room drops from the tail, and only then: {narrow}"
         );
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(
