@@ -106,9 +106,12 @@ pub fn status(state: &Path, folder: &Path) -> Option<Value> {
     fleet::alive(record["pid"].as_u64()? as u32).then_some(record)
 }
 
-/// Every live coordinator, by the process and folder it claimed. Rows are marked from this and
+/// Every coordinator claim, by the session and folder it named. Rows are marked from this and
 /// never from a title, so a session that merely mentions the word is not mistaken for the role.
-pub fn claims(state: &Path) -> HashSet<(u32, PathBuf)> {
+/// The session is the identity, not the process: `claude --bg` re-hosts a conversation under a
+/// new pid while it works, so a pid read minutes ago names nothing. A claim whose session the
+/// harness no longer reports marks no row, which is the only liveness test the mark needs.
+pub fn claims(state: &Path) -> HashSet<(String, PathBuf)> {
     fs::read_dir(state.join("coordinator/folders"))
         .into_iter()
         .flatten()
@@ -116,9 +119,9 @@ pub fn claims(state: &Path) -> HashSet<(u32, PathBuf)> {
         .filter_map(|entry| {
             let record: Value =
                 serde_json::from_slice(&fs::read(entry.path().join("status.json")).ok()?).ok()?;
-            let pid = record["pid"].as_u64()? as u32;
+            let session = record["session"].as_str()?.to_owned();
             let cwd = PathBuf::from(record["cwd"].as_str()?);
-            fleet::alive(pid).then_some((pid, cwd))
+            Some((session, cwd))
         })
         .collect()
 }
@@ -145,15 +148,14 @@ pub fn claim(folder: &Folder, release: bool) -> Result<String> {
     if release {
         // Only the holder hands the folder back. A coordinator that finds a foreign record has
         // already been told to stand down, and clearing it would take the folder from a peer.
-        let live = status(&folder.state, &folder.path);
-        if let Some(live) = &live
-            && live["pid"].as_u64() != Some(u64::from(std::process::id()))
-            && !own_process(live)
-        {
+        // The holder is the session named in the record, not the process that wrote it: a
+        // re-hosted `claude --bg` claim would otherwise read as nobody's and be cleared by the
+        // first peer to release a folder it never held.
+        let rows = folder.roster()?;
+        if let Some(held) = foreign_holder(&record, &rows) {
             bail!(
-                "{} is held by pid {}, not by you",
-                folder.path.display(),
-                live["pid"]
+                "{} is held by session {held}, not by you",
+                folder.path.display()
             );
         }
         fs::remove_file(&record).ok();
@@ -163,13 +165,10 @@ pub fn claim(folder: &Folder, release: bool) -> Result<String> {
     let me = own_session(&rows).context(
         "no agent session in this process's parent chain; the coordinator runs inside one",
     )?;
-    if let Some(live) = status(&folder.state, &folder.path)
-        && !own_process(&live)
-    {
+    if let Some(held) = foreign_holder(&record, &rows) {
         bail!(
-            "another coordinator owns {} (pid {}); report that and stop",
-            folder.path.display(),
-            live["pid"]
+            "another coordinator owns {} (session {held}); report that and stop",
+            folder.path.display()
         );
     }
     write_atomically(
@@ -211,6 +210,49 @@ pub fn claim(folder: &Folder, release: bool) -> Result<String> {
         me.harness,
         dir.display()
     ))
+}
+
+/// Point the holder's record at the process running it now. A `claude --bg` conversation is
+/// re-hosted under a new pid while it works, so a record written at claim time names a process
+/// that has gone: the folder would read as free, and the row would lose its mark, while its
+/// coordinator is mid-beat. The holder rewrites it as it ticks; nobody else may.
+fn refresh(folder: &Folder, rows: &[Session]) {
+    let record = folder.dir().join("status.json");
+    let Some(me) = own_session(rows) else {
+        return;
+    };
+    let Ok(mut live) = read_json::<Value>(&record) else {
+        return;
+    };
+    if live["session"].as_str() != Some(me.session_id.as_str())
+        || live["pid"].as_u64() == me.pid.map(u64::from)
+    {
+        return;
+    }
+    let Ok(_hold) = hold(&folder.dir()) else {
+        return;
+    };
+    live["pid"] = json!(me.pid);
+    let _ = write_atomically(&record, &live.to_string());
+}
+
+/// The session holding this folder, when it is not the caller's own and the harness still
+/// reports it. A record naming a session no agent is running is a leftover: the coordinator
+/// that wrote it cannot hand back a folder it crashed out of, so the next caller may clear it.
+fn foreign_holder(record: &Path, rows: &[Session]) -> Option<String> {
+    let live = read_json::<Value>(record).ok()?;
+    let held = live["session"].as_str()?;
+    if own_session(rows).is_some_and(|me| me.session_id == held) || own_process(&live) {
+        return None;
+    }
+    // Either reading proves the holder is still there: the harness reports its session, or the
+    // process it recorded is running. A background session re-hosted since it claimed fails the
+    // second and passes the first, which is the whole point of naming the session.
+    let running = rows.iter().any(|s| s.session_id == held)
+        || live["pid"]
+            .as_u64()
+            .is_some_and(|pid| fleet::alive(pid as u32));
+    running.then(|| held.to_owned())
 }
 
 /// A record this very session wrote, including one written by an earlier run of it. Matching on
@@ -578,6 +620,7 @@ pub fn tick(folder: &Folder) -> Result<String> {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim_end().to_owned())
     };
     let rows = folder.roster()?;
+    refresh(folder, &rows);
     let waiting = lines(&folder.inbox());
     let held = own_session(&rows).map(|s| s.session_id.clone());
     let mut out = format!(

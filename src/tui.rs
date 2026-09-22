@@ -2956,9 +2956,7 @@ fn fleet_rows_observed(
     let claims = crate::coordinator::claims(state);
     if !claims.is_empty() {
         for s in &mut out {
-            s.coordinator = s
-                .pid
-                .is_some_and(|pid| claims.contains(&(pid, s.cwd.clone())));
+            s.coordinator = claims.contains(&(s.session_id.clone(), s.cwd.clone()));
         }
     }
     fleet::sort(&mut out);
@@ -13768,8 +13766,21 @@ impl App {
     /// record and the native command are the same whoever wrote the prompt. Returns the
     /// placeholder row id.
     fn launch(&mut self, kind: HarnessKind, dir: PathBuf, prompt: String) -> String {
-        let policy = self.session_policy();
         let what = format!("{kind} in {}", fleet::tilde(&dir));
+        self.launch_as(kind, dir, prompt, what, None)
+    }
+
+    /// The launch above, for a start cones builds itself rather than taking from the
+    /// harness's own composer command, such as the coordinator's.
+    fn launch_as(
+        &mut self,
+        kind: HarnessKind,
+        dir: PathBuf,
+        prompt: String,
+        what: String,
+        start: Option<Box<dyn FnOnce() -> Result<Start> + Send>>,
+    ) -> String {
+        let policy = self.session_policy();
         let since = chrono::Utc::now();
         let id = self.launch_row(kind, &dir, &prompt);
         // Foreground harnesses run as the dashboard's own client.
@@ -13782,16 +13793,15 @@ impl App {
                 .then(|| (dir.clone(), since));
             let retry = Some(prompt.clone());
             // Use a temporary launch key until the harness reports the session's own id.
-            self.prepare_viewer(
-                what,
-                id.clone(),
-                record,
-                retry,
-                move || match harness::start(kind, &dir, prompt.trim(), &policy)? {
+            self.prepare_viewer(what, id.clone(), record, retry, move || {
+                match match start {
+                    Some(start) => start()?,
+                    None => harness::start(kind, &dir, prompt.trim(), &policy)?,
+                } {
                     Start::Foreground(command) => Ok(command),
                     Start::Background(_) => anyhow::bail!("expected a {kind} viewer"),
-                },
-            );
+                }
+            });
             return id;
         }
         let (tx, rx) = mpsc::channel();
@@ -13804,9 +13814,10 @@ impl App {
             let mut command_ms = None;
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
-                let Start::Background(mut command) =
-                    harness::start(kind, &dir, prompt.trim(), &policy)?
-                else {
+                let Start::Background(mut command) = (match start {
+                    Some(start) => start()?,
+                    None => harness::start(kind, &dir, prompt.trim(), &policy)?,
+                }) else {
                     anyhow::bail!("expected a background Claude session");
                 };
                 preparation_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
@@ -13910,11 +13921,25 @@ impl App {
             return;
         }
         let dir = dir.canonicalize().unwrap_or(dir);
-        let what = format!("coordinator starting in {}", fleet::tilde(&dir));
+        let what = format!("coordinator in {}", fleet::tilde(&dir));
+        // The coordinator starts on the one launch path, which reads the background id the
+        // harness prints and hands the placeholder over to the session it names. Spawning
+        // `cones coordinator start` instead threw that id away, and the row stood beside the
+        // session it was standing in for until it expired.
+        let state = self.state.clone();
+        let folder = dir.clone();
+        let id = self.launch_as(
+            HarnessKind::Claude,
+            dir,
+            "coordinator".into(),
+            what,
+            Some(Box::new(move || {
+                Ok(Start::Background(harness::coordinator(&folder, &state)?))
+            })),
+        );
         // The row stands in for the session from the keystroke, already marked with the role it
         // is starting: the claim it will write is what the mark is read from later, and that is
         // seconds away.
-        let id = self.launch_row(HarnessKind::Claude, &dir, "coordinator");
         for s in self.data.sessions.iter_mut().filter(|s| s.session_id == id) {
             s.coordinator = true;
         }
@@ -13922,7 +13947,6 @@ impl App {
             p.session.coordinator = true;
         }
         self.rebuild();
-        self.spawn(&["coordinator", "start"], Some(&dir), &what);
     }
 
     fn fork_selected(&mut self) {

@@ -1449,6 +1449,21 @@ fn a_claim_marks_its_row_and_only_in_the_folder_it_claimed() {
         ],
         "a reused pid in a folder nobody claimed is not the coordinator"
     );
+    // `claude --bg` re-hosts a conversation under a new pid while it works, so the pid a claim
+    // recorded stops naming anything. The session it named is still on the roster, and that is
+    // what the mark is read from.
+    let record = f.coordinator_dir().join("status.json");
+    let mut live: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    live["pid"] = serde_json::json!(u32::MAX);
+    fs::write(&record, live.to_string()).unwrap();
+    assert_eq!(
+        marks(),
+        [
+            ("worker-elsewhere".to_owned(), false),
+            ("worker-one".to_owned(), true)
+        ],
+        "a coordinator re-hosted under another pid keeps the role"
+    );
     f.run(&["claim", "--release"]);
     assert_eq!(
         marks(),
@@ -1545,7 +1560,7 @@ fn a_claim_is_refused_while_another_live_coordinator_holds_the_folder() {
         "a peer's claim is not yours to clear"
     );
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("held by pid 1"),
+        String::from_utf8_lossy(&out.stderr).contains("held by session someone"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );

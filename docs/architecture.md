@@ -322,9 +322,13 @@ believe they hold it, which is how one worker ends up taking notes from two coor
 watcher lease is taken under the same lock. The test is
 `only_one_of_several_distinct_agents_wins_a_free_folder`.
 
-A claim names the process and the folder, and that pair is what marks a roster row as the
+A claim names the session and the folder, and that pair is what marks a roster row as the
 coordinator. Never a title: a session that merely mentions the word is not the role, and a pid
-reused in another folder is not either.
+reused in another folder is not either. The session is the identity because the process is not
+stable: `claude --bg` re-hosts a conversation under a new pid while it works, so a claim read by
+pid alone would lose its mark and read as a free folder mid-beat. The holder repoints the record
+at its current process as it ticks, and a claim is foreign only while the harness still reports
+the session that wrote it, or the process it recorded is still running.
 
 ### Integration
 
@@ -346,9 +350,9 @@ author's hunks in a file, so a commit comes from a diff trimmed to one author's 
 | Permissions and execution | the harness |
 | Who counts as a worker | `cones ls` |
 | Whether a worker can be written to | the harness's `message` operation |
-| One coordinator per folder | the claim's live pid |
+| One coordinator per folder | the claim's live session |
 | A wake means something moved | `cones comms wait` |
 | Mail is handled, not just read | `cones comms mail --ack` |
-| One consumer per folder inbox | the claim's live pid and `watcher.json` |
+| One consumer per folder inbox | the claim's live session and `watcher.json` |
 | A combined tree is sound | `scripts/check` |
 | Scope, config, pushing | the owner |
