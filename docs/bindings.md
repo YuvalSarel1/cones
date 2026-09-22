@@ -17,7 +17,7 @@ The file has `version: 1` and a `states` list. Each state has:
 | `when` | Explanation of when the state applies, shown in Help. |
 | `extends` | Optional state whose bindings are inherited. |
 | `bindings` | Keys, action names and explanations for this state. |
-| `sections` | Optional Help sections grouping actions by selected row type or task. |
+| `sections` | Help entries selected by row type or task. `[]` omits the state from Help. If absent, all its bindings appear. |
 
 Each binding has a `keys` list, an `action` and a `description`. For example:
 
@@ -27,20 +27,23 @@ Each binding has a `keys` list, an `action` and a `description`. For example:
   description: "Open Help."
 ```
 
-Aliases share one action and description. In a state with `extends`, a local
+Aliases share one action and description. Help displays the first key spelling;
+all aliases still work. In a state with `extends`, a local
 key replaces that inherited key; other inherited keys remain available. Help
 names the inherited state under the heading instead of repeating its keys.
 
 Groups are what Help opens and closes, so a new state joins an existing group
-unless it is a place of its own. The current set is the list, viewers, the
-preview, menus, Help, config, columns, MCP servers, jobs and text editing. The
-list group holds the row types, the composer and the prompts that replace it.
+unless it is a place of its own. The visible groups are the list, viewers,
+preview, config, MCP servers and jobs. Columns sit under config.
 
 A Help section has a `title`, a `when` explanation and `bindings` entries
 referencing an `action` in the state's bindings. Each entry can override the
 Help `description` for that context. Shortcut labels come from the referenced
 action's keys, so remapping an action updates every section that uses it.
-Sections only organize Help; they do not change input handling.
+Sections only select and organize Help; they do not change input handling.
+Built-in states select their Help entries explicitly. Keep cones-specific
+actions and unusual behavior; leave routine navigation, text editing and
+duplicate controls in the binding reference and the screen's footer.
 
 Keys use lowercase names: `up`, `down`, `left`, `right`, `home`, `end`,
 `pageup`, `pagedown`, `enter`, `esc`, `tab`, `backspace`, `delete`, `space`

@@ -114,16 +114,19 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide. It opens on where you pressed it
-from: the heading for the selected row, or the composer when an instruction is
-typed. Everything else stays collapsed, so the whole dashboard reads as ten
-places on one screen. The groups are the list, viewers, the preview, menus,
-Help, config, columns, MCP servers, jobs and text editing.
+`help` and `ctrl+g` open the built-in guide as six collapsed topics. The group
+for where you pressed Help is selected, with its details closed until you open
+them. Entering from the Help menu keeps the same compact index as its preview.
+The guide covers cones actions: sessions and launches, viewers, conversation
+previews, config and columns, MCP servers, and jobs. Routine navigation, text
+editing and repeated controls are left out. Footer hints show how to move
+around the current screen; the complete key reference is in
+[`assets/bindings.yaml`](../assets/bindings.yaml).
 
 `↑ ↓` move between headings and `enter` opens or closes the one under the
 cursor; `→` opens it and `←` closes it before leaving. An open heading says when
 its controls apply, including what Enter and stop do for that selection, and
-names the state whose keys also work there instead of repeating them.
+shows one key spelling per action. Other aliases still work.
 
 The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f`
 also start search. It searches by the same two rules as [history](#history),
@@ -143,8 +146,8 @@ last lines, and the wheel scrolls by rendered line. Shortcuts stack above their
 descriptions in narrow panes. `esc` or `ctrl+u` clears the search; with an empty
 search, `esc` returns to the list. `ctrl+g` closes Help directly.
 
-Shortcuts come from the same [YAML definitions](bindings.md) used for input
-handling. Edit `assets/bindings.yaml`, then rebuild and restart cones; the
+Shortcuts are selected from the same [YAML definitions](bindings.md) used for
+input handling. Edit `assets/bindings.yaml`, then rebuild and restart cones; the
 native keys that return to the list are `viewer.input.return_to_list` in the
 `assets/harnesses/` definitions. There is no user override file, `jobs.yaml`
 setting or in-app binding editor yet.

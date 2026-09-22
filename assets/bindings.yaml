@@ -7,81 +7,70 @@ states:
     title: "List navigation"
     when: "Shared controls while the dashboard list has focus. Row-specific actions are described below."
     sections:
-      - title: "List navigation"
-        when: "Shared controls while the dashboard list has focus. Row-specific actions are described below."
+      - title: List navigation
+        when: While browsing.
         bindings:
-          - action: up
-          - action: down
-          - action: tab
-          - action: right
-          - action: left
-          - action: cancel
-          - action: quit
           - action: group
+            description: Group by folder or state.
           - action: history
+            description: Show past conversations.
           - action: filter
+            description: Filter text, :attention or :unread.
           - action: refresh
-          - action: split
+            description: Refresh; toggle indexing in history.
+          - action: quit
+            description: Press twice to quit cones.
           - action: guide
-          - action: page_up
-          - action: page_down
-      - title: "Session rows"
-        when: "An agent session is selected in the main list, with no instruction typed."
+            description: Open Help.
+      - title: Session rows
+        when: A session is selected, with no draft.
         bindings:
           - action: enter
-            description: "Join the selected session when its harness supports it; shift or alt opens fullscreen."
+            description: Join; shift+enter opens fullscreen.
           - action: stop
-            description: "Press twice to confirm the displayed action: stop, delete or forget, depending on the session."
+            description: Press twice to stop, delete or forget.
           - action: rename
+            description: Rename; submit empty for native naming.
           - action: highlight
+            description: Toggle the session highlight.
           - action: fork
+            description: Fork the selected conversation.
           - action: mcp
-      - title: "Terminal rows"
-        when: "An existing shell terminal is selected in the list."
+            description: Inspect MCP servers.
+      - title: Folder rows
+        when: A pinned folder is selected.
         bindings:
           - action: enter
-            description: "Focus the terminal; shift or alt opens fullscreen. Keys inside the shell are listed under Terminal."
-          - action: stop
-            description: "Press twice to close the terminal."
-      - title: "Folder rows"
-        when: "A pinned folder heading is selected. Its composer starts new work in that directory."
-        bindings:
-          - action: enter
-            description: "With an empty instruction, show how to start work here. Type an instruction first to launch an agent in this folder."
-          - action: stop
-            description: "Press twice to remove the folder from the dashboard. Its files stay on disk."
-          - action: cycle
-            description: "Choose a harness or terminal for new work in this folder."
+            description: Type an instruction here to start an agent.
           - action: coordinate
-          - action: settings
-      - title: "Job rows"
-        when: "A saved job is selected on the jobs screen, with no instruction typed."
+            description: Start this folder's coordinator.
+          - action: stop
+            description: Press twice to unpin; files stay on disk.
+      - title: Job rows
+        when: A saved job is selected.
         bindings:
-          - action: enter
-            description: "Request a run of the selected job. On new job, open the job form."
           - action: edit_job
+            description: Edit the job.
           - action: stop
-            description: "Press twice to stop the job's latest running run. If none is running, delete the job."
-      - title: "Run rows"
-        when: "A supervised run is selected, with no instruction typed."
+            description: Press twice to stop the job, or delete it if idle.
+      - title: Run rows
+        when: A supervised run is selected.
         bindings:
           - action: enter
-            description: "Join a running run's session, or follow its logs if it cannot be joined. Open the output of a finished run."
+            description: Join a running session or read its output.
           - action: stop
-            description: "Press twice to stop a running run or hide a finished run from the dashboard."
-      - title: "Composer"
-        when: "The instruction or terminal-command field below the list. Folder prompts and history search have their own controls."
+            description: Press twice to stop, or hide a finished run.
+      - title: Composer
+        when: While writing a new instruction.
         bindings:
-          - action: enter
-            description: "Submit the typed instruction or command. Shift or alt inserts a line break in a nonempty draft."
-          - action: tab
-            description: "Complete the path being typed, or focus the pane when no path is under the cursor."
           - action: cycle
+            description: Choose a harness or terminal.
           - action: settings
+            description: Choose model, effort and launch settings.
           - action: paste_image
-          - action: mcp
-          - action: cancel
-            description: "Clear the draft. Text editing shortcuts are listed under Text editing."
+            description: Paste a clipboard image.
+          - action: enter
+            description: Launch; shift+enter inserts a line break.
     bindings:
       - keys: ["up"]
         action: up
@@ -166,6 +155,7 @@ states:
     title: "Menu"
     when: "A jobs, config or help menu button is selected. Shared List navigation controls also apply."
     extends: list
+    sections: []
     bindings:
       - keys: ["left"]
         action: left
@@ -181,6 +171,14 @@ states:
     title: "History rows"
     when: "A past conversation is selected. Typing searches history. Shared List navigation controls also apply."
     extends: list
+    sections:
+      - title: History rows
+        when: A past conversation is selected.
+        bindings:
+          - action: cycle
+            description: Switch search between words and meaning.
+          - action: enter
+            description: Resume; shift+enter opens fullscreen.
     bindings:
       - keys: ["shift+tab"]
         action: cycle
@@ -199,6 +197,7 @@ states:
     title: "Add folder"
     when: "The add-folder prompt is selected. Type a directory path; shared List navigation controls also apply."
     extends: list
+    sections: []
     bindings:
       - keys: ["tab"]
         action: tab
@@ -214,6 +213,7 @@ states:
     title: "Folder suggestions"
     when: "A suggested folder is selected below the add-folder prompt. Shared List navigation controls also apply."
     extends: list
+    sections: []
     bindings:
       - keys: ["enter"]
         action: enter
@@ -228,6 +228,16 @@ states:
     group: "Viewers"
     title: "Viewers"
     when: "A native agent viewer has focus. Other input reaches the harness; return keys depend on its native prompt."
+    sections:
+      - title: Viewers
+        when: Inside a native agent or terminal.
+        bindings:
+          - action: split
+            description: Toggle fullscreen.
+          - action: page_up
+            description: Scroll back through terminal output.
+          - action: page_down
+            description: Scroll forward through terminal output.
     bindings:
       - keys: ["ctrl+c"]
         action: quit
@@ -245,6 +255,7 @@ states:
     group: "Viewers"
     title: "Terminal"
     when: "A shell terminal has focus. Other keys, including ctrl+c and tab, reach the shell."
+    sections: []
     bindings:
       - keys: ["ctrl+z"]
         action: leave
@@ -263,6 +274,7 @@ states:
     title: "Other viewers"
     when: "A viewer without a harness definition has focus."
     extends: agent_viewer
+    sections: []
     bindings:
       - keys: ["ctrl+z", "tab"]
         action: leave
@@ -271,6 +283,14 @@ states:
     group: "Preview"
     title: "Preview"
     when: "A read-only transcript or run output has focus."
+    sections:
+      - title: Preview
+        when: While reading a conversation.
+        bindings:
+          - action: right
+            description: Inspect recorded instructions, skills and MCP.
+          - action: copy
+            description: Copy a response, code block or row details.
     bindings:
       - keys: ["up"]
         action: up
@@ -318,6 +338,7 @@ states:
     group: "Preview"
     title: "Recorded context"
     when: "The recorded context inspector has focus."
+    sections: []
     bindings:
       - keys: ["up"]
         action: up
@@ -356,6 +377,7 @@ states:
     group: "Menus"
     title: "Copy menu"
     when: "A copy menu is open."
+    sections: []
     bindings:
       - keys: ["up"]
         action: up
@@ -370,6 +392,12 @@ states:
     group: "Viewers"
     title: "Panel focus"
     when: "A dashboard panel is focused. Ctrl+z leaves any panel; tab leaves Help, Columns, MCP and Config when not editing."
+    sections:
+      - title: Panel focus
+        when: From a viewer or dashboard panel.
+        bindings:
+          - action: leave
+            description: Return to the list; the session stays alive.
     bindings:
       - keys: ["ctrl+z"]
         action: leave
@@ -384,6 +412,7 @@ states:
     group: "Viewers"
     title: "Opening a viewer"
     when: "An asynchronous viewer launch is pending."
+    sections: []
     bindings:
       - keys: ["esc", "ctrl+z"]
         action: cancel
@@ -392,6 +421,7 @@ states:
     group: "The list"
     title: "Filter"
     when: "The row-filter prompt has focus."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -406,6 +436,7 @@ states:
     group: "The list"
     title: "Rename"
     when: "The session-name prompt has focus."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -417,6 +448,7 @@ states:
     group: "Help"
     title: "Help"
     when: "Help is open. Unhandled typing edits its search."
+    sections: []
     bindings:
       - keys: ["up"]
         action: up
@@ -467,6 +499,14 @@ states:
     group: "Config"
     title: "Config"
     when: "Settings are selected, outside text editing, choices and group tabs."
+    sections:
+      - title: Config
+        when: In settings.
+        bindings:
+          - action: help
+            description: Explain the selected setting.
+          - action: reset
+            description: Reset a setting to its default.
     bindings:
       - keys: ["up"]
         action: up
@@ -523,6 +563,7 @@ states:
     group: "Config"
     title: "Settings groups"
     when: "The settings group buttons have focus."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -537,6 +578,7 @@ states:
     group: "Config"
     title: "Group navigation"
     when: "Settings or column group buttons have focus."
+    sections: []
     bindings:
       - keys: ["left", "["]
         action: previous
@@ -554,6 +596,7 @@ states:
     group: "Config"
     title: "Setting choices"
     when: "A setting choice list is open."
+    sections: []
     bindings:
       - keys: ["up"]
         action: up
@@ -586,6 +629,12 @@ states:
     group: "Config"
     title: "Pinned folders"
     when: "The pinned folder list is open."
+    sections:
+      - title: Pinned folders
+        when: In Config > folders.
+        bindings:
+          - action: remove
+            description: Remove the selected folder.
     bindings:
       - keys: ["up"]
         action: up
@@ -615,6 +664,7 @@ states:
     group: "Config"
     title: "Setting text"
     when: "A setting is being edited. Other keys use Text editing."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -635,6 +685,7 @@ states:
     group: "Config"
     title: "Setting explanation"
     when: "The explanation for a setting is open."
+    sections: []
     bindings:
       - keys: ["up"]
         action: up
@@ -658,9 +709,21 @@ states:
         action: cancel
         description: "Return to the setting."
   - id: columns
-    group: "Columns"
+    group: "Config"
     title: "Columns"
     when: "A column row is selected."
+    sections:
+      - title: Columns
+        when: In Config > columns.
+        bindings:
+          - action: toggle
+            description: Show or hide a column.
+          - action: previous
+            description: Move a column earlier.
+          - action: next
+            description: Move a column later.
+          - action: reset
+            description: Restore this table's default columns.
     bindings:
       - keys: ["up"]
         action: up
@@ -699,6 +762,7 @@ states:
     group: "Columns"
     title: "Column tables"
     when: "The column table buttons have focus."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -710,6 +774,18 @@ states:
     group: "MCP servers"
     title: "MCP servers"
     when: "The MCP server list has focus. Changes are staged until saved."
+    sections:
+      - title: MCP servers
+        when: Changes are staged until saved.
+        bindings:
+          - action: remove
+            description: Stage removal, or undo it.
+          - action: copy
+            description: Copy to another scope.
+          - action: save
+            description: Save staged changes.
+          - action: undo
+            description: Discard staged changes.
     bindings:
       - keys: ["up"]
         action: up
@@ -748,6 +824,7 @@ states:
     group: "MCP servers"
     title: "MCP copy destination"
     when: "A destination scope is being selected."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -765,6 +842,14 @@ states:
     group: "Jobs"
     title: "Job editor"
     when: "A job field has focus. Unhandled typing edits the field or selects a choice by its initial."
+    sections:
+      - title: Job editor
+        when: While editing a job.
+        bindings:
+          - action: enter
+            description: Accept a field, save or run the job.
+          - action: reset
+            description: On an empty field, restore its default.
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -791,6 +876,7 @@ states:
     group: "Jobs"
     title: "Job settings heading"
     when: "The job settings section heading has focus."
+    sections: []
     bindings:
       - keys: ["esc"]
         action: cancel
@@ -811,6 +897,12 @@ states:
     group: "Jobs"
     title: "Job folder completion"
     when: "The job editor folder field has focus."
+    sections:
+      - title: Job folder completion
+        when: In the job's folder field.
+        bindings:
+          - action: complete
+            description: Complete the folder path.
     bindings:
       - keys: ["tab"]
         action: complete
@@ -819,6 +911,7 @@ states:
     group: "Text editing"
     title: "Text editing"
     when: "A cones text field has focus. Printable characters without control are inserted; native harness drafts remain native."
+    sections: []
     bindings:
       - keys: ["ctrl+left", "alt+left", "alt+b"]
         action: word_left
