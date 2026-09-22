@@ -14469,13 +14469,6 @@ impl App {
             keys.push(("tab", "pane"));
         }
         keys.push(("↑↓", "select"));
-        if self
-            .selected_session()
-            .and_then(|s| harness::by_name(&s.harness))
-            .is_some_and(|spec| spec.operations.rename)
-        {
-            keys.push(("ctrl+n", "rename"));
-        }
         keys.push(("ctrl+g", "help"));
         let room = (self.hint_width() as usize).saturating_sub(label);
         while keys.len() > 1 && hints(&keys).width() > room {
@@ -14628,6 +14621,19 @@ impl App {
                 }
                 if let Some(verb) = self.stop_verb() {
                     keys.push(("ctrl+x", verb));
+                }
+                if self
+                    .selected_session()
+                    .and_then(|s| harness::by_name(&s.harness))
+                    .is_some_and(|spec| spec.operations.rename)
+                {
+                    keys.push(("ctrl+n", "rename"));
+                }
+                if self.selected_session().is_some() {
+                    keys.push(("ctrl+p", "highlight"));
+                }
+                if folder {
+                    keys.push(("ctrl+d", "coordinator"));
                 }
                 compact(keys)
             }
@@ -27040,8 +27046,8 @@ states:
         assert_eq!(key(&app).as_deref(), Some(A));
         app.split = false;
         assert!(
-            app.footer_lines()[1].to_string().contains("ctrl+n rename"),
-            "navigation names the rename key on a session that supports it"
+            app.footer_lines()[0].to_string().contains("ctrl+n rename"),
+            "the session row names the rename key on a session that supports it"
         );
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(
