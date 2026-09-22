@@ -1,25 +1,32 @@
-//! The folder's coordinator: its claim on the folder, its wake gate, its mail and its notes.
+//! One folder's coordination plumbing: the claim on it, the wake gate, the mail and the notes.
 //!
 //! Coordination itself is a skill the model reads; what lives here is the plumbing that skill
 //! would otherwise re-implement in shell. Every piece of it is harness-neutral: the state sits
-//! under cones' own directory rather than one harness's home, the coordinator's identity comes
-//! from the roster rather than a single harness's registry, and an outgoing note goes through
+//! under cones' own directory rather than one harness's home, the sender's identity comes from
+//! the roster rather than a single harness's registry, and an outgoing note goes through
 //! whatever delivery command that worker's harness declares.
+//!
+//! The commands split by who may run them. Anyone may `send`. Consuming a folder — `mail` and
+//! `wait` — belongs to one agent at a time, because acknowledgement is a single cursor and the
+//! watcher keeps a single position: a second consumer either acts on a reply the first one owns
+//! or moves the cursor past one it never saw.
 
 use crate::fleet::{self, Session};
 use anyhow::{Context, Result, bail, ensure};
+use fs2::FileExt;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
-    fs,
+    collections::{BTreeMap, HashSet},
+    fs::{self, File},
     io::Write,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
-/// How long the watcher sleeps between roster reads. Arrivals and mail are the only two things
-/// it looks for, so a slower beat costs nothing but the delay before a greeting goes out.
+/// How long the watcher sleeps between roster reads. Arrivals, mail and a watched worker's
+/// condition are the only things it looks for, so a slower beat costs nothing but the delay
+/// before a greeting goes out.
 const BEAT: Duration = Duration::from_secs(10);
 
 /// One coordinated folder: where its state lives and how its roster is read.
@@ -39,18 +46,23 @@ impl Folder {
         directory(&self.state, &self.path)
     }
 
-    /// Everything cones sees in this folder and the worktrees under it, which is the same read
-    /// `cones ls --dir` prints. Discovery is not re-derived here: cones already decides who is
-    /// a worker, resolves a Codex thread to its client and drops viewers and daemons.
-    pub fn roster(&self) -> Result<Vec<Session>> {
+    /// Every session cones can see, wherever it is working. Discovery is not re-derived here:
+    /// cones already decides who is a worker, resolves a Codex thread to its client and drops
+    /// viewers and daemons.
+    fn fleet(&self) -> Result<Vec<Session>> {
         let runs = crate::ledger::Ledger::new(&self.state)?.runs()?;
-        let rows = crate::tui::fleet_rows(
+        crate::tui::fleet_rows(
             &self.claude,
             &self.state,
             &runs,
             &crate::config::defaults(&self.jobs),
-        )?;
-        Ok(rows
+        )
+    }
+
+    /// This folder and the worktrees under it, which is the same read `cones ls --dir` prints.
+    pub fn roster(&self) -> Result<Vec<Session>> {
+        Ok(self
+            .fleet()?
             .into_iter()
             .filter(|s| fleet::contains(&self.path, &s.cwd))
             .collect())
@@ -60,9 +72,9 @@ impl Folder {
         self.dir().join("inbox.jsonl")
     }
 
-    /// Lines the coordinator has durably handled. Reading mail never moves this; only an
-    /// explicit acknowledgement does, which is what lets a replaced coordinator see a reply
-    /// the one before it read but never acted on.
+    /// Lines the folder's consumer has durably handled. Reading mail never moves this; only an
+    /// explicit acknowledgement does, which is what lets a replacement see a reply the agent
+    /// before it read but never acted on.
     fn acknowledged(&self, total: usize) -> usize {
         read_number(&self.dir().join("inbox.ack")).min(total)
     }
@@ -73,6 +85,16 @@ pub fn directory(state: &Path, folder: &Path) -> PathBuf {
     state
         .join("coordinator/folders")
         .join(format!("{digest:x}"))
+}
+
+/// Hold this folder's records across a read-modify-write. Reading a record and then replacing
+/// it is not mutual exclusion: two agents both read the folder as free, both write, and both
+/// believe they hold it. Every writer of `status.json` and `watcher.json` takes this first.
+fn hold(dir: &Path) -> Result<File> {
+    crate::private_dir(dir)?;
+    let f = crate::private_file(&dir.join("folder.lock"))?;
+    f.lock_exclusive()?;
+    Ok(f)
 }
 
 /// The live record for one folder, or none. A record whose process has gone is not live: the
@@ -102,7 +124,7 @@ pub fn claims(state: &Path) -> HashSet<(u32, PathBuf)> {
 }
 
 /// Which roster row is running this command, found by walking the process chain until one of
-/// the pids is a session cones can see. That works whatever harness the coordinator runs in,
+/// the pids is a session cones can see. That works whatever harness the caller runs in,
 /// where reading one harness's registry would only ever find that harness's sessions.
 fn own_session(rows: &[Session]) -> Option<&Session> {
     let mut pid = Some(std::process::id());
@@ -118,6 +140,7 @@ fn own_session(rows: &[Session]) -> Option<&Session> {
 
 pub fn claim(folder: &Folder, release: bool) -> Result<String> {
     let dir = folder.dir();
+    let _hold = hold(&dir)?;
     let record = dir.join("status.json");
     if release {
         // Only the holder hands the folder back. A coordinator that finds a foreign record has
@@ -149,7 +172,6 @@ pub fn claim(folder: &Folder, release: bool) -> Result<String> {
             live["pid"]
         );
     }
-    fs::create_dir_all(&dir)?;
     write_atomically(
         &record,
         &json!({
@@ -166,6 +188,21 @@ pub fn claim(folder: &Folder, release: bool) -> Result<String> {
         write_atomically(&ack, &waiting.to_string())?;
         if waiting > 0 {
             note = format!("\n{waiting} inbox entries predate this claim and are not replayed");
+        }
+    }
+    // A replacement does not inherit the position its predecessor announced from. A reply that
+    // one read and never acknowledged is still unhandled, and leaving the watcher above it
+    // would step straight over the reply this claim exists to pick up.
+    let seen_path = dir.join("wait.json");
+    if let Ok(mut seen) = read_json::<Seen>(&seen_path) {
+        let acked = folder.acknowledged(lines(&folder.inbox()).len());
+        if seen.inbox > acked {
+            seen.inbox = acked;
+            write_atomically(&seen_path, &serde_json::to_string(&seen)?)?;
+            note.push_str(&format!(
+                "\nunhandled mail from before this claim is pending again from line {}",
+                acked + 1
+            ));
         }
     }
     Ok(format!(
@@ -193,6 +230,80 @@ fn own_process(record: &Value) -> bool {
     false
 }
 
+/// A folder has one consumer of its inbox and its watcher, and that is whoever holds its claim.
+/// Anyone may send into a folder; two agents reading out of one split a single acknowledgement
+/// cursor between them, so the one that loses a line never learns the line existed.
+fn consumer(folder: &Folder) -> Result<()> {
+    let Some(live) = status(&folder.state, &folder.path) else {
+        return Ok(());
+    };
+    ensure!(
+        own_process(&live),
+        "{} is coordinated by pid {} (session {}); one agent consumes a folder's inbox and \
+         watcher, so report through that agent or use a separate task folder",
+        folder.path.display(),
+        live["pid"],
+        live["session"].as_str().unwrap_or("-")
+    );
+    Ok(())
+}
+
+/// A watch refused because one is already armed. This is the one refusal worth retrying: a
+/// caller that re-arms the instant its own wait returns can race its predecessor out of the
+/// folder. A refusal from the folder's claim is not retryable, which is why they are separate
+/// errors and separate exit codes.
+#[derive(Debug)]
+pub struct Armed(pub u32);
+
+impl std::fmt::Display for Armed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pid {} is already waiting here; a folder has one watcher, so retry once it \
+             returns, wait through that agent, or use a separate task folder",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for Armed {}
+
+/// One armed watcher per folder, released when it returns. Two `wait` calls on one folder split
+/// its wakeups: each records what it showed, so whichever loses the race for a line never learns
+/// that line existed. A lease whose process has gone is free to take.
+struct Watcher(PathBuf);
+
+impl Watcher {
+    fn arm(dir: &Path) -> Result<Self> {
+        let _hold = hold(dir)?;
+        let path = dir.join("watcher.json");
+        if let Some(pid) = read_json::<Value>(&path)
+            .ok()
+            .and_then(|v| v["pid"].as_u64())
+            .map(|p| p as u32)
+            .filter(|p| *p != std::process::id() && fleet::alive(*p))
+        {
+            return Err(Armed(pid).into());
+        }
+        write_atomically(&path, &json!({"pid": std::process::id()}).to_string())?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        // Clear the lease only while it is still this process's: a watcher that was killed can
+        // be replaced by the next one before this value is dropped.
+        if read_json::<Value>(&self.0)
+            .ok()
+            .and_then(|v| v["pid"].as_u64())
+            == Some(u64::from(std::process::id()))
+        {
+            fs::remove_file(&self.0).ok();
+        }
+    }
+}
+
 /// What the watcher has already put in front of the model. Kept beside the inbox rather than in
 /// the job that armed it, so a restarted coordinator does not re-announce a worker it knows.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -201,23 +312,45 @@ struct Seen {
     ids: Vec<String>,
     #[serde(default)]
     inbox: usize,
+    /// The last condition reported for each watched worker, so a worker that is still waiting
+    /// for input is not announced every pass, and one that blocks again after recovering is.
+    #[serde(default)]
+    workers: BTreeMap<String, String>,
 }
 
 /// Block until something happens that is worth a model call, and print what it was.
 ///
-/// Exactly two things qualify: a worker arrived and has not been shown, and a worker wrote. A
-/// departure, a state moving between active, idle and blocked, and an edit to the tree are facts
-/// to read from a tick once the coordinator is already awake. Waking for them spends a call to
-/// learn that somebody else is still working, and a session going idle and active again is not
-/// news. This is the only place that rule is enforced, so there is no loop condition to widen.
-pub fn wait(folder: &Folder, timeout: Option<Duration>) -> Result<Option<String>> {
+/// With no `ids`, exactly two things qualify: a worker arrived and has not been shown, and a
+/// worker wrote. A departure, a state moving between active, idle and blocked, and an edit to
+/// the tree are facts to read from a tick once the coordinator is already awake. Waking for them
+/// spends a call to learn that somebody else is still working, and a session going idle and
+/// active again is not news.
+///
+/// With `ids`, the watch narrows to those workers, which is what a dispatcher that launched a
+/// known set wants: arrivals are somebody else's business, and what matters is a worker that
+/// stopped making progress on its own. Mail still wakes it, because a reply is how a worker
+/// reports. This is the only place either rule is enforced, so there is no loop condition in a
+/// prompt to widen.
+pub fn wait(folder: &Folder, ids: &[String], timeout: Option<Duration>) -> Result<Option<String>> {
+    consumer(folder)?;
     let dir = folder.dir();
-    fs::create_dir_all(&dir)?;
+    // The lease is this value's, so it is released as this function returns, before the caller
+    // can print or observe anything. A caller that re-arms on the same line as its wake finds
+    // the folder free; one that races its own predecessor gets `Armed`, which it may retry.
+    let _watcher = Watcher::arm(&dir)?;
     let seen_path = dir.join("wait.json");
-    let mut seen: Seen = fs::read(&seen_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let mut seen: Seen = read_json(&seen_path).unwrap_or_default();
+    // A watch names workers the caller launched, so an id cones has never seen is a typo. One
+    // it has watched before is not: a worker leaving is the disappearance this mode reports.
+    if !ids.is_empty() {
+        let roster = folder.roster()?;
+        for id in ids {
+            ensure!(
+                roster.iter().any(|s| s.session_id == *id) || seen.workers.contains_key(id),
+                "{id} is not on this folder's roster"
+            );
+        }
+    }
     let deadline = timeout.map(|t| Instant::now() + t);
     // A roster read can fail transiently while a harness rewrites a registry. Retrying keeps the
     // watcher armed; an hour of failures is a broken install and belongs in front of the model.
@@ -227,32 +360,37 @@ pub fn wait(folder: &Folder, timeout: Option<Duration>) -> Result<Option<String>
         match folder.roster() {
             Ok(rows) => {
                 failures = 0;
-                let known: HashSet<&str> = seen.ids.iter().map(String::as_str).collect();
-                let arrivals: Vec<&Session> = rows
-                    .iter()
-                    .filter(|s| !known.contains(s.session_id.as_str()))
-                    .collect();
                 let waiting = lines(&folder.inbox());
+                // Mail is not suppressed on the first arm. A reply that landed between the
+                // coordinator's read and this call is unacknowledged, which is the record of
+                // nobody having acted on it, and a watcher that swallowed it would never wake.
                 let mail = waiting.len() > seen.inbox.max(folder.acknowledged(waiting.len()));
-                // The first arm has nothing recorded, so everything present looks new. It is
-                // not: the coordinator read the folder before arming. Snapshot and sleep.
-                if !first && (!arrivals.is_empty() || mail) {
-                    let mut out = String::new();
-                    for row in &arrivals {
-                        out.push_str(&format!("new: {}\n", summary(row)));
-                    }
-                    if mail {
-                        out.push_str(&pending(folder, &waiting));
+                let mut out = String::new();
+                if ids.is_empty() {
+                    let known: HashSet<&str> = seen.ids.iter().map(String::as_str).collect();
+                    // The first arm has nothing recorded, so every session present looks new. It
+                    // is not: the coordinator read the folder before arming.
+                    if !first {
+                        for row in rows
+                            .iter()
+                            .filter(|s| !known.contains(s.session_id.as_str()))
+                        {
+                            out.push_str(&format!("new: {}\n", summary(row)));
+                        }
                     }
                     seen.ids = rows.iter().map(|s| s.session_id.clone()).collect();
-                    seen.inbox = waiting.len();
-                    write_atomically(&seen_path, &serde_json::to_string(&seen)?)?;
-                    return Ok(Some(out));
+                } else {
+                    out.push_str(&watched(ids, &rows, &mut seen.workers));
                 }
-                seen.ids = rows.iter().map(|s| s.session_id.clone()).collect();
+                if mail {
+                    out.push_str(&unread(folder, &waiting));
+                }
                 seen.inbox = waiting.len();
                 write_atomically(&seen_path, &serde_json::to_string(&seen)?)?;
                 first = false;
+                if !out.is_empty() {
+                    return Ok(Some(out));
+                }
             }
             Err(e) => {
                 failures += 1;
@@ -272,6 +410,43 @@ pub fn wait(folder: &Folder, timeout: Option<Duration>) -> Result<Option<String>
     }
 }
 
+/// Why a watched worker is worth looking at. None of these is a finished task: a worker that
+/// asks for input, reports a native failure or leaves the roster has stopped moving on its own,
+/// and what the assignment came to is the worker's own report. Each condition is announced once
+/// and again only after the worker has been out of it.
+fn watched(ids: &[String], rows: &[Session], reported: &mut BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    for id in ids {
+        let (condition, why) = match rows.iter().find(|s| s.session_id == *id) {
+            None => (
+                "gone",
+                Some("left the roster, so cones can no longer observe it"),
+            ),
+            Some(row) => match row.state.as_str() {
+                "blocked" => (
+                    "blocked",
+                    Some("is asking for input natively; answer it in its own session"),
+                ),
+                "failed" | "crashed" | "error" => (
+                    "failed",
+                    Some("reported a native failure; read its session"),
+                ),
+                other => (other, None),
+            },
+        };
+        if reported.get(id).map(String::as_str) == Some(condition) {
+            continue;
+        }
+        reported.insert(id.clone(), condition.to_owned());
+        if let Some(why) = why {
+            out.push_str(&format!(
+                "worker: {id}\t{condition}\t{why}. This is not a completed task.\n"
+            ));
+        }
+    }
+    out
+}
+
 fn summary(row: &Session) -> String {
     format!(
         "{}\t{}\t{}\t{}\t{}",
@@ -287,7 +462,7 @@ fn pending(folder: &Folder, waiting: &[String]) -> String {
     let acked = folder.acknowledged(waiting.len());
     let mut out = String::from(
         "mail: unacknowledged, still pending after you read it. \
-         Acknowledge with `cones coordinator mail --ack N` once you have acted on it.\n",
+         Acknowledge with `cones comms mail --ack N` once you have acted on it.\n",
     );
     for (n, line) in waiting.iter().enumerate().skip(acked) {
         out.push_str(&format!("{}\t{line}\n", n + 1));
@@ -295,14 +470,21 @@ fn pending(folder: &Folder, waiting: &[String]) -> String {
     out
 }
 
+/// Pending mail, or the line that says there is none. Separate from `mail` so a `tick` can print
+/// it without taking the consumer check twice.
+fn unread(folder: &Folder, waiting: &[String]) -> String {
+    match folder.acknowledged(waiting.len()) < waiting.len() {
+        true => pending(folder, waiting),
+        false => "mail: none pending\n".into(),
+    }
+}
+
 pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
+    consumer(folder)?;
     let waiting = lines(&folder.inbox());
     let acked = folder.acknowledged(waiting.len());
     let Some(through) = ack else {
-        return Ok(match acked < waiting.len() {
-            true => pending(folder, &waiting),
-            false => "mail: none pending\n".into(),
-        });
+        return Ok(unread(folder, &waiting));
     };
     ensure!(
         acked < through && through <= waiting.len(),
@@ -311,41 +493,35 @@ pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
         waiting.len()
     );
     let dir = folder.dir();
-    fs::create_dir_all(&dir)?;
+    crate::private_dir(&dir)?;
     write_atomically(&dir.join("inbox.ack"), &through.to_string())?;
     Ok(format!("acknowledged through line {through}\n"))
 }
 
-/// One note to a live worker, delivered by that worker's own harness.
+/// One note to a live worker in this folder, delivered by that worker's own harness.
 ///
-/// The coordinator has no authority the owner did not give it, so the note says who it is from
-/// and carries the folder's inbox as the way back. A harness with no delivery command of its own
-/// is refused rather than approximated: typing into somebody's terminal is not a message.
+/// The sender has no authority the owner did not give it, so the note says who it is from and
+/// carries the folder's inbox as the way back. A harness with no delivery command of its own is
+/// refused rather than approximated: typing into somebody's terminal is not a message.
 pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String> {
-    let rows = folder.roster()?;
-    let row = rows
+    let fleet_rows = folder.fleet()?;
+    let row = fleet_rows
         .iter()
-        .find(|s| s.session_id == id)
+        .find(|s| s.session_id == id && fleet::contains(&folder.path, &s.cwd))
         .with_context(|| format!("{id} is not on this folder's roster"))?;
     let dir = folder.dir();
-    fs::create_dir_all(&dir)?;
+    crate::private_dir(&dir)?;
     let greeted_path = dir.join("greeted.json");
-    let mut greeted: Vec<String> = fs::read(&greeted_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    let mut greeted: Vec<String> = read_json(&greeted_path).unwrap_or_default();
     // A greeting registers the session and outlives every task in it, so repeating one is a
     // no-op rather than a second interruption.
     if greet && greeted.iter().any(|g| g == id) {
         return Ok(format!("{id} was already greeted\n"));
     }
     let note = format!(
-        "[coordinator, not the owner{}] {text}\n\
+        "[{}] {text}\n\
          Reply by appending one JSON line to {}: {}",
-        match greet {
-            true => "; session introduction",
-            false => "",
-        },
+        sender(folder, &fleet_rows, greet),
         folder.inbox().display(),
         json!({"from": format!("{}:{id}", row.harness), "text": "<reply>"}),
     );
@@ -365,6 +541,27 @@ pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String
         write_atomically(&greeted_path, &serde_json::to_string(&greeted)?)?;
     }
     Ok(format!("sent to {id} ({})\n", row.harness))
+}
+
+/// How the note introduces its sender. Only the folder's claim holder may call itself the
+/// coordinator; any other agent names the session it is, and one cones cannot place says only
+/// that it is not the owner. A recipient that cannot tell a peer from the coordinator cannot
+/// weigh what it just read, and every one of these is peer input either way.
+fn sender(folder: &Folder, rows: &[Session], greet: bool) -> String {
+    let who = match status(&folder.state, &folder.path) {
+        Some(live) if own_process(&live) => "coordinator, not the owner".to_owned(),
+        _ => match own_session(rows) {
+            Some(me) => format!(
+                "{} session {}, a peer agent, not the owner",
+                me.harness, me.session_id
+            ),
+            None => "another agent, not the owner".to_owned(),
+        },
+    };
+    match greet {
+        true => format!("{who}; session introduction"),
+        false => who,
+    }
 }
 
 /// Everything the coordinator reads before it acts, in one tool result: what the tree is doing,
@@ -414,7 +611,7 @@ pub fn tick(folder: &Folder) -> Result<String> {
         ));
     }
     out.push_str("--- mail\n");
-    out.push_str(&mail(folder, None)?);
+    out.push_str(&unread(folder, &waiting));
     Ok(out)
 }
 
@@ -431,6 +628,10 @@ fn lines(path: &Path) -> Vec<String> {
         .lines()
         .map(str::to_owned)
         .collect()
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
 fn read_number(path: &Path) -> usize {
@@ -451,4 +652,109 @@ fn write_atomically(path: &Path, text: &str) -> Result<()> {
     temporary.as_file().sync_all()?;
     temporary.persist(path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: &str, state: &str, pid: Option<u32>) -> Session {
+        serde_json::from_value(json!({
+            "session_id": id, "harness": "claude", "cwd": "/project",
+            "state": state, "pid": pid
+        }))
+        .unwrap()
+    }
+
+    fn folder(state: &Path) -> Folder {
+        Folder {
+            state: state.to_path_buf(),
+            claude: state.join("claude"),
+            jobs: state.join("jobs.yaml"),
+            path: PathBuf::from("/project"),
+        }
+    }
+
+    /// A note says who it is really from. Only the folder's claim holder may call itself the
+    /// coordinator, because a worker weighs a note by who sent it, and every other agent's note
+    /// would otherwise arrive carrying a role the owner never gave it.
+    #[test]
+    fn only_the_claim_holder_signs_a_note_as_the_coordinator() {
+        let state = tempfile::tempdir().unwrap();
+        let f = folder(state.path());
+        let me = [row("mine", "idle", Some(std::process::id()))];
+        assert_eq!(
+            sender(&f, &me, false),
+            "claude session mine, a peer agent, not the owner"
+        );
+        assert_eq!(sender(&f, &[], false), "another agent, not the owner");
+        assert_eq!(
+            sender(&f, &[], true),
+            "another agent, not the owner; session introduction"
+        );
+
+        let record = f.dir().join("status.json");
+        // launchd is pid 1 on macOS: alive, and certainly not in this process's parent chain.
+        write_atomically(&record, &json!({"pid": 1, "session": "peer"}).to_string()).unwrap();
+        assert_eq!(
+            sender(&f, &me, false),
+            "claude session mine, a peer agent, not the owner",
+            "a live foreign claim does not make this agent the coordinator"
+        );
+
+        write_atomically(
+            &record,
+            &json!({"pid": std::process::id(), "session": "mine"}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(sender(&f, &me, false), "coordinator, not the owner");
+        assert_eq!(
+            sender(&f, &me, true),
+            "coordinator, not the owner; session introduction"
+        );
+    }
+
+    /// The watched-worker rule. A worker that asks for input, fails natively or leaves is worth
+    /// one look, not one every ten seconds; and it is worth another look only after it has been
+    /// out of that condition. None of it means the assignment finished.
+    #[test]
+    fn a_watched_worker_reports_each_condition_once_and_again_after_it_clears() {
+        let ids = ["a".to_owned(), "b".to_owned()];
+        let mut reported = BTreeMap::new();
+        let working = [row("a", "active", None), row("b", "active", None)];
+        assert_eq!(watched(&ids, &working, &mut reported), "");
+
+        let blocked = [row("a", "blocked", None), row("b", "active", None)];
+        let out = watched(&ids, &blocked, &mut reported);
+        assert!(out.starts_with("worker: a\tblocked\t"), "{out}");
+        assert!(out.contains("not a completed task"), "{out}");
+        assert_eq!(out.lines().count(), 1, "only the worker that moved: {out}");
+        assert_eq!(watched(&ids, &blocked, &mut reported), "", "reported once");
+
+        // Idle, done and stopped are states to read from a tick, not reasons to wake.
+        for quiet in ["idle", "done", "stopped"] {
+            assert_eq!(
+                watched(
+                    &ids,
+                    &[row("a", quiet, None), row("b", quiet, None)],
+                    &mut reported
+                ),
+                "",
+                "{quiet} is not a reason to inspect a worker"
+            );
+        }
+        let out = watched(&ids, &blocked, &mut reported);
+        assert!(
+            out.starts_with("worker: a\tblocked\t"),
+            "blocking again after recovering is news: {out}"
+        );
+
+        let out = watched(&ids, &[row("b", "failed", None)], &mut reported);
+        assert!(out.contains("worker: a\tgone\t"), "{out}");
+        assert!(out.contains("worker: b\tfailed\t"), "{out}");
+        assert_eq!(
+            watched(&ids, &[row("b", "failed", None)], &mut reported),
+            ""
+        );
+    }
 }

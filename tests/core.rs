@@ -1200,14 +1200,31 @@ impl Coordinated {
         .unwrap();
     }
 
-    fn command(&self, args: &[&str]) -> std::process::Output {
-        std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+    /// A session registered under a status the harness would report, so the roster reaches the
+    /// state a watch reacts to.
+    fn worker_state(&self, id: &str, status: &str) {
+        fs::write(
+            self.registry.join(format!("{id}.json")),
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": id,
+                "cwd": self.work.canonicalize().unwrap(), "kind": "interactive",
+                "status": status
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// One cones invocation against this folder, under either spelling of the command group.
+    fn spawn(&self, group: &str, args: &[&str]) -> std::process::Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_cones"));
+        command
             .args([
                 "--jobs",
                 self.jobs.to_str().unwrap(),
                 "--state-dir",
                 self.dir.path().to_str().unwrap(),
-                "coordinator",
+                group,
                 "--dir",
                 self.work.to_str().unwrap(),
             ])
@@ -1215,9 +1232,30 @@ impl Coordinated {
             .env("HOME", self.dir.path())
             .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("CODEX_HOME", self.dir.path().join("missing-codex"))
-            .env("PI_CODING_AGENT_DIR", self.dir.path().join("missing-pi"))
-            .output()
-            .unwrap()
+            .env("PI_CODING_AGENT_DIR", self.dir.path().join("missing-pi"));
+        command
+    }
+
+    fn at(&self, group: &str, args: &[&str]) -> std::process::Output {
+        self.spawn(group, args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> std::process::Output {
+        self.at("coordinator", args)
+    }
+
+    /// Block until a file the command under test writes appears, rather than sleeping for as
+    /// long as it usually takes: five checkouts building at once make any such guess wrong.
+    fn until(&self, path: &std::path::Path) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} never appeared",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     fn run(&self, args: &[&str]) -> String {
@@ -1542,5 +1580,384 @@ fn concurrent_claims_leave_one_valid_record_and_no_temporaries() {
     assert!(
         leftovers.is_empty(),
         "temporaries left behind: {leftovers:?}"
+    );
+}
+
+/// Both spellings are one command group over one folder's state. A session that was started
+/// before the rename still has the old skill loaded, so `coordinator send` and `comms send` have
+/// to be the same command and not two that drift, and an acknowledgement under either name has
+/// to be the acknowledgement the other one reads.
+#[test]
+fn comms_and_coordinator_are_one_implementation_over_one_folder_state() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    fs::write(
+        dir.join("inbox.jsonl"),
+        "{\"text\":\"one\"}\n{\"text\":\"two\"}\n",
+    )
+    .unwrap();
+    let old = String::from_utf8(f.at("coordinator", &["mail"]).stdout).unwrap();
+    let new = String::from_utf8(f.at("comms", &["mail"]).stdout).unwrap();
+    assert_eq!(old, new);
+    assert!(new.contains("1\t{\"text\":\"one\"}"), "{new}");
+
+    let acked = f.at("comms", &["mail", "--ack", "1"]);
+    assert!(acked.status.success());
+    let old = String::from_utf8(f.at("coordinator", &["mail"]).stdout).unwrap();
+    assert!(
+        !old.contains("\"one\""),
+        "one spelling's ack is the other's: {old}"
+    );
+    assert!(old.contains("2\t{\"text\":\"two\"}"), "{old}");
+    assert!(
+        f.at("coordinator", &["mail", "--ack", "2"])
+            .status
+            .success(),
+        "the old spelling still moves the same cursor"
+    );
+    assert_eq!(f.at("comms", &["mail"]).status.code(), Some(0));
+
+    // The wake gate and the refusals are shared too, not reimplemented under the new name.
+    for group in ["comms", "coordinator"] {
+        let out = f.at(group, &["wait", "--timeout", "1"]);
+        assert_eq!(out.status.code(), Some(2), "{group}");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "timeout\n");
+        let out = f.at(group, &["send", "nobody", "hello"]);
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("not on this folder's roster"),
+            "{group}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// The first-arm race. A dispatcher reads its mail, decides nothing is pending, and arms the
+/// watcher; a reply that lands in between is unacknowledged, which is the record of nobody
+/// having acted on it. Snapshotting the inbox on the first arm swallowed exactly that reply and
+/// left the dispatcher blocked on a worker that had already answered.
+#[test]
+fn a_reply_that_lands_before_the_first_wait_still_wakes_it() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    assert_eq!(f.at("comms", &["mail"]).stdout, b"mail: none pending\n");
+    fs::write(
+        dir.join("inbox.jsonl"),
+        "{\"from\":\"stream:A\",\"text\":\"done\"}\n",
+    )
+    .unwrap();
+    assert!(!dir.join("wait.json").exists(), "nothing has armed yet");
+
+    let woken = f.at("comms", &["wait", "--timeout", "30"]);
+    assert!(woken.status.success());
+    let woken = String::from_utf8(woken.stdout).unwrap();
+    assert!(woken.contains("1\t{\"from\":\"stream:A\""), "{woken}");
+    // And still exactly once: a batch nobody acknowledged is not a wake every ten seconds.
+    let out = f.at("comms", &["wait", "--timeout", "1"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// A replacement dispatcher inherits the unhandled replies, not the position the one before it
+/// announced from. Reading mail is not handling it, so a reply the predecessor showed and never
+/// acknowledged is still somebody's to act on, and the watcher must not start above it.
+#[test]
+fn a_claim_puts_unacknowledged_mail_back_in_front_of_the_watcher() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    fs::write(
+        dir.join("inbox.jsonl"),
+        "{\"text\":\"one\"}\n{\"text\":\"two\"}\n",
+    )
+    .unwrap();
+    let woken = f.run(&["wait", "--timeout", "30"]);
+    assert!(woken.contains("2\t{\"text\":\"two\"}"), "{woken}");
+    f.run(&["mail", "--ack", "1"]);
+
+    let reclaimed = f.run(&["claim"]);
+    assert!(
+        reclaimed.contains("unhandled mail from before this claim is pending again from line 2"),
+        "{reclaimed}"
+    );
+    let woken = f.at("comms", &["wait", "--timeout", "30"]);
+    assert!(
+        woken.status.success(),
+        "{}",
+        String::from_utf8_lossy(&woken.stderr)
+    );
+    let woken = String::from_utf8(woken.stdout).unwrap();
+    assert!(woken.contains("2\t{\"text\":\"two\"}"), "{woken}");
+    assert!(!woken.contains("\"one\""), "line 1 was handled: {woken}");
+}
+
+/// A folder has one consumer. Acknowledgement is a single cursor and the watcher keeps a single
+/// position, so a second reader either acts on a reply the first one owns or steps the cursor
+/// past one it never saw. Sending is not restricted; consuming is.
+#[test]
+fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    fs::write(dir.join("inbox.jsonl"), "{\"text\":\"one\"}\n").unwrap();
+
+    // A second watcher while the first is armed, told apart by the lease the first one writes.
+    let watcher = dir.join("watcher.json");
+    let mut armed = f
+        .spawn("comms", &["wait", "--timeout", "60"])
+        .spawn()
+        .unwrap();
+    f.until(&watcher);
+    for group in ["comms", "coordinator"] {
+        let out = f.at(group, &["wait", "--timeout", "1"]);
+        // Its own exit code, because this is the refusal a caller may retry: an agent that
+        // re-arms the instant its wait returns can race its own predecessor out of the folder.
+        assert_eq!(out.status.code(), Some(3), "{group} took a second watcher");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("a folder has one watcher"),
+            "{group}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert!(
+        armed.wait().unwrap().success(),
+        "the first watcher kept its wake"
+    );
+    assert!(
+        !watcher.exists(),
+        "the lease is released when the watch returns"
+    );
+    assert!(
+        f.at("comms", &["wait", "--timeout", "1"]).status.code() == Some(2),
+        "a released lease is free to take"
+    );
+
+    // A folder somebody else coordinates: consuming is refused, sending is not.
+    // launchd is pid 1 on macOS: alive, and certainly not in this process's parent chain.
+    fs::write(
+        dir.join("status.json"),
+        serde_json::json!({"cwd": f.work.canonicalize().unwrap(), "pid": 1, "session": "peer"})
+            .to_string(),
+    )
+    .unwrap();
+    for args in [
+        vec!["mail"],
+        vec!["mail", "--ack", "1"],
+        vec!["wait", "--timeout", "1"],
+    ] {
+        let out = f.at("comms", &args);
+        // Exit 1, not the retryable 3: a peer's claim does not clear by waiting for it.
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?} consumed a peer's folder"
+        );
+        let error = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            error.contains("one agent consumes a folder's inbox"),
+            "{args:?}: {error}"
+        );
+        assert!(error.contains("pid 1"), "{args:?}: {error}");
+    }
+    let error =
+        String::from_utf8_lossy(&f.at("comms", &["send", "worker-one", "hi"]).stderr).into_owned();
+    assert!(
+        error.contains("has no message operation"),
+        "sending into a coordinated folder is still allowed: {error}"
+    );
+}
+
+/// Claiming has to be atomic across distinct agents. Reading the record and then replacing it is
+/// not mutual exclusion: two agents both read the folder as free, both write, and both believe
+/// they hold it, which is how workers end up taking notes from two coordinators at once.
+#[test]
+fn only_one_of_several_distinct_agents_wins_a_free_folder() {
+    let f = Coordinated::new();
+    let out = f.dir.path().join("race");
+    fs::create_dir_all(&out).unwrap();
+    let (go, done) = (out.join("go"), out.join("done"));
+    // Each racer is its own shell, registered as its own session before it calls cones, so the
+    // process chain a claim walks reaches a different roster row for every one of them. They
+    // start together on `go` and stay alive until `done`, so the winner's claim is live for the
+    // whole race rather than dying with the process that took it.
+    let mut racers: Vec<_> = (0..6)
+        .map(|n| {
+            let script = format!(
+                "printf '{{\"pid\":%s,\"sessionId\":\"racer-{n}\",\"cwd\":\"{cwd}\",\
+                 \"kind\":\"interactive\",\"status\":\"idle\"}}' $$ > {reg}/racer-{n}.json\n\
+                 while [ ! -f {go} ]; do sleep 0.01; done\n\
+                 \"$@\" > {out}/{n}.out 2> {out}/{n}.err; echo $? > {out}/{n}.code\n\
+                 while [ ! -f {done} ]; do sleep 0.01; done\n",
+                cwd = f.work.canonicalize().unwrap().display(),
+                reg = f.registry.display(),
+                go = go.display(),
+                done = done.display(),
+                out = out.display(),
+            );
+            // "$@" in the script is the cones claim this racer runs, passed as arguments so
+            // the folder's temporary path never has to survive a round through the shell.
+            std::process::Command::new("/bin/sh")
+                .args(["-c", &script, "sh", env!("CARGO_BIN_EXE_cones")])
+                .args([
+                    "--jobs",
+                    f.jobs.to_str().unwrap(),
+                    "--state-dir",
+                    f.dir.path().to_str().unwrap(),
+                    "coordinator",
+                    "--dir",
+                    f.work.to_str().unwrap(),
+                    "claim",
+                ])
+                .env("HOME", f.dir.path())
+                .env("CLAUDE_CONFIG_DIR", f.dir.path().join("claude"))
+                .env("CODEX_HOME", f.dir.path().join("missing-codex"))
+                .env("PI_CODING_AGENT_DIR", f.dir.path().join("missing-pi"))
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    for n in 0..6 {
+        f.until(&f.registry.join(format!("racer-{n}.json")));
+    }
+    fs::write(&go, "").unwrap();
+    for n in 0..6 {
+        f.until(&out.join(format!("{n}.code")));
+    }
+    fs::write(&done, "").unwrap();
+    for racer in &mut racers {
+        racer.wait().unwrap();
+    }
+    let results: Vec<(String, String)> = (0..6)
+        .map(|n| {
+            (
+                fs::read_to_string(out.join(format!("{n}.code")))
+                    .unwrap()
+                    .trim()
+                    .to_owned(),
+                fs::read_to_string(out.join(format!("{n}.err"))).unwrap(),
+            )
+        })
+        .collect();
+    let won: Vec<_> = results.iter().filter(|(code, _)| code == "0").collect();
+    assert_eq!(
+        won.len(),
+        1,
+        "{} agents held one folder: {results:?}",
+        won.len()
+    );
+    for (_, error) in results.iter().filter(|(code, _)| code != "0") {
+        assert!(error.contains("another coordinator owns"), "{error}");
+    }
+}
+
+/// Watching a named set of workers, which is what a dispatcher that launched them wants. An
+/// arrival is somebody else's business; what earns a call is a worker that stopped moving on its
+/// own, reported once, plus the reply that is how a worker actually reports finishing.
+#[test]
+fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    f.worker("worker-two");
+    let watch = [
+        "wait",
+        "--id",
+        "worker-one",
+        "--id",
+        "worker-two",
+        "--timeout",
+    ];
+    let quiet = |why: &str| {
+        let out = f.at("comms", &[watch.as_slice(), &["1"]].concat());
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{why}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    };
+    let woken = |why: &str| {
+        let out = f.at("comms", &[watch.as_slice(), &["30"]].concat());
+        assert!(
+            out.status.success(),
+            "{why}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    quiet("two idle workers are not news");
+
+    // An arrival is not this watch's business: it was told which workers are its own.
+    f.worker("worker-three");
+    quiet("an arrival outside the watched set is not a reason to wake");
+
+    f.worker_state("worker-one", "waiting");
+    let out = woken("a native input request is a reason to look at a worker");
+    assert!(out.contains("worker: worker-one\tblocked\t"), "{out}");
+    assert!(out.contains("asking for input natively"), "{out}");
+    assert!(out.contains("not a completed task"), "{out}");
+    assert!(!out.contains("worker-three"), "only the watched set: {out}");
+    quiet("a worker still waiting for input is not announced again");
+
+    f.worker_state("worker-two", "failed");
+    let out = woken("a native failure is a reason to look at a worker");
+    assert!(out.contains("worker: worker-two\tfailed\t"), "{out}");
+    assert!(out.contains("reported a native failure"), "{out}");
+    assert!(out.contains("not a completed task"), "{out}");
+    quiet("a worker that is still failed is not announced again");
+
+    fs::remove_file(f.registry.join("worker-two.json")).unwrap();
+    let out = woken("a watched worker leaving the roster is worth a look");
+    assert!(out.contains("worker: worker-two\tgone\t"), "{out}");
+    assert!(out.contains("not a completed task"), "{out}");
+    quiet("a worker that is still gone is not announced again");
+
+    // A reply is how a worker reports, so it wakes a narrowed watch too.
+    fs::write(
+        dir.join("inbox.jsonl"),
+        "{\"from\":\"claude:worker-one\",\"text\":\"done\"}\n",
+    )
+    .unwrap();
+    let out = woken("a reply wakes a narrowed watch");
+    assert!(out.contains("1\t{\"from\":\"claude:worker-one\""), "{out}");
+    quiet("one pending batch wakes it once");
+
+    // A worker cones cannot see is a typo, not a disappearance to report.
+    let out = f.at("comms", &["wait", "--id", "nobody", "--timeout", "1"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("nobody is not on this folder's roster"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// An arrival while the first arm is asleep is still an arrival. The first pass records the
+/// folder as the coordinator already read it and keeps waiting, so the suppression has to end
+/// with that pass rather than with the call: a worker that starts a second later is news.
+#[test]
+fn a_worker_that_arrives_while_the_first_arm_sleeps_still_wakes_it() {
+    let f = Coordinated::new();
+    let dir = f.coordinator_dir();
+    let armed = dir.join("wait.json");
+    let watch = f
+        .spawn("comms", &["wait", "--timeout", "120"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // The first pass writes what it saw before it sleeps, which is the signal that it is armed.
+    f.until(&armed);
+    f.worker("worker-late");
+    let out = watch.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let woken = String::from_utf8(out.stdout).unwrap();
+    assert!(woken.starts_with("new: worker-late\tclaude\t"), "{woken}");
+    assert!(
+        !woken.contains("worker-one"),
+        "already there before the arm: {woken}"
     );
 }

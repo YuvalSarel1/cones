@@ -29,6 +29,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones show ID [--tail N] [--all]` | [Read a session's conversation](#reading-a-conversation). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
+| `cones comms [--dir PATH] send\|mail\|wait ...` | [Write to the agents in a folder, read their replies and wait for one](#comms). |
 | `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
 
 ### Reading runs and sessions
@@ -139,27 +140,42 @@ The skill's plumbing is a public subcommand group. `--dir` defaults to the curre
 ```sh
 cones coordinator --dir ~/src/app start
 cones coordinator --dir ~/src/app claim [--release]
-cones coordinator --dir ~/src/app wait [--timeout SECONDS]
 cones coordinator --dir ~/src/app tick
-cones coordinator --dir ~/src/app send SESSION_ID "text" [--greet]
-cones coordinator --dir ~/src/app mail [--ack N]
 ```
 
-`claim` records the session running it as the folder's coordinator, identified by walking the process chain to the first pid on the folder's roster, so the role does not depend on which harness holds it. A folder another live coordinator holds is refused. Mail that predates the claim is counted as handled rather than replayed. `--release` hands the folder back and is refused for somebody else's claim.
-
-`wait` blocks without a model turn and returns only for a roster session it has not shown before or a line appended to the folder's inbox. Departures, state changes and tree edits are read from `tick`. It exits 2 printing `timeout` when `--timeout` passes. See [the wake loop](architecture.md#the-wake-loop).
+`claim` records the session running it as the folder's coordinator, identified by walking the process chain to the first pid on the folder's roster, so the role does not depend on which harness holds it. A folder another live coordinator holds is refused, and the check and the record happen under one lock, so two agents claiming a free folder at the same moment produce one holder and one refusal. Mail that predates the claim is counted as handled rather than replayed, and mail a previous coordinator read without acknowledging is put back in front of the watcher. `--release` hands the folder back and is refused for somebody else's claim.
 
 `tick` prints HEAD, the working tree, the roster with each worker's context use and cost, and pending mail, in one read.
 
-`send` delivers one note through the recipient's own harness [message operation](harness.md#message-delivery); a harness without one is refused. `--greet` is the once-per-session introduction and repeating it is a no-op. A recipient outside the folder's roster is refused.
-
-`mail` prints replies nobody has acted on and consumes nothing, so a restarted coordinator still sees them. Only `--ack N` moves the handled position.
+`coordinator send`, `mail` and `wait` are still accepted: they are the same commands as [`cones comms`](#comms) over the same state, kept because a session started before the rename has the older skill loaded.
 
 Its roster is the `cones ls --dir <folder> --json` read, so who counts as a worker is decided here: unclaimed spares, Codex thread attribution, viewer and daemon processes and each harness's reported state. The skill does not read the native homes itself.
 
+## Comms
+
+Writing to the agents working in a folder, reading their replies, and waiting for one. An agent that dispatched its own workers uses these directly; it does not need to start a coordinator to get them. None of them calls a model.
+
+```sh
+cones comms --dir ~/src/app send SESSION_ID "text" [--greet]
+cones comms --dir ~/src/app mail [--ack N]
+cones comms --dir ~/src/app wait [--id SESSION_ID]... [--timeout SECONDS]
+```
+
+`send` delivers one note through the recipient's own harness [message operation](harness.md#message-delivery); a harness without one is refused. A recipient outside the folder's roster is refused. `--greet` is the once-per-session introduction and repeating it is a no-op. The note names its sender: the folder's claim holder signs as the coordinator, any other identified session signs as that session, and an agent cones cannot place on the roster says only that it is not the owner. Either way a note is peer input and carries no authority the owner did not give the sender.
+
+`mail` prints replies nobody has acted on and consumes nothing, so a restarted reader still sees them. Only `--ack N` moves the handled position.
+
+`wait` blocks without a model turn until something is worth a turn, and exits 2 printing `timeout` when `--timeout` passes. It exits 3 when another watch is already armed on the folder, which is the one refusal worth retrying: an agent that re-arms the instant its own wait returns can race its predecessor out of the folder. Every other refusal exits 1, including a folder a different live agent holds, which does not clear by waiting. With no `--id`, it returns for a roster session it has not shown before or a line appended to the folder's inbox; departures, state changes and tree edits are read from `tick`. See [the wake loop](architecture.md#the-wake-loop).
+
+Repeated `--id` narrows the watch to those workers, which is what an agent that launched a known set wants. Arrivals stop counting, and the wake reasons become a native input request, a native failure and a worker leaving the roster, each reported once and again only after the worker has been out of that condition. None of them is a completed task: they are reasons to look at a worker, and what the assignment came to is the worker's own report. Mail still wakes a narrowed watch, because a reply is how a worker reports. An id that has never been on the roster is refused; one this watch has seen before may leave, which is the disappearance it reports.
+
+`--timeout` is the caller's own recovery boundary. It does not limit, interrupt or stop a worker, and cones infers nothing from a quiet transcript: a worker waiting for input is waiting, not stuck.
+
+A folder has one consumer. `mail` and `wait` are refused while a different live agent holds the folder's claim, because acknowledgement is a single cursor and the watcher keeps a single position, so a second reader either acts on a reply the first one owns or steps the cursor past one it never saw. A second `wait` armed on the same folder is refused for the same reason. `send` is not restricted: anyone may write into a folder. Cooperate through the agent that holds the folder, or use a separate task folder.
+
 ### State
 
-One directory per folder, `STATE_DIR/coordinator/folders/<sha256 of absolute folder>`, holding `status.json` (the claim), `inbox.jsonl`, `inbox.ack`, `wait.json` and `greeted.json`. It is under the state directory rather than a harness home because any harness can hold the role, and per folder rather than per session because a reply must outlive the session that asked for it.
+One directory per folder, `STATE_DIR/coordinator/folders/<sha256 of absolute folder>`, holding `status.json` (the claim), `inbox.jsonl`, `inbox.ack`, `wait.json`, `greeted.json`, `watcher.json` (the armed watch's lease, removed when it returns) and `folder.lock`. It is under the state directory rather than a harness home because any harness can hold the role, and per folder rather than per session because a reply must outlive the session that asked for it.
 
 Codex delivery requires a running local app-server daemon with `queue --thread`. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
 

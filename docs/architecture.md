@@ -30,7 +30,7 @@ harness itself reports; a value it never reported stays absent rather than infer
 ```mermaid
 flowchart TB
     subgraph binary ["the cones binary"]
-        CLI["main.rs<br/>run launch ls logs attach<br/>install catchup coordinator worker"]
+        CLI["main.rs<br/>run launch ls logs attach<br/>install catchup comms coordinator worker"]
         TUI["tui.rs<br/>dashboard, config screen, Help"]
         RUN["runner.rs + ledger.rs<br/>supervision, records, output"]
         HAR["harness.rs + harness/spec.rs<br/>definitions, adapters, capabilities"]
@@ -50,7 +50,7 @@ flowchart TB
     FLEET --> TUI
     VIEW --> TUI
     READ --> TUI
-    CLI -->|cones coordinator| COORD
+    CLI -->|cones coordinator, cones comms| COORD
     COORD -->|cones ls --json| FLEET
 
     classDef owned fill:#1e293b,stroke:#64748b,color:#e2e8f0
@@ -150,8 +150,11 @@ The coordinator is one agent session running the `start-coordinator` skill, whic
 repository under `assets/coordinator` and is compiled into the binary with `include_str!`.
 `cones coordinator start` writes the plugin out and starts a background Claude session for a folder.
 
-The skill is prose. Everything it needs a program for is `cones coordinator`, a subcommand group
-in `src/coordinator.rs`: `claim`, `wait`, `mail`, `send` and `tick`. That split is the point.
+The skill is prose. Everything it needs a program for is in `src/coordinator.rs`: `claim` and
+`tick` under `cones coordinator`, and `send`, `mail` and `wait` under `cones comms`, which
+`cones coordinator` still spells too because a session started before the rename has the older
+skill loaded. An agent that dispatched its own workers uses `cones comms` without ever starting a
+coordinator; the role and the plumbing are separate. That split is the point.
 Judgment about overlaps, findings and integration belongs to the model reading the skill; the
 claim on a folder, the wake gate, the mail positions and delivery are mechanism, and mechanism
 in a prompt is a second implementation nobody tests.
@@ -173,7 +176,7 @@ Three places, and only three.
    is a real cost charged to someone else's budget.
 3. A worker does its own work, which is the point and not the coordinator's concern.
 
-`cones coordinator` makes none. This is why the wake gate is the most load-bearing piece of the
+Neither command group makes one. This is why the wake gate is the most load-bearing piece of the
 design: a gate that fires when nothing happened turns a ten second sleep into a model call every
 ten seconds.
 
@@ -181,7 +184,7 @@ ten seconds.
 
 ```mermaid
 flowchart TB
-    Arm([arm watcher]) --> Wait["cones coordinator wait<br/>blocks, no model"]
+    Arm([arm watcher]) --> Wait["cones comms wait<br/>blocks, no model"]
     Wait --> Q{"arrival or mail?"}
     Q -->|"no"| Sleep["sleep 10"] --> Wait
     Q -->|"yes"| Wake["coordinator wakes<br/>MODEL CALL"]
@@ -209,16 +212,38 @@ awake, because waking to learn that somebody else is still working spends a call
 The rule lives in one function, so there is no loop condition in the prompt for a coordinator to
 widen. `wait` records what it returned before returning it, so a change nobody woke for cannot
 come back as news, and one pending batch of mail wakes the coordinator once rather than on every
-pass. The first arm records the folder as it stands and keeps waiting: everything already there
+pass. The first arm records the roster as it stands and keeps waiting: everything already there
 was read by the tick that came before it, and is not an arrival.
+
+Mail is the exception to that first arm. A reply that lands between the read and the arm is
+unacknowledged, which is the record of nobody having acted on it, so the watcher returns it
+rather than snapshotting over it. Otherwise a dispatcher blocks on a worker that already answered.
+
+Repeated `--id` narrows the watch to named workers, which is the shape an agent that dispatched
+its own set needs. Arrivals stop counting and the wake reasons become a native input request, a
+native failure and a worker leaving the roster. Each is announced once and again only after the
+worker has been out of that condition, so a worker still waiting for input does not wake the
+dispatcher every ten seconds. None of them is completion: they say a worker stopped moving on its
+own, and the assignment's result is the worker's own report. Mail wakes a narrowed watch too.
+`--timeout` is the caller's recovery boundary and limits nothing on the worker's side; cones never
+reads a quiet transcript as a dead agent.
 
 A `claim` counts mail that predates it as handled, so a coordinator arriving in a folder with
 history does not treat that history as a backlog it was asked to answer. Reading mail never
 moves the acknowledged position; only `mail --ack N` does. That is what lets a replaced
-coordinator see a reply the one before it read and never acted on.
+coordinator see a reply the one before it read and never acted on, and a claim lowers the
+watcher's position back to the acknowledged one so the replacement's first wait returns it.
 
-The tests are `the_coordinator_wakes_for_an_arrival_and_for_mail_and_for_nothing_else` and
-`mail_stays_pending_until_it_is_acknowledged` in `tests/core.rs`.
+A folder has one consumer, because the acknowledged position is a single cursor and the watcher
+keeps a single position. `mail` and `wait` are refused while a different live agent holds the
+claim, and a second `wait` is refused while one is armed, which a lease in `watcher.json` decides.
+`send` stays unrestricted: anyone may write into a folder, and only reading out of one competes.
+
+The tests are `the_coordinator_wakes_for_an_arrival_and_for_mail_and_for_nothing_else`,
+`mail_stays_pending_until_it_is_acknowledged`, `a_reply_that_lands_before_the_first_wait_still_wakes_it`,
+`a_claim_puts_unacknowledged_mail_back_in_front_of_the_watcher`,
+`a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher` and
+`a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion` in `tests/core.rs`.
 
 ### Roster and messaging
 
@@ -244,7 +269,7 @@ owner's own input line, which is not a message from a peer.
 flowchart LR
     Coord["coordinator<br/>MODEL"]
     SM["native SendMessage<br/>Claude to Claude"] --> CS["Claude worker"]
-    CX["cones coordinator send"] --> Op["harness message operation"]
+    CX["cones comms send"] --> Op["harness message operation"]
     Op --> CT["worker"]
     CT -->|reply| Inbox["inbox.jsonl"]
     Coord --> SM
@@ -263,9 +288,14 @@ can reach a session whose agent never answers, which is why the greeting asks fo
 acknowledgement. Without one, a worker that read the greeting and a worker that never received
 it look identical.
 
-A greeting introduces the coordinator to the session once and is recorded, so repeating one is a
+A greeting introduces the sender to the session once and is recorded, so repeating one is a
 no-op rather than a second interruption, and finishing a task cannot suppress the message that
 asks the worker to report its next assignment.
+
+A note names who it is from. Only the folder's claim holder signs as the coordinator; any other
+identified session signs as that session, and an agent cones cannot place on the roster says only
+that it is not the owner. A recipient that cannot tell a peer from the coordinator cannot weigh
+what it just read, and every note is peer input either way.
 
 Codex delivery goes through `codex queue --thread`, against the daemon that owns the thread
 rather than the ambient one, because a home pinned to another provider region keeps its own
@@ -285,6 +315,12 @@ this record legitimately, a replacement overlapping the one it takes over from a
 one shared temporary means the second writer's rename deletes the first writer's source, so the
 writer that loses dies and takes its watcher with it. The test is
 `concurrent_claims_leave_one_valid_record_and_no_temporaries`.
+
+Reading the claim and then writing it is not mutual exclusion, so `folder.lock` holds the whole
+read-modify-write. Without it two distinct agents both read a free folder, both write, and both
+believe they hold it, which is how one worker ends up taking notes from two coordinators. The
+watcher lease is taken under the same lock. The test is
+`only_one_of_several_distinct_agents_wins_a_free_folder`.
 
 A claim names the process and the folder, and that pair is what marks a roster row as the
 coordinator. Never a title: a session that merely mentions the word is not the role, and a pid
@@ -311,7 +347,8 @@ author's hunks in a file, so a commit comes from a diff trimmed to one author's 
 | Who counts as a worker | `cones ls` |
 | Whether a worker can be written to | the harness's `message` operation |
 | One coordinator per folder | the claim's live pid |
-| A coordinator wake means something moved | `cones coordinator wait` |
-| Mail is handled, not just read | `cones coordinator mail --ack` |
+| A wake means something moved | `cones comms wait` |
+| Mail is handled, not just read | `cones comms mail --ack` |
+| One consumer per folder inbox | the claim's live pid and `watcher.json` |
 | A combined tree is sound | `scripts/check` |
 | Scope, config, pushing | the owner |

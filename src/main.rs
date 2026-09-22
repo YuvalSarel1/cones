@@ -31,19 +31,20 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Action>,
 }
+/// Talking to the agents working in one folder, and noticing when one of them stops. The same
+/// commands answer to `cones comms` and to the older `cones coordinator` spelling, against the
+/// same folder state, because a session started before an upgrade still has the old skill loaded.
 #[derive(Subcommand)]
-enum CoordinatorTask {
-    /// Start the folder's coordinator: one background Claude session on the embedded skill.
-    /// A folder another live coordinator holds is refused, not joined.
-    Start,
-    /// Record this session as the folder's coordinator, or hand the folder back with --release.
-    Claim {
-        #[arg(long)]
-        release: bool,
-    },
-    /// Block until a worker arrives or a worker writes; nothing else is worth a model call.
+enum CommsTask {
+    /// Block until something worth a model call happens; nothing else wakes it.
     Wait {
-        /// Give up after this many seconds and exit 2, rather than waiting indefinitely.
+        /// Watch only these workers, repeated once per id. Then arrivals are somebody else's
+        /// business and the wake reasons are a native input request, a native failure and a
+        /// worker leaving the roster, each reported once. None of them is a finished task.
+        #[arg(long = "id")]
+        ids: Vec<String>,
+        /// Give up after this many seconds and exit 2, rather than waiting indefinitely. This
+        /// is your own recovery boundary; it does not limit or stop any worker.
         #[arg(long)]
         timeout: Option<u64>,
     },
@@ -61,8 +62,23 @@ enum CoordinatorTask {
         #[arg(long)]
         greet: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum CoordinatorTask {
+    /// Start the folder's coordinator: one background Claude session on the embedded skill.
+    /// A folder another live coordinator holds is refused, not joined.
+    Start,
+    /// Record this session as the folder's coordinator, or hand the folder back with --release.
+    Claim {
+        #[arg(long)]
+        release: bool,
+    },
     /// Head, tree, roster and pending mail in one read: everything to check before acting.
     Tick,
+    /// `send`, `mail` and `wait`, which `cones comms` also spells.
+    #[command(flatten)]
+    Comms(CommsTask),
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -149,6 +165,16 @@ enum Action {
         id: String,
         #[arg(long)]
         print_command: bool,
+    },
+    /// Notes to the agents working in a folder, their replies, and the gate that waits for
+    /// either. Who to write to and what it means is the caller's judgment, not a command.
+    Comms {
+        /// The folder the agents share; defaults to the current directory. Worktrees under it
+        /// belong to it, so a worker that moves into one stays on the same roster.
+        #[arg(long, global = true)]
+        dir: Option<PathBuf>,
+        #[command(subcommand)]
+        task: CommsTask,
     },
     /// What a coordinator needs a program for: its claim on a folder, its wake gate, its mail
     /// and its notes. Coordination itself is the skill's judgment, not a command.
@@ -606,14 +632,11 @@ fn execute(cli: Cli) -> Result<i32> {
             let error = command.exec();
             bail!("native resume failed: {error}")
         }
+        Action::Comms { dir, task } => {
+            comms(&folder(&state, &claude, &jobs_path, dir, &cwd)?, task)
+        }
         Action::Coordinator { dir, task } => {
-            cones::cost::init(&state, false);
-            let folder = cones::coordinator::Folder {
-                state: state.clone(),
-                claude: claude.clone(),
-                jobs: jobs_path.clone(),
-                path: coordinated(dir, &cwd)?,
-            };
+            let folder = folder(&state, &claude, &jobs_path, dir, &cwd)?;
             match task {
                 CoordinatorTask::Start => {
                     if let Some(status) = harness::coordinator_status(&state, &folder.path) {
@@ -627,28 +650,18 @@ fn execute(cli: Cli) -> Result<i32> {
                     let started = harness::coordinator(&folder.path, &state)?
                         .status()
                         .context("start claude")?;
-                    return Ok(started.code().unwrap_or(1));
+                    Ok(started.code().unwrap_or(1))
                 }
                 CoordinatorTask::Claim { release } => {
                     println!("{}", cones::coordinator::claim(&folder, release)?);
+                    Ok(0)
                 }
-                CoordinatorTask::Wait { timeout } => {
-                    let limit = timeout.map(std::time::Duration::from_secs);
-                    let Some(woken) = cones::coordinator::wait(&folder, limit)? else {
-                        println!("timeout");
-                        return Ok(2);
-                    };
-                    print!("{woken}");
+                CoordinatorTask::Tick => {
+                    print!("{}", cones::coordinator::tick(&folder)?);
+                    Ok(0)
                 }
-                CoordinatorTask::Mail { ack } => {
-                    print!("{}", cones::coordinator::mail(&folder, ack)?);
-                }
-                CoordinatorTask::Send { id, text, greet } => {
-                    print!("{}", cones::coordinator::send(&folder, &id, &text, greet)?);
-                }
-                CoordinatorTask::Tick => print!("{}", cones::coordinator::tick(&folder)?),
+                CoordinatorTask::Comms(task) => comms(&folder, task),
             }
-            Ok(0)
         }
         Action::Show { id, tail, all } => {
             let located = cones::show::locate(&claude, &id)?;
@@ -668,12 +681,53 @@ fn execute(cli: Cli) -> Result<i32> {
     }
 }
 
-/// The folder a coordinator command acts on. It must already exist: a coordinator claims a
-/// folder agents are working in, never one it would create.
-fn coordinated(dir: Option<PathBuf>, cwd: &std::path::Path) -> Result<PathBuf> {
-    cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), cwd)?
-        .canonicalize()
-        .context("coordinator directory")
+/// The folder a coordination command acts on. It must already exist: these commands act on a
+/// folder agents are working in, never on one they would create.
+fn folder(
+    state: &std::path::Path,
+    claude: &std::path::Path,
+    jobs: &std::path::Path,
+    dir: Option<PathBuf>,
+    cwd: &std::path::Path,
+) -> Result<cones::coordinator::Folder> {
+    cones::cost::init(state, false);
+    Ok(cones::coordinator::Folder {
+        state: state.to_path_buf(),
+        claude: claude.to_path_buf(),
+        jobs: jobs.to_path_buf(),
+        path: cones::expand_path(&dir.unwrap_or_else(|| PathBuf::from(".")), cwd)?
+            .canonicalize()
+            .context("coordinator directory")?,
+    })
+}
+
+/// The commands `cones comms` and `cones coordinator` both answer to, on one folder's state.
+fn comms(folder: &cones::coordinator::Folder, task: CommsTask) -> Result<i32> {
+    match task {
+        CommsTask::Wait { ids, timeout } => {
+            let limit = timeout.map(std::time::Duration::from_secs);
+            match cones::coordinator::wait(folder, &ids, limit) {
+                Ok(Some(woken)) => print!("{woken}"),
+                Ok(None) => {
+                    println!("timeout");
+                    return Ok(2);
+                }
+                // A watch that lost the lease to another watch gets its own code, because that
+                // is the refusal a caller may retry: re-arming the moment a wait returns can
+                // race the predecessor out of the folder. A peer's claim never clears that way.
+                Err(e) if e.is::<cones::coordinator::Armed>() => {
+                    eprintln!("cones: {e:#}");
+                    return Ok(3);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        CommsTask::Mail { ack } => print!("{}", cones::coordinator::mail(folder, ack)?),
+        CommsTask::Send { id, text, greet } => {
+            print!("{}", cones::coordinator::send(folder, &id, &text, greet)?)
+        }
+    }
+    Ok(0)
 }
 
 /// Launchers such as fzf hand children the `/dev/tty` clone device. Bun-based harnesses
