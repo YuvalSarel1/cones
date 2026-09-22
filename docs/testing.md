@@ -45,6 +45,10 @@ covers the claim, the wake gate, mail and delivery; the skill that reads them sh
 prose alone and has no helpers of its own to test.
 The normal gate requires Python 3 and Node.js 22 or later alongside Rust.
 CI uses the same `scripts/check` entry point.
+One test compiles Claude's argv, which resolves the executable on
+`harness::launch_path()`, so the suite needs a `claude` on that path. The
+assertion is the argument list rather than anything the binary does, so CI
+installs a stub for it.
 
 ## Installing HEAD
 

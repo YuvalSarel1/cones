@@ -13,4 +13,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # One test compiles Claude's argv, which resolves the executable on
+      # harness::launch_path(). The assertion is the argument list, so a stub
+      # on that path is enough and nothing ever runs it.
+      - run: |
+          mkdir -p ~/.local/bin
+          printf '#!/bin/sh\nexit 0\n' > ~/.local/bin/claude
+          chmod +x ~/.local/bin/claude
       - run: scripts/check
