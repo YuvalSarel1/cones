@@ -96,7 +96,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `job_columns` | `[status, schedule, next_run, model, last_run, folder]` |
 | `history_columns` | `[last_active, folder, model, context, last_reply]` |
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
-| `highlight` | `magenta`: colour of a session row highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`. |
+| `highlight` | `magenta`: colour of a session title highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
 | `folders` | `[]`: folders pinned in the session list, each absolute or under `~`. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it; `+ add folder` and `ctrl+x` on a pinned row in the session list write the same setting. A path carrying a comma, a quote or a bracket is refused. |
 

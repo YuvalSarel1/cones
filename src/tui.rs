@@ -220,7 +220,7 @@ pub struct Data {
     pub confirm_secs: f64,
     /// Leave a table column out rather than draw the part of it that fits.
     pub whole_columns: bool,
-    /// Colour of the rows highlighted with ctrl+p.
+    /// Colour of the titles highlighted with ctrl+p.
     pub highlight: Color,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
@@ -4232,8 +4232,8 @@ const FIELDS: [Field; 60] = [
         sub: "",
         name: "highlight",
         short: "highlight colour",
-        hint: "Colour of a session row highlighted with ctrl+p.",
-        long: "Colour ctrl+p paints the selected session row in, so rows you are watching stand out from the rest. The mark itself lasts as long as the dashboard is open and is never written to the file; only the colour is.",
+        hint: "Colour of a session title highlighted with ctrl+p.",
+        long: "Colour ctrl+p paints the selected session's title in, so rows you are watching stand out from the rest. The mark itself lasts as long as the dashboard is open and is never written to the file; only the colour is.",
         builtin: "magenta",
         input: Answer::Pick(&["-", "magenta", "cyan", "blue", "green", "yellow", "red"]),
     },
@@ -8806,7 +8806,7 @@ struct App {
     /// Successful delete/forget commands take effect here before the registry catches up.
     removed_sessions: HashSet<String>,
     feedback: Option<(&'static str, Instant)>,
-    /// Session ids marked with ctrl+p, drawn in the configured highlight colour.
+    /// Session ids marked with ctrl+p, whose titles are drawn in the highlight colour.
     /// ponytail: kept for the dashboard's lifetime only; persist it if marks are missed.
     highlighted: HashSet<String>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
@@ -16006,6 +16006,9 @@ impl App {
                     .armed
                     .as_deref()
                     .is_some_and(|a| row.kind.key() == Some(a));
+                // Only the title cell carries the mark, so the columns a state or a count
+                // owns keep reporting in their own colours.
+                let title = named_cell(rows, i).saturating_sub(1);
                 let marked = matches!(row.kind, Kind::Session(..))
                     && row.kind.key().is_some_and(|k| self.highlighted.contains(k));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
@@ -16042,7 +16045,7 @@ impl App {
                         text,
                         match () {
                             () if armed => style.fg(Color::Red),
-                            () if marked => style.fg(self.data.highlight),
+                            () if marked && c == title => style.fg(self.data.highlight),
                             () => style,
                         },
                     ));
@@ -24369,6 +24372,18 @@ states:
                 .map(|s| s.style.fg)
                 .collect()
         };
+        // The cells painted in the colour, by their text.
+        let titles = |app: &App, colour: Color| -> Vec<String> {
+            app.row_lines(&app.rows, &app.visible, None, 0, 40, 200)
+                .iter()
+                .find(|l| l.to_string().contains(&A[..8]))
+                .expect("the session has a row")
+                .spans
+                .iter()
+                .filter(|s| s.style.fg == Some(colour))
+                .map(|s| s.content.trim().to_owned())
+                .collect()
+        };
         assert_eq!(app.data.highlight, Color::Magenta, "the built-in colour");
         let plain = painted(&app);
         assert!(
@@ -24377,15 +24392,22 @@ states:
         );
         app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(app.highlighted.contains(A));
-        let marked = painted(&app);
+        let marked = titles(&app, Color::Magenta);
+        assert_eq!(
+            marked.len(),
+            1,
+            "only the title cell is drawn in the colour: {:?}",
+            painted(&app)
+        );
         assert!(
-            marked[1..].iter().all(|fg| *fg == Some(Color::Magenta)),
-            "every cell of the marked row is drawn in the colour: {marked:?}"
+            marked[0].contains(&A[..8]),
+            "and that cell is the title: {marked:?}"
         );
         app.data.highlight = Color::Cyan;
-        assert!(
-            painted(&app)[1..].iter().all(|fg| *fg == Some(Color::Cyan)),
-            "the configured colour is what the row is painted in"
+        assert_eq!(
+            titles(&app, Color::Cyan),
+            marked,
+            "the configured colour is what the title is painted in"
         );
         app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(app.highlighted.is_empty(), "the second press unmarks it");
