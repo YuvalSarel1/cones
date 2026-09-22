@@ -46,6 +46,20 @@ prose alone and has no helpers of its own to test.
 The normal gate requires Python 3 and Node.js 22 or later alongside Rust.
 CI uses the same `scripts/check` entry point.
 
+## Installing HEAD
+
+```sh
+scripts/check install
+```
+
+This builds the current commit in a detached worktree under `~/.cones` and installs
+it with `cargo install --root ~/.local`, so the binary carries committed code only.
+It takes the same slot as the other modes, and raises `CARGO_BUILD_JOBS` to the
+machine's CPU count, since a build does not exec the processes a test run does. The
+release artifacts persist in `~/.cones/install-target`, so a later install rebuilds
+the crate rather than its dependencies. `CONES_INSTALL_ROOT` overrides the install
+prefix.
+
 ## Resource and native checks
 
 ```sh

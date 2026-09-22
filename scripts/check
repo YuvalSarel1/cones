@@ -2,15 +2,16 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|test [cargo test arguments...]]'
+    echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|install|test [cargo test arguments...]]'
     echo 'Defaults to fmt, clippy, and all test targets. Full logs remain in TMPDIR.'
+    echo 'install builds HEAD in a detached worktree and installs it under ~/.local.'
 }
 
 mode=${1:-all}
 if (( $# )); then shift; fi
 case "$mode" in
     -h|--help) usage; exit 0 ;;
-    all|fmt|clippy|reporting|stress)
+    all|fmt|clippy|reporting|stress|install)
         if (( $# )); then usage >&2; exit 2; fi
         ;;
     test) ;;
@@ -77,6 +78,23 @@ case "$mode" in
             -- --ignored --nocapture --test-threads=1
         printf 'Resources: %s\n' "$CONES_STRESS_OUTPUT"
         printf 'Observation: %s\n' "$CONES_STRESS_OBSERVATION_OUTPUT"
+        ;;
+    install)
+        # One worktree path, reused: the install target dir keys its cache on it,
+        # so only what HEAD changed is rebuilt. A build does not exec the process
+        # storm a test run does, so it gets the whole machine rather than two jobs.
+        state=${CONES_CHECK_STATE_DIR:-$HOME/.cones}
+        worktree=$state/install-worktree
+        git worktree remove --force "$worktree" >/dev/null 2>&1 || true
+        rm -rf -- "$worktree"
+        git worktree add --detach "$worktree" HEAD >/dev/null
+        trap 'git worktree remove --force "$worktree" >/dev/null 2>&1 || true' EXIT
+        run_check install env "CARGO_BUILD_JOBS=$(getconf _NPROCESSORS_ONLN)" \
+            cargo install --path "$worktree" --force \
+            --root "${CONES_INSTALL_ROOT:-$HOME/.local}" \
+            --target-dir "$state/install-target"
+        printf 'Installed %s to %s/bin\n' "$(git rev-parse --short HEAD)" \
+            "${CONES_INSTALL_ROOT:-$HOME/.local}"
         ;;
     test)
         if (( $# == 0 )); then set -- --all-targets; fi

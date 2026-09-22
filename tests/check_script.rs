@@ -302,3 +302,62 @@ printf '%s\n' "$PWD" "$@" > "$TMPDIR/args"
     assert!(!fixture.logs(&output).join("fmt.log").exists());
     assert!(!fixture.logs(&output).join("clippy.log").exists());
 }
+
+#[test]
+fn installing_head_builds_a_detached_worktree_at_full_width_and_removes_it() {
+    let fixture = Fixture::new(
+        r#"
+printf '%s\n' "$@" "jobs=$CARGO_BUILD_JOBS" > "$TMPDIR/args"
+test -f "$3/Cargo.toml" && printf 'package\n' >> "$TMPDIR/args"
+git -C "$3" rev-parse HEAD >> "$TMPDIR/args"
+"#,
+    );
+    let root = fixture.dir.path().join("prefix");
+    let state = fixture.dir.path().join("queue");
+    let output = fixture
+        .command()
+        .env("CONES_INSTALL_ROOT", &root)
+        .arg("install")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let worktree = state.join("install-worktree");
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    let recorded = fs::read_to_string(fixture.dir.path().join("args")).unwrap();
+    let jobs: usize = recorded
+        .lines()
+        .find_map(|line| line.strip_prefix("jobs="))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        jobs > 2,
+        "a build takes the machine, not the test cap: {jobs}"
+    );
+    assert_eq!(
+        recorded,
+        format!(
+            "install\n--path\n{}\n--force\n--root\n{}\n--target-dir\n{}\njobs={jobs}\npackage\n{head}",
+            worktree.display(),
+            root.display(),
+            state.join("install-target").display(),
+        )
+    );
+    assert!(!worktree.exists(), "the worktree is cleaned up");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(&format!(
+            "Installed {} to {}/bin",
+            &head[..7],
+            root.display()
+        )),
+        "{output:?}"
+    );
+}
