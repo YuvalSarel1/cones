@@ -27,6 +27,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
+| `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
 
 ### Reading runs and sessions
 
@@ -68,6 +69,31 @@ cones run nightly-triage --prompt "summarize the failures"
 ```
 
 The task runs in the current directory under the named job's policy, otherwise the first job's. With no readable, valid jobs file or no template job, it uses the [built-in policy defaults](jobs.md#job-fields-and-defaults). An explicit unknown job name is an error. Each task gets a fresh `adhoc-<8 hex>` name, so overlap is checked per task.
+
+### Stopping a session
+
+```sh
+cones stop 5bf8392e-17cb-405d-a400-22dfbda13472
+```
+
+`ID` is the session id `cones ls --json` prints. Stopping is not deleting: the job record and the
+transcript stay, so the conversation is still there to attach to or resume. Removal remains the
+harness's own action.
+
+Two targets are supported, and the exit status reports the supported operation rather than the
+row disappearing:
+
+| Target | What runs |
+| --- | --- |
+| Claude background session | `claude stop <short id>`, against the native home the row was discovered in. Claude's own answer is the result, and it is idempotent: stopping a stopped session succeeds again. |
+| Session in a cones-owned persistent terminal | The terminal host's stop, which acknowledges only after the native client it owns has exited. |
+
+Everything else is an error. A session in a terminal cones does not own can only be ended by that
+terminal. A harness with no native session stop says so by name instead of substituting something
+else: cones will not delete a job record, close an attach client or signal the daemon that owns
+every other session on the machine. Codex 0.155 has no per-thread stop — `archive` and `delete`
+are history operations and `app-server daemon stop` ends every thread — so Codex threads are not
+stoppable from cones. An unknown id is an error, not a silent success.
 
 ## Coordinator
 

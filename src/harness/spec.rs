@@ -142,6 +142,10 @@ pub struct Operations {
     pub resume: Option<Operation>,
     pub fork: Option<Operation>,
     pub remove: Option<Operation>,
+    /// End a live session and keep its conversation. `{id}` or `{short_id}`. Distinct from
+    /// `remove`, which deletes the record: a harness with no `stop` cannot be stopped from
+    /// cones, and saying so is better than deleting the work instead.
+    pub stop: Option<Operation>,
     pub unarchive: Option<Operation>,
     /// Deliver one note to a live session. `{id}`, `{text}` and, where the harness talks to a
     /// daemon, `{remote}`. A harness without it cannot be written to from cones.
@@ -1167,6 +1171,10 @@ impl HarnessSpec {
             &["id", "short_id", "remote", "transcript"],
         )?;
         validate_args(&self.commands.remove, &["id", "short_id"])?;
+        if let Some(stop) = &self.operations.stop {
+            validate_args(&stop.args, &["id", "short_id"])?;
+            require_operand(&stop.args, &["{id}", "{short_id}"])?;
+        }
         validate_args(&self.commands.unarchive, &["id"])?;
         ensure!(
             !self.operations.rename

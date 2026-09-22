@@ -63,6 +63,15 @@ operations:
     args: [--bg, --resume, "{id}"]
   remove:
     args: [rm, "{short_id}"]
+  stop:
+    args: [stop, "{short_id}"]
+    probe:
+      # Ask the subcommand itself. A claude without it treats `stop` as a prompt and prints the
+      # top-level help, which never names this usage line.
+      args: [stop, --help]
+      contains: ["Usage: claude stop"]
+      error: "this claude has no `stop`, so a background session could only be ended by deleting its job record; update Claude Code"
+      description: "claude: stop a background session and keep its conversation"
   rename: true
   sessions:
     default: {join: attach, stop: signal, lifetime: daemon}

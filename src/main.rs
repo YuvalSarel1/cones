@@ -129,6 +129,11 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
+    /// End a session's work and keep its conversation; see docs/cli.md.
+    Stop {
+        /// The session id as `cones ls` prints it.
+        id: String,
+    },
     /// A run's captured output; the dashboard opens this in a viewer.
     #[command(name = "__logs", hide = true)]
     Logs {
@@ -465,6 +470,10 @@ fn execute(cli: Cli) -> Result<i32> {
                     );
                 }
             }
+            Ok(0)
+        }
+        Action::Stop { id } => {
+            print!("{}", cones::stop::session(&state, &claude, &id)?);
             Ok(0)
         }
         Action::List => {

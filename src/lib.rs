@@ -22,6 +22,7 @@ pub(crate) mod process_info;
 pub mod runner;
 pub mod search;
 pub mod sqlite;
+pub mod stop;
 pub mod terminal;
 pub mod terminal_host;
 pub mod transcript;
