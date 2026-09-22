@@ -10658,8 +10658,10 @@ impl App {
             })
     }
 
+    /// A painted viewer the pane shows is read, whether the cursor rested on the row and
+    /// peeked it or the user entered it: either way the reply is on screen.
     fn reviewed_observation(&self) -> Option<attention::Observation> {
-        if let Some(open) = self.focus.and_then(|i| self.viewers.get(i)) {
+        if let Some(open) = self.shown().and_then(|i| self.viewers.get(i)) {
             if open.viewer.first_paint().is_some() && !open.viewer.scrolled() {
                 return self.attention_for(&open.key);
             }
@@ -21071,7 +21073,7 @@ states:
     }
 
     #[test]
-    fn attention_marks_native_completion_and_filters_without_acknowledging_a_preview() {
+    fn attention_marks_native_completion_and_a_shown_peek_reads_it_but_a_hidden_viewer_does_not() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = app(dir.path());
         let mut first = placeholder(HarnessKind::Claude, A, dir.path(), "first task");
@@ -21110,7 +21112,8 @@ states:
         app.filter = Input::new(":unread first");
         app.apply_filter();
         assert_eq!(sessions(&app), [A]);
-        // A prepared preview is not an explicit review.
+        // A prepared viewer the pane does not show is not a review; a peek the pane paints is.
+        app.split = false;
         app.viewers.push(viewer_open(A, "claude", "RESULT"));
         let deadline = Instant::now() + Duration::from_secs(3);
         while app.viewers[0].viewer.first_paint().is_none() {
@@ -21120,7 +21123,14 @@ states:
         }
         app.review_focused();
         assert!(app.attention.unread(&app.attention_for(A).unwrap()));
-        app.focus(0);
+        app.split = true;
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(A))
+            .unwrap();
+        assert_eq!(app.shown(), Some(0), "the peek is the pane");
+        app.review_focused();
         assert!(!app.attention.unread(&app.attention_for(A).unwrap()));
         assert_eq!(app.data.sessions[0].state, "done");
         assert_eq!(app.data.sessions[1].state, "blocked");

@@ -8,7 +8,7 @@
 
 The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a read failed: the previous counts and rows stay visible, with the reason in the result line, until a read succeeds. Background reads start one second after the previous read completes. Manual actions discard obsolete reads, so an older snapshot cannot undo a stop or removal.
 
-A separate `●` marks a newly observed completion you have not reviewed. The summary counts unread completions without changing native state. Entering its painted live viewer or focusing its loaded output preview clears the marker; selecting or hovering a row does not. Input requests remain until the harness reports that they are resolved.
+A separate `●` marks a newly observed completion you have not reviewed. The summary counts unread completions without changing native state. Its live viewer painted in the pane clears the marker, whether the cursor rested on the row long enough to peek it or you entered it, and so does focusing its loaded output preview. A selected row with nothing painted yet stays unread. Input requests remain until the harness reports that they are resolved.
 
 Press `ctrl+f` and type `:attention` for input requests and unread completions, or `:unread` for completions alone. Add a space and text to narrow either filter. Existing completed sessions form the first baseline instead of appearing as an unread backlog. Read markers are shared by dashboards using the same state directory and survive restart. Cones observes native state transitions and changed final replies; it cannot count turns that begin and end between reads with an identical final reply.
 
