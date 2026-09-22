@@ -7762,6 +7762,14 @@ enum BindingState {
     Text,
 }
 
+/// A range of pane cells a drag has highlighted, relative to the pane's top left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Selection {
+    viewer: usize,
+    from: (u16, u16),
+    to: (u16, u16),
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum KeyAction {
@@ -7795,6 +7803,7 @@ enum KeyAction {
     Leave,
     Left,
     Mcp,
+    Mouse,
     Next,
     PageDown,
     PageUp,
@@ -8941,6 +8950,12 @@ struct App {
     /// The real terminal's default colors, probed once at start, for viewers that ask.
     colors: viewer::Colors,
     mouse_capture: bool,
+    /// Set by the release-the-mouse key: no reports at all, so the terminal selects.
+    mouse_off: bool,
+    /// Where a left press landed in the pane, in cells relative to it.
+    drag_from: Option<(u16, u16)>,
+    /// The cell range a drag has highlighted.
+    selection: Option<Selection>,
     needs_clear: bool,
     /// The last frame's rows and columns.
     size: (u16, u16),
@@ -9301,6 +9316,9 @@ impl App {
             focus: None,
             colors: viewer::Colors::default(),
             mouse_capture: false,
+            mouse_off: false,
+            drag_from: None,
+            selection: None,
             needs_clear: false,
             size: (24, 80),
             pane: Rect::new(0, 0, 80, 23),
@@ -12935,17 +12953,31 @@ impl App {
     /// the terminal, so dragging selects text there exactly as it does outside cones.
     /// Anything else the dashboard draws around the pane needs the reports.
     fn wants_mouse(&self) -> bool {
-        self.split_active()
-            || self.on_button()
-            || self.focus.is_some_and(|i| {
-                self.viewers[i].viewer.screen().mouse_protocol_mode()
-                    != viewer::MouseProtocolMode::None
-            })
-            || self.history.visible
-            || matches!(
-                self.mode,
-                Mode::Columns(_) | Mode::Config(_) | Mode::Guide(_)
-            )
+        !self.mouse_off
+            && (self.split_active()
+                || self.on_button()
+                || self.focus.is_some_and(|i| {
+                    self.viewers[i].viewer.screen().mouse_protocol_mode()
+                        != viewer::MouseProtocolMode::None
+                })
+                || self.history.visible
+                || matches!(
+                    self.mode,
+                    Mode::Columns(_) | Mode::Config(_) | Mode::Guide(_)
+                ))
+    }
+
+    /// Hand the mouse to the terminal, or take it back. A client that reports the mouse,
+    /// such as Claude Code, leaves the terminal nothing to select with; this says which
+    /// of the two gets the drag, whatever the pane happens to be running.
+    fn toggle_mouse(&mut self) {
+        self.mouse_off = !self.mouse_off;
+        let what = if self.mouse_off {
+            "mouse released: drag selects text"
+        } else {
+            "mouse read by cones"
+        };
+        self.install(what);
     }
 
     /// VS Code sends an empty bracketed paste for clipboard images. Forward it as ctrl+v
@@ -13115,6 +13147,9 @@ impl App {
             }
             return;
         }
+        if self.drag_select(ev) {
+            return;
+        }
         if (self.split_active() || !self.pane_focused()) && !self.click(ev) {
             return;
         }
@@ -13150,6 +13185,88 @@ impl App {
         let bytes = viewer::encode_mouse(ev, (pane.x, pane.y), mode);
         if !bytes.is_empty() {
             open.viewer.write(&bytes);
+        }
+    }
+
+    /// Dragging over a pane selects its text, whatever the client would have done with the
+    /// report. The emulator owns the highlight, so this holds for a client that reads the
+    /// mouse, such as Claude Code, as much as for one that ignores it. Returns whether the
+    /// event was spent on the selection.
+    fn drag_select(&mut self, ev: MouseEvent) -> bool {
+        let pane = self.pane;
+        let Some(i) = self.shown() else {
+            self.drag_from = None;
+            self.selection = None;
+            return false;
+        };
+        let inside = (pane.left()..pane.right()).contains(&ev.column)
+            && (pane.top()..pane.bottom()).contains(&ev.row);
+        let cell = |ev: &MouseEvent| {
+            (
+                ev.row.clamp(pane.top(), pane.bottom().saturating_sub(1)) - pane.y,
+                ev.column.clamp(pane.left(), pane.right().saturating_sub(1)) - pane.x,
+            )
+        };
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // A press ends the last selection and anchors the next one; the click itself
+                // still focuses the pane or reaches the client.
+                self.selection = None;
+                self.drag_from = inside.then(|| cell(&ev));
+                false
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                let Some(from) = self.drag_from else {
+                    return false;
+                };
+                let to = cell(&ev);
+                if self.selection.is_none() {
+                    if from == to {
+                        return true;
+                    }
+                    // The client saw the press. Release it there, or it waits for a button
+                    // that now belongs to the selection.
+                    let mode = self.viewers[i].viewer.screen().mouse_protocol_mode();
+                    let up = MouseEvent {
+                        kind: MouseEventKind::Up(MouseButton::Left),
+                        column: pane.x + from.1,
+                        row: pane.y + from.0,
+                        modifiers: KeyModifiers::NONE,
+                    };
+                    let bytes = viewer::encode_mouse(up, (pane.x, pane.y), mode);
+                    if !bytes.is_empty() {
+                        self.viewers[i].viewer.write(&bytes);
+                    }
+                }
+                self.selection = Some(Selection {
+                    viewer: i,
+                    from,
+                    to,
+                });
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.drag_from = None;
+                let Some(sel) = self.selection else {
+                    return false;
+                };
+                let text = viewer::selected_text(
+                    self.viewers[sel.viewer].viewer.display_screen(),
+                    sel.from,
+                    sel.to,
+                );
+                self.status = match copy::to_clipboard(&text) {
+                    Ok(()) => format!("copied {} characters", text.chars().count()),
+                    Err(e) => format!("{e:#}"),
+                };
+                true
+            }
+            // Scrolling moves the rows out from under a highlight, so it ends there.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                self.selection = None;
+                false
+            }
+            _ => false,
         }
     }
 
@@ -15025,6 +15142,8 @@ impl App {
 
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
+        // Typing moves the pane on; the copy already happened, so the highlight goes.
+        self.selection = None;
         // A handoff runs behind the list, so only input aimed at the native editor,
         // or an explicit escape, takes it back.
         if self.focus.is_some() || code == KeyCode::Esc {
@@ -15048,6 +15167,10 @@ impl App {
             // ctrl+\ arrives as the byte 0x1c, which crossterm reports as ctrl+4.
             if action == KeyAction::Split {
                 self.toggle_split();
+                return Ok(false);
+            }
+            if action == KeyAction::Mouse {
+                self.toggle_mouse();
                 return Ok(false);
             }
             // ctrl+c never reaches agent clients: Claude Code, Codex and pi all quit on two of
@@ -15503,6 +15626,7 @@ impl App {
                     }
                     KeyAction::History if !self.jobs_view => self.toggle_history(),
                     KeyAction::Highlight => self.highlight_selected(),
+                    KeyAction::Mouse => self.toggle_mouse(),
                     KeyAction::Rename => self.rename_selected(),
                     KeyAction::Mcp => self.open_mcp(),
                     KeyAction::Fork => self.fork_selected(),
@@ -15797,10 +15921,32 @@ impl App {
     /// Draw the emulator cursor only when focused and at the live scroll position.
     fn draw_viewer(&mut self, frame: &mut Frame, i: usize, pane: Rect) {
         let focused = self.focus == Some(i);
+        let selection = self.selection.filter(|s| s.viewer == i);
         let open = &mut self.viewers[i];
         open.viewer.resize(pane.height, pane.width);
         let screen = open.viewer.display_screen();
         viewer::render(screen, pane, frame.buffer_mut());
+        if let Some(sel) = selection {
+            let (start, end) = if sel.from <= sel.to {
+                (sel.from, sel.to)
+            } else {
+                (sel.to, sel.from)
+            };
+            for row in start.0..=end.0.min(pane.height.saturating_sub(1)) {
+                let first = if row == start.0 { start.1 } else { 0 };
+                let last = if row == end.0 {
+                    end.1
+                } else {
+                    pane.width.saturating_sub(1)
+                };
+                for col in first..=last.min(pane.width.saturating_sub(1)) {
+                    if let Some(target) = frame.buffer_mut().cell_mut((pane.x + col, pane.y + row))
+                    {
+                        target.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                    }
+                }
+            }
+        }
         if focused && !screen.hide_cursor() && !open.viewer.scrolled() {
             let (row, mut col) = screen.cursor_position();
             col = col.min(pane.width.saturating_sub(1));
@@ -24857,6 +25003,92 @@ states:
     }
 
     #[test]
+    fn dragging_over_a_pane_highlights_its_text_whatever_the_client_reads() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        // A client that asks for every mouse report still loses the drag to the selection.
+        app.viewers.push(viewer_script(
+            A,
+            "attach",
+            "printf '\\033[?1003h\\033[?1006h\\033[HHELLO WORLD'; sleep 5",
+        ));
+        wait_paint(&mut app, 0, "HELLO WORLD");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let pane = app.pane;
+        assert_eq!(
+            app.viewers[0].viewer.screen().mouse_protocol_mode(),
+            viewer::MouseProtocolMode::AnyMotion
+        );
+        let at = |kind, column, row| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.mouse(at(MouseEventKind::Down(MouseButton::Left), pane.x, pane.y));
+        assert_eq!(app.selection, None, "a press alone selects nothing");
+        app.mouse(at(
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.x + 4,
+            pane.y,
+        ));
+        assert_eq!(
+            app.selection,
+            Some(Selection {
+                viewer: 0,
+                from: (0, 0),
+                to: (0, 4)
+            })
+        );
+        t.draw(|f| app.draw(f)).unwrap();
+        for col in 0..5 {
+            assert!(
+                t.backend()
+                    .buffer()
+                    .cell((pane.x + col, pane.y))
+                    .unwrap()
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::REVERSED),
+                "the dragged cells are highlighted"
+            );
+        }
+        assert!(
+            !t.backend()
+                .buffer()
+                .cell((pane.x + 5, pane.y))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "and nothing past them is"
+        );
+        assert_eq!(
+            viewer::selected_text(app.viewers[0].viewer.display_screen(), (0, 0), (0, 4)),
+            "HELLO"
+        );
+        // Dragging past the pane clamps, and a fresh press drops the highlight.
+        app.mouse(at(
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.right() + 20,
+            pane.y,
+        ));
+        assert_eq!(
+            app.selection,
+            Some(Selection {
+                viewer: 0,
+                from: (0, 0),
+                to: (0, pane.width - 1)
+            })
+        );
+        app.mouse(at(MouseEventKind::Down(MouseButton::Left), pane.x, pane.y));
+        assert_eq!(app.selection, None);
+    }
+
+    #[test]
     fn a_click_on_a_pane_showing_scrollback_stays_with_the_emulator() {
         let d = dir();
         registry_bg(d.path(), A, "/src/one", "idle", 1);
@@ -27375,6 +27607,11 @@ states:
             viewer::MouseProtocolMode::AnyMotion
         );
         assert!(app.wants_mouse(), "a reporting client needs the mouse");
+        // The release key beats any client: the terminal gets the drag until it is pressed again.
+        assert!(!app.key(KeyCode::Char('m'), KeyModifiers::ALT).unwrap());
+        assert!(!app.wants_mouse(), "alt+m hands the mouse to the terminal");
+        assert!(!app.key(KeyCode::Char('m'), KeyModifiers::ALT).unwrap());
+        assert!(app.wants_mouse(), "alt+m again takes the mouse back");
         app.unfocus();
         assert!(!app.wants_mouse(), "the list alone releases the mouse");
     }

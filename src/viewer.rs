@@ -918,6 +918,42 @@ pub fn render(screen: &vt100::Screen, area: Rect, buf: &mut Buffer) {
     }
 }
 
+/// The text between two cells of the displayed screen, inclusive, with trailing blanks
+/// dropped from every row. Wide continuations are skipped so a wide glyph is copied once.
+pub fn selected_text(screen: &vt100::Screen, from: (u16, u16), to: (u16, u16)) -> String {
+    let (start, end) = if (from.0, from.1) <= (to.0, to.1) {
+        (from, to)
+    } else {
+        (to, from)
+    };
+    let (rows, cols) = screen.size();
+    let mut out: Vec<String> = Vec::new();
+    for row in start.0..=end.0.min(rows.saturating_sub(1)) {
+        let first = if row == start.0 { start.1 } else { 0 };
+        let last = if row == end.0 {
+            end.1
+        } else {
+            cols.saturating_sub(1)
+        };
+        let mut line = String::new();
+        for col in first..=last.min(cols.saturating_sub(1)) {
+            let Some(cell) = screen.cell(row, col) else {
+                continue;
+            };
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            if cell.has_contents() {
+                line.push_str(cell.contents());
+            } else {
+                line.push(' ');
+            }
+        }
+        out.push(line.trim_end().to_owned());
+    }
+    out.join("\n")
+}
+
 /// The xterm modifier parameter: 1 plus shift, alt and control bits.
 fn modifier_param(mods: KeyModifiers) -> u8 {
     1 + u8::from(mods.contains(KeyModifiers::SHIFT))

@@ -120,6 +120,9 @@ states:
       - keys: ["ctrl+p"]
         action: highlight
         description: "Highlight the selected session, or remove its highlight. The colour is the config's highlight setting."
+      - keys: ["alt+m"]
+        action: mouse
+        description: "Release the mouse to the terminal so dragging selects text, or take it back for cones and the panes."
       - keys: ["ctrl+t"]
         action: mcp
         description: "Inspect MCP servers and stage scoped changes."
@@ -245,6 +248,9 @@ states:
       - keys: ["ctrl+\\", "ctrl+4"]
         action: split
         description: "Toggle fullscreen for this viewer."
+      - keys: ["alt+m"]
+        action: mouse
+        description: "Release the mouse to the terminal so dragging selects text, or take it back."
       - keys: ["shift+pageup"]
         action: page_up
         description: "Scroll viewer history up a page."
@@ -263,6 +269,9 @@ states:
       - keys: ["ctrl+\\", "ctrl+4"]
         action: split
         description: "Toggle fullscreen for this terminal."
+      - keys: ["alt+m"]
+        action: mouse
+        description: "Release the mouse to the terminal so dragging selects text, or take it back."
       - keys: ["shift+pageup"]
         action: page_up
         description: "Scroll terminal history up a page."

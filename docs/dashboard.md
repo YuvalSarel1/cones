@@ -283,7 +283,7 @@ All viewers close with the dashboard. Whether that also ends the session depends
 
 The [experimental terminal launchers](harness.md#additional-terminal-harnesses) return with Ctrl+Z; Tab and Left stay native even with empty input. OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
 
-Typing returns to the live screen. Beside the list, and for clients that read mouse events, terminal text selection needs the terminal's modifier, such as option-drag in iTerm2. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
+Typing returns to the live screen. Beside the list, and for clients that read mouse events, terminal text selection needs the terminal's modifier, such as option-drag in iTerm2, or `alt+m`, which releases the mouse to the terminal until it is pressed again. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
 
 ## Composer
 
