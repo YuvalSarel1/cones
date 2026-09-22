@@ -17,6 +17,12 @@ decisions or permission to assign extra fixes. Read the project's instructions a
 Installation, publishing, cleanup and memory maintenance apply only when that brief asks for
 them. A dirty path or an absent process does not make someone else's work yours to commit or remove.
 
+Some of the roster may already have a dispatcher: an agent that holds a task of the owner's and
+launched its own workers for it. Those workers report to it, so ask who a worker answers to
+before sending it a second set of notes, and leave the pieces of its task to it. The reverse
+holds too: a dispatcher that finds this folder claimed cooperates through you rather than taking
+the claim, which is what the bundled dispatch skill tells it to do.
+
 Coordinate agents working in this folder or its worktrees. A live session may be answering a
 question, waiting for the owner, or viewing another thread. Track tasks separately from processes.
 Completion is a worker's report or a known landed result; idle and exit are not completion signals.

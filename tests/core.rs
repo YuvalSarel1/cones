@@ -1070,7 +1070,7 @@ fn doctor_probes_only_the_switches_the_compiler_emits() {
 }
 
 #[test]
-fn coordinator_plugin_is_the_skill_and_nothing_else() {
+fn coordinator_plugin_is_prose_and_nothing_else() {
     let state = tempfile::tempdir().unwrap();
     let plugin = cones::harness::coordinator_plugin(state.path()).unwrap();
     let skill = plugin.join("skills/start-coordinator");
@@ -1095,6 +1095,7 @@ fn coordinator_plugin_is_the_skill_and_nothing_else() {
         files,
         [
             ".claude-plugin/plugin.json",
+            "skills/dispatch/SKILL.md",
             "skills/start-coordinator/SKILL.md"
         ]
     );

@@ -143,6 +143,14 @@ One directory per folder, `STATE_DIR/coordinator/folders/<sha256 of absolute fol
 
 Codex delivery requires a running local app-server daemon with `queue --thread`. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
 
+## Dispatching your own workers
+
+The bundled [dispatch skill](../assets/coordinator/skills/dispatch/SKILL.md) is for the agent that already holds the owner's task and wants parallel sessions on it: launch workers in their own worktrees, read their results, verify the combined tree and stop them. It divides nothing for you. The decomposition, the dependency order and the report back to the owner stay with the agent.
+
+It ships in the same embedded plugin as the coordinator skill, so `cones coordinator start` writes it to `STATE_DIR/coordinator/plugin` along with the other one. A session that is already running cannot be handed it that way: Claude Code reads its skills when it starts, so rewriting the plugin directory does not reach an open session, and no other harness has a plugin command of Claude's kind. Neither skill ships helpers, so reading the prose is the same as loading it.
+
+A dispatcher works in the folder it launched into. If no live coordinator holds that folder, the dispatcher may `claim` it and use the same inbox and watcher; one consumer per inbox, so whoever acknowledges mail is the one reading it. If a coordinator already holds the folder, `claim` refuses, and the dispatcher either goes through that coordinator or dispatches its task in a separate folder. Holding a task grants no authority over sessions it did not launch.
+
 ## Diagnostics
 
 `--debug` writes JSONL records to `STATE_DIR/tui-debug.log`. Each record has `v`, a UTC `timestamp`, `pid`, `dashboard_id`, `level`, `event` and `data`. The dashboard ID separates simultaneous dashboards and restarts. Related operations carry an `operation_id`; row events include the row kind, native identity, harness and discovery source when known.
