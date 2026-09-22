@@ -21,6 +21,7 @@ pub mod pi;
 pub(crate) mod process_info;
 pub mod runner;
 pub mod search;
+pub mod show;
 pub mod sqlite;
 pub mod stop;
 pub mod terminal;

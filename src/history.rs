@@ -197,24 +197,7 @@ impl Reader {
 
     /// Discover configured native homes on the worker, never on the dashboard input thread.
     pub fn discover(claude: PathBuf, state: PathBuf) -> std::io::Result<Self> {
-        Self::with_sources(
-            move || {
-                harness::known()
-                    .iter()
-                    .flat_map(|&kind| {
-                        harness::spec(kind)
-                            .home
-                            .all(&claude)
-                            .into_iter()
-                            .map(move |home| Source {
-                                harness: kind,
-                                home,
-                            })
-                    })
-                    .collect()
-            },
-            Some(state.join("search")),
-        )
+        Self::with_sources(move || sources(&claude), Some(state.join("search")))
     }
 
     fn with_sources(
@@ -278,6 +261,31 @@ struct Stamp {
     len: u64,
     device: u64,
     inode: u64,
+}
+
+/// Every configured native home, including the siblings a harness keeps beside its own.
+pub fn sources(claude: &Path) -> Vec<Source> {
+    harness::known()
+        .iter()
+        .flat_map(|&kind| {
+            harness::spec(kind)
+                .home
+                .all(claude)
+                .into_iter()
+                .map(move |home| Source {
+                    harness: kind,
+                    home,
+                })
+        })
+        .collect()
+}
+
+/// One scan of every source, for a caller that wants the whole list instead of a page.
+/// `Reader` is asynchronous because the dashboard cannot block; a command already has.
+pub fn all(sources: &[Source]) -> Result<Vec<Entry>> {
+    let mut cache = Cache::default();
+    cache.scan(sources, &mut Stats::default())?;
+    Ok(cache.entries)
 }
 
 fn stamp(path: &Path) -> std::io::Result<Stamp> {

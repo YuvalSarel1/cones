@@ -10,7 +10,7 @@
 //! user-message extractor without taking the live prompt cache lock. Control
 //! sequences are stripped before text is returned for drawing.
 use crate::{harness, output};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::{
@@ -543,28 +543,13 @@ fn parse_at(harness: &str, bytes: &[u8], mut offset: u64) -> Transcript {
         if message.text.trim().is_empty() && message.tools.is_empty() {
             continue;
         }
-        if let Some(previous) = messages.back_mut()
-            && message.role == Role::Assistant
-            && previous.role == Role::Assistant
-            && message.id.is_some()
-            && message.id == previous.id
-        {
-            size -= previous.bytes();
-            if !message.text.is_empty() {
-                if !previous.text.is_empty() {
-                    previous.text.push_str("\n\n");
-                }
-                previous.text.push_str(&message.text);
-            }
-            previous.tools.extend(message.tools);
-            previous.at = message.at.or(previous.at);
-            earlier |= trim_message(previous);
-            size += previous.bytes();
-        } else {
-            earlier |= trim_message(&mut message);
-            size += message.bytes();
-            messages.push_back(message);
+        let before = messages.back().map_or(0, Message::bytes);
+        if absorb(&mut messages, message) {
+            size -= before;
         }
+        let last = messages.back_mut().expect("absorb leaves a message behind");
+        earlier |= trim_message(last);
+        size += last.bytes();
         while messages.len() > MAX_MESSAGES || size > MAX_TEXT {
             if let Some(old) = messages.pop_front() {
                 size -= old.bytes();
@@ -579,6 +564,139 @@ fn parse_at(harness: &str, bytes: &[u8], mut offset: u64) -> Transcript {
         older: None,
         newer: None,
         matched: None,
+    }
+}
+
+/// Append a message, merging an assistant turn a harness split across records into the one
+/// it continues. Returns whether it merged, so a caller counting retained bytes can discount
+/// what the previous message already contributed.
+fn absorb(messages: &mut VecDeque<Message>, message: Message) -> bool {
+    if let Some(previous) = messages.back_mut()
+        && message.role == Role::Assistant
+        && previous.role == Role::Assistant
+        && message.id.is_some()
+        && message.id == previous.id
+    {
+        if !message.text.is_empty() {
+            if !previous.text.is_empty() {
+                previous.text.push_str("\n\n");
+            }
+            previous.text.push_str(&message.text);
+        }
+        previous.tools.extend(message.tools);
+        previous.at = message.at.or(previous.at);
+        return true;
+    }
+    messages.push_back(message);
+    false
+}
+
+/// Rows read per OpenCode page. Matches the text index: one bounded statement at a time,
+/// so a long conversation never holds a snapshot open across the whole export.
+const EXPORT_PAGE: usize = 64;
+
+/// A conversation read for something other than a pane. No message is shortened and no
+/// byte window bounds how far back the read goes, so what this returns is what the
+/// harness recorded, less the roles its definition excludes from conversation text.
+#[derive(Clone, Debug, Default)]
+pub struct Export {
+    pub messages: Vec<Message>,
+    /// Messages dropped to honour the requested tail. Zero means nothing was left out.
+    pub omitted: usize,
+    /// The file ended mid-record, so a writer is still appending and this read is behind.
+    pub incomplete: bool,
+}
+
+/// Export a conversation. `tail` keeps that many of the most recent messages; `None` keeps
+/// every one. Reading opens files for reading only: no harness client, no native state.
+pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Export> {
+    ensure!(
+        harness::by_name(harness).is_some_and(|spec| spec.transcript.available),
+        "{harness} keeps no transcript cones can read"
+    );
+    ensure!(
+        tail != Some(0),
+        "--tail takes a positive number of messages"
+    );
+    let mut out = Export::default();
+    let mut kept: VecDeque<Message> = VecDeque::new();
+    match source {
+        Source::Conversation(path) => {
+            let mut reader = BufReader::new(output::open_read(path)?);
+            let mut seen = HashSet::new();
+            let mut bytes = Vec::new();
+            loop {
+                bytes.clear();
+                let count = reader
+                    .read_until(b'\n', &mut bytes)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                if count == 0 {
+                    break;
+                }
+                // A record without its newline is still being written; it is not text yet.
+                if !bytes.ends_with(b"\n") {
+                    out.incomplete = true;
+                    break;
+                }
+                let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
+                    continue;
+                };
+                if let Some(id) = v["uuid"].as_str()
+                    && !seen.insert(id.to_owned())
+                {
+                    continue;
+                }
+                keep(&mut kept, harness, &v, tail, &mut out.omitted);
+            }
+        }
+        Source::Opencode {
+            database,
+            session_id,
+        } => {
+            let mut at = 0;
+            loop {
+                let events =
+                    crate::opencode::conversation_page(database, session_id, at, EXPORT_PAGE)?;
+                let count = events.len();
+                for v in &events {
+                    keep(&mut kept, harness, v, tail, &mut out.omitted);
+                }
+                at += count;
+                if count < EXPORT_PAGE {
+                    break;
+                }
+            }
+        }
+        Source::Run { .. } => bail!("a run's captured output is not a conversation"),
+        Source::Match { .. } => bail!("a search result is not a conversation"),
+    }
+    out.messages = kept.into();
+    Ok(out)
+}
+
+/// Add one native record's message to the export, dropping the oldest once the tail is full.
+fn keep(
+    kept: &mut VecDeque<Message>,
+    harness: &str,
+    v: &Value,
+    tail: Option<usize>,
+    omitted: &mut usize,
+) {
+    let Some(mut message) = message(harness, v) else {
+        return;
+    };
+    message.text = plain(&message.text);
+    if message.text.trim().is_empty() && message.tools.is_empty() {
+        return;
+    }
+    // A merged continuation joins the message already counted, so the tail is unchanged.
+    if !absorb(kept, message)
+        && let Some(tail) = tail
+    {
+        while kept.len() > tail {
+            kept.pop_front();
+            *omitted += 1;
+        }
     }
 }
 

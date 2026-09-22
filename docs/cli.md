@@ -27,6 +27,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
+| `cones show ID [--tail N] [--all]` | [Read a session's conversation](#reading-a-conversation). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
 | `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
 
@@ -43,6 +44,24 @@ cones ls --dir ~/src/app --json
 ```
 
 The [coordinator](#coordinator) reads its folder this way instead of walking the harness registries itself.
+
+### Reading a conversation
+
+```sh
+cones show 4f0c2b1e-8d31-4a55-9f0c-6b2a17e4d900
+cones show 4f0c2b1e --tail 5
+cones show 4f0c2b1e --all
+```
+
+`cones show` prints a session's conversation as text. Each message is labelled `user`, `assistant` or `output`, followed by the harness's own timestamp in your local timezone, then the text, then the tool calls that turn recorded. Terminal control sequences are stripped: a transcript is data, never something your terminal runs.
+
+The default is the last 40 messages. `--tail N` asks for a different count and `--all` for the whole conversation the harness kept. A read that left messages out starts with `[N earlier messages omitted; --all exports the whole conversation]`, so a bounded read is never mistaken for a full one. No individual message is shortened, which is where this differs from the dashboard's preview pane.
+
+`ID` is the session id `cones ls` prints, or an unambiguous prefix of at least four characters. An exact id wins over a prefix that another session also starts with, and a prefix two sessions share is an error naming both. Sessions come from the same discovery the dashboard's history uses, so a finished session reads like a live one, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and the OpenCode home select which sessions exist.
+
+Claude, Codex, pi and OpenCode keep conversations cones can read. A harness whose session lives only in its own terminal keeps none, so there is nothing to show and naming one is an error rather than an empty export.
+
+Reading opens files for reading. It attaches to nothing, resumes nothing, starts no viewer and writes no native state, so a worker cannot tell that its conversation was read. A record the harness has not finished writing is left out, and the note saying so goes to stderr, so the conversation on stdout stays pipeable.
 
 ### Starting a session
 

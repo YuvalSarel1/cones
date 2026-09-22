@@ -463,3 +463,386 @@ fn incomplete_and_malformed_records_are_ignored_and_cache_retention_is_limited()
     let reread = read(&mut reader, target(&dir.path().join("0.jsonl"))).unwrap();
     assert!(!Arc::ptr_eq(first.as_ref().unwrap(), &reread));
 }
+
+/// `cones show` exports, as opposed to previews: whole messages, an explicit tail and an
+/// honest report of what the harness has not finished writing.
+mod export {
+    use super::{claude, records};
+    use cones::transcript::{self, Export, Role, Source};
+    use serde_json::{Value, json};
+    use std::{fs, path::Path, process::Command};
+
+    fn file(dir: &Path, name: &str, values: &[Value]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, records(values)).unwrap();
+        path
+    }
+
+    fn export(path: &Path, harness: &str, tail: Option<usize>) -> Export {
+        transcript::export(&Source::Conversation(path.to_owned()), harness, tail).unwrap()
+    }
+
+    fn texts(export: &Export) -> Vec<&str> {
+        export.messages.iter().map(|m| m.text.as_str()).collect()
+    }
+
+    #[test]
+    fn exports_keep_whole_messages_and_name_what_the_tail_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let huge = "x".repeat(200 * 1024);
+        let mut values: Vec<Value> = (0..99)
+            .map(|i| {
+                claude(
+                    if i % 2 == 0 { "user" } else { "assistant" },
+                    &format!("message {i}"),
+                )
+            })
+            .collect();
+        values.push(claude("assistant", &huge));
+        let path = file(dir.path(), "long.jsonl", &values);
+
+        let all = export(&path, "claude", None);
+        assert_eq!(all.messages.len(), 100);
+        assert_eq!(all.omitted, 0);
+        assert!(!all.incomplete);
+        assert_eq!(all.messages[0].text, "message 0");
+        assert_eq!(all.messages[0].role, Role::User);
+        assert_eq!(all.messages[1].role, Role::Assistant);
+        // The preview bounds retained text for a pane; an export must not silently do that.
+        assert_eq!(all.messages[99].text.len(), huge.len());
+        let preview = transcript::parse("claude", &records(&values));
+        assert!(
+            preview.messages.last().unwrap().text.len() < huge.len(),
+            "the preview is expected to trim, which is what the export must not inherit"
+        );
+
+        let tail = export(&path, "claude", Some(40));
+        assert_eq!(tail.messages.len(), 40);
+        assert_eq!(tail.omitted, 60);
+        assert_eq!(tail.messages[0].text, "message 60");
+        assert_eq!(tail.messages[39].text.len(), huge.len());
+
+        let short = export(&path, "claude", Some(500));
+        assert_eq!(short.messages.len(), 100);
+        assert_eq!(short.omitted, 0);
+
+        let error = transcript::export(&Source::Conversation(path), "claude", Some(0))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("positive number"), "{error}");
+    }
+
+    #[test]
+    fn an_assistant_turn_split_across_records_stays_one_message_in_the_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let split = |text: &str| json!({"type":"assistant","message":{"id":"one","content":[{"type":"text","text":text}]}});
+        let path = file(
+            dir.path(),
+            "split.jsonl",
+            &[
+                claude("user", "question"),
+                split("first half"),
+                split("second half"),
+                claude("user", "follow up"),
+            ],
+        );
+        let all = export(&path, "claude", None);
+        assert_eq!(
+            texts(&all),
+            ["question", "first half\n\nsecond half", "follow up"]
+        );
+        // A continuation joins a message already counted, so it cannot evict the tail twice.
+        let tail = export(&path, "claude", Some(2));
+        assert_eq!(texts(&tail), ["first half\n\nsecond half", "follow up"]);
+        assert_eq!(tail.omitted, 1);
+    }
+
+    #[test]
+    fn every_harness_that_declares_a_reader_exports_and_the_rest_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let codex = file(
+            dir.path(),
+            "codex.jsonl",
+            &[
+                json!({"type":"event_msg","payload":{"item":{"type":"UserMessage","content":[{"type":"text","text":"question"}]}}}),
+                json!({"type":"response_item","payload":{"type":"message","role":"assistant","id":"m","content":[{"type":"output_text","text":"answer"}]}}),
+                json!({"type":"response_item","payload":{"type":"function_call","name":"exec","arguments":"cargo test"}}),
+            ],
+        );
+        let exported = export(&codex, "codex", None);
+        assert_eq!(texts(&exported)[..2], ["question", "answer"]);
+        assert_eq!(exported.messages.last().unwrap().tools[0].name, "exec");
+
+        let pi = file(
+            dir.path(),
+            "pi.jsonl",
+            &[
+                json!({"type":"session","id":"pi","cwd":"/fixture"}),
+                json!({"type":"message","message":{"role":"user","content":[{"type":"text","text":"question"}]}}),
+                json!({"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"tool noise"}]}}),
+                json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"answer"}]}}),
+            ],
+        );
+        assert_eq!(texts(&export(&pi, "pi", None)), ["question", "answer"]);
+
+        let opencode = dir.path().join("opencode.db");
+        let mut child = Command::new("sqlite3")
+            .arg(&opencode)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        std::io::Write::write_all(
+            &mut child.stdin.take().unwrap(),
+            include_bytes!("../assets/harnesses/fixtures/opencode.sql"),
+        )
+        .unwrap();
+        assert!(child.wait().unwrap().success());
+        let exported = transcript::export(
+            &Source::Opencode {
+                database: opencode,
+                session_id: "ses_fixture".into(),
+            },
+            "opencode",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            texts(&exported),
+            [
+                "Inspect the fixture\nand explain it",
+                "Reading",
+                "Done\nAdditional detail"
+            ]
+        );
+
+        // A harness cones cannot read is refused by name, not answered with an empty export.
+        let error = transcript::export(&Source::Conversation(codex.clone()), "gemini", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no transcript cones can read"), "{error}");
+        let error = transcript::export(
+            &Source::Run {
+                events: Some(codex),
+                stderr: None,
+            },
+            "claude",
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not a conversation"), "{error}");
+    }
+
+    #[test]
+    fn malformed_and_half_written_records_are_skipped_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("partial.jsonl");
+        let mut bytes = records(&[
+            claude("user", "first"),
+            json!({"type":"user","uuid":"u1","message":{"content":[{"type":"text","text":"once"}]}}),
+            json!({"type":"user","uuid":"u1","message":{"content":[{"type":"text","text":"once"}]}}),
+        ]);
+        bytes.extend_from_slice(b"{ not json at all }\n");
+        bytes.extend_from_slice(
+            records(&[claude("assistant", "\x1b[31mred\x1b[0m and \x07bell")]).as_slice(),
+        );
+        // A record a harness is still writing has no newline yet.
+        bytes.extend_from_slice(format!("{}", claude("assistant", "half written")).as_bytes());
+        fs::write(&path, &bytes).unwrap();
+
+        let exported = export(&path, "claude", None);
+        assert_eq!(texts(&exported), ["first", "once", "red and bell"]);
+        assert!(exported.incomplete);
+
+        // Completing the record makes it readable and the export complete again.
+        fs::write(&path, [bytes.as_slice(), b"\n"].concat()).unwrap();
+        let exported = export(&path, "claude", None);
+        assert_eq!(texts(&exported).last(), Some(&"half written"));
+        assert!(!exported.incomplete);
+    }
+}
+
+/// `cones show` end to end: identity from history discovery, text on stdout, and a
+/// session that cannot tell it was read.
+mod show {
+    use super::{claude, records};
+    use serde_json::{Value, json};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        process::{Command, Output},
+        time::SystemTime,
+    };
+
+    const ALPHA: &str = "11111111-1111-4111-8111-111111111111";
+    const BETA: &str = "22222222-2222-4222-8222-222222222222";
+    const GAMMA: &str = "22222222-2222-4222-8222-222222222223";
+
+    /// Every file under a native home, so a read that changed one is visible.
+    fn snapshot(root: &Path) -> Vec<(PathBuf, u64, SystemTime)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_owned()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let meta = entry.metadata().unwrap();
+                if meta.is_dir() {
+                    stack.push(entry.path());
+                } else {
+                    out.push((entry.path(), meta.len(), meta.modified().unwrap()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn conversation(texts: &[String]) -> Vec<Value> {
+        let mut values = vec![json!({
+            "type": "user", "cwd": "/fixture", "timestamp": "2026-09-16T12:00:00Z",
+            "message": {"content": [{"type": "text", "text": texts[0]}]}
+        })];
+        values.extend(
+            texts
+                .iter()
+                .enumerate()
+                .skip(1)
+                .map(|(i, text)| claude(if i % 2 == 0 { "user" } else { "assistant" }, text)),
+        );
+        values
+    }
+
+    #[test]
+    fn show_exports_a_historical_session_from_a_custom_home_without_touching_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("claude-home");
+        let project = home.join("projects").join("fixture");
+        fs::create_dir_all(&project).unwrap();
+        let long: Vec<String> = (0..50).map(|i| format!("message {i}")).collect();
+        let alpha = project.join(format!("{ALPHA}.jsonl"));
+        fs::write(&alpha, records(&conversation(&long))).unwrap();
+        for id in [BETA, GAMMA] {
+            fs::write(
+                project.join(format!("{id}.jsonl")),
+                records(&conversation(&[
+                    format!("{id} asked"),
+                    format!("{id} answered"),
+                ])),
+            )
+            .unwrap();
+        }
+
+        let run = |args: &[&str]| -> Output {
+            Command::new(env!("CARGO_BIN_EXE_cones"))
+                .args([
+                    "--state-dir",
+                    dir.path().join("state").to_str().unwrap(),
+                    "--jobs",
+                    dir.path().join("jobs.yaml").to_str().unwrap(),
+                ])
+                .args(args)
+                .env("TZ", "UTC")
+                .env("HOME", dir.path())
+                .env("CLAUDE_CONFIG_DIR", &home)
+                .env("CODEX_HOME", dir.path().join("missing-codex"))
+                .env("PI_CODING_AGENT_DIR", dir.path().join("missing-pi"))
+                .env_remove("OPENCODE_DB")
+                .env_remove("OPENCODE_TUI_CONFIG")
+                .env_remove("XDG_DATA_HOME")
+                .output()
+                .unwrap()
+        };
+        let ok = |args: &[&str]| -> String {
+            let out = run(args);
+            assert!(
+                out.status.success(),
+                "cones {}: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(
+                out.stderr.is_empty(),
+                "diagnostics belong on stderr only when there are any: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8(out.stdout).unwrap()
+        };
+        let failure = |args: &[&str]| -> String {
+            let out = run(args);
+            assert!(!out.status.success(), "cones {} succeeded", args.join(" "));
+            String::from_utf8(out.stderr).unwrap()
+        };
+
+        let before = snapshot(&home);
+
+        // The default is a bounded tail that says so, labelled by role and native time.
+        let text = ok(&["show", ALPHA]);
+        assert!(
+            text.starts_with("[10 earlier messages omitted; --all exports the whole conversation]"),
+            "{text}"
+        );
+        assert!(text.contains("user 2026-09-16T12:00:00+00:00\n"), "{text}");
+        assert!(
+            text.contains("\nmessage 10\n") && text.contains("\nmessage 49\n"),
+            "{text}"
+        );
+        assert!(!text.contains("message 9\n"), "{text}");
+
+        let all = ok(&["show", ALPHA, "--all"]);
+        assert!(!all.contains("omitted"), "{all}");
+        assert!(
+            all.contains("\nmessage 0\n") && all.contains("\nmessage 49\n"),
+            "{all}"
+        );
+        assert_eq!(all.matches("\nassistant 2026").count(), 25, "{all}");
+
+        let two = ok(&["show", ALPHA, "--tail", "2"]);
+        assert!(two.starts_with("[48 earlier messages omitted"), "{two}");
+        assert!(
+            two.contains("\nmessage 48\n") && two.contains("\nmessage 49\n"),
+            "{two}"
+        );
+        assert!(!two.contains("message 47"), "{two}");
+
+        // A prefix is enough when it names one session, and an exact id beats a shared prefix.
+        assert!(ok(&["show", "1111"]).contains("message 49"));
+        assert!(ok(&["show", BETA, "--all"]).contains(&format!("{BETA} answered")));
+        let ambiguous = failure(&["show", "2222"]);
+        assert!(
+            ambiguous.contains("matches 2 sessions") && ambiguous.contains(GAMMA),
+            "{ambiguous}"
+        );
+        for unknown in ["99999999-9999-4999-8999-999999999999", "ab"] {
+            let missing = failure(&["show", unknown]);
+            assert!(missing.contains("no session"), "{missing}");
+        }
+        assert!(failure(&["show", ALPHA, "--tail", "0"]).contains("positive number"));
+        // A bounded read and the whole conversation are different requests.
+        assert!(
+            !run(&["show", ALPHA, "--tail", "1", "--all"])
+                .status
+                .success()
+        );
+
+        assert_eq!(
+            before,
+            snapshot(&home),
+            "reading a session changed its home"
+        );
+        assert!(
+            !dir.path().join("state").exists(),
+            "reading a session created cones state"
+        );
+
+        // A record the harness has not finished writing is left out, and said so on stderr.
+        let mut partial = fs::read(&alpha).unwrap();
+        partial.extend_from_slice(format!("{}", claude("assistant", "still writing")).as_bytes());
+        fs::write(&alpha, partial).unwrap();
+        let out = run(&["show", ALPHA, "--all"]);
+        assert!(out.status.success());
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(!text.contains("still writing"), "{text}");
+        let diagnostics = String::from_utf8(out.stderr).unwrap();
+        assert!(diagnostics.contains("is being written"), "{diagnostics}");
+    }
+}

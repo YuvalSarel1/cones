@@ -173,6 +173,17 @@ enum Action {
         #[arg(long)]
         run_id: String,
     },
+    /// A session's conversation as text; see docs/cli.md. Reading starts nothing.
+    Show {
+        /// The session id as the roster prints it, or an unambiguous prefix of one.
+        id: String,
+        /// Export this many of the most recent messages instead of the default 40.
+        #[arg(long, conflicts_with = "all")]
+        tail: Option<usize>,
+        /// The whole conversation the harness recorded, however long it is.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 fn main() {
@@ -636,6 +647,20 @@ fn execute(cli: Cli) -> Result<i32> {
                     print!("{}", cones::coordinator::send(&folder, &id, &text, greet)?);
                 }
                 CoordinatorTask::Tick => print!("{}", cones::coordinator::tick(&folder)?),
+            }
+            Ok(0)
+        }
+        Action::Show { id, tail, all } => {
+            let located = cones::show::locate(&claude, &id)?;
+            let tail = (!all).then(|| tail.unwrap_or(cones::show::DEFAULT_TAIL));
+            let export = cones::transcript::export(&located.source, &located.key.harness, tail)?;
+            print!("{}", cones::show::render(&export));
+            // The export is text on stdout; what is wrong with it belongs on stderr.
+            if export.incomplete {
+                eprintln!(
+                    "cones: {} is being written; its last record is not in this export",
+                    located.key.session_id
+                );
             }
             Ok(0)
         }
