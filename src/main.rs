@@ -393,14 +393,19 @@ fn execute(cli: Cli) -> Result<i32> {
                 );
             }
             let prompt = prompt.unwrap_or_default();
-            match harness::start(kind, &dir, prompt.trim(), &policy)? {
+            let start = harness::start(kind, &dir, prompt.trim(), &policy)?;
+            if print_command {
+                let command = match start {
+                    harness::Start::Background(c) => c,
+                    harness::Start::Foreground(c) => harness::restore_stdin_prompt(c)?,
+                };
+                println!("{}", shell_command(dir.as_os_str(), &command));
+                return Ok(0);
+            }
+            match start {
                 // Claude's launch returns once the background session is recorded; its
                 // identifier is the command's own output, as it is for the dashboard.
                 harness::Start::Background(mut command) => {
-                    if print_command {
-                        println!("{}", shell_command(dir.as_os_str(), &command));
-                        return Ok(0);
-                    }
                     let status = command
                         .stdin(std::process::Stdio::null())
                         .status()
@@ -410,10 +415,6 @@ fn execute(cli: Cli) -> Result<i32> {
                 // Every other harness is its own terminal client, so it takes this terminal.
                 harness::Start::Foreground(mut command) => {
                     command = harness::restore_stdin_prompt(command)?;
-                    if print_command {
-                        println!("{}", shell_command(dir.as_os_str(), &command));
-                        return Ok(0);
-                    }
                     attach_real_tty(&mut command);
                     let error = command.exec();
                     bail!("{kind} failed to start: {error}")
