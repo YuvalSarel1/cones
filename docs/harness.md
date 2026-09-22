@@ -95,7 +95,7 @@ History uses native transcript archives independently of live registries, proces
 
 Identity is harness, canonical native home and session id. Aliases of a home collapse; separate homes stay distinct. Directory symlinks are not followed. Claude copies across project folders collapse to the copy with the latest recorded activity. Entries without a recorded cwd are omitted; missing activity remains absent and sorts last. No file mtime substitutes for a reported timestamp.
 
-Previews select user and assistant text in native order. Claude uses native message content; Codex uses UI `UserMessage` events or legacy `user_message` records plus assistant `response_item` text; pi uses its user/assistant messages. OpenCode orders messages by creation time and id, and text parts by id, excluding synthetic and ignored parts. Tool results, thinking and injected instructions are excluded, and terminal control sequences are stripped before display.
+Previews select user and assistant text in native order. Claude uses native message content; Codex uses UI `UserMessage` events or legacy `user_message` records plus assistant `response_item` text; pi uses its user/assistant messages. OpenCode orders messages by creation time and id, and text parts by id, excluding synthetic and ignored parts. Tool results, thinking and injected instructions are excluded, and terminal control sequences are stripped before display. A harness whose definition declares no peek, such as pi and OpenCode, uses the same preview for its live rows, because no viewer of it ever opens; a harness that declares one keeps its native pane while a row has a client to join, and falls back to the preview for a row whose client the harness has retired.
 
 ### Coordinator identity
 

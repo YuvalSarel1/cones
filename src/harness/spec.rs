@@ -1338,8 +1338,16 @@ impl HarnessSpec {
             .unwrap_or(&self.default_session)
     }
 
+    /// A harness that declares no peek at all: no row of it ever opens a live pane, whatever
+    /// its kind or state. Those rows preview their conversation read-only instead. A harness
+    /// that does declare one keeps its native pane while a row has a client to join, and its
+    /// rows without one read the conversation the same way.
+    pub fn never_peeks(&self) -> bool {
+        self.viewer.peek == Peek::Unavailable
+    }
+
     pub fn permits_peek(&self, session: &Session) -> bool {
-        self.viewer.peek != Peek::Unavailable
+        !self.never_peeks()
             && self.session(session.kind.as_deref()).join != Join::Unavailable
             && !self
                 .viewer

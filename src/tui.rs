@@ -9796,6 +9796,40 @@ impl App {
                     source,
                 })
             }
+            // pi and OpenCode are seen and never joined, so their live rows have no native
+            // viewer to wait for. Preview the conversation they are writing rather than
+            // leaving the pane empty. Claude and Codex rows keep their native pane.
+            //
+            // A settled row is the same case for one refresh or for good: the harness has
+            // retired its client, so there is nothing to join and the pane the reader stares
+            // at is empty. Read its conversation instead. A row with a client keeps the
+            // native pane, and entering the row still revives the session.
+            Kind::Session(id, _) => {
+                let s = self.data.sessions.iter().find(|s| &s.session_id == id)?;
+                let spec = harness::by_name(&s.harness)?;
+                let settled = s.pid.is_none()
+                    && spec
+                        .viewer
+                        .peek_blocked_states
+                        .iter()
+                        .any(|state| state.as_str() == s.state);
+                if !spec.never_peeks() && !settled {
+                    return None;
+                }
+                let path = s.transcript_path.clone()?;
+                Some(transcript::Target {
+                    key: id.clone(),
+                    harness: s.harness.clone(),
+                    source: if s.harness == "opencode" {
+                        transcript::Source::Opencode {
+                            database: path,
+                            session_id: s.session_id.clone(),
+                        }
+                    } else {
+                        transcript::Source::Conversation(path)
+                    },
+                })
+            }
             _ => None,
         }
     }
@@ -10136,13 +10170,16 @@ impl App {
                 self.transcript.requested = false;
             }
         }
-        // Runs can finish or write stderr after the last live snapshot. Poll their file
-        // stamps while visible; unchanged files reuse the reader's cached document.
-        if matches!(self.selected().map(|r| &r.kind), Some(Kind::Run(..)))
-            && self
-                .transcript
-                .loaded_at
-                .is_some_and(|at| at.elapsed() >= Duration::from_secs(1))
+        // Runs can finish or write stderr after the last live snapshot, and a previewed live
+        // session keeps writing its conversation. Poll their file stamps while visible;
+        // unchanged files reuse the reader's cached document.
+        if matches!(
+            self.selected().map(|r| &r.kind),
+            Some(Kind::Run(..) | Kind::Session(..))
+        ) && self
+            .transcript
+            .loaded_at
+            .is_some_and(|at| at.elapsed() >= Duration::from_secs(1))
         {
             self.transcript.requested = false;
         }
@@ -15762,6 +15799,14 @@ impl App {
                 }
                 (title, subtitle)
             }
+            // A live row's conversation is still being written: say live, not history.
+            Some(Kind::Session(..)) => (
+                format!(
+                    "{} · conversation · live · read only",
+                    logo(&target.harness)
+                ),
+                String::new(),
+            ),
             _ => (
                 format!("{} · history · read only", logo(&target.harness)),
                 String::new(),
@@ -20619,6 +20664,50 @@ states:
         assert!(app.transcript.focused);
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(!app.transcript.focused);
+    }
+
+    /// pi and OpenCode are never joined, so a live row of either previews the conversation
+    /// it is writing. A Claude row keeps its native viewer and previews nothing.
+    #[test]
+    fn live_row_of_a_harness_that_cannot_be_joined_previews_its_conversation() {
+        let (d, mut app, mut terminal) = history_fixture(0);
+        let path = d.path().join("pi-session.jsonl");
+        let records = [
+            json!({"type":"message","message":{"role":"user","content":"why is the pane empty"}}),
+            json!({"type":"message","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"pi reply in the pane"}]}}),
+        ];
+        fs::write(
+            &path,
+            records.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let mut row = session(A, "idle", "pi work", 0);
+        row.harness = "pi".into();
+        row.kind = None;
+        row.cwd = d.path().to_owned();
+        row.pid = Some(4321);
+        row.transcript_path = Some(path);
+        let mut live = session(B, "idle", "claude work", 0);
+        live.pid = Some(4322);
+        live.transcript_path = Some(app.claude.join("projects/history/missing.jsonl"));
+        app.data.sessions = vec![row, live];
+        app.rebuild();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(&app.rows[i].kind, Kind::Session(id, _) if id == A))
+            .unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(text.contains("pi reply in the pane"), "{text}");
+        assert!(text.contains("conversation · live · read only"), "{text}");
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(&app.rows[i].kind, Kind::Session(id, _) if id == B))
+            .unwrap();
+        app.transcript_tick();
+        assert!(app.transcript_target().is_none(), "claude keeps its viewer");
     }
 
     #[test]
@@ -28204,6 +28293,71 @@ while True:
         assert!(
             !harness::can_peek(s, d.path()),
             "the harness layer refuses too, for every peek path"
+        );
+    }
+
+    /// The harness retires a background session's client between turns, and the row it leaves
+    /// has nothing to join: the peek is refused and the pane stayed empty, so the reader lost
+    /// the conversation the moment the daemon parked it. Read it instead, while a row that
+    /// still has a client keeps its native pane.
+    #[test]
+    fn a_settled_session_reads_its_conversation_where_a_joinable_row_keeps_the_native_pane() {
+        let d = dir();
+        let one = d.path().join("one");
+        fs::create_dir(&one).unwrap();
+        registry_bg(d.path(), A, one.to_str().unwrap(), "idle", 1);
+        let job = d.path().join("jobs").join(&A[..8]);
+        fs::create_dir_all(&job).unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({
+                "state": "stopped", "tempo": "idle", "sessionId": A, "cwd": one
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let slug = one
+            .to_string_lossy()
+            .replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+        let project = d.path().join("projects").join(slug);
+        fs::create_dir_all(&project).unwrap();
+        let records = [
+            serde_json::json!({"type":"user","cwd":one,"timestamp":"2026-09-22T12:00:00Z","message":{"content":"land the fix"}}),
+            serde_json::json!({"type":"assistant","timestamp":"2026-09-22T12:00:04Z","message":{"id":"m","model":"fixture-model","usage":{"input_tokens":20,"output_tokens":4},"content":[{"type":"text","text":"parked mid-thought"}]}}),
+        ];
+        fs::write(
+            project.join(format!("{A}.jsonl")),
+            records.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+        let mut app = app(d.path());
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(160, 24)).unwrap();
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        assert_eq!(
+            app.transcript_target().map(|t| t.key),
+            None,
+            "a session with a client is joined, not read"
+        );
+        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
+        app.refresh().unwrap();
+        assert_eq!(key(&app).as_deref(), Some(A));
+        rested(&mut app, A, OLD);
+        assert_eq!(
+            app.prespawn_decision(),
+            Err("native_kind_cannot_peek"),
+            "the peek is still refused, so the pane has no client to wait for"
+        );
+        assert_eq!(
+            app.transcript_target().map(|t| t.key),
+            Some(A.to_owned()),
+            "the settled row reads its own conversation"
+        );
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let pane = pane_text(&app, &terminal);
+        assert!(
+            pane.contains("parked mid-thought"),
+            "the reader sees the reply the session parked on: {pane}"
         );
     }
 
