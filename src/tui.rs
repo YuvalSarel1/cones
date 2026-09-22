@@ -1608,12 +1608,14 @@ impl Guide {
                     )
                 } else {
                     format!(
-                        "{} · enter opens a heading · {} shortcuts",
+                        "{} by {} · shift+tab {} · enter opens a heading · {} shortcuts",
                         if active {
                             "Type to search"
                         } else {
                             "Enter to search"
                         },
+                        self.search.label(),
+                        self.search.other().label(),
                         guide_groups()
                             .iter()
                             .flat_map(|g| g.sections.iter())
@@ -1652,9 +1654,11 @@ impl Guide {
             let switch = format!("{} search", self.search.other().label());
             return hints(&[("↑↓", "scroll"), ("shift+tab", &switch), ("esc", "clear")]);
         }
+        let switch = format!("{} search", self.search.other().label());
         hints(&[
             ("↑↓", "heading"),
             ("enter", "open"),
+            ("shift+tab", &switch),
             ("pgup/dn", "page"),
             ("esc", "back"),
         ])
@@ -17373,6 +17377,32 @@ states:
         );
         guide.typed("resets");
         assert_eq!(guide.search, search::Mode::Words);
+    }
+
+    #[test]
+    fn help_offers_the_other_search_before_anything_is_typed() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        app.mode = Mode::Guide(Guide::new(&["List navigation"]));
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(96, 24)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 96).join("\n");
+        assert!(
+            text.contains("Type to search by words · shift+tab meaning"),
+            "an empty Help names its search and the key that switches it: {text}"
+        );
+        assert!(
+            text.contains("shift+tab meaning search"),
+            "the hint bar carries the switch too: {text}"
+        );
+        app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 96).join("\n");
+        assert!(
+            text.contains("Type to search by meaning · shift+tab words"),
+            "switching with nothing typed says so: {text}"
+        );
     }
 
     #[test]
