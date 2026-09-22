@@ -17558,7 +17558,9 @@ states:
             "{lines:#?}"
         );
         assert!(
-            text.contains("↑↓ heading · enter open · pgup/dn page · esc back"),
+            text.contains(
+                "↑↓ heading · enter open · shift+tab meaning search · pgup/dn page · esc back"
+            ),
             "{text}"
         );
         let Mode::Guide(g) = &app.mode else {
