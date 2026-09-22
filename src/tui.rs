@@ -195,6 +195,28 @@ impl Row {
     }
 }
 
+/// What a run is doing now, resolved once. A run has up to three accounts of itself: the
+/// agent living in it, the ledger record that closed it, and its transcript's own reading.
+/// Every place that draws a run reads this instead of picking among them again, because
+/// picking again is how a row came to say `timeout` at an agent that was working.
+#[derive(Debug, Default, Clone)]
+pub struct RunView {
+    /// The live agent's own state, when a run has one. Counts it among the fleet.
+    pub agent: Option<String>,
+    /// What the status column says. A run the ledger still calls started keeps that word:
+    /// the stop and follow-log actions read the same string.
+    pub status: String,
+    pub duration_s: Option<f64>,
+    pub cost_usd: Option<f64>,
+    pub cost_info: Option<crate::cost::Info>,
+    pub model: Option<String>,
+    pub context_tokens: Option<u64>,
+    pub context_window: Option<u64>,
+    pub tokens_in: Option<u64>,
+    pub tokens_out: Option<u64>,
+    pub last: Option<String>,
+}
+
 pub struct Data {
     pub jobs: Vec<ResolvedJob>,
     /// The configuration file these jobs came from; it follows the dashboard's directory.
@@ -427,8 +449,107 @@ impl Data {
         })
     }
 
+    /// An agent a run holds is still an agent: its row is the run's, but the fleet it belongs
+    /// to is the same one the header counts.
     fn count(&self, state: &str) -> usize {
         self.sessions.iter().filter(|s| s.state == state).count()
+            + self
+                .runs
+                .iter()
+                .filter(|r| self.agent_in(r).is_some_and(|s| s.state == state))
+                .count()
+    }
+
+    /// Resolve a run against the agent in it, its ledger record and its transcript, in that
+    /// order of authority. Nothing caches this: a stored view is one more account of a run to
+    /// leave stale, which is the shape of the bug it exists to prevent.
+    pub fn view(&self, run_id: &str) -> Option<RunView> {
+        self.runs
+            .iter()
+            .find(|r| r.started.run_id == run_id)
+            .map(|run| self.resolve_run(run))
+    }
+
+    fn resolve_run(&self, run: &Run) -> RunView {
+        let ledger = run.status();
+        let last = run.terminal.as_ref().unwrap_or(&run.started);
+        let blank = history::Columns::default();
+        let report = self.run_reports.get(&run.started.run_id).unwrap_or(&blank);
+        let live = self.agent_in(run);
+        let (cost_usd, cost_info) = match live {
+            Some(s) => (s.cost_usd, s.cost_info.clone()),
+            // A run killed at its timeout never receives the harness's closing total, so the
+            // only price it has left is the one its own transcript adds up.
+            None => match last.cost_usd {
+                Some(c) => (Some(c), None),
+                None => (report.cost_usd, report.cost_info.clone()),
+            },
+        };
+        RunView {
+            agent: live.map(|s| s.state.clone()),
+            status: match (&live, ledger.as_str()) {
+                (_, "started") => ledger,
+                (Some(s), _) => s.state.clone(),
+                (None, _) => ledger,
+            },
+            // A resumed run has no second fired_at, so its live figure is the agent's own age,
+            // the same reading the fleet prints for any agent. It spans the gap the run spent
+            // stopped; the recorded duration is what the run itself took.
+            duration_s: match live {
+                Some(s) => s
+                    .started
+                    .map(|at| (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0)
+                    .or(last.duration_s),
+                None => last.duration_s.or_else(|| {
+                    (run.terminal.is_none() && run.status() == "started")
+                        .then(|| {
+                            run.started.fired_at.map(|at| {
+                                (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0
+                            })
+                        })
+                        .flatten()
+                }),
+            },
+            cost_usd,
+            cost_info,
+            model: live
+                .and_then(|s| s.model.clone())
+                .or_else(|| report.model.clone()),
+            context_tokens: live
+                .and_then(|s| s.context_tokens)
+                .or(report.context_tokens),
+            context_window: live
+                .and_then(|s| s.context_window)
+                .or(report.context_window),
+            tokens_in: live
+                .and_then(|s| s.tokens_in)
+                .or(last.tokens_in)
+                .or(report.tokens_in),
+            tokens_out: live
+                .and_then(|s| s.tokens_out)
+                .or(last.tokens_out)
+                .or(report.tokens_out),
+            last: live
+                .and_then(|s| s.last.clone())
+                .or_else(|| report.last.clone()),
+        }
+    }
+
+    /// The agent in a run. Discovery collapses a session the ledger owns out of the live list;
+    /// a resume the harness reports under a fresh id arrives through the run's own pane. A
+    /// client that has left says nothing the ledger record does not.
+    fn agent_in(&self, run: &Run) -> Option<&Session> {
+        let owned = run.started.session_id.as_deref();
+        self.run_live
+            .iter()
+            .find(|(id, _)| *id == run.started.run_id)
+            .map(|(_, s)| s)
+            .or_else(|| {
+                self.run_sessions
+                    .iter()
+                    .find(|s| Some(s.session_id.as_str()) == owned)
+            })
+            .filter(|s| !matches!(s.state.as_str(), "exited" | "done" | "stopped"))
     }
 
     /// Folders to offer under `+ add folder`: the pinned ones, `query` keeping those whose
@@ -492,36 +613,6 @@ impl Data {
         }
         spans.pop();
         Line::from(spans)
-    }
-
-    /// The agent a run has right now. Discovery collapses a session the ledger owns into
-    /// `run_sessions`; a resume the harness reports under a fresh id arrives through the run's
-    /// own pane instead. A client that has left says nothing the terminal record does not.
-    fn live_run(&self, run_id: &str) -> Option<&Session> {
-        let run = self.runs.iter().find(|r| r.started.run_id == run_id)?;
-        let owned = run.started.session_id.as_deref();
-        self.run_live
-            .iter()
-            .find(|(id, _)| id == run_id)
-            .map(|(_, s)| s)
-            .or_else(|| {
-                self.run_sessions
-                    .iter()
-                    .find(|s| Some(s.session_id.as_str()) == owned)
-            })
-            .filter(|s| !matches!(s.state.as_str(), "exited" | "done" | "stopped"))
-    }
-
-    /// The state a run's row reports: its agent's when one is live, the ledger's otherwise. A
-    /// run the ledger still calls started keeps that word, because the actions the row offers
-    /// and its pulse both read it.
-    fn run_state(&self, run: &Run) -> String {
-        let ledger = run.status();
-        if ledger == "started" {
-            return ledger;
-        }
-        self.live_run(&run.started.run_id)
-            .map_or(ledger, |s| s.state.clone())
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
@@ -804,10 +895,8 @@ impl Data {
             let cells = runs
                 .iter()
                 .map(|r| {
-                    // A resumed run is working again; the ledger's terminal record stays in the
-                    // reason column, where it says why it was resumed from.
-                    let live = self.live_run(&r.started.run_id);
-                    let status = self.run_state(r);
+                    let view = self.view(&r.started.run_id).unwrap_or_default();
+                    let status = &view.status;
                     let h = r.started.harness.map(|h| h.to_string()).unwrap_or_default();
                     let harness = if h.is_empty() {
                         "-".into()
@@ -816,18 +905,12 @@ impl Data {
                     } else {
                         mark(&h).into()
                     };
-                    let mut row =
-                        vec![(icon(&status).into(), color(&status)), (harness, brand(&h))];
+                    let mut row = vec![(icon(status).into(), color(status)), (harness, brand(&h))];
                     if has_status {
-                        row.push((label(&status).to_owned(), color(&status)));
+                        row.push((label(status).to_owned(), color(status)));
                     }
                     row.push((r.started.job.clone().unwrap_or_else(|| "-".into()), plain()));
-                    let report = self
-                        .run_reports
-                        .get(&r.started.run_id)
-                        .cloned()
-                        .unwrap_or_default();
-                    row.extend(cols.iter().map(|c| run_cell(c, r, &report, live)));
+                    row.extend(cols.iter().map(|c| run_cell(c, r, &view)));
                     row
                 })
                 .collect();
@@ -835,7 +918,11 @@ impl Data {
             out.push(names);
             for (r, cells) in runs.iter().zip(cells) {
                 out.push(Row {
-                    kind: Kind::Run(r.started.run_id.clone(), self.run_state(r)),
+                    kind: Kind::Run(
+                        r.started.run_id.clone(),
+                        self.view(&r.started.run_id)
+                            .map_or_else(|| r.status(), |v| v.status.clone()),
+                    ),
                     cells,
                 });
             }
@@ -902,7 +989,8 @@ impl Data {
                     format!(
                         "{} · {} · {} · {}",
                         r.started.job.as_deref().unwrap_or("-"),
-                        r.status(),
+                        self.view(id)
+                            .map_or_else(|| r.status(), |v| v.status.clone()),
                         last.reason.as_deref().unwrap_or(""),
                         r.started.run_id
                     ),
@@ -2181,48 +2269,25 @@ fn local_stamp(at: Option<chrono::DateTime<chrono::Utc>>) -> String {
     .unwrap_or_else(|| "-".into())
 }
 
-fn run_cell(
-    column: &str,
-    run: &Run,
-    report: &history::Columns,
-    live: Option<&Session>,
-) -> (String, Style) {
+/// Only the ledger's own record of the run is read here. Everything a live agent can
+/// contradict comes from the view, resolved once.
+fn run_cell(column: &str, run: &Run, view: &RunView) -> (String, Style) {
     let last = run.terminal.as_ref().unwrap_or(&run.started);
     let text = match config::column_name(column) {
         "started" => local_stamp(run.started.fired_at),
         "ended" => local_stamp(last.ended_at),
-        "duration" => last
+        "duration" => view
             .duration_s
-            .or_else(|| {
-                (run.terminal.is_none() && run.status() == "started")
-                    .then(|| {
-                        run.started.fired_at.map(|at| {
-                            (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0
-                        })
-                    })
-                    .flatten()
-            })
             .map(|d| format!("{d:.0}s"))
             .unwrap_or_else(|| "-".into()),
-        "model" => report
+        "model" => view
             .model
             .as_deref()
             .map(fleet::model)
             .unwrap_or_else(|| "-".into()),
-        "context" => fleet::context_values(report.context_tokens, report.context_window),
-        "tokens" => fleet::token_values(
-            last.tokens_in.or(report.tokens_in),
-            last.tokens_out.or(report.tokens_out),
-        ),
-        // A killed run never emits the harness's final total, so fall back to the transcript's
-        // own accounting rather than print nothing for work that was paid for.
-        "cost" => match live {
-            Some(s) => crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
-            None => match last.cost_usd {
-                Some(c) => fleet::cost(c),
-                None => crate::cost::display(report.cost_usd, report.cost_info.as_ref()),
-            },
-        },
+        "context" => fleet::context_values(view.context_tokens, view.context_window),
+        "tokens" => fleet::token_values(view.tokens_in, view.tokens_out),
+        "cost" => crate::cost::display(view.cost_usd, view.cost_info.as_ref()),
         "reason" => last.reason.clone().unwrap_or_else(|| "-".into()),
         "folder" => run
             .started
@@ -2231,7 +2296,7 @@ fn run_cell(
             .map(fleet::tilde)
             .unwrap_or_else(|| "-".into()),
         "trigger" => run.started.trigger.clone().unwrap_or_else(|| "-".into()),
-        "last_reply" => report
+        "last_reply" => view
             .last
             .as_deref()
             .map(|s| clip(s, 100))
@@ -15656,7 +15721,9 @@ impl App {
                 let title = format!(
                     "{} · {}",
                     run.started.job.as_deref().unwrap_or("run"),
-                    run.status()
+                    self.data
+                        .view(id)
+                        .map_or_else(|| run.status(), |v| v.status.clone())
                 );
                 let mut subtitle = if self.run_conversation(run).is_some() {
                     "conversation · read only".to_owned()
@@ -28614,6 +28681,79 @@ while True:
                 );
             }
         }
+    }
+
+    /// Every column the agent can contradict, and the header that counts the fleet. A run row
+    /// is not a separate kind of thing: the agent in it is in the fleet, and its readings are
+    /// the row's.
+    #[test]
+    fn a_runs_columns_and_the_header_count_follow_the_agent_in_it() {
+        let d = dir();
+        let mut app = timed_out_run(d.path(), None);
+        let mut data = priced_load(&app);
+        data.run_reports.insert(
+            A.into(),
+            history::Columns {
+                model: Some("stale-model".into()),
+                context_tokens: Some(1_000),
+                context_window: Some(200_000),
+                tokens_in: Some(1_000),
+                tokens_out: Some(1_000),
+                last: Some("what it said before it was killed".into()),
+                cost_usd: Some(0.42),
+                ..Default::default()
+            },
+        );
+        data.run_columns = [
+            "duration",
+            "model",
+            "context",
+            "tokens",
+            "cost",
+            "last_reply",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let mut agent = session(B, "active", "resumed", 0);
+        agent.started = Some(chrono::Utc::now() - chrono::Duration::seconds(90));
+        agent.model = Some("opus".into());
+        agent.context_tokens = Some(161_000);
+        agent.context_window = Some(1_000_000);
+        agent.tokens_in = Some(50_000);
+        agent.tokens_out = Some(2_000);
+        agent.last = Some("what it is saying now".into());
+        agent.cost_usd = Some(8.82);
+        data.run_sessions.push(agent);
+        assert_eq!(
+            data.count("active"),
+            1,
+            "the agent in a run counts in the header like any other"
+        );
+        app.apply(data);
+        let text: Vec<String> = run_row_cells(&app).into_iter().map(|(t, _)| t).collect();
+        let has = |want: &str| text.iter().any(|c| c == want);
+        assert!(has("90s"), "duration is the agent's own age: {text:?}");
+        assert!(
+            has("161k/1.0M"),
+            "context is what the agent has filled: {text:?}"
+        );
+        assert!(has("50k/2k"), "tokens are the agent's: {text:?}");
+        assert!(has("$8.82"), "and so is the cost: {text:?}");
+        assert!(
+            has("what it is saying now"),
+            "the last reply is the live one: {text:?}"
+        );
+        assert!(
+            has("opus") && !has("stale-model"),
+            "the model is the one the agent is running: {text:?}"
+        );
+
+        // The detail line and the preview header are two more accounts of the same run.
+        let detail = app.data.details(&Kind::Run(A.into(), "active".into()), 0);
+        assert!(
+            detail[0].starts_with("- · active · timeout ·"),
+            "the detail line leads with the agent and keeps why the run stopped: {detail:?}"
+        );
     }
 
     /// A run cones killed at its timeout never gets the harness's closing total, so the only

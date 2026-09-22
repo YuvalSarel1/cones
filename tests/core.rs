@@ -832,12 +832,15 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         assert!(row.contains(s), "{row}");
     }
     let lines: Vec<&str> = list.lines().collect();
+    // The busy session the run owns has no row of its own, but it is still an agent on this
+    // machine: the summary counts the fleet, not the list.
     assert!(
         lines[..3].iter().all(|l| l.starts_with("hdr\t-\t"))
-            && ["0 working", "0 input", "1 idle"]
+            && ["1 working", "0 input", "1 idle"]
                 .iter()
                 .all(|s| plain(lines[1]).contains(s)),
-        "three pinned header lines carry the summary"
+        "three pinned header lines count the run's agent with the loose one: {}",
+        plain(lines[1])
     );
     let names = lines.iter().find(|l| l.contains("context")).unwrap();
     assert!(
