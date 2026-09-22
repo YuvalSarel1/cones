@@ -494,12 +494,22 @@ impl Data {
         Line::from(spans)
     }
 
-    /// The session a resumed run is running right now, if its pane is open.
+    /// The agent a run has right now. Discovery collapses a session the ledger owns into
+    /// `run_sessions`; a resume the harness reports under a fresh id arrives through the run's
+    /// own pane instead. A client that has left says nothing the terminal record does not.
     fn live_run(&self, run_id: &str) -> Option<&Session> {
+        let run = self.runs.iter().find(|r| r.started.run_id == run_id)?;
+        let owned = run.started.session_id.as_deref();
         self.run_live
             .iter()
             .find(|(id, _)| id == run_id)
             .map(|(_, s)| s)
+            .or_else(|| {
+                self.run_sessions
+                    .iter()
+                    .find(|s| Some(s.session_id.as_str()) == owned)
+            })
+            .filter(|s| !matches!(s.state.as_str(), "exited" | "done" | "stopped"))
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
@@ -28477,72 +28487,143 @@ while True:
         );
     }
 
-    /// A timed-out run the owner resumed is working again, and the work costs money whether or
-    /// not the killed harness got to report its total.
-    #[test]
-    fn a_resumed_run_reports_the_live_agent_and_a_killed_run_still_prices_its_transcript() {
-        let d = dir();
-        let ledger = Ledger::new(d.path()).unwrap();
+    /// A timed-out run, its ledger record, and nothing live in it.
+    fn timed_out_run(dir: &Path, recorded_cost: Option<f64>) -> App {
+        let ledger = Ledger::new(dir).unwrap();
         let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
         start.fired_at = Some(chrono::Utc::now());
         start.session_id = Some(B.into());
         ledger.append(&start).unwrap();
         let mut end = crate::ledger::Record::new(A.into(), crate::ledger::Status::Timeout);
         end.reason = Some("timeout".into());
+        end.cost_usd = recorded_cost;
         ledger.append(&end).unwrap();
-        let mut app = app(d.path());
+        let mut app = app(dir);
         app.refresh().unwrap();
-        let priced = |data: &mut Data| {
-            data.run_reports.insert(
-                A.into(),
-                history::Columns {
-                    cost_usd: Some(0.42),
-                    ..Default::default()
-                },
-            );
-        };
+        app
+    }
+
+    /// The transcript's own accounting, standing in for what `fleet::run_columns` reads.
+    fn priced_load(app: &App) -> Data {
         let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
-        priced(&mut data);
-        app.apply(data);
-        let cells = |app: &App| {
-            app.rows
-                .iter()
-                .find(|r| matches!(&r.kind, Kind::Run(id, _) if id == A))
-                .map(|r| r.cells.iter().map(|(t, _)| t.trim().to_owned()).collect())
-                .unwrap_or_else(Vec::new)
-        };
-        let stopped: Vec<String> = cells(&app);
-        assert!(
-            stopped.iter().any(|c| c == "timeout"),
-            "a run nobody resumed still reads as timed out: {stopped:?}"
+        data.run_reports.insert(
+            A.into(),
+            history::Columns {
+                cost_usd: Some(0.42),
+                ..Default::default()
+            },
         );
+        data
+    }
+
+    fn run_row_cells(app: &App) -> Vec<(String, Style)> {
+        app.rows
+            .iter()
+            .find(|r| matches!(&r.kind, Kind::Run(id, _) if id == A))
+            .expect("the run keeps its row")
+            .cells
+            .iter()
+            .map(|(t, style)| (t.trim().to_owned(), *style))
+            .collect()
+    }
+
+    /// The row for a run with a live agent has to speak for the agent, whichever way cones came
+    /// by it. Knowing only one of the two sources is what shipped a row reading `timeout` at an
+    /// agent that was working, so enumerate both against every state a client can be in.
+    #[test]
+    fn every_source_of_a_runs_live_agent_reaches_its_row() {
+        let d = dir();
+        let mut app = timed_out_run(d.path(), None);
+        let pane = silent_open(&format!("run:{A}"));
+        let pane_pid = pane.viewer.pid();
+        app.viewers.push(pane);
+        // Through the pane: `cones __attach` execs the harness in the run's own terminal, and
+        // the harness may report that agent under a fresh session id. Through `run_sessions`:
+        // discovery collapses a session the ledger already owns out of the live list.
+        let render = |app: &mut App, through_pane: bool, state: &str| {
+            let mut data = priced_load(app);
+            let mut s = session(if through_pane { C } else { B }, state, "resumed", 0);
+            s.cost_usd = Some(1.25);
+            if through_pane {
+                s.pid = Some(pane_pid);
+                data.sessions.push(s);
+            } else {
+                data.run_sessions.push(s);
+            }
+            app.apply(data);
+            run_row_cells(app)
+        };
+        for pane in [true, false] {
+            for (state, shown) in [
+                ("active", "working"),
+                ("blocked", "input"),
+                ("idle", "idle"),
+            ] {
+                let row = render(&mut app, pane, state);
+                let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
+                let at = format!("pane={pane} state={state}");
+                assert!(
+                    text.contains(&shown),
+                    "{at}: the row says what its agent is doing now: {text:?}"
+                );
+                assert_eq!(row[0].1, color(state), "{at}: the icon says it too");
+                assert!(
+                    text.contains(&"$1.25"),
+                    "{at}: and charges what the live session has spent: {text:?}"
+                );
+                assert!(
+                    text.contains(&"timeout"),
+                    "{at}: while the reason column keeps why the run stopped: {text:?}"
+                );
+            }
+            for state in ["exited", "done", "stopped"] {
+                let row = render(&mut app, pane, state);
+                let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
+                let at = format!("pane={pane} state={state}");
+                assert_eq!(
+                    text.iter().filter(|c| **c == "timeout").count(),
+                    2,
+                    "{at}: a client that left leaves status and reason to the record: {text:?}"
+                );
+                assert_eq!(row[0].1, color("timeout"), "{at}: and the icon with them");
+                assert!(
+                    text.contains(&"$0.42"),
+                    "{at}: the transcript prices what the killed harness never totalled: {text:?}"
+                );
+            }
+        }
+    }
+
+    /// A run cones killed at its timeout never gets the harness's closing total, so the only
+    /// price it has is the one its own transcript adds up. The record still outranks it.
+    #[test]
+    fn a_run_nobody_resumed_reads_the_ledger_and_prices_its_transcript() {
+        let d = dir();
+        let mut app = timed_out_run(d.path(), None);
+        let data = priced_load(&app);
+        app.apply(data);
+        let row = run_row_cells(&app);
+        let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(
+            text.iter().filter(|c| **c == "timeout").count(),
+            2,
+            "a run nobody resumed reads as timed out: {text:?}"
+        );
+        assert_eq!(row[0].1, color("timeout"), "icon included");
         assert!(
-            stopped.iter().any(|c| c == "$0.42"),
-            "the transcript prices a run the harness never got to total: {stopped:?}"
+            text.contains(&"$0.42"),
+            "and is still priced from its transcript: {text:?}"
         );
 
-        let resume = silent_open(&format!("run:{A}"));
-        let resumed_pid = resume.viewer.pid();
-        app.viewers.push(resume);
-        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
-        priced(&mut data);
-        let mut resumed = session(C, "active", "the resumed run", 0);
-        resumed.pid = Some(resumed_pid);
-        resumed.cost_usd = Some(1.25);
-        data.sessions.push(resumed);
+        let d = dir();
+        let mut app = timed_out_run(d.path(), Some(3.0));
+        let data = priced_load(&app);
         app.apply(data);
-        let live: Vec<String> = cells(&app);
+        let row = run_row_cells(&app);
+        let text: Vec<&str> = row.iter().map(|(t, _)| t.as_str()).collect();
         assert!(
-            live.iter().any(|c| c == "working"),
-            "the resumed run says what its agent is doing now: {live:?}"
-        );
-        assert!(
-            live.iter().any(|c| c == "timeout"),
-            "and the reason column keeps why it stopped: {live:?}"
-        );
-        assert!(
-            live.iter().any(|c| c == "$1.25"),
-            "cost follows the live session once it is running: {live:?}"
+            text.contains(&"$3.00") && !text.contains(&"$0.42"),
+            "a record that carries the total outranks the transcript: {text:?}"
         );
     }
 
