@@ -1105,6 +1105,48 @@ fn coordinator_plugin_is_prose_and_nothing_else() {
     assert_eq!(manifest["name"], "cones");
 }
 
+#[test]
+fn a_running_agent_reads_a_bundled_skill_without_starting_a_coordinator() {
+    let cones = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = cones(&["skill"]);
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "start-coordinator\ndispatch\n"
+    );
+
+    let out = cones(&["skill", "dispatch"]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("---\nname: dispatch\n"), "{text}");
+    // Printing is loading, because the skill is prose and ships no helper to substitute a path
+    // into. Nothing hands a skill to a session that is already running.
+    assert!(!text.contains("__CONES_"));
+    // The commands the skill tells a dispatcher to run. Pinned so a stream landing a different
+    // spelling than the walkthrough was written against shows up as a failure, not as prose
+    // naming a command the binary does not have.
+    let mut verbs: Vec<&str> = text
+        .split("`cones ")
+        .skip(1)
+        .filter_map(|rest| rest.split([' ', '`']).next())
+        .collect();
+    verbs.sort_unstable();
+    verbs.dedup();
+    assert_eq!(verbs, ["comms", "launch", "ls", "show", "stop"]);
+
+    let out = cones(&["skill", "orchestrate"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no bundled skill orchestrate"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).unwrap().flatten() {

@@ -28,6 +28,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
+| `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
 
 ### Reading runs and sessions
 
@@ -147,7 +148,12 @@ Codex delivery requires a running local app-server daemon with `queue --thread`.
 
 The bundled [dispatch skill](../assets/coordinator/skills/dispatch/SKILL.md) is for the agent that already holds the owner's task and wants parallel sessions on it: launch workers in their own worktrees, read their results, verify the combined tree and stop them. It divides nothing for you. The decomposition, the dependency order and the report back to the owner stay with the agent.
 
-It ships in the same embedded plugin as the coordinator skill, so `cones coordinator start` writes it to `STATE_DIR/coordinator/plugin` along with the other one. A session that is already running cannot be handed it that way: Claude Code reads its skills when it starts, so rewriting the plugin directory does not reach an open session, and no other harness has a plugin command of Claude's kind. Neither skill ships helpers, so reading the prose is the same as loading it.
+```sh
+cones skill            # the bundled skill names, one per line
+cones skill dispatch
+```
+
+`cones skill` prints an embedded `SKILL.md` on stdout and calls no model. That is the supported way for a session that is already running to get these instructions, in any harness, because nothing loads a skill into a live session: Claude Code reads its skills when it starts, so rewriting `STATE_DIR/coordinator/plugin` does not reach an open session, and no other harness has a plugin command of Claude's kind. `cones coordinator start` loads that plugin for the background coordinator it starts and for nothing else. Neither skill ships helpers, so reading the prose is the same as loading it.
 
 A dispatcher works in the folder it launched into. If no live coordinator holds that folder, the dispatcher may `claim` it and use the same inbox and watcher; one consumer per inbox, so whoever acknowledges mail is the one reading it. If a coordinator already holds the folder, `claim` refuses, and the dispatcher either goes through that coordinator or dispatches its task in a separate folder. Holding a task grants no authority over sessions it did not launch.
 

@@ -160,6 +160,12 @@ enum Action {
         #[command(subcommand)]
         task: CoordinatorTask,
     },
+    /// A bundled skill's prose on stdout, for an agent that is already running: nothing loads a
+    /// skill into a live session, and every harness can read a command's output.
+    Skill {
+        /// Skill name; omitted, the bundled names are listed one per line.
+        name: Option<String>,
+    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -474,6 +480,23 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Action::Stop { id } => {
             print!("{}", cones::stop::session(&state, &claude, &id)?);
+            Ok(0)
+        }
+        Action::Skill { name } => {
+            let Some(name) = name else {
+                for (bundled, _) in cones::harness::skills() {
+                    println!("{bundled}");
+                }
+                return Ok(0);
+            };
+            let Some((_, text)) = cones::harness::skills().find(|(b, _)| *b == name) else {
+                let bundled: Vec<_> = cones::harness::skills().map(|(b, _)| b).collect();
+                bail!(
+                    "no bundled skill {name}; there is {}",
+                    bundled.join(" and ")
+                );
+            };
+            print!("{text}");
             Ok(0)
         }
         Action::List => {

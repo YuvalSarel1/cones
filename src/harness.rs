@@ -753,6 +753,18 @@ const COORDINATOR_FILES: [(&str, &str); 3] = [
     ),
 ];
 
+/// The bundled skills by name, in the order the plugin lists them. Nothing loads a skill into a
+/// session that is already running, so an agent already holding a task reads the prose from
+/// stdout instead: `cones skill dispatch`.
+pub fn skills() -> impl Iterator<Item = (&'static str, &'static str)> {
+    COORDINATOR_FILES.into_iter().filter_map(|(rel, text)| {
+        Some((
+            rel.strip_prefix("skills/")?.strip_suffix("/SKILL.md")?,
+            text,
+        ))
+    })
+}
+
 /// The folder's live coordinator record, including one claimed outside cones.
 pub fn coordinator_status(state: &Path, dir: &Path) -> Option<Value> {
     crate::coordinator::status(state, dir)
