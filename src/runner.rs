@@ -378,14 +378,12 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     let _run_lease = ledger
         .run_lock(&run_id)?
         .context("run ID is already active")?;
-    let session_id = uuid::Uuid::new_v4().to_string();
     let mut output = RunOutput::new(&ledger.state, &run_id)?;
     let mut initial = Record::new(run_id.clone(), Status::Started);
     initial.job = Some(job.name.clone());
     initial.trigger = Some(trigger.into());
     initial.fired_at = Some(Utc::now());
     initial.harness = Some(job.harness);
-    initial.session_id = Some(session_id.clone());
     initial.cwd = Some(job.cwd.clone());
     initial.pid = Some(std::process::id());
     initial.owns_run_lock = Some(true);
@@ -395,7 +393,7 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     initial.attach_mode = Some("session".into());
     let prepared = (|| -> Result<_> {
         let harness = harness::adapter(job.harness)?;
-        let invocation = harness.compile(job, &session_id)?;
+        let invocation = harness.compile(job)?;
         Ok((harness, invocation))
     })();
     let (harness, invocation) = match prepared {
@@ -422,20 +420,71 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     let pgid = guard.child.id() as i32;
     initial.pgid = Some(pgid);
     let signals = Signals::new()?;
-    ledger.append(&initial)?;
-    drop(admission);
-    let _ = writeln!(std::io::stdout(), "{run_id}\tstarted\t{}", job.name);
-    let _ = std::io::stdout().flush();
     let start = Instant::now();
     let mut terminal = Record::new(run_id.clone(), Status::Failed);
     let mut outcome = Outcome::default();
     let mut input = guard.child.stdin.take();
-    let result = (|| -> Result<()> {
-        // Release the local execution gate only after the durable start record.
+    // `claude --bg` names the conversation itself, so the run cannot be recorded under an id
+    // cones chose. The worker launches, reports the session it got, and the start record
+    // carries that one. A supervisor that dies before recording takes the session with it:
+    // the worker removes a session whose parent is gone.
+    let started = (|| -> Result<Receiver<Output>> {
         send(&mut input, &serde_json::to_value(&invocation)?)?;
         let events = read_output(guard.child.stdout.take().context("missing worker stdout")?);
         output.capture_stderr(guard.child.stderr.take().context("missing worker stderr")?);
         input.take();
+        Ok(events)
+    })();
+    let events = match started {
+        Ok(events) => events,
+        Err(e) => {
+            cleanup(pgid);
+            guard.armed = false;
+            let _ = guard.child.wait();
+            return terminal_failure(ledger, job, &initial, format!("spawn: {e:#}"), &mut output);
+        }
+    };
+    let launched = (|| -> Result<String> {
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            match events.recv_timeout(Duration::from_millis(25)) {
+                Ok(Output::Line(line)) if !line.trim().is_empty() => {
+                    let event: serde_json::Value =
+                        serde_json::from_str(&line).context("invalid harness event")?;
+                    output.record(&event)?;
+                    if let Some(id) = event["session_id"].as_str() {
+                        return Ok(id.to_owned());
+                    }
+                }
+                Ok(Output::Invalid) => bail!("invalid or oversized harness event"),
+                Ok(Output::Done) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("the harness started no session cones can watch")
+                }
+                _ => {}
+            }
+            ensure!(Instant::now() < deadline, "the launch reported no session");
+            if signals.cancelled.load(Ordering::Relaxed) {
+                bail!("interrupted before the harness reported a session");
+            }
+        }
+    })();
+    let session_id = match launched {
+        Ok(id) => id,
+        Err(e) => {
+            cleanup(pgid);
+            guard.armed = false;
+            let _ = guard.child.wait();
+            let reason = format!("{e:#}");
+            output.sync()?;
+            return terminal_failure(ledger, job, &initial, reason, &mut output);
+        }
+    };
+    initial.session_id = Some(session_id.clone());
+    ledger.append(&initial)?;
+    drop(admission);
+    let _ = writeln!(std::io::stdout(), "{run_id}\tstarted\t{}", job.name);
+    let _ = std::io::stdout().flush();
+    let result = (|| -> Result<()> {
         let mut done = false;
         let mut exited = None;
         loop {
@@ -656,7 +705,7 @@ fn archive(
 const WATCH: Duration = Duration::from_secs(3);
 /// How long a launched session has to reach the harness's own roster before the run is
 /// reported as never started. The launch has already returned by then.
-const REGISTER: Duration = Duration::from_secs(10);
+const SETTLE: Duration = Duration::from_secs(20);
 
 /// Run a job as a background session and watch it to its end.
 ///
@@ -666,13 +715,6 @@ const REGISTER: Duration = Duration::from_secs(10);
 /// session outlives a normal run on purpose, which is what lets the dashboard peek it and
 /// join it. Only a run cones ends early removes it.
 fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i32) -> Result<i32> {
-    let session_id = invocation
-        .args
-        .iter()
-        .position(|a| a == "--session-id")
-        .and_then(|i| invocation.args.get(i + 1))
-        .context("background run compiled without a session id")?
-        .clone();
     let home = invocation
         .env
         .get("CLAUDE_CONFIG_DIR")
@@ -699,23 +741,37 @@ fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i3
             .find(|l| !l.trim().is_empty())
             .unwrap_or("no error output")
     );
+    // `--bg` names the conversation and prints the short form of that name. The run is
+    // recorded under the id the roster carries for it, never under one cones invented.
     let short = crate::launch::background_id(&stdout)
         .context("claude --bg started but printed no background id")?;
-    // The run's identity is the session id cones passed, so a harness that named the session
-    // something else has not started the run cones recorded, and nothing here may pretend it did.
-    ensure!(
-        session_id.starts_with(&short),
-        "claude --bg ignored --session-id {session_id} and named the session {short}"
-    );
+    let deadline = Instant::now() + SETTLE;
+    let session_id = loop {
+        let named: Vec<_> = crate::fleet::sessions(&home)?
+            .into_iter()
+            .filter(|s| s.session_id.starts_with(&short))
+            .collect();
+        ensure!(
+            named.len() < 2,
+            "background id {short} names {} sessions; cones will not choose between them",
+            named.len()
+        );
+        if let Some(session) = named.into_iter().next() {
+            break session.session_id;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "the harness returned background id {short} and never listed a session for it"
+        );
+        thread::sleep(Duration::from_millis(200));
+    };
     report(&json!({"type": "cones_launch", "session_id": session_id, "background_id": short}))?;
     let start = Instant::now();
-    let mut seen = false;
     let mut checked = Instant::now() - WATCH;
     loop {
         if checked.elapsed() >= WATCH {
             checked = Instant::now();
             let session = crate::fleet::find(&home, &session_id)?;
-            seen |= session.is_some();
             match session.as_ref().map(|s| s.state.as_str()) {
                 Some(state @ ("done" | "failed" | "stopped")) => {
                     // The session is the run, so the run ending ends it. What it did is in
@@ -729,13 +785,10 @@ fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i3
                     }))?;
                     return Ok(0);
                 }
-                // A session that reached the roster and left it was removed under the run.
-                None if seen => {
+                // The session was listed a moment ago, so its absence is a removal.
+                None => {
                     report(&json!({"type": "cones_result", "state": "stopped"}))?;
                     return Ok(0);
-                }
-                None if start.elapsed() > REGISTER => {
-                    bail!("the harness never listed session {session_id} after backgrounding it")
                 }
                 _ => {}
             }

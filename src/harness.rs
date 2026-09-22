@@ -22,7 +22,7 @@ pub struct Invocation {
 }
 
 pub trait Harness {
-    fn compile(&self, job: &ResolvedJob, session_id: &str) -> Result<Invocation>;
+    fn compile(&self, job: &ResolvedJob) -> Result<Invocation>;
     fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
     /// Open a session that is still running elsewhere in this terminal; resume would refuse it.
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
@@ -853,12 +853,11 @@ pub fn environment(job: &ResolvedJob) -> Result<BTreeMap<String, String>> {
 }
 
 impl Harness for Claude {
-    fn compile(&self, job: &ResolvedJob, session_id: &str) -> Result<Invocation> {
+    fn compile(&self, job: &ResolvedJob) -> Result<Invocation> {
         ensure!(
             job.harness == HarnessKind::Claude,
             "Claude adapter requires a Claude job"
         );
-        uuid::Uuid::parse_str(session_id)?;
         // A job is a scheduled launch of the same agent the owner runs by hand: its own
         // settings, its own MCP servers, no prompts to answer and no second permission
         // engine here. timeout_min is the only limit cones puts on the run.
@@ -869,8 +868,6 @@ impl Harness for Claude {
         let mut args: Vec<String> = [
             "--bg",
             "--dangerously-skip-permissions",
-            "--session-id",
-            session_id,
             "--name",
             &job.name,
         ]
@@ -963,11 +960,9 @@ pub fn policy_hash(job: &ResolvedJob, invocation: &Invocation) -> Result<String>
 }
 
 pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Value> {
-    // Exclude task text, generated session identity and secret values from the policy hash.
+    // Exclude task text and secret values from the policy hash. The session identity is the
+    // harness's own: `--bg` names the conversation, and cones records what it returned.
     let mut args = invocation.args.clone();
-    if let Some(i) = args.iter().position(|a| a == "--session-id") {
-        args[i + 1] = "<session-id>".into();
-    }
     if let Some(i) = args.iter().position(|a| a == "--name") {
         args[i + 1] = "<job-name>".into();
     }

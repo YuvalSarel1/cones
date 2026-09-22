@@ -255,10 +255,9 @@ fn a_job_launches_the_agent_with_the_prompt_and_no_policy_of_its_own() {
     let path = dir.path().join("jobs.yaml");
     fs::write(&path, config_text("    model: opus\n")).unwrap();
     let job = config::read_jobs(&path).unwrap().remove(0);
-    let id = "13c73aaf-43d6-4b2c-af51-05763e0c6834";
     let argv = cones::harness::adapter(job.harness)
         .unwrap()
-        .compile(&job, id)
+        .compile(&job)
         .unwrap()
         .args;
     assert_eq!(
@@ -266,8 +265,6 @@ fn a_job_launches_the_agent_with_the_prompt_and_no_policy_of_its_own() {
         [
             "--bg",
             "--dangerously-skip-permissions",
-            "--session-id",
-            id,
             "--name",
             "sample",
             "--model",

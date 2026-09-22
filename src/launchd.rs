@@ -421,7 +421,7 @@ pub fn install(
         .iter()
         .filter(|j| j.enabled)
         .map(|job| {
-            harness::adapter(job.harness)?.compile(job, &uuid::Uuid::new_v4().to_string())?;
+            harness::adapter(job.harness)?.compile(job)?;
             Ok((job, render(job, exe, jobs_path, state)?))
         })
         .collect::<Result<_>>()?;

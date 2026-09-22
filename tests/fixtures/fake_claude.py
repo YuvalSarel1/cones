@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 
 HOME = pathlib.Path(os.environ["HOME"])
 SESSIONS = HOME / ".claude/sessions"
@@ -117,11 +118,9 @@ if args[:1] == ["rm"]:
         (JOBS / short).rmdir()
     sys.exit(0)
 
-session = args[args.index("--session-id") + 1]
+# `claude --bg` names the conversation itself; the launcher learns the id from this line.
+session = str(uuid.uuid4())
 mode = args[args.index("--model") + 1]
-ledger = pathlib.Path(os.environ["FAKE_LEDGER"])
-starts = [json.loads(line) for line in ledger.read_text().splitlines()]
-assert any(r.get("session_id") == session and r["status"] == "started" for r in starts)
 
 if mode == "missing":
     # Backgrounded, and never listed: the run has no session to watch.
