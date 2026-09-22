@@ -7564,12 +7564,11 @@ enum Mode {
     Guide(Guide),
     /// Native MCP configuration for one harness and folder, with staged changes.
     Mcp(Box<McpPanel>),
-    /// A compact list over the bottom of the session list: recent sessions, or copy actions.
+    /// A compact list over the bottom of the session list: the copy actions.
     Pick(Pick),
 }
 
-/// Recently entered sessions, or the copy menu for the selected row: one overlay with two
-/// sets of rows, because both are a short list picked with the arrows.
+/// The copy menu for the selected row: a short list picked with the arrows.
 struct Pick {
     title: &'static str,
     rows: Vec<PickRow>,
@@ -7578,15 +7577,8 @@ struct Pick {
 
 struct PickRow {
     label: String,
-    action: PickAction,
-}
-
-#[derive(Clone)]
-enum PickAction {
-    /// Enter the row holding this key. A key whose row has gone is never offered, so
-    /// nothing here resumes or restarts a closed session.
-    Enter(String),
-    Copy(String),
+    /// The text this row copies.
+    text: String,
 }
 
 impl Pick {
@@ -7609,10 +7601,6 @@ impl Pick {
         lines
     }
 }
-
-/// Recent sessions worth offering. Older entries are forgotten rather than kept for a
-/// dashboard that has been open for days.
-const RECENT: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -7689,7 +7677,6 @@ enum KeyAction {
     PasteImage,
     Previous,
     Quit,
-    Recent,
     Refresh,
     Remove,
     Rename,
@@ -8766,8 +8753,6 @@ struct App {
     filter: Input,
     history: HistoryView,
     transcript: TranscriptView,
-    /// Row keys of the sessions and runs entered from here, most recent first.
-    recent: Vec<String>,
     attention: attention::Tracker,
     mode: Mode,
     status: String,
@@ -9133,7 +9118,6 @@ impl App {
             filter: Input::default(),
             history: HistoryView::default(),
             transcript: TranscriptView::default(),
-            recent: Vec::new(),
             attention: attention::Tracker::default(),
             mode: Mode::Normal,
             status: String::new(),
@@ -9877,44 +9861,6 @@ impl App {
         }
     }
 
-    /// Entering a row is deliberate: peeks, previews, speculative attaches and the
-    /// transcript pane never reach here, so browsing the list does not reorder this.
-    fn remember_entered(&mut self, kind: &Kind) {
-        let key = match kind {
-            Kind::Session(id, _) | Kind::Run(id, _) => id.clone(),
-            _ => return,
-        };
-        self.recent.retain(|k| k != &key);
-        self.recent.insert(0, key);
-        self.recent.truncate(RECENT);
-    }
-
-    /// Recent entries that still have a row, most recent first, with the index the cursor
-    /// uses. A session that has closed has no row and is skipped, never restarted.
-    fn recent_rows(&self) -> Vec<(String, usize)> {
-        self.recent
-            .iter()
-            .filter_map(|key| {
-                let at = self.visible.iter().position(|&i| {
-                    matches!(self.rows[i].kind, Kind::Session(..) | Kind::Run(..))
-                        && self.rows[i].kind.key() == Some(key.as_str())
-                })?;
-                Some((key.clone(), at))
-            })
-            .collect()
-    }
-
-    /// The row the dashboard is on: the focused viewer's, else the selected row's.
-    fn current_key(&self) -> Option<String> {
-        if let Some(i) = self.focus {
-            let key = self.viewers[i].key.clone();
-            return Some(key.strip_prefix("run:").unwrap_or(&key).to_owned());
-        }
-        self.selected()
-            .and_then(|r| r.kind.key())
-            .map(str::to_owned)
-    }
-
     fn close_pick(&mut self) {
         self.mode = Mode::Normal;
         self.needs_clear = true;
@@ -9927,44 +9873,6 @@ impl App {
         self.needs_clear = true;
     }
 
-    /// Select a listed row and enter it. The composer keeps its draft: switching sessions
-    /// is navigation, not a launch.
-    fn enter_row(&mut self, at: usize) -> Result<()> {
-        if self.focus.is_some() {
-            self.unfocus();
-        }
-        self.cursor = at;
-        self.enter()
-    }
-
-    /// The recently entered sessions, without the one the dashboard is already on, so the
-    /// first row is the session to go back to. Moving through the list only previews it.
-    fn open_recent(&mut self) {
-        let current = self.current_key();
-        let rows: Vec<PickRow> = self
-            .recent_rows()
-            .into_iter()
-            .filter(|(key, _)| Some(key) != current.as_ref())
-            .map(|(key, at)| PickRow {
-                label: self.rows[self.visible[at]]
-                    .text()
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                action: PickAction::Enter(key),
-            })
-            .collect();
-        if rows.is_empty() {
-            self.status = "no other session entered from here yet".into();
-            return;
-        }
-        self.mode = Mode::Pick(Pick {
-            title: "recent sessions",
-            rows,
-            at: 0,
-        });
-    }
-
     fn open_copy_menu(&mut self) {
         let Some(kind) = self.selected().map(|r| r.kind.clone()) else {
             return;
@@ -9973,7 +9881,7 @@ impl App {
             .into_iter()
             .map(|item| PickRow {
                 label: item.label,
-                action: PickAction::Copy(item.text),
+                text: item.text,
             })
             .collect();
         self.mode = Mode::Pick(Pick {
@@ -13330,7 +13238,6 @@ impl App {
             })
         });
         if let Some(i) = self.viewer_of(&kind) {
-            self.remember_entered(&kind);
             self.focus(i);
             return Ok(());
         }
@@ -13352,7 +13259,6 @@ impl App {
                         speculative: false,
                         operation: None,
                     });
-                    self.remember_entered(&kind);
                     self.focus(self.viewers.len() - 1);
                 }
                 Err(error) => self.status = format!("return failed: {error}"),
@@ -13368,7 +13274,6 @@ impl App {
             // the peek did. A still-running run with no joinable session falls back to its
             // logs, a finished one to the resume `__attach` performs.
             Kind::Run(id, s) => {
-                self.remember_entered(&Kind::Run(id.clone(), s.clone()));
                 let joined = self.run_session(&id).cloned().and_then(|session| {
                     let spec = harness::by_name(&session.harness)?;
                     let home = spec.session_home(&self.claude, &session);
@@ -13424,7 +13329,6 @@ impl App {
                 let home = spec.session_home(&self.claude, s);
                 if spec.session(s.kind.as_deref()).join == harness::spec::Join::CodexRemote {
                     let session = s.clone();
-                    self.remember_entered(&Kind::Session(id.clone(), String::new()));
                     self.prepare_viewer(spec.commands.viewer.clone(), id, None, None, move || {
                         harness::join(&session, &home, false)
                     });
@@ -13432,7 +13336,6 @@ impl App {
                 }
                 match harness::join(s, &home, false) {
                     Ok(c) => {
-                        self.remember_entered(&Kind::Session(id.clone(), String::new()));
                         self.open(self.size, c, &spec.commands.viewer, id, None);
                     }
                     Err(e) => {
@@ -14943,34 +14846,17 @@ impl App {
         };
         let action = key_action(state, code, mods);
         if let Mode::Pick(pick) = &mut self.mode {
-            // ctrl+b walks the same list it opened, so pressing it twice returns to the
-            // session entered before this one and pressing it again comes back.
-            let stepping = action == KeyAction::Recent
-                && matches!(
-                    pick.rows.get(pick.at).map(|r| &r.action),
-                    Some(PickAction::Enter(_))
-                );
-            let choose = action == KeyAction::Enter || stepping;
             match action {
                 KeyAction::Up => pick.step(-1),
                 KeyAction::Down => pick.step(1),
-                _ if choose => {
-                    let action = pick.rows.get(pick.at).map(|r| r.action.clone());
+                KeyAction::Enter => {
+                    let text = pick.rows.get(pick.at).map(|r| r.text.clone());
                     self.close_pick();
-                    match action {
-                        Some(PickAction::Enter(key)) => {
-                            match self.recent_rows().into_iter().find(|(k, _)| *k == key) {
-                                Some((_, at)) => self.enter_row(at)?,
-                                None => self.status = "that session is no longer listed".into(),
-                            }
-                        }
-                        Some(PickAction::Copy(text)) => {
-                            self.status = match copy::to_clipboard(&text) {
-                                Ok(()) => format!("copied {} characters", text.chars().count()),
-                                Err(e) => format!("not copied: {e:#}"),
-                            };
-                        }
-                        None => {}
+                    if let Some(text) = text {
+                        self.status = match copy::to_clipboard(&text) {
+                            Ok(()) => format!("copied {} characters", text.chars().count()),
+                            Err(e) => format!("not copied: {e:#}"),
+                        };
                     }
                 }
                 _ => self.close_pick(),
@@ -15376,7 +15262,6 @@ impl App {
                     KeyAction::Mcp => self.open_mcp(),
                     KeyAction::Fork => self.fork_selected(),
                     KeyAction::Coordinate => self.coordinate_selected(),
-                    KeyAction::Recent => self.open_recent(),
                     KeyAction::Refresh => {
                         if self.history.visible {
                             // Refresh brings the meaning index up to date as well. Typing a
@@ -28864,106 +28749,6 @@ while True:
             "cones has not verified where opencode keeps MCP configuration"
         );
     }
-    fn enter_by_key(app: &mut App, id: &str) {
-        let at = app
-            .visible
-            .iter()
-            .position(|&i| app.rows[i].kind.key() == Some(id))
-            .unwrap_or_else(|| panic!("{id} has no row"));
-        app.cursor = at;
-        app.enter().unwrap();
-    }
-
-    /// ctrl+b lists what was entered from here and enters the highlighted row, so two
-    /// sessions toggle. A session that has closed leaves the list rather than being revived.
-    /// The key belongs to the list: a focused client keeps every key of its own.
-    #[test]
-    fn recent_navigation_toggles_between_two_sessions_and_drops_a_closed_one() {
-        let d = dir();
-        registry(d.path(), A, "/src/one", "idle", 1);
-        registry(d.path(), B, "/src/two", "idle", 2);
-        let mut app = app(d.path());
-        app.refresh().unwrap();
-        app.viewers.push(viewer_open(A, "attach", "A"));
-        app.viewers.push(viewer_open(B, "attach", "B"));
-        enter_by_key(&mut app, A);
-        enter_by_key(&mut app, B);
-        assert_eq!(app.recent, vec![B.to_owned(), A.to_owned()]);
-        app.text = "a draft".into();
-        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        assert_eq!(app.focus, Some(1), "the focused client kept the key");
-        app.unfocus();
-        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        let Mode::Pick(pick) = &app.mode else {
-            panic!("no recent list: {}", app.status)
-        };
-        assert_eq!(pick.rows.len(), 1, "the session in view is not offered");
-        assert!(
-            matches!(&pick.rows[0].action, PickAction::Enter(key) if key == A),
-            "the session entered before this one comes first"
-        );
-        assert!(
-            pick.rows[0].label.contains(&A[..8]),
-            "{}",
-            pick.rows[0].label
-        );
-        assert_eq!(
-            app.recent,
-            vec![B.to_owned(), A.to_owned()],
-            "opening the list enters nothing"
-        );
-        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.recent, vec![A.to_owned(), B.to_owned()]);
-        assert_eq!(app.focus, Some(0), "A's own viewer took focus");
-        app.unfocus();
-        for _ in 0..2 {
-            app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        }
-        assert_eq!(app.focus, Some(1), "the same two sessions toggle");
-        assert_eq!(app.recent, vec![B.to_owned(), A.to_owned()]);
-        assert_eq!(app.text, "a draft", "switching sessions keeps the draft");
-        assert_eq!(app.viewers.len(), 2, "no session was started again");
-        app.unfocus();
-        fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
-        app.close(0);
-        app.refresh().unwrap();
-        assert!(
-            !app.recent_rows().iter().any(|(key, _)| key == A),
-            "a session with no row is not offered"
-        );
-        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        if let Mode::Pick(pick) = &app.mode {
-            assert!(
-                !pick
-                    .rows
-                    .iter()
-                    .any(|r| matches!(&r.action, PickAction::Enter(key) if key == A)),
-                "the closed session left the list"
-            );
-        }
-        assert!(
-            app.viewers.len() == 1 && app.opening.is_none() && app.pending.is_empty(),
-            "the closed session is skipped, not resumed"
-        );
-    }
-
-    /// Resting on rows draws their previews. None of that is entering, so the recent list
-    /// stays empty until a row is actually opened.
-    #[test]
-    fn previewing_rows_does_not_put_them_in_the_recent_list() {
-        let (_d, mut app, mut terminal) = history_fixture(2);
-        app.toggle_history();
-        history_until(&mut app, &mut terminal, |a| a.history.ready);
-        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
-        app.step(1);
-        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
-        assert!(app.recent.is_empty());
-        app.key(KeyCode::Char('b'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.status, "no other session entered from here yet");
-    }
-
     /// The copy menu is the preview's own key: it offers the reply, each fenced block in it
     /// and the row's details, as text with no terminal escapes left in it.
     #[test]
@@ -29004,14 +28789,14 @@ while True:
             ]
         );
         for row in &pick.rows {
-            let PickAction::Copy(text) = &row.action else {
-                panic!("{} is not a copy action", row.label)
-            };
-            assert!(!text.contains('\u{1b}'), "{}: {text:?}", row.label);
+            assert!(
+                !row.text.contains('\u{1b}'),
+                "{}: {:?}",
+                row.label,
+                row.text
+            );
         }
-        let PickAction::Copy(details) = &pick.rows[3].action else {
-            panic!("details")
-        };
+        let details = &pick.rows[3].text;
         assert!(details.contains("claude · history"), "{details}");
         assert!(
             details.contains(&app.history.rows[0].entry.key.session_id),

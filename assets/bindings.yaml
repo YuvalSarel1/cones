@@ -20,7 +20,6 @@ states:
           - action: group
           - action: history
           - action: filter
-          - action: recent
           - action: refresh
           - action: split
           - action: guide
@@ -135,9 +134,6 @@ states:
       - keys: ["ctrl+t"]
         action: mcp
         description: "Inspect MCP servers and stage scoped changes."
-      - keys: ["ctrl+b"]
-        action: recent
-        description: "List recently entered sessions. Press again to enter the highlighted session."
       - keys: ["ctrl+y"]
         action: fork
         description: "Fork the selected conversation."
@@ -358,8 +354,8 @@ states:
         description: "Toggle the pane or fullscreen."
   - id: pick
     group: "Menus"
-    title: "Session and copy menus"
-    when: "A recent-session or copy menu is open."
+    title: "Copy menu"
+    when: "A copy menu is open."
     bindings:
       - keys: ["up"]
         action: up
@@ -369,10 +365,7 @@ states:
         description: "Select the next item."
       - keys: ["enter"]
         action: enter
-        description: "Choose the selected item."
-      - keys: ["ctrl+b"]
-        action: recent
-        description: "Enter the highlighted recent session. Other keys close the menu."
+        description: "Choose the selected item. Other keys close the menu."
   - id: panel
     group: "Viewers"
     title: "Panel focus"

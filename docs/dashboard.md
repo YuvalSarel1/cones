@@ -29,8 +29,6 @@ Desktop notifications are optional, off by default. Set `start.notify: true` in 
 | `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected row's folder. Its row appears and is selected at once, marked as the coordinator before the session reports itself. A folder that already has one is refused, naming the session that holds it. |
 | `ctrl+g` | Open help. |
 
-`ctrl+b` lists the sessions and runs entered from this dashboard, most recent first and without the one you are on, so the first row is the session to go back to. Pressing `ctrl+b` again enters it; the arrows choose another row and `enter` takes it. Moving through the list only highlights rows: nothing is entered until you choose it. Only entering a row records it, so resting on a row, a read-only preview and a speculative viewer leave the order alone. A session that has closed is no longer listed and is never resumed to satisfy the list. Switching sessions keeps the composer draft and every open viewer's own state.
-
 Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
 
 Quitting cones detaches from its hosted terminals: shells, pi, OpenCode, interactive Claude forks and experimental launchers started here. Reopen cones with the same state directory and press Enter on the row to reconnect to the same process, including its native editor draft. `ctrl+x` twice explicitly stops that terminal. Claude background sessions and Codex daemon threads retain their native ownership; their attach clients are not retained by the new host, and their draft behavior remains native.
@@ -182,7 +180,6 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+p` | Highlight the selected session, or remove its highlight. The colour is [`highlight`](jobs.md#list-settings); marks last while the dashboard is open and are never written to the file. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation). |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
-| `ctrl+b` | List the sessions entered from here, most recent first; press it again to enter the highlighted one. |
 | `ctrl+r` | Reload now. |
 
 Rename opens the selected native client and waits for an empty editor before submitting the command. A key, paste or mouse action cancels a pending handoff. In Codex, accept or edit the suggestion in its own prompt. An interactive Claude session in another terminal still supports a manually entered name through its transcript; automatic naming requires access to its native client. A live external client may overwrite that transcript-only name.
