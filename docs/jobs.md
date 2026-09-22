@@ -106,7 +106,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | --- | --- | --- |
 | `harness` | All | Harness name after the permanent icon. |
 | `state` | Agents | Working, input, idle, done, failed or stopped. |
-| `status` | Jobs, runs | Last run outcome for a job, or the run's supervision status. Disabled jobs show `off`. |
+| `status` | Jobs, runs | Last run outcome for a job. Runs show supervision status while in flight, then the state of a live agent in their row, or the recorded outcome when no agent remains. Disabled jobs show `off`. |
 | `folder` | All | Reported working directory. |
 | `branch` | Agents | Current Git branch of the displayed folder, or `@<commit>` for a detached checkout. Read once per distinct folder during background refresh, only when selected. |
 | `model` | All | Reported model; jobs show their configured model. |
@@ -114,14 +114,14 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `cpu` | Agents | Percent of one core the process running the session is using, as the kernel reports it. |
 | `memory` | Agents | Resident memory of the process running the session. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |
-| `tokens` | Agents, runs, history | Input/output totals. Run terminal records take precedence over live usage. |
-| `cost` | Agents, runs, history | Native dollars, or `~$…` for a catalog estimate from reported provider, model and usage. A subtotal with gaps shows only what it priced; unavailable totals show `-`. Finished runs keep their terminal-record cost. See [cost sources](harness.md#cost-estimates). |
+| `tokens` | Agents, runs, history | Input/output totals. Runs use reported live counters first, then their ledger record and saved output. |
+| `cost` | Agents, runs, history | Native dollars, or `~$…` for a catalog estimate from reported provider, model and usage. A subtotal with gaps shows only what it priced; unavailable totals show `-`. A run with a live agent shows that agent's cost. Otherwise its recorded cost takes precedence over saved-output accounting. See [cost sources](harness.md#cost-estimates). |
 | `activity` | Agents | Counts over time under the [activity settings](#activity). |
 | `age` | Agents, history | Time since session start. |
 | `last_active` | Agents, history | Time since the latest recorded activity. |
 | `last_reply` | Agents, runs, history | Latest recorded reply or agent status text. |
 | `started`, `ended` | Runs | Start and end time in the local timezone, including the date. |
-| `duration` | Runs | Recorded duration, or elapsed seconds while running. |
+| `duration` | Runs | The live agent's age when reported, including for a resumed run; otherwise recorded duration, or elapsed seconds while supervision is running. |
 | `reason` | Runs | Failure, timeout or skip reason. |
 | `trigger` | Runs | `manual` or `schedule`. |
 | `schedule` | Jobs | Configured local cron rule, separate from status. |
@@ -200,9 +200,9 @@ Overlap is per job. Two jobs sharing a directory may both run; shared-file coord
 
 ## Run lifecycle
 
-A run is one supervised background session. `cones run` takes an admission lock for its job, reaps orphaned runs and applies skip rules. Replacement can wait for that job's old run without blocking admission for other jobs. It then creates a gated worker in its own process group, appends `started`, and releases the worker. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
+A run is one supervised background session. `cones run` takes an admission lock for its job, reaps orphaned runs and applies skip rules. Replacement can wait for that job's old run without blocking admission for other jobs. It then starts a worker in its own process group. Once the worker reports the native session id, the supervisor appends `started` with that id and releases the admission lock. Policy compilation errors are recorded as failed runs; dashboard saves compile every job and report the first error with its name.
 
-The worker starts the session with `--bg` and watches it. The harness's daemon owns the agent, so the worker has no child to wait on: it reads the state the harness reports for that session every three seconds and reports the first terminal one as the run's result. A session that never reaches the harness's roster within ten seconds fails the run, as does a launch that prints no background id or names a session other than the run's.
+The worker starts the session with `--bg` and resolves the returned short id to the full session id on the harness's roster. It allows twenty seconds after launch returns for that id to identify exactly one session; missing, ambiguous or unlisted ids fail the run. The harness's daemon owns the agent, so the worker reads the state the harness reports for that session every three seconds and reports the first terminal one as the run's result.
 
 While a run works, its session is a live agent like any other: the dashboard peeks it in a native viewer and enter joins the conversation to steer it. The run ends the session when it ends, so a scheduled job leaves no agent behind; the conversation stays resumable from the run row.
 
@@ -222,11 +222,12 @@ blast radius you accept.
 | --- | --- |
 | Background session, peekable while it runs | `--bg` |
 | Unattended, no prompt to answer | `--dangerously-skip-permissions` |
-| Pinned session identity | `--session-id <fresh uuid>` |
 | Job name | `--name <job>` |
 | Model override | `--model <m>` when set |
 | Effort override | `--effort <level>` when set |
 | Task | `-- <prompt>` |
+
+The harness assigns the session id. cones records that returned identity in the ledger; it passes no `--session-id` flag.
 
 ### Environment
 
@@ -253,16 +254,16 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | `timeout` | `replaced` | A later run replaced this one. | 124 |
 | `failed` | `interrupted` | Dashboard stop, or SIGTERM/SIGINT to the supervisor. | 1 |
 | `failed` | `session_failed`, `session_stopped` | The harness reported the session as failed, or as stopped by something other than this run. | 1 |
-| `failed` | `session_mismatch` | An event's session id differs from the pinned id. | 1 |
+| `failed` | `session_mismatch` | An event's session id differs from the native id recorded at launch. | 1 |
 | `failed` | `missing_result` | The supervisor ended without an account of the session. | 1 |
 | `failed` | `validation: ...`, `spawn: ...`, `runner: ...` | Compilation, worker launch or supervision failed. | 1 |
 | `failed` | `exit`, or native result subtype | Nonzero exit without another explanation, or a result other than `success`, recorded verbatim. | 1 |
 | `failed` | `orphan` | A later run of the job reaped a dead supervisor. | |
 | `crashed` | | Derived on read: no terminal record more than five seconds beyond the run's timeout. | |
 
-A background session reports no totals of its own, so `tokens_in`, `tokens_out` and `cost_usd` come from the session's own records the way every other session's do: the saved status line first, then the conversation's reported usage. A machine with no `statusLine` command has no reported cost for a run, only the estimate from usage.
+A background launch prints no usage totals. Run tokens come from the conversation's reported usage; a saved status line supplies the context window and takes precedence for cost. Without a native dollar total, a displayed estimate requires reported provider, model and usage plus matching cached prices. Missing inputs leave cost unavailable.
 
-The start record contains `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. Session id, job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
+The start record contains `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. The policy excludes the session id; job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
 
 ### Stored files
 

@@ -77,7 +77,7 @@ python3 scripts/check-rename.py
 python3 scripts/check-stop.py target/debug/cones /absolute/path/to/claude
 ```
 
-Stress is separate from the default gate. It runs one ignored macOS test alone,
+Stress is separate from the default gate. It runs two ignored macOS tests sequentially,
 using disposable homes, Python terminal fixtures and the real dashboard
 preparation, cancellation, input and close paths. History and transcript workers
 are repeatedly refreshed and dropped. No native agent or model is started.

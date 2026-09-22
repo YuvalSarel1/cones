@@ -24,7 +24,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
-| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a detached session](#starting-a-session) the way the dashboard's composer does, and print its identifier. |
+| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. Supported harnesses detach and print an identifier; Codex stays in the terminal. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones show ID [--tail N] [--all]` | [Read a session's conversation](#reading-a-conversation). |
@@ -78,17 +78,20 @@ cones launch --dir ~/src/app --harness claude --model opus --effort high
 
 This CLI selection is separate from the dashboard's `start.harness`. The `_in_picker` switches affect the dashboard cycle, not `cones launch`. With no prompt the session opens waiting for input.
 
-A launch detaches. The session keeps running once the shell that started it exits, and the command prints one identifier on stdout for the other commands to take. The harness and which kind of identifier it is go to stderr, so `id=$(cones launch --dir ~/src/app "fix the flaky test")` is the whole of it.
+A detached launch keeps running once the shell that started it exits and prints one identifier on stdout. The harness and identifier kind go to stderr, so `id=$(cones launch --dir ~/src/app "fix the flaky test")` captures the id. Codex stays in the launching terminal and prints no session identifier.
 
 | Harness | Where the session runs | Identifier printed |
 | --- | --- | --- |
 | Claude | Its own background daemon. | Its native session id, in full rather than the eight characters the harness prints. |
-| pi, OpenCode, [experimental launchers](harness.md#additional-terminal-harnesses) | A cones-owned terminal host, the one the dashboard uses. | The id the roster carries for that client, usually `<harness>-<pid>`. The stderr line says whether it is the harness's own name or a client process; see [detached launch](harness.md#detached-launch) for how long each stays valid. |
+| OpenCode | A cones-owned terminal host. | The host's stored session id, updated by its reporter when OpenCode identifies the conversation. |
+| pi, [experimental launchers](harness.md#additional-terminal-harnesses) | A cones-owned terminal host, the one the dashboard uses. | The id the roster carries: a native session id, `<harness>-<pid>`, or the host's own id when discovery supplies none. See [detached launch](harness.md#detached-launch) for how long each stays valid. |
 | Codex | This terminal, as before. | None. Codex reports no thread at launch, so it has no detached launch. |
 
-Returning an identifier means the roster carried it before the command exited, so `cones ls`, `cones show`, `cones comms send` and `cones stop` take it. Two identical prompts launched into one folder at the same instant get two identifiers: they are told apart by Claude's returned background id, or by the pid of the client the host just spawned, never by prompt, folder or start time. A launch that starts a session cones cannot then name exits non-zero and prints no identifier, naming what the harness printed instead and where to look. It never guesses, and it never stops the session it started.
+Returning an identifier means `cones ls` carried it before the command exited. Other commands retain their own requirements: `show` needs a native conversation id and a readable transcript, `comms send` needs a roster row with native message delivery, and `stop` needs a Claude background session or a matching owned-terminal record. A process id is not a transcript id, and a returned id does not grant a harness operations it lacks.
 
-Every launch is recorded in `STATE_DIR/launches.jsonl` before anything starts, as `launch.submitted`, and again as `launch.identified` or `launch.unnamed`. A launcher killed between the two leaves the first record, so the prompt and folder survive it and a retry is a duplicate you can see.
+Two identical prompts launched into one folder at the same instant get two identifiers: they are told apart by Claude's returned background id, or by the pid of the client the host just spawned, never by prompt, folder or start time. A launch that starts a session cones cannot then name exits non-zero and prints no identifier, naming what the harness printed instead and where to look. It never guesses, and it never stops the session it started.
+
+Every detached launch is recorded in `STATE_DIR/launches.jsonl` before anything starts, as `launch.submitted`, and again as `launch.identified` or `launch.unnamed`. A launcher killed between the two leaves the first record, so the prompt and folder survive it and a retry is a duplicate you can see. The foreground Codex CLI path writes neither record.
 
 `--print-command` prints the folder, environment and command instead of starting anything, and records nothing.
 
@@ -118,6 +121,8 @@ row disappearing:
 | --- | --- |
 | Claude background session | `claude stop <short id>`, against the native home the row was discovered in. Claude's own answer is the result, and it is idempotent: stopping a stopped session succeeds again. |
 | Session in a cones-owned persistent terminal | The terminal host's stop, which acknowledges only after the native client it owns has exited. |
+
+For a hosted terminal, `ID` must match the session id stored by its host. A process or native conversation id printed by discovery may differ; the CLI does not translate those ids back to a host. The dashboard can locate an owned terminal by its client and stop it with `ctrl+x` twice.
 
 Everything else is an error. A session in a terminal cones does not own can only be ended by that
 terminal. A harness with no native session stop says so by name instead of substituting something
@@ -221,7 +226,7 @@ A dispatcher works in the folder it launched into. If no live coordinator holds 
 
 The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
 
-Every prompt submitted to start a harness session, from the dashboard or from [`cones launch`](#starting-a-session), is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered. A CLI launch has no `dashboard_id` and adds a second record, `launch.identified` with the resolved `session_id` or `launch.unnamed` with the `error`.
+Every prompt submitted to start a harness session from the dashboard or a detached [`cones launch`](#starting-a-session) is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered. A detached CLI launch has no `dashboard_id` and adds a second record, `launch.identified` with the resolved `session_id` or `launch.unnamed` with the `error`. The foreground Codex CLI path writes no launch recovery record.
 
 Reviving a conversation from history records `resume.submitted` in the same file. For that event, `data.operation_id` contains the source session id and `data.prompt` contains its saved title, or an empty string; the title is not sent as a new instruction. The record describes the resume request, not proof that it succeeded. This file uses the same 10 MiB bound. Debug launch events reference the operation ID without repeating the prompt.
 

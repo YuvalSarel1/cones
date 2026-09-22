@@ -30,7 +30,7 @@ harness itself reports; a value it never reported stays absent rather than infer
 ```mermaid
 flowchart TB
     subgraph binary ["the cones binary"]
-        CLI["main.rs<br/>run launch ls logs attach<br/>install catchup comms coordinator worker"]
+        CLI["main.rs<br/>run launch ls show stop<br/>catchup comms coordinator skill"]
         TUI["tui.rs<br/>dashboard, config screen, Help"]
         RUN["runner.rs + ledger.rs<br/>supervision, records, output"]
         HAR["harness.rs + harness/spec.rs<br/>definitions, adapters, capabilities"]
@@ -65,8 +65,9 @@ crossing that line are the whole integration surface.
 ## Runs and the ledger
 
 A job is the agent you would run by hand, on a schedule: your settings, your MCP servers, no
-permission prompts, and a timeout. `jobs.yaml` holds them, `cones install` writes the LaunchAgents,
-and a tick runs `cones run`. `cones catchup` covers ticks that passed while the Mac was off.
+permission prompts, and a timeout. `jobs.yaml` holds them, and saving a job in the dashboard
+installs the LaunchAgents through the internal `cones __install` command. A tick runs `cones run`.
+`cones catchup` covers ticks that passed while the Mac was off.
 
 ```mermaid
 flowchart LR
@@ -205,7 +206,7 @@ flowchart TB
     class Wake model
 ```
 
-`wait` returns for exactly two things: a session on the folder's roster that it has not shown
+Without `--id`, `wait` returns for two things: a session on the folder's roster that it has not shown
 before, and a line appended to the folder's inbox. A departure, a state moving between active,
 idle and blocked, and an edit to the tree are read from `tick` when the coordinator is already
 awake, because waking to learn that somebody else is still working spends a call for nothing.
