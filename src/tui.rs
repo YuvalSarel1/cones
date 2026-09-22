@@ -15725,10 +15725,17 @@ impl App {
                         .view(id)
                         .map_or_else(|| run.status(), |v| v.status.clone())
                 );
-                let mut subtitle = if self.run_conversation(run).is_some() {
-                    "conversation · read only".to_owned()
+                // A headless run has no terminal to mirror, but the file it writes is
+                // polled while it runs. Say live so an active run does not read as history.
+                let state = if run.status() == "started" {
+                    "live"
                 } else {
-                    "output · read only".to_owned()
+                    "read only"
+                };
+                let mut subtitle = if self.run_conversation(run).is_some() {
+                    format!("conversation · {state}")
+                } else {
+                    format!("output · {state}")
                 };
                 if let Some(reason) = &last.reason {
                     subtitle.push_str(&format!(" · {reason}"));
@@ -20803,7 +20810,7 @@ states:
         transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
         let text = pane_text(&app, &terminal);
         assert!(
-            text.contains("first run output") && text.contains("output · read only"),
+            text.contains("first run output") && text.contains("output · live"),
             "{text}"
         );
         assert_eq!(app.viewers.len(), 1);
