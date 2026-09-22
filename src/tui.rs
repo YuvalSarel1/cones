@@ -9792,17 +9792,17 @@ impl App {
             }
             Kind::Run(id, _) => {
                 let run = self.data.runs.iter().find(|r| &r.started.run_id == id)?;
-                let source = if run.started.output.is_none()
-                    && run.started.stderr.is_none()
-                    && let Some(path) = run.terminal.as_ref().and_then(|r| r.transcript.as_ref())
-                {
-                    transcript::Source::Conversation(path.clone())
-                } else {
-                    transcript::Source::Run {
-                        events: run.started.output.clone(),
-                        stderr: run.started.stderr.clone(),
-                    }
-                };
+                // A finished run reads like any other session: show the archived
+                // conversation, and keep the raw log for runs that never archived one.
+                let source =
+                    if let Some(path) = run.terminal.as_ref().and_then(|r| r.transcript.as_ref()) {
+                        transcript::Source::Conversation(path.clone())
+                    } else {
+                        transcript::Source::Run {
+                            events: run.started.output.clone(),
+                            stderr: run.started.stderr.clone(),
+                        }
+                    };
                 Some(transcript::Target {
                     key: format!("run:{id}"),
                     harness: run
@@ -15544,7 +15544,15 @@ impl App {
                     run.started.job.as_deref().unwrap_or("run"),
                     run.status()
                 );
-                let mut subtitle = "output · read only".to_owned();
+                let archived = run
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|r| r.transcript.is_some());
+                let mut subtitle = if archived {
+                    "conversation · read only".to_owned()
+                } else {
+                    "output · read only".to_owned()
+                };
                 if let Some(reason) = &last.reason {
                     subtitle.push_str(&format!(" · {reason}"));
                 }
@@ -20626,6 +20634,55 @@ states:
         assert!(pane_text(&app, &terminal).contains("fixture failure"));
         assert_eq!(app.viewers.len(), 1);
         assert!(app.opening.is_none());
+    }
+
+    #[test]
+    fn a_finished_run_previews_its_archived_conversation_instead_of_the_raw_log() {
+        let (d, mut app, mut terminal) = history_fixture(0);
+        let output = d.path().join("events.jsonl");
+        fs::write(
+            &output,
+            format!(
+                "{}\n",
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"raw log line"}]}})
+            ),
+        )
+        .unwrap();
+        let archived = d.path().join("archived.jsonl");
+        fs::write(
+            &archived,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"user","message":{"content":"archived question"}}),
+                json!({"type":"assistant","message":{"content":[{"type":"text","text":"archived answer"}]}})
+            ),
+        )
+        .unwrap();
+        let mut started = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        started.fired_at = Some(chrono::Utc::now());
+        started.output = Some(output);
+        started.job = Some("update-workbench".into());
+        started.harness = Some(HarnessKind::Claude);
+        let mut ended = crate::ledger::Record::new(A.into(), crate::ledger::Status::Timeout);
+        ended.reason = Some("timeout".into());
+        ended.transcript = Some(archived);
+        app.data.runs.push(Run {
+            started,
+            terminal: Some(ended),
+        });
+        app.rebuild();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| matches!(app.rows[i].kind, Kind::Run(..)))
+            .unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        let text = pane_text(&app, &terminal);
+        assert!(text.contains("archived question"), "{text}");
+        assert!(text.contains("archived answer"), "{text}");
+        assert!(!text.contains("raw log line"), "{text}");
+        assert!(text.contains("conversation · read only"), "{text}");
+        assert!(text.contains("update-workbench · timeout"), "{text}");
     }
 
     #[test]
