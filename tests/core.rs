@@ -1073,9 +1073,9 @@ fn doctor_probes_only_the_switches_the_compiler_emits() {
 fn coordinator_plugin_is_the_skill_and_nothing_else() {
     let state = tempfile::tempdir().unwrap();
     let plugin = cones::harness::coordinator_plugin(state.path()).unwrap();
-    let skill = plugin.join("skills/start-orchestrator");
+    let skill = plugin.join("skills/start-coordinator");
     let text = std::fs::read_to_string(skill.join("SKILL.md")).unwrap();
-    assert!(text.starts_with("---\nname: start-orchestrator\n"));
+    assert!(text.starts_with("---\nname: start-coordinator\n"));
     // The plumbing is `cones coordinator` now, so the skill ships no helpers and no path to
     // substitute into. A leftover from an older build would be a second, drifting runtime.
     assert!(!text.contains("__CONES_"));
@@ -1095,7 +1095,7 @@ fn coordinator_plugin_is_the_skill_and_nothing_else() {
         files,
         [
             ".claude-plugin/plugin.json",
-            "skills/start-orchestrator/SKILL.md"
+            "skills/start-coordinator/SKILL.md"
         ]
     );
     let manifest: serde_json::Value =

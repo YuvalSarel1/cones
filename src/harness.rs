@@ -737,15 +737,15 @@ pub fn launch_path() -> String {
 
 /// Embedded coordinator plugin, loaded only for the session that starts it. The skill is prose
 /// and nothing else: the plumbing it used to ship as shell and Python is `cones coordinator`.
-pub const COORDINATOR_SKILL: &str = "start-orchestrator";
+pub const COORDINATOR_SKILL: &str = "start-coordinator";
 const COORDINATOR_FILES: [(&str, &str); 2] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
     ),
     (
-        "skills/start-orchestrator/SKILL.md",
-        include_str!("../assets/coordinator/skills/start-orchestrator/SKILL.md"),
+        "skills/start-coordinator/SKILL.md",
+        include_str!("../assets/coordinator/skills/start-coordinator/SKILL.md"),
     ),
 ];
 

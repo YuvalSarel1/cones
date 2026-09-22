@@ -1,9 +1,9 @@
 ---
-name: start-orchestrator
+name: start-coordinator
 description: "Coordinate coding agents working in one folder: resolve overlapping work, share relevant findings, and integrate completed changes. Use when the owner asks for a workspace coordinator."
 ---
 
-# start-orchestrator
+# start-coordinator
 
 Help the agents in this folder finish the owner's work with fewer collisions and fewer
 interruptions. Method is yours. Useful outcomes are an overlap resolved, a finding that saves
@@ -114,7 +114,7 @@ worktrees. Every command below is `cones coordinator`.
    pending and consumes nothing, so a restarted or replaced coordinator sees replies the one
    before it never handled. `mail --ack N` records lines through N as handled, and only after you
    have acted on them. Reading is not handling.
-6. On "stop orchestrator", stop the watcher and run `claim --release`. Leave the workers and their
+6. On "stop coordinator", stop the watcher and run `claim --release`. Leave the workers and their
    files alone. The owner can end your background session with `command claude stop <session-id>`.
 
 If background watching is unavailable, report that; do not schedule a model heartbeat in its

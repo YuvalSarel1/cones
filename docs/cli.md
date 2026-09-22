@@ -71,7 +71,7 @@ The task runs in the current directory under the named job's policy, otherwise t
 
 ## Coordinator
 
-The bundled [start-orchestrator skill](../assets/coordinator/skills/start-orchestrator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker.
+The bundled [start-coordinator skill](../assets/coordinator/skills/start-coordinator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker.
 
 ### Launch
 
@@ -82,9 +82,9 @@ cones coordinator --dir ~/src/app start
 
 `ctrl+d` in the dashboard does the same for the selected row's folder.
 
-The default folder is the current directory. A folder another live coordinator holds is refused with an error naming its pid and session, and nothing is started; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-orchestrator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
+The default folder is the current directory. A folder another live coordinator holds is refused with an error naming its pid and session, and nothing is started; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-coordinator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
 
-The coordinator appears as a native session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop orchestrator`, which releases its claim; its background session remains until separately stopped. Coordination rules belong to the skill.
+The coordinator appears as a native session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop coordinator`, which releases its claim; its background session remains until separately stopped. Coordination rules belong to the skill.
 
 ### Commands
 

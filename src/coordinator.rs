@@ -340,7 +340,7 @@ pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String
         return Ok(format!("{id} was already greeted\n"));
     }
     let note = format!(
-        "[orchestrator, not the owner{}] {text}\n\
+        "[coordinator, not the owner{}] {text}\n\
          Reply by appending one JSON line to {}: {}",
         match greet {
             true => "; session introduction",

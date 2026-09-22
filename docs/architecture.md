@@ -146,7 +146,7 @@ so neither a draw nor a test starts a model.
 
 ## The coordinator
 
-The coordinator is one agent session running the `start-orchestrator` skill, which ships in this
+The coordinator is one agent session running the `start-coordinator` skill, which ships in this
 repository under `assets/coordinator` and is compiled into the binary with `include_str!`.
 `cones coordinator start` writes the plugin out and starts a background Claude session for a folder.
 

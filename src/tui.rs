@@ -859,7 +859,7 @@ impl Data {
                         logo(&s.harness),
                         label(&s.state),
                         s.kind.as_deref().unwrap_or(""),
-                        if s.coordinator { " orchestrator" } else { "" },
+                        if s.coordinator { " coordinator" } else { "" },
                         s.model.as_deref().map_or_else(|| "-".into(), fleet::model),
                         local_stamp(s.started),
                         local_stamp(s.last_activity),
@@ -13788,7 +13788,19 @@ impl App {
             );
             return;
         }
-        let what = format!("coordinator starting in {}", dir.display());
+        let dir = dir.canonicalize().unwrap_or(dir);
+        let what = format!("coordinator starting in {}", fleet::tilde(&dir));
+        // The row stands in for the session from the keystroke, already marked with the role it
+        // is starting: the claim it will write is what the mark is read from later, and that is
+        // seconds away.
+        let id = self.launch_row(HarnessKind::Claude, &dir, "coordinator");
+        for s in self.data.sessions.iter_mut().filter(|s| s.session_id == id) {
+            s.coordinator = true;
+        }
+        if let Some(p) = self.pending.iter_mut().find(|p| p.session.session_id == id) {
+            p.session.coordinator = true;
+        }
+        self.rebuild();
         self.spawn(&["coordinator", "start"], Some(&dir), &what);
     }
 
@@ -18399,7 +18411,7 @@ states:
     }
 
     #[test]
-    fn the_list_names_the_folders_orchestrator_in_orange() {
+    fn the_list_names_the_folders_coordinator_in_orange() {
         let d = dir();
         let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
         let session = |id: &str, kind: &str, coordinator: bool| Session {
@@ -18428,7 +18440,7 @@ states:
             activity: Vec::new(),
         };
         data.sessions.push(session("aaaa-worker", "bg", false));
-        data.sessions.push(session("bbbb-orchestrator", "bg", true));
+        data.sessions.push(session("bbbb-coordinator", "bg", true));
         data.sessions
             .push(session("cccc-typed", "interactive", true));
         let row = |data: &Data, id: &str| {
@@ -18440,12 +18452,12 @@ states:
         assert_eq!(row(&data, "aaaa-worker").cells[2].0.trim(), "working");
         assert_eq!(row(&data, "aaaa-worker").cells[3].0.trim(), "sweep");
         assert_eq!(row(&data, "aaaa-worker").cells[3].1, plain());
-        let marked = row(&data, "bbbb-orchestrator");
+        let marked = row(&data, "bbbb-coordinator");
         assert_eq!(marked.cells[2].0.trim(), "working");
         assert_eq!(marked.cells[3].0.trim(), "★ sweep");
         assert_eq!(marked.cells[3].1, lit());
         data.columns = vec!["model".into()];
-        let marked = row(&data, "bbbb-orchestrator");
+        let marked = row(&data, "bbbb-coordinator");
         assert_eq!(
             marked.cells[2].0.trim(),
             "★ sweep",
@@ -21036,6 +21048,34 @@ states:
             app.status.contains("already has a coordinator") && app.status.contains("8077985c"),
             "{}",
             app.status
+        );
+    }
+
+    #[test]
+    fn ctrl_d_adds_a_selected_coordinator_row_before_the_claim_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        app.cwd = dir.path().canonicalize().unwrap();
+        // The command itself must not run here; the row is written before it is spawned.
+        app.exe = dir.path().join("no-such-cones");
+        app.key(KeyCode::Char('d'), KeyModifiers::CONTROL).unwrap();
+        let row = app
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.cwd == app.cwd)
+            .expect("a row for the folder");
+        assert!(row.coordinator, "{row:?}");
+        assert_eq!(key(&app).as_deref(), Some(row.session_id.as_str()));
+        let title = app
+            .rows
+            .iter()
+            .find(|r| r.kind.key() == Some(row.session_id.as_str()))
+            .map(|r| r.cells.clone())
+            .expect("the rebuilt row");
+        assert!(
+            title.iter().any(|(text, _)| text.starts_with(COORDINATOR)),
+            "{title:?}"
         );
     }
 
