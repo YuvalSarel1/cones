@@ -77,6 +77,14 @@ or an uncontested small edit can stay in place. Resolve actual function or depen
 with both workers; sharing a filename alone need not stop them. Do not relay an API that has not
 landed to a worker expected to land first. Never stash or reset a shared checkout.
 
+Which hazard a worker faces depends on where it works, so give the rule that fits. Authors sharing
+one checkout share an index: there, staging by path commits every author's hunks, one worker's
+reset unstages another's work, and a check describes the tree rather than a commit. A worker alone
+in its own worktree has none of those. Its overlaps are merge conflicts that arrive later and are
+yours to resolve, so what it needs is the region it owns and an instruction not to reformat around
+its change. A machine-wide check slot, load-sensitive tests and a base that is only correct locally
+cross every worktree.
+
 Once a task lands or is withdrawn, report the result once. A task that already finished has no
 obligation to answer a late coordinator note.
 
