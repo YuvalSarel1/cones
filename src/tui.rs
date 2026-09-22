@@ -100,6 +100,8 @@ const SPINNER: [&str; 16] = [
 const FRAME_MS: usize = 160;
 /// The mascot stays still.
 const CONE: &str = "▲";
+/// What Codex's naming prompt prints above the name it proposes for the thread.
+const CODEX_SUGGESTION: &str = "Suggested from this conversation";
 
 fn spinner_frame(tick: usize) -> usize {
     tick * 100 / FRAME_MS % SPINNER.len()
@@ -9078,8 +9080,22 @@ struct NativeRename {
     id: String,
     harness: HarnessKind,
     command: String,
+    /// The name the row carries now, so a suggestion is told apart from what it replaces.
+    was: Option<String>,
+    /// The user was already inside a viewer, so the handoff leaves the focus where it is.
+    keep: bool,
     started: Instant,
-    typed: bool,
+    stage: RenameStage,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum RenameStage {
+    /// Waiting for the native editor to be empty before typing the command.
+    Typing,
+    /// Waiting for the editor to echo the command before submitting it.
+    Submitting,
+    /// Waiting for Codex to fill its naming prompt with a suggestion before accepting it.
+    Accepting,
 }
 
 impl PendingStop {
@@ -11517,15 +11533,23 @@ impl App {
             } else {
                 format!("/rename {name}")
             },
+            // Codex asks its naming prompt to suggest a name; accepting it is a second key.
+            was: (name.is_empty() && spec.kind == HarnessKind::Codex)
+                .then(|| session.title.clone().unwrap_or_default()),
+            keep: self.focus.is_some(),
             started: Instant::now(),
-            typed: false,
+            stage: RenameStage::Typing,
         };
-        self.enter()?;
+        // A client the row already has takes the command where it stands; only a row
+        // without one is opened, and the handoff hands the focus back either way.
+        if self.viewer_of(&kind).is_none() {
+            self.enter()?;
+        }
         if self.viewer_of(&kind).is_some()
             || self.opening.as_ref().is_some_and(|o| o.key == pending.id)
         {
             self.rename = Some(pending);
-            self.status = "opening native rename · any key cancels the handoff".into();
+            self.status = "renaming in the native client".into();
         }
         Ok(())
     }
@@ -11536,74 +11560,123 @@ impl App {
         let Some(pending) = &self.rename else {
             return false;
         };
-        if pending.started.elapsed() > Duration::from_secs(10) {
+        let (id, harness, stage, keep) = (
+            pending.id.clone(),
+            pending.harness,
+            pending.stage,
+            pending.keep,
+        );
+        // The suggestion Codex accepts waits on a model, which the editor does not.
+        let limit = if stage == RenameStage::Accepting {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_secs(10)
+        };
+        if pending.started.elapsed() > limit {
             self.rename = None;
             self.status = "native rename was not submitted · return to the prompt and retry".into();
             return true;
         }
-        let kind = Kind::Session(pending.id.clone(), String::new());
+        let kind = Kind::Session(id.clone(), String::new());
         let Some(i) = self.viewer_of(&kind) else {
-            if self.opening.as_ref().is_none_or(|o| o.key != pending.id) {
+            if self.opening.as_ref().is_none_or(|o| o.key != id) {
                 self.rename = None;
             }
             return false;
         };
+        // The rename runs in the client, not in front of the user: leave them in the list.
+        if !keep && self.focus == Some(i) {
+            self.unfocus();
+        }
         let open = &mut self.viewers[i];
-        if self.focus != Some(i) || open.harness != Some(pending.harness) {
+        if open.harness != Some(harness) {
             self.rename = None;
             return false;
         }
         let screen = open.viewer.screen();
-        if pending.typed {
-            let Some((row, col)) = viewer::command_cursor(screen) else {
-                return false;
-            };
-            let echoed = (0..=row).rev().find_map(|start| {
-                let first = screen.contents_between(start, 0, start, screen.size().1);
-                let text = first.trim_start();
-                if !text.starts_with(['❯', '›']) {
-                    return None;
+        match stage {
+            RenameStage::Typing => {
+                if !viewer::at_empty_command_prompt(screen, &harness::spec(harness).input) {
+                    return false;
                 }
-                Some(
-                    (start..=row)
-                        .map(|r| {
-                            screen.contents_between(
-                                r,
-                                0,
-                                r,
-                                if r == row { col } else { screen.size().1 },
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("")
-                        .trim_start_matches(|c: char| {
-                            c.is_whitespace()
-                                || matches!(c, '❯' | '›')
-                                || (harness::spec(pending.harness).input.ignore_braille
-                                    && ('\u{2800}'..='\u{28ff}').contains(&c))
-                        })
-                        .to_owned(),
-                )
-            });
-            // Native editors indent wrapped lines. Whitespace in the echo can
-            // differ at those wraps; the bytes we submit remain the user's name.
-            if !echoed.is_some_and(|text| {
-                text.chars()
-                    .filter(|c| !c.is_whitespace())
-                    .eq(pending.command.chars().filter(|c| !c.is_whitespace()))
-            }) {
-                return false;
+                let command = self.rename.as_ref().unwrap().command.clone();
+                self.viewers[i].viewer.write(command.as_bytes());
+                self.rename.as_mut().unwrap().stage = RenameStage::Submitting;
             }
-            open.viewer.write(b"\r");
-            self.rename = None;
-            self.status = "native rename opened".into();
-            self.invalidate();
-        } else {
-            if !viewer::at_empty_command_prompt(screen, &harness::spec(pending.harness).input) {
-                return false;
+            RenameStage::Submitting => {
+                let Some((row, col)) = viewer::command_cursor(screen) else {
+                    return false;
+                };
+                let echoed = (0..=row).rev().find_map(|start| {
+                    let first = screen.contents_between(start, 0, start, screen.size().1);
+                    let text = first.trim_start();
+                    if !text.starts_with(['❯', '›']) {
+                        return None;
+                    }
+                    Some(
+                        (start..=row)
+                            .map(|r| {
+                                screen.contents_between(
+                                    r,
+                                    0,
+                                    r,
+                                    if r == row { col } else { screen.size().1 },
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                            .trim_start_matches(|c: char| {
+                                c.is_whitespace()
+                                    || matches!(c, '❯' | '›')
+                                    || (harness::spec(harness).input.ignore_braille
+                                        && ('\u{2800}'..='\u{28ff}').contains(&c))
+                            })
+                            .to_owned(),
+                    )
+                });
+                // Native editors indent wrapped lines. Whitespace in the echo can
+                // differ at those wraps; the bytes we submit remain the user's name.
+                let command = self.rename.as_ref().unwrap().command.clone();
+                if !echoed.is_some_and(|text| {
+                    text.chars()
+                        .filter(|c| !c.is_whitespace())
+                        .eq(command.chars().filter(|c| !c.is_whitespace()))
+                }) {
+                    return false;
+                }
+                self.viewers[i].viewer.write(b"\r");
+                if self.rename.as_ref().unwrap().was.is_some() {
+                    let pending = self.rename.as_mut().unwrap();
+                    pending.stage = RenameStage::Accepting;
+                    pending.started = Instant::now();
+                    self.status = "waiting for the suggested name".into();
+                } else {
+                    self.rename = None;
+                    self.status = "native rename opened".into();
+                }
+                self.invalidate();
             }
-            open.viewer.write(pending.command.as_bytes());
-            self.rename.as_mut().unwrap().typed = true;
+            RenameStage::Accepting => {
+                if !screen.contents().contains(CODEX_SUGGESTION) {
+                    return false;
+                }
+                let (row, _) = screen.cursor_position();
+                let line = screen.contents_between(row, 0, row, screen.size().1);
+                let suggestion = line
+                    .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '❯' | '›'))
+                    .trim()
+                    .to_owned();
+                // Accept only once the prompt carries a name of its own, not what it replaces.
+                if suggestion.is_empty()
+                    || Some(suggestion.as_str()) == self.rename.as_ref().unwrap().was.as_deref()
+                {
+                    return false;
+                }
+                self.viewers[i].viewer.write(b"\r");
+                self.rename = None;
+                self.status = format!("accepted {suggestion}");
+                self.invalidate();
+            }
         }
         true
     }
@@ -14830,7 +14903,11 @@ impl App {
 
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
-        self.rename = None;
+        // A handoff runs behind the list, so only input aimed at the native editor,
+        // or an explicit escape, takes it back.
+        if self.focus.is_some() || code == KeyCode::Esc {
+            self.rename = None;
+        }
         if let Some(open) = self.focused() {
             let terminal = open.is_terminal();
             let action = key_action(
@@ -27242,8 +27319,12 @@ text = b""
 while True:
     b = os.read(0, 1)
     if b == b"\r":
-        Path(sys.argv[1]).write_bytes(text)
-        os.write(1, b"\r\nNATIVE RENAME\r\n")
+        with open(sys.argv[1], "ab") as f:
+            f.write(text + b"\n")
+        if text == b"/rename":
+            os.write(1, b"\r\nSuggested from this conversation\r\nNew name")
+        else:
+            os.write(1, b"\r\nNATIVE RENAME\r\n")
         text = b""
     else:
         text += b
@@ -27269,24 +27350,35 @@ while True:
                     app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
                 }
                 app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-                assert_eq!(app.focus, Some(0));
+                assert!(
+                    app.focus.is_none(),
+                    "the handoff leaves the user in the list"
+                );
                 assert!(!result.exists(), "handoff waits for the native editor");
+                // An empty Codex rename is two submissions: the command, then the
+                // suggestion its naming prompt fills in.
+                let mut want = if name.is_empty() {
+                    "/rename\n".to_owned()
+                } else {
+                    format!("/rename {name}\n")
+                };
+                if name.is_empty() && harness == HarnessKind::Codex {
+                    want.push('\n');
+                }
                 let deadline = Instant::now() + Duration::from_secs(3);
-                while !result.exists() {
+                while fs::read_to_string(&result).unwrap_or_default() != want {
                     app.pump();
-                    assert!(Instant::now() < deadline, "native rename was not delivered");
+                    assert!(
+                        Instant::now() < deadline,
+                        "{harness}: native rename was not delivered: {:?}",
+                        fs::read_to_string(&result)
+                    );
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                assert_eq!(
-                    fs::read_to_string(&result).unwrap(),
-                    if name.is_empty() {
-                        "/rename".into()
-                    } else {
-                        format!("/rename {name}")
-                    },
-                    "{harness}"
-                );
                 assert!(app.rename.is_none(), "the command is sent once");
+                if name.is_empty() && harness == HarnessKind::Codex {
+                    assert_eq!(app.status, "accepted New name");
+                }
                 assert_eq!(
                     app.selected_session().unwrap().title.as_deref(),
                     Some("Old title"),
@@ -27306,7 +27398,7 @@ while True:
         assert!(app.rename.is_some());
         app.pump();
         assert!(
-            !app.rename.as_ref().unwrap().typed,
+            app.rename.as_ref().unwrap().stage == RenameStage::Typing,
             "Home in a draft is not empty"
         );
         assert!(app.viewers[0].viewer.screen().contents().contains("draft"));
@@ -27439,20 +27531,9 @@ while True:
                     app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
                 }
                 app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                // Codex's suggestion is accepted by the handoff, not by the user.
                 until(&mut app, &|app| app.rename.is_none());
-                if name.is_empty() && kind == HarnessKind::Codex {
-                    until(&mut app, &|app| {
-                        let screen = app.viewers[0].viewer.screen();
-                        let (row, _) = screen.cursor_position();
-                        screen
-                            .contents()
-                            .contains("Suggested from this conversation")
-                            && screen
-                                .contents_between(row, 0, row, screen.size().1)
-                                .contains("Fixture title")
-                    });
-                    app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-                }
+                assert!(app.focus.is_none(), "{kind}: the list keeps the focus");
                 let expected = match (name.is_empty(), kind) {
                     (true, HarnessKind::Claude) => "fixture-title",
                     (true, _) => "Fixture title",

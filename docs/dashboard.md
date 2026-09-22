@@ -176,7 +176,7 @@ Harness marks and the mascot stay still. A coordinator has an orange title prefi
 | `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
 | `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
 | `shift+tab` | With the cursor in history, switch its search between words and meaning. |
-| `ctrl+n` | Rename a Claude or Codex session. Type a name, or submit the empty field to open native `/rename`: Claude generates a name; Codex opens its native naming prompt, which can suggest a name. |
+| `ctrl+n` | Rename a Claude or Codex session. Type a name, or submit the empty field to hand `/rename` to the native client: Claude generates a name, and Codex's naming prompt is accepted once it fills in its suggestion. The handoff runs in the client while the cursor stays in the list. |
 | `ctrl+p` | Highlight the selected session, or remove its highlight. The colour is [`highlight`](jobs.md#list-settings); marks last while the dashboard is open and are never written to the file. |
 | `ctrl+y` | [Fork a supported conversation](#fork-a-conversation). |
 | `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
