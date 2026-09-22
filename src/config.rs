@@ -341,16 +341,30 @@ pub struct JobsFile {
 
 pub const WHOLE_COLUMNS: bool = true;
 
-/// Colour of a highlighted session row. Distinct from the states' green, yellow and red and
-/// from the coordinator's orange, so a mark is never read as a reported state.
+/// Colour of a highlighted session row. The built-in is distinct from the states' green, yellow
+/// and red and from the coordinator's orange, so an unconfigured mark is never read as a
+/// reported state.
 pub const HIGHLIGHT: &str = "magenta";
 
-pub const HIGHLIGHTS: [&str; 6] = ["magenta", "cyan", "blue", "green", "yellow", "red"];
+pub const HIGHLIGHTS: [&str; 11] = [
+    "magenta", "cyan", "blue", "green", "yellow", "red", "orange", "pink", "purple", "teal",
+    "white",
+];
+
+/// A colour given as `#rrggbb`, for a terminal that takes one directly.
+pub fn highlight_hex(name: &str) -> Option<(u8, u8, u8)> {
+    let d = name.strip_prefix('#')?;
+    if d.len() != 6 || !d.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&d[i..i + 2], 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
 
 pub fn check_highlight(name: &str) -> Result<()> {
     ensure!(
-        HIGHLIGHTS.contains(&name),
-        "highlight {name}: one of {}",
+        HIGHLIGHTS.contains(&name) || highlight_hex(name).is_some(),
+        "highlight {name}: one of {}, or a hex colour such as #ff8800",
         HIGHLIGHTS.join(", ")
     );
     Ok(())
@@ -1176,7 +1190,14 @@ pub fn write_highlight(path: &Path, name: &str) -> Result<()> {
     write_top_level(
         path,
         "highlight",
-        (!name.is_empty()).then(|| format!("highlight: {name}")),
+        // A hex colour starts with the comment character, so it is written quoted.
+        (!name.is_empty()).then(|| {
+            if highlight_hex(name).is_some() {
+                format!("highlight: \"{name}\"")
+            } else {
+                format!("highlight: {name}")
+            }
+        }),
     )
 }
 
@@ -2465,8 +2486,25 @@ mod tests {
             (highlight(&p), file_highlight(&p)),
             ("cyan".to_owned(), Some("cyan".to_owned()))
         );
+        write_highlight(&p, "#ff8800").unwrap();
+        let text = fs::read_to_string(&p).unwrap();
+        assert!(
+            text.contains("\nhighlight: \"#ff8800\"\n"),
+            "written: {text}"
+        );
+        assert_eq!(
+            (highlight(&p), highlight_hex("#ff8800")),
+            ("#ff8800".to_owned(), Some((0xff, 0x88, 0x00))),
+            "a hex colour is kept and read back"
+        );
+        for bad in ["#ff880", "#ff88000", "#ff88zz", "ff8800"] {
+            assert_eq!(highlight_hex(bad), None, "{bad}");
+            assert!(check_highlight(bad).is_err(), "{bad}");
+        }
+        write_highlight(&p, "cyan").unwrap();
         let err = format!("{:#}", write_highlight(&p, "puce").unwrap_err());
         assert!(err.contains("highlight puce: one of magenta"), "{err}");
+        assert!(err.contains("hex colour such as #ff8800"), "{err}");
         assert_eq!(file_highlight(&p), Some("cyan".to_owned()), "left alone");
         write_highlight(&p, "").unwrap();
         assert_eq!(file_highlight(&p), None, "an empty name removes the line");

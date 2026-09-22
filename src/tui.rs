@@ -2363,14 +2363,37 @@ fn lit() -> Style {
 /// The configured highlight colour. An unknown name cannot reach here: the config rejects it
 /// and the reader falls back to the built-in.
 fn highlight_colour(name: &str) -> Color {
-    match name {
+    parse_colour(name).unwrap_or(Color::Magenta)
+}
+
+/// A colour the config offers by name, or one given as `#rrggbb`. None is a name the config
+/// would refuse, so a half-typed hex is not painted as magenta while it is being typed.
+fn parse_colour(name: &str) -> Option<Color> {
+    if let Some((r, g, b)) = config::highlight_hex(name) {
+        return Some(Color::Rgb(r, g, b));
+    }
+    Some(match name {
+        "magenta" => Color::Magenta,
         "cyan" => Color::Cyan,
         "blue" => Color::Blue,
         "green" => Color::Green,
         "yellow" => Color::Yellow,
         "red" => Color::Red,
-        _ => Color::Magenta,
+        "orange" => ORANGE,
+        "pink" => Color::Indexed(213),
+        "purple" => Color::Indexed(99),
+        "teal" => Color::Indexed(37),
+        "white" => Color::White,
+        _ => return None,
+    })
+}
+
+/// The colour a colour setting's value stands for, so its row is drawn in what it names.
+fn swatch(f: &Field, value: &str) -> Option<Color> {
+    if f.name != "highlight" {
+        return None;
     }
+    parse_colour(if value.is_empty() { f.builtin } else { value })
 }
 
 /// Pad an editor row out to the pane and shade it, so the row the cursor is on reads as one line.
@@ -4233,9 +4256,15 @@ const FIELDS: [Field; 60] = [
         name: "highlight",
         short: "highlight colour",
         hint: "Colour of a session title highlighted with ctrl+p.",
-        long: "Colour ctrl+p paints the selected session's title in, so rows you are watching stand out from the rest. The mark itself lasts as long as the dashboard is open and is never written to the file; only the colour is.",
+        long: "Colour ctrl+p paints the selected session's title in, so rows you are watching stand out from the rest. Each choice is drawn in the colour it names, and the last one takes a hex colour such as #ff8800 for a terminal that renders true colour. The mark itself lasts as long as the dashboard is open and is never written to the file; only the colour is.",
         builtin: "magenta",
-        input: Answer::Pick(&["-", "magenta", "cyan", "blue", "green", "yellow", "red"]),
+        input: Answer::PickOrType(
+            &[
+                "-", "magenta", "cyan", "blue", "green", "yellow", "red", "orange", "pink",
+                "purple", "teal", "white",
+            ],
+            "a hex colour",
+        ),
     },
     Field {
         group: "cones",
@@ -6071,7 +6100,19 @@ impl ConfigForm {
                             if i == current { "(*) " } else { "( ) " },
                             if i == current { plain() } else { dim() },
                         ),
-                        Span::styled(label, if i == choice { lit() } else { plain() }),
+                        Span::styled(
+                            label,
+                            // The empty slot past the words says what it takes; only a value
+                            // it holds has a colour to be drawn in.
+                            match swatch(f, value).filter(|_| i < ring.len() || !f.picked(value)) {
+                                Some(c) if i == choice => {
+                                    Style::default().fg(c).add_modifier(Modifier::BOLD)
+                                }
+                                Some(c) => Style::default().fg(c),
+                                None if i == choice => lit(),
+                                None => plain(),
+                            },
+                        ),
                     ],
                     columns as usize,
                 ));
@@ -6275,12 +6316,11 @@ impl ConfigForm {
             value
         };
         let value = f.display(value);
-        let style = if i == self.row && !self.tabs {
-            lit()
-        } else if configured {
-            bold()
-        } else {
-            dim()
+        let style = match swatch(f, value) {
+            Some(c) => Style::default().fg(c).add_modifier(Modifier::BOLD),
+            None if i == self.row && !self.tabs => lit(),
+            None if configured => bold(),
+            None => dim(),
         };
         let edges = if f.picks().is_some() || f.step().is_some() {
             ("‹ ", " ›")
@@ -24355,6 +24395,92 @@ states:
         app.key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
         assert!(app.highlighted.is_empty(), "the second press unmarks it");
         assert_eq!(painted(&app), plain, "and the row returns to its colours");
+    }
+
+    #[test]
+    fn the_highlight_choices_are_drawn_in_their_own_colours_and_the_last_takes_a_hex() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.mode = Mode::Config(app.config_form());
+        let Mode::Config(form) = &mut app.mode else {
+            unreachable!()
+        };
+        form.tabs = false;
+        form.go(field_at("highlight"));
+        let colour = |app: &App, text: &str| -> Option<Color> {
+            let Mode::Config(form) = &app.mode else {
+                unreachable!()
+            };
+            let lines = form.lines(80).0;
+            let line = lines
+                .iter()
+                .find(|l| l.to_string().contains(text))
+                .unwrap_or_else(|| panic!("{text} is on a row: {lines:?}"));
+            line.spans
+                .iter()
+                .find(|s| s.content.contains(text))
+                .expect("the row names it")
+                .style
+                .fg
+        };
+        let type_in = |app: &mut App, text: &str| {
+            for c in text.chars() {
+                app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+            }
+        };
+        let error = |app: &App| -> Option<String> {
+            let Mode::Config(form) = &app.mode else {
+                unreachable!()
+            };
+            form.error.clone()
+        };
+        // The row itself carries the colour it is set to, before the choices are opened.
+        assert_eq!(colour(&app, "magenta"), Some(Color::Magenta));
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.choice.is_some()),
+            "enter opens the choices"
+        );
+        for name in config::HIGHLIGHTS {
+            assert_eq!(
+                colour(&app, name),
+                Some(highlight_colour(name)),
+                "{name} is drawn in itself"
+            );
+        }
+        assert_eq!(
+            colour(&app, "custom"),
+            None,
+            "the empty custom slot has no colour of its own"
+        );
+        // The last choice types a colour of one's own. One the config would refuse is
+        // reported on the row rather than written.
+        app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        type_in(&mut app, "#ff88");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            error(&app).is_some_and(|e| e.contains("hex colour such as #ff8800")),
+            "an unreadable colour is refused: {:?}",
+            error(&app)
+        );
+        assert_eq!(config::file_highlight(&app.jobs_path), None, "not written");
+        assert_eq!(app.data.highlight, Color::Magenta);
+        // Backspace takes the row back to the built-in, and a whole hex colour is taken.
+        app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        type_in(&mut app, "#ff8800");
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(error(&app), None, "a hex colour is accepted");
+        assert_eq!(config::highlight(&app.jobs_path), "#ff8800", "and written");
+        assert_eq!(app.data.highlight, Color::Rgb(0xff, 0x88, 0x00));
+        assert_eq!(
+            colour(&app, "#ff8800"),
+            Some(Color::Rgb(0xff, 0x88, 0x00)),
+            "the row holding it is drawn in it too"
+        );
     }
 
     #[test]
