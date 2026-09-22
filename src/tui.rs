@@ -1229,20 +1229,21 @@ struct Guide {
 }
 
 impl Guide {
-    /// Open Help on the headings that describe where the reader already is.
+    /// Open Help on the heading that describes where the reader already is. Only the
+    /// most specific one: the rest of `origin` is what that heading inherits, one enter away.
     fn new(origin: &[&str]) -> Self {
         let mut guide = Self::default();
-        for head in origin.iter().filter_map(|title| guide_section(title)) {
+        if let Some(head) = origin.first().and_then(|title| guide_section(title)) {
             if let GuideHead::Section(group, _) = head {
                 guide.open.insert(GuideHead::Group(group));
             }
             guide.open.insert(head);
+            guide.cursor = guide
+                .heads()
+                .iter()
+                .position(|&h| h == head)
+                .unwrap_or_default();
         }
-        guide.cursor = origin
-            .first()
-            .and_then(|title| guide_section(title))
-            .and_then(|head| guide.heads().iter().position(|&h| h == head))
-            .unwrap_or_default();
         guide
     }
 
@@ -1483,9 +1484,21 @@ impl Guide {
                     .retain(|h| !matches!(h, GuideHead::Section(g, _) if *g == group));
             }
         } else {
+            // One heading at a time, so Help stays a screen tall however deep the reader goes.
+            match head {
+                GuideHead::Group(_) => self.open.clear(),
+                GuideHead::Section(group, _) => self
+                    .open
+                    .retain(|h| !matches!(h, GuideHead::Section(g, _) if *g == group)),
+            }
             self.open.insert(head);
         }
-        self.cursor = self.cursor.min(self.heads().len().saturating_sub(1));
+        // Collapsing a group above this one moves every heading, so find the cursor again.
+        self.cursor = self
+            .heads()
+            .iter()
+            .position(|&h| h == head)
+            .unwrap_or(self.cursor.min(self.heads().len().saturating_sub(1)));
         self.follow();
         true
     }
@@ -17152,7 +17165,7 @@ states:
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(90, 50)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 90).join("\n");
-        for open in ["▾ The list", "▾ List navigation", "▾ Session rows"] {
+        for open in ["▾ The list", "▸ List navigation", "▾ Session rows"] {
             assert!(text.contains(open), "{open} is where the cursor is: {text}");
         }
         assert!(
@@ -17186,8 +17199,8 @@ states:
             "a closed heading shows none of its keys: {whole:#?}"
         );
         assert!(
-            whole.len() < 60,
-            "the whole dashboard stays browsable: {} lines",
+            whole.len() <= 40,
+            "the whole dashboard stays on one screen: {} lines",
             whole.len()
         );
     }
@@ -17237,6 +17250,14 @@ states:
             "an opened group lists its headings, still closed: {:#?}",
             open.lines
         );
+        assert!(
+            !open
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("Terminal rows")),
+            "and the group that was open closed, so Help stays one screen: {:#?}",
+            open.lines
+        );
         guide.cursor = guide
             .heads()
             .iter()
@@ -17248,6 +17269,18 @@ states:
                 .to_string()
                 .contains("Validate and save the entered value")),
             "and each one opens on its own"
+        );
+        guide.cursor = guide
+            .heads()
+            .iter()
+            .position(|head| Some(*head) == guide_section("Pinned folders"))
+            .expect("an open group offers its headings");
+        guide.key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            !guide.view(90).lines.iter().any(|line| line
+                .to_string()
+                .contains("Validate and save the entered value")),
+            "opening the next heading closes the last one"
         );
         guide.cursor = guide
             .heads()
@@ -24958,7 +24991,7 @@ states:
         assert!(app.split_active());
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("Move between rows") && pane(&t).contains("search ›"),
+            pane(&t).contains("Select the next menu button") && pane(&t).contains("search ›"),
             "entering opens the button's own place: {}",
             pane(&t)
         );
