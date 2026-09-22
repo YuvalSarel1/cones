@@ -1197,21 +1197,12 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// One heading in Help: the keys that work in one place, with the condition that makes
-/// them live. A section is what the reader opens and closes.
-struct GuideSection {
-    title: String,
-    when: String,
-    /// A state whose keys also work here, named instead of copied in.
-    inherits: Option<String>,
-    keys: Vec<(String, String)>,
-}
-
-/// Dispatch states filed under one place in the dashboard, so Help opens as a short list
-/// of places rather than every state at once.
+/// One heading in Help: the keys that matter in one place, with the condition that makes
+/// them live. A heading is what the reader opens and closes.
 struct GuideGroup {
     title: String,
-    sections: Vec<GuideSection>,
+    when: String,
+    keys: Vec<(String, String)>,
 }
 
 /// Help is built from the same keys and descriptions used for dispatch.
@@ -1220,15 +1211,9 @@ fn guide_groups() -> &'static [GuideGroup] {
     GUIDE.get_or_init(|| bindings().guide())
 }
 
-/// Locate a section by its heading. Headings are unique across the guide.
-fn guide_section(title: &str) -> Option<GuideHead> {
-    guide_groups().iter().enumerate().find_map(|(g, group)| {
-        group
-            .sections
-            .iter()
-            .position(|s| s.title == title)
-            .map(|s| GuideHead::Section(g, s))
-    })
+/// Locate a heading by name. Headings are unique across the guide.
+fn guide_group(title: &str) -> Option<usize> {
+    guide_groups().iter().position(|g| g.title == title)
 }
 
 /// Every shortcut in Help, flattened. Tests read the table, not the drawing.
@@ -1236,7 +1221,7 @@ fn guide_section(title: &str) -> Option<GuideHead> {
 fn guide_pairs(guide: &[GuideGroup]) -> Vec<(String, String)> {
     guide
         .iter()
-        .flat_map(|group| group.sections.iter().flat_map(|s| s.keys.iter()))
+        .flat_map(|group| group.keys.iter())
         .cloned()
         .collect()
 }
@@ -1246,17 +1231,16 @@ fn guide_pairs(guide: &[GuideGroup]) -> Vec<(String, String)> {
 fn guide_keys(guide: &[GuideGroup], title: &str) -> Vec<(String, String)> {
     guide
         .iter()
-        .flat_map(|group| &group.sections)
-        .find(|section| section.title == title)
-        .map(|section| section.keys.clone())
+        .find(|group| group.title == title)
+        .map(|group| group.keys.clone())
         .unwrap_or_default()
 }
 
 /// Every shortcut as one searchable line, in the order Help draws them, so a result
 /// position names a place in the tree. Both search modes read the same text.
 struct GuideCorpus {
-    /// The group, section and key each line came from.
-    places: Vec<(usize, usize, usize)>,
+    /// The heading and key each line came from.
+    places: Vec<(usize, usize)>,
     lines: search::Corpus,
 }
 
@@ -1266,11 +1250,9 @@ fn guide_corpus() -> &'static GuideCorpus {
         let mut places = vec![];
         let mut texts = vec![];
         for (g, group) in guide_groups().iter().enumerate() {
-            for (s, section) in group.sections.iter().enumerate() {
-                for (k, (key, what)) in section.keys.iter().enumerate() {
-                    places.push((g, s, k));
-                    texts.push(format!("{} {} {key} {what}", group.title, section.title));
-                }
+            for (k, (key, what)) in group.keys.iter().enumerate() {
+                places.push((g, k));
+                texts.push(format!("{} {key} {what}", group.title));
             }
         }
         GuideCorpus {
@@ -1281,17 +1263,17 @@ fn guide_corpus() -> &'static GuideCorpus {
 }
 
 /// Where one shortcut sits in the flat corpus.
-fn guide_position(group: usize, section: usize, key: usize) -> Option<usize> {
+fn guide_position(group: usize, key: usize) -> Option<usize> {
     guide_corpus()
         .places
         .iter()
-        .position(|place| *place == (group, section, key))
+        .position(|place| *place == (group, key))
 }
 
 fn guide_key_width() -> usize {
     guide_groups()
         .iter()
-        .flat_map(|g| g.sections.iter().flat_map(|s| s.keys.iter()))
+        .flat_map(|g| g.keys.iter())
         .map(|(key, _)| key.chars().count())
         // A handful of long chord lists would push every description off the screen.
         .filter(|&width| width <= 16)
@@ -1299,14 +1281,7 @@ fn guide_key_width() -> usize {
         .unwrap_or(0)
 }
 
-/// What the cursor sits on: a whole group, or one section inside an open group.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-enum GuideHead {
-    Group(usize),
-    Section(usize, usize),
-}
-
-/// The rendered guide, plus where each openable heading landed so the cursor can follow.
+/// The rendered guide, plus where each heading landed so the cursor can follow.
 struct GuideView {
     lines: Vec<Line<'static>>,
     heads: Vec<usize>,
@@ -1318,9 +1293,9 @@ struct Guide {
     top: usize,
     find: Input,
     area: Rect,
-    /// Groups and sections the reader has open. Everything starts closed; `new` selects
-    /// the group Help was pressed from without expanding it.
-    open: HashSet<GuideHead>,
+    /// Headings the reader has open. Everything starts closed; `new` selects the heading
+    /// Help was pressed from without expanding it.
+    open: HashSet<usize>,
     cursor: usize,
     /// Words or meaning, the same two searches history offers, on the same key.
     search: search::Mode,
@@ -1333,26 +1308,11 @@ struct Guide {
 
 impl Guide {
     /// Start with the short topic index, highlighting where Help was pressed from.
-    fn new(origin: &[&str]) -> Self {
-        let mut guide = Self::default();
-        if let Some(GuideHead::Section(group, _)) =
-            origin.first().and_then(|title| guide_section(title))
-        {
-            guide.cursor = group;
+    fn new(origin: &str) -> Self {
+        Self {
+            cursor: guide_group(origin).unwrap_or(0),
+            ..Self::default()
         }
-        guide
-    }
-
-    /// Every heading the reader can move to, in the order they are drawn.
-    fn heads(&self) -> Vec<GuideHead> {
-        let mut heads = vec![];
-        for (g, group) in guide_groups().iter().enumerate() {
-            heads.push(GuideHead::Group(g));
-            if self.open.contains(&GuideHead::Group(g)) {
-                heads.extend((0..group.sections.len()).map(|s| GuideHead::Section(g, s)));
-            }
-        }
-        heads
     }
 
     /// Searching flattens the tree: every match is shown open, and the cursor stands down.
@@ -1416,32 +1376,21 @@ impl Guide {
         };
         let mut drawn_open = false;
         for (g, group) in guide_groups().iter().enumerate() {
-            let sections: Vec<(usize, Vec<&(String, String)>)> = group
-                .sections
+            let keys: Vec<&(String, String)> = group
+                .keys
                 .iter()
                 .enumerate()
-                .filter_map(|(s, section)| {
-                    if !searching {
-                        return Some((s, section.keys.iter().collect()));
-                    }
-                    let keys: Vec<_> = section
-                        .keys
-                        .iter()
-                        .enumerate()
-                        .filter(|(k, _)| {
-                            guide_position(g, s, *k).is_some_and(|at| self.hits.contains(&at))
-                        })
-                        .map(|(_, pair)| pair)
-                        .collect();
-                    (!keys.is_empty()).then_some((s, keys))
+                .filter(|(k, _)| {
+                    !searching || guide_position(g, *k).is_some_and(|at| self.hits.contains(&at))
                 })
+                .map(|(_, pair)| pair)
                 .collect();
-            view.matches += sections.iter().map(|(_, keys)| keys.len()).sum::<usize>();
-            if searching && sections.is_empty() {
+            view.matches += if searching { keys.len() } else { 0 };
+            if searching && keys.is_empty() {
                 continue;
             }
-            let open = searching || self.open.contains(&GuideHead::Group(g));
-            // Air around the group being read; the closed ones stack as one block.
+            let open = searching || self.open.contains(&g);
+            // Air around the heading being read; the closed ones stack as one block.
             if !view.lines.is_empty() && (open || drawn_open) {
                 view.lines.push(Line::default());
             }
@@ -1460,58 +1409,30 @@ impl Guide {
             if !open {
                 continue;
             }
-            for (s, keys) in sections {
-                let section = &group.sections[s];
-                let open = searching || self.open.contains(&GuideHead::Section(g, s));
-                if !searching {
-                    view.heads.push(view.lines.len());
-                }
-                view.lines.extend(hang(
-                    vec![Span::styled(
-                        format!("  {} {}", if open { "▾" } else { "▸" }, section.title),
-                        bold(),
-                    )],
-                    4,
-                    columns,
-                ));
-                if !open {
-                    continue;
-                }
-                view.lines.extend(hang(
-                    vec![Span::styled(format!("    {}", section.when), dim())],
-                    4,
-                    columns,
-                ));
-                for (key, what) in keys {
-                    if columns < 48 {
-                        view.lines.extend(hang(
-                            vec![Span::styled(format!("    {key}"), bold())],
-                            0,
-                            columns,
-                        ));
-                        view.lines.extend(hang(
-                            vec![Span::raw("      "), Span::raw(what.clone())],
-                            6.min(columns.saturating_sub(1)),
-                            columns,
-                        ));
-                    } else {
-                        view.lines.extend(hang(
-                            vec![
-                                Span::styled(format!("    {key:width$}  "), bold()),
-                                Span::raw(what.clone()),
-                            ],
-                            indent,
-                            columns,
-                        ));
-                    }
-                }
-                if let Some(parent) = &section.inherits {
+            view.lines.extend(hang(
+                vec![Span::styled(format!("    {}", group.when), dim())],
+                4,
+                columns,
+            ));
+            for (key, what) in keys {
+                if columns < 48 {
                     view.lines.extend(hang(
-                        vec![Span::styled(
-                            format!("    Plus the keys under {parent}."),
-                            dim(),
-                        )],
-                        4,
+                        vec![Span::styled(format!("    {key}"), bold())],
+                        0,
+                        columns,
+                    ));
+                    view.lines.extend(hang(
+                        vec![Span::raw("      "), Span::raw(what.clone())],
+                        6.min(columns.saturating_sub(1)),
+                        columns,
+                    ));
+                } else {
+                    view.lines.extend(hang(
+                        vec![
+                            Span::styled(format!("    {key:width$}  "), bold()),
+                            Span::raw(what.clone()),
+                        ],
+                        indent,
                         columns,
                     ));
                 }
@@ -1522,7 +1443,7 @@ impl Guide {
                 Line::from("No shortcuts match your search."),
                 Line::default(),
                 Line::from(Span::styled(
-                    "Try a key or topic, such as config, clipboard or pane.",
+                    "Try a key or topic, such as fork, stop or search.",
                     dim(),
                 )),
                 Line::from(Span::styled(
@@ -1536,7 +1457,6 @@ impl Guide {
         }
         view
     }
-
     fn body_height(&self) -> usize {
         self.area
             .height
@@ -1565,36 +1485,18 @@ impl Guide {
     }
 
     fn toggle(&mut self, open: Option<bool>) -> bool {
-        let Some(&head) = self.heads().get(self.cursor) else {
+        if self.cursor >= guide_groups().len() {
             return false;
-        };
-        let shown = self.open.contains(&head);
+        }
+        let shown = self.open.contains(&self.cursor);
         if open == Some(shown) {
             return false;
         }
-        if shown {
-            self.open.remove(&head);
-            // A closing group takes its sections with it, so reopening it is a clean slate.
-            if let GuideHead::Group(group) = head {
-                self.open
-                    .retain(|h| !matches!(h, GuideHead::Section(g, _) if *g == group));
-            }
-        } else {
-            // Keep only the heading being read expanded.
-            match head {
-                GuideHead::Group(_) => self.open.clear(),
-                GuideHead::Section(group, _) => self
-                    .open
-                    .retain(|h| !matches!(h, GuideHead::Section(g, _) if *g == group)),
-            }
-            self.open.insert(head);
+        // Keep only the heading being read expanded.
+        self.open.clear();
+        if !shown {
+            self.open.insert(self.cursor);
         }
-        // Collapsing a group above this one moves every heading, so find the cursor again.
-        self.cursor = self
-            .heads()
-            .iter()
-            .position(|&h| h == head)
-            .unwrap_or(self.cursor.min(self.heads().len().saturating_sub(1)));
         self.follow();
         true
     }
@@ -1664,7 +1566,7 @@ impl Guide {
                 self.follow();
             }
             KeyAction::Down => {
-                self.cursor = (self.cursor + 1).min(self.heads().len().saturating_sub(1));
+                self.cursor = (self.cursor + 1).min(guide_groups().len().saturating_sub(1));
                 self.follow();
             }
             KeyAction::PageUp => self.top = self.top.saturating_sub(self.body_height()),
@@ -7840,21 +7742,18 @@ struct KeyBindings {
 #[serde(deny_unknown_fields)]
 struct StateBindings {
     id: BindingState,
-    /// The help heading this state is filed under. Several states share one group so the
-    /// guide opens as a short list of places rather than every dispatch state at once.
-    group: String,
     title: String,
     when: String,
     extends: Option<BindingState>,
     bindings: Vec<KeyBinding>,
-    /// Missing keeps the full reference; an empty list leaves routine controls out of Help.
-    sections: Option<Vec<BindingSection>>,
+    /// The state's Help entry. States without one stay bound but out of Help.
+    help: Option<BindingHelp>,
 }
 
-/// Help can distinguish selected row types without creating new input states.
+/// One Help heading: the few keys worth teaching for this state.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BindingSection {
+struct BindingHelp {
     title: String,
     when: String,
     bindings: Vec<BindingExplanation>,
@@ -7946,11 +7845,6 @@ impl KeyBindings {
                 !state.title.trim().is_empty() && !state.when.trim().is_empty(),
                 "binding state needs a title and condition"
             );
-            anyhow::ensure!(
-                !state.group.trim().is_empty(),
-                "binding state {:?} needs a help group",
-                state.id
-            );
             let mut keys = HashSet::new();
             for binding in &mut state.bindings {
                 anyhow::ensure!(
@@ -7980,28 +7874,36 @@ impl KeyBindings {
                     .with_context(|| format!("missing binding state {id:?}"))?
                     .extends;
             }
-            for section in state.sections.iter().flatten() {
+            let Some(help) = &state.help else { continue };
+            anyhow::ensure!(
+                !help.title.trim().is_empty() && !help.when.trim().is_empty(),
+                "help section needs a title and condition"
+            );
+            anyhow::ensure!(
+                map.states
+                    .iter()
+                    .filter(|s| s.help.as_ref().is_some_and(|h| h.title == help.title))
+                    .count()
+                    == 1,
+                "duplicate help heading {:?}",
+                help.title
+            );
+            for explanation in &help.bindings {
                 anyhow::ensure!(
-                    !section.title.trim().is_empty() && !section.when.trim().is_empty(),
-                    "help section needs a title and condition"
+                    state
+                        .bindings
+                        .iter()
+                        .any(|b| b.action == explanation.action),
+                    "help section references missing action {:?}",
+                    explanation.action
                 );
-                for explanation in &section.bindings {
-                    anyhow::ensure!(
-                        state
-                            .bindings
-                            .iter()
-                            .any(|b| b.action == explanation.action),
-                        "help section references missing action {:?}",
-                        explanation.action
-                    );
-                    anyhow::ensure!(
-                        explanation
-                            .description
-                            .as_ref()
-                            .is_none_or(|s| !s.trim().is_empty()),
-                        "help explanation needs a description"
-                    );
-                }
+                anyhow::ensure!(
+                    explanation
+                        .description
+                        .as_ref()
+                        .is_none_or(|s| !s.trim().is_empty()),
+                    "help explanation needs a description"
+                );
             }
         }
         Ok(map)
@@ -8059,66 +7961,36 @@ impl KeyBindings {
     /// Build the selected Help entries from the dispatch table. Routine controls can be
     /// omitted without changing their bindings; displayed keys always come from dispatch.
     fn guide(&self) -> Vec<GuideGroup> {
-        let mut groups: Vec<GuideGroup> = vec![];
-        for state in &self.states {
-            let sections = if state.sections.is_none() {
-                vec![GuideSection {
-                    title: state.title.clone(),
-                    when: state.when.clone(),
-                    inherits: state
-                        .extends
-                        .and_then(|id| self.states.iter().find(|s| s.id == id))
-                        .map(|s| s.title.clone()),
-                    keys: state
+        self.states
+            .iter()
+            .filter_map(|state| {
+                let help = state.help.as_ref()?;
+                Some(GuideGroup {
+                    title: help.title.clone(),
+                    when: help.when.clone(),
+                    keys: help
                         .bindings
                         .iter()
-                        .map(|binding| (binding_keys(binding), binding.description.clone()))
+                        .flat_map(|explanation| {
+                            state
+                                .bindings
+                                .iter()
+                                .filter(move |b| b.action == explanation.action)
+                                .map(move |binding| {
+                                    (
+                                        binding_keys(binding),
+                                        explanation
+                                            .description
+                                            .as_ref()
+                                            .unwrap_or(&binding.description)
+                                            .clone(),
+                                    )
+                                })
+                        })
                         .collect(),
-                }]
-            } else {
-                state
-                    .sections
-                    .iter()
-                    .flatten()
-                    .map(|section| GuideSection {
-                        title: section.title.clone(),
-                        when: section.when.clone(),
-                        inherits: None,
-                        keys: section
-                            .bindings
-                            .iter()
-                            .flat_map(|explanation| {
-                                state
-                                    .bindings
-                                    .iter()
-                                    .filter(move |b| b.action == explanation.action)
-                                    .map(move |binding| {
-                                        (
-                                            binding_keys(binding),
-                                            explanation
-                                                .description
-                                                .as_ref()
-                                                .unwrap_or(&binding.description)
-                                                .clone(),
-                                        )
-                                    })
-                            })
-                            .collect(),
-                    })
-                    .collect()
-            };
-            if sections.is_empty() {
-                continue;
-            }
-            match groups.iter_mut().find(|g| g.title == state.group) {
-                Some(group) => group.sections.extend(sections),
-                None => groups.push(GuideGroup {
-                    title: state.group.clone(),
-                    sections,
-                }),
-            }
-        }
-        groups
+                })
+            })
+            .collect()
     }
 }
 
@@ -13778,7 +13650,7 @@ impl App {
         match MENU[self.menu].0 {
             "jobs" => self.show_jobs(),
             "config" => self.mode = Mode::Config(self.config_form()),
-            _ => self.mode = Mode::Guide(Guide::new(&self.guide_origin())),
+            _ => self.mode = Mode::Guide(Guide::new(self.guide_origin())),
         }
     }
 
@@ -15622,7 +15494,7 @@ impl App {
                     KeyAction::EditJob => self.edit_job(),
                     KeyAction::Filter => self.mode = Mode::Filter,
                     KeyAction::Guide => {
-                        self.mode = Mode::Guide(Guide::new(&self.guide_origin()));
+                        self.mode = Mode::Guide(Guide::new(self.guide_origin()));
                     }
                     KeyAction::History if !self.jobs_view => self.toggle_history(),
                     KeyAction::Highlight => self.highlight_selected(),
@@ -16201,35 +16073,12 @@ impl App {
         matches!(self.selected().map(|r| &r.kind), Some(Kind::Menu))
     }
 
-    /// The Help headings that describe where the cursor is. Help is reachable only from
-    /// the list, so the origin is the list plus whatever the selected row answers to.
-    fn guide_origin(&self) -> Vec<&'static str> {
-        let here = if self.on_button() {
-            "Menu"
-        } else if self.history_selected() {
-            "History rows"
-        } else if self.on_new_folder() {
-            "Add folder"
-        } else if self.on_suggestion().is_some() {
-            "Folder suggestions"
-        } else if !self.composer_text().is_empty() {
-            // The row sections all read "with no instruction typed"; a draft moves the
-            // live keys to the composer.
-            "Composer"
+    /// The Help heading the cursor starts on. Help is reachable only from the list.
+    fn guide_origin(&self) -> &'static str {
+        if self.history_selected() {
+            "History"
         } else {
-            match self.selected().map(|row| &row.kind) {
-                Some(Kind::Session(id, _)) if id.starts_with("terminal:") => "Terminal rows",
-                Some(Kind::Session(..)) => "Session rows",
-                Some(Kind::Folder(_)) => "Folder rows",
-                Some(Kind::Job(_) | Kind::NewJob) => "Job rows",
-                Some(Kind::Run(..)) => "Run rows",
-                _ => "List navigation",
-            }
-        };
-        if here == "List navigation" {
-            vec![here]
-        } else {
-            vec![here, "List navigation"]
+            "The list"
         }
     }
 
@@ -17340,14 +17189,6 @@ mod tests {
         let guide = map.guide();
         let all = guide_pairs(&guide);
         assert!(
-            all.iter()
-                .any(|(key, description)| key == "ctrl+j" && description == "Open Help.")
-        );
-        assert!(
-            !all.iter()
-                .any(|(key, description)| key == "ctrl+g" && description == "Open Help.")
-        );
-        assert!(
             !all.iter()
                 .any(|(_, description)| description == "Close Help."),
             "the Help screen's own navigation stays in its footer"
@@ -17360,21 +17201,14 @@ mod tests {
             ),
             KeyAction::Stop
         );
-        for (title, expected) in [
-            ("Session rows", "forget"),
-            ("Folder rows", "files stay on disk"),
-            ("Job rows", "delete it"),
-            ("Run rows", "hide a finished run"),
-        ] {
-            let section = guide_keys(&guide, title);
-            assert!(
-                section
-                    .iter()
-                    .any(|(key, text)| key == "ctrl+w" && text.contains(expected)),
-                "{title}: {section:?}"
-            );
-            assert!(section.iter().all(|(key, _)| key != "ctrl+x"), "{title}");
-        }
+        let section = guide_keys(&guide, "The list");
+        assert!(
+            section
+                .iter()
+                .any(|(key, text)| key == "ctrl+w" && text.contains("Press twice to stop")),
+            "{section:?}"
+        );
+        assert!(section.iter().all(|(key, _)| key != "ctrl+x"));
     }
 
     #[test]
@@ -17383,7 +17217,6 @@ mod tests {
 version: 1
 states:
   - id: list
-    group: Places
     title: Rows
     when: The list has focus.
     bindings:
@@ -17394,7 +17227,6 @@ states:
         KeyBindings::parse(source).unwrap();
         for (from, to, message) in [
             ("version: 1", "version: 2", "version"),
-            ("group: Places", "group: \" \"", "help group"),
             ("version: 1", "version: 1\nextra: true", "unknown field"),
             ("id: list", "id: typo", "unknown variant"),
             ("action: guide", "action: typo", "unknown variant"),
@@ -17422,12 +17254,12 @@ states:
             ),
             (
                 "title: Rows",
-                "title: Rows\n    sections:\n      - title: Sessions\n        when: A session is selected.\n        bindings:\n          - action: stop",
+                "title: Rows\n    help:\n      title: Rows\n      when: A session is selected.\n      bindings:\n        - action: stop",
                 "missing action",
             ),
             (
                 "title: Rows",
-                "title: Rows\n    sections:\n      - title: ''\n        when: A session is selected.\n        bindings: []",
+                "title: Rows\n    help:\n      title: ''\n      when: A session is selected.\n      bindings: []",
                 "title and condition",
             ),
         ] {
@@ -17447,32 +17279,26 @@ states:
 
     #[test]
     fn guide_search_matches_topics_and_scrolls_to_the_last_wrapped_line() {
-        let mut guide = Guide::new(&["Session rows"]);
+        let mut guide = Guide::new("The list");
         guide.area = Rect::new(0, 0, 80, 20);
-        guide.typed("CONFIG reset");
+        guide.typed("START the COORDINATOR");
         let found = guide.view(80);
-        assert_eq!(found.matches, 1, "one shortcut resets a setting");
+        assert_eq!(found.matches, 1, "one shortcut starts a coordinator");
         let text: Vec<String> = found.lines.iter().map(ToString::to_string).collect();
         assert!(
-            text.iter().any(|line| line.contains("▾ Config"))
-                && text.iter().any(|line| line.contains("backspace")),
-            "a match carries its group and heading: {text:#?}"
+            text.iter().any(|line| line.contains("▾ The list"))
+                && text.iter().any(|line| line.contains("ctrl+d")),
+            "a match carries its heading: {text:#?}"
         );
         assert!(
-            !text.iter().any(|line| line.contains("Session rows")),
-            "searching ignores what was open: {text:#?}"
+            !text.iter().any(|line| line.contains("Resume")),
+            "searching hides the headings that do not match: {text:#?}"
         );
-        guide.typed("config clipboard");
+        guide.typed("clipboard nonsense");
         assert_eq!(guide.view(80).matches, 0);
         guide.find = Input::default();
         for width in [12, 32, 60, 120] {
-            let mut guide = Guide::new(&["Session rows"]);
-            guide.toggle(Some(true));
-            guide.cursor = guide
-                .heads()
-                .iter()
-                .position(|head| Some(*head) == guide_section("Session rows"))
-                .unwrap();
+            let mut guide = Guide::new("The list");
             guide.toggle(Some(true));
             let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
             t.draw(|f| guide.draw(f, f.area(), true)).unwrap();
@@ -17505,20 +17331,7 @@ states:
         while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
             app.step(1);
         }
-        assert_eq!(app.guide_origin(), ["Session rows", "List navigation"]);
-        app.text = "fix the flake".into();
-        assert_eq!(
-            app.guide_origin(),
-            ["Composer", "List navigation"],
-            "a typed instruction moves the live keys off the row"
-        );
-        app.text.clear();
-        app.show_jobs();
-        assert_eq!(app.guide_origin(), ["Job rows", "List navigation"]);
-        app.leave_jobs();
-        while !matches!(app.selected().map(|r| &r.kind), Some(Kind::Session(..))) {
-            app.step(1);
-        }
+        assert_eq!(app.guide_origin(), "The list");
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
         for (width, height, split) in [(90, 24, false), (40, 20, false), (100, 24, true)] {
             app.split = split;
@@ -17529,17 +17342,17 @@ states:
                 unreachable!()
             };
             let whole = guide.view(guide.area.width);
-            assert_eq!(whole.lines.len(), 6, "one line per topic: {text}");
+            assert_eq!(
+                whole.lines.len(),
+                guide_groups().len(),
+                "one line per topic: {text}"
+            );
             assert_eq!(
                 guide.max_scroll(),
                 0,
                 "the index needs no scrolling: {text}"
             );
-            assert_eq!(
-                guide.heads().get(guide.cursor),
-                Some(&GuideHead::Group(0)),
-                "the selected session belongs to The list"
-            );
+            assert_eq!(guide.cursor, 0, "the session row belongs to The list");
             for group in guide_groups() {
                 assert!(
                     text.contains(&format!("▸ {}", group.title)),
@@ -17564,100 +17377,35 @@ states:
                 .iter()
                 .any(|line| line.to_string().contains("Fork the selected"))
         };
-        let mut guide = Guide::new(&["Session rows", "List navigation"]);
+        let resume = |guide: &Guide| {
+            guide
+                .view(90)
+                .lines
+                .iter()
+                .any(|line| line.to_string().contains("Resume; shift+enter"))
+        };
+        let mut guide = Guide::new("The list");
         guide.area = Rect::new(0, 0, 90, 40);
-        assert!(!fork(&guide), "Help starts with every topic closed");
+        assert!(!fork(&guide), "Help starts with every heading closed");
         guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        guide.cursor = guide
-            .heads()
-            .iter()
-            .position(|head| Some(*head) == guide_section("Session rows"))
-            .unwrap();
+        assert!(fork(&guide), "enter opens the heading under the cursor");
         guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(
-            guide.heads().get(guide.cursor).copied(),
-            guide_section("Session rows"),
-            "the reader can open the selected row's shortcuts"
-        );
+        assert!(!fork(&guide), "and closes it again");
+        guide.key(KeyCode::Right, KeyModifiers::NONE);
         assert!(fork(&guide));
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(!fork(&guide), "enter closes the heading under the cursor");
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(fork(&guide), "and opens it again");
         assert!(!guide.key(KeyCode::Left, KeyModifiers::NONE));
         assert!(!fork(&guide), "left closes before it leaves");
         assert!(
             guide.key(KeyCode::Left, KeyModifiers::NONE),
             "a closed heading lets left leave Help"
         );
-        let config = guide_groups()
-            .iter()
-            .position(|group| group.title == "Config")
-            .unwrap();
-        guide.cursor = guide
-            .heads()
-            .iter()
-            .position(|head| *head == GuideHead::Group(config))
-            .unwrap();
         guide.key(KeyCode::Right, KeyModifiers::NONE);
-        let open = guide.view(90);
-        assert!(
-            open.lines
-                .iter()
-                .any(|line| line.to_string().contains("▸ Columns")),
-            "an opened group lists its headings, still closed: {:#?}",
-            open.lines
-        );
-        assert!(
-            !open
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Session rows")),
-            "and the group that was open closed: {:#?}",
-            open.lines
-        );
-        guide.cursor = guide
-            .heads()
-            .iter()
-            .position(|head| Some(*head) == guide_section("Columns"))
-            .expect("an open group offers its headings");
+        guide.cursor = guide_group("History").expect("History is a heading");
         guide.key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(resume(&guide), "the next heading opens on its own");
         assert!(
-            guide
-                .view(90)
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Move a column earlier.")),
-            "and each one opens on its own"
-        );
-        guide.cursor = guide
-            .heads()
-            .iter()
-            .position(|head| Some(*head) == guide_section("Pinned folders"))
-            .expect("an open group offers its headings");
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(
-            !guide
-                .view(90)
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Move a column earlier.")),
-            "opening the next heading closes the last one"
-        );
-        guide.cursor = guide
-            .heads()
-            .iter()
-            .position(|head| *head == GuideHead::Group(config))
-            .unwrap();
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(
-            !guide
-                .view(90)
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Move a column earlier.")),
-            "closing a group forgets what was open inside it"
+            !fork(&guide),
+            "opening a heading closes the one that was open"
         );
     }
 
@@ -17666,12 +17414,12 @@ states:
         let d = dir();
         let mut app = app(d.path());
         app.split = false;
-        app.mode = Mode::Guide(Guide::new(&["List navigation"]));
-        app.paste("config\r\nreset");
+        app.mode = Mode::Guide(Guide::new("The list"));
+        app.paste("rename a\r\nsession");
         let Mode::Guide(guide) = &app.mode else {
             unreachable!()
         };
-        assert_eq!(guide.find.text, "config reset");
+        assert_eq!(guide.find.text, "rename a session");
         assert_eq!(guide.view(60).matches, 1);
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.paste("no-such-設定");
@@ -17693,12 +17441,19 @@ states:
             row: 6,
             modifiers: KeyModifiers::NONE,
         });
-        assert!(matches!(&app.mode, Mode::Guide(g) if g.top > 0));
+        let Mode::Guide(g) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(
+            g.top > 0,
+            g.max_scroll() > 0,
+            "the wheel scrolls Help only when it overflows the pane"
+        );
     }
 
     #[test]
     fn help_words_search_stems_and_drops_filler_like_history() {
-        let mut guide = Guide::new(&["List navigation"]);
+        let mut guide = Guide::new("The list");
         guide.area = Rect::new(0, 0, 80, 24);
         let found = |guide: &Guide| {
             guide
@@ -17706,24 +17461,24 @@ states:
                 .lines
                 .iter()
                 .map(ToString::to_string)
-                .filter(|line| line.contains("Reset a setting to its default."))
+                .filter(|line| line.contains("Rename a session"))
                 .count()
         };
-        // The literal words are "Reset a setting to its default"; both endings stem to it.
-        guide.typed("resetting settings");
+        // The literal words are "Rename a session"; both endings stem to them.
+        guide.typed("renaming sessions");
         assert_eq!(found(&guide), 1, "{:#?}", guide.view(80).lines);
-        guide.typed("reset");
+        guide.typed("rename");
         let whole = guide.view(80).matches;
-        guide.typed("how do I reset a setting");
+        guide.typed("how do I rename a session");
         assert_eq!(found(&guide), 1, "filler words are not searched for");
         assert!(guide.view(80).matches <= whole);
-        guide.typed("rese");
+        guide.typed("renam");
         assert_eq!(
             found(&guide),
             1,
             "a prefix matches while the reader is still typing"
         );
-        guide.typed("resets");
+        guide.typed("renames");
         assert_eq!(guide.search, search::Mode::Words);
     }
 
@@ -17732,7 +17487,7 @@ states:
         let d = dir();
         let mut app = app(d.path());
         app.split = false;
-        app.mode = Mode::Guide(Guide::new(&["List navigation"]));
+        app.mode = Mode::Guide(Guide::new("The list"));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 24)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 40).join("\n");
@@ -17759,7 +17514,7 @@ states:
         let d = dir();
         let mut app = app(d.path());
         app.split = false;
-        app.mode = Mode::Guide(Guide::new(&["List navigation"]));
+        app.mode = Mode::Guide(Guide::new("The list"));
         app.paste("abandon a runaway agent");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(72, 24)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -17779,7 +17534,7 @@ states:
             .lines
             .texts
             .iter()
-            .position(|text| text.contains("Press twice to stop the job"))
+            .position(|text| text.contains("Press twice to stop a session"))
             .expect("a stop shortcut to find");
         let unit = |on: usize| {
             let mut v = vec![0.0; search::DIMENSIONS];
@@ -17800,7 +17555,7 @@ states:
             "meaning reports its own count: {text}"
         );
         assert!(
-            text.contains("Press twice to stop the job"),
+            text.contains("Press twice to stop a session"),
             "the shortcut the query means is shown: {text}"
         );
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
@@ -17822,36 +17577,33 @@ states:
                     assert_eq!(bindings().action(state.id, code, mods), binding.action);
                 }
             }
-            let Some(sections) = &state.sections else {
-                panic!("{:?} needs an explicit Help selection", state.id);
-            };
-            for section in sections {
-                let shown = guide_keys(guide, &section.title);
-                assert_eq!(shown.len(), section.bindings.len(), "{}", section.title);
-                for explanation in &section.bindings {
-                    let binding = state
-                        .bindings
+            let Some(help) = &state.help else { continue };
+            let shown = guide_keys(guide, &help.title);
+            assert_eq!(shown.len(), help.bindings.len(), "{}", help.title);
+            for explanation in &help.bindings {
+                let binding = state
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.action == explanation.action)
+                    .unwrap();
+                let description = explanation
+                    .description
+                    .as_ref()
+                    .unwrap_or(&binding.description);
+                assert!(
+                    shown
                         .iter()
-                        .find(|binding| binding.action == explanation.action)
-                        .unwrap();
-                    let description = explanation
-                        .description
-                        .as_ref()
-                        .unwrap_or(&binding.description);
-                    assert!(
-                        shown
-                            .iter()
-                            .any(|(key, text)| key == &binding_label(&binding.keys[0])
-                                && text == description),
-                        "{}: {:?}",
-                        section.title,
-                        explanation.action
-                    );
-                }
+                        .any(|(key, text)| key == &binding_label(&binding.keys[0])
+                            && text == description),
+                    "{}: {:?}",
+                    help.title,
+                    explanation.action
+                );
             }
         }
-        // The old reference had 221 entries. Keep the useful subset small as bindings grow.
-        assert!(all.len() <= 50, "{} Help entries", all.len());
+        // The old reference had 221 entries, the first curation 45. Help stays a short card.
+        assert!(all.len() <= 15, "{} Help entries", all.len());
+        assert!(guide.len() <= 4, "{} Help headings", guide.len());
         for ordinary in [
             "↑",
             "↓",
@@ -17864,17 +17616,12 @@ states:
         ] {
             assert!(!all.iter().any(|(key, _)| key == ordinary), "{ordinary}");
         }
-        for essential in ["ctrl+y", "ctrl+n", "ctrl+x", "ctrl+o", "ctrl+z", "ctrl+t"] {
+        for essential in ["ctrl+y", "ctrl+n", "ctrl+x", "ctrl+o", "ctrl+z"] {
             assert!(all.iter().any(|(key, _)| key == essential), "{essential}");
         }
         let mut expanded = Guide::default();
-        for (g, group) in guide.iter().enumerate() {
-            expanded.open.insert(GuideHead::Group(g));
-            for s in 0..group.sections.len() {
-                expanded.open.insert(GuideHead::Section(g, s));
-            }
-        }
-        for (width, budget) in [(90, 100), (60, 125), (40, 200)] {
+        expanded.open.extend(0..guide.len());
+        for (width, budget) in [(90, 30), (60, 40), (40, 60)] {
             let lines = expanded.view(width).lines.len();
             assert!(
                 lines <= budget,
@@ -17910,13 +17657,13 @@ states:
             );
         }
         let mut searched = Guide::default();
-        searched.typed("job rows delete");
+        searched.typed("resume fullscreen");
         let found = searched.view(120);
         assert_eq!(found.matches, 1);
         let lines: Vec<String> = found.lines.iter().map(ToString::to_string).collect();
         assert!(
-            lines.iter().any(|line| line.contains("▾ Job rows"))
-                && lines.iter().any(|line| line.contains("ctrl+x")),
+            lines.iter().any(|line| line.contains("▾ History"))
+                && lines.iter().any(|line| line.contains("enter")),
             "{lines:#?}"
         );
         assert!(
@@ -25480,7 +25227,7 @@ states:
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
             pane(&t).contains("▸ The list")
-                && pane(&t).contains("▸ Jobs")
+                && pane(&t).contains("▸ Viewers")
                 && pane(&t).contains("Enter to search"),
             "hovering previews every place, closed: {}",
             pane(&t)
@@ -25498,7 +25245,7 @@ states:
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
             pane(&t).contains("▸ The list")
-                && pane(&t).contains("▸ Jobs")
+                && pane(&t).contains("▸ Viewers")
                 && pane(&t).contains("search ›")
                 && !pane(&t).contains("▾"),
             "entering keeps the preview's short topic index: {}",
@@ -25513,11 +25260,7 @@ states:
         let Mode::Guide(g) = &app.mode else {
             unreachable!()
         };
-        assert_eq!(
-            g.heads().get(g.cursor).copied(),
-            Some(GuideHead::Group(0)),
-            "the help button's group holds the cursor"
-        );
+        assert_eq!(g.cursor, 0, "the help button's heading holds the cursor");
         let cursor = g.cursor;
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
         assert!(matches!(&app.mode, Mode::Guide(g) if g.cursor == cursor + 1));

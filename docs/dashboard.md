@@ -114,13 +114,14 @@ Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide as six collapsed topics. The group
-for where you pressed Help is selected, with its details closed until you open
-them. Entering from the Help menu keeps the same compact index as its preview.
-The guide covers cones actions: sessions and launches, viewers, conversation
-previews, config and columns, MCP servers, and jobs. Routine navigation, text
-editing and repeated controls are left out. Footer hints show how to move
-around the current screen; the complete key reference is in
+`help` and `ctrl+g` open the built-in guide as three collapsed headings: the
+list, history and viewers. The heading for where you pressed Help is selected,
+with its details closed until you open them. Entering from the Help menu keeps
+the same compact index as its preview. The guide is a short card of the cones
+actions a reader cannot guess: joining, launching, stopping, renaming, forking,
+filtering, launch settings and returning from a viewer. Navigation, text
+editing, repeated controls and the secondary screens are left out. Footer hints
+show how to move around the current screen; the complete key reference is in
 [`assets/bindings.yaml`](../assets/bindings.yaml).
 
 `↑ ↓` move between headings and `enter` opens or closes the one under the
@@ -131,13 +132,13 @@ shows one key spelling per action. Other aliases still work.
 The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f`
 also start search. It searches by the same two rules as [history](#history),
 and `shift+tab` switches between them. By words, the default, every word typed
-must appear in one shortcut's key, description, heading or group name; endings
-and prefixes are stemmed, so `resetting settings` finds `Reset a setting to
-its default`, and common English filler is dropped. By meaning, shortcuts
+must appear in one shortcut's key, description or heading; endings and prefixes
+are stemmed, so `forking conversations` finds `Fork the selected conversation`,
+and common English filler is dropped. By meaning, shortcuts
 close to the query are shown instead, so `abandon a runaway agent` reaches the
 stop keys without naming them. Meaning uses the same local MiniLM model
 history uses and needs it downloaded once; words never load it. Searching
-flattens the tree and shows every match with its heading, and `↑ ↓` scroll
+opens every heading that has a match, and `↑ ↓` scroll
 while it is active. The prompt names the active search, its match count and
 how to recover from an empty result.
 

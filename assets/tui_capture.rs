@@ -527,14 +527,14 @@ fn capture_config() -> Result<()> {
     }
     for (name, query, width, height) in [
         ("help", "", 60, 36),
-        ("help-search", "config reset", 60, 24),
+        ("help-search", "rename session", 60, 24),
         ("help-empty", "not-a-shortcut", 60, 24),
         ("help-narrow", "viewer", 40, 28),
     ] {
         let origin = app.guide_origin();
         app.mode = Mode::Guide(Guide {
             find: Input::new(query),
-            ..Guide::new(&origin)
+            ..Guide::new(origin)
         });
         let mut terminal = Terminal::new(TestBackend::new(width, height))?;
         terminal.draw(|frame| app.draw(frame))?;

@@ -12,12 +12,11 @@ The file has `version: 1` and a `states` list. Each state has:
 | Field | Meaning |
 | --- | --- |
 | `id` | State selected by the dashboard's input router. |
-| `group` | Place in Help this state is filed under. States sharing one open and close together. |
-| `title` | Heading name in Help. |
-| `when` | Explanation of when the state applies, shown in Help. |
+| `title` | Name of the state, used in this file and in error messages. |
+| `when` | Explanation of when the state applies. |
 | `extends` | Optional state whose bindings are inherited. |
 | `bindings` | Keys, action names and explanations for this state. |
-| `sections` | Help entries selected by row type or task. `[]` omits the state from Help. If absent, all its bindings appear. |
+| `help` | Optional Help heading for this state. Without it the state stays out of Help; its keys still work. |
 
 Each binding has a `keys` list, an `action` and a `description`. For example:
 
@@ -29,21 +28,19 @@ Each binding has a `keys` list, an `action` and a `description`. For example:
 
 Aliases share one action and description. Help displays the first key spelling;
 all aliases still work. In a state with `extends`, a local
-key replaces that inherited key; other inherited keys remain available. Help
-names the inherited state under the heading instead of repeating its keys.
+key replaces that inherited key; other inherited keys remain available.
 
-Groups are what Help opens and closes, so a new state joins an existing group
-unless it is a place of its own. The visible groups are the list, viewers,
-preview, config, MCP servers and jobs. Columns sit under config.
-
-A Help section has a `title`, a `when` explanation and `bindings` entries
+A `help` block has a `title`, a `when` explanation and `bindings` entries
 referencing an `action` in the state's bindings. Each entry can override the
-Help `description` for that context. Shortcut labels come from the referenced
-action's keys, so remapping an action updates every section that uses it.
-Sections only select and organize Help; they do not change input handling.
-Built-in states select their Help entries explicitly. Keep cones-specific
-actions and unusual behavior; leave routine navigation, text editing and
-duplicate controls in the binding reference and the screen's footer.
+Help `description`. Shortcut labels come from the referenced action's keys, so
+remapping an action updates Help with it. Help is a flat list of headings the
+reader opens one at a time; it only selects and organizes, and never changes
+input handling.
+
+Help is a card, not a reference. Only three states carry one: the list, history
+and viewers. Keep it to the cones-specific actions a reader cannot guess, and
+leave navigation, text editing, secondary screens and duplicate controls to each
+screen's footer and this file.
 
 Keys use lowercase names: `up`, `down`, `left`, `right`, `home`, `end`,
 `pageup`, `pagedown`, `enter`, `esc`, `tab`, `backspace`, `delete`, `space`
@@ -56,8 +53,8 @@ same input that way. Unlisted modifier combinations do not match a binding.
 Loading rejects unknown fields, states, actions and key names, unsupported
 versions, repeated modifiers, duplicate states or keys within a state, missing
 parent states and inheritance cycles. Keys and descriptions cannot be empty;
-states also need a group, a title and a condition, and Help sections a title
-and a condition. Section references
+states also need a title and a condition, and Help headings a title and a
+condition. Help headings must be unique. Their references
 must name an action defined in that state. Action names refer to Rust handlers:
 adding a new behavior still requires code.
 
