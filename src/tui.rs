@@ -205,6 +205,9 @@ pub struct Data {
     /// Live sessions a ledger run owns. Their rows collapse into the run's, so they are kept
     /// out of `sessions`; a peek still joins them the way it joins any agent.
     pub run_sessions: Vec<Session>,
+    /// A resumed run's live session, by run id. `__attach` execs the harness in the run's own
+    /// pane, so the agent it starts belongs to that row and not to the live list.
+    pub run_live: Vec<(String, Session)>,
     /// Session column names from jobs.yaml's `columns:`.
     pub columns: Vec<String>,
     pub run_columns: Vec<String>,
@@ -393,6 +396,7 @@ impl Data {
             sessions,
             hosts,
             run_sessions,
+            run_live: Vec::new(),
             columns,
             columns_default,
             run_columns,
@@ -488,6 +492,14 @@ impl Data {
         }
         spans.pop();
         Line::from(spans)
+    }
+
+    /// The session a resumed run is running right now, if its pane is open.
+    fn live_run(&self, run_id: &str) -> Option<&Session> {
+        self.run_live
+            .iter()
+            .find(|(id, _)| id == run_id)
+            .map(|(_, s)| s)
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
@@ -770,7 +782,10 @@ impl Data {
             let cells = runs
                 .iter()
                 .map(|r| {
-                    let status = r.status();
+                    // A resumed run is working again; the ledger's terminal record stays in the
+                    // reason column, where it says why it was resumed from.
+                    let live = self.live_run(&r.started.run_id);
+                    let status = live.map_or_else(|| r.status(), |s| s.state.clone());
                     let h = r.started.harness.map(|h| h.to_string()).unwrap_or_default();
                     let harness = if h.is_empty() {
                         "-".into()
@@ -782,7 +797,7 @@ impl Data {
                     let mut row =
                         vec![(icon(&status).into(), color(&status)), (harness, brand(&h))];
                     if has_status {
-                        row.push((status.clone(), color(&status)));
+                        row.push((label(&status).to_owned(), color(&status)));
                     }
                     row.push((r.started.job.clone().unwrap_or_else(|| "-".into()), plain()));
                     let report = self
@@ -790,7 +805,7 @@ impl Data {
                         .get(&r.started.run_id)
                         .cloned()
                         .unwrap_or_default();
-                    row.extend(cols.iter().map(|c| run_cell(c, r, &report)));
+                    row.extend(cols.iter().map(|c| run_cell(c, r, &report, live)));
                     row
                 })
                 .collect();
@@ -2144,7 +2159,12 @@ fn local_stamp(at: Option<chrono::DateTime<chrono::Utc>>) -> String {
     .unwrap_or_else(|| "-".into())
 }
 
-fn run_cell(column: &str, run: &Run, report: &history::Columns) -> (String, Style) {
+fn run_cell(
+    column: &str,
+    run: &Run,
+    report: &history::Columns,
+    live: Option<&Session>,
+) -> (String, Style) {
     let last = run.terminal.as_ref().unwrap_or(&run.started);
     let text = match config::column_name(column) {
         "started" => local_stamp(run.started.fired_at),
@@ -2172,11 +2192,15 @@ fn run_cell(column: &str, run: &Run, report: &history::Columns) -> (String, Styl
             last.tokens_in.or(report.tokens_in),
             last.tokens_out.or(report.tokens_out),
         ),
-        "cost" => last
-            .cost_usd
-            .or_else(|| run.terminal.is_none().then_some(report.cost_usd).flatten())
-            .map(fleet::cost)
-            .unwrap_or_else(|| "-".into()),
+        // A killed run never emits the harness's final total, so fall back to the transcript's
+        // own accounting rather than print nothing for work that was paid for.
+        "cost" => match live {
+            Some(s) => crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
+            None => match last.cost_usd {
+                Some(c) => fleet::cost(c),
+                None => crate::cost::display(report.cost_usd, report.cost_info.as_ref()),
+            },
+        },
         "reason" => last.reason.clone().unwrap_or_else(|| "-".into()),
         "folder" => run
             .started
@@ -10718,14 +10742,25 @@ impl App {
         // in place, so the session the harness then reports carries the viewer's pid and belongs
         // to the run, not to a new agent. Reviving a history row is the opposite promise and
         // still puts a real agent in the live list.
+        // The run's own row speaks for it: hand the session over so the row can say the agent
+        // is working rather than repeat the terminal record it was resumed from.
+        let mut live = Vec::new();
         data.sessions.retain(|row| {
-            row.pid.is_none_or(|pid| {
-                !self
-                    .viewers
+            let key = row.pid.and_then(|pid| {
+                self.viewers
                     .iter()
-                    .any(|o| o.key.starts_with("run:") && o.viewer.pid() == pid)
-            })
+                    .find(|o| o.key.starts_with("run:") && o.viewer.pid() == pid)
+                    .and_then(|o| o.key.strip_prefix("run:"))
+            });
+            match key {
+                Some(run) => {
+                    live.push((run.to_owned(), row.clone()));
+                    false
+                }
+                None => true,
+            }
         });
+        data.run_live = live;
         data.sessions.retain(|row| {
             !self.pending.iter().any(|p| {
                 p.session.pid.is_some()
@@ -28439,6 +28474,75 @@ while True:
                 .iter()
                 .any(|r| matches!(&r.kind, Kind::Session(id, _) if id == C)),
             "a history revive is a real agent"
+        );
+    }
+
+    /// A timed-out run the owner resumed is working again, and the work costs money whether or
+    /// not the killed harness got to report its total.
+    #[test]
+    fn a_resumed_run_reports_the_live_agent_and_a_killed_run_still_prices_its_transcript() {
+        let d = dir();
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        start.fired_at = Some(chrono::Utc::now());
+        start.session_id = Some(B.into());
+        ledger.append(&start).unwrap();
+        let mut end = crate::ledger::Record::new(A.into(), crate::ledger::Status::Timeout);
+        end.reason = Some("timeout".into());
+        ledger.append(&end).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let priced = |data: &mut Data| {
+            data.run_reports.insert(
+                A.into(),
+                history::Columns {
+                    cost_usd: Some(0.42),
+                    ..Default::default()
+                },
+            );
+        };
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        priced(&mut data);
+        app.apply(data);
+        let cells = |app: &App| {
+            app.rows
+                .iter()
+                .find(|r| matches!(&r.kind, Kind::Run(id, _) if id == A))
+                .map(|r| r.cells.iter().map(|(t, _)| t.trim().to_owned()).collect())
+                .unwrap_or_else(Vec::new)
+        };
+        let stopped: Vec<String> = cells(&app);
+        assert!(
+            stopped.iter().any(|c| c == "timeout"),
+            "a run nobody resumed still reads as timed out: {stopped:?}"
+        );
+        assert!(
+            stopped.iter().any(|c| c == "$0.42"),
+            "the transcript prices a run the harness never got to total: {stopped:?}"
+        );
+
+        let resume = silent_open(&format!("run:{A}"));
+        let resumed_pid = resume.viewer.pid();
+        app.viewers.push(resume);
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        priced(&mut data);
+        let mut resumed = session(C, "active", "the resumed run", 0);
+        resumed.pid = Some(resumed_pid);
+        resumed.cost_usd = Some(1.25);
+        data.sessions.push(resumed);
+        app.apply(data);
+        let live: Vec<String> = cells(&app);
+        assert!(
+            live.iter().any(|c| c == "working"),
+            "the resumed run says what its agent is doing now: {live:?}"
+        );
+        assert!(
+            live.iter().any(|c| c == "timeout"),
+            "and the reason column keeps why it stopped: {live:?}"
+        );
+        assert!(
+            live.iter().any(|c| c == "$1.25"),
+            "cost follows the live session once it is running: {live:?}"
         );
     }
 
