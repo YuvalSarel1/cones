@@ -11242,7 +11242,7 @@ impl App {
                     .map(|r| r.started.run_id.clone()),
             )
             .collect();
-        // The gutter is always there so a marker appearing never shifts the columns.
+        // The one-cell gutter is always there so a marker appearing never shifts the columns.
         for table in [&mut self.rows, &mut self.other] {
             let headers: HashSet<usize> = table
                 .iter()
@@ -11259,9 +11259,9 @@ impl App {
             for (i, row) in table.iter_mut().enumerate() {
                 let marker = match &row.kind {
                     Kind::Session(id, _) | Kind::Run(id, _) => {
-                        Some(if unread.contains(id) { "● " } else { "  " })
+                        Some(if unread.contains(id) { "●" } else { " " })
                     }
-                    _ if headers.contains(&i) => Some("  "),
+                    _ if headers.contains(&i) => Some(" "),
                     _ => None,
                 };
                 if let Some(marker) = marker
@@ -21694,7 +21694,7 @@ states:
                 .unwrap()
                 .cells[0]
                 .0
-                .starts_with("  "),
+                .starts_with(" "),
             "a read row keeps the gutter so columns never shift"
         );
         app.filter = Input::new(":attention");
