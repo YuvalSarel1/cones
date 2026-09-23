@@ -931,30 +931,10 @@ impl Model {
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         // Padding is manual: the tokenizer stays unpadded so a lone query is untouched.
-        let width = encodings
-            .iter()
-            .map(|e| e.get_ids().len())
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        let mut ids = Vec::with_capacity(texts.len() * width);
-        let mut mask = Vec::with_capacity(texts.len() * width);
-        for encoding in &encodings {
-            let got = encoding.get_ids();
-            ids.extend_from_slice(got);
-            ids.extend(std::iter::repeat_n(0, width - got.len()));
-            mask.extend(std::iter::repeat_n(1.0, got.len()));
-            mask.extend(std::iter::repeat_n(0.0, width - got.len()));
-        }
-        let shape = (texts.len(), width);
-        let ids = Tensor::from_vec(ids, shape, &Device::Cpu)?;
-        let mask = Tensor::from_vec(mask, shape, &Device::Cpu)?;
+        let rows: Vec<_> = encodings.iter().map(|e| e.get_ids()).collect();
+        let (ids, mask) = pad(&rows)?;
         let hidden = self.bert.forward(&ids, &ids.zeros_like()?, Some(&mask))?;
-        // Mean over real tokens only; a padded column must not pull the vector toward PAD.
-        let summed = hidden.broadcast_mul(&mask.unsqueeze(2)?)?.sum(1)?;
-        let vectors = summed
-            .broadcast_div(&mask.sum(1)?.unsqueeze(1)?)?
-            .to_vec2::<f32>()?;
+        let vectors = pool(&hidden, &mask)?;
         ensure!(
             vectors.len() == texts.len()
                 && vectors
@@ -964,6 +944,32 @@ impl Model {
         );
         Ok(vectors)
     }
+}
+
+/// Token ids padded to one width, and a mask over the real tokens in the model's dtype.
+fn pad(rows: &[&[u32]]) -> Result<(Tensor, Tensor)> {
+    let width = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let mut ids = Vec::with_capacity(rows.len() * width);
+    let mut mask = Vec::with_capacity(rows.len() * width);
+    for got in rows {
+        ids.extend_from_slice(got);
+        ids.extend(std::iter::repeat_n(0, width - got.len()));
+        mask.extend(std::iter::repeat_n(1f32, got.len()));
+        mask.extend(std::iter::repeat_n(0f32, width - got.len()));
+    }
+    let shape = (rows.len(), width);
+    Ok((
+        Tensor::from_vec(ids, shape, &Device::Cpu)?,
+        Tensor::from_vec(mask, shape, &Device::Cpu)?,
+    ))
+}
+
+/// Mean over real tokens only; a padded column must not pull the vector toward PAD.
+fn pool(hidden: &Tensor, mask: &Tensor) -> Result<Vec<Vec<f32>>> {
+    let summed = hidden.broadcast_mul(&mask.unsqueeze(2)?)?.sum(1)?;
+    Ok(summed
+        .broadcast_div(&mask.sum(1)?.unsqueeze(1)?)?
+        .to_vec2::<f32>()?)
 }
 
 fn file_digest(path: &Path) -> Result<String> {
@@ -1116,6 +1122,20 @@ mod tests {
             columns: None,
             hit: None,
         }
+    }
+
+    #[test]
+    fn padded_passages_pool_like_single_ones() {
+        // The model returns F32 activations; a mask of any other dtype fails the pool.
+        let (ids, mask) = pad(&[&[7, 8, 9], &[5]]).unwrap();
+        assert_eq!(ids.to_vec2::<u32>().unwrap(), [[7, 8, 9], [5, 0, 0]]);
+        let hidden = Tensor::from_vec(
+            vec![1f32, 2., 3., 4., 5., 6., 10., 20., 99., 99., 99., 99.],
+            (2, 3, 2),
+            &Device::Cpu,
+        )
+        .unwrap();
+        assert_eq!(pool(&hidden, &mask).unwrap(), [[3., 4.], [10., 20.]]);
     }
 
     fn vector(n: usize) -> Vec<f32> {
