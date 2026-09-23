@@ -1,27 +1,35 @@
 # Testing and resource use
 
-Use `scripts/check` for validation. It queues one gate at a time across cones
-checkouts on the same machine, holding `~/.cones/check.lock` through formatting,
-Clippy, Rust tests and the JavaScript reporter contract. Waiting checks print the
-holder's PID and checkout. Cancellation stops the gate's process group. The lock
-is inherited by Cargo, so killing the wrapper cannot admit a second check while
-its child still runs. The lock file stays in place; the kernel releases the
-lease when its last owner exits.
+Use `scripts/check` for validation. It queues work across cones checkouts on the
+same machine by what it costs. Formatting and the JavaScript reporter contract run
+first and take no slot, so a formatting failure returns at once. Compiling (Clippy,
+`cargo test --no-run` and `install`) takes a build slot: two builds may run at
+once, under background QoS (`taskpolicy -b`), which keeps them on the efficiency
+cores. Running the built tests takes the test slot, which is exclusive, because
+wall-clock tests flake under load; it waits for running builds, and a waiting test
+run holds back new builds so they cannot starve it. Tests run at normal priority.
+Waiting checks print the holder's PID and checkout. Cancellation stops the gate's
+process group. Each lease is inherited by Cargo, so killing the wrapper cannot
+admit another check while its child still runs. The lock files under `~/.cones`
+stay in place; the kernel releases a lease when its last owner exits. Builds hold
+`check.lock` shared and test runs hold it exclusively, which is how older copies of
+the wrapper, which hold it exclusively for a whole gate, still queue with this one.
 
-The slot controls calls through this script. Direct Cargo invocations and other
-applications are outside it. It is a shared admission slot, with no FIFO ordering
-guarantee or hard machine CPU limit.
+The slots control calls through this script. Direct Cargo invocations and other
+applications are outside them. There is no FIFO ordering guarantee or hard machine
+CPU limit.
 
-`CARGO_BUILD_JOBS` and `RUST_TEST_THREADS` default to `2` inside the gate.
+Inside a build, `CARGO_BUILD_JOBS` defaults to the number of efficiency cores
+(`hw.perflevel1.logicalcpu`, at least `2`); `RUST_TEST_THREADS` defaults to `2`.
 Explicit values take precedence. Each checkout retains its own build output;
-sharing a gate does not share build artifacts. `CONES_CHECK_STATE_DIR` overrides
+sharing a queue does not share build artifacts. `CONES_CHECK_STATE_DIR` overrides
 the lock directory for isolated fixtures. Fixtures that invoke `scripts/check`
 must use a temporary directory to avoid waiting on their outer gate.
 
 Full output stays in the printed log directory. The terminal shows stage results
 and counts per Rust suite; failures retain their exit status and bounded diagnostics.
-`usage.json` records queue wait, execution time, worker limits, child CPU time and
-maximum child RSS. Maximum child RSS is not the combined memory of the process tree.
+`usage.json` records total queue wait, execution time excluding it, worker limits,
+child CPU time, maximum child RSS and each lease's stage, kind and wait. Maximum child RSS is not the combined memory of the process tree.
 Tests run without inherited native-home overrides, including `CODEX_HOME`,
 `CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`, `OPENCODE_DB`, `OPENCODE_TUI_CONFIG`
 and `XDG_DATA_HOME`. Tests of custom configuration set it explicitly on their
@@ -58,8 +66,7 @@ scripts/check install
 
 This builds the current commit in a detached worktree under `~/.cones` and installs
 it with `cargo install --root ~/.local`, so the binary carries committed code only.
-It takes the same slot as the other modes, and raises `CARGO_BUILD_JOBS` to the
-machine's CPU count, since a build does not exec the processes a test run does. The
+It takes a build slot, at background priority like any other build. The
 release artifacts persist in `~/.cones/install-target`, so a later install rebuilds
 the crate rather than its dependencies. `CONES_INSTALL_ROOT` overrides the install
 prefix.

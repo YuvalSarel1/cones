@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
     echo 'Usage: scripts/check [all|fmt|clippy|reporting|stress|install|test [cargo test arguments...]]'
-    echo 'Defaults to fmt, clippy, and all test targets. Full logs remain in TMPDIR.'
+    echo 'Defaults to fmt, reporting, clippy, and all test targets. Full logs remain in TMPDIR.'
     echo 'install builds HEAD in a detached worktree and installs it under ~/.local.'
 }
 
@@ -18,26 +18,35 @@ case "$mode" in
     *) usage >&2; exit 2 ;;
 esac
 
-# The parent owns admission for this entire gate. A nested fixture invocation has
-# a different parent and must acquire its own (temporary) queue, not bypass it.
+# The parent supervises this entire gate. A nested fixture invocation has a
+# different parent and must use its own (temporary) queue, not bypass it.
 if [[ ${CONES_CHECK_PARENT:-} != "$PPID" ]]; then
     exec python3 "$(dirname -- "${BASH_SOURCE[0]}")/check_queue.py" \
         "${BASH_SOURCE[0]}" "$mode" "$@"
 fi
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+queue=$PWD/scripts/check_queue.py
 log_dir=${CONES_CHECK_LOG_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/cones-check.XXXXXX")}
 export CARGO_TERM_COLOR=never
 printf 'Logs: %s\n' "$log_dir"
+exec 3>&1 # where a lease reports its wait
+export CONES_CHECK_CONSOLE_FD=3
 
+# run_check NAME LEASE COMMAND...: LEASE is none, build (two at once, background
+# priority) or test (exclusive). Formatting and the reporter contract need no slot.
 run_check() {
-    local name=$1
-    shift
+    local name=$1 kind=$2
+    shift 2
     local log="$log_dir/$name.log"
-    if [[ $name == test || $name == stress ]]; then
+    if [[ $name == test || $name == stress || $name == build ]]; then
         # Native homes must come from fixtures, including on an agent's machine.
+        # The build drops them too, so the test run reuses what it compiled.
         set -- env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u PI_CODING_AGENT_DIR \
             -u OPENCODE_DB -u OPENCODE_TUI_CONFIG -u XDG_DATA_HOME "$@"
+    fi
+    if [[ $kind != none ]]; then
+        set -- python3 "$queue" lease "$kind" "$name" "$@"
     fi
     if "$@" >"$log" 2>&1; then
         printf '%s: ok\n' "$name"
@@ -61,36 +70,46 @@ run_check() {
     fi
 }
 
+# Compile under a build lease, then run what it built under the exclusive one.
+run_tests() {
+    local selection=() argument
+    for argument in "$@"; do
+        if [[ $argument == -- ]]; then break; fi
+        selection+=("$argument")
+    done
+    run_check build build cargo test --no-run ${selection[@]+"${selection[@]}"}
+    run_check test test cargo test "$@"
+}
+
 case "$mode" in
     all)
-        run_check fmt cargo fmt --check
-        run_check clippy cargo clippy --all-targets -- -D warnings
-        run_check test cargo test --all-targets
-        run_check reporting node --test tests/reporting.mjs
+        run_check fmt none cargo fmt --check
+        run_check reporting none node --test tests/reporting.mjs
+        run_check clippy build cargo clippy --all-targets -- -D warnings
+        run_tests --all-targets
         ;;
-    fmt) run_check fmt cargo fmt --check ;;
-    clippy) run_check clippy cargo clippy --all-targets -- -D warnings ;;
-    reporting) run_check reporting node --test tests/reporting.mjs ;;
+    fmt) run_check fmt none cargo fmt --check ;;
+    clippy) run_check clippy build cargo clippy --all-targets -- -D warnings ;;
+    reporting) run_check reporting none node --test tests/reporting.mjs ;;
     stress)
         export CONES_STRESS_OUTPUT="$log_dir/resources.json"
         export CONES_STRESS_OBSERVATION_OUTPUT="$log_dir/observation.json"
-        run_check stress cargo test --lib tui::stress:: \
+        run_check build build cargo test --no-run --lib
+        run_check stress test cargo test --lib tui::stress:: \
             -- --ignored --nocapture --test-threads=1
         printf 'Resources: %s\n' "$CONES_STRESS_OUTPUT"
         printf 'Observation: %s\n' "$CONES_STRESS_OBSERVATION_OUTPUT"
         ;;
     install)
         # One worktree path, reused: the install target dir keys its cache on it,
-        # so only what HEAD changed is rebuilt. A build does not exec the process
-        # storm a test run does, so it gets the whole machine rather than two jobs.
+        # so only what HEAD changed is rebuilt.
         state=${CONES_CHECK_STATE_DIR:-$HOME/.cones}
         worktree=$state/install-worktree
         git worktree remove --force "$worktree" >/dev/null 2>&1 || true
         rm -rf -- "$worktree"
         git worktree add --detach "$worktree" HEAD >/dev/null
         trap 'git worktree remove --force "$worktree" >/dev/null 2>&1 || true' EXIT
-        run_check install env "CARGO_BUILD_JOBS=$(getconf _NPROCESSORS_ONLN)" \
-            cargo install --path "$worktree" --force \
+        run_check install build cargo install --path "$worktree" --force \
             --root "${CONES_INSTALL_ROOT:-$HOME/.local}" \
             --target-dir "$state/install-target"
         printf 'Installed %s to %s/bin\n' "$(git rev-parse --short HEAD)" \
@@ -98,6 +117,6 @@ case "$mode" in
         ;;
     test)
         if (( $# == 0 )); then set -- --all-targets; fi
-        run_check test cargo test "$@"
+        run_tests "$@"
         ;;
 esac

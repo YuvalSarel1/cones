@@ -40,6 +40,55 @@ impl Fixture {
         self.command().args(args).output().unwrap()
     }
 
+    /// Runs a copy of the wrapper from this fixture's own checkout, sharing only `queue`.
+    fn start(&self, queue: &std::path::Path) -> Running {
+        // Distinct checkouts, sharing only the queue. No real Cargo or native CLI.
+        let scripts = self.dir.path().join("checkout/scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for name in ["check", "check_queue.py"] {
+            fs::copy(
+                format!("{}/scripts/{name}", env!("CARGO_MANIFEST_DIR")),
+                scripts.join(name),
+            )
+            .unwrap();
+        }
+        let log = fs::File::create(self.dir.path().join("console")).unwrap();
+        let command = self.command();
+        // Command's program cannot be replaced; run the copied wrapper via Bash.
+        let mut copied = Command::new("/bin/bash");
+        copied
+            .arg(scripts.join("check"))
+            .arg("test")
+            .envs(command.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+            .env("CONES_CHECK_STATE_DIR", queue)
+            .stdout(log.try_clone().unwrap())
+            .stderr(log);
+        // Keep the fixture cwd independent of whichever checkout starts the gate.
+        copied.current_dir(self.dir.path());
+        Running(copied.spawn().unwrap())
+    }
+
+    fn console(&self) -> String {
+        fs::read_to_string(self.dir.path().join("console")).unwrap()
+    }
+
+    /// Waits until the console reports that this gate is queued behind another.
+    fn until_waiting(&self) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.console().contains("waiting for PID") {
+            assert!(
+                Instant::now() < deadline,
+                "never queued:\n{}",
+                self.console()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn has(&self, name: &str) -> bool {
+        self.dir.path().join(name).exists()
+    }
+
     fn logs(&self, output: &Output) -> std::path::PathBuf {
         String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -81,44 +130,16 @@ fn checkouts_share_one_slot_and_cancellation_or_supervisor_death_cannot_overlap_
     use fs2::FileExt;
     for end in ["success", "cancel", "crash"] {
         let queue = tempfile::tempdir().unwrap();
+        // The first gate builds, then holds its exclusive test run open. The
+        // second gate's build must not start beside it.
         let first = Fixture::new(
-            "echo $$ > \"$TMPDIR/cargo.pid\"\ntouch \"$TMPDIR/entered\"\nwhile [ ! -f \"$TMPDIR/release\" ]; do sleep 0.02; done\n",
+            "case \" $* \" in *\" --no-run \"*) exit 0 ;; esac\necho $$ > \"$TMPDIR/cargo.pid\"\ntouch \"$TMPDIR/entered\"\nwhile [ ! -f \"$TMPDIR/release\" ]; do sleep 0.02; done\n",
         );
         let second = Fixture::new("touch \"$TMPDIR/entered\"\n");
-        let start = |fixture: &Fixture| {
-            // Distinct checkouts, sharing only the queue. No real Cargo or native CLI.
-            let scripts = fixture.dir.path().join("checkout/scripts");
-            fs::create_dir_all(&scripts).unwrap();
-            for name in ["check", "check_queue.py"] {
-                fs::copy(
-                    format!("{}/scripts/{name}", env!("CARGO_MANIFEST_DIR")),
-                    scripts.join(name),
-                )
-                .unwrap();
-            }
-            let log = fs::File::create(fixture.dir.path().join("console")).unwrap();
-            let command = fixture.command();
-            // Command's program cannot be replaced; run the copied wrapper via Bash.
-            let mut copied = Command::new("/bin/bash");
-            copied
-                .arg(scripts.join("check"))
-                .arg("test")
-                .envs(command.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
-                .env("CONES_CHECK_STATE_DIR", queue.path())
-                .stdout(log.try_clone().unwrap())
-                .stderr(log);
-            // Keep the fixture cwd independent of whichever checkout starts the gate.
-            copied.current_dir(fixture.dir.path());
-            Running(copied.spawn().unwrap())
-        };
-        let mut a = start(&first);
-        until(|| first.dir.path().join("entered").exists());
-        let mut b = start(&second);
-        until(|| {
-            fs::read_to_string(second.dir.path().join("console"))
-                .unwrap()
-                .contains("waiting for PID")
-        });
+        let mut a = first.start(queue.path());
+        until(|| first.has("entered"));
+        let mut b = second.start(queue.path());
+        second.until_waiting();
         assert!(!second.dir.path().join("entered").exists());
         let cargo: i32 = fs::read_to_string(first.dir.path().join("cargo.pid"))
             .unwrap()
@@ -167,9 +188,71 @@ fn checkouts_share_one_slot_and_cancellation_or_supervisor_death_cannot_overlap_
 }
 
 #[test]
+fn two_builds_overlap_in_the_background_while_further_builds_and_test_runs_wait() {
+    let cargo = r#"
+case " $* " in
+*" --no-run "*)
+    python3 -c 'import os; print(os.getpriority(4, 0))' > "$TMPDIR/build.priority"
+    touch "$TMPDIR/built"
+    while [ ! -f "$TMPDIR/release" ]; do sleep 0.02; done ;;
+*)
+    python3 -c 'import os; print(os.getpriority(4, 0))' > "$TMPDIR/test.priority"
+    touch "$TMPDIR/tested" ;;
+esac
+"#;
+    let release = |fixture: &Fixture| fs::write(fixture.dir.path().join("release"), "").unwrap();
+    let finish = |gates: Vec<(&Fixture, Running)>| {
+        for (fixture, mut gate) in gates {
+            assert!(gate.0.wait().unwrap().success(), "{}", fixture.console());
+            let priority = |name| fs::read_to_string(fixture.dir.path().join(name)).unwrap();
+            assert_eq!(
+                priority("build.priority"),
+                "1\n",
+                "builds run in the background"
+            );
+            assert_eq!(
+                priority("test.priority"),
+                "0\n",
+                "test runs keep normal priority"
+            );
+        }
+    };
+
+    let queue = tempfile::tempdir().unwrap();
+    let [a, b, c] = [(); 3].map(|_| Fixture::new(cargo));
+    let (first, second) = (a.start(queue.path()), b.start(queue.path()));
+    until(|| a.has("built") && b.has("built"));
+    let third = c.start(queue.path());
+    c.until_waiting();
+    assert!(!c.has("built"), "a third build waits for a slot");
+    [&a, &b, &c].into_iter().for_each(release);
+    finish(vec![(&a, first), (&b, second), (&c, third)]);
+
+    let queue = tempfile::tempdir().unwrap();
+    let [a, b, c] = [(); 3].map(|_| Fixture::new(cargo));
+    let (first, second) = (a.start(queue.path()), b.start(queue.path()));
+    until(|| a.has("built") && b.has("built"));
+    release(&a);
+    a.until_waiting();
+    assert!(!a.has("tested"), "a test run waits for every build");
+    // A slot is free, but the waiting test run holds the turnstile.
+    let third = c.start(queue.path());
+    c.until_waiting();
+    assert!(
+        !c.has("built"),
+        "new builds cannot starve a waiting test run"
+    );
+    release(&b);
+    until(|| c.has("built"));
+    assert!(a.has("tested"), "the waiting test run went first");
+    release(&c);
+    finish(vec![(&a, first), (&b, second), (&c, third)]);
+}
+
+#[test]
 fn a_cancelled_waiter_never_starts_and_native_overrides_do_not_reach_tests() {
     let fixture = Fixture::new(
-        "test -z \"${OPENCODE_DB+x}\" && test -z \"${CODEX_HOME+x}\" && test -z \"${PI_CODING_AGENT_DIR+x}\" || exit 92\n",
+        "touch \"$TMPDIR/ran\"\ntest -z \"${OPENCODE_DB+x}\" && test -z \"${CODEX_HOME+x}\" && test -z \"${PI_CODING_AGENT_DIR+x}\" || exit 92\n",
     );
     let queue = fixture.dir.path().join("queue");
     fs::create_dir(&queue).unwrap();
@@ -192,11 +275,7 @@ fn a_cancelled_waiter_never_starts_and_native_overrides_do_not_reach_tests() {
     });
     unsafe { libc::kill(waiter.0.id() as i32, libc::SIGINT) };
     assert_eq!(waiter.0.wait().unwrap().code(), Some(130));
-    assert!(
-        !fs::read_to_string(fixture.dir.path().join("console"))
-            .unwrap()
-            .contains("Logs:")
-    );
+    assert!(!fixture.has("ran"), "a cancelled waiter never runs Cargo");
     drop(lease);
     let output = fixture
         .command()
@@ -213,8 +292,8 @@ fn a_cancelled_waiter_never_starts_and_native_overrides_do_not_reach_tests() {
 fn successful_checks_keep_full_logs_and_only_print_suite_summaries() {
     let fixture = Fixture::new(
         r#"
-printf '%s\n' "$*" > "$TMPDIR/$1.args"
-if [ "$1" = test ]; then
+printf '%s\n' "$*" >> "$TMPDIR/$1.args"
+if [ "$1" = test ] && [ "$2" != --no-run ]; then
     echo '     Running unittests src/lib.rs (target/debug/deps/cones-123)' >&2
     for ((i = 0; i < 10000; i++)); do echo "test case_$i ... ok"; done
     echo 'test result: ok. 10000 passed; 0 failed'
@@ -241,8 +320,10 @@ fi
     );
     assert_eq!(
         fs::read_to_string(fixture.dir.path().join("test.args")).unwrap(),
-        "test --all-targets\n"
+        "test --no-run --all-targets\ntest --all-targets\n",
+        "tests are compiled first, then run"
     );
+    assert!(text.contains("build: ok\ntest: ok\n"), "{text}");
     let second = fixture.run(&["fmt"]);
     assert!(second.status.success());
     assert_ne!(fixture.logs(&second), logs);
@@ -251,15 +332,17 @@ fi
 
 #[test]
 fn failures_preserve_status_and_logs_bound_output_and_stop_the_gate() {
-    for (stage, next) in [
-        ("fmt", "clippy"),
-        ("clippy", "test"),
-        ("test", "reporting"),
-        ("reporting", "none"),
+    // Stages that need no slot run first, so their failures never queue. A failed
+    // test build is reported as the build and never reaches the test run.
+    for (stage, shown, next) in [
+        ("fmt", "fmt", "reporting"),
+        ("reporting", "reporting", "clippy"),
+        ("clippy", "clippy", "test"),
+        ("test", "build", "none"),
     ] {
         let fixture = Fixture::new(&format!(
             r#"
-echo ran > "$TMPDIR/$1.ran"
+echo ran >> "$TMPDIR/$1.ran"
 if [ "$1" = {stage} ]; then
     echo 'early diagnostic' >&2
     for ((i = 0; i < 20000; i++)); do printf 'verbose output '; done
@@ -272,9 +355,16 @@ fi
         assert_eq!(output.status.code(), Some(37));
         let text = String::from_utf8_lossy(&output.stderr);
         assert!(text.len() < 13000);
-        assert!(text.contains(&format!("{stage}: FAILED (exit 37)")));
+        assert!(
+            text.contains(&format!("{shown}: FAILED (exit 37)")),
+            "{text}"
+        );
         assert!(text.contains("final diagnostic"));
-        let log = fixture.logs(&output).join(format!("{stage}.log"));
+        if stage == "test" {
+            let ran = fs::read_to_string(fixture.dir.path().join("test.ran")).unwrap();
+            assert_eq!(ran, "ran\n", "the test run never starts");
+        }
+        let log = fixture.logs(&output).join(format!("{shown}.log"));
         let saved = fs::read_to_string(log).unwrap();
         assert!(saved.starts_with("early diagnostic"));
         assert!(saved.ends_with("final diagnostic\n"));
@@ -287,16 +377,18 @@ fi
 fn focused_tests_preserve_arguments_and_run_from_the_checkout() {
     let fixture = Fixture::new(
         r#"
-printf '%s\n' "$PWD" "$@" > "$TMPDIR/args"
+printf '%s\n' "$PWD" "$@" >> "$TMPDIR/args"
 "#,
     );
     let output = fixture.run(&["test", "--lib", "filter with spaces", "--", "--exact"]);
     assert!(output.status.success());
+    // The build takes the selection; test binary arguments go only to the run.
     assert_eq!(
         fs::read_to_string(fixture.dir.path().join("args")).unwrap(),
         format!(
-            "{}\ntest\n--lib\nfilter with spaces\n--\n--exact\n",
-            env!("CARGO_MANIFEST_DIR")
+            "{root}\ntest\n--no-run\n--lib\nfilter with spaces\n\
+             {root}\ntest\n--lib\nfilter with spaces\n--\n--exact\n",
+            root = env!("CARGO_MANIFEST_DIR")
         )
     );
     assert!(!fixture.logs(&output).join("fmt.log").exists());
@@ -304,10 +396,11 @@ printf '%s\n' "$PWD" "$@" > "$TMPDIR/args"
 }
 
 #[test]
-fn installing_head_builds_a_detached_worktree_at_full_width_and_removes_it() {
+fn installing_head_builds_a_detached_worktree_in_the_background_and_removes_it() {
     let fixture = Fixture::new(
         r#"
-printf '%s\n' "$@" "jobs=$CARGO_BUILD_JOBS" > "$TMPDIR/args"
+printf '%s\n' "$@" > "$TMPDIR/args"
+python3 -c 'import os; print("priority", os.getpriority(4, 0))' >> "$TMPDIR/args"
 test -f "$3/Cargo.toml" && printf 'package\n' >> "$TMPDIR/args"
 git -C "$3" rev-parse HEAD >> "$TMPDIR/args"
 "#,
@@ -332,20 +425,10 @@ git -C "$3" rev-parse HEAD >> "$TMPDIR/args"
     )
     .unwrap();
     let recorded = fs::read_to_string(fixture.dir.path().join("args")).unwrap();
-    let jobs: usize = recorded
-        .lines()
-        .find_map(|line| line.strip_prefix("jobs="))
-        .unwrap()
-        .parse()
-        .unwrap();
-    assert!(
-        jobs > 2,
-        "a build takes the machine, not the test cap: {jobs}"
-    );
     assert_eq!(
         recorded,
         format!(
-            "install\n--path\n{}\n--force\n--root\n{}\n--target-dir\n{}\njobs={jobs}\npackage\n{head}",
+            "install\n--path\n{}\n--force\n--root\n{}\n--target-dir\n{}\npriority 1\npackage\n{head}",
             worktree.display(),
             root.display(),
             state.join("install-target").display(),
