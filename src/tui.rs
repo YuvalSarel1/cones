@@ -17289,7 +17289,7 @@ states:
             }
         }
         // The old reference had 221 entries, the first curation 45. Help stays a short card.
-        assert!(all.len() <= 15, "{} Help entries", all.len());
+        assert!(all.len() <= 20, "{} Help entries", all.len());
         assert!(guide.len() <= 4, "{} Help headings", guide.len());
         for ordinary in [
             "↑",
@@ -17303,7 +17303,10 @@ states:
         ] {
             assert!(!all.iter().any(|(key, _)| key == ordinary), "{ordinary}");
         }
-        for essential in ["ctrl+y", "ctrl+n", "ctrl+x", "ctrl+o", "ctrl+z"] {
+        for essential in [
+            "ctrl+y", "ctrl+n", "ctrl+x", "ctrl+o", "ctrl+z", "ctrl+t", "ctrl+p", "ctrl+s",
+            "ctrl+h", "ctrl+e", "ctrl+v", "alt+m",
+        ] {
             assert!(all.iter().any(|(key, _)| key == essential), "{essential}");
         }
         for (width, budget) in [(90, 30), (60, 40), (40, 60)] {

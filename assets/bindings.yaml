@@ -19,6 +19,8 @@ states:
           description: Fork the selected conversation.
         - action: pin
           description: Pin a session above every group, or unpin it.
+        - action: highlight
+          description: Highlight a session, or remove its highlight.
         - action: coordinate
           description: Start the folder's coordinator.
         - action: settings
@@ -27,6 +29,16 @@ states:
           description: Choose a harness or terminal.
         - action: filter
           description: Filter by text, :attention or :unread.
+        - action: group
+          description: Group sessions by state or folder.
+        - action: history
+          description: Show or hide past conversations.
+        - action: edit_job
+          description: Edit the selected job.
+        - action: paste_image
+          description: Paste a clipboard image into an instruction.
+        - action: mouse
+          description: Release the mouse so dragging selects text.
     bindings:
       - keys: ["up"]
         action: up
