@@ -14023,6 +14023,12 @@ impl App {
         self.rebuild();
     }
 
+    fn can_fork(&self) -> bool {
+        self.fork_source()
+            .and_then(|e| harness::by_name(&e.key.harness))
+            .is_some_and(|spec| spec.operations.fork.is_some())
+    }
+
     fn fork_selected(&mut self) {
         let entry = self.fork_source();
         let Some(entry) = entry else {
@@ -14787,6 +14793,9 @@ impl App {
                 if matches!(self.selected().map(|r| &r.kind), Some(Kind::History(_))) {
                     keys.push(("enter", self.enter_label()));
                 }
+                if self.can_fork() {
+                    keys.push(("ctrl+y", "fork"));
+                }
                 let other = self.history.search.other();
                 let switch = format!("{} search", other.label());
                 keys.push(("shift+tab", &switch));
@@ -14860,6 +14869,9 @@ impl App {
                     .is_some_and(|spec| spec.operations.rename)
                 {
                     keys.push(("ctrl+n", "rename"));
+                }
+                if self.can_fork() {
+                    keys.push(("ctrl+y", "fork"));
                 }
                 if self.selected_session().is_some() {
                     keys.push(("ctrl+p", "highlight"));
@@ -27777,7 +27789,9 @@ states:
         app.size = (24, 120);
         let wide = row_keys(&app);
         assert!(
-            wide.contains("ctrl+n rename") && wide.contains("ctrl+p highlight"),
+            wide.contains("ctrl+n rename")
+                && wide.contains("ctrl+y fork")
+                && wide.contains("ctrl+p highlight"),
             "a bar with the room shows every key the row has: {wide}"
         );
         app.size = (24, 80);
@@ -29520,6 +29534,7 @@ while True:
         app.data.sessions = vec![session];
         app.rebuild();
         app.select_new("gemini-123");
+        assert!(!app.footer_lines()[0].to_string().contains("ctrl+y"));
         app.text = "unfinished instruction".into();
         app.fork_selected();
         assert!(app.status.contains("native conversation id"));
