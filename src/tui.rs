@@ -13731,7 +13731,12 @@ impl App {
     fn open_menu(&mut self) {
         match MENU[self.menu].0 {
             "jobs" => self.show_jobs(),
-            "config" => self.mode = Mode::Config(self.config_form()),
+            "config" => {
+                // Opening from the menu lands on the tab row, where ←→ pick a group.
+                let mut form = self.config_form();
+                form.tabs = true;
+                self.mode = Mode::Config(form);
+            }
             _ => self.mode = Mode::Guide(Guide::new(self.guide_origin())),
         }
     }
@@ -26215,6 +26220,10 @@ states:
         }
         app.menu = MENU.iter().position(|m| m.0 == "config").unwrap();
         app.enter().unwrap();
+        assert!(
+            matches!(&app.mode, Mode::Config(f) if f.tabs),
+            "opening config from the menu lands on the tab row"
+        );
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 34)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let text = rows(&t, 120).join("\n");
