@@ -657,7 +657,7 @@ fn transcript_parent(transcript: &Path, id: &str) -> Option<String> {
 
 /// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
 /// Registry busy wins because job state can lag a new turn. A background job idles only
-/// when the registry, tempo and in-flight work all rest.
+/// when the registry, tempo and in-flight work all rest; a pending wake counts as resting.
 fn state(job: &Value, status: &str) -> String {
     let job_state = job["state"].as_str();
     let tempo = job["tempo"].as_str();
@@ -672,13 +672,20 @@ fn state(job: &Value, status: &str) -> String {
             Some("failed" | "stopped") => true,
             _ => false,
         };
+    // A scheduled wake is not work: a job sleeping until its cron fires rests.
     let in_flight = &job["inFlight"];
+    let kinds = in_flight["kinds"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let resting = status == "idle"
         && tempo == Some("idle")
-        && !waking
-        && in_flight["tasks"].as_u64().unwrap_or(0) == 0
         && in_flight["queued"].as_u64().unwrap_or(0) == 0
-        && in_flight["kinds"].as_array().is_none_or(|k| k.is_empty());
+        && if kinds.is_empty() {
+            in_flight["tasks"].as_u64().unwrap_or(0) == 0
+        } else {
+            kinds.iter().all(|k| k.as_str() == Some("session_cron"))
+        };
     match job_state {
         _ if status == "busy" || status == "shell" => "active",
         Some(done) if finished => done,
@@ -2198,13 +2205,34 @@ mod tests {
         let mut waking = job("done", "idle");
         waking["selfWake"] = true.into();
         assert_eq!(
-            word(waking, "idle"),
-            "active",
+            word(waking.clone(), "idle"),
+            "idle",
             "a job that wakes itself has another turn coming, so it is not done"
         );
+        assert_eq!(word(waking, "busy"), "active");
         let mut routine = job("done", "idle");
         routine["routine"] = serde_json::json!({"id": "nightly"});
-        assert_eq!(word(routine, "idle"), "active");
+        assert_eq!(word(routine, "idle"), "idle");
+        // Claude Code 2.1.280's record for a finished job sleeping on a fallback wake.
+        let mut sleeping = job("done", "idle");
+        sleeping["inFlight"] = serde_json::json!({
+            "tasks": 1, "queued": 0, "kinds": ["session_cron"], "drainableMonitors": 0,
+            "wake": {"at": 1790146440000u64, "reason": "fallback", "fires": 0}
+        });
+        assert_eq!(
+            word(sleeping.clone(), "idle"),
+            "idle",
+            "a scheduled wake is not work"
+        );
+        sleeping["inFlight"]["kinds"] = serde_json::json!(["session_cron", "bash"]);
+        assert_eq!(word(sleeping.clone(), "idle"), "active");
+        sleeping["inFlight"]["kinds"] = serde_json::json!(["session_cron"]);
+        sleeping["inFlight"]["queued"] = 1.into();
+        assert_eq!(
+            word(sleeping, "idle"),
+            "active",
+            "a queued prompt is a turn coming now"
+        );
         let mut stopped = job("stopped", "idle");
         stopped["selfWake"] = true.into();
         assert_eq!(
