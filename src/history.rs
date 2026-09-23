@@ -288,6 +288,35 @@ pub fn all(sources: &[Source]) -> Result<Vec<Entry>> {
     Ok(cache.entries)
 }
 
+/// The command and MCP surfaces use the same query engine without a dashboard worker.
+/// Keep this for a client's lifetime so repeated searches reuse metadata and embeddings.
+pub(crate) struct Catalog {
+    sources: Vec<Source>,
+    cache: Cache,
+}
+
+impl Catalog {
+    pub(crate) fn new(sources: Vec<Source>, state: Option<PathBuf>) -> Self {
+        Self {
+            sources,
+            cache: Cache {
+                search_directory: state.map(|p| p.join("search")),
+                ..Default::default()
+            },
+        }
+    }
+
+    pub(crate) fn page(
+        &mut self,
+        query: Query,
+        offset: usize,
+        include: impl Fn(&Entry) -> bool,
+    ) -> Result<Page> {
+        self.cache
+            .page_filtered(&self.sources, query, offset, include)
+    }
+}
+
 fn stamp(path: &Path) -> std::io::Result<Stamp> {
     let m = fs::metadata(path)?;
     Ok(Stamp {
@@ -350,6 +379,16 @@ struct Cache {
 
 impl Cache {
     fn page(&mut self, sources: &[Source], query: Query) -> Result<Page> {
+        self.page_filtered(sources, query, 0, |_| true)
+    }
+
+    fn page_filtered(
+        &mut self,
+        sources: &[Source],
+        query: Query,
+        offset: usize,
+        include: impl Fn(&Entry) -> bool,
+    ) -> Result<Page> {
         let started = std::time::Instant::now();
         ensure!(
             (1..=MAX_PAGE).contains(&query.limit),
@@ -403,6 +442,7 @@ impl Cache {
                     self.search = Some(search::Index::open(self.search_directory.clone())?);
                 }
                 let index = self.search.as_mut().unwrap();
+                let _guard = index.lock()?;
                 index.sync(&matched)?;
                 let results = index.search(&matched, &query.filter, query.search, query.refresh)?;
                 self.search_results = Some(((query.filter.clone(), query.search), results));
@@ -436,23 +476,30 @@ impl Cache {
                 self.search = Some(search::Index::open(self.search_directory.clone())?);
             }
             let index = self.search.as_mut().unwrap();
+            let _guard = index.lock()?;
             index.sync(&matched)?;
             let results = index.fill(query.refresh)?;
             search_pending = results.pending;
             search_status = results.status;
             search_error = results.error;
         }
+        // Scope after searching, before pagination. A scoped command must not remove other
+        // projects from the shared index, and its limit counts only eligible results.
+        matched.retain(include);
         let total = matched.len();
-        let mut remaining = matched.into_iter().filter(|e| {
-            query.after.as_ref().is_none_or(|c| {
-                let rank = e.hit.as_ref().map(|h| h.score);
-                c.score
-                    .zip(rank)
-                    .map_or(std::cmp::Ordering::Equal, |(old, new)| old.total_cmp(&new))
-                    .then_with(|| order(e.last_activity, &e.key, c.last_activity, &c.key))
-                    .is_gt()
+        let mut remaining = matched
+            .into_iter()
+            .filter(|e| {
+                query.after.as_ref().is_none_or(|c| {
+                    let rank = e.hit.as_ref().map(|h| h.score);
+                    c.score
+                        .zip(rank)
+                        .map_or(std::cmp::Ordering::Equal, |(old, new)| old.total_cmp(&new))
+                        .then_with(|| order(e.last_activity, &e.key, c.last_activity, &c.key))
+                        .is_gt()
+                })
             })
-        });
+            .skip(offset);
         let mut entries: Vec<Entry> = remaining.by_ref().take(query.limit).collect();
         let next = remaining
             .next()

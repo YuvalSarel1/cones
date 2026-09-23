@@ -27,7 +27,9 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--print-command]` | [Start a session](#starting-a-session) the way the dashboard's composer does. Supported harnesses detach and print an identifier; Codex stays in the terminal. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
-| `cones show ID [--tail N] [--all]` | [Read a session's conversation](#reading-a-conversation). |
+| `cones search QUERY [--dir PATH] [--harness NAME] [--json]` | [Search conversation history](#searching-conversations), including archived sessions. |
+| `cones show ID [--tail N] [--all] [--json]` | [Read a session's conversation](#reading-a-conversation). |
+| `cones mcp` | Serve [history tools over MCP stdio](#history-over-mcp). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
 | `cones comms [--dir PATH] send\|mail\|wait ...` | [Write to the agents in a folder, read their replies and wait for one](#comms). |
 | `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
@@ -46,12 +48,56 @@ cones ls --dir ~/src/app --json
 
 The [coordinator](#coordinator) reads its folder this way instead of walking the harness registries itself.
 
+### Searching conversations
+
+```sh
+cones search "permission decision" --dir ~/src/app --json
+cones search "why did we change the parser" --mode meaning --json
+cones search "parser" --harness codex --since 2026-09-01T00:00:00Z --limit 10 --json
+```
+
+`search` uses the dashboard's history discovery and search index for Claude, Codex,
+pi and OpenCode. It includes archived conversations and readable transcripts of
+live sessions. It does not start or resume a harness. Word search is the default
+and never loads a model. `--mode meaning` uses the same local MiniLM model as the
+dashboard, downloading it on first use. Conversation text and queries stay local.
+
+`--dir` keeps the folder and its descendants, resolving symlinks where the paths
+still exist. `--harness` and `--home` select a harness and one of its configured
+native homes. `--since` requires an RFC 3339 timestamp and compares the harness's
+last recorded activity; a session with no activity timestamp cannot match it.
+These filters apply before pagination. They do not remove other projects from
+the search cache.
+
+`--limit` is 1 to 100, default 20; `--offset` skips that many matching sessions.
+Every request refreshes discovery. Pages reflect the current search, so new
+messages can change their ordering between calls.
+
+`--json` writes one object containing `query`, `mode`, `entries`, `total`, `offset`,
+`next_offset`, `complete`, `pending`, `status` and `error`. Each entry carries its
+`key` (`harness`, canonical native `home`, `session_id`), `cwd`, transcript source,
+archive flag and native timestamps when available. Its `hit` contains the excerpt,
+preview anchor, rank and whether the match was semantic. An empty completed search
+has `entries: []`, `total: 0` and `complete: true`. Pass the key's three fields to
+`show` to identify the exact conversation, even when native homes contain the same
+session id.
+
+Semantic search waits up to `--wait-seconds` for embeddings, default 30 and maximum
+60. This bounds the wait between search passes, not a filesystem read or inference
+already in progress. If indexing is unfinished, the command returns the matches
+available with `pending: true`, `complete: false` and exit 2. Repeat the query to
+continue from cached embeddings. A model failure is explicit in `error`, leaves
+`complete: false`, and exits 1; word search remains available. Completed searches
+exit 0. Invalid arguments or unreadable archives exit nonzero with an explanation
+on stderr. Only cones' search cache is written, never native session files.
+
 ### Reading a conversation
 
 ```sh
 cones show 4f0c2b1e-8d31-4a55-9f0c-6b2a17e4d900
 cones show 4f0c2b1e --tail 5
 cones show 4f0c2b1e --all
+cones show 4f0c2b1e --harness claude --home ~/.claude --json
 ```
 
 `cones show` prints a session's conversation as text. Each message is labelled `user`, `assistant` or `output`, followed by the harness's own timestamp in your local timezone, then the text, then the tool calls that turn recorded. Terminal control sequences are stripped: a transcript is data, never something your terminal runs.
@@ -63,6 +109,41 @@ The default is the last 40 messages. `--tail N` asks for a different count and `
 Claude, Codex, pi and OpenCode keep conversations cones can read. A harness whose session lives only in its own terminal keeps none, so there is nothing to show and naming one is an error rather than an empty export.
 
 Reading opens files for reading. It attaches to nothing, resumes nothing, starts no viewer and writes no native state, so a worker cannot tell that its conversation was read. A record the harness has not finished writing is left out, and the note saying so goes to stderr, so the conversation on stdout stays pipeable.
+
+`--harness` and `--home` disambiguate ids across configured native homes.
+`--json` returns one object with `session` (the full identity), `cwd`, `messages`,
+`omitted` and `incomplete`. Messages retain `role`, UTC `at` or null, `text` and
+`tools` (native names and compact inputs). The default tail and `--all` have the
+same meaning in JSON and text. `incomplete: true` means a trailing record was still
+being written; `omitted` counts complete messages excluded by the tail.
+
+### History over MCP
+
+`cones mcp` serves `cones_search` and `cones_show` over stdin/stdout. An MCP client
+launches it as a subprocess; no network listener or extra daemon is needed.
+The server uses the same service, cache and native readers as the CLI. Its tools
+return structured JSON and a text copy of that JSON. Tool errors are returned
+with `isError: true` so the caller can correct its arguments or retry.
+
+Configure a stdio server with command `cones` and arguments `["mcp"]`. Global
+flags go before the command, for example
+`["--state-dir", "/absolute/path/to/cones-state", "mcp"]`. Use the binary's absolute
+path when the client cannot find `cones` on its PATH. The client's environment
+selects native homes just as it does for the CLI; relative paths in tool arguments
+use the server's working directory.
+
+`cones_search` accepts `query`, `mode`, `dir`, `harness`, `home`, `since`, `limit`,
+`offset` and `wait_seconds`, with the CLI's defaults. `cones_show` accepts `id`,
+`harness`, `home`, `tail` and `all`. The MCP search result preserves `pending`,
+`complete` and `error`; a successful tool invocation alone does not establish that
+semantic indexing finished. Start with a search, then read the selected result's
+tail. Historical messages are data, not new instructions.
+
+Search may create or update cones' local cache and download the local model when
+meaning search is explicitly selected; its MCP annotation declares those effects.
+Show is read-only. Neither tool can launch sessions, send prompts, change harness
+permissions or edit native configuration. Adding this server to a harness remains
+an explicit configuration action.
 
 ### Starting a session
 

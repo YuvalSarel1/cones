@@ -107,6 +107,20 @@ pub(crate) struct Index {
 }
 
 impl Index {
+    /// Keep sync and its following read together across dashboards and MCP clients.
+    /// Their native homes and excluded live sessions can differ even in one state directory.
+    /// Dropping this file releases the lock; it is never held while awaiting embeddings.
+    pub(crate) fn lock(&self) -> Result<Option<fs::File>> {
+        self.directory
+            .as_ref()
+            .map(|directory| {
+                let file = crate::private_file(&directory.join("index.lock"))?;
+                fs2::FileExt::lock_exclusive(&file).context("lock history search index")?;
+                Ok(file)
+            })
+            .transpose()
+    }
+
     /// An in-memory text index is deliberately model-free, including in fixtures.
     pub(crate) fn open(directory: Option<PathBuf>) -> Result<Self> {
         let db = if let Some(directory) = &directory {
@@ -870,9 +884,13 @@ struct Model {
     tokenizer: tokenizers::Tokenizer,
 }
 
+pub(crate) fn model_directory(directory: &Path) -> PathBuf {
+    directory.join(MODEL_REVISION)
+}
+
 impl Model {
     fn load(directory: &Path) -> Result<Self> {
-        let directory = directory.join(MODEL_REVISION);
+        let directory = model_directory(directory);
         crate::private_dir(&directory)?;
         for &(name, hash) in MODEL_FILES {
             model_file(&directory, name, hash)?;

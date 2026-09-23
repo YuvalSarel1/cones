@@ -27,14 +27,42 @@ pub struct Located {
 
 /// Find the one session `id` names, by exact id or by an unambiguous prefix of one.
 pub fn locate(claude: &Path, id: &str) -> Result<Located> {
+    locate_scoped(claude, id, None, None)
+}
+
+/// Disambiguate identical native ids using the harness and home returned by search.
+pub fn locate_scoped(
+    claude: &Path,
+    id: &str,
+    harness: Option<&str>,
+    home: Option<&Path>,
+) -> Result<Located> {
+    locate_entries(&history::all(&history::sources(claude))?, id, harness, home)
+}
+
+pub(crate) fn locate_entries(
+    entries: &[history::Entry],
+    id: &str,
+    harness: Option<&str>,
+    home: Option<&Path>,
+) -> Result<Located> {
     let id = id.trim();
     ensure!(!id.is_empty(), "a session id is required");
-    let entries = history::all(&history::sources(claude))?;
-    let mut found: Vec<&history::Entry> =
-        entries.iter().filter(|e| e.key.session_id == id).collect();
+    let home = home.map(|p| p.canonicalize().unwrap_or_else(|_| p.to_owned()));
+    let entries: Vec<_> = entries
+        .iter()
+        .filter(|e| harness.is_none_or(|h| e.key.harness == h))
+        .filter(|e| home.as_ref().is_none_or(|h| &e.key.home == h))
+        .collect();
+    let mut found: Vec<&history::Entry> = entries
+        .iter()
+        .copied()
+        .filter(|e| e.key.session_id == id)
+        .collect();
     if found.is_empty() && id.len() >= MIN_PREFIX {
         found = entries
             .iter()
+            .copied()
             .filter(|e| e.key.session_id.starts_with(id))
             .collect();
     }
@@ -69,6 +97,28 @@ pub fn locate(claude: &Path, id: &str) -> Result<Located> {
         },
         key: entry.key.clone(),
         cwd: entry.cwd.clone(),
+    })
+}
+
+/// Machine-readable export with the same messages and omissions as the text command.
+pub fn json(located: &Located, export: &transcript::Export) -> serde_json::Value {
+    serde_json::json!({
+        "session": located.key,
+        "cwd": located.cwd,
+        "omitted": export.omitted,
+        "incomplete": export.incomplete,
+        "messages": export.messages.iter().map(|m| serde_json::json!({
+            "role": match m.role {
+                transcript::Role::User => "user",
+                transcript::Role::Assistant => "assistant",
+                transcript::Role::Output => "output",
+            },
+            "at": m.at,
+            "text": m.text,
+            "tools": m.tools.iter().map(|t| serde_json::json!({
+                "name": t.name, "input": t.input,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
     })
 }
 

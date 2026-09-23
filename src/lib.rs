@@ -10,6 +10,8 @@ pub mod fleet;
 pub mod forks;
 pub mod harness;
 pub mod history;
+pub mod history_api;
+pub mod history_mcp;
 pub mod launch;
 pub mod launchd;
 pub mod ledger;

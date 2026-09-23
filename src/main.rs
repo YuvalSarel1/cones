@@ -209,7 +209,44 @@ enum Action {
         /// The whole conversation the harness recorded, however long it is.
         #[arg(long)]
         all: bool,
+        /// Machine-readable identity, messages and omission counts.
+        #[arg(long)]
+        json: bool,
+        /// Restrict identity resolution to this harness.
+        #[arg(long)]
+        harness: Option<String>,
+        /// Restrict identity resolution to this configured native home.
+        #[arg(long)]
+        home: Option<PathBuf>,
     },
+    /// Search native conversation history without starting or resuming a session.
+    Search {
+        query: String,
+        #[arg(long, value_enum, default_value = "words")]
+        mode: cones::history_api::Mode,
+        /// Only this folder and its descendants.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        #[arg(long)]
+        harness: Option<String>,
+        /// Only this configured native home.
+        #[arg(long)]
+        home: Option<PathBuf>,
+        /// Earliest recorded last activity, as an RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Wait this long for semantic indexing; incomplete results are labelled.
+        #[arg(long, default_value_t = 30)]
+        wait_seconds: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Serve cones_search and cones_show over MCP stdio until stdin closes.
+    Mcp,
 }
 
 fn main() {
@@ -676,11 +713,25 @@ fn execute(cli: Cli) -> Result<i32> {
                 CoordinatorTask::Comms(task) => comms(&folder, task),
             }
         }
-        Action::Show { id, tail, all } => {
-            let located = cones::show::locate(&claude, &id)?;
+        Action::Show {
+            id,
+            tail,
+            all,
+            json,
+            harness,
+            home,
+        } => {
+            cones::history_api::validate_harness(harness.as_deref())?;
+            let home = home.map(|p| cones::expand_path(&p, &cwd)).transpose()?;
+            let located =
+                cones::show::locate_scoped(&claude, &id, harness.as_deref(), home.as_deref())?;
             let tail = (!all).then(|| tail.unwrap_or(cones::show::DEFAULT_TAIL));
             let export = cones::transcript::export(&located.source, &located.key.harness, tail)?;
-            print!("{}", cones::show::render(&export));
+            if json {
+                println!("{}", cones::show::json(&located, &export));
+            } else {
+                print!("{}", cones::show::render(&export));
+            }
             // The export is text on stdout; what is wrong with it belongs on stderr.
             if export.incomplete {
                 eprintln!(
@@ -688,6 +739,79 @@ fn execute(cli: Cli) -> Result<i32> {
                     located.key.session_id
                 );
             }
+            Ok(0)
+        }
+        Action::Search {
+            query,
+            mode,
+            dir,
+            harness,
+            home,
+            since,
+            limit,
+            offset,
+            wait_seconds,
+            json,
+        } => {
+            let mut service = cones::history_api::Service::discover(&claude, state, cwd);
+            let results = service.search(cones::history_api::Search {
+                query,
+                mode,
+                dir,
+                harness,
+                home,
+                since,
+                limit,
+                offset,
+                wait_seconds,
+            })?;
+            if json {
+                println!("{}", serde_json::to_string(&results)?);
+            } else {
+                for entry in &results.entries {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        entry.key.session_id,
+                        entry.key.harness,
+                        entry.cwd.display(),
+                        cones::transcript::plain(entry.title.as_deref().unwrap_or(""))
+                    );
+                    if let Some(hit) = &entry.hit
+                        && !hit.snippet.is_empty()
+                    {
+                        println!("  {}", cones::transcript::plain(&hit.snippet));
+                    }
+                }
+                eprintln!(
+                    "{} matches; {} returned",
+                    results.total,
+                    results.entries.len()
+                );
+                if let Some(next) = results.next_offset {
+                    eprintln!("next page: --offset {next}");
+                }
+                if results.pending {
+                    eprintln!("cones: semantic search is incomplete; rerun to continue indexing");
+                }
+                if let Some(error) = &results.error {
+                    eprintln!("cones: semantic search unavailable: {error}");
+                }
+            }
+            Ok(if results.error.is_some() {
+                1
+            } else if results.pending {
+                2
+            } else {
+                0
+            })
+        }
+        Action::Mcp => {
+            let mut service = cones::history_api::Service::discover(&claude, state, cwd);
+            cones::history_mcp::serve(
+                &mut service,
+                std::io::stdin().lock(),
+                std::io::stdout().lock(),
+            )?;
             Ok(0)
         }
         Action::Worker { .. } => unreachable!(),
