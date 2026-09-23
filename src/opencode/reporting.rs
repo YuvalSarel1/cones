@@ -104,6 +104,7 @@ impl Reporter {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Report(pub(crate) Value);
 
 impl Report {

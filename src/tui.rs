@@ -2825,7 +2825,10 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
         if let Some(row) = rows.iter_mut().find(|s| {
             s.harness == host.session.harness && s.pid.is_some() && s.pid == host.session.pid
         }) {
-            if row.harness == "opencode" {
+            if row.harness == "opencode"
+                || (row.harness == "pi"
+                    && matches!(host.session.state.as_str(), "active" | "idle" | "blocked"))
+            {
                 let usage = row.usage;
                 *row = host.session.clone();
                 row.usage = usage;
@@ -2840,8 +2843,11 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
         } else {
             let mut row = host.session.clone();
             // The host records process ownership, not agent activity. Only the
-            // native OpenCode reporter can supply state here without discovery.
-            if row.harness != "opencode" {
+            // native reporters can supply state here without discovery.
+            if row.harness != "opencode"
+                && !(row.harness == "pi"
+                    && matches!(row.state.as_str(), "active" | "idle" | "blocked"))
+            {
                 row.state = "-".into();
             }
             rows.push(row);
@@ -10748,12 +10754,12 @@ impl App {
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
         for open in &self.viewers {
-            if open.harness == Some(HarnessKind::Opencode)
-                && let Some(report) = open.viewer.opencode_report()
-                && let Some(row) = data
-                    .sessions
-                    .iter_mut()
-                    .find(|row| row.harness == "opencode" && row.pid == Some(open.viewer.pid()))
+            if matches!(open.harness, Some(HarnessKind::Opencode | HarnessKind::Pi))
+                && let Some(report) = open.viewer.native_report()
+                && let Some(row) = data.sessions.iter_mut().find(|row| {
+                    row.pid == Some(open.viewer.pid())
+                        && harness::by_name(&row.harness).map(|s| s.kind) == open.harness
+                })
             {
                 report.apply(row);
             }
@@ -21352,6 +21358,60 @@ states:
     const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const C: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+
+    #[test]
+    fn reported_pi_waits_keep_separate_clients_and_enter_the_attention_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(dir.path());
+        let hosts: Vec<_> = [(A, 11, "blocked"), (B, 22, "idle")]
+            .into_iter()
+            .map(|(id, pid, state)| {
+                let mut session = placeholder(HarnessKind::Pi, id, dir.path(), id);
+                session.pid = Some(pid);
+                session.state = state.into();
+                terminal_host::Record {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    socket: dir.path().join(format!("socket-{pid}")),
+                    session,
+                    what: "pi".into(),
+                }
+            })
+            .collect();
+        let mut rows: Vec<_> = hosts
+            .iter()
+            .map(|h| {
+                let mut row = h.session.clone();
+                row.session_id = format!("pi-{}", row.pid.unwrap());
+                row.state = "active".into();
+                row
+            })
+            .collect();
+        merge_hosts(&mut rows, &hosts);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            (&*rows[0].session_id, &*rows[0].state, rows[0].pid),
+            (A, "blocked", Some(11))
+        );
+        assert_eq!(
+            (&*rows[1].session_id, &*rows[1].state, rows[1].pid),
+            (B, "idle", Some(22))
+        );
+        app.data.sessions = rows;
+        app.data.runs.clear();
+        app.update_attention();
+        app.rebuild();
+        app.filter = Input::new(":attention");
+        app.apply_filter();
+        let visible: Vec<_> = app
+            .visible
+            .iter()
+            .filter_map(|i| match &app.rows[*i].kind {
+                Kind::Session(id, _) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(visible, [A]);
+    }
 
     #[test]
     fn host_metadata_keeps_process_metrics_and_does_not_reparent_a_changed_session() {

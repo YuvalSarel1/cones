@@ -58,3 +58,67 @@ test("native reporting recovers from API failure, heartbeats idle, and clears on
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("Pi reports native dialogs, nested waits, switches, failure and reload without handling input", async (t) => {
+  const { default: report } = await import("../assets/harnesses/pi-report.mjs");
+  const directory = mkdtempSync(join(tmpdir(), "cones-pi-report-test-"));
+  const path = join(directory, "session.json");
+  const original = process.env.CONES_PI_REPORT;
+  process.env.CONES_PI_REPORT = path;
+  const handlers = new Map();
+  let tick, failed = false, idle = true, id = "aaaaaaaa-1111-4111-8111-111111111111";
+  t.mock.method(globalThis, "setInterval", (fn) => { tick = fn; return { unref() {} }; });
+  t.mock.method(globalThis, "clearInterval", () => {});
+  const pi = { on: (event, handler) => handlers.set(event, handler) };
+  const ctx = {
+    cwd: directory,
+    sessionManager: {
+      getSessionId: () => { if (failed) throw Error("native API failed"); return id; },
+      getSessionFile: () => undefined,
+    },
+    isIdle: () => idle,
+  };
+  const emit = (name) => handlers.get(name)({ type: name }, ctx);
+  const read = () => JSON.parse(readFileSync(path, "utf8"));
+  try {
+    report(pi);
+    emit("ui_prompt_start");
+    tick();
+    assert.equal(read().waiting, true, "a startup dialog may precede this observer's session_start");
+    emit("session_start");
+    assert.equal(read().waiting, true);
+    emit("ui_prompt_end");
+    assert.equal(read().pid, process.pid);
+    assert.equal(read().session.id, id);
+    assert.equal(read().idle, true);
+    assert.equal(read().waiting, false);
+    emit("ui_prompt_start");
+    assert.equal(read().waiting, true);
+    emit("ui_prompt_start"); emit("ui_prompt_end");
+    assert.equal(read().waiting, true, "ending one nested dialog leaves the other pending");
+    emit("ui_prompt_end");
+    assert.equal(read().waiting, false);
+    idle = false; emit("agent_start");
+    assert.equal(read().idle, false);
+    failed = true; tick();
+    assert.equal(existsSync(path), false, "API failure withdraws the report");
+    failed = false; tick();
+    assert.equal(read().idle, false);
+    utimesSync(path, new Date(0), new Date(0)); tick();
+    assert.ok(statSync(path).mtimeMs > 0, "unchanged state refreshes liveness");
+    emit("ui_prompt_start"); emit("session_shutdown");
+    assert.equal(existsSync(path), false);
+    id = "bbbbbbbb-2222-4222-8222-222222222222";
+    report(pi); emit("session_start");
+    assert.equal(read().session.id, id);
+    assert.equal(read().waiting, false, "session replacement clears the old wait");
+    assert.ok(!handlers.has("input") && !handlers.has("tool_call"));
+    emit("session_shutdown");
+    assert.equal(existsSync(path), false);
+  } finally {
+    handlers.get("session_shutdown")?.();
+    if (original === undefined) delete process.env.CONES_PI_REPORT;
+    else process.env.CONES_PI_REPORT = original;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

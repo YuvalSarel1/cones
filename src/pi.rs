@@ -1,6 +1,7 @@
 //! pi fleet discovery from processes and session files. pi overwrites argv, so
 //! files are matched by cwd and write time; multiple processes in one cwd are ambiguous.
 //! pi supports neither attach nor supervised cones jobs.
+pub(crate) mod reporting;
 use crate::{
     cost::{Adapter, Reader, Reading, Response},
     fleet::{Activity, Session},

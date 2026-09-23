@@ -32,6 +32,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 rayon = "1"
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 tui-markdown = "0.3.9"
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 vt100 = "0.16"
 
 [patch.crates-io]

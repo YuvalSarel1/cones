@@ -1,5 +1,6 @@
 //! Codex fleet discovery from processes, writer locks, the thread database and rollouts.
 //! This module observes native sessions; it does not execute supervised jobs.
+mod runtime;
 use crate::{
     cost::{Adapter, Reader, Reading, Response},
     fleet::Session,
@@ -699,7 +700,12 @@ pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
 }
 
 pub fn daemon_pid(codex: &Path) -> Option<u32> {
-    let text = fs::read_to_string(codex.join(&daemon_files().pid)).ok()?;
+    let pid = codex.join(&daemon_files().pid);
+    // A standalone install names it app-server.pid; Codex's managed daemon package, which
+    // other installs download on `daemon start`, names it daemon.pid in the same folder.
+    let text = fs::read_to_string(&pid)
+        .or_else(|_| fs::read_to_string(pid.with_file_name("daemon.pid")))
+        .ok()?;
     let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
     // Signal 0 through the kernel, not `/bin/kill`: liveness is read once per pass per home.
     crate::observe::read(
@@ -859,6 +865,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
     out.sort_by_key(|s| s.started);
     let mut seen = std::collections::HashSet::new();
     out.retain(|s| seen.insert(s.session_id.clone()));
+    runtime::apply(codex, &mut out);
     out
 }
 
@@ -955,7 +962,8 @@ pub(crate) fn thread_rows_observed(
     let held = daemon
         .filter(|_| ids.iter().any(|(_, record)| record.is_none()))
         .and_then(|pid| crate::fleet::usage(std::iter::once(pid)).remove(&pid));
-    ids.into_iter()
+    let mut rows: Vec<_> = ids
+        .into_iter()
         .filter(|(id, _)| !live.iter().any(|s| s.session_id == *id))
         .filter_map(|(id, record)| {
             let rollout = record
@@ -1015,7 +1023,9 @@ pub(crate) fn thread_rows_observed(
                 session_id: id,
             })
         })
-        .collect()
+        .collect();
+    runtime::apply(codex, &mut rows);
+    rows
 }
 
 /// Read rollout headers only from files modified since the earliest process start.
@@ -1486,6 +1496,19 @@ mod tests {
             Some("active"),
             "a shorter file is read anew"
         );
+    }
+
+    #[test]
+    fn a_managed_daemon_install_names_its_pid_file_daemon_pid() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("app-server-daemon")).unwrap();
+        assert_eq!(daemon_pid(d.path()), None);
+        fs::write(
+            d.path().join("app-server-daemon/daemon.pid"),
+            serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(daemon_pid(d.path()), Some(std::process::id()));
     }
 
     #[test]

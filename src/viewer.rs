@@ -212,6 +212,7 @@ pub struct Viewer {
     first_paint: Option<Duration>,
     status: Option<ExitStatus>,
     opencode: Option<crate::opencode::reporting::Reporter>,
+    pi: Option<crate::pi::reporting::Reporter>,
     remote: Option<Remote>,
 }
 
@@ -219,8 +220,41 @@ struct Remote {
     record: crate::terminal_host::Record,
     input: Vec<u8>,
     display: Option<vt100::Parser>,
-    report: Option<crate::opencode::reporting::Report>,
+    report: Option<NativeReport>,
     report_at: Instant,
+}
+
+#[derive(Clone)]
+pub(crate) enum NativeReport {
+    OpenCode(crate::opencode::reporting::Report),
+    Pi(crate::pi::reporting::Report),
+}
+
+impl NativeReport {
+    fn parse(harness: &str, value: serde_json::Value, pid: u32) -> Option<Self> {
+        let bytes = serde_json::to_vec(&value).ok()?;
+        match harness {
+            "opencode" => {
+                crate::opencode::reporting::Report::parse(&bytes, pid).map(Self::OpenCode)
+            }
+            "pi" => crate::pi::reporting::Report::parse(&bytes, pid).map(Self::Pi),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn apply(&self, row: &mut crate::fleet::Session) {
+        match self {
+            Self::OpenCode(report) => report.apply(row),
+            Self::Pi(report) => report.apply(row),
+        }
+    }
+
+    fn value(self) -> serde_json::Value {
+        match self {
+            Self::OpenCode(report) => report.0,
+            Self::Pi(report) => report.0,
+        }
+    }
 }
 
 fn nonblocking(fd: i32) -> io::Result<()> {
@@ -272,13 +306,14 @@ impl Viewer {
     }
 
     fn spawn_pty(
-        command: Command,
+        mut command: Command,
         rows: u16,
         cols: u16,
         normal: Option<&libc::termios>,
         colors: Colors,
         terminal: bool,
     ) -> io::Result<Viewer> {
+        let pi = crate::pi::reporting::Reporter::prepare(&mut command)?;
         let mut command = crate::harness::restore_stdin_prompt(command)?;
         let opencode = crate::opencode::reporting::Reporter::prepare(&mut command)?;
         let (mut master, mut slave) = (-1, -1);
@@ -346,6 +381,7 @@ impl Viewer {
             first_paint: None,
             status: None,
             opencode,
+            pi,
             remote: None,
         })
     }
@@ -357,18 +393,17 @@ impl Viewer {
             .unwrap_or_else(|| self.child.as_ref().unwrap().id())
     }
 
-    pub(crate) fn opencode_report(&self) -> Option<crate::opencode::reporting::Report> {
+    pub(crate) fn native_report(&self) -> Option<NativeReport> {
         if let Some(remote) = &self.remote {
             return (remote.report_at.elapsed() < Duration::from_secs(5))
-                .then(|| {
-                    remote
-                        .report
-                        .as_ref()
-                        .map(|r| crate::opencode::reporting::Report(r.0.clone()))
-                })
+                .then(|| remote.report.clone())
                 .flatten();
         }
-        self.opencode.as_ref()?.read(self.pid())
+        self.opencode
+            .as_ref()
+            .and_then(|r| r.read(self.pid()))
+            .map(NativeReport::OpenCode)
+            .or_else(|| self.pi.as_ref()?.read(self.pid()).map(NativeReport::Pi))
     }
 
     fn kill(&mut self) {
@@ -407,6 +442,7 @@ impl Viewer {
             first_paint: None,
             status: None,
             opencode: None,
+            pi: None,
             remote: Some(Remote {
                 record,
                 input: Vec::new(),
@@ -506,8 +542,9 @@ impl Viewer {
                     self.status = exit.map(ExitStatus::from_raw);
                     let remote = self.remote.as_mut().unwrap();
                     remote.report = report.and_then(|r| {
-                        crate::opencode::reporting::Report::parse(
-                            &serde_json::to_vec(&r).ok()?,
+                        NativeReport::parse(
+                            &remote.record.session.harness,
+                            r,
                             remote.record.session.pid?,
                         )
                     });
@@ -557,7 +594,7 @@ impl Viewer {
             scrolled,
             title: self.title().map(str::to_owned),
             return_to_list: self.take_return_to_list(),
-            report: self.opencode_report().map(|r| r.0),
+            report: self.native_report().map(NativeReport::value),
             stderr: self.errors.clone(),
             exit: self.status.map(ExitStatus::into_raw),
         };

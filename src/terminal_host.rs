@@ -161,12 +161,14 @@ pub(crate) fn records(state: &Path) -> Vec<Record> {
                 return None;
             }
             let mut bytes = Vec::new();
-            File::open(path)
-                .ok()?
-                .take(256 * 1024)
-                .read_to_end(&mut bytes)
-                .ok()?;
-            let record: Record = serde_json::from_slice(&bytes).ok()?;
+            let file = File::open(path).ok()?;
+            let fresh =
+                file.metadata().ok()?.modified().ok()?.elapsed().ok()? < Duration::from_secs(5);
+            file.take(256 * 1024).read_to_end(&mut bytes).ok()?;
+            let mut record: Record = serde_json::from_slice(&bytes).ok()?;
+            if !fresh && matches!(record.session.harness.as_str(), "pi" | "opencode") {
+                record.session.state = "-".into();
+            }
             if uuid::Uuid::parse_str(&record.id).is_err() {
                 return None;
             }
@@ -414,7 +416,6 @@ pub fn serve() -> io::Result<i32> {
         } else {
             None
         };
-        command = crate::harness::restore_stdin_prompt(command)?;
         let spawn = if launch.shell {
             Viewer::spawn_terminal
         } else {
@@ -529,6 +530,11 @@ fn host_loop(
                                 && session.pid == record.session.pid =>
                         {
                             record.session = *session;
+                            if let Some(report) = viewer.native_report() {
+                                report.apply(&mut record.session);
+                            } else if matches!(record.session.harness.as_str(), "pi" | "opencode") {
+                                record.session.state = "-".into();
+                            }
                             save(state, record)?;
                         }
                         _ => return Err(io::Error::other("invalid terminal request")),
@@ -554,16 +560,23 @@ fn host_loop(
             }
         }
         if !ending && !retired && last_report.elapsed() >= Duration::from_secs(1) {
-            if let Some(report) = viewer.opencode_report() {
+            if let Some(report) = viewer.native_report() {
                 let previous_id = record.session.session_id.clone();
                 report.apply(&mut record.session);
-                if record.session.session_id != previous_id && previous_id.starts_with("ses_") {
+                if record.session.session_id != previous_id
+                    && (previous_id.starts_with("ses_")
+                        || uuid::Uuid::parse_str(&previous_id).is_ok())
+                {
                     record.session.forked_from = None;
                 }
-                save(state, record)?;
-            } else if record.session.harness == "opencode" && record.session.state != "-" {
+                // A failed observation write must not end the native terminal.
+                // Readers withdraw expired state until publication recovers.
+                let _ = save(state, record);
+            } else if matches!(record.session.harness.as_str(), "pi" | "opencode")
+                && record.session.state != "-"
+            {
                 record.session.state = "-".into();
-                save(state, record)?;
+                let _ = save(state, record);
             }
             dirty = true;
             last_report = Instant::now();

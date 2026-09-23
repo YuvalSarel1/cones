@@ -93,6 +93,8 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
                 .current_dir(dir);
             if kind == HarnessKind::Opencode {
                 c.env(crate::opencode::reporting::ENABLE, "1");
+            } else if kind == HarnessKind::Pi {
+                c.env(crate::pi::reporting::ENABLE, "1");
             }
             Start::Foreground(c)
         }
@@ -249,6 +251,9 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
         command
     };
     spec.home.set_command_home(&mut command, &entry.key.home);
+    if spec.kind == HarnessKind::Pi {
+        command.env(crate::pi::reporting::ENABLE, "1");
+    }
     if let Some(launch) = &spec.launch {
         provider_env(
             &mut command,
@@ -268,7 +273,8 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
 /// so passing those on makes a session report a host it does not run in. A machine-wide
 /// preference is not identity and stays, and a value cones set on this command is this launch's
 /// own policy and always wins.
-const HOST_IDENTITY: [&str; 14] = [
+const HOST_IDENTITY: [&str; 15] = [
+    "CONES_PI_REPORT",
     "AI_AGENT",
     "CLAUDECODE",
     "CLAUDE_CODE_CHILD_SESSION",
@@ -595,6 +601,9 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
         }
     };
     spec.home.set_command_home(&mut command, &entry.key.home);
+    if spec.kind == HarnessKind::Pi {
+        command.env(crate::pi::reporting::ENABLE, "1");
+    }
     drop_host_identity(&mut command);
     if entry.archived && spec.commands.resume_handler != spec::Resume::SessionId {
         check_operation(spec, &spec.operations.unarchive, "unarchive")?;

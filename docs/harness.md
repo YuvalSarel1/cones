@@ -4,8 +4,8 @@
 
 cones discovers native sessions, reads reports and invokes supported native operations.
 Missing state, context and usage stay absent. It installs no global session hooks; owned
-OpenCode clients load a native TUI reporter. Four harnesses have report readers; six more
-have [experimental terminal adapters](#additional-terminal-harnesses).
+pi and OpenCode clients load native reporting extensions. Four harnesses have report readers;
+six more have [experimental terminal adapters](#additional-terminal-harnesses).
 
 ## Discovery
 
@@ -42,7 +42,7 @@ Before thread attribution, a process row uses `codex-<pid>`.
 | Fact | Source or rule |
 | --- | --- |
 | Thread id | Explicit resume id, then held writer lock, then unambiguous rollout match. |
-| Daemon ownership | `thread-writer-locks/<id>.lock` open in the live daemon PID from `app-server-daemon/app-server.pid`. Multiple clients share one thread row. |
+| Daemon ownership | `thread-writer-locks/<id>.lock` open in the live daemon PID from `app-server-daemon/app-server.pid`, or `daemon.pid` in Codex's managed daemon package. Multiple clients share one thread row. |
 | Liveness | Kernel open files, never lock-file existence or mtime. Versions before 0.154 lack writer locks. |
 | Directory | Process cwd; detached threads use database `threads.cwd`, then rollout `session_meta.cwd`. |
 | Rollout | Database `threads.rollout_path`, then a `sessions/` filename ending in `-<id>.jsonl`. Created on the first turn. |
@@ -62,7 +62,8 @@ A nonempty `PI_CODING_AGENT_SESSION_DIR` selects the complete session directory.
 `:` with `-`.
 
 With exactly one pi process in a cwd, select its most recently written file since process
-start and require the first-line cwd to match. Multiple candidates remain unattributed.
+start and require the first-line cwd to match. Multiple external candidates remain
+unattributed; owned clients report their own identity and [input](#native-input-signals).
 This accommodates `--continue` appending to an older session. Identity is the file's first-line
 `id`, otherwise `pi-<pid>`. Files appear after the first turn; process exit removes the row.
 
@@ -188,8 +189,8 @@ live session, the ledger precedes saved-output accounting.
 | --- | --- |
 | Claude interactive | Registry `busy`/`shell`: working; `waiting`: input; `idle`: idle. Other words are preserved. |
 | Claude background | Precedence below, following native listing behavior in 2.1.272. |
-| Codex | Rollout `task_started`: working; `task_complete`: done; `turn_aborted`: stopped. Approval waits remain working; no rollout means `-`. |
-| pi | User/tool-result: working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown/no turn: `-`. Native input waits are not consumed. |
+| Codex | Daemon threads: [native runtime state](#native-input-signals), including approvals and questions. Otherwise rollout `task_started`: working; `task_complete`: done; `turn_aborted`: stopped; no rollout means `-`. |
+| pi | User/tool-result: working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown/no turn: `-`. Owned clients report native idle/working and dialogs as [input](#native-input-signals). |
 | OpenCode | Owned reporter: busy/retry/idle and pending questions/permissions. External process rows: `-`; saved messages cannot establish live state. |
 
 Claude background uses the first matching rule:
@@ -203,8 +204,29 @@ Claude background uses the first matching rule:
    the row.
 5. Otherwise working.
 
-Quiet output does not override these reports. Codex and pi native input reporting is not
-integrated into these readers.
+Quiet output does not override these reports.
+
+### Native input signals
+
+Local Codex daemon threads are read with `thread/read` over the native home's
+`app-server-control/app-server-control.sock`. `waitingOnApproval` and `waitingOnUserInput`
+mean input; active, idle and system error map to working, idle and failed. Reads start no
+daemon, resume or subscribe to no thread and answer no request. A failed or unsupported read
+falls back to that refresh's rollout state without keeping an earlier wait. Standalone
+clients and custom server sockets have rollout reporting only.
+[Native protocol](https://developers.openai.com/codex/app-server/).
+
+Owned pi launches, forks and resumes add a private `--extension`, keeping native settings and
+other extensions. It reports `ui_prompt_start`/`ui_prompt_end`, native idle state and the
+session id and file; nested dialogs stay input until all close, and native identity keeps
+clients sharing a cwd apart. It registers no tools or input handlers. Reports refresh every
+second and expire after five; a failed write withdraws the state and leaves the client
+running. The detached host keeps reporting after the dashboard closes. Running clients must
+be reopened through cones to load it.
+[Event contract](https://github.com/YuvalSarel1/pi/blob/61716b03c944d3096a94d0e7ab7dd666b4a370ec/packages/coding-agent/src/core/extensions/types.ts#L745-L761).
+
+Verified with Codex 0.156.1 and pi 0.85.1+bedrock-images.61716b03c; older native APIs may lack
+these signals.
 
 ### Context window for Claude
 
