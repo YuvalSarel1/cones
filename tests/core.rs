@@ -657,6 +657,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             b.last.as_deref(),
             b.transcript_path.as_deref().and_then(|p| p.to_str()),
             b.cwd.to_str(),
+            b.dir().to_str(),
         ),
         (
             Some("bg"),
@@ -664,10 +665,12 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             Some("Inspecting job state files"),
             Some("/t/b.jsonl"),
             Some("/src/launch"),
+            Some("/src/b"),
         ),
         "a job's row sits in its launch directory and carries the job's name, as in `claude \
          agents`, even after the session entered a worktree and the registry cwd moved and \
-         while a claimed spare still holds its 8-hex id as the registry name"
+         while a claimed spare still holds its 8-hex id as the registry name; the folder it \
+         works in stays the registry cwd"
     );
     assert_eq!(
         (

@@ -340,7 +340,10 @@ impl Data {
         if let Some(d) = &mut diagnostics {
             d.phase("run_reports", reports_started);
         }
-        let seen: Vec<PathBuf> = sessions.iter().map(|s| s.cwd.clone()).collect();
+        let seen: Vec<PathBuf> = sessions
+            .iter()
+            .flat_map(|s| [s.cwd.clone()].into_iter().chain(s.moved_to.clone()))
+            .collect();
         // Pins live in `jobs.yaml` so the config editor holds them. A list the ledger's state
         // directory still carries is imported the first time cones reads a file without the key.
         let folders = match config::file_folders(jobs_path) {
@@ -755,8 +758,8 @@ impl Data {
                     set,
                     by_state,
                     sparks.get(&s.session_id).map(String::as_str),
-                    self.branches.get(&s.cwd).map(String::as_str),
-                    self.worktrees.contains(&s.cwd),
+                    self.branches.get(s.dir()).map(String::as_str),
+                    self.worktrees.contains(s.dir()),
                     s.forked_from
                         .as_deref()
                         .filter(|parent| {
@@ -2113,7 +2116,7 @@ fn session_cells(
                 if c == "branch" {
                     (branch.unwrap_or("-").into(), dim())
                 } else if c == "folder" {
-                    (folder_cell(&s.cwd, worktree), dim())
+                    (folder_cell(s.dir(), worktree), dim())
                 } else {
                     cell(c, s, by_state, spark)
                 }
@@ -8461,6 +8464,7 @@ fn history_session(entry: &history::Entry) -> Session {
         coordinator: false,
         forked_from: None,
         activity: Vec::new(),
+        moved_to: None,
     }
 }
 
@@ -8939,6 +8943,7 @@ pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str)
         coordinator: false,
         forked_from: None,
         activity: Vec::new(),
+        moved_to: None,
     }
 }
 
@@ -14173,6 +14178,7 @@ impl App {
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         };
         self.terminals.push(session.clone());
         self.data.sessions.push(session);
@@ -18547,6 +18553,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         app.filter = Input::new("209aa1a4");
@@ -18583,6 +18590,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         };
         data.sessions
             .push(session("aaaa-interactive", "interactive"));
@@ -18640,6 +18648,7 @@ states:
             coordinator,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         };
         data.sessions.push(session("aaaa-worker", "bg", false));
         data.sessions.push(session("bbbb-coordinator", "bg", true));
@@ -18711,6 +18720,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         app.filter = Input::new("codex-77");
@@ -18750,6 +18760,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         app.filter = Input::new("dddd-dae");
@@ -24332,6 +24343,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         }
     }
 
@@ -25400,6 +25412,7 @@ states:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         assert_eq!(key(&app).as_deref(), Some("dddd-daemon"));
@@ -27189,6 +27202,21 @@ states:
         ] {
             registry(d.path(), id, cwd.to_str().unwrap(), "idle", 1);
         }
+        // A background job launched in the repository that then entered a worktree.
+        let moved = repo.join(".claude/worktrees/moved");
+        git(
+            &repo,
+            &["worktree", "add", "-b", "moved", moved.to_str().unwrap()],
+        );
+        let moved_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+        registry_bg(d.path(), moved_id, moved.to_str().unwrap(), "idle", 1);
+        let job = d.path().join("jobs").join(&moved_id[..8]);
+        fs::create_dir_all(&job).unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({"state": "working", "sessionId": moved_id, "cwd": repo}).to_string(),
+        )
+        .unwrap();
         let mut app = app(d.path());
         app.data.columns = vec!["state".into(), "folder".into()];
         app.data.folders = vec![repo.clone(), nested.clone()];
@@ -27231,6 +27259,22 @@ states:
             let row = app.selected().unwrap();
             assert_eq!(row.cells[3].0.contains('⑂'), marked, "{}", row.text());
         }
+        app.select_new(moved_id);
+        assert_eq!(
+            app.selected().unwrap().cells[3].0,
+            format!("⑂ session {}", &moved_id[..8]),
+            "a background job keeps its launch heading and marks the worktree it entered"
+        );
+        app.by_state = true;
+        app.rebuild();
+        app.select_new(moved_id);
+        assert_eq!(
+            app.selected().unwrap().cells[4].0.trim(),
+            folder_cell(&moved, true),
+            "its folder cell names the worktree"
+        );
+        app.by_state = false;
+        app.rebuild();
 
         // The repository stays the heading even when all of its sessions are in worktrees.
         app.data
@@ -28141,6 +28185,7 @@ while True:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         app.step(-1);
@@ -28679,6 +28724,7 @@ while True:
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         });
         app.apply(data);
         app.settle();

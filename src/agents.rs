@@ -73,6 +73,7 @@ pub fn sessions(kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
                 coordinator: false,
                 forked_from: None,
                 activity: Vec::new(),
+                moved_to: None,
             })
         })
         .collect())

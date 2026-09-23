@@ -25,6 +25,9 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     pub cwd: PathBuf,
+    /// Where a background job works now, when EnterWorktree moved it out of its launch `cwd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<PathBuf>,
     /// Normalized harness state; see `state` and docs/harness.md.
     pub state: String,
     /// First reported timestamp; rows sort by it.
@@ -169,6 +172,11 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 }
 
 impl Session {
+    /// The folder the session works in now, which a background job's worktree moves away from `cwd`.
+    pub fn dir(&self) -> &Path {
+        self.moved_to.as_deref().unwrap_or(&self.cwd)
+    }
+
     /// Only Claude background sessions and Codex daemon threads are joinable.
     pub fn own_terminal(&self) -> bool {
         crate::harness::by_name(&self.harness).is_none_or(|spec| {
@@ -567,7 +575,14 @@ fn build(
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
         // Keep background jobs grouped by launch cwd when their registry cwd moves into a worktree.
-        cwd: job["cwd"].as_str().map(PathBuf::from).unwrap_or(cwd),
+        cwd: job["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or(cwd.clone()),
+        moved_to: job["cwd"]
+            .as_str()
+            .filter(|launch| Path::new(launch) != cwd)
+            .map(|_| cwd.clone()),
         state: state(job, v["status"].as_str().unwrap_or("-")),
         started: d.report.started,
         last_activity: d.report.last_activity,
@@ -2178,6 +2193,7 @@ mod tests {
             coordinator: false,
             forked_from: None,
             activity: Vec::new(),
+            moved_to: None,
         };
         assert!(rename(&session, "  ").is_err(), "a blank title is refused");
         rename(&session, " Ours ").unwrap();
