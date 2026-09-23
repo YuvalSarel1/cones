@@ -25714,6 +25714,8 @@ states:
         );
         assert_eq!(app.status, "back to the list", "and says so");
         assert!(!app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap());
+        // The editor opens on the tab row: the first enter steps into the fields.
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         let Mode::Config(form) = &app.mode else {
             panic!("the editor is open on a field");
@@ -25741,6 +25743,8 @@ states:
             app.key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        // The editor opens on the tab row: the first enter steps into the fields.
+        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('9'), KeyModifiers::NONE).unwrap();
         let typed = match &app.mode {
