@@ -282,15 +282,36 @@ fn settle(
     }
 }
 
-/// The id in `claude --bg`'s one line, `backgrounded · <short id> (idle)`.
+/// The id in `claude --bg`'s one line, `backgrounded · <short id> (idle)`. Claude colours the
+/// id even when stdout is a pipe, so escape sequences are dropped before reading it.
 pub fn background_id(status: &str) -> Option<String> {
-    status
+    plain(status)
         .split("backgrounded · ")
         .nth(1)?
         .split_whitespace()
         .next()
         .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
         .map(str::to_owned)
+}
+
+/// The text without its CSI escape sequences, such as colours.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.clone().next() == Some('[') {
+            chars.next();
+            // Parameters and intermediates run until the final byte, '@' through '~'.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn first_line(text: &str) -> Option<&str> {
@@ -328,6 +349,11 @@ mod tests {
         assert_eq!(
             background_id("warming up\nbackgrounded · 16c712a9 (idle)").as_deref(),
             Some("16c712a9")
+        );
+        assert_eq!(
+            background_id("backgrounded · \x1b[36m9ab92c71\x1b[39m\n").as_deref(),
+            Some("9ab92c71"),
+            "claude colours the id even into a pipe"
         );
         for other in [
             "",

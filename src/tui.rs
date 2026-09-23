@@ -8879,16 +8879,6 @@ impl Pending {
 // Expire placeholders if the launch never appears in the registry.
 const PENDING_TTL: Duration = Duration::from_secs(90);
 
-/// The id in `claude --bg`'s one line, `backgrounded · <short id> (idle)`.
-fn short_id(status: &str) -> Option<String> {
-    status
-        .split("backgrounded · ")
-        .nth(1)?
-        .split_whitespace()
-        .next()
-        .map(str::to_owned)
-}
-
 pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str) -> Session {
     Session {
         session_id: id.to_owned(),
@@ -10499,7 +10489,7 @@ impl App {
                             if let Some(p) =
                                 self.pending.iter_mut().find(|p| p.session.session_id == id)
                             {
-                                p.short = short_id(&message);
+                                p.short = crate::launch::background_id(&message);
                             }
                             // The new row is the report; only a failure needs words.
                             self.status.clear();
@@ -13874,7 +13864,7 @@ impl App {
                         "outcome": if result.is_ok() { "started" } else { "failed" },
                         "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
                         "preparation_ms": preparation_ms, "command_ms": command_ms,
-                        "native_id_prefix": result.as_ref().ok().and_then(|s| short_id(s)),
+                        "native_id_prefix": result.as_ref().ok().and_then(|s| crate::launch::background_id(s)),
                         "error": result.as_ref().err().map(|e| format!("{e:#}")),
                     }),
                 );
@@ -21680,7 +21670,9 @@ states:
         app.data.sessions.push(session.clone());
         app.pending.push(Pending {
             session,
-            short: short_id("started coordinator: backgrounded · aaaaaaaa (idle)"),
+            short: crate::launch::background_id(
+                "started coordinator: backgrounded · aaaaaaaa (idle)",
+            ),
             fork_home: None,
             at: Instant::now(),
         });
@@ -21758,7 +21750,8 @@ states:
             .find(|r| r.kind.key() == Some("starting:1"))
             .unwrap();
         assert!(row.text().contains("fix the tests") && row.working());
-        app.pending[0].short = short_id("started claude in ~: backgrounded · aaaaaaaa (idle)");
+        app.pending[0].short =
+            crate::launch::background_id("started claude in ~: backgrounded · aaaaaaaa (idle)");
         assert_eq!(app.pending[0].short.as_deref(), Some("aaaaaaaa"));
         app.refresh().unwrap();
         assert!(has(&app, "starting:1"));
