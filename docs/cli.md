@@ -72,28 +72,23 @@ cones launch --dir ~/src/app --harness codex "rebase onto main"
 cones launch --dir ~/src/app --harness claude --model opus --effort high
 ```
 
-`--dir` is required: an agent started in whatever folder your shell happens to sit in edits files you did not mean to touch. An explicit `--harness` selects that harness and errors if it is disabled. Without it, an enabled `defaults.harness` wins, otherwise the first enabled launchable harness is used. No enabled harness is an error.
+`--dir` is required. An explicit harness must be enabled. Otherwise cones uses enabled
+`defaults.harness`, then the first enabled launchable harness; none is an error. Dashboard
+`start.harness` and `_in_picker` settings do not affect CLI selection.
 
-`--model` and `--effort` are what the dashboard's `ctrl+o` sets, for one session. A harness with no such flag, such as `--effort` for Codex, is an error rather than a silent no-op. Unset, they and the provider and Bedrock settings come from `defaults`.
+`--model` and `--effort` override defaults for this session only; unsupported flags fail.
+Other unset settings use [configured defaults](jobs.md#composer-harnesses). Omitting the prompt
+opens the session waiting for input. `--print-command` prints folder, environment and command
+without launching or recording anything.
 
-This CLI selection is separate from the dashboard's `start.harness`. The `_in_picker` switches affect the dashboard cycle, not `cones launch`. With no prompt the session opens waiting for input.
+Claude launches into its daemon; OpenCode, pi and experimental launchers use persistent hosts.
+They print a discovered identifier on stdout, with its kind on stderr, and survive the launching
+shell. Codex stays in the current terminal and prints no id. See [detached identities and
+verification limits](harness.md#detached-launch) before using the returned id with other commands.
 
-A detached launch keeps running once the shell that started it exits and prints one identifier on stdout. The harness and identifier kind go to stderr, so `id=$(cones launch --dir ~/src/app "fix the flaky test")` captures the id. Codex stays in the launching terminal and prints no session identifier.
-
-| Harness | Where the session runs | Identifier printed |
-| --- | --- | --- |
-| Claude | Its own background daemon. | Its native session id, in full rather than the eight characters the harness prints. |
-| OpenCode | A cones-owned terminal host. | The host's stored session id, updated by its reporter when OpenCode identifies the conversation. |
-| pi, [experimental launchers](harness.md#additional-terminal-harnesses) | A cones-owned terminal host, the one the dashboard uses. | The id the roster carries: a native session id, `<harness>-<pid>`, or the host's own id when discovery supplies none. See [detached launch](harness.md#detached-launch) for how long each stays valid. |
-| Codex | This terminal, as before. | None. Codex reports no thread at launch, so it has no detached launch. |
-
-Returning an identifier means `cones ls` carried it before the command exited. Other commands retain their own requirements: `show` needs a native conversation id and a readable transcript, `comms send` needs a roster row with native message delivery, and `stop` needs a Claude background session or a matching owned-terminal record. A process id is not a transcript id, and a returned id does not grant a harness operations it lacks.
-
-Two identical prompts launched into one folder at the same instant get two identifiers: they are told apart by Claude's returned background id, or by the pid of the client the host just spawned, never by prompt, folder or start time. A launch that starts a session cones cannot then name exits non-zero and prints no identifier, naming what the harness printed instead and where to look. It never guesses, and it never stops the session it started.
-
-Every detached launch is recorded in `STATE_DIR/launches.jsonl` before anything starts, as `launch.submitted`, and again as `launch.identified` or `launch.unnamed`. A launcher killed between the two leaves the first record, so the prompt and folder survive it and a retry is a duplicate you can see. The foreground Codex CLI path writes neither record.
-
-`--print-command` prints the folder, environment and command instead of starting anything, and records nothing.
+An unnamed launch exits nonzero without printing an id or stopping the started session.
+Concurrent identical prompts receive separate owned identities. The [launch ledger](#diagnostics)
+retains submissions and identification outcomes, including with debug off.
 
 ### One-off tasks
 
@@ -102,7 +97,10 @@ cones run --prompt "fix the flaky test"
 cones run nightly-triage --prompt "summarize the failures"
 ```
 
-The task runs in the current directory under the named job's policy, otherwise the first job's. With no readable, valid jobs file or no template job, it uses the [built-in policy defaults](jobs.md#job-fields-and-defaults). An explicit unknown job name is an error. Each task gets a fresh `adhoc-<8 hex>` name, so overlap is checked per task.
+The task uses the current directory and the named job's policy, otherwise the first job's.
+Without a valid readable file or template job, it uses [built-in defaults](jobs.md#job-fields-and-defaults).
+An unknown explicit job is an error. Each task gets an `adhoc-<8 hex>` name and independent
+overlap admission.
 
 ### Stopping a session
 
@@ -110,68 +108,53 @@ The task runs in the current directory under the named job's policy, otherwise t
 cones stop 5bf8392e-17cb-405d-a400-22dfbda13472
 ```
 
-`ID` is the session id `cones ls --json` prints. Stopping is not deleting: the job record and the
-transcript stay, so the conversation is still there to attach to or resume. Removal remains the
-harness's own action.
+Use the id from `cones ls --json`. Two targets are supported:
 
-Two targets are supported, and the exit status reports the supported operation rather than the
-row disappearing:
-
-| Target | What runs |
+| Target | Operation |
 | --- | --- |
-| Claude background session | `claude stop <short id>`, against the native home the row was discovered in. Claude's own answer is the result, and it is idempotent: stopping a stopped session succeeds again. |
-| Session in a cones-owned persistent terminal | The terminal host's stop, which acknowledges only after the native client it owns has exited. |
+| Claude background | Native `claude stop <short id>` in its recorded home. Repeated stop succeeds; job record and transcript remain. |
+| Owned persistent terminal | Host stop, acknowledged after the client exits. Saved host ids and current discovered ids resolve by harness and live client PID. |
 
-For a hosted terminal, both its saved session id and the current process or native
-conversation id printed by discovery can identify it. The CLI and dashboard match
-the discovered row to its host using the same harness and live client pid.
-The CLI refuses ambiguous matches. The dashboard's equivalent is `ctrl+x` twice.
-
-Everything else is an error. A session in a terminal cones does not own can only be ended by that
-terminal. A harness with no native session stop says so by name instead of substituting something
-else: cones will not delete a job record, close an attach client or signal the daemon that owns
-every other session on the machine. Codex 0.155 has no per-thread stop — `archive` and `delete`
-are history operations and `app-server daemon stop` ends every thread — so Codex threads are not
-stoppable from cones. An unknown id is an error, not a silent success.
+Ambiguous or unknown ids, unrelated external terminals and unsupported harness operations fail.
+Codex has no supported per-thread stop; stopping its daemon would affect every thread.
+The dashboard has separate [stop/removal controls](harness.md#native-actions).
 
 ## Coordinator
 
-The bundled [start-coordinator skill](../assets/coordinator/skills/start-coordinator/SKILL.md) resolves overlapping work, shares relevant findings and integrates completed changes in a folder. Task scope stays with the owner and each worker.
+The optional [coordinator skill](../assets/coordinator/skills/start-coordinator/SKILL.md) handles
+overlaps, relevant findings and integration. Task scope stays with the owner and workers.
 
 ### Launch
 
 ```sh
-cones coordinator start
 cones coordinator --dir ~/src/app start
 ```
 
-`ctrl+d` in the dashboard does the same for the selected row's folder.
+The folder defaults to cwd; dashboard Ctrl+D uses the selection's folder. An existing live
+coordinator is refused. Otherwise cones refreshes its embedded plugin in
+`STATE_DIR/coordinator/plugin`, removes obsolete plugin files and starts background Claude
+with `/cones:start-coordinator`. It installs nothing in the user's plugin directory.
 
-The default folder is the current directory. A folder another live coordinator holds is refused with an error naming its pid and session, and nothing is started; otherwise cones writes its embedded plugin to `STATE_DIR/coordinator/plugin` and launches `claude --bg --plugin-dir <plugin> /cones:start-coordinator` there. Nothing is installed in the user's plugin directory. The plugin is rewritten on every start, and files an older build shipped are removed, so an upgraded coordinator cannot follow instructions this build no longer has.
-
-The coordinator appears as a native session; [the dashboard](dashboard.md#sessions-and-runs) marks it. To end its coordination role, tell it `stop coordinator`, which releases its claim; its background session remains until separately stopped. Coordination rules belong to the skill.
+Tell the coordinator `stop coordinator` to release its role. Its native session remains until
+separately stopped.
 
 ### Commands
 
-The skill's plumbing is a public subcommand group. `--dir` defaults to the current directory and covers the worktrees under it. None of these call a model.
-
 ```sh
-cones coordinator --dir ~/src/app start
 cones coordinator --dir ~/src/app claim [--release]
 cones coordinator --dir ~/src/app tick
 ```
 
-`claim` records the session running it as the folder's coordinator, identified by walking the process chain to the first pid on the folder's roster, so the role does not depend on which harness holds it. A folder another live coordinator holds is refused, and the check and the record happen under one lock, so two agents claiming a free folder at the same moment produce one holder and one refusal. Mail that predates the claim is counted as handled rather than replayed, and mail a previous coordinator read without acknowledging is put back in front of the watcher. `--release` hands the folder back and is refused for somebody else's claim.
-
-`tick` prints HEAD, the working tree, the roster with each worker's context use and cost, and pending mail, in one read.
-
-`coordinator send`, `mail` and `wait` are still accepted: they are the same commands as [`cones comms`](#comms) over the same state, kept because a session started before the rename has the older skill loaded.
-
-Its roster is the `cones ls --dir <folder> --json` read, so who counts as a worker is decided here: unclaimed spares, Codex thread attribution, viewer and daemon processes and each harness's reported state. The skill does not read the native homes itself.
+`claim` identifies the caller through its process chain and folder roster. Claiming another
+live holder's folder or releasing somebody else's claim fails. `tick` prints HEAD, tree status,
+roster context/cost and pending mail. Neither command calls a model. Legacy `coordinator send`,
+`mail` and `wait` are aliases for `comms`.
 
 ## Comms
 
-Writing to the agents working in a folder, reading their replies, and waiting for one. An agent that dispatched its own workers uses these directly; it does not need to start a coordinator to get them. None of them calls a model.
+These commands also serve dispatchers without a coordinator. `--dir` defaults to cwd and
+covers descendants under the same [folder filtering](#reading-runs-and-sessions) as `ls`.
+Commands make no model calls, though delivery can cause a recipient's native turn.
 
 ```sh
 cones comms --dir ~/src/app send SESSION_ID "text" [--greet]
@@ -179,79 +162,97 @@ cones comms --dir ~/src/app mail [--ack N]
 cones comms --dir ~/src/app wait [--id SESSION_ID]... [--timeout SECONDS]
 ```
 
-`send` delivers one note through the recipient's own harness [message operation](harness.md#message-delivery); a harness without one is refused. A recipient outside the folder's roster is refused. `--greet` is the once-per-session introduction and repeating it is a no-op. The note names its sender: the folder's claim holder signs as the coordinator, any other identified session signs as that session, and an agent cones cannot place on the roster says only that it is not the owner. Either way a note is peer input and carries no authority the owner did not give the sender.
+| Command | Behavior |
+| --- | --- |
+| `send` | Deliver through the roster recipient's native [message operation](harness.md#message-delivery). Missing operations fail; `--greet` sends at most once per session. Notes identify their sender. |
+| `mail` | Read pending replies. Only `--ack N` marks them handled. |
+| `wait` | Block for new roster sessions or mail. With repeated `--id`, watch named workers for native input, failure or departure, plus mail. Unknown worker ids fail. |
 
-`mail` prints replies nobody has acted on and consumes nothing, so a restarted reader still sees them. Only `--ack N` moves the handled position.
+Wait events are announced once per condition. A worker event prompts inspection; its result
+report establishes task completion. Timeout only ends the wait. Exit 2 means timeout, exit 3
+means a competing watcher and permits retry; other refusals exit 1.
 
-`wait` blocks without a model turn until something is worth a turn, and exits 2 printing `timeout` when `--timeout` passes. It exits 3 when another watch is already armed on the folder, which is the one refusal worth retrying: an agent that re-arms the instant its own wait returns can race its predecessor out of the folder. Every other refusal exits 1, including a folder a different live agent holds, which does not clear by waiting. With no `--id`, it returns for a roster session it has not shown before or a line appended to the folder's inbox; departures, state changes and tree edits are read from `tick`. See [the wake loop](architecture.md#the-wake-loop).
-
-Repeated `--id` narrows the watch to those workers, which is what an agent that launched a known set wants. Arrivals stop counting, and the wake reasons become a native input request, a native failure and a worker leaving the roster, each reported once and again only after the worker has been out of that condition. None of them is a completed task: they are reasons to look at a worker, and what the assignment came to is the worker's own report. Mail still wakes a narrowed watch, because a reply is how a worker reports. An id that has never been on the roster is refused; one this watch has seen before may leave, which is the disappearance it reports.
-
-`--timeout` is the caller's own recovery boundary. It does not limit, interrupt or stop a worker, and cones infers nothing from a quiet transcript: a worker waiting for input is waiting, not stuck.
-
-A folder has one consumer. `mail` and `wait` are refused while a different live agent holds the folder's claim, because acknowledgement is a single cursor and the watcher keeps a single position, so a second reader either acts on a reply the first one owns or steps the cursor past one it never saw. A second `wait` armed on the same folder is refused for the same reason. `send` is not restricted: anyone may write into a folder. Cooperate through the agent that holds the folder, or use a separate task folder.
+One live claim holder consumes a folder's inbox and only one watcher may be armed. Other
+agents can send into it. Use that holder or a separate task folder instead of competing for
+the inbox. [The wake loop](architecture.md#the-wake-loop) explains baseline and replacement behavior.
 
 ### State
 
-One directory per folder, `STATE_DIR/coordinator/folders/<sha256 of absolute folder>`, holding `status.json` (the claim), `inbox.jsonl`, `inbox.ack`, `wait.json`, `greeted.json`, `watcher.json` (the armed watch's lease, removed when it returns) and `folder.lock`. It is under the state directory rather than a harness home because any harness can hold the role, and per folder rather than per session because a reply must outlive the session that asked for it.
-
-Codex delivery requires a running local app-server daemon with `queue --thread`. Installation, cleanup and publishing are project-specific assignments, not generic coordinator duties.
+`STATE_DIR/coordinator/folders/<sha256 of absolute folder>` holds `status.json`, `inbox.jsonl`,
+`inbox.ack`, `wait.json`, `greeted.json`, `watcher.json` and `folder.lock`. State survives the
+requesting session. Codex delivery requires the recipient home's daemon with `queue --thread`.
 
 ## Dispatching your own workers
 
-The bundled [dispatch skill](../assets/coordinator/skills/dispatch/SKILL.md) is for the agent that already holds the owner's task and wants parallel sessions on it: launch workers in their own worktrees, read their results, verify the combined tree and stop them. It divides nothing for you. The decomposition, the dependency order and the report back to the owner stay with the agent.
-
 ```sh
-cones skill            # the bundled skill names, one per line
+cones skill
 cones skill dispatch
 ```
 
-`cones skill` prints an embedded `SKILL.md` on stdout and calls no model. That is the supported way for a session that is already running to get these instructions, in any harness, because nothing loads a skill into a live session: Claude Code reads its skills when it starts, so rewriting `STATE_DIR/coordinator/plugin` does not reach an open session, and no other harness has a plugin command of Claude's kind. `cones coordinator start` loads that plugin for the background coordinator it starts and for nothing else. Neither skill ships helpers, so reading the prose is the same as loading it.
+Without a name, `skill` lists bundled skills; with one, it prints the embedded `SKILL.md`.
+A running session can read these instructions without restarting. Refreshing a plugin does
+not load it into existing sessions; `coordinator start` loads it only into the session it starts.
+The skills contain prose and no helpers.
 
-A dispatcher works in the folder it launched into. If no live coordinator holds that folder, the dispatcher may `claim` it and use the same inbox and watcher; one consumer per inbox, so whoever acknowledges mail is the one reading it. If a coordinator already holds the folder, `claim` refuses, and the dispatcher either goes through that coordinator or dispatches its task in a separate folder. Holding a task grants no authority over sessions it did not launch.
+The [dispatch skill](../assets/coordinator/skills/dispatch/SKILL.md) covers launching owned
+workers, collecting results, checking integration and stopping them. Decomposition remains
+with the dispatcher. It may claim an unowned task folder; an existing coordinator requires
+cooperation or a separate folder. Dispatch grants no authority over unrelated sessions.
 
 ## Diagnostics
 
-`--debug` writes JSONL records to `STATE_DIR/tui-debug.log`. Each record has `v`, a UTC `timestamp`, `pid`, `dashboard_id`, `level`, `event` and `data`. The dashboard ID separates simultaneous dashboards and restarts. Related operations carry an `operation_id`; row events include the row kind, native identity, harness and discovery source when known.
+`--debug` writes `STATE_DIR/tui-debug.log` as JSONL. Records carry schema `v`, UTC `timestamp`,
+`pid`, `dashboard_id`, `level`, `event` and `data`. Related events share `operation_id`;
+row events include native identity and discovery source when known.
 
 | Events | Contents |
 | --- | --- |
-| `dashboard.started`, `dashboard.stopped` | Executable path, version and SHA-256 fingerprint; terminal state, configuration path and exit reason. |
-| `row.*`, `view.changed` | Added, removed and changed rows, native identity replacement, selection, focus and status changes. Sources distinguish registry rows, process rows, saved launches, daemon locks, history and the ledger. |
-| `input.key`, `input.paste`, `terminal.*` | Navigation and shortcut keys with modifiers and their input route; paste size and whether it was empty; terminal size and colors. Ordinary typed characters and mouse movement require trace. |
-| `viewer.*` | Preparation, spawn, first text, focus, leave, close, exit and refusal reasons, with row identity and viewer pid. First-text timing starts at spawn; operation timing also covers preparation. A prespawn hit records the viewer's age separately. |
-| `launch.*`, `action.*` | Requests and outcomes for launches, stops, deletes and forgets, including native errors and elapsed time. |
-| `refresh.*`, `load.failed`, `discovery.failed`, `configuration.*` | Read outcomes, discarded snapshots, retained stale rows and recovery. Configuration errors are recorded when they change. |
-| `history.*`, `transcript.*` | Request and worker durations, indexing and hydration timings, file/read counts, bytes read, cache hits, errors and discarded results. A cached transcript reports zero bytes read for that request. |
-| `timing`, `timing.summary` | Slow individual operations and periodic counts, mean and maximum durations per phase. Normal samples are summarized every 30 seconds and on exit. Drawing, input-to-draw and viewer pumping are slow at 16 ms; other measured phases at 250 ms. |
+| `dashboard.started`, `dashboard.stopped` | Build identity, configuration, terminal state and exit reason. |
+| `row.*`, `view.changed` | Row identity, selection, focus and status changes. |
+| `input.*`, `terminal.*` | Shortcut routes, paste sizes and terminal dimensions. |
+| `viewer.*` | Preparation, spawn, first output, focus, closure and failures with PID/timing. |
+| `launch.*`, `action.*` | Launch/stop/removal requests and outcomes. |
+| `refresh.*`, `load.failed`, `discovery.failed`, `configuration.*` | Read errors, stale snapshots and recovery. |
+| `history.*`, `transcript.*` | Worker duration, reads, bytes, caches and discarded results. |
+| `timing`, `timing.summary` | Slow operations and counts/mean/max every 30 seconds and on exit. Thresholds: 16 ms for drawing/input/pumping, 250 ms otherwise. |
 
-`--trace` includes every timing sample, ordinary input text, mouse events and viewer commands. It implies `--debug`; it does not change harness execution or permissions. Both flags affect dashboard diagnostics only.
+`--trace` implies debug and adds every timing sample, ordinary input text, mouse events and
+viewer commands. Both flags affect dashboard diagnostics only.
 
-The debug file is capped at 10 MiB. When an append would exceed that bound, cones keeps roughly the newest 5 MiB of complete lines. A single oversized record retains its identity and a marked preview instead of invalid JSON. Writers open the file for each append; a file lock coordinates compaction across dashboards.
-
-Every prompt submitted to start a harness session from the dashboard or a detached [`cones launch`](#starting-a-session) is also recorded once in `STATE_DIR/launches.jsonl`, including with debug off, as `launch.submitted`. Its `data` contains `operation_id`, `harness`, `cwd` and the submitted `prompt`, so a launch that fails before creating a native session can still be recovered. A detached CLI launch has no `dashboard_id` and adds a second record, `launch.identified` with the resolved `session_id` or `launch.unnamed` with the `error`. The foreground Codex CLI path writes no launch recovery record.
-
-Reviving a conversation from history records `resume.submitted` in the same file. For that event, `data.operation_id` contains the source session id and `data.prompt` contains its saved title, or an empty string; the title is not sent as a new instruction. The record describes the resume request, not proof that it succeeded. This file uses the same 10 MiB bound. Debug launch events reference the operation ID without repeating the prompt.
-
-Older text records can remain in the retained log tail. For example, this prints failures from the structured records and skips older lines:
+The log caps at 10 MiB and compacts to roughly the newest 5 MiB of complete lines. Oversized
+records retain identity and a marked preview. File locking coordinates concurrent writers.
+To read errors while skipping older text records:
 
 ```sh
 jq -R 'fromjson? | select(.level == "error")' ~/.cones/tui-debug.log
 ```
 
+`STATE_DIR/launches.jsonl` uses the same bound and records these requests even with debug off:
+
+| Event | Data |
+| --- | --- |
+| `launch.submitted` | Dashboard/detached-CLI `operation_id`, harness, cwd and prompt, before launch. |
+| `launch.identified` / `launch.unnamed` | Detached CLI resolved `session_id` or error; no `dashboard_id`. |
+| `resume.submitted` | History resume request: source id in `data.operation_id`, saved title in `data.prompt`. The title is not sent as an instruction. |
+
+Submissions do not prove success. Foreground Codex CLI launches write no recovery record.
+
 ## Internal commands
 
-The dashboard and runner start these subprocesses. They are hidden from `--help` and may change with their callers.
+These implementation commands are hidden from help and may change with their callers.
 
 | Command | Purpose |
 | --- | --- |
-| `__logs ID [--follow] [--raw]` | Read captured output. The current session renderer does not handle pi message entries. |
-| `__attach ID [--print-command]` | Open a background session or resume a finished run. |
-| `__install [--dry-run]` | Compile and install schedules. Dry run prints plist XML, including imported credentials; stderr warns when a job imports values. |
-| `__list` | Render dashboard rows for a subprocess caller. |
+| `__logs ID [--follow] [--raw]` | Captured output; this renderer does not handle pi message entries. |
+| `__attach ID [--print-command]` | Attach or resume a finished run. |
+| `__install [--dry-run]` | Install schedules; dry run prints plist XML including imported credentials. |
+| `__list` | Render rows for subprocess callers. |
 | `__worker --run-id ID` | Run the supervised worker. |
-| `__terminal-host` | Own one interactive PTY independently of the dashboard. Internal framed protocol on a private local socket; arguments and environment arrive through an anonymous pipe. |
+| `__terminal-host` | Own an interactive PTY through a private local socket. Arguments/environment arrive through an anonymous pipe. |
 
-`STATE_DIR/terminals/` contains owned-terminal identities, reported row metadata and host locks. Native reports remain authoritative; the host supplies OpenCode's observer reports even while detached. `attention.json` holds completion fingerprints and shared read markers, protected by `attention.lock`. Raw terminal screens and launch environments are not stored in these files. Native conversations and the existing launch recovery ledger retain their usual storage.
+`STATE_DIR/terminals/` stores owned identities, row metadata and host locks, including detached
+OpenCode reports. `attention.json` and `attention.lock` hold shared completion/read markers.
+Neither stores raw terminal screens or launch environments.
 
-Session JSON includes `cost_info` when cost was reported or estimation was attempted. It identifies the source and coverage of `cost_usd`, including pricing snapshot metadata for calculated estimates. See [cost estimates](harness.md#cost-estimates).
+Session JSON includes [cost_info](harness.md#cost-estimates) for reported or estimated cost,
+with its source, coverage and pricing snapshot metadata.

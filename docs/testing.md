@@ -108,8 +108,11 @@ the interval a churning dashboard wedged this machine over, and the wrapper's
 five-minute cap extends with the duration asked for.
 
 Run stress for changes to worker lifetimes, output pumping, caches or concurrency,
-and native checks for changes to harness integration. The OpenCode script uses
-a loopback provider and requires tmux. Its results complement fixture tests.
+and native checks for changes to harness integration. The OpenCode script requires
+tmux and uses isolated homes with a loopback provider, without inherited credentials
+or external model calls. It covers launch, native identity and reported columns,
+empty/drafted input and menus, viewer reuse, stop, preview and resume. Screens and
+diagnostics stay in its printed temporary directory. Its results complement fixture tests.
 Investigate a failed budget before adjusting it. Correctness tests synchronize
 with explicit readiness signals; performance budgets belong in stress checks.
 
@@ -133,6 +136,18 @@ The rename check uses the installed Claude and Codex CLIs with disposable homes
 and a loopback provider. It exercises Ctrl+N through the dashboard handler for
 manual names and empty submissions, accepts Codex's generated suggestion, and
 checks the persisted native names for the exact discovered session IDs.
+
+## Harness acceptance
+
+Use disposable native homes and loopback providers. Follow a fresh dashboard launch through
+identity, every promised column, empty and drafted input, menus, stop, history and resume.
+Check reporting loss, concurrent clients and custom configuration, including the configured
+AWS profile/region. Assert the actual dashboard data path and reject missing promised values.
+
+Record the tested CLI version and distinguish support for owned viewers, external clients,
+CLI listings and supervised jobs. State unsupported and unverified cases explicitly.
+The default gate does not run the native scripts above; run the relevant ones for integration
+changes. Validate the exact delivered diff, including its tests.
 
 ## Maintaining coverage
 

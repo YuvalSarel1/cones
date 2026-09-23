@@ -2,326 +2,361 @@
 
 [README](../README.md) · [Configuration and runs](jobs.md) · [Harness support](harness.md) · [Commands](cli.md)
 
-`cones` shows sessions and recent runs, including sessions it did not start. No jobs file is needed. This guide follows the screen: navigation, menu, session list, viewer and composer. The [configuration reference](jobs.md) owns field names, defaults and accepted values.
+`cones` shows native sessions and recent runs, including sessions started elsewhere. No jobs
+file is needed. This guide covers controls; [configuration](jobs.md) owns field names,
+defaults and accepted values.
 
 ## Navigation
 
-The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a read failed: the previous counts and rows stay visible, with the reason in the result line, until a read succeeds. Background reads start one second after the previous read completes. Manual actions discard obsolete reads, so an older snapshot cannot undo a stop or removal.
+The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a
+read failed: previous rows remain visible with the error until a refresh succeeds.
 
-A separate `●` marks a newly observed completion you have not reviewed. The summary counts unread completions without changing native state. Its live viewer painted in the pane clears the marker, whether the cursor rested on the row long enough to peek it or you entered it, and so does focusing its loaded output preview. A selected row with nothing painted yet stays unread. Input requests remain until the harness reports that they are resolved.
+`●` marks an unread completion. Viewing its painted live pane or focusing its loaded output
+preview clears it. Merely selecting a row before its content loads does not. Input requests
+remain until the harness reports resolution. Read markers are shared across dashboards and
+survive restart; existing completions form the initial baseline. Turns that begin and end
+between reads with identical final replies cannot be distinguished.
 
-Press `ctrl+f` and type `:attention` for input requests and unread completions, or `:unread` for completions alone. Add a space and text to narrow either filter. Existing completed sessions form the first baseline instead of appearing as an unread backlog. Read markers are shared by dashboards using the same state directory and survive restart. Cones observes native state transitions and changed final replies; it cannot count turns that begin and end between reads with an identical final reply.
-
-Desktop notifications are optional, off by default. Set `start.notify: true` in Config's `cones` / `start` subsection. Newly reported input requests and completions can notify; the focused session stays quiet. This setting is separate from scheduled jobs' failure notifications.
+Use `ctrl+f` with `:attention` for input requests and unread completions, or `:unread` for
+completions alone. Append text to narrow the results. Optional desktop notifications use
+`start.notify`, default off; the focused session stays quiet. Job failure notifications have
+a separate setting.
 
 | Key | Action |
 | --- | --- |
 | `↑ ↓` | Select rows; up past the first table reaches the menu. |
-| `enter` | With an empty composer, act on the selection: open a session or finished run, follow a running run, start a job, or open a menu screen. With text, submit the instruction. |
-| `shift+enter` | Open the selection over the whole frame once; returning restores the prior layout. With text, insert a line break. Terminals reporting alt+enter use the same action. |
-| `tab` | Complete the directory path being typed in the composer, the one under the cursor when the instruction holds several. With nothing to complete, enter the pane from the list. Return when an agent's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells and forms keep Tab for their own input. |
-| `→` | With an empty composer, go to the agent: into the pane when it is open, over the whole frame when it is closed. On the menu row it picks a button. |
-| `ctrl+z` | Return from a viewer or menu screen; the viewer keeps running. |
-| `ctrl+\` | Toggle the pane from the list; switch split/full frame from a focused viewer or menu screen. Also recognized as ctrl+4. |
-| `esc` | Back out one step: armed action, typed instruction, jobs screen, dashboard. Forms cancel an edit or close. Inside a native viewer it goes to the client. |
-| `ctrl+c twice` | Quit within a 1.5-second confirmation window, from the list or an agent viewer. In a terminal, Ctrl+C interrupts commands. |
-| `ctrl+o` | Open the [launch settings](#launch-settings) of the harness the composer names. |
-| `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected row's folder. Its row appears and is selected at once, marked as the coordinator before the session reports itself. A folder that already has one is refused, naming the session that holds it. |
-| `ctrl+g` | Open help. |
+| `enter` | Open the selection with an empty composer; submit an instruction with text. |
+| `shift+enter` | Open the selection fullscreen once; insert a line break with text. Alt+Enter is also accepted. |
+| `tab` | Complete a directory path in the composer; otherwise enter the pane. Native viewer behavior is below. |
+| `→` | With an empty composer, enter the pane or open the session fullscreen if the pane is off. |
+| `ctrl+z` | Return from a viewer or screen to the list. |
+| `ctrl+\` | Toggle the pane; in a focused screen, switch split/fullscreen. Also `ctrl+4`. |
+| `esc` | Cancel the current action or draft, then back out. Native viewers receive Escape. |
+| `ctrl+c twice` | Quit within 1.5 seconds from the list or an agent viewer. Shell viewers keep Ctrl+C for interrupts. |
+| `ctrl+o` | Open the selected harness's [launch settings](#launch-settings). |
+| `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected folder; refuse an existing live coordinator. |
+| `ctrl+g` | Open Help. |
 
-Clicking a list row selects it and takes focus. `enter`, `tab` or a pane click gives the selected viewer focus. Split viewers retain their dimensions across focus changes. A full-frame viewer has a bottom strip with its title, fleet counts, other input requests and return keys.
-
-Quitting cones detaches from its hosted terminals: shells, pi, OpenCode, interactive Claude forks and experimental launchers started here. Reopen cones with the same state directory and press Enter on the row to reconnect to the same process, including its native editor draft. `ctrl+x` twice explicitly stops that terminal. Claude background sessions and Codex daemon threads retain their native ownership; their attach clients are not retained by the new host, and their draft behavior remains native.
-
-Each owned terminal has a detached host and permits one attached dashboard at a time. A second dashboard reports that it is already open; it does not steal input. Closing the first dashboard releases the connection. Processes survive dashboard crashes, but not a host crash or machine restart. Native conversation history can still be resumed afterward; arbitrary shell processes are not automatically restarted. Cones never adopts or stops unrelated external terminals on exit.
-
-The footer has two labeled lines: actions for the current selection or draft,
-then navigation and `ctrl+g help`. Session actions appear while browsing;
-launch settings and harness selection appear while drafting new work. Narrow
-panes drop secondary hints. The composer starts a new agent in the selected folder.
+Click a row to select it; click its pane or press Enter/Tab to focus the viewer. The footer
+shows actions for the current selection or draft, followed by navigation. Fullscreen viewers
+have a bottom strip with the session title, fleet counts, input requests and return keys.
 
 ## Menu
 
-The menu has `jobs`, `config` and `help`. Once there, use `← →` or click to choose a button. It opens in the pane when enabled, otherwise over the full frame, at any terminal size. Column pickers open from Config.
-
-Menu and section buttons shift horizontally to keep the selected button visible in narrow panes. Clicks follow the visible buttons; gaps do not select anything. An oversized selected label is clipped to the available space.
+The menu has `jobs`, `config` and `help`. Choose with Left/Right or a click. Screens use the
+pane when enabled, otherwise the full frame. Menu and tab rows scroll to keep their selection
+visible in narrow layouts. Column pickers open from Config.
 
 ### Jobs
 
-The jobs screen lists jobs in file order, then `new job`. Its `job_columns` picker controls status, schedule, next run, model, last run and folder, with harness names optional. Enabled and harness icons and the job name always show. Next run follows the enabled job's configured calendar intervals. `enter` starts a job; `ctrl+e` edits it with an empty composer; confirmed removal stops its running run or deletes the idle job.
+Jobs appear in file order, followed by `new job`. Enter runs the selected job; `ctrl+e` edits
+it with an empty composer. Removal stops a live run or deletes an idle job. The optional next
+run column follows the configured schedule; it does not confirm that launchd loaded it.
 
-Open `new job`, or press `enter` on the menu's `jobs` button with an instruction typed. The wizard accepts answers in any order: `↑ ↓` select rows, `enter` accepts and advances, `← →` pick schedules, backspace on an empty answer goes back, and `esc` cancels. Untouched answers use the displayed defaults.
+Open `new job`, or submit a drafted instruction on the Jobs menu button. The wizard asks:
 
 | Question | Answer |
 | --- | --- |
 | `what` | Task, seeded from the composer. |
-| `where` | Directory, initially the selected row's. Tab completes paths. Resolution follows [`cwd`](jobs.md#job-fields-and-defaults). |
+| `where` | Directory, initially the selection's. Tab completes paths. |
 | `when` | `once`, `hourly`, `daily`, `weekdays`, `weekly` or `cron`. |
-| `at` | Defaults to `09:00` for daily/weekdays, `mon 09:00` for weekly, or a five-field cron expression. Hourly uses `0 * * * *` and skips this row. |
+| `at` | `09:00` for daily/weekdays, `mon 09:00` for weekly, or a five-field cron. Hourly uses `0 * * * *`. |
 | `name` | Task slug until edited; follows the [job name rules](jobs.md#job-fields-and-defaults). |
 
-A `once` task uses the first job's policy, or built-in policy when no template is available, and writes no job. For scheduled jobs, the `runs` section below the answers exposes job overrides. It starts open when the job has overrides; `enter` or `→` opens it and `←` closes it. Each row names the key it writes, with the inherited value in its hint. It uses the [config controls](#config); backspace restores inheritance, and `enter` on a setting saves the job.
+Arrows select answers, Enter accepts, and Escape cancels. Backspace on an empty answer goes
+back. Untouched answers keep their defaults. A `once` task uses the first job's policy or the
+built-in policy and creates no job. Scheduled tasks expose overrides in `runs`; Backspace
+restores inheritance and Enter on a setting saves.
 
-Save validates the whole file and changes only the selected job block, preserving surrounding formatting and comments. Invalid values keep the form open on the relevant row. Save and delete then [install schedules](jobs.md#schedules); errors appear in the result line.
+Saving validates the file and updates only the chosen job block, preserving comments and
+formatting. Save and delete [install schedules](jobs.md#schedules). Errors keep the form open.
 
 ### Columns
 
-Config's column settings open a picker for Sessions, Runs, Jobs and History, starting on the selected setting's table. Its table tabs use the same button row as Config: `↑` past the first column reaches the buttons, `← →` switch tables and wrap around, and `↓`, `enter` or space returns to the columns. Each table remembers its selected column. `esc` returns to the Config setting. The picker uses the existing pane or the full frame, like the other menu screens.
+Config's column settings open a picker with Sessions, Runs, Jobs and History tabs. Each tab
+remembers its cursor. Up past the first column reaches the tabs; Left/Right switches tabs.
 
 | Key | Action |
 | --- | --- |
-| `↑ ↓` | Select a column; `↑` past the first reaches the table buttons. Movement stops at the last column. |
-| `← →` on the table buttons | Switch tables and wrap around. |
-| `←` on a column | Return to the column setting in Config. `→` does nothing on a column. |
-| `space` | Show or hide the selected column without moving its row. |
-| `[` `]` | Move a shown column earlier or later; the cursor follows it. |
-| `backspace` | Restore the current table's defaults. |
-| `home`, `end`, `page up`, `page down` | Navigate longer lists and short panes. |
-| `esc` | Return to the column setting in Config. |
-| `tab`, `ctrl+z` | Return to the dashboard list. |
+| `space` | Show or hide the selected column. |
+| `[` `]` | Move a shown column earlier or later. |
+| `backspace` | Restore this table's defaults. |
+| `←` or `esc` on a column | Return to Config. |
+| `tab` or `ctrl+z` | Return to the dashboard list. |
 
-The `›` marker and shaded row show keyboard focus; `[x]` and `[ ]` show visibility. The order number records a shown column's position in its saved set. State/status and the harness name retain their places beside the row's identity, as their descriptions explain. `defaults` or `custom` identifies where the selection comes from, independently of visibility.
-
-Click a row to select it, its checkbox to toggle it, or a table name to focus its button. The wheel moves through columns. The selected row stays visible when the pane is short. A focused tab row stays visible even in a one-line pane; returning to the columns restores their space.
-
-Every change validates and saves only that table's column setting in `jobs.yaml`, then updates the dashboard. Other settings and job blocks are preserved. A failed save keeps the previous selection and explains the error. An explicit empty selection hides every optional column; reset removes that override so defaults apply again.
+Click a checkbox to toggle visibility or a row to select it. `[x]` shows visibility, the
+number shows saved order, and `›` shows focus. Every change saves that table's setting and
+updates the display. A failed save retains the previous selection. An explicit empty set
+hides all optional columns; reset removes the override. See [column values](jobs.md#list-settings).
 
 ### Config
 
-The editor has three tabs: `cones` for dashboard settings, `harnesses` for which harnesses the composer offers and the AWS settings every harness shares, and `runs` for shared run policy. The tabs are a button row like the [menu](#menu): `↑` past the first field lands on them, `← →` pick a tab and wrap around, and `↓` or `enter` returns to the fields. The visible `[` `]` shortcut switches groups while browsing settings, and clicking a tab also lands on the row. Each tab remembers its selected field. Bold subheadings, indentation and blank rows separate config blocks. The `harnesses` tab holds the connectivity check, the Bedrock switch with its AWS profile and region, then one on/off row per harness. A harness's own model, effort and provider are not here: [`ctrl+o`](#launch-settings) sets them beside the composer, where the harness is already selected.
+The editor has three tabs: `cones` for display settings, `harnesses` for availability and
+shared AWS settings, and `runs` for run policy. Up past the fields reaches the tabs;
+Left/Right or `[` `]` switches groups. Each group remembers its selected field.
 
-Each setting occupies one row with its current value. A `*` marks values set in config; inherited values are dim. Boolean controls show `on` and `off`, and `full access` describes the existing `codex_full_access` setting. These labels do not change the stored keys or boolean values. An unset harness-owned setting says `harness default`; `aws_profile` and `aws_region` say `AWS default`, since an unset one is resolved by AWS from the shell and `~/.aws/config`, not by the harness.
-
-Only the focused field has the `›` marker. Moving to the tabs removes the field's focus styling without losing its selection. Focused tabs remain visible in short panes, and returning to the fields restores their space.
-
-A fixed two-line hint stays below the list and names the default or reset value. `?` or `F1` opens the full explanation for the selected setting; arrows, the wheel and page keys scroll it, and `esc` returns to the same setting. `F1` also works during text editing. Results and errors can use more hint space.
-
-`↑ ↓` select a field; `← →` change a choice or step a number, validating and saving immediately. `backspace` restores the built-in value. `home`, `end`, `page up` and `page down` navigate within the current tab. The wheel moves through fields, and the selected row stays visible in short panes.
+A `*` marks configured values; inherited values are dim. Unset native choices say `harness
+default`; unset AWS settings say `AWS default`. The fixed hint shows the default/reset value.
+Press `?` or F1 for the full explanation; F1 also works while editing text.
 
 | Control | Interaction |
 | --- | --- |
-| Choices | Arrows or space cycle directly. `enter` or clicking the value opens a vertical list. `↑ ↓` browse without changing the setting; `enter`, space or clicking a choice saves it. `(*)` marks the current value. `esc` or `←` returns without changing it. |
-| Choices or text | Model, AWS region and bucket pickers include a custom value option. Typing on the setting also opens text editing. Arrows cycle through the choices and the custom slot. |
-| Numbers | Confirmation time and bar count step by 1, timeout by 5 minutes. Steps stay on their grid and never go below zero; field validation may reject zero. Unset nonnumeric values step from zero. |
-| Text | `enter` or clicking the value starts editing; `enter` accepts and `esc` restores the previous value. Long values scroll within the row to keep the cursor visible. Environment names use commas. Empty values omit overrides. |
-| Columns | `enter`, `→` or space opens the [column picker](#columns). |
-| Folders | The pinned folders row counts them. `enter`, `→` or space opens the list, one folder per row with `+ add folder` past the last. `↑ ↓` select, `enter` edits the selected folder or types a new one, `ctrl+x` removes one, and `esc` returns to the settings. Each change is written at once; a refused path keeps the list open on the entry so it can be corrected. |
-| Connectivity | `enter`, `→` or space runs the launch probe for every harness and answers on the explanation line: the binary on cones's own launch PATH, and whether the installed version takes the flags a dashboard session needs. It writes nothing, and the next key clears the answer. |
+| Choice | Left/Right or Space cycles and saves. Enter opens a list; confirm a choice to save, Escape to cancel. |
+| Number | Arrows step values; validation enforces the allowed range. |
+| Text | Enter edits, Enter saves, Escape restores. Empty values omit overrides. |
+| Reset | Backspace restores the built-in value. |
+| Columns | Enter, Right or Space opens the picker. |
+| Folders | Open the pinned list; Enter edits/adds, `ctrl+x` removes a pin. |
+| Connectivity | Enter, Right or Space checks installed CLIs and required launch flags without writing. |
 
-Clicking a field's label only selects it. Saving keeps focus on that field. `esc` closes Config; `tab` or `ctrl+z` returns to the dashboard list. Leaving keeps saved changes. Validation errors focus the relevant field and leave the file untouched; a failed file write keeps the value that was entered and shows the error, so the same change can be made again once the cause is fixed. A `jobs.yaml` this build cannot read, such as one holding a column or a version a newer cones wrote, is reported on the hint row instead of being shown as the built-in defaults, and a write onto it is refused rather than replacing the settings it holds.
+Changes save immediately. Escape closes Config; Tab or Ctrl+Z returns to the list. Validation
+errors identify the field; write failures retain the entered value for retry. An unreadable
+configuration is reported and cannot be overwritten through this screen.
 
-Config saves replace only `defaults`, `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `activity`, `pane`, `start` and `confirm_secs`, preserving job blocks. `folders` and `highlight` are written on their own. A missing file is created with `jobs: []`. Config saves do not reinstall schedules; [captured environment changes](jobs.md#environment) require a job save afterward.
+Saves preserve job blocks. They do not reinstall schedules, so changing captured environment
+settings requires a subsequent job save. Model, effort and provider controls live in the
+composer's [launch settings](#launch-settings).
 
 ### Help
 
-`help` and `ctrl+g` open the built-in guide as three collapsed headings: the
-list, history and viewers. The heading for where you pressed Help is selected,
-with its details closed until you open them. Entering from the Help menu keeps
-the same compact index as its preview. The guide is a short card of the cones
-actions a reader cannot guess: joining, launching, stopping, renaming, forking,
-filtering, launch settings and returning from a viewer. Navigation, text
-editing, repeated controls and the secondary screens are left out. Footer hints
-show how to move around the current screen; the complete key reference is in
-[`assets/bindings.yaml`](../assets/bindings.yaml).
+Help opens a compact index for the list, history and viewers. Enter expands a heading;
+Left/Right closes or opens it. It covers cones-specific actions; screen footers show navigation.
 
-`↑ ↓` move between headings and `enter` opens or closes the one under the
-cursor; `→` opens it and `←` closes it before leaving. An open heading says when
-its controls apply, including what Enter and stop do for that selection, and
-shows one key spelling per action. Other aliases still work.
+Type to search. `shift+tab` switches between words and meaning using the same local search
+as [history](#history). Word search needs no model download. Matches open their headings;
+Escape or Ctrl+U clears the query, and Escape on an empty query returns to the list. Ctrl+G
+closes Help directly.
 
-The search prompt accepts typing and pasted text immediately; `/` and `ctrl+f`
-also start search. It searches by the same two rules as [history](#history),
-and `shift+tab` switches between them. By words, the default, every word typed
-must appear in one shortcut's key, description or heading; endings and prefixes
-are stemmed, so `forking conversations` finds `Fork the selected conversation`,
-and common English filler is dropped. By meaning, shortcuts
-close to the query are shown instead, so `abandon a runaway agent` reaches the
-stop keys without naming them. Meaning uses the same local MiniLM model
-history uses and needs it downloaded once; words never load it. Searching
-opens every heading that has a match, and `↑ ↓` scroll
-while it is active. The prompt names the active search, its match count and
-how to recover from an empty result.
-
-`page up` and `page down` scroll a page; `home` and `end` reach the first and
-last lines, and the wheel scrolls by rendered line. Shortcuts stack above their
-descriptions in narrow panes. `esc` or `ctrl+u` clears the search; with an empty
-search, `esc` returns to the list. `ctrl+g` closes Help directly.
-
-Shortcuts are selected from the same [YAML definitions](bindings.md) used for
-input handling. Edit `assets/bindings.yaml`, then rebuild and restart cones; the
-native keys that return to the list are `viewer.input.return_to_list` in the
-`assets/harnesses/` definitions. There is no user override file, `jobs.yaml`
-setting or in-app binding editor yet.
+Bindings are embedded at build time. See [binding definitions](bindings.md) for the complete
+key source and how to change it. There is no runtime binding editor or override file.
 
 ## Sessions and runs
 
-Live sessions group by directory, sorted without case, or by state with input requests first. Linked Git worktrees share their repository's heading, with `⑂` beside each worktree session's title. Session actions still use the session's actual working directory. Within a group they sort by reported start, oldest first; unknown starts sort last, then by id. Forks follow their visible parents, with indentation confined to the title column. The list's last row is always [`+ add folder`](#add-a-folder). Runs show the newest 200 visible records. Their independent `run_columns` setting controls harness name, status, start and end times, duration, context, model, tokens, cost, reason, directory, trigger and last reply. Start and end times use your local timezone.
+Sessions group by directory or state, with input requests first in state grouping. Linked
+Git worktrees share their repository heading and carry `⑂`; actions use the actual working
+directory. Sessions sort oldest first by reported start, with unknown starts last. Forks
+follow visible parents. Runs show the newest 200 visible records.
 
-Session rows have an activity icon, harness mark, title and [configured columns](jobs.md#list-settings). Run rows always retain their status icon, harness mark and job name. The [column picker](#columns) edits `columns`, `run_columns`, `job_columns` and `history_columns` independently. Harness names are hidden by default while their icons remain. Agent folders appear as a column when grouping by state and as headings in the normal view. A folder that is a linked Git worktree, its own checkout of a repository held elsewhere, carries `⑂`. The mark is read per folder, so a history row shows it only for a folder the live list already resolved. The default last reply column hides while the preview pane is open; an explicitly selected last reply stays visible. Headers are dim and unselectable; filtering hides them. Column widths grow during the dashboard session so changing values do not move adjacent cells. Narrow lists follow `whole_columns`.
+[Column settings](jobs.md#list-settings) control each table independently. Identity and row
+icons stay visible. The default last reply column hides with the pane open; an explicit
+selection keeps it. Columns grow to fit values during the session, and `whole_columns`
+controls clipping in narrow lists. Times display in the local timezone.
 
-Selecting a run previews its conversation when available: the archived transcript when one was recorded, otherwise the native transcript for its session. If that file is unavailable, the preview falls back to captured events and stderr. Conversation previews show messages and compact tool calls, excluding tool output and thinking. The preview refreshes once per second while visible and follows new output until you scroll back; it says `live` while the run is still going and `read only` once the run has a terminal record. It never resumes the run.
-
-Resting on a run with a joinable live session can replace the preview with its native pane. `tab` or a pane click focuses the visible pane; `enter` joins the run's own session whenever that session is still up, falls back to a running run's log when it cannot be joined, and opens a settled run through the harness. Runs without captured files say so. A resumed run keeps its place in the run list and its columns follow the live agent; the ledger retains the original outcome. Reviving a history row puts an agent in the live list.
-
-| State | Icon | Label | Color |
-| --- | --- | --- | --- |
-| `active` | Animated `▁▂▃▄▅▆▇` and back | working | plain |
-| `blocked` | `▇` | input | yellow |
-| `idle` | `▁` | idle | dim |
-| `done` | `✓` | done | green |
-| `failed` | `✗` | failed | red |
-| `stopped` | `▁` | stopped | dim |
-| `-` | `–` | `-` | dim |
-
-Harness marks and the mascot stay still. A coordinator has an orange title prefixed with `★`; its identity comes from [its claim on the folder](harness.md#coordinator-identity). Sessions that need their original terminal say `own terminal` in the footer.
-
-| Key | List action |
+| State | Display |
 | --- | --- |
-| `ctrl+x twice` | Confirm the selected row's removal or stop. |
-| `ctrl+s` | Group by state or directory. |
-| `ctrl+f` | Filter; `enter` keeps the filter, `esc` clears it, `←` leaves it while empty. |
-| `ctrl+h` | Show or hide history. With an empty composer, opening selects the first history row when loaded. |
-| `shift+tab` | With the cursor in history, switch its search between words and meaning. |
-| `ctrl+n` | Rename a Claude or Codex session. Type a name, or submit the empty field to hand `/rename` to the native client: Claude generates a name, and Codex's naming prompt is accepted once it fills in its suggestion. The handoff runs in the client while the cursor stays in the list. |
-| `ctrl+p` | Highlight the selected session, or remove its highlight. The colour is [`highlight`](jobs.md#list-settings); marks last while the dashboard is open and are never written to the file. |
-| `ctrl+y` | [Fork a supported conversation](#fork-a-conversation). |
-| `ctrl+t` | Inspect and change the [MCP servers](#mcp-servers) of the selected session's harness. |
-| `ctrl+r` | Reload now. |
+| `active` | Animated bar, working |
+| `blocked` | Yellow bar, input |
+| `idle` | Dim low bar, idle |
+| `done` | Green check, done |
+| `failed` | Red cross, failed |
+| `stopped` | Dim low bar, stopped |
+| Unknown | `-` |
 
-Rename opens the selected native client and waits for an empty editor before submitting the command. For an empty-name Codex rename, cones waits for the native suggestion and accepts it automatically while the cursor stays in the list. A key, paste or mouse action cancels a pending handoff. An interactive Claude session in another terminal still supports a manually entered name through its transcript; automatic naming requires access to its native client. A live external client may overwrite that transcript-only name.
-
-The first `ctrl+x` marks the row red; another key cancels it. Expiry follows [`confirm_secs`](jobs.md#list-settings). Confirmed deletions disappear before the native command finishes and return if it fails. A successful action clears the hint; the disappearing row is its confirmation.
-
-| Selected row | Confirmed action |
-| --- | --- |
-| Live session | The [native stop or removal](harness.md#native-actions) for its kind. |
-| Settled Claude background session | `claude rm`; the row goes with the job record, the transcript stays. |
-| Run in flight, or job with a live run | Stop the run. |
-| Finished run | Hide the row, and the session it owns with it, so neither returns as an agent row; retain its ledger, output and transcript. Restore through the [`hidden` file](jobs.md#stored-files). |
-| Job with no live run | Delete the job and reinstall schedules. |
-| Pinned empty folder | Remove its pin; leave the directory intact. |
-
-### Add a folder
-
-`+ add folder` is the last row of the session list, always there. Select it and type: the row takes a path instead of an instruction, so the composer stays empty. Enter an existing directory. `~` expands and relative paths use the dashboard's cwd. `tab` completes directory names; a second tab lists remaining matches. An empty input has nothing to complete, so `tab` enters the pane there as it does elsewhere in the list. Hidden names need a `.` prefix. `enter` pins the folder, `esc` clears what is typed, and a missing directory is reported without losing the text.
-
-While the row or one of its offers holds the cursor, the pinned folders the session list does not already hold are offered under it. A pinned folder with a heading or a row of its own is already on screen, so offering to pin it again would say nothing, and on a usual list that leaves nothing to offer. Typing filters the rest by any fragment of the path, `↓` moves onto one, `enter` pins it, `tab` puts it in the input to edit, and `esc` returns to the input. Aliases of one folder, such as a symlinked path, are offered once. Nothing is read to build the offers; a folder that has since been deleted is still offered and reported as missing when it is picked.
-
-The pinned folder is dropped in among the other folders in sorted order and takes the cursor, so the next instruction starts there. Adding a folder that already has sessions keeps the folder's existing rows.
-
-Pins are the [`folders` setting](jobs.md#list-settings) in `jobs.yaml`, so the config screen holds the same list, one folder per row, and either place can edit it. Sessions replace the empty-folder placeholder while present; it returns when they leave. A list an older cones left in the state directory is imported the first time a file without the setting is read.
-
-### Fork a conversation
-
-Select a live session or a history entry and press `ctrl+y`. Claude Code, Codex, pi and OpenCode use their native fork operation to create a separate conversation. The source stays unchanged and no instruction is sent automatically. Claude forks open a persistent interactive terminal; regular Claude launches remain background sessions. The composer draft stays intact. A fork uses the same project directory; it does not create a Git worktree or isolate file edits. A missing transcript, unsupported CLI or archived source is reported before launching.
-
-In the folder view a fork appears beneath its visible parent. Only its title is indented, using `↳`; the state, harness and configurable columns share the same alignment as every other row. Nested forks receive another indent. If the parent is hidden or in another state group, the fork remains visible with a branch mark; once the parent is gone the mark goes with it and the fork reads as an ordinary row. Relationships created through cones are saved in `STATE_DIR/forks.json` after the new native identity is known.
-
-### MCP servers
-
-`ctrl+t` opens the MCP panel for the selected session's harness and folder. With no session selected it uses the harness the composer names and the folder a launch would use. The panel reads native configuration files and nothing else: it starts no harness client, sends no prompt and writes nothing until you save.
-
-cones offers only the scopes it has verified for a harness. Claude Code has three: `user`, the `mcpServers` table of `.claude.json` under the native home, which reaches every project; `project`, `.mcp.json` in the folder, which is checked in with the repository; and `local`, that folder's own entry inside `.claude.json`, private to the home. Codex has one, `mcp_servers` in `config.toml` under its `CODEX_HOME`. Every other harness reports that cones has not verified where it keeps MCP configuration instead of guessing. No harness cones reads reports whether a running session actually loaded a server, so the panel states what is configured and says so.
-
-Each row is a server with the transport and the command or address its own entry states. A scope with no file says so; an unreadable or malformed file shows its parse error rather than reading as empty.
+Harness marks stay still. The coordinator has an orange `★` title, identified by its claim.
+An external session without native attach support says `own terminal`.
 
 | Key | Action |
 | --- | --- |
-| `x` | Stage removal of the selected server from its scope, or take that change back. |
-| `c` | Copy the selected server into another scope that stores servers the same way. `← →` choose the scope and `enter` stages it. |
-| `s` | Save the staged changes. |
-| `u` | Discard every staged change and keep the panel open. |
-| `esc` | Close the panel. Staged changes are discarded and no file is written. |
+| `ctrl+x twice` | Confirm stop or removal. |
+| `ctrl+s` | Group by state or directory. |
+| `ctrl+f` | Filter; Enter keeps it, Escape clears it. |
+| `ctrl+h` | Show or hide history. |
+| `ctrl+n` | Rename a Claude or Codex session. |
+| `ctrl+p` | Toggle a temporary session highlight. |
+| `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
+| `ctrl+t` | Open [MCP servers](#mcp-servers). |
+| `ctrl+r` | Refresh now. |
 
-The prompt lists what a save will do before it happens. Saving rewrites only the servers table of the scopes named in that list, through a temporary file in the same directory, and keeps the file's mode, because `.claude.json` holds credentials. Comments and unrelated settings in `config.toml` survive. Copies are written before removals, so moving a server between scopes in one save works. A failed write leaves the file as it was and keeps the changes staged, so the same save can be retried once the cause is fixed.
+Rename accepts a manual name or an empty submission for native automatic naming. Codex's
+suggestion is accepted once ready. A key, paste or mouse action cancels a pending handoff.
+An external interactive Claude client supports manual transcript naming only and may later
+overwrite it.
 
-Saving changes files, not processes. A session that already loaded these servers keeps them until it next starts; cones never restarts a live session.
+The first `ctrl+x` arms the action; another key cancels it. Expiry uses `confirm_secs`.
+The row disappears while the action runs and returns if it fails.
+
+| Selection | Confirmed action |
+| --- | --- |
+| Live session | Its [native stop or removal](harness.md#native-actions). |
+| Settled Claude background | Remove the job record; retain the transcript. |
+| Running run or job | Stop the run. |
+| Finished run | Hide the run and its owned session; retain output and ledger. Restore through the [hidden file](jobs.md#stored-files). |
+| Idle job | Delete it and reinstall schedules. |
+| Empty pinned folder | Remove its pin; retain the directory. |
+
+Run previews read the archived/native conversation, falling back to captured events and
+stderr. They show messages and compact tool calls, excluding thinking and tool output. Live
+output refreshes once per second and follows new text until scrolled back. Enter joins an
+available native session, follows a running run's output if unjoinable, or revives a settled
+run. A resumed run retains its row and original ledger outcome while displaying live values.
+
+### Add a folder
+
+`+ add folder` is the last session-list row. Type an existing path there; `~` expands and
+relative paths use the dashboard's cwd. Tab completes directories; a second Tab lists matches.
+Hidden names require a `.` prefix. Enter pins the folder and selects it; invalid paths retain
+the input. Escape clears it.
+
+The row offers pinned folders not already represented in the list, filtered by path fragment.
+It does not build suggestions from past sessions. Down selects an offer, Enter accepts it,
+and Tab copies it into the input. Aliases are deduplicated; deleted directories are rejected
+when chosen. Pins share the `folders` configuration with Config. A pin becomes an empty
+folder row whenever its sessions leave.
+
+### Fork a conversation
+
+`ctrl+y` forks a live or historical Claude, Codex, pi or OpenCode conversation through the
+native harness. It creates a new identity in the same folder, sends no instruction and
+preserves the composer draft. Claude forks use persistent interactive terminals. Forks do
+not create worktrees or transfer conversations between harnesses.
+
+The new row appears beneath its visible parent, with indentation confined to the title.
+`STATE_DIR/forks.json` records confirmed links. Hidden parents leave a branch marker; absent
+parents leave an ordinary row. Missing transcripts, archived sources and unsupported CLIs
+are reported before launch.
+
+### MCP servers
+
+`ctrl+t` reads native configuration for the selected session, or the composer harness and
+folder when no session is selected. Configured servers are shown without claiming a running
+session loaded them.
+
+| Harness/scope | Configuration source |
+| --- | --- |
+| Claude user | `mcpServers` in `.claude.json` under the native home. |
+| Claude project | `.mcp.json` in the project folder. |
+| Claude local | The folder's entry in the native home's `.claude.json`. |
+| Codex | `mcp_servers` in `config.toml` under `CODEX_HOME`. |
+
+Other harnesses report unverified support. Missing files and parse errors are shown explicitly.
+
+| Key | Action |
+| --- | --- |
+| `x` | Stage or undo removal. |
+| `c` | Copy to a compatible scope; arrows choose it and Enter stages it. |
+| `s` | Save staged changes. |
+| `u` | Discard staged changes. |
+| `esc` | Close and discard unsaved changes. |
+
+The prompt lists pending changes. Saves preserve unrelated settings, file modes and TOML
+comments; copies precede removals. Failed writes retain staged changes for retry. Saving
+never restarts a session; native clients pick up configuration when they next start.
+
 ### History
 
-History appears below the live list, ordered by latest recorded activity regardless of grouping. It excludes live sessions and identified Claude ledger sessions. Its independent `history_columns` default to last active, folder, model, context and last reply. Live state and activity chart columns are not offered. [Historical sources](harness.md#historical-sessions) define which conversations appear.
+`ctrl+h` shows conversations below the live list, newest activity first. Live sessions and
+identified Claude run conversations are excluded. Pages contain 50 rows; moving beyond a
+page loads more. [Historical sources](harness.md#historical-sessions) define inclusion.
 
-Pages contain 50 rows. Arrows, page-up/down and the wheel over the list load older entries without wrapping. With the cursor in history, typing or pasting edits the filter directly, including while results load or no rows match. Backspace and the usual text editing keys edit the search; `esc` clears it, or hides history when empty. Filtering searches beyond loaded pages. `ctrl+r`, or hiding and reopening history, refreshes the snapshot; live polling does not rescan it.
+Typing or pasting with history selected searches titles, folders, harnesses, IDs and visible
+conversation text beyond loaded pages. Matching conversations appear once, with excerpts
+where needed. Selecting a result previews its passage; Enter resumes. In the explicit
+Ctrl+F field, Enter keeps the filter. Escape clears the query, then hides history.
 
-Typing in history searches session titles, folders, harnesses, IDs and conversation text. `ctrl+f` also opens the search field. Each conversation appears once. A row whose title already holds the words stands alone; the rest carry one excerpt line, a short run of whole words around the match with markup removed, and yellow marks the words that matched. Selecting a result opens its matching passage; `enter` resumes it. In the explicit `ctrl+f` field, `enter` keeps the search and returns to the list.
+`shift+tab` switches search modes:
 
-`shift+tab` chooses what a query means, and the prompt says which is active. By words, the default, every word typed must appear in the same passage; common English filler such as `something about` is dropped, so it neither hides a match nor stands in for one, and a query of nothing but filler searches for the filler itself. By meaning, passages close to the query are returned instead and `≈` marks them. Titles, folders, harnesses and IDs match in both. Switching reruns the current query.
+- **Words:** every query word must appear in one passage. Common English filler is dropped,
+  except when the whole query is filler. Titles and other metadata are also searched.
+- **Meaning:** local MiniLM matches passages and marks results `≈`. The first use downloads
+  about 90 MB. Conversation text and queries stay on the machine. English works best;
+  similarity below 0.5 is discarded. Model failures are reported; Ctrl+R retries.
 
-Search by meaning uses MiniLM locally. The first such search downloads the model, about 90 MB, and builds passage embeddings in the background, reporting how many passages remain. Embedding only runs while such a search is on screen, so `ctrl+r` in history also fills the index for every conversation, with no query attached, and reports its progress in the same place; it stops when nothing remains, and a second `ctrl+r` calls it off. Conversation text and queries stay on the machine. If the model cannot load, the list says so and `ctrl+r` retries; `shift+tab` returns to words, which never loads the model at all. Resemblance below 0.5 cosine is discarded as noise. The model works best with English; search by words also handles other languages.
+Ctrl+R refreshes history; reopening it also refreshes. During meaning search it can fill the
+embedding index for every conversation and reports progress; a second Ctrl+R cancels that
+work. The rebuildable cache is under `STATE_DIR/search/`. Browsing without a query loads no
+model, and live session polling does not rescan history.
 
-The rebuildable search cache lives under `STATE_DIR/search/`. Text comes from visible user and assistant messages, excluding thinking, tool output and harness control records. Changed transcripts are reindexed on refresh; unchanged passage embeddings are reused. SQLite stores the text index and vectors, and model files are cached alongside it. Opening history without a query does not load or download the model.
+Previews show chronological messages, Markdown replies and compact tool calls, excluding
+thinking and tool output. The initial view starts at the latest message or search match.
+Scrolling loads more in bounded pages; oversized messages mark omitted text. Native themes,
+extensions and interactive widgets are not reproduced. Live pi/OpenCode rows without owned
+viewers, and settled sessions without clients to join, use the same read-only presentation.
+Live previews refresh once per second.
 
-Selecting a row loads its conversation in the pane after a short cursor rest. Messages appear in chronological order, with the latest message at the bottom. Claude and Codex use their prompt and response markers; pi uses shaded prompt blocks and unmarked replies. Replies render Markdown with highlighted code. Recorded tool calls appear as compact names and inputs; tool outputs and thinking stay out of the conversation. The pane says `history · read only`. A live pi or OpenCode row with no open owned viewer shows the same preview of the conversation it is still writing, says `conversation · live · read only` and refreshes once per second. Owned viewers keep their native pane; joinable Claude and Codex live rows prepare theirs. A row whose conversation cones cannot locate yet leaves the preview empty. A settled row reads the same way: once the harness has retired a session's client there is nothing to join, so its conversation is shown read-only rather than an empty pane, and entering the row still revives the session. Scrolling up loads earlier messages in bounded pages and keeps the text you were reading in place. Large individual messages remain bounded; omitted text is marked.
+In a focused preview, arrows, page keys and the wheel scroll. Home/End reaches the loaded
+beginning/latest text. Tab, Escape or Ctrl+Z returns; Ctrl+R rereads at the bottom. `c` copies
+the last response, one of its fenced code blocks, or session details. Incomplete blocks are
+marked and copied text excludes terminal escapes.
 
-These are read-only presentations based on each harness's default appearance. Native extensions, custom themes and interactive tool widgets are not reproduced.
+Right from a Claude or Codex history preview opens the context inspector. Browse categories,
+entries and text with Right; Left returns. It distinguishes recorded content, named sources
+and files merely present on disk, including mismatches with recorded copies. Unreported
+token counts stay unknown. It is unavailable for live rows, runs and other harnesses.
 
-The wheel scrolls the preview without changing the selection. When focused, arrows and page-up/down scroll; home/end reach the loaded beginning or latest text. Reaching the beginning requests an older page when available. `tab`, `esc` or `ctrl+z` returns to the list. Typing and pasting are ignored apart from `c`, which opens the copy menu. Focused `ctrl+r` rereads the preview at the bottom; `ctrl+\` changes its layout.
-
-`c` in a focused preview offers its last response, each fenced code block in that response and the row's own details. Blocks are named by language and first content line, and a block whose closing fence has not arrived is marked as still streaming. The chosen text goes to the system clipboard with terminal escapes stripped, since a transcript is data rather than commands.
-
-From a focused Claude or Codex history preview, `→` opens the context inspector: what instructions, skills and MCP servers the selected session's own records hold, and where each came from. It is unavailable on live rows, run rows and other harnesses' history. It reads only those records and the folder beside them, so it starts no harness client, sends no prompt and writes nothing. Categories list their entries, `→` opens an entry and then its text, and `←` steps back and finally returns to the conversation with the same entry still selected. Every entry says whether its text is in the session records, only named by them, or merely a file on disk; installed is not loaded. A recorded file that no longer matches the copy on disk says so, and the recorded copy is what the entry shows. Token totals are the harness's own reported numbers; an unreported count stays unknown rather than estimated. Claude and Codex record different things, and a category a harness never records says that instead of appearing empty.
-
-A search preview starts at the matching passage. Scrolling past either end loads more conversation in that direction. Large individual messages show a bounded excerpt around the match, with omitted text marked.
-
-`enter` resumes the selected conversation, including from its preview. An existing composer draft is preserved while searching and resuming history. Its native viewer replaces the preview and is reused when the session appears live. History has no delete action. Browsing it starts no harness client.
+Enter resumes with the recorded native home and folder while preserving the composer draft.
+History offers no delete action or recent-session switcher. Browsing previews and context
+starts no native client.
 
 ## Viewer
 
-The pane shows the focused viewer, otherwise the selected session's viewer. Sessions, runs and historical rows never show another row's output. A live session stays blank while its client starts. Runs and historical rows use their read-only previews until their viewer opens; menu rows preview their button. Folder and job rows can retain the last focused viewer.
+A focused viewer stays in the pane; otherwise it follows the selection. Rows never display
+another session's output. Folder and job rows may retain the last focused viewer. Resting on
+a joinable session prepares its client; a session needing revival waits for explicit entry.
+Saved Codex threads also wait for entry if their daemon is gone.
 
-Resting on a joinable live row can prepare its viewer before entry. A run whose session is still up is such a row, finished or not: its session is collapsed into the run's row, and resting there joins that session the way resting on an agent does, replacing the read-only preview with the live pane. This never starts a new agent: a run whose session has settled requires an explicit open, since only a resume could show it, and a saved Codex thread waits for entry if its daemon has exited. A speculative viewer says `attach` until entered, then `return`. A preview may be closed to make room for another; entered Codex clients, resumed runs and historical viewers are retained, while a run's join makes room like any agent's. A Claude client left in its own agents list closes so that list cannot appear under a session's name.
+Quitting or crashing the dashboard leaves hosted shells, pi, OpenCode, experimental launchers
+and interactive Claude forks running. Reopen with the same state directory and Enter
+reconnects to the process and its draft. One dashboard may attach to a host at a time.
+`ctrl+x` twice stops it. Host crashes and machine restarts end these processes; conversation
+history remains resumable where the harness provides it. Claude background sessions and
+Codex daemon threads keep native ownership, while their attach clients close and draft
+behavior remains native.
 
-Closing the dashboard detaches its viewers. Hosted shells, pi, OpenCode, experimental launchers and interactive Claude forks keep running in their terminal hosts. Reopen the dashboard and press Enter on the row to reconnect to the same process and draft. Claude background sessions and Codex daemon threads keep their native ownership, while their attach clients close. See [native ownership](harness.md#native-actions) for the limits. Stopping or removing a row is a separate action.
-
-| Input in a native viewer | Behavior |
+| Native viewer input | Behavior |
 | --- | --- |
-| `tab` | Return when the harness's empty prompt is recognized or zsh reports an empty command line; otherwise pass through for completion. Other shells always keep Tab. |
-| `ctrl+z`, `ctrl+\` | Dashboard navigation, as above. Ctrl+Z returns even with an unfinished draft. |
-| `←` | Return when the harness's standard empty editor is recognized or zsh reports an empty command line; populated or multiline input keeps the arrow. Modified arrows stay native. |
-| `ctrl+c` | Dashboard quit confirmation in an agent viewer. These clients interpret two presses as quit, and Claude's first press leaves the conversation for its agents list. Use `esc` to interrupt a turn. In a terminal, Ctrl+C interrupts the shell's foreground command. |
-| Other keys, including `esc` and `shift+tab` | Pass to the native client. Classic terminal encoding means some modified keys, including shift+enter, cannot be distinguished there. |
-| Shift-page-up/down | Scroll emulator history. |
-| Clicks in scrolled history | Stay with the emulator. The lines under the pointer left the client's screen, so a report would name whatever the live screen holds at that row; the wheel keeps scrolling history instead. Return to the bottom to click the client again. |
-| Left drag | While cones reads mouse events, dragging over a native pane highlights its text and releasing copies it to the clipboard, including when the client requests mouse events. A click without dragging keeps its usual action. |
-| Wheel | Scroll the viewer under the pointer, even without focus. Clients requesting mouse events receive them; otherwise emulator history scrolls. Shift-wheel always uses emulator history. A focused full-frame client that requests no mouse events, such as Codex, gives the mouse back to the terminal, so dragging selects text and the wheel belongs to the terminal until the list returns. |
-| Text paste | Preserve bracketed paste when the client requests it. An empty paste, used for images by VS Code, becomes the client's ctrl+v. |
+| `ctrl+z` | Return to the list, including with a draft. |
+| `tab` / `←` | Return from a recognized empty native editor; otherwise remain native. Exceptions below. |
+| `ctrl+c` | Quit confirmation in agent viewers; interrupt foreground commands in shell viewers. Use Escape to interrupt an agent turn. |
+| `ctrl+\` | Switch split/fullscreen. |
+| Other keys | Pass through, including Escape, Shift+Tab and modified arrows. Some terminal encodings lose modified-key distinctions. |
+| Shift+PageUp/PageDown | Scroll emulator history. |
+| Left drag | Select and copy pane text while cones owns mouse input. |
+| Wheel | Scroll the pane under the pointer; native mouse clients receive events, otherwise emulator history scrolls. Shift+wheel always scrolls the emulator. |
+| Paste | Preserve native bracketed paste. Empty paste events become Ctrl+V for image paste. |
 
-The [experimental terminal launchers](harness.md#additional-terminal-harnesses) return with Ctrl+Z; Tab and Left stay native even with empty input. OpenCode returns with Left when its standard session editor is empty. Drafts, multiline input and native menus keep Left; Tab stays native. Ctrl+Z always returns to the list.
+OpenCode returns with Left from its standard empty editor but keeps Tab native. Experimental
+launchers keep both keys native. Zsh returns with Tab/Left from an empty command line;
+continuations and foreground programs keep them. Other shells keep both native.
 
-Typing returns to the live screen. To select text across the pane's boundary, use the terminal's modifier, such as option-drag in iTerm2, or `alt+m`, which releases the mouse to the terminal until it is pressed again. Split viewers use the dashboard's hint line so the harness retains its own bottom status row. For delays, see [diagnostics](cli.md#diagnostics).
+Clicks in scrolled emulator history stay with the emulator. Typing returns to the live
+screen. A fullscreen client without mouse reporting gives mouse control to the terminal.
+Use the terminal's selection modifier or `alt+m` to select across the pane boundary;
+Alt+M toggles mouse capture. See [diagnostics](cli.md#diagnostics) for delays.
 
 ## Composer
 
-Type an instruction and press `enter` to start a native session in the selected row's directory. From the menu or without a selected directory, it uses the dashboard's cwd. On `jobs` or `new job`, submitting an instruction opens the job wizard instead. `shift+tab` cycles the [configured harnesses](jobs.md#composer-harnesses), then terminal; the prefix names the selection. A harness turned off by its [enabled switch](jobs.md#composer-harnesses) is skipped, including as the harness the dashboard comes up on, and its [discovery](harness.md#discovery) stops too; the terminal stays reachable with every harness off. Identified agent rows show their reported model.
+Type an instruction and Enter to launch in the selected folder. With no folder selection,
+the dashboard's cwd is used. Submitting on Jobs opens its wizard. Shift+Tab cycles through
+[visible enabled harnesses](jobs.md#composer-harnesses), then the terminal. If every launcher
+is hidden, the terminal remains available.
 
-On `terminal`, type or paste a command and press `enter` to run it in a new interactive shell in that directory and focus its pane. An empty command opens the shell at its prompt. The command field supports the composer's editing keys and `shift+enter` for a new line. The prefix shows the detected shell, such as `terminal (zsh)`. cones uses an executable `$SHELL`, then the account's configured shell, then `/bin/sh`. In zsh, Left or Tab returns to the list when the command line is empty. With a command typed, Left edits and Tab completes using your existing bindings. Continuation lines and foreground programs keep both keys. Other shells keep their native Left and Tab bindings. Ctrl+C interrupts commands, and Ctrl+Z always returns to the list.
+For `terminal`, Enter opens an interactive shell or runs the drafted command in a new one.
+The shell comes from executable `$SHELL`, then the account shell, then `/bin/sh`. With an empty
+command field, Enter reconnects to a selected owned terminal. Commands and agent instructions
+keep separate drafts. Escape clears a command, then returns to the default harness.
 
-From the list, Enter reconnects to a selected owned terminal when the command field is empty. Tab focuses a viewer already open in this dashboard. Select a folder to open another shell, or type a command to start one. Shell rows survive dashboard refreshes and closure; they end when the shell exits or you stop it with Ctrl+X twice. Terminal commands and agent instructions keep separate drafts when switching with `shift+tab`. Escape clears a drafted command; with the command empty, it returns to the default harness.
-
-The instruction wraps to at most eight text rows. In a side-by-side pane it aligns with Claude or pi's input box when that box is near the bottom; Codex and log viewers keep the composer at its normal position. Scrolling history does not move it.
-
-A launch immediately selects a row containing the harness, directory and first instruction line, while preparation runs in the background. List focus stays available until the viewer is ready. Native discovery fills in reported details and replaces the launch identity without changing the viewer or taking selection back after you move away. Unrelated arrivals do not take selection while typing or viewing a session. `esc` or `ctrl+z` cancels pending preparation; other keys do not cancel it; a cancellation or failure removes the launch row and restores its instruction unless you have typed new text.
-
-The prefix names the harness the launch starts, and nothing else: its [launch settings](#launch-settings) stay in the `ctrl+o` picker rather than beside every instruction. Native sessions retain their harness permissions. Supervised runs add a timeout and use the [unattended run contract](jobs.md#what-the-harness-is-told). [Launch identity](harness.md#composer-identity) explains attribution limits.
+Launch preparation selects a temporary row and keeps the list usable until the viewer is
+ready. Discovery fills in native identity without reclaiming selection after you move away.
+Escape or Ctrl+Z cancels pending preparation. Failure or cancellation restores the instruction
+unless you have typed new text. [Identity limits](harness.md#composer-identity) vary by harness.
 
 ### Launch settings
 
-`ctrl+o` opens the selected harness's own settings under the list, with the composer and its draft still in place: Claude's model and effort, Codex's model and full access, pi's model, provider and thinking, and one model row for every other harness that takes one. Amp and droid define none, so `ctrl+o` says so and opens nothing. It is unavailable on the terminal, a menu button, the folder row, a history search and the jobs screen, where the composer names no harness.
+Ctrl+O opens model, effort and provider controls available for the selected harness, with the
+composer draft intact. It is unavailable where the composer names no harness. Amp and Droid
+have no settings here.
 
-The rows are the [config editor's](#config) own controls, and a change is written to `defaults` in `jobs.yaml` as it is made, so there is no save key and nothing to lose by closing the picker; the status line names the file. Scheduled jobs pick the new value up on their next run, and a running session keeps what it started with. The saved choice survives a restart, and reopening `ctrl+o` shows it. `↑ ↓` select a row, `enter` opens the choices or text editing, `backspace` restores the harness default, and `?` explains the selected setting. `esc`, `tab` or another `ctrl+o` closes the picker and keeps the draft and the selection. A failed write keeps the picker open with the value that was typed, leaves the previous default intact and shows the error in the hint row.
+Changes immediately write `defaults` in `jobs.yaml`; closing the picker keeps them. Scheduled
+jobs use applicable new defaults on their next run, while running sessions retain their launch
+settings. There is no separate set of interactive launch defaults. Controls match Config;
+Escape, Tab or Ctrl+O closes the picker.
 
 ### Text and images
 
-Keys without another action type into the composer. Text prompts share these editing controls:
+The composer wraps up to eight rows. Standard cursor, word movement and deletion keys edit
+text; Shift+Enter inserts a newline. Ctrl+E edits a selected job only when the composer is
+empty. See [the binding source](../assets/bindings.yaml) for all aliases.
 
-| Keys | Edit |
-| --- | --- |
-| `← →` | Move one character. With nothing typed, `←` leaves the jobs screen and the filter, since there is nothing to its left. |
-| `alt+← alt+→`, `ctrl+← ctrl+→`, `alt+b alt+f` | Move one word. |
-| `home end`, `ctrl+a ctrl+e` | Move to the line's ends. With an empty composer, `ctrl+e` edits a selected job. |
-| `backspace delete` | Delete one character. |
-| `alt+backspace`, `ctrl+w` | Delete the preceding word. |
-| `alt+d` | Delete the following word. |
-| `ctrl+u ctrl+k` | Delete before or after the cursor. |
-| `ctrl+v` | Paste a clipboard image. |
-
-Words are runs of non-space characters. macOS terminals commonly translate command/option shortcuts into these control/alt keys. Text pastes insert at the cursor. Images use macOS `osascript`, are saved as temporary PNGs and appear as `[Image #n]` markers; each marker deletes as one character and expands to its path at launch.
+Ctrl+V pastes clipboard images through macOS `osascript`. Temporary PNGs appear as
+`[Image #n]` markers, delete as one unit and expand to their paths at launch. Text pastes
+insert at the cursor.
