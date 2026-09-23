@@ -1277,6 +1277,14 @@ mod tests {
     }
 
     #[test]
+    fn a_version_or_help_probe_is_not_a_session() {
+        // `codex app-server daemon start` runs `codex --version` on the binary it is about to use.
+        let ps = "  1 Wed Sep 23 05:31:47 2026 /Users/u/.codex/packages/standalone/current/bin/codex --version\n  2 Wed Sep 23 05:31:47 2026 codex -V\n  3 Wed Sep 23 05:31:47 2026 codex --help\n  4 Wed Sep 23 05:31:47 2026 codex -h\n  5 Wed Sep 23 05:31:47 2026 codex help\n  6 Wed Sep 23 05:31:47 2026 codex fix the parser\n";
+        let pids: Vec<u32> = processes(ps).iter().map(|p| p.pid).collect();
+        assert_eq!(pids, [6]);
+    }
+
+    #[test]
     fn a_process_states_its_thread_by_lock_or_resume_argument() {
         let ps = "  7 Sun Sep 13 15:19:19 2026 /usr/local/bin/codex --remote unix:///s.sock resume 01a09fed-867a-7a42-b7b9-22fbcbd280d7\n  8 Sun Sep 13 15:19:19 2026 codex resume\n  9 Sun Sep 13 15:19:19 2026 codex app-server --listen unix://\n";
         let procs = processes(ps);

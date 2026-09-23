@@ -9,6 +9,11 @@ discovery:
   daemon: {pid: app-server-daemon/app-server.pid, locks: thread-writer-locks}
   process: codex
   exclude_subcommands:
+    - --help
+    - -h
+    - --version
+    - -V
+    - help
     - agents
     - login
     - logout
