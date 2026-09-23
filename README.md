@@ -87,7 +87,7 @@ To start work in a project:
 
 Open a session with `Enter`; `Ctrl+Z` returns to the list. Press `Ctrl+H` to browse history, select a conversation to preview it, and press `Enter` to resume.
 
-A bold title marks an unread completion. Use `Ctrl+F` with `:attention` to find input requests and unread work. Quitting cones keeps owned terminals running; reopen the dashboard and press `Enter` to reconnect. `Ctrl+X` twice explicitly stops a terminal.
+A green `✉` before the title marks an unread completion. Use `Ctrl+F` with `:attention` to find input requests and unread work. Quitting cones keeps owned terminals running; reopen the dashboard and press `Enter` to reconnect. `Ctrl+X` twice explicitly stops a terminal.
 
 Press `Ctrl+Y` to [fork a supported conversation](docs/dashboard.md#fork-a-conversation). The new session appears beneath its parent with aligned columns. It uses the same folder, so file edits are shared.
 

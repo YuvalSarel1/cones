@@ -255,6 +255,8 @@ pub struct Data {
     pub worktrees: BTreeSet<PathBuf>,
     /// Each worktree's repository, for session grouping and folder suggestions.
     pub roots: BTreeMap<PathBuf, PathBuf>,
+    /// Sessions and runs whose completion nobody has reviewed; the dashboard fills it.
+    pub unread: HashSet<String>,
     diagnostics: Option<LoadDiagnostics>,
 }
 
@@ -439,6 +441,7 @@ impl Data {
             folders,
             worktrees,
             roots,
+            unread: HashSet::new(),
             diagnostics,
         })
     }
@@ -759,29 +762,34 @@ impl Data {
             .filter(|c| *c != state_key && *c != "harness")
             .collect();
         let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
+        let title = if has_state { 3 } else { 2 };
         let cells = flat
             .iter()
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
             .map(|(_, e)| match e {
                 Entry::Folder(_) => vec![],
-                Entry::Session(s) => session_cells(
-                    s,
-                    set,
-                    by_state,
-                    sparks.get(&s.session_id).map(String::as_str),
-                    self.branches.get(s.dir()).map(String::as_str),
-                    self.worktrees.contains(s.dir()),
-                    s.forked_from
-                        .as_deref()
-                        .filter(|parent| {
-                            present.contains(&(s.harness.as_str(), s.cwd.as_path(), parent))
-                        })
-                        .map(|_| {
-                            depths
-                                .get(&(s.harness.as_str(), s.session_id.as_str()))
-                                .copied()
-                                .unwrap_or(0)
-                        }),
+                Entry::Session(s) => unread(
+                    self.unread.contains(&s.session_id),
+                    title,
+                    session_cells(
+                        s,
+                        set,
+                        by_state,
+                        sparks.get(&s.session_id).map(String::as_str),
+                        self.branches.get(s.dir()).map(String::as_str),
+                        self.worktrees.contains(s.dir()),
+                        s.forked_from
+                            .as_deref()
+                            .filter(|parent| {
+                                present.contains(&(s.harness.as_str(), s.cwd.as_path(), parent))
+                            })
+                            .map(|_| {
+                                depths
+                                    .get(&(s.harness.as_str(), s.session_id.as_str()))
+                                    .copied()
+                                    .unwrap_or(0)
+                            }),
+                    ),
                 ),
                 Entry::Job(j) => {
                     let last = self
@@ -923,9 +931,10 @@ impl Data {
                     if has_status {
                         row.push((label(status).to_owned(), color(status)));
                     }
+                    let title = row.len();
                     row.push((r.started.job.clone().unwrap_or_else(|| "-".into()), plain()));
                     row.extend(cols.iter().map(|c| run_cell(c, r, &view)));
-                    row
+                    unread(self.unread.contains(&r.started.run_id), title, row)
                 })
                 .collect();
             let (names, cells) = columns(&names, cells, widths);
@@ -2008,6 +2017,14 @@ fn job_cell(
     }
 }
 
+/// Mark cell `title` of an unread row. The mark goes in before the table pads its columns.
+fn unread(unread: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    if unread && let Some((text, _)) = row.get_mut(title) {
+        *text = format!("{UNREAD} {text}");
+    }
+    row
+}
+
 /// `spark` is scaled once for the fleet so rows share a bound.
 fn session_cells(
     s: &Session,
@@ -2642,6 +2659,8 @@ fn logo_cell(harness: &str) -> String {
 
 /// Prefix on the coordinator's title, which is also drawn in orange.
 const COORDINATOR: &str = "★";
+/// Prefix on an unread title, drawn in green whatever the title's own colour.
+const UNREAD: &str = "✉";
 
 fn brand(harness: &str) -> Style {
     harness::by_name(harness)
@@ -11128,6 +11147,23 @@ impl App {
             .filter(|a| matches!(a.verb, "delete" | "forget"))
             .map(|a| a.id.as_str())
             .collect();
+        self.data.unread = self
+            .data
+            .sessions
+            .iter()
+            .filter_map(|s| {
+                attention::Observation::session(s)
+                    .filter(|o| self.attention.unread(o))
+                    .map(|_| s.session_id.clone())
+            })
+            .chain(
+                self.data
+                    .runs
+                    .iter()
+                    .filter(|r| self.attention.unread(&attention::Observation::run(r)))
+                    .map(|r| r.started.run_id.clone()),
+            )
+            .collect();
         let in_pane = self.jobs_view && self.split_active();
         self.rows = if in_pane { vec![] } else { menu_rows() };
         self.rows.extend(self.data.rows_excluding(
@@ -11156,36 +11192,6 @@ impl App {
             self.other.extend(history);
         } else {
             self.rows.extend(history);
-        }
-        let unread: HashSet<String> = self
-            .data
-            .sessions
-            .iter()
-            .filter_map(|s| {
-                attention::Observation::session(s)
-                    .filter(|o| self.attention.unread(o))
-                    .map(|_| s.session_id.clone())
-            })
-            .chain(
-                self.data
-                    .runs
-                    .iter()
-                    .filter(|r| self.attention.unread(&attention::Observation::run(r)))
-                    .map(|r| r.started.run_id.clone()),
-            )
-            .collect();
-        // An unread row bolds its title, like an inbox, so no column is spent on a marker.
-        for table in [&mut self.rows, &mut self.other] {
-            for i in 0..table.len() {
-                if let Kind::Session(id, _) | Kind::Run(id, _) = &table[i].kind
-                    && unread.contains(id)
-                {
-                    let title = named_cell(table, i).saturating_sub(1);
-                    if let Some((_, style)) = table[i].cells.get_mut(title) {
-                        *style = style.add_modifier(Modifier::BOLD);
-                    }
-                }
-            }
         }
         self.apply_filter();
         if let Some(k) = &keep
@@ -16271,15 +16277,24 @@ impl App {
                 } else {
                     &row.cells
                 };
-                let mut drawn = Vec::with_capacity(cells.len());
+                let mut drawn = Vec::with_capacity(cells.len() + 1);
+                let mut keep = named_cell(rows, i);
                 for (c, (text, style)) in cells.iter().enumerate() {
+                    let text = match text.strip_prefix(UNREAD) {
+                        Some(rest) if c == title && !armed => {
+                            drawn.push(Span::styled(UNREAD, style.fg(Color::Green)));
+                            keep = keep.saturating_add(1);
+                            rest
+                        }
+                        _ => text.as_str(),
+                    };
                     let (text, style) = if c == 0 && row.working() {
                         (
                             text.replacen('▁', SPINNER[spinner_frame(self.tick)], 1),
                             *style,
                         )
                     } else {
-                        (text.clone(), *style)
+                        (text.to_owned(), *style)
                     };
                     drawn.push(Span::styled(
                         text,
@@ -16300,11 +16315,7 @@ impl App {
                         | Kind::Columns
                 );
                 spans.extend(if self.data.whole_columns && tabular {
-                    whole_cells(
-                        drawn,
-                        (width as usize).saturating_sub(mark),
-                        named_cell(rows, i),
-                    )
+                    whole_cells(drawn, (width as usize).saturating_sub(mark), keep)
                 } else {
                     drawn
                 });
@@ -21513,20 +21524,33 @@ states:
         app.update_attention();
         app.rebuild();
         assert!(app.header_summary().to_string().contains("1 unread"));
-        let title_bold = |app: &App| {
+        let title = |app: &App| {
             let i = app
                 .rows
                 .iter()
                 .position(|r| r.kind.key() == Some(A))
                 .unwrap();
-            let (text, style) = &app.rows[i].cells[named_cell(&app.rows, i) - 1];
-            assert!(text.starts_with("first task"), "the title cell: {text:?}");
-            style.add_modifier.contains(Modifier::BOLD)
+            app.rows[i].cells[named_cell(&app.rows, i) - 1]
+                .0
+                .trim()
+                .to_owned()
         };
-        assert!(title_bold(&app), "an unread title is bold, like an inbox");
+        assert_eq!(title(&app), format!("{UNREAD} first task"));
+        let lines = app.row_lines(&app.rows, &app.visible, None, 0, app.rows.len(), 120);
+        let mark = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .find(|s| s.content == UNREAD)
+            .expect("the unread mark is its own span");
+        assert_eq!(mark.style.fg, Some(Color::Green));
+        let other = app
+            .rows
+            .iter()
+            .position(|r| r.kind.key() == Some(B))
+            .unwrap();
         assert!(
-            !app.rows.iter().any(|r| r.text().contains('●')),
-            "no gutter dot"
+            !app.rows[other].text().contains(UNREAD),
+            "a row waiting for input is not unread"
         );
         app.filter = Input::new(":attention");
         app.apply_filter();
@@ -21567,7 +21591,7 @@ states:
         assert_eq!(app.data.sessions[1].state, "blocked");
         assert!(!app.header_summary().to_string().contains("unread"));
         app.rebuild();
-        assert!(!title_bold(&app), "a read title is plain again");
+        assert_eq!(title(&app), "first task", "a read title loses its mark");
         app.filter = Input::new(":attention");
         app.apply_filter();
         assert_eq!(sessions(&app), [B]);
