@@ -320,7 +320,7 @@ states:
         description: "Choose the selected item. Other keys close the menu."
   - id: panel
     title: "Panel focus"
-    when: "A dashboard panel is focused. Ctrl+z leaves any panel; tab leaves Help, Columns, MCP and Config when not editing."
+    when: "A dashboard panel is focused. Ctrl+z leaves any panel; tab leaves Help, Columns and Config when not editing."
     help:
       title: Viewers
       when: A viewer or panel has focus.
