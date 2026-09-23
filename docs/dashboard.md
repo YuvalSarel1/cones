@@ -164,7 +164,8 @@ An external session without native attach support says `own terminal`.
 | `ctrl+n` | Rename a Claude or Codex session. |
 | `ctrl+p` | Toggle a temporary session highlight. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
-| `ctrl+t` | Open [MCP servers](#mcp-servers). |
+| `ctrl+t` | Pin a session above every group, or unpin it. |
+| `ctrl+l` | Open [MCP servers](#mcp-servers). |
 | `ctrl+r` | Refresh now. |
 
 Rename accepts a manual name or an empty submission for native automatic naming. Codex's
@@ -217,7 +218,7 @@ are reported before launch.
 
 ### MCP servers
 
-`ctrl+t` reads native configuration for the selected session, or the composer harness and
+`ctrl+l` reads native configuration for the selected session, or the composer harness and
 folder when no session is selected. Configured servers are shown without claiming a running
 session loaded them.
 

@@ -78,6 +78,9 @@ states:
         action: mouse
         description: "Release the mouse to the terminal so dragging selects text, or take it back for cones and the panes."
       - keys: ["ctrl+t"]
+        action: pin
+        description: "Pin the selected session above every group, or unpin it. Pins survive restarts."
+      - keys: ["ctrl+l"]
         action: mcp
         description: "Inspect MCP servers and stage scoped changes."
       - keys: ["ctrl+y"]

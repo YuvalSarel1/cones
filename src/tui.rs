@@ -619,7 +619,14 @@ impl Data {
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
-        self.rows_excluding(by_state, false, false, &HashSet::new(), &mut Widths::new())
+        self.rows_excluding(
+            by_state,
+            false,
+            false,
+            &HashSet::new(),
+            &HashSet::new(),
+            &mut Widths::new(),
+        )
     }
 
     /// Hide pending deletions without changing source data, so failures can restore their rows.
@@ -629,6 +636,7 @@ impl Data {
         jobs_view: bool,
         hide_reply: bool,
         deleting: &HashSet<&str>,
+        pinned: &HashSet<String>,
         widths: &mut Widths,
     ) -> Vec<Row> {
         let mut out = Vec::new();
@@ -672,7 +680,10 @@ impl Data {
             .iter()
             .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
         {
-            let key = if by_state {
+            // An empty sort key puts pins above every state rank and folder path.
+            let key = if pinned.contains(&s.session_id) {
+                (String::new(), "pinned".to_owned())
+            } else if by_state {
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
                     "active" => 2,
@@ -7714,6 +7725,7 @@ enum KeyAction {
     PageDown,
     PageUp,
     PasteImage,
+    Pin,
     Previous,
     Quit,
     Refresh,
@@ -8002,6 +8014,9 @@ fn binding_keys(binding: &KeyBinding) -> String {
     // One spelling is enough to learn a shortcut. All aliases remain accepted by dispatch.
     binding_label(&binding.keys[0])
 }
+
+/// The dashboard's pinned session ids, under the state directory.
+const PINS: &str = "pins.json";
 
 const HISTORY_PAGE: usize = 50;
 const HISTORY_PREFETCH: usize = 10;
@@ -8807,6 +8822,8 @@ struct App {
     /// Session ids marked with ctrl+p, whose titles are drawn in the highlight colour.
     /// ponytail: kept for the dashboard's lifetime only; persist it if marks are missed.
     highlighted: HashSet<String>,
+    /// Session ids pinned with ctrl+t, listed above every group; kept in `state/pins.json`.
+    pinned: HashSet<String>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     armed_at: Instant,
@@ -9181,6 +9198,10 @@ impl App {
             removed_sessions: HashSet::new(),
             feedback: None,
             highlighted: HashSet::new(),
+            pinned: std::fs::read(state.join(PINS))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or_default(),
             armed: None,
             armed_at: Instant::now(),
             quit_armed: None,
@@ -11182,6 +11203,7 @@ impl App {
             self.jobs_view,
             self.split_active() && self.data.columns_default,
             &deleting,
+            &self.pinned,
             &mut self.widths,
         ));
         self.other = if self.jobs_view { menu_rows() } else { vec![] };
@@ -11190,6 +11212,7 @@ impl App {
             !self.jobs_view,
             self.split_active() && self.data.columns_default,
             &deleting,
+            &self.pinned,
             &mut self.widths,
         ));
         if let Some(query) = self.suggested.clone() {
@@ -11563,6 +11586,24 @@ impl App {
             self.highlighted.insert(id);
         }
         self.invalidate();
+    }
+
+    /// Pin or unpin the selected session. A pin that no longer matches a row stays in the file
+    /// harmlessly, so a session that comes back keeps its place.
+    fn pin_selected(&mut self) {
+        let Some(id) = self.selected_session().map(|s| s.session_id.clone()) else {
+            self.status = "ctrl+t pins the selected session".into();
+            return;
+        };
+        if !self.pinned.remove(&id) {
+            self.pinned.insert(id);
+        }
+        let mut ids: Vec<&String> = self.pinned.iter().collect();
+        ids.sort();
+        if let Err(e) = std::fs::write(self.state.join(PINS), serde_json::to_vec(&ids).unwrap()) {
+            self.status = format!("pin kept for this dashboard only: {e}");
+        }
+        self.rebuild();
     }
 
     fn rename_selected(&mut self) {
@@ -13691,7 +13732,7 @@ impl App {
         };
         let Some(kind) = kind else {
             self.status =
-                "ctrl+t reads the MCP servers of a session, or of the harness the composer names"
+                "ctrl+l reads the MCP servers of a session, or of the harness the composer names"
                     .into();
             return;
         };
@@ -14873,7 +14914,13 @@ impl App {
                 if self.can_fork() {
                     keys.push(("ctrl+y", "fork"));
                 }
-                if self.selected_session().is_some() {
+                if let Some(s) = self.selected_session() {
+                    let pin = if self.pinned.contains(&s.session_id) {
+                        "unpin"
+                    } else {
+                        "pin"
+                    };
+                    keys.push(("ctrl+t", pin));
                     keys.push(("ctrl+p", "highlight"));
                 }
                 if folder {
@@ -15609,6 +15656,7 @@ impl App {
                     }
                     KeyAction::History if !self.jobs_view => self.toggle_history(),
                     KeyAction::Highlight => self.highlight_selected(),
+                    KeyAction::Pin => self.pin_selected(),
                     KeyAction::Mouse => self.toggle_mouse(),
                     KeyAction::Rename => self.rename_selected(),
                     KeyAction::Mcp => self.open_mcp(),
@@ -18498,7 +18546,14 @@ states:
         let rows = |path: &Path| {
             Data::load(path, d.path(), d.path())
                 .unwrap()
-                .rows_excluding(false, true, false, &HashSet::new(), &mut Widths::new())
+                .rows_excluding(
+                    false,
+                    true,
+                    false,
+                    &HashSet::new(),
+                    &HashSet::new(),
+                    &mut Widths::new(),
+                )
         };
         let header = |rows: &[Row]| {
             rows.iter()
@@ -24855,6 +24910,54 @@ states:
     }
 
     #[test]
+    fn ctrl_t_pins_a_session_above_every_group_across_restarts() {
+        let d = dir();
+        registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
+        registry(d.path(), B, "/src/two", "idle", 1_757_682_871_000);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let order = |app: &App| -> Vec<String> {
+            app.rows
+                .iter()
+                .filter_map(|r| match &r.kind {
+                    Kind::Header => r.cells.first().map(|(t, _)| t.clone()),
+                    Kind::Session(id, _) => Some(id[..1].to_owned()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(order(&app), ["/src/one", "a", "/src/two", "b"]);
+        let at = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(B))
+            .unwrap();
+        app.cursor = at;
+        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(order(&app), ["pinned", "b", "/src/one", "a"]);
+        assert_eq!(
+            key(&app).as_deref(),
+            Some(B),
+            "the cursor follows the pinned row"
+        );
+        let mut again = self::app(d.path());
+        again.refresh().unwrap();
+        assert_eq!(
+            order(&again),
+            ["pinned", "b", "/src/one", "a"],
+            "the pin is saved"
+        );
+        again
+            .key(KeyCode::Char('t'), KeyModifiers::CONTROL)
+            .unwrap();
+        assert_eq!(
+            order(&again),
+            ["/src/one", "a", "/src/two", "b"],
+            "a second press unpins"
+        );
+    }
+
+    #[test]
     fn ctrl_p_paints_the_selected_session_in_the_configured_colour_until_it_is_pressed_again() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
@@ -27374,9 +27477,14 @@ states:
 
         // Hiding the final sessions restores both explicitly pinned folders.
         let hidden = HashSet::from([B, C]);
-        let rows = app
-            .data
-            .rows_excluding(false, false, false, &hidden, &mut Widths::new());
+        let rows = app.data.rows_excluding(
+            false,
+            false,
+            false,
+            &hidden,
+            &HashSet::new(),
+            &mut Widths::new(),
+        );
         assert_eq!(
             rows.iter()
                 .filter_map(|r| match &r.kind {
@@ -29822,9 +29930,9 @@ while True:
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
 
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
         let Mode::Mcp(panel) = &app.mode else {
-            panic!("ctrl+t opens the MCP panel: {}", app.status);
+            panic!("ctrl+l opens the MCP panel: {}", app.status);
         };
         assert_eq!(panel.kind, HarnessKind::Claude);
         assert_eq!(
@@ -29896,7 +30004,7 @@ while True:
         registry(claude, A, cwd, "idle", 1_757_682_871_000);
         let mut app = app(claude);
         app.refresh().unwrap();
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
         app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -29913,7 +30021,7 @@ while True:
             .iter()
             .position(|k| *k == HarnessKind::Opencode)
             .unwrap();
-        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(
             app.status,
