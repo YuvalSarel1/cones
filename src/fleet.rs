@@ -39,6 +39,9 @@ pub struct Session {
     /// Model id reported by the harness, verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// A model change the harness reports as applying from the next turn, verbatim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -586,6 +589,7 @@ fn build(
         state: state(job, v["status"].as_str().unwrap_or("-")),
         started: d.report.started,
         last_activity: d.report.last_activity,
+        next_model: None,
         model: d.report.model,
         pid,
         transcript_path: transcript,
@@ -1677,6 +1681,24 @@ pub fn model(id: &str) -> String {
         + window
 }
 
+/// The row's model, and a pending change as `running → next` without the words both share.
+pub fn row_model(s: &Session) -> String {
+    let Some(now) = s.model.as_deref().map(model) else {
+        return "-".into();
+    };
+    let Some(next) = s.next_model.as_deref().map(model) else {
+        return now;
+    };
+    let same = now
+        .char_indices()
+        .zip(next.chars())
+        .take_while(|((_, a), b)| a == b)
+        .filter(|((_, c), _)| matches!(c, ' ' | '-'))
+        .last()
+        .map_or(0, |((i, _), _)| i + 1);
+    format!("{now} → {}", &next[same..])
+}
+
 pub fn tilde(path: &Path) -> String {
     dirs::home_dir()
         .and_then(|h| path.strip_prefix(h).ok())
@@ -2220,6 +2242,7 @@ mod tests {
             state: "idle".into(),
             started: None,
             last_activity: None,
+            next_model: None,
             model: None,
             pid: None,
             transcript_path: Some(transcript.clone()),

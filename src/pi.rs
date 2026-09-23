@@ -334,6 +334,7 @@ fn row(p: &Process, file: Option<(PathBuf, Meta)>) -> Session {
         cwd: p.cwd.clone().unwrap_or_default(),
         state: t.state.unwrap_or("-").into(),
         last_activity: t.last_activity,
+        next_model: None,
         model: t.model,
         started: Some(p.started),
         pid: Some(p.pid),

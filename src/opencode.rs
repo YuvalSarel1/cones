@@ -571,6 +571,7 @@ pub fn rows(home: &Path, procs: &[Process]) -> Result<Vec<Session>> {
                 pid: Some(p.pid),
                 transcript_path: entry.map(|e| e.transcript.clone()),
                 title: entry.and_then(|e| e.title.clone()),
+                next_model: None,
                 model: report.model,
                 tokens_in: report.tokens_in,
                 tokens_out: report.tokens_out,

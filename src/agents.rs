@@ -58,6 +58,7 @@ pub fn sessions(kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
                 started: Some(p.started),
                 pid: Some(p.pid),
                 last_activity: None,
+                next_model: None,
                 model: None,
                 transcript_path: None,
                 tokens_in: None,

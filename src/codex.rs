@@ -84,6 +84,8 @@ pub struct Tail {
     pub last_activity: Option<DateTime<Utc>>,
     /// `turn_context.model` on the last turn, verbatim.
     pub model: Option<String>,
+    /// `thread_settings_applied` model differing from `model`, until the next `turn_context`.
+    pub next_model: Option<String>,
     /// `turn_context.effort` on the last turn, verbatim.
     pub effort: Option<String>,
     /// Latest `total_token_usage`: input includes cache hits; context uses `last_token_usage.total_tokens`.
@@ -467,9 +469,17 @@ impl Tail {
                 if let Some(model) = v["payload"]["model"].as_str() {
                     t.model = Some(model.to_owned());
                 }
+                t.next_model = None;
                 if let Some(effort) = v["payload"]["effort"].as_str() {
                     t.effort = Some(effort.to_owned());
                 }
+            }
+            // `/model` mid-turn applies from the next turn; the running turn keeps its model.
+            if payload["type"] == "thread_settings_applied" {
+                t.next_model = payload["thread_settings"]["model"]
+                    .as_str()
+                    .filter(|m| Some(*m) != t.model.as_deref())
+                    .map(str::to_owned);
             }
             if let Some(state) = crate::harness::spec(crate::config::HarnessKind::Codex)
                 .state
@@ -842,6 +852,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 cwd: p.cwd.clone().unwrap_or_default(),
                 state: t.state.unwrap_or("-").into(),
                 last_activity: t.last_activity,
+                next_model: t.next_model,
                 model: t.model,
                 effort: t.effort,
                 usage: None,
@@ -999,6 +1010,7 @@ pub(crate) fn thread_rows_observed(
                     .unwrap_or_default(),
                 state: tail.state.unwrap_or("-").into(),
                 last_activity: tail.last_activity,
+                next_model: tail.next_model,
                 model: tail.model,
                 effort: tail.effort,
                 // A saved launch the daemon no longer holds is detached, and reports no process.
@@ -1440,6 +1452,65 @@ mod tests {
             tail_of(&path).effort,
             None,
             "a turn that reports no effort reports none"
+        );
+    }
+
+    #[test]
+    fn a_mid_turn_model_change_shows_pending_until_the_next_turn() {
+        let context = |model: &str| {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"turn_context","payload":{"model":model}})
+            )
+        };
+        let settings = |model: &str| {
+            format!(
+                "{}\n",
+                serde_json::json!({"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":model}}})
+            )
+        };
+        // The row label, and the JSON a `cones ls --json` consumer reads.
+        let shown = |t: &Tail| {
+            let s: crate::fleet::Session = serde_json::from_value(serde_json::json!({
+                "session_id": "x", "cwd": "/x", "state": "active",
+                "model": t.model, "next_model": t.next_model,
+            }))
+            .unwrap();
+            let json = serde_json::to_value(&s).unwrap();
+            (
+                crate::fleet::row_model(&s),
+                json["model"].clone(),
+                json.get("next_model").cloned(),
+            )
+        };
+        let mut t = Tail::default();
+        t.fold(&(context("openai.gpt-6-astra") + &settings("openai.gpt-6-astra")));
+        assert_eq!(
+            shown(&t),
+            ("GPT-6 Astra".into(), "openai.gpt-6-astra".into(), None),
+            "settings naming the running model are not a change"
+        );
+        t.fold(&settings("openai.gpt-5.6-sol"));
+        assert_eq!(
+            shown(&t),
+            (
+                "GPT-6 Astra → 5.6 Sol".into(),
+                "openai.gpt-6-astra".into(),
+                Some("openai.gpt-5.6-sol".into())
+            ),
+            "the running turn keeps its model id; the change is pending"
+        );
+        t.fold(&settings("openai.gpt-6-astra"));
+        assert_eq!(
+            shown(&t),
+            ("GPT-6 Astra".into(), "openai.gpt-6-astra".into(), None),
+            "switching back cancels the change"
+        );
+        t.fold(&(settings("openai.gpt-5.6-sol") + &context("openai.gpt-5.6-sol")));
+        assert_eq!(
+            shown(&t),
+            ("GPT-5.6 Sol".into(), "openai.gpt-5.6-sol".into(), None),
+            "the next turn runs the new model"
         );
     }
 
