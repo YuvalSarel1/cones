@@ -447,10 +447,12 @@ impl Data {
     }
 
     /// A pending deletion is already hidden, so its folder must not stay covered by it.
-    fn has_rows_in(&self, dir: &Path, deleting: &HashSet<&str>) -> bool {
+    fn has_rows_in(&self, dir: &Path, deleting: &HashSet<&str>, pinned: &HashSet<String>) -> bool {
         let repository = dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+        // A pinned session is listed under "pinned", so it leaves its folder without a row.
         self.sessions.iter().any(|s| {
             !deleting.contains(s.session_id.as_str())
+                && !pinned.contains(&s.session_id)
                 && (s.cwd == dir || self.roots.get(&s.cwd) == Some(&repository))
         })
     }
@@ -707,7 +709,7 @@ impl Data {
                 (sort, name)
             };
             let group = groups.entry(key).or_default();
-            if group.is_empty() && !self.has_rows_in(dir, deleting) {
+            if group.is_empty() && !self.has_rows_in(dir, deleting, pinned) {
                 group.push(Entry::Folder(dir));
             }
         }
@@ -24812,6 +24814,56 @@ states:
         app.focus = Some(0);
         wait_paint(&mut app, 0, "PI");
         assert_eq!(app.foot_rows(), 1);
+    }
+
+    /// Pinning a folder's only session moved it under "pinned" and left the folder with no
+    /// row, so `+ add folder` kept offering a folder that adding could not show.
+    #[test]
+    fn a_folder_whose_only_session_is_pinned_keeps_its_row() {
+        let d = dir();
+        let work = d.path().join("work");
+        fs::create_dir(&work).unwrap();
+        registry(
+            d.path(),
+            A,
+            work.to_str().unwrap(),
+            "idle",
+            1_757_682_871_000,
+        );
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        app.pin_folder(work.clone()).unwrap();
+        let at = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(A))
+            .unwrap();
+        app.cursor = at;
+        app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        poll_until(&mut app, |a| a.loading.is_none());
+        let name = fleet::tilde(&work);
+        let row = app
+            .rows
+            .iter()
+            .find(|r| r.kind == Kind::Folder(name.clone()))
+            .expect("the folder keeps a row beside the pinned session");
+        assert_eq!(row.text(), "no sessions here");
+        assert!(
+            app.data.folder_suggestions("", 10).contains(&name),
+            "the folder is still configured"
+        );
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind == Kind::NewFolder)
+            .unwrap();
+        app.sync_suggestions();
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Suggestion(_, dir) if *dir == name)),
+            "a folder the list shows is not offered again"
+        );
     }
 
     #[test]
