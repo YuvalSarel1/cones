@@ -312,7 +312,7 @@ behavior remains native.
 | `ctrl+\` | Switch split/fullscreen. |
 | Other keys | Pass through, including Escape, Shift+Tab and modified arrows. Some terminal encodings lose modified-key distinctions. |
 | Shift+PageUp/PageDown | Scroll emulator history. |
-| Left drag | Select and copy pane text while cones owns mouse input. |
+| Left drag | Select pane text; release copies it. |
 | Wheel | Scroll the pane under the pointer; native mouse clients receive events, otherwise emulator history scrolls. Shift+wheel always scrolls the emulator. |
 | Paste | Preserve native bracketed paste. Empty paste events become Ctrl+V for image paste. |
 
@@ -321,9 +321,13 @@ launchers keep both keys native. Zsh returns with Tab/Left from an empty command
 continuations and foreground programs keep them. Other shells keep both native.
 
 Clicks in scrolled emulator history stay with the emulator. Typing returns to the live
-screen. A fullscreen client without mouse reporting gives mouse control to the terminal.
-Use the terminal's selection modifier or `alt+m` to select across the pane boundary;
-Alt+M toggles mouse capture. See [diagnostics](cli.md#diagnostics) for delays.
+screen.
+
+Cones reads the mouse on every screen. The wheel moves through the list and scrolls the
+pane, preview, Help or editor under the pointer. A left drag selects text in any of them and
+copies it on release, kept inside the region where the press landed. `alt+m` hands the
+mouse to the terminal, for a selection that crosses regions, and takes it back. See
+[diagnostics](cli.md#diagnostics) for delays.
 
 ## Composer
 

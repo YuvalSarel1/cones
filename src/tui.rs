@@ -7632,12 +7632,54 @@ enum BindingState {
     Text,
 }
 
-/// A range of pane cells a drag has highlighted, relative to the pane's top left.
+/// A range of cells a drag has highlighted, as (row, column) relative to the top left of
+/// the region the press landed in. A viewer's text comes from its emulator, so scrollback
+/// and wide characters copy as the client wrote them; any other region copies the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Selection {
-    viewer: usize,
+    viewer: Option<usize>,
+    area: Rect,
     from: (u16, u16),
     to: (u16, u16),
+}
+
+impl Selection {
+    /// The selected cells of each row, in reading order.
+    fn rows(&self) -> impl Iterator<Item = (u16, std::ops::RangeInclusive<u16>)> {
+        let (start, end) = if self.from <= self.to {
+            (self.from, self.to)
+        } else {
+            (self.to, self.from)
+        };
+        let last_col = self.area.width.saturating_sub(1);
+        (start.0..=end.0.min(self.area.height.saturating_sub(1))).map(move |row| {
+            let first = if row == start.0 { start.1 } else { 0 };
+            let last = if row == end.0 { end.1 } else { last_col };
+            (row, first..=last.min(last_col))
+        })
+    }
+
+    /// The selected text of a drawn frame, one line per row without trailing blanks.
+    fn text(&self, frame: &ratatui::buffer::Buffer) -> String {
+        let mut out = Vec::new();
+        for (row, cols) in self.rows() {
+            let mut line = String::new();
+            let mut hidden = 0;
+            for col in cols {
+                // A wide character's second cell holds a blank the terminal never shows.
+                if hidden > 0 {
+                    hidden -= 1;
+                    continue;
+                }
+                if let Some(cell) = frame.cell((self.area.x + col, self.area.y + row)) {
+                    line.push_str(cell.symbol());
+                    hidden = Span::raw(cell.symbol()).width().saturating_sub(1);
+                }
+            }
+            out.push(line.trim_end().to_owned());
+        }
+        out.join("\n")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -8802,8 +8844,11 @@ struct App {
     mouse_capture: bool,
     /// Set by the release-the-mouse key: no reports at all, so the terminal selects.
     mouse_off: bool,
-    /// Where a left press landed in the pane, in cells relative to it.
-    drag_from: Option<(u16, u16)>,
+    /// Where the left button went down: the region and the cell a drag would start from.
+    drag_from: Option<Selection>,
+    /// The last frame drawn while a drag is anchored, which regions without an emulator
+    /// copy their text from.
+    drawn: ratatui::buffer::Buffer,
     /// The cell range a drag has highlighted.
     selection: Option<Selection>,
     needs_clear: bool,
@@ -9165,6 +9210,7 @@ impl App {
             mouse_capture: false,
             mouse_off: false,
             drag_from: None,
+            drawn: ratatui::buffer::Buffer::default(),
             selection: None,
             needs_clear: false,
             size: (24, 80),
@@ -12839,22 +12885,12 @@ impl App {
         Line::from(spans)
     }
 
-    /// A pane whose client asks for no mouse reporting, such as Codex, keeps the mouse for
-    /// the terminal, so dragging selects text there exactly as it does outside cones.
-    /// Anything else the dashboard draws around the pane needs the reports.
+    /// Cones reads the mouse whatever is on screen, since the wheel and drag-to-copy work in
+    /// every region. A terminal that is not reporting turns the wheel into arrow keys in the
+    /// alternate screen, as VS Code does, so a release by state would type into the
+    /// client. Only `alt+m` hands the mouse to the terminal.
     fn wants_mouse(&self) -> bool {
         !self.mouse_off
-            && (self.split_active()
-                || self.on_button()
-                || self.focus.is_some_and(|i| {
-                    self.viewers[i].viewer.screen().mouse_protocol_mode()
-                        != viewer::MouseProtocolMode::None
-                })
-                || self.history.visible
-                || matches!(
-                    self.mode,
-                    Mode::Columns(_) | Mode::Config(_) | Mode::Guide(_)
-                ))
     }
 
     /// Hand the mouse to the terminal, or take it back. A client that reports the mouse,
@@ -12959,6 +12995,9 @@ impl App {
         if !matches!(ev.kind, MouseEventKind::Moved) {
             self.rename = None;
         }
+        if self.drag_select(ev) {
+            return;
+        }
         if let Mode::Guide(guide) = &mut self.mode
             && guide.area.contains((ev.column, ev.row).into())
         {
@@ -12995,9 +13034,7 @@ impl App {
             return;
         }
         let list = self.list_area;
-        if self.history.visible
-            && !self.jobs_view
-            && matches!(self.mode, Mode::Normal | Mode::Filter)
+        if matches!(self.mode, Mode::Normal | Mode::Filter)
             && (self.split_active() || !self.pane_focused())
             && (list.left()..list.right()).contains(&ev.column)
             && (list.top()..list.bottom()).contains(&ev.row)
@@ -13035,9 +13072,6 @@ impl App {
                 MouseEventKind::ScrollDown => self.transcript.scroll(WHEEL_LINES as isize),
                 _ => {}
             }
-            return;
-        }
-        if self.drag_select(ev) {
             return;
         }
         if (self.split_active() || !self.pane_focused()) && !self.click(ev) {
@@ -13078,73 +13112,90 @@ impl App {
         }
     }
 
-    /// Dragging over a pane selects its text, whatever the client would have done with the
-    /// report. The emulator owns the highlight, so this holds for a client that reads the
-    /// mouse, such as Claude Code, as much as for one that ignores it. Returns whether the
-    /// event was spent on the selection.
+    /// The region under a cell and the viewer whose emulator holds its text, if one does.
+    /// Overlays come first, then the pane while it shows anything, then the list; the rest
+    /// of the frame, such as the footer, is one region of its own.
+    fn region_at(&self, column: u16, row: u16) -> (Rect, Option<usize>) {
+        let hit = |a: Rect| a.contains((column, row).into());
+        match &self.mode {
+            Mode::Guide(guide) if hit(guide.area) => return (guide.area, None),
+            Mode::Config(form) if hit(form.area) => return (form.area, None),
+            Mode::Columns(form) if hit(form.area) => return (form.area, None),
+            _ => {}
+        }
+        if (self.split_active() || self.pane_focused()) && hit(self.pane) {
+            let viewer = self.shown().filter(|_| !self.transcript_shown());
+            return (self.pane, viewer);
+        }
+        if hit(self.list_area) {
+            return (self.list_area, None);
+        }
+        (self.frame(), None)
+    }
+
+    /// Dragging selects the text of the region the press landed in, and releasing copies
+    /// it. The selection stays inside that region however far the pointer goes. In a pane
+    /// the emulator owns the text, so this holds for a client that reads the mouse, such as
+    /// Claude Code, as much as for one that ignores it. Returns whether the event was spent
+    /// on the selection.
     fn drag_select(&mut self, ev: MouseEvent) -> bool {
-        let pane = self.pane;
-        let Some(i) = self.shown() else {
-            self.drag_from = None;
-            self.selection = None;
-            return false;
-        };
-        let inside = (pane.left()..pane.right()).contains(&ev.column)
-            && (pane.top()..pane.bottom()).contains(&ev.row);
-        let cell = |ev: &MouseEvent| {
+        let cell = |area: Rect, ev: &MouseEvent| {
             (
-                ev.row.clamp(pane.top(), pane.bottom().saturating_sub(1)) - pane.y,
-                ev.column.clamp(pane.left(), pane.right().saturating_sub(1)) - pane.x,
+                ev.row.clamp(area.top(), area.bottom().saturating_sub(1)) - area.y,
+                ev.column.clamp(area.left(), area.right().saturating_sub(1)) - area.x,
             )
         };
         match ev.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 // A press ends the last selection and anchors the next one; the click itself
-                // still focuses the pane or reaches the client.
+                // still reaches the region under it.
                 self.selection = None;
-                self.drag_from = inside.then(|| cell(&ev));
+                let (area, viewer) = self.region_at(ev.column, ev.row);
+                let at = cell(area, &ev);
+                self.drag_from = (!area.is_empty()).then_some(Selection {
+                    viewer,
+                    area,
+                    from: at,
+                    to: at,
+                });
                 false
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let Some(from) = self.drag_from else {
+                let Some(anchor) = self.drag_from else {
                     return false;
                 };
-                let to = cell(&ev);
+                let to = cell(anchor.area, &ev);
                 if self.selection.is_none() {
-                    if from == to {
+                    if anchor.from == to {
                         return true;
                     }
                     // The client saw the press. Release it there, or it waits for a button
                     // that now belongs to the selection.
-                    let mode = self.viewers[i].viewer.screen().mouse_protocol_mode();
-                    let up = MouseEvent {
-                        kind: MouseEventKind::Up(MouseButton::Left),
-                        column: pane.x + from.1,
-                        row: pane.y + from.0,
-                        modifiers: KeyModifiers::NONE,
-                    };
-                    let bytes = viewer::encode_mouse(up, (pane.x, pane.y), mode);
-                    if !bytes.is_empty() {
-                        self.viewers[i].viewer.write(&bytes);
+                    if let Some(i) = anchor.viewer
+                        && let Some(open) = self.viewers.get_mut(i)
+                    {
+                        let mode = open.viewer.screen().mouse_protocol_mode();
+                        let area = anchor.area;
+                        let up = MouseEvent {
+                            kind: MouseEventKind::Up(MouseButton::Left),
+                            column: area.x + anchor.from.1,
+                            row: area.y + anchor.from.0,
+                            modifiers: KeyModifiers::NONE,
+                        };
+                        let bytes = viewer::encode_mouse(up, (area.x, area.y), mode);
+                        if !bytes.is_empty() {
+                            open.viewer.write(&bytes);
+                        }
                     }
                 }
-                self.selection = Some(Selection {
-                    viewer: i,
-                    from,
-                    to,
-                });
+                self.selection = Some(Selection { to, ..anchor });
                 true
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.drag_from = None;
-                let Some(sel) = self.selection else {
+                let Some(text) = self.selected_text() else {
                     return false;
                 };
-                let text = viewer::selected_text(
-                    self.viewers[sel.viewer].viewer.display_screen(),
-                    sel.from,
-                    sel.to,
-                );
                 self.status = match copy::to_clipboard(&text) {
                     Ok(()) => format!("copied {} characters", text.chars().count()),
                     Err(e) => format!("{e:#}"),
@@ -13158,6 +13209,15 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// What releasing the button copies.
+    fn selected_text(&self) -> Option<String> {
+        let sel = self.selection?;
+        Some(match sel.viewer.and_then(|i| self.viewers.get(i)) {
+            Some(open) => viewer::selected_text(open.viewer.display_screen(), sel.from, sel.to),
+            None => sel.text(&self.drawn),
+        })
     }
 
     fn pane_mouse(&self, mut ev: MouseEvent) -> Option<MouseEvent> {
@@ -15605,6 +15665,24 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        self.draw_screen(frame);
+        if let Some(sel) = self.selection {
+            let buf = frame.buffer_mut();
+            for (row, cols) in sel.rows() {
+                for col in cols {
+                    if let Some(cell) = buf.cell_mut((sel.area.x + col, sel.area.y + row)) {
+                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                    }
+                }
+            }
+        }
+        // ponytail: a copy per frame only while the button is down; the release reads it.
+        if self.drag_from.is_some() {
+            self.drawn = frame.buffer_mut().clone();
+        }
+    }
+
+    fn draw_screen(&mut self, frame: &mut Frame) {
         self.sync_suggestions();
         // Meaning arrives from the worker between keystrokes, so Help refreshes per frame.
         if let Mode::Guide(guide) = &mut self.mode {
@@ -15874,32 +15952,10 @@ impl App {
     /// Draw the emulator cursor only when focused and at the live scroll position.
     fn draw_viewer(&mut self, frame: &mut Frame, i: usize, pane: Rect) {
         let focused = self.focus == Some(i);
-        let selection = self.selection.filter(|s| s.viewer == i);
         let open = &mut self.viewers[i];
         open.viewer.resize(pane.height, pane.width);
         let screen = open.viewer.display_screen();
         viewer::render(screen, pane, frame.buffer_mut());
-        if let Some(sel) = selection {
-            let (start, end) = if sel.from <= sel.to {
-                (sel.from, sel.to)
-            } else {
-                (sel.to, sel.from)
-            };
-            for row in start.0..=end.0.min(pane.height.saturating_sub(1)) {
-                let first = if row == start.0 { start.1 } else { 0 };
-                let last = if row == end.0 {
-                    end.1
-                } else {
-                    pane.width.saturating_sub(1)
-                };
-                for col in first..=last.min(pane.width.saturating_sub(1)) {
-                    if let Some(target) = frame.buffer_mut().cell_mut((pane.x + col, pane.y + row))
-                    {
-                        target.set_style(Style::default().add_modifier(Modifier::REVERSED));
-                    }
-                }
-            }
-        }
         if focused && !screen.hide_cursor() && !open.viewer.scrolled() {
             let (row, mut col) = screen.cursor_position();
             col = col.min(pane.width.saturating_sub(1));
@@ -20444,6 +20500,44 @@ states:
         terminal.draw(|f| app.draw(f)).unwrap();
         assert!(app.transcript.document.is_none());
         assert!(!pane_text(&app, &terminal).contains("reply 0"));
+    }
+
+    #[test]
+    fn the_transcript_preview_scrolls_under_the_wheel_and_copies_a_dragged_line() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let path = app.history.rows[0].entry.transcript.clone();
+        let messages: String = (0..30).map(|i| {
+            format!("{}\n", serde_json::json!({"type":"assistant","message":{"content":[{"type":"text","text":format!("preview line {i:02}")}]}}))
+        }).collect();
+        fs::write(&path, messages).unwrap();
+        transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
+        assert!(app.transcript_shown() && app.wants_mouse());
+        let pane = app.pane;
+        let before = app.transcript.scroll;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: pane.x + 2,
+            row: pane.y + 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(
+            app.transcript.scroll < before,
+            "the wheel scrolls the preview"
+        );
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let row = (pane.top()..pane.bottom())
+            .find(|&y| cells(&terminal, y, pane.left()..pane.right()).contains("preview line"))
+            .unwrap();
+        let shown = cells(&terminal, row, pane.left()..pane.right());
+        let copied = drag_text(&mut app, &mut terminal, (pane.right() - 1, row), (0, row));
+        assert_eq!(
+            copied.as_deref(),
+            Some(shown.trim_end()),
+            "dragging back over the list keeps to the preview's line"
+        );
+        assert!(shown.contains("preview line"));
     }
 
     #[test]
@@ -25161,7 +25255,8 @@ states:
         assert_eq!(
             app.selection,
             Some(Selection {
-                viewer: 0,
+                viewer: Some(0),
+                area: pane,
                 from: (0, 0),
                 to: (0, 4)
             })
@@ -25189,10 +25284,7 @@ states:
                 .contains(Modifier::REVERSED),
             "and nothing past them is"
         );
-        assert_eq!(
-            viewer::selected_text(app.viewers[0].viewer.display_screen(), (0, 0), (0, 4)),
-            "HELLO"
-        );
+        assert_eq!(app.selected_text().as_deref(), Some("HELLO"));
         // Dragging past the pane clamps, and a fresh press drops the highlight.
         app.mouse(at(
             MouseEventKind::Drag(MouseButton::Left),
@@ -25202,13 +25294,180 @@ states:
         assert_eq!(
             app.selection,
             Some(Selection {
-                viewer: 0,
+                viewer: Some(0),
+                area: pane,
                 from: (0, 0),
                 to: (0, pane.width - 1)
             })
         );
         app.mouse(at(MouseEventKind::Down(MouseButton::Left), pane.x, pane.y));
         assert_eq!(app.selection, None);
+    }
+
+    /// Press at `from`, drag to `to` with a frame drawn between, as the event loop does,
+    /// and return what the release would copy. The release itself would fill the clipboard.
+    fn drag_text(
+        app: &mut App,
+        t: &mut Terminal<ratatui::backend::TestBackend>,
+        from: (u16, u16),
+        to: (u16, u16),
+    ) -> Option<String> {
+        let at = |kind, (column, row): (u16, u16)| MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        app.mouse(at(MouseEventKind::Down(MouseButton::Left), from));
+        t.draw(|f| app.draw(f)).unwrap();
+        app.mouse(at(MouseEventKind::Drag(MouseButton::Left), to));
+        t.draw(|f| app.draw(f)).unwrap();
+        app.selected_text()
+    }
+
+    fn reversed(t: &Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> bool {
+        t.backend()
+            .buffer()
+            .cell((x, y))
+            .unwrap()
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED)
+    }
+
+    #[test]
+    fn the_list_scrolls_under_the_wheel_and_copies_a_dragged_row_without_history() {
+        let d = dir();
+        registry_bg(d.path(), A, "/src/one", "idle", 1);
+        registry_bg(d.path(), B, "/src/two", "idle", 2);
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(app.split_active() && !app.history.visible);
+        assert!(
+            app.wants_mouse(),
+            "the list reads the mouse with the pane beside it"
+        );
+        let list = app.list_area;
+        let row_of = |app: &App, id: &str| {
+            let n = app
+                .visible
+                .iter()
+                .position(|&i| app.rows[i].kind.key() == Some(id))
+                .unwrap();
+            list.y + (n - app.scroll) as u16
+        };
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(A))
+            .unwrap();
+        let before = app.cursor;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: list.x + 1,
+            row: list.y + 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_ne!(app.cursor, before, "the wheel moves through the list");
+        t.draw(|f| app.draw(f)).unwrap();
+        // Dragging far into the pane stays on the list, which is where the press landed.
+        let row = row_of(&app, B);
+        let copied = drag_text(&mut app, &mut t, (list.x, row), (list.right() + 40, row));
+        // The press selected the row, and the copy is the row as drawn since.
+        let shown = cells(&t, row, list.x..list.right());
+        assert_eq!(copied.as_deref(), Some(shown.trim_end()));
+        assert!(shown.contains("bbbbbbbb"), "the row is B's: {shown:?}");
+        assert!(
+            reversed(&t, list.right() - 1, row),
+            "the row is highlighted"
+        );
+        assert!(
+            !reversed(&t, list.right() + 1, row),
+            "and the pane beside it is not"
+        );
+        // With the pane closed the list still reads the mouse.
+        app.split = false;
+        t.draw(|f| app.draw(f)).unwrap();
+        assert!(app.wants_mouse());
+        let before = app.cursor;
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 5,
+            row: app.list_area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_ne!(
+            app.cursor, before,
+            "the wheel moves the list with the pane closed"
+        );
+    }
+
+    #[test]
+    fn help_and_the_config_editor_copy_a_dragged_line() {
+        let (_d, mut app, mut t) = split_setup(200);
+        app.unfocus();
+        app.mode = Mode::Guide(Guide::new("The list"));
+        t.draw(|f| app.draw(f)).unwrap();
+        let Mode::Guide(guide) = &app.mode else {
+            unreachable!()
+        };
+        let area = guide.area;
+        let row = (area.top()..area.bottom())
+            .find(|&y| !cells(&t, y, area.left()..area.right()).trim().is_empty())
+            .unwrap();
+        let shown = cells(&t, row, area.left()..area.right());
+        let copied = drag_text(&mut app, &mut t, (area.x, row), (area.right() + 5, row));
+        assert_eq!(copied.as_deref(), Some(shown.trim_end()));
+        assert!(
+            matches!(app.mode, Mode::Guide(_)),
+            "the drag leaves Help open"
+        );
+
+        app.mode = Mode::Config(app.config_form());
+        t.draw(|f| app.draw(f)).unwrap();
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        let area = form.area;
+        let (at, tabs, top) = (form.row, form.tabs, form.top);
+        let last = area.bottom() - 1;
+        let shown: Vec<_> = (area.top()..=last)
+            .map(|y| {
+                cells(&t, y, area.left()..area.right())
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect();
+        // A drag down past the editor's bottom takes every line to its last.
+        let copied = drag_text(&mut app, &mut t, (area.x, area.y), (area.x, last + 10));
+        let mut expected = shown.clone();
+        *expected.last_mut().unwrap() = shown.last().unwrap().chars().take(1).collect();
+        assert_eq!(copied, Some(expected.join("\n")));
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(
+            (form.row, form.tabs, form.top),
+            (at, tabs, top),
+            "copying moves nothing"
+        );
+        app.mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: area.x + 2,
+            row: area.y + 3,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert_eq!(app.selection, None, "the wheel ends the highlight");
+        let Mode::Config(form) = &app.mode else {
+            unreachable!()
+        };
+        assert_ne!(
+            (form.row, form.tabs),
+            (at, tabs),
+            "the wheel walks the editor's settings"
+        );
     }
 
     #[test]
@@ -27759,16 +28018,28 @@ states:
         );
         assert!(!app.key(KeyCode::Char('a'), KeyModifiers::NONE).unwrap());
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
-        // A full frame held by a client that reads no mouse leaves the reports to the
-        // terminal, so dragging over it selects text the way it does outside cones.
+        // A full frame held by a client that reads no mouse, such as Codex, keeps the
+        // reports: a terminal left to itself would turn the wheel into arrow keys for the
+        // client. The wheel reaches the emulator's history and a drag copies its text.
         app.toggle_split();
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            !app.wants_mouse(),
-            "a mouseless client keeps the mouse for the terminal's own selection"
+            app.wants_mouse(),
+            "a mouseless client still leaves cones the mouse"
         );
         app.mouse(wheel(MouseEventKind::ScrollUp, KeyModifiers::NONE));
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 3);
+        t.draw(|f| app.draw(f)).unwrap();
+        let pane = app.pane;
+        let row = (pane.top()..pane.bottom())
+            .find(|&y| cells(&t, y, pane.left()..pane.right()).starts_with("line"))
+            .unwrap();
+        let shown = cells(&t, row, pane.left()..pane.right());
+        assert_eq!(
+            drag_text(&mut app, &mut t, (pane.x, row), (pane.right() + 9, row)).as_deref(),
+            Some(shown.trim_end()),
+            "a drag copies the history on screen"
+        );
         app.mouse(wheel(MouseEventKind::ScrollDown, KeyModifiers::NONE));
         assert_eq!(app.viewers[0].viewer.screen().scrollback(), 0);
         t.resize(Rect::new(0, 0, 80, 30)).unwrap();
@@ -27789,7 +28060,7 @@ states:
         assert!(!app.key(KeyCode::Char('m'), KeyModifiers::ALT).unwrap());
         assert!(app.wants_mouse(), "alt+m again takes the mouse back");
         app.unfocus();
-        assert!(!app.wants_mouse(), "the list alone releases the mouse");
+        assert!(app.wants_mouse(), "the list alone keeps the mouse");
     }
 
     #[test]
@@ -27846,8 +28117,8 @@ states:
         assert_eq!(key(&app).as_deref(), Some(A));
         app.split = false;
         assert!(
-            !app.wants_mouse(),
-            "with the pane off and no focused viewer none is read"
+            app.wants_mouse(),
+            "with the pane off and no focused viewer the list still reads it"
         );
         assert_eq!(app.rest_for(), REST);
         app.split = true;
