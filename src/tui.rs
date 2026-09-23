@@ -12248,14 +12248,10 @@ impl App {
             .find(|v| v.key == key)
             .and_then(|v| v.viewer.host())
             .or_else(|| {
-                self.data.hosts.iter().find(|host| {
-                    host.session.session_id == key
-                        || row.is_some_and(|s| {
-                            s.harness == host.session.harness
-                                && s.pid.is_some()
-                                && s.pid == host.session.pid
-                        })
-                })
+                self.data
+                    .hosts
+                    .iter()
+                    .find(|host| host.matches_session(key, row))
             })
     }
 

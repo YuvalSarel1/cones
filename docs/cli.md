@@ -122,7 +122,10 @@ row disappearing:
 | Claude background session | `claude stop <short id>`, against the native home the row was discovered in. Claude's own answer is the result, and it is idempotent: stopping a stopped session succeeds again. |
 | Session in a cones-owned persistent terminal | The terminal host's stop, which acknowledges only after the native client it owns has exited. |
 
-For a hosted terminal, `ID` must match the session id stored by its host. A process or native conversation id printed by discovery may differ; the CLI does not translate those ids back to a host. The dashboard can locate an owned terminal by its client and stop it with `ctrl+x` twice.
+For a hosted terminal, both its saved session id and the current process or native
+conversation id printed by discovery can identify it. The CLI and dashboard match
+the discovered row to its host using the same harness and live client pid.
+The CLI refuses ambiguous matches. The dashboard's equivalent is `ctrl+x` twice.
 
 Everything else is an error. A session in a terminal cones does not own can only be ended by that
 terminal. A harness with no native session stop says so by name instead of substituting something

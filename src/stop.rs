@@ -19,9 +19,17 @@ use std::{
 /// End the work `id` names. Returns the line describing what was stopped; every other outcome,
 /// including an unsupported target, is an error.
 pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
-    let hosts: Vec<_> = crate::terminal_host::records(state)
-        .into_iter()
-        .filter(|r| r.session.session_id == id)
+    let records = crate::terminal_host::records(state);
+    // Exact host ids also work for shells and clients with no native discovery.
+    // Otherwise resolve the current row before matching its harness and owned pid.
+    let session = if records.iter().any(|r| r.matches_session(id, None)) {
+        None
+    } else {
+        crate::fleet::control_session(claude, id)?
+    };
+    let hosts: Vec<_> = records
+        .iter()
+        .filter(|r| r.matches_session(id, session.as_ref()))
         .collect();
     ensure!(
         hosts.len() < 2,
@@ -38,7 +46,7 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
             record.session.harness
         ));
     }
-    let session = crate::fleet::control_session(claude, id)?.with_context(|| {
+    let session = session.with_context(|| {
         format!("{id} is not a live session; `cones ls --json` lists the ids that can be stopped")
     })?;
     let spec = harness::by_name(&session.harness)

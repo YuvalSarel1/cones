@@ -3,8 +3,11 @@ use serde_json::json;
 use std::{
     fs,
     io::{Read, Write},
-    os::{fd::AsRawFd, unix::fs::PermissionsExt},
-    path::PathBuf,
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::PermissionsExt},
+    },
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
 };
 
@@ -91,6 +94,37 @@ impl Fixture {
 
     fn calls(&self) -> String {
         fs::read_to_string(self.home().join("calls.log")).unwrap_or_default()
+    }
+
+    fn pi(&self) -> PathBuf {
+        fs::create_dir_all(self.root.path().join(".pi/agent")).unwrap();
+        let program = self.root.path().join(".local/bin/pi");
+        fs::write(
+            &program,
+            "#!/usr/bin/python3\nimport time\nwhile True:\n    time.sleep(1)\n",
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        program
+    }
+
+    fn rows(&self) -> Vec<serde_json::Value> {
+        let out = Command::new(env!("CARGO_BIN_EXE_cones"))
+            .env("HOME", self.root.path())
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .args([
+                "--state-dir",
+                self.state().to_str().unwrap(),
+                "ls",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        text(&out.stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
     }
 }
 
@@ -261,39 +295,8 @@ fn only_a_declared_native_stop_operation_makes_a_harness_stoppable() {
 fn an_owned_terminal_stop_waits_for_its_native_client_to_exit() {
     let f = Fixture::new();
     let state = f.state();
-    fs::create_dir(state.join("terminals")).unwrap();
-    let id = uuid::Uuid::new_v4().to_string();
     let session = "ffffffff-6666-4666-8666-666666666666";
-    let socket = PathBuf::from(format!("/tmp/cones-stop-test-{id}"));
-    let record = json!({
-        "id": id, "socket": socket, "what": "fixture",
-        "session": {"session_id": session, "harness": "claude", "kind": "interactive",
-                    "cwd": f.root.path(), "state": "-"}
-    });
-    let mut host = Host(
-        Command::new(env!("CARGO_BIN_EXE_cones"))
-            .arg("__terminal-host")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
-    );
-    let launch = json!({
-        "program": "/bin/cat".as_bytes(), "args": [], "env": [],
-        "cwd": f.root.path(), "rows": 12, "cols": 80,
-        "colors": {"fg": "rgb:e4e4/e4e4/e4e4", "bg": "rgb:1414/1414/1414"},
-        "shell": true, "record": record, "state": state
-    });
-    let bytes = serde_json::to_vec(&launch).unwrap();
-    let mut stdin = host.0.stdin.take().unwrap();
-    stdin
-        .write_all(&(bytes.len() as u32).to_be_bytes())
-        .unwrap();
-    stdin.write_all(&bytes).unwrap();
-    drop(stdin);
-    let ready = ready(&mut host);
-    let pid = ready["Ok"]["session"]["pid"].as_u64().unwrap() as i32;
+    let host = Host::start(&f, "claude", session, Path::new("/bin/cat"));
 
     let message = cones::stop::session(&state, &f.home(), session).unwrap();
     assert!(
@@ -301,13 +304,12 @@ fn an_owned_terminal_stop_waits_for_its_native_client_to_exit() {
         "{message}"
     );
     assert_eq!(
-        unsafe { libc::kill(pid, 0) },
+        unsafe { libc::kill(host.pid(), 0) },
         -1,
         "the acknowledgement must follow the native client's exit"
     );
-    assert!(!state.join(format!("terminals/{id}.json")).exists());
+    assert!(!host.path(&f).exists());
     assert_eq!(f.calls(), "", "an owned terminal is stopped by its host");
-    let _ = fs::remove_file(&socket);
 
     // With the host gone the same id is no longer stoppable, and says so rather than succeeding.
     let error = cones::stop::session(&state, &f.home(), session).unwrap_err();
@@ -317,17 +319,201 @@ fn an_owned_terminal_stop_waits_for_its_native_client_to_exit() {
     );
 }
 
-struct Host(Child);
+#[test]
+fn a_discovered_native_id_stops_only_its_owned_client_and_keeps_history() {
+    let f = Fixture::new();
+    let host = Host::start(&f, "claude", "launch-placeholder", Path::new("/bin/cat"));
+    let other = Host::start(&f, "claude", "other-launch", Path::new("/bin/cat"));
+    let id = "12121212-1111-4111-8111-111111111111";
+    f.live(id, "interactive", host.pid() as u32);
+    let transcript = f.transcript(id);
+
+    let out = f.stop(id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains(id));
+    assert!(!host.alive(), "the selected client must have exited");
+    assert!(!host.path(&f).exists());
+    assert!(other.alive(), "another owned session must keep running");
+    assert!(other.path(&f).exists());
+    assert!(transcript.exists(), "history must survive stopping");
+    assert_eq!(f.calls(), "", "an owned client must use its host");
+}
+
+#[test]
+fn the_pi_process_id_printed_by_ls_stops_its_owned_terminal() {
+    let f = Fixture::new();
+    let host = Host::start(&f, "pi", "pi-launch-placeholder", &f.pi());
+    let id = format!("pi-{}", host.pid());
+    let rows = f.rows();
+    assert!(
+        rows.iter().any(|row| row["session"]["session_id"] == id),
+        "the process id must come from ls: {rows:?}"
+    );
+
+    let out = f.stop(&id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains(&id));
+    assert!(
+        !host.alive(),
+        "stop must wait for the listed client to exit"
+    );
+    assert!(!host.path(&f).exists());
+    assert_eq!(f.calls(), "");
+}
+
+#[test]
+fn a_pi_conversation_id_replacing_the_launch_id_stops_its_owned_terminal() {
+    let f = Fixture::new();
+    let host = Host::start(&f, "pi", "pi-launch-placeholder", &f.pi());
+    let cwd = fs::canonicalize(f.root.path()).unwrap();
+    let dir = cones::pi::session_dir(&f.root.path().join(".pi/agent"), &cwd);
+    fs::create_dir_all(&dir).unwrap();
+    let id = "56565656-1111-4111-8111-111111111111";
+    let transcript = dir.join(format!("{id}.jsonl"));
+    fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            json!({"type": "session", "id": id, "cwd": cwd,
+                   "timestamp": chrono::Utc::now().to_rfc3339()})
+        ),
+    )
+    .unwrap();
+    let rows = f.rows();
+    assert!(
+        rows.iter()
+            .any(|row| row["session"]["session_id"] == id && row["session"]["pid"] == host.pid()),
+        "the native id must identify this client in ls: {rows:?}"
+    );
+
+    let out = f.stop(id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains(id));
+    assert!(!host.alive());
+    assert!(!host.path(&f).exists());
+    assert!(transcript.exists());
+    assert_eq!(f.calls(), "");
+}
+
+#[test]
+fn an_ambiguous_owned_id_stops_neither_client() {
+    let f = Fixture::new();
+    let first = Host::start(&f, "claude", "same-id", Path::new("/bin/cat"));
+    let second = Host::start(&f, "claude", "same-id", Path::new("/bin/cat"));
+
+    let out = f.stop("same-id");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("names 2 cones terminals"),
+        "{}",
+        text(&out.stderr)
+    );
+    for host in [&first, &second] {
+        assert!(host.alive());
+        assert!(host.path(&f).exists());
+    }
+    assert_eq!(f.calls(), "");
+}
+
+#[test]
+fn a_discovered_id_with_another_harness_does_not_claim_an_owned_process() {
+    let f = Fixture::new();
+    let host = Host::start(&f, "pi", "pi-launch-placeholder", Path::new("/bin/cat"));
+    let id = "34343434-1111-4111-8111-111111111111";
+    f.live(id, "interactive", host.pid() as u32);
+
+    let out = f.stop(id);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains("runs in a terminal cones does not own"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        host.alive(),
+        "matching only a pid must not stop another harness"
+    );
+    assert!(host.path(&f).exists());
+    assert_eq!(f.calls(), "");
+}
+
+struct Host {
+    child: Child,
+    record: serde_json::Value,
+}
+
+impl Host {
+    fn start(f: &Fixture, harness: &str, session: &str, program: &Path) -> Self {
+        let state = f.state();
+        fs::create_dir_all(state.join("terminals")).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let socket = PathBuf::from(format!("/tmp/cones-stop-test-{id}"));
+        let record = json!({
+            "id": id, "socket": socket, "what": "fixture",
+            "session": {"session_id": session, "harness": harness, "kind": "interactive",
+                        "cwd": f.root.path(), "state": "-"}
+        });
+        let launch = json!({
+            "program": program.as_os_str().as_bytes(), "args": [],
+            "env": [["HOME".as_bytes(), f.root.path().as_os_str().as_bytes()]],
+            "cwd": f.root.path(), "rows": 12, "cols": 80,
+            "colors": {"fg": "rgb:e4e4/e4e4/e4e4", "bg": "rgb:1414/1414/1414"},
+            "shell": true, "record": record, "state": state
+        });
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cones"))
+            .arg("__terminal-host")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let bytes = serde_json::to_vec(&launch).unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin
+            .write_all(&(bytes.len() as u32).to_be_bytes())
+            .unwrap();
+        stdin.write_all(&bytes).unwrap();
+        drop(stdin);
+        let mut host = Self { child, record };
+        host.record = ready(&mut host)["Ok"].clone();
+        host
+    }
+
+    fn pid(&self) -> i32 {
+        self.record["session"]["pid"].as_u64().unwrap() as i32
+    }
+
+    fn alive(&self) -> bool {
+        unsafe { libc::kill(self.pid(), 0) == 0 }
+    }
+
+    fn path(&self, f: &Fixture) -> PathBuf {
+        f.state().join(format!(
+            "terminals/{}.json",
+            self.record["id"].as_str().unwrap()
+        ))
+    }
+}
+
 impl Drop for Host {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if self.child.try_wait().ok().flatten().is_none()
+            && let Some(pid) = self.record["session"]["pid"].as_u64()
+        {
+            // Only the disposable client created by this fixture.
+            unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(socket) = self.record["socket"].as_str() {
+            let _ = fs::remove_file(socket);
+        }
     }
 }
 
 /// The host's readiness reply, or a panic with whatever it said instead.
 fn ready(host: &mut Host) -> serde_json::Value {
-    let stdout = host.0.stdout.as_mut().unwrap();
+    let stdout = host.child.stdout.as_mut().unwrap();
     let mut descriptor = libc::pollfd {
         fd: stdout.as_raw_fd(),
         events: libc::POLLIN,

@@ -32,6 +32,19 @@ pub(crate) struct Record {
     pub what: String,
 }
 
+impl Record {
+    /// Discovery can replace a launch id with a process or native conversation id.
+    /// Only the same harness and its owned client can bind that row back to this host.
+    pub(crate) fn matches_session(&self, id: &str, session: Option<&Session>) -> bool {
+        self.session.session_id == id
+            || session.is_some_and(|session| {
+                session.harness == self.session.harness
+                    && session.pid.is_some()
+                    && session.pid == self.session.pid
+            })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Launch {
     program: Vec<u8>,

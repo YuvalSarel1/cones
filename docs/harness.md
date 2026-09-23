@@ -164,6 +164,31 @@ Claude background state uses the first matching rule:
 
 A completed turn followed by a local command such as `/compact` may still satisfy rule 4. Treating the pane's quiet prompt as idle would override the native report and misclassify the lag case in rule 1.
 
+### Native input signals
+
+Codex and pi have native input signals that cones' transcript readers do not yet
+consume. Checked on September 23, 2026:
+
+- **Codex 0.156.1:** the serving app-server's `thread/read` and `thread/list` return
+  runtime `status.activeFlags`, including `waitingOnApproval` and
+  `waitingOnUserInput`. A disposable loopback check verified that a separate
+  observer could read an approval wait, disconnect and reconnect, and see it clear
+  when the original client declined. The observer neither resumed the thread nor
+  received its approval request. The user-input flag was checked in the generated
+  native schema, not exercised in that check.
+  [Native protocol](https://developers.openai.com/codex/app-server/).
+- **Pi 0.85.1+bedrock-images.61716b03c:** a reporting extension can observe
+  `ui_prompt_start` and `ui_prompt_end` with the native session id. A disposable
+  TUI check verified paired events for a cancelled confirmation and an answered
+  text-input dialog, without a model call. Selectors, editors and custom dialogs
+  are declared by the API but were not exercised.
+  [Event contract](https://github.com/YuvalSarel1/pi/blob/61716b03c944d3096a94d0e7ab7dd666b4a370ec/packages/coding-agent/src/core/extensions/types.ts#L745-L761).
+
+These are prospective reporting integrations. Codex observation needs the
+app-server that owns the thread. A pi observer must be loaded into the native
+client; already-running terminals do not acquire it. Responses remain in the
+native interface.
+
 ### Context window for Claude
 
 Only statusLine stdin reports `context_window.context_window_size`; the transcript, registry and `claude agents --json` do not. cones reads a saved copy under `<Claude home>/statusline/<session_id>.json`, including its reported `cost.total_cost_usd` and `effort.level` when present. Missing, negative or non-finite costs remain unavailable. To provide it, add this after `input=$(cat)` in your statusLine command, using the same native home as the dashboard:
@@ -244,7 +269,12 @@ An unattended session that is waiting for input stays waiting. cones does not an
 
 Codex is unsupported for detached launch. Against codex-cli 0.155.1 on September 22, 2026, no subcommand creates a thread and reports its id: `codex --remote <addr> -- <instruction>` opens a TUI client that reports none, `codex agents` is a browser, `codex app-server daemon` manages the daemon rather than its threads, and `codex exec` is a non-interactive run rather than a session to join. A detached Codex session also has no supported stop: `archive` and `delete` are history operations, and `remote-control stop` and `app-server daemon stop` end the daemon that owns every thread. Since exact identity and continued execution cannot both be established, cones reports no detached launch for it rather than returning an identity it would have to guess.
 
-A hosted terminal has one known gap. [`cones stop`](cli.md#stopping-a-session) finds a cones-owned terminal by matching the id against the host record's own session id, and finds a native session in the Claude registry. An OpenCode row is the host's record, so stopping it works. A pi or experimental row is the harness's process row, `pi-<pid>`, which matches neither, so `cones stop pi-<pid>` reports that it is not a live session even though it is listed and cones owns its terminal. Stop such a session from the dashboard instead, with `ctrl+x` twice on its row. The capability is present on both sides; what is missing is the lookup from a roster row to the host record that owns its pid.
+[`cones stop`](cli.md#stopping-a-session) accepts an owned host's saved id or its
+current discovered row id. The CLI shares the dashboard's match by harness and
+live client pid, so `pi-<pid>` and a later native conversation id can both resolve
+to the same host. It refuses ambiguous matches and leaves unrelated terminals
+alone. `tests/stop.rs` exercises process and native ids against real disposable
+hosts, including client exit, retained history and an unaffected second session.
 
 Hosting an experimental launcher gives it a lifetime, nothing else. Their [declared limits](#additional-terminal-harnesses) are unchanged: no transcript, no message delivery, no state, model, context or cost, and a process row rather than a conversation. A cones-owned terminal does not turn a process into a reported session.
 
