@@ -665,26 +665,28 @@ fn state(job: &Value, status: &str) -> String {
         || job["selfWake"].as_bool() == Some(true)
         || job["inFlight"]["kinds"]
             .as_array()
-            .is_some_and(|k| k.iter().any(|k| k.as_str() == Some("session_cron")));
+            .is_some_and(|k| k.iter().any(is_wake));
     let finished = tempo != Some("active")
         && match job_state {
             Some("done") => !waking,
             Some("failed" | "stopped") => true,
             _ => false,
         };
-    // A scheduled wake is not work: a job sleeping until its cron fires rests.
+    // A wake is not work: a job sleeping until its cron fires or a monitor reports rests.
+    // A done job keeps tempo active while its monitor runs, as Claude's own "done · 1 monitor
+    // still running" footer shows.
     let in_flight = &job["inFlight"];
     let kinds = in_flight["kinds"]
         .as_array()
         .map(Vec::as_slice)
         .unwrap_or_default();
     let resting = status == "idle"
-        && tempo == Some("idle")
+        && (tempo == Some("idle") || job_state == Some("done") && !kinds.is_empty())
         && in_flight["queued"].as_u64().unwrap_or(0) == 0
         && if kinds.is_empty() {
             in_flight["tasks"].as_u64().unwrap_or(0) == 0
         } else {
-            kinds.iter().all(|k| k.as_str() == Some("session_cron"))
+            kinds.iter().all(is_wake)
         };
     match job_state {
         _ if status == "busy" || status == "shell" => "active",
@@ -695,6 +697,11 @@ fn state(job: &Value, status: &str) -> String {
         None => status,
     }
     .into()
+}
+
+/// In-flight kinds that only wait to start a turn: a scheduled wake or a monitor.
+fn is_wake(kind: &Value) -> bool {
+    matches!(kind.as_str(), Some("session_cron" | "monitor"))
 }
 
 /// Read reported values saved by the user's statusLine command.
@@ -2226,6 +2233,23 @@ mod tests {
         );
         sleeping["inFlight"]["kinds"] = serde_json::json!(["session_cron", "bash"]);
         assert_eq!(word(sleeping.clone(), "idle"), "active");
+        // Claude Code 2.1.280's record for a finished job whose monitor still runs.
+        let mut watching = job("done", "active");
+        watching["inFlight"] = serde_json::json!({
+            "tasks": 1, "queued": 0, "kinds": ["monitor"], "drainableMonitors": 0
+        });
+        assert_eq!(
+            word(watching.clone(), "idle"),
+            "idle",
+            "a monitor waiting to report is not a turn"
+        );
+        assert_eq!(word(watching.clone(), "busy"), "active");
+        watching["state"] = "working".into();
+        assert_eq!(
+            word(watching, "idle"),
+            "active",
+            "an active job mid-turn beside its monitor is working"
+        );
         sleeping["inFlight"]["kinds"] = serde_json::json!(["session_cron"]);
         sleeping["inFlight"]["queued"] = 1.into();
         assert_eq!(
