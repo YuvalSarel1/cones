@@ -11,7 +11,7 @@ defaults and accepted values.
 The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a
 read failed: previous rows remain visible with the error until a refresh succeeds.
 
-`●` marks an unread completion. Viewing its painted live pane or focusing its loaded output
+A bold title marks an unread completion. Viewing its painted live pane or focusing its loaded output
 preview clears it. Merely selecting a row before its content loads does not. Input requests
 remain until the harness reports resolution. Read markers are shared across dashboards and
 survive restart; existing completions form the initial baseline. Turns that begin and end
