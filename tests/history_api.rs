@@ -561,3 +561,120 @@ fn mcp_lifecycle_framing_and_tool_errors_are_distinct() {
     assert_eq!(replies[8]["id"], 6);
     assert_eq!(replies[8]["result"], json!({}));
 }
+
+/// `index status` counts without loading a model; `index` reports every phase change as a
+/// JSON line and ends on the model's failure. The model directory is obstructed, so neither
+/// can download or run one.
+#[test]
+fn index_status_and_index_report_progress_without_a_model() {
+    let f = Fixture::new();
+    let before = f.snapshot();
+    let models = f.root.path().join("state/search/models");
+    fs::create_dir_all(&models).unwrap();
+    let blocked = cones::search::model_directory(&models);
+    fs::write(&blocked, "blocked").unwrap();
+
+    let out = f
+        .command()
+        .args(["index", "status", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(status["phase"], "embedding");
+    assert_eq!(status["conversations"], indexed_sessions(&f));
+    assert!(status["passages"].as_i64().unwrap() > 0);
+    assert_eq!(status["embedded"], 0);
+    assert_eq!(status["remaining"], status["passages"]);
+    assert!(status["rate"].is_null() && status["eta_seconds"].is_null());
+    assert_eq!(status["model_downloaded"], false);
+    assert_eq!(status["cache"], json!(f.root.path().join("state/search")));
+    assert!(status["cache_bytes"].as_u64().unwrap() > 0);
+    assert!(status["status"].is_null() && status["error"].is_null());
+    assert_eq!(fs::read_to_string(&blocked).unwrap(), "blocked");
+
+    let out = f.command().args(["index", "status"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let summary = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        summary.starts_with(&format!(
+            "0/{0} passages embedded · {0} remaining · {1} conversations · model not downloaded",
+            status["passages"], status["conversations"]
+        )),
+        "{summary}"
+    );
+
+    // Another process holding the batch claim leaves this one waiting, not embedding.
+    let claim = fs::File::create(f.root.path().join("state/search/fill.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&claim).unwrap();
+    let out = f
+        .command()
+        .args(["index", "--json", "--timeout", "1"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let phases: Vec<Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap()["phase"].clone())
+        .collect();
+    assert_eq!(
+        phases,
+        [json!("syncing"), json!("waiting"), json!("waiting")]
+    );
+    drop(claim);
+
+    let out = f.command().args(["index", "--json"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "a model failure exits 1");
+    let lines: Vec<Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0]["phase"], "syncing");
+    let last = lines.last().unwrap();
+    assert_eq!(last["phase"], "failed");
+    assert!(last["error"].as_str().is_some_and(|e| !e.is_empty()));
+    assert_eq!(last["passages"], status["passages"]);
+    assert_eq!(last["embedded"], 0);
+    assert!(
+        lines[1..lines.len() - 1]
+            .iter()
+            .all(|l| l["phase"] == "downloading_model" && l["remaining"] == status["passages"]),
+        "{lines:?}"
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cones: indexing failed:"));
+    assert_eq!(fs::read_to_string(&blocked).unwrap(), "blocked");
+
+    // Piped without --json, progress is one plain line per change on stderr.
+    let out = f
+        .command()
+        .args(["index", "--timeout", "0"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a timeout leaves work remaining"
+    );
+    let progress = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(
+        progress,
+        format!(
+            "Reading conversations…\nDownloading model ▕{}▏ 0/{}\n",
+            "░".repeat(24),
+            status["passages"]
+        )
+    );
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .starts_with(&format!("0/{} passages embedded", status["passages"]))
+    );
+    assert_eq!(f.snapshot(), before, "native archives are never written");
+}

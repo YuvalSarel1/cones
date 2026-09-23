@@ -245,8 +245,78 @@ enum Action {
         #[arg(long)]
         json: bool,
     },
+    /// Build the meaning-search index for every conversation, with progress; see docs/cli.md.
+    Index {
+        /// Stop after this many seconds; finished batches are kept.
+        #[arg(long)]
+        timeout: Option<u64>,
+        /// One JSON status line per change on stdout instead of a progress bar.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        task: Option<IndexTask>,
+    },
     /// Serve cones_search and cones_show over MCP stdio until stdin closes.
     Mcp,
+}
+
+#[derive(Subcommand)]
+enum IndexTask {
+    /// Counts, model and cache, without loading a model or embedding anything.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn index_progress(s: &cones::history_api::IndexStatus) -> String {
+    use cones::history_api::Phase;
+    let label = match s.phase {
+        Phase::Syncing => return "Reading conversations…".into(),
+        Phase::Waiting => "Another cones process is indexing",
+        Phase::DownloadingModel => "Downloading model",
+        Phase::Embedding | Phase::Failed => "Indexing",
+        Phase::Done => "Indexed",
+    };
+    let width = 24;
+    let filled = if s.passages > 0 {
+        (s.embedded * width / s.passages) as usize
+    } else {
+        width as usize
+    };
+    let mut line = format!(
+        "{label} ▕{}{}▏ {}/{}",
+        "█".repeat(filled),
+        "░".repeat(width as usize - filled),
+        s.embedded,
+        s.passages
+    );
+    if let Some(rate) = s.rate {
+        line += &format!(" · {rate:.0}/s");
+    }
+    if let Some(eta) = s.eta_seconds.filter(|_| s.remaining > 0) {
+        line += &format!(" · ~{}m{:02}s left", eta / 60, eta % 60);
+    }
+    line
+}
+
+fn index_summary(s: &cones::history_api::IndexStatus) -> String {
+    format!(
+        "{}/{} passages embedded · {} remaining · {} conversations · model {} · cache {} ({:.1} MB)",
+        s.embedded,
+        s.passages,
+        s.remaining,
+        s.conversations,
+        if s.model_downloaded {
+            "downloaded"
+        } else {
+            "not downloaded"
+        },
+        s.cache
+            .as_ref()
+            .map_or("none".into(), |p| p.display().to_string()),
+        s.cache_bytes as f64 / 1e6
+    )
 }
 
 fn main() {
@@ -803,6 +873,51 @@ fn execute(cli: Cli) -> Result<i32> {
                 2
             } else {
                 0
+            })
+        }
+        Action::Index {
+            timeout,
+            json,
+            task,
+        } => {
+            let json = json || matches!(task, Some(IndexTask::Status { json: true }));
+            let mut service = cones::history_api::Service::discover(&claude, state, cwd);
+            let status = match task {
+                Some(IndexTask::Status { .. }) => {
+                    let status = service.index_status()?;
+                    if json {
+                        println!("{}", serde_json::to_string(&status)?);
+                    }
+                    status
+                }
+                None => {
+                    let bar = !json && std::io::stderr().is_terminal();
+                    let status =
+                        service.index(timeout.map(std::time::Duration::from_secs), |s| {
+                            if json {
+                                println!("{}", serde_json::to_string(s).unwrap());
+                            } else if bar {
+                                eprint!("\r\x1b[2K{}", index_progress(s));
+                            } else {
+                                eprintln!("{}", index_progress(s));
+                            }
+                        })?;
+                    if bar {
+                        eprintln!();
+                    }
+                    status
+                }
+            };
+            if !json {
+                println!("{}", index_summary(&status));
+            }
+            if let Some(error) = &status.error {
+                eprintln!("cones: indexing failed: {error}");
+            }
+            Ok(match status.phase {
+                cones::history_api::Phase::Done => 0,
+                cones::history_api::Phase::Failed => 1,
+                _ => 2,
             })
         }
         Action::Mcp => {

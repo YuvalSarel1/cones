@@ -72,10 +72,41 @@ pub struct Results {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Syncing,
+    /// Another cones process is embedding a batch; this one resumes when it commits.
+    Waiting,
+    DownloadingModel,
+    Embedding,
+    Done,
+    Failed,
+}
+
+/// The meaning index, reported the same way before, during and after `cones index`.
+#[derive(Clone, Debug, Serialize)]
+pub struct IndexStatus {
+    pub phase: Phase,
+    pub conversations: i64,
+    pub passages: i64,
+    pub embedded: i64,
+    pub remaining: i64,
+    /// Passages per second since this command started embedding.
+    pub rate: Option<f64>,
+    pub eta_seconds: Option<u64>,
+    pub model_downloaded: bool,
+    pub cache: Option<PathBuf>,
+    pub cache_bytes: u64,
+    pub status: Option<String>,
+    pub error: Option<String>,
+}
+
 pub struct Service {
     catalog: history::Catalog,
     sources: Vec<history::Source>,
     base: PathBuf,
+    search: Option<PathBuf>,
 }
 
 impl Service {
@@ -86,9 +117,90 @@ impl Service {
     /// Explicit sources and an absent state directory keep fixtures model-free.
     pub fn new(sources: Vec<history::Source>, state: Option<PathBuf>, base: PathBuf) -> Self {
         Self {
+            search: state.as_ref().map(|p| p.join("search")),
             catalog: history::Catalog::new(sources.clone(), state),
             sources,
             base,
+        }
+    }
+
+    fn status(&self, phase: Phase, progress: search::Progress) -> IndexStatus {
+        IndexStatus {
+            phase,
+            conversations: progress.conversations,
+            passages: progress.passages,
+            embedded: progress.embedded,
+            remaining: progress.passages - progress.embedded,
+            rate: None,
+            eta_seconds: None,
+            model_downloaded: self
+                .search
+                .as_ref()
+                .is_some_and(|d| search::model_present(&d.join("models"))),
+            cache_bytes: self.search.as_ref().map_or(0, |d| disk_usage(d)),
+            cache: self.search.clone(),
+            status: None,
+            error: None,
+        }
+    }
+
+    /// Rereads changed transcripts but never loads a model or embeds anything.
+    pub fn index_status(&mut self) -> Result<IndexStatus> {
+        let (progress, _) = self.catalog.index(true, false)?;
+        let phase = if progress.passages == progress.embedded {
+            Phase::Done
+        } else {
+            Phase::Embedding
+        };
+        Ok(self.status(phase, progress))
+    }
+
+    /// Embed until every passage has a vector, the timeout passes or the model fails.
+    /// `report` sees every change of phase or count; the last status is returned.
+    pub fn index(
+        &mut self,
+        timeout: Option<Duration>,
+        mut report: impl FnMut(&IndexStatus),
+    ) -> Result<IndexStatus> {
+        report(&self.status(Phase::Syncing, search::Progress::default()));
+        let started = Instant::now();
+        let deadline = timeout.map(|t| started + t);
+        let mut sync = true;
+        let mut first: Option<(Instant, i64)> = None;
+        let mut last: Option<(Phase, search::Progress)> = None;
+        loop {
+            let (progress, results) = self.catalog.index(sync, true)?;
+            sync = false;
+            let results = results.expect("embedding was requested");
+            let mut status = self.status(Phase::Embedding, progress);
+            if results.error.is_some() {
+                status.phase = Phase::Failed;
+            } else if !results.pending {
+                status.phase = Phase::Done;
+            } else if results.waiting {
+                status.phase = Phase::Waiting;
+            } else if !status.model_downloaded && progress.embedded == 0 {
+                status.phase = Phase::DownloadingModel;
+            }
+            let (since, from) = *first.get_or_insert((Instant::now(), progress.embedded));
+            let elapsed = since.elapsed().as_secs_f64();
+            if progress.embedded > from && elapsed > 0.0 {
+                let rate = (progress.embedded - from) as f64 / elapsed;
+                status.rate = Some(rate);
+                status.eta_seconds = Some((status.remaining as f64 / rate).ceil() as u64);
+            }
+            status.status = results.status;
+            status.error = results.error;
+            let finished = matches!(status.phase, Phase::Done | Phase::Failed)
+                || deadline.is_some_and(|d| Instant::now() >= d);
+            if finished || last != Some((status.phase, progress)) {
+                report(&status);
+                last = Some((status.phase, progress));
+            }
+            if finished {
+                return Ok(status);
+            }
+            std::thread::sleep(Duration::from_millis(250));
         }
     }
 
@@ -183,6 +295,18 @@ impl Service {
         let export = transcript::export(&located.source, &located.key.harness, tail)?;
         Ok(show::json(&located, &export))
     }
+}
+
+fn disk_usage(path: &Path) -> u64 {
+    std::fs::read_dir(path).map_or(0, |entries| {
+        entries
+            .flatten()
+            .map(|e| match e.file_type() {
+                Ok(t) if t.is_dir() => disk_usage(&e.path()),
+                _ => e.metadata().map_or(0, |m| m.len()),
+            })
+            .sum()
+    })
 }
 
 pub fn validate_harness(name: Option<&str>) -> Result<()> {

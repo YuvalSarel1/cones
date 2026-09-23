@@ -28,6 +28,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones search QUERY [--dir PATH] [--harness NAME] [--json]` | [Search conversation history](#searching-conversations), including archived sessions. |
+| `cones index [status] [--timeout SECS] [--json]` | [Build the meaning index](#building-the-meaning-index) with progress, or report it. |
 | `cones show ID [--tail N] [--all] [--json]` | [Read a session's conversation](#reading-a-conversation). |
 | `cones mcp` | Serve [history tools over MCP stdio](#history-over-mcp). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
@@ -90,6 +91,44 @@ continue from cached embeddings. A model failure is explicit in `error`, leaves
 `complete: false`, and exits 1; word search remains available. Completed searches
 exit 0. Invalid arguments or unreadable archives exit nonzero with an explanation
 on stderr. Only cones' search cache is written, never native session files.
+
+### Building the meaning index
+
+```sh
+cones index status
+cones index
+cones index --json --timeout 600
+```
+
+Meaning search embeds passages only while someone waits on it, so a large history
+can stay partly indexed. `cones index` embeds every remaining passage of every
+conversation, including archived ones, and returns when none is left. Finished
+batches are kept, so stopping it with Ctrl-C or `--timeout` loses nothing and the
+next run resumes.
+
+`cones index status` reads changed transcripts and reports the counts without
+loading a model or embedding anything.
+
+Both print the same status, as one summary line or with `--json` as one object:
+`phase`, `conversations`, `passages`, `embedded`, `remaining`, `rate` and
+`eta_seconds` (passages per second and time left, once a batch has finished),
+`model_downloaded`, `cache`, `cache_bytes`, `status` and `error`. Passages are
+distinct texts; identical passages share one embedding.
+
+While running, `cones index` redraws a progress bar on stderr when stderr is a
+terminal. Piped, it writes one plain line per change to stderr. With `--json` it
+writes one status object per change to stdout instead, and the last line is the
+final status; an agent can read those lines to report progress. `phase` is
+`syncing`, `downloading_model` (the first batch, until the 90 MB model is present),
+`embedding`, `waiting`, `done` or `failed`.
+
+Processes sharing a state directory embed one batch at a time. While another
+dashboard, search or `cones index` holds the current batch, this one reports
+`waiting` and continues when that batch is saved.
+
+Exit status is 0 when every passage is embedded, 2 when some remain (after a
+timeout, or from `status`), and 1 when the model fails, with the error in `error`
+and on stderr.
 
 ### Reading a conversation
 

@@ -90,8 +90,19 @@ impl Mode {
 pub struct Results {
     pub hits: HashMap<String, Hit>,
     pub pending: bool,
+    /// Another process holds the batch claim, so this one embeds nothing for now.
+    pub waiting: bool,
     pub status: Option<String>,
     pub error: Option<String>,
+}
+
+/// How far the meaning index has come. Vectors are shared by identical passages, so the
+/// counts are distinct passages, not rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Progress {
+    pub conversations: i64,
+    pub passages: i64,
+    pub embedded: i64,
 }
 
 pub(crate) fn identity(entry: &Entry) -> String {
@@ -104,6 +115,9 @@ pub(crate) struct Index {
     directory: Option<PathBuf>,
     query_vector: Option<(String, Vec<f32>)>,
     failure: Option<String>,
+    /// Held from claiming a batch until its vectors are committed, so two processes
+    /// sharing a cache never embed the same passages.
+    claim: Option<fs::File>,
 }
 
 impl Index {
@@ -145,6 +159,7 @@ impl Index {
             directory,
             query_vector: None,
             failure: None,
+            claim: None,
         })
     }
 
@@ -376,6 +391,36 @@ impl Index {
         )?)
     }
 
+    pub(crate) fn progress(&self) -> Result<Progress> {
+        let passages = self
+            .db
+            .query_row("SELECT count(DISTINCT hash) FROM passages", [], |r| {
+                r.get(0)
+            })?;
+        Ok(Progress {
+            conversations: self
+                .db
+                .query_row("SELECT count(*) FROM sessions", [], |r| r.get(0))?,
+            passages,
+            embedded: passages - self.missing()?,
+        })
+    }
+
+    /// Whether another process holds the batch claim. Never blocks.
+    fn claimed(&mut self) -> Result<bool> {
+        if self.claim.is_some() {
+            return Ok(true);
+        }
+        let Some(directory) = &self.directory else {
+            return Ok(true);
+        };
+        let file = crate::private_file(&directory.join("fill.lock"))?;
+        if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+            self.claim = Some(file);
+        }
+        Ok(self.claim.is_some())
+    }
+
     /// Embed every passage there is, with no query attached. Typing a meaning query is
     /// otherwise the only thing that ever schedules work, so the index only finishes for a
     /// reader who sits on the search screen long enough, which nobody does.
@@ -396,12 +441,18 @@ impl Index {
         }
         let missing = self.missing()?;
         results.pending = missing > 0;
-        results.status = Some(if missing > 0 {
+        let busy = self.worker.as_ref().is_some_and(|w| w.busy);
+        let elsewhere = missing > 0 && !busy && !self.claimed()?;
+        results.waiting = elsewhere;
+        results.status = Some(if elsewhere {
+            format!("Another cones process is indexing · {missing} passages remaining")
+        } else if missing > 0 {
             format!("Indexing conversations · {missing} passages remaining")
         } else {
             "Every conversation is indexed".into()
         });
         if missing > 0
+            && !elsewhere
             && let Err(error) = self.schedule("")
         {
             self.failure = Some(format!("{error:#}"));
@@ -430,13 +481,16 @@ impl Index {
                     )?;
                 }
                 tx.commit()?;
+                self.claim = None;
             }
             Ok(Err(error)) => {
                 worker.busy = false;
                 self.failure = Some(error);
+                self.claim = None;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
                 self.failure = Some("embedding worker exited".into());
+                self.claim = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
         }
@@ -449,10 +503,15 @@ impl Index {
                 self.directory.as_ref().unwrap().join("models"),
             )?);
         }
-        let worker = self.worker.as_mut().unwrap();
-        if worker.busy {
+        if self.worker.as_ref().unwrap().busy {
             return Ok(());
         }
+        // A query still gets its own vector while another process embeds passages.
+        let limit = if self.claimed()? { BATCH } else { 0 };
+        if limit == 0 && self.query_vector.as_ref().is_some_and(|(q, _)| q == query) {
+            return Ok(());
+        }
+        let worker = self.worker.as_mut().unwrap();
         let chunks = self
             .db
             .prepare(
@@ -460,7 +519,7 @@ impl Index {
              LEFT JOIN vectors v ON v.hash = p.hash WHERE v.hash IS NULL
              GROUP BY p.hash ORDER BY min(p.rowid) LIMIT ?1",
             )?
-            .query_map([BATCH as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .query_map([limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         worker
             .input
@@ -884,8 +943,16 @@ struct Model {
     tokenizer: tokenizers::Tokenizer,
 }
 
-pub(crate) fn model_directory(directory: &Path) -> PathBuf {
+pub fn model_directory(directory: &Path) -> PathBuf {
     directory.join(MODEL_REVISION)
+}
+
+/// Downloaded, not verified: loading checks the digests.
+pub(crate) fn model_present(directory: &Path) -> bool {
+    let directory = model_directory(directory);
+    MODEL_FILES
+        .iter()
+        .all(|(name, _)| directory.join(name).is_file())
 }
 
 impl Model {
@@ -1522,5 +1589,107 @@ mod tests {
         assert!(!results.pending);
         assert_eq!(results.error.as_deref(), Some("embedding worker exited"));
         assert_eq!(index.missing().unwrap(), 0);
+    }
+
+    /// Two processes sharing a cache must not embed the same batch, and a meaning query in
+    /// one must still get its own vector while the other embeds passages.
+    #[test]
+    fn one_process_embeds_a_batch_at_a_time_and_counts_are_shared() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        let entries = vec![
+            entry(&home, "one", "the first conversation about ledgers"),
+            entry(&home, "two", "the second conversation about parsers"),
+        ];
+        let worker = |index: &mut Index| {
+            let (input, requests) = mpsc::channel();
+            let (replies, output) = mpsc::channel();
+            index.worker = Some(Embeddings {
+                input,
+                output,
+                busy: false,
+            });
+            (requests, replies)
+        };
+        let mut first = Index::open(Some(d.path().join("index"))).unwrap();
+        let mut second = Index::open(Some(d.path().join("index"))).unwrap();
+        first.sync(&entries).unwrap();
+        let progress = second.progress().unwrap();
+        assert_eq!(progress.conversations, 2);
+        assert_eq!(progress.embedded, 0);
+        assert_eq!(progress.passages, first.missing().unwrap());
+        assert!(progress.passages > 0);
+
+        let (first_requests, first_replies) = worker(&mut first);
+        let (second_requests, second_replies) = worker(&mut second);
+        assert!(first.fill(false).unwrap().pending);
+        let batch = first_requests.try_recv().unwrap();
+        assert_eq!(batch.chunks.len() as i64, progress.passages);
+
+        let waiting = second.fill(false).unwrap();
+        assert!(waiting.pending && waiting.waiting);
+        assert_eq!(
+            waiting.status,
+            Some(format!(
+                "Another cones process is indexing · {} passages remaining",
+                progress.passages
+            ))
+        );
+        assert!(second_requests.try_recv().is_err(), "no duplicate batch");
+        second
+            .search(&entries, "ledgers", Mode::Meaning, false)
+            .unwrap();
+        let query = second_requests.try_recv().unwrap();
+        assert_eq!(query.query, "ledgers");
+        assert!(query.chunks.is_empty(), "the query borrows no passages");
+        second_replies
+            .send(Ok(EmbeddingResponse {
+                query: query.query,
+                query_vector: vector(1),
+                vectors: vec![],
+            }))
+            .unwrap();
+        second
+            .search(&entries, "ledgers", Mode::Meaning, false)
+            .unwrap();
+        assert!(second.claim.is_none(), "a query-only reply holds no claim");
+        assert!(
+            second_requests.try_recv().is_err(),
+            "a known query waits without asking again"
+        );
+
+        first_replies
+            .send(Ok(EmbeddingResponse {
+                query: batch.query,
+                query_vector: vector(0),
+                vectors: batch
+                    .chunks
+                    .into_iter()
+                    .map(|(hash, _)| (hash, vector(0)))
+                    .collect(),
+            }))
+            .unwrap();
+        assert!(!first.fill(false).unwrap().pending);
+        assert!(
+            first.claim.is_none(),
+            "the claim ends with the committed batch"
+        );
+        let done = second.progress().unwrap();
+        assert_eq!(done.embedded, done.passages);
+
+        // New passages after the release go to whoever asks next.
+        let more = vec![entry(&home, "three", "a third conversation about queues")];
+        second.sync(&[entries, more].concat()).unwrap();
+        assert!(second.fill(false).unwrap().pending);
+        assert!(!second_requests.try_recv().unwrap().chunks.is_empty());
+        assert!(
+            first
+                .fill(false)
+                .unwrap()
+                .status
+                .unwrap()
+                .starts_with("Another cones process")
+        );
     }
 }

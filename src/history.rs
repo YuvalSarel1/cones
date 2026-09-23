@@ -315,6 +315,30 @@ impl Catalog {
         self.cache
             .page_filtered(&self.sources, query, offset, include)
     }
+
+    /// The meaning index over every conversation. `sync` rereads changed transcripts;
+    /// `embed` schedules the next batch, which is the only step that loads a model.
+    pub(crate) fn index(
+        &mut self,
+        sync: bool,
+        embed: bool,
+    ) -> Result<(search::Progress, Option<search::Results>)> {
+        let cache = &mut self.cache;
+        if sync || !cache.initialized {
+            cache.scan(&self.sources, &mut Stats::default())?;
+            cache.search_results = None;
+        }
+        if cache.search.is_none() {
+            cache.search = Some(search::Index::open(cache.search_directory.clone())?);
+        }
+        let index = cache.search.as_mut().unwrap();
+        let _guard = index.lock()?;
+        if sync {
+            index.sync(&cache.entries)?;
+        }
+        let results = embed.then(|| index.fill(false)).transpose()?;
+        Ok((index.progress()?, results))
+    }
 }
 
 fn stamp(path: &Path) -> std::io::Result<Stamp> {
