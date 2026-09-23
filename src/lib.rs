@@ -15,7 +15,6 @@ pub mod history_mcp;
 pub mod launch;
 pub mod launchd;
 pub mod ledger;
-pub mod mcp;
 pub mod observe;
 pub mod opencode;
 pub mod output;

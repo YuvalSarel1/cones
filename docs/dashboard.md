@@ -165,7 +165,6 @@ An external session without native attach support says `own terminal`.
 | `ctrl+p` | Toggle a temporary session highlight. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
 | `ctrl+t` | Pin a session above every group, or unpin it. |
-| `ctrl+l` | Open [MCP servers](#mcp-servers). |
 | `ctrl+r` | Refresh now. |
 
 Rename accepts a manual name or an empty submission for native automatic naming. Codex's
@@ -215,33 +214,6 @@ The new row appears beneath its visible parent, with indentation confined to the
 `STATE_DIR/forks.json` records confirmed links. Hidden parents leave a branch marker; absent
 parents leave an ordinary row. Missing transcripts, archived sources and unsupported CLIs
 are reported before launch.
-
-### MCP servers
-
-`ctrl+l` reads native configuration for the selected session, or the composer harness and
-folder when no session is selected. Configured servers are shown without claiming a running
-session loaded them.
-
-| Harness/scope | Configuration source |
-| --- | --- |
-| Claude user | `mcpServers` in `.claude.json` under the native home. |
-| Claude project | `.mcp.json` in the project folder. |
-| Claude local | The folder's entry in the native home's `.claude.json`. |
-| Codex | `mcp_servers` in `config.toml` under `CODEX_HOME`. |
-
-Other harnesses report unverified support. Missing files and parse errors are shown explicitly.
-
-| Key | Action |
-| --- | --- |
-| `x` | Stage or undo removal. |
-| `c` | Copy to a compatible scope; arrows choose it and Enter stages it. |
-| `s` | Save staged changes. |
-| `u` | Discard staged changes. |
-| `esc` | Close and discard unsaved changes. |
-
-The prompt lists pending changes. Saves preserve unrelated settings, file modes and TOML
-comments; copies precede removals. Failed writes retain staged changes for retry. Saving
-never restarts a session; native clients pick up configuration when they next start.
 
 ### History
 

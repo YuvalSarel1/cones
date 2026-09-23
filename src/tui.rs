@@ -16,7 +16,7 @@ use crate::{
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    mcp, output, runner, search, terminal, terminal_host, transcript,
+    output, runner, search, terminal, terminal_host, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -7162,393 +7162,6 @@ fn column_help(name: &str) -> &'static str {
     }
 }
 
-/// A row of the MCP panel. Scope rows are context; only server rows take actions.
-enum McpRow {
-    Scope(usize),
-    Server(usize, String),
-    /// A copy this save would write into the scope, not yet on disk.
-    Pending(usize, String),
-    Note(String),
-}
-
-enum McpAction {
-    Stay,
-    Close,
-}
-
-/// Native MCP configuration for one harness and folder: what is configured, in which scope, and
-/// staged changes that reach the files only on save. Nothing here starts or restarts a session.
-struct McpPanel {
-    kind: HarnessKind,
-    home: PathBuf,
-    project: PathBuf,
-    found: mcp::Inspection,
-    rows: Vec<McpRow>,
-    at: usize,
-    staged: Vec<mcp::Change>,
-    /// Which scope a copy would write to, while that choice is open.
-    copying: Option<usize>,
-    error: Option<String>,
-    note: Option<String>,
-    area: Rect,
-    top: usize,
-}
-
-impl McpPanel {
-    fn new(kind: HarnessKind, home: PathBuf, project: PathBuf) -> Self {
-        let mut panel = Self {
-            found: mcp::inspect(kind, &home, &project),
-            kind,
-            home,
-            project,
-            rows: Vec::new(),
-            at: 0,
-            staged: Vec::new(),
-            copying: None,
-            error: None,
-            note: None,
-            area: Rect::default(),
-            top: 0,
-        };
-        panel.rebuild();
-        panel
-    }
-
-    /// Reread the native files. Staged changes survive, so a save still knows what was asked for.
-    fn reread(&mut self) {
-        self.found = mcp::inspect(self.kind, &self.home, &self.project);
-        self.rebuild();
-    }
-
-    fn rebuild(&mut self) {
-        let mut rows = Vec::new();
-        for (i, view) in self.found.scopes.iter().enumerate() {
-            rows.push(McpRow::Scope(i));
-            if let Some(error) = &view.error {
-                rows.push(McpRow::Note(error.clone()));
-            }
-            for server in &view.servers {
-                rows.push(McpRow::Server(i, server.name.clone()));
-            }
-            for change in &self.staged {
-                if let mcp::Change::Copy { to, name, .. } = change
-                    && *to == view.scope.name
-                    && !view.servers.iter().any(|s| s.name == *name)
-                {
-                    rows.push(McpRow::Pending(i, name.clone()));
-                }
-            }
-            if view.error.is_none() && view.servers.is_empty() {
-                rows.push(McpRow::Note(if view.present {
-                    "no servers in this scope".to_owned()
-                } else {
-                    "no file yet".to_owned()
-                }));
-            }
-        }
-        self.rows = rows;
-        self.at = self.at.min(self.rows.len().saturating_sub(1));
-    }
-
-    /// The scope and server the selected row acts on.
-    fn selected(&self) -> Option<(&'static mcp::Scope, &str)> {
-        match self.rows.get(self.at)? {
-            McpRow::Server(i, name) | McpRow::Pending(i, name) => {
-                Some((self.found.scopes[*i].scope, name.as_str()))
-            }
-            _ => None,
-        }
-    }
-
-    fn staged_removal(&self, scope: &str, name: &str) -> bool {
-        self.staged.iter().any(
-            |c| matches!(c, mcp::Change::Remove { scope: s, name: n } if *s == scope && n == name),
-        )
-    }
-
-    /// Scopes a copy can reach: the others that store servers the same way.
-    fn targets(&self, from: &'static mcp::Scope) -> Vec<&'static mcp::Scope> {
-        mcp::scopes(self.kind)
-            .iter()
-            .filter(|s| s.name != from.name && s.format == from.format)
-            .collect()
-    }
-
-    fn key(&mut self, code: KeyCode) -> McpAction {
-        let action = key_action(
-            if self.copying.is_some() {
-                BindingState::McpCopy
-            } else {
-                BindingState::Mcp
-            },
-            code,
-            KeyModifiers::NONE,
-        );
-        self.error = None;
-        if let Some(target) = self.copying {
-            let Some((from, name)) = self.selected() else {
-                self.copying = None;
-                return McpAction::Stay;
-            };
-            let (name, targets) = (name.to_owned(), self.targets(from));
-            match action {
-                KeyAction::Cancel => self.copying = None,
-                KeyAction::Left => self.copying = Some(target.saturating_sub(1)),
-                KeyAction::Right => self.copying = Some((target + 1).min(targets.len() - 1)),
-                KeyAction::Enter => {
-                    let to = targets[target.min(targets.len() - 1)].name;
-                    self.copying = None;
-                    let change = mcp::Change::Copy {
-                        from: from.name,
-                        to,
-                        name,
-                    };
-                    if !self.staged.contains(&change) {
-                        self.staged.push(change);
-                    }
-                    self.rebuild();
-                }
-                _ => {}
-            }
-            return McpAction::Stay;
-        }
-        match action {
-            KeyAction::Cancel => return McpAction::Close,
-            KeyAction::Up => self.at = self.at.saturating_sub(1),
-            KeyAction::Down => self.at = (self.at + 1).min(self.rows.len().saturating_sub(1)),
-            KeyAction::Home => self.at = 0,
-            KeyAction::End => self.at = self.rows.len().saturating_sub(1),
-            KeyAction::PageUp => self.at = self.at.saturating_sub(self.body().max(1)),
-            KeyAction::PageDown => {
-                self.at = (self.at + self.body().max(1)).min(self.rows.len().saturating_sub(1));
-            }
-            KeyAction::Remove => {
-                if let Some((scope, name)) = self.selected() {
-                    let (scope, name) = (scope.name, name.to_owned());
-                    if let Some(i) = self.staged.iter().position(|c| {
-                        matches!(c, mcp::Change::Remove { scope: s, name: n } if *s == scope && *n == name)
-                            || matches!(c, mcp::Change::Copy { to, name: n, .. } if *to == scope && *n == name)
-                    }) {
-                        self.staged.remove(i);
-                    } else {
-                        self.staged.push(mcp::Change::Remove {
-                            scope,
-                            name,
-                        });
-                    }
-                    self.rebuild();
-                }
-            }
-            KeyAction::Copy => {
-                if let Some((from, _)) = self.selected() {
-                    if self.targets(from).is_empty() {
-                        self.error = Some(format!(
-                            "{} has no other scope that stores servers the same way",
-                            self.kind
-                        ));
-                    } else {
-                        self.copying = Some(0);
-                    }
-                }
-            }
-            KeyAction::Save if !self.staged.is_empty() => self.save(),
-            KeyAction::Undo if !self.staged.is_empty() => {
-                self.staged.clear();
-                self.note = Some("staged changes discarded; no file was written".to_owned());
-                self.rebuild();
-            }
-            _ => {}
-        }
-        McpAction::Stay
-    }
-
-    /// Write the staged changes. Saving never touches a running session: a harness that already
-    /// loaded these servers keeps them until its own next start.
-    fn save(&mut self) {
-        match mcp::apply(self.kind, &self.home, &self.project, &self.staged) {
-            Ok(()) => {
-                let scopes: BTreeSet<&str> = self.staged.iter().map(mcp::Change::writes).collect();
-                let count = self.staged.len();
-                self.staged.clear();
-                self.note = Some(format!(
-                    "saved {count} change{} to {}; running sessions keep what they started with",
-                    if count == 1 { "" } else { "s" },
-                    scopes.into_iter().collect::<Vec<_>>().join(" and "),
-                ));
-                self.reread();
-            }
-            // The changes stay staged, so the same save can be tried again once the cause is fixed.
-            Err(e) => self.error = Some(format!("{e:#}")),
-        }
-    }
-
-    fn body(&self) -> usize {
-        self.area.height.saturating_sub(self.header().len() as u16) as usize
-    }
-
-    fn header(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![
-            Line::from(vec![
-                Span::styled(format!("{} MCP servers", self.kind), lit()),
-                Span::styled(format!("  {}", fleet::tilde(&self.project)), dim()),
-            ]),
-            Line::from(Span::styled(
-                format!(
-                    "configured in {}; whether a session loaded them is not reported",
-                    fleet::tilde(&self.home)
-                ),
-                dim(),
-            )),
-        ];
-        if self.area.height < 8 {
-            lines.truncate(1);
-        }
-        lines.push(Line::default());
-        lines
-    }
-
-    fn draw(&mut self, frame: &mut Frame, area: Rect) {
-        self.area = area;
-        let mut lines = self.header();
-        let height = self.body();
-        self.top = self
-            .at
-            .saturating_sub(height.saturating_sub(1))
-            .min(self.rows.len().saturating_sub(height));
-        for (i, row) in self.rows.iter().enumerate().skip(self.top).take(height) {
-            let selected = i == self.at;
-            let mark = if selected { "› " } else { "  " };
-            let mut line = match row {
-                McpRow::Scope(s) => {
-                    let view = &self.found.scopes[*s];
-                    Line::from(vec![
-                        Span::styled(mark, lit()),
-                        Span::styled(format!("{:<9}", view.scope.name), bold()),
-                        Span::styled(format!("{}  ", view.scope.about), dim()),
-                        Span::styled(fleet::tilde(&view.path), dim()),
-                    ])
-                }
-                McpRow::Note(text) => Line::from(vec![
-                    Span::styled(mark, lit()),
-                    Span::styled(format!("    {text}"), dim()),
-                ]),
-                McpRow::Server(s, name) => {
-                    let view = &self.found.scopes[*s];
-                    let server = view.servers.iter().find(|x| x.name == *name);
-                    let going = self.staged_removal(view.scope.name, name);
-                    Line::from(vec![
-                        Span::styled(mark, lit()),
-                        Span::styled(
-                            format!("    {:<20}", name),
-                            if going {
-                                Style::default().fg(Color::Red)
-                            } else if selected {
-                                lit()
-                            } else {
-                                plain()
-                            },
-                        ),
-                        Span::styled(
-                            format!("{:<10}", server.map(|s| s.transport.as_str()).unwrap_or("")),
-                            dim(),
-                        ),
-                        Span::styled(
-                            clip(
-                                server.map(|s| s.detail.as_str()).unwrap_or(""),
-                                area.width.saturating_sub(38) as usize,
-                            ),
-                            dim(),
-                        ),
-                        Span::styled(
-                            if going { "  removing" } else { "" },
-                            Style::default().fg(Color::Red),
-                        ),
-                    ])
-                }
-                McpRow::Pending(_, name) => Line::from(vec![
-                    Span::styled(mark, lit()),
-                    Span::styled(format!("    {name:<20}"), Style::default().fg(ORANGE)),
-                    Span::styled("copying in", Style::default().fg(ORANGE)),
-                ]),
-            };
-            if selected {
-                on_row(std::slice::from_mut(&mut line), area.width);
-            }
-            lines.push(line);
-        }
-        frame.render_widget(Paragraph::new(lines), area);
-    }
-
-    fn line(&self) -> Line<'static> {
-        if let Some(error) = &self.error {
-            return Line::from(Span::styled(error.clone(), Style::default().fg(Color::Red)));
-        }
-        if let Some(target) = self.copying
-            && let Some((from, name)) = self.selected()
-        {
-            let targets = self.targets(from);
-            let mut spans = vec![Span::styled(format!("copy {name} to "), lit())];
-            picks(
-                &mut spans,
-                &targets.iter().map(|s| s.name).collect::<Vec<_>>(),
-                target.min(targets.len() - 1),
-            );
-            return Line::from(spans);
-        }
-        if !self.staged.is_empty() {
-            return Line::from(vec![
-                Span::styled("will save › ", Style::default().fg(ORANGE)),
-                Span::raw(
-                    self.staged
-                        .iter()
-                        .map(mcp::Change::summary)
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                ),
-            ]);
-        }
-        if let Some(note) = &self.note {
-            return Line::from(Span::styled(note.clone(), dim()));
-        }
-        match self.selected() {
-            Some((scope, name)) => Line::from(vec![
-                Span::styled(format!("{name} › "), lit()),
-                Span::styled(format!("{} scope, {}", scope.name, scope.about), dim()),
-            ]),
-            None => Line::from(Span::styled(
-                "nothing is staged; reading changed no file".to_owned(),
-                dim(),
-            )),
-        }
-    }
-
-    fn hints(&self) -> Line<'static> {
-        if self.copying.is_some() {
-            return hints(&[("←→", "scope"), ("enter", "stage copy"), ("esc", "cancel")]);
-        }
-        let mut keys = vec![("↑ ↓", "server")];
-        if let Some((scope, name)) = self.selected() {
-            keys.push((
-                "x",
-                if self.staged_removal(scope.name, name) {
-                    "keep"
-                } else {
-                    "remove"
-                },
-            ));
-            if !self.targets(scope).is_empty() {
-                keys.push(("c", "copy to scope"));
-            }
-        }
-        if !self.staged.is_empty() {
-            keys.push(("s", "save"));
-            keys.push(("u", "undo all"));
-        }
-        keys.push(("esc", "back"));
-        hints(&keys)
-    }
-}
-
 enum Mode {
     Normal,
     Filter,
@@ -7558,8 +7171,6 @@ enum Mode {
     Rename(Input),
     /// Search and scroll state for the keyboard guide.
     Guide(Guide),
-    /// Native MCP configuration for one harness and folder, with staged changes.
-    Mcp(Box<McpPanel>),
     /// A compact list over the bottom of the session list: the copy actions.
     Pick(Pick),
 }
@@ -7626,8 +7237,6 @@ enum BindingState {
     ConfigHelp,
     Columns,
     ColumnTabs,
-    Mcp,
-    McpCopy,
     Job,
     JobHead,
     JobFolder,
@@ -7716,7 +7325,6 @@ enum KeyAction {
     Home,
     Leave,
     Left,
-    Mcp,
     Mouse,
     Next,
     PageDown,
@@ -7730,7 +7338,6 @@ enum KeyAction {
     Rename,
     Reset,
     Right,
-    Save,
     Search,
     Settings,
     Split,
@@ -7738,7 +7345,6 @@ enum KeyAction {
     Tab,
     TextEnd,
     Toggle,
-    Undo,
     Up,
     WordLeft,
     WordRight,
@@ -9380,7 +8986,6 @@ impl App {
             Mode::Columns(_) => "columns",
             Mode::Rename(_) => "rename",
             Mode::Guide(..) => "guide",
-            Mode::Mcp(..) => "mcp",
             Mode::Pick(_) => "pick",
         };
         json!({
@@ -11777,7 +11382,6 @@ impl App {
             // The picker edits the config screen's columns group, so the pane keeps its name.
             Mode::Columns(_) => Some("config"),
             Mode::Job(_) => Some("jobs"),
-            Mode::Mcp(_) => Some("mcp"),
             _ => self.jobs_view.then_some("jobs"),
         };
         open.or_else(|| {
@@ -11800,7 +11404,7 @@ impl App {
         self.jobs_view
             || matches!(
                 self.mode,
-                Mode::Guide(..) | Mode::Config(_) | Mode::Columns(_) | Mode::Job(_) | Mode::Mcp(_)
+                Mode::Guide(..) | Mode::Config(_) | Mode::Columns(_) | Mode::Job(_)
             )
     }
 
@@ -13699,35 +13303,6 @@ impl App {
         Ok(())
     }
 
-    /// The MCP servers the selected session's harness is configured with, or the composer's.
-    /// Opening reads native files: no harness client starts, no prompt is sent, nothing is written.
-    fn open_mcp(&mut self) {
-        let session = self.selected_session();
-        let kind = match session {
-            Some(s) => harness::by_name(&s.harness).map(|spec| spec.kind),
-            None => self.composer_harness(),
-        };
-        let Some(kind) = kind else {
-            self.status =
-                "ctrl+l reads the MCP servers of a session, or of the harness the composer names"
-                    .into();
-            return;
-        };
-        if mcp::scopes(kind).is_empty() {
-            self.status = format!("cones has not verified where {kind} keeps MCP configuration");
-            return;
-        }
-        let spec = harness::spec(kind);
-        let home = match session {
-            Some(s) => spec.session_home(&self.claude, s),
-            None => spec.home.resolve(&self.claude),
-        };
-        let dir = self.target_dir();
-        let dir = dir.canonicalize().unwrap_or(dir);
-        self.mode = Mode::Mcp(Box::new(McpPanel::new(kind, home, dir)));
-        self.needs_clear = true;
-    }
-
     fn open_menu(&mut self) {
         match MENU[self.menu].0 {
             "jobs" => self.show_jobs(),
@@ -14800,7 +14375,6 @@ impl App {
             Mode::Config(form) if form.scope.is_some() && form.error.is_some() => form.line(),
             Mode::Config(form) => form.hints(),
             Mode::Guide(guide) => guide.hints(),
-            Mode::Mcp(panel) => panel.hints(),
             Mode::Rename(input) => hints(&[
                 (
                     "enter",
@@ -15323,7 +14897,7 @@ impl App {
         let tab_out = panel_action == KeyAction::Tab
             && match &self.mode {
                 Mode::Config(form) => !form.open,
-                Mode::Guide(..) | Mode::Columns(_) | Mode::Mcp(_) => true,
+                Mode::Guide(..) | Mode::Columns(_) => true,
                 _ => false,
             };
         if (tab_out || panel_action == KeyAction::Leave) && self.panel_focused() {
@@ -15413,14 +14987,6 @@ impl App {
                 // so the next launch and the next run both start from what was chosen.
                 let action = form.key(code, mods);
                 self.config_action(action, before);
-            }
-            Mode::Mcp(panel) => {
-                if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                    && matches!(panel.key(code), McpAction::Close)
-                {
-                    self.mode = Mode::Normal;
-                    self.status = "back to the list; no MCP file was written".into();
-                }
             }
             Mode::Normal => {
                 let armed = self.armed.take();
@@ -15643,7 +15209,6 @@ impl App {
                     KeyAction::Pin => self.pin_selected(),
                     KeyAction::Mouse => self.toggle_mouse(),
                     KeyAction::Rename => self.rename_selected(),
-                    KeyAction::Mcp => self.open_mcp(),
                     KeyAction::Fork => self.fork_selected(),
                     KeyAction::Coordinate => self.coordinate_selected(),
                     KeyAction::Refresh => {
@@ -16018,7 +15583,6 @@ impl App {
                 spans.extend(guide.find.spans("Type a key or topic"));
                 Line::from(spans)
             }
-            Mode::Mcp(panel) => panel.line(),
             Mode::Normal => self.composer(),
         }
     }
@@ -16086,7 +15650,6 @@ impl App {
             (Mode::Job(form), _) => frame.render_widget(form.paragraph(body), body),
             (Mode::Config(form), _) => form.draw(frame, body),
             (Mode::Guide(guide), _) => guide.draw(frame, body, true),
-            (Mode::Mcp(panel), _) => panel.draw(frame, body),
             (_, "help") => Guide::default().draw(frame, body, false),
             // Config previews reread jobs.yaml every frame. Cache the form in rebuild
             // if profiling shows this cost.
@@ -16198,8 +15761,6 @@ impl App {
             form.draw(frame, list);
         } else if let Mode::Columns(form) = &mut self.mode {
             form.draw(frame, list);
-        } else if let Mode::Mcp(panel) = &mut self.mode {
-            panel.draw(frame, list);
         } else {
             self.draw_list(frame, list);
         }
@@ -30254,125 +29815,6 @@ while True:
         release.send(()).unwrap();
     }
 
-    #[test]
-    fn the_mcp_panel_reads_a_session_scope_and_writes_only_on_save() {
-        let d = tempfile::tempdir().unwrap();
-        let claude = d.path();
-        let cwd = claude.to_str().unwrap();
-        let config = claude.join(".claude.json");
-        fs::write(
-            &config,
-            serde_json::json!({
-                "installMethod": "native",
-                "mcpServers": {"weather": {"command": "weather-mcp"}}
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let before = fs::read_to_string(&config).unwrap();
-        registry(claude, A, cwd, "idle", 1_757_682_871_000);
-        let mut app = app(claude);
-        app.refresh().unwrap();
-        assert_eq!(key(&app).as_deref(), Some(A));
-
-        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
-        let Mode::Mcp(panel) = &app.mode else {
-            panic!("ctrl+l opens the MCP panel: {}", app.status);
-        };
-        assert_eq!(panel.kind, HarnessKind::Claude);
-        assert_eq!(
-            panel
-                .found
-                .view("user")
-                .unwrap()
-                .servers
-                .iter()
-                .map(|s| s.name.clone())
-                .collect::<Vec<_>>(),
-            ["weather"],
-            "the user scope is read from the session's own home"
-        );
-        assert!(
-            panel.found.view("project").is_some_and(|v| !v.present),
-            "a scope with no file is reported, not invented"
-        );
-        assert_eq!(
-            fs::read_to_string(&config).unwrap(),
-            before,
-            "opening the panel writes nothing"
-        );
-
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
-        let line = app.mode_line().to_string();
-        assert!(line.contains("remove weather from user"), "{line}");
-        assert_eq!(
-            fs::read_to_string(&config).unwrap(),
-            before,
-            "a staged change is not a written change"
-        );
-
-        app.key(KeyCode::Char('s'), KeyModifiers::NONE).unwrap();
-        let Mode::Mcp(panel) = &app.mode else {
-            panic!("saving keeps the panel open");
-        };
-        assert!(panel.staged.is_empty());
-        let note = panel.line().to_string();
-        assert!(
-            note.contains("running sessions keep what they started with"),
-            "saving does not restart a live session: {note}"
-        );
-        let saved: serde_json::Value =
-            serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
-        assert!(saved["mcpServers"].as_object().unwrap().is_empty());
-        assert_eq!(
-            saved["installMethod"], "native",
-            "unrelated native settings survive the save"
-        );
-
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-    }
-
-    #[test]
-    fn staged_mcp_changes_are_dropped_when_the_panel_closes() {
-        let d = tempfile::tempdir().unwrap();
-        let claude = d.path();
-        let cwd = claude.to_str().unwrap();
-        let config = claude.join(".claude.json");
-        fs::write(
-            &config,
-            serde_json::json!({"mcpServers": {"weather": {"command": "weather-mcp"}}}).to_string(),
-        )
-        .unwrap();
-        let before = fs::read_to_string(&config).unwrap();
-        registry(claude, A, cwd, "idle", 1_757_682_871_000);
-        let mut app = app(claude);
-        app.refresh().unwrap();
-        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
-        app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Char('x'), KeyModifiers::NONE).unwrap();
-        app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.status, "back to the list; no MCP file was written");
-        assert_eq!(fs::read_to_string(&config).unwrap(), before);
-    }
-
-    #[test]
-    fn an_unverified_harness_says_so_instead_of_guessing_its_mcp_files() {
-        let d = tempfile::tempdir().unwrap();
-        let mut app = app(d.path());
-        app.harness = harness::launchable()
-            .iter()
-            .position(|k| *k == HarnessKind::Opencode)
-            .unwrap();
-        app.key(KeyCode::Char('l'), KeyModifiers::CONTROL).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(
-            app.status,
-            "cones has not verified where opencode keeps MCP configuration"
-        );
-    }
     /// The copy menu is the preview's own key: it offers the reply, each fenced block in it
     /// and the row's details, as text with no terminal escapes left in it.
     #[test]

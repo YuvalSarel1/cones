@@ -17,6 +17,8 @@ states:
           description: Rename a session; submit empty for native naming.
         - action: fork
           description: Fork the selected conversation.
+        - action: pin
+          description: Pin a session above every group, or unpin it.
         - action: coordinate
           description: Start the folder's coordinator.
         - action: settings
@@ -80,9 +82,6 @@ states:
       - keys: ["ctrl+t"]
         action: pin
         description: "Pin the selected session above every group, or unpin it. Pins survive restarts."
-      - keys: ["ctrl+l"]
-        action: mcp
-        description: "Inspect MCP servers and stage scoped changes."
       - keys: ["ctrl+y"]
         action: fork
         description: "Fork the selected conversation."
@@ -650,59 +649,6 @@ states:
       - keys: ["down", "enter", "space"]
         action: enter
         description: "Return to the selected column."
-  - id: mcp
-    title: "MCP servers"
-    when: "The MCP server list has focus. Changes are staged until saved."
-    bindings:
-      - keys: ["up"]
-        action: up
-        description: "Select the previous row."
-      - keys: ["down"]
-        action: down
-        description: "Select the next row."
-      - keys: ["home"]
-        action: home
-        description: "Go to the first row."
-      - keys: ["end"]
-        action: end
-        description: "Go to the last row."
-      - keys: ["pageup"]
-        action: page_up
-        description: "Move up a page."
-      - keys: ["pagedown"]
-        action: page_down
-        description: "Move down a page."
-      - keys: ["esc"]
-        action: cancel
-        description: "Close without writing staged changes."
-      - keys: ["x"]
-        action: remove
-        description: "Stage removal or undo the staged change for this server."
-      - keys: ["c"]
-        action: copy
-        description: "Choose a destination scope for a copy."
-      - keys: ["s"]
-        action: save
-        description: "Save staged changes."
-      - keys: ["u"]
-        action: undo
-        description: "Discard all staged changes."
-  - id: mcp_copy
-    title: "MCP copy destination"
-    when: "A destination scope is being selected."
-    bindings:
-      - keys: ["esc"]
-        action: cancel
-        description: "Cancel choosing a destination."
-      - keys: ["left"]
-        action: left
-        description: "Select the previous scope."
-      - keys: ["right"]
-        action: right
-        description: "Select the next scope."
-      - keys: ["enter"]
-        action: enter
-        description: "Stage the copy to the selected scope."
   - id: job
     title: "Job editor"
     when: "A job field has focus. Unhandled typing edits the field or selects a choice by its initial."

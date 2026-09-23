@@ -27,11 +27,11 @@ search, plus native resume for Claude, Codex, pi and OpenCode. Discovery of an
 external terminal still does not guarantee attachment. [History][cones-history],
 [support][cones-harness]
 
-Both offer MCP configuration and retain hosted terminals after detaching.
+Agent Deck offers MCP configuration; both retain hosted terminals after detaching.
 Agent Deck's Claude default skips permission prompts, configurably; cones
 preserves interactive harness permissions, while supervised Claude jobs also
 skip prompts. cones permits one dashboard attachment per owned host, and Codex
-approval waits remain reported as working. [MCP][cones-mcp],
+approval waits remain reported as working.
 [permissions][deck-permissions], [jobs][cones-jobs], [limits][cones-harness]
 
 Reviewed 2026-09-23. Agent Deck: [3b41e36][deck-base]; latest release
@@ -48,7 +48,6 @@ Source and documentation review; live flows untested.
 [deck-recall-opencode]: https://github.com/asheshgoplani/agent-deck/blob/3b41e36de82d89f84a951e5c0f490fc6e1973c41/internal/recall/reader/opencode.go#L15-L56
 [cones-history]: ../dashboard.md#history
 [cones-harness]: ../harness.md
-[cones-mcp]: ../dashboard.md#mcp-servers
 [deck-permissions]: https://github.com/asheshgoplani/agent-deck/blob/3b41e36de82d89f84a951e5c0f490fc6e1973c41/internal/session/userconfig.go#L2262-L2269
 [cones-jobs]: ../jobs.md#what-the-harness-is-told
 [deck-base]: https://github.com/asheshgoplani/agent-deck/commit/3b41e36de82d89f84a951e5c0f490fc6e1973c41
