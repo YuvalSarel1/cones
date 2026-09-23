@@ -26,7 +26,7 @@ permissions. Cost adapters supply native records to the shared [accounting compo
 | `home` | Native environment variable, default base and optional sibling discovery. |
 | `discovery` | Registry/process match, daemon/lock paths and excluded subcommands. |
 | `state` | Ordered event guards, discriminator pointers and state mappings. Claude uses native code instead. |
-| `transcript` | Scan roots, message sources and saved statusLine source. `window_pointer`, `cost_pointer` and `effort_pointer` select reported values. |
+| `transcript` | Scan roots, message sources and saved statusLine source. `window_pointer`, `cost_pointer`, `effort_pointer` and `dir_pointer` select reported values. |
 | `operations` | Launch, attach, resume, fork, stop, remove, unarchive, message, rename and session-kind behavior. |
 | `execution` | Native enforcement and result-reporting support; both default to `unknown`. |
 | `viewer` | Label, peek, retention, alignment and native input overrides. |

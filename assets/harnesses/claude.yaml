@@ -34,6 +34,7 @@ transcript:
     window_pointer: /context_window/context_window_size
     cost_pointer: /cost/total_cost_usd
     effort_pointer: /effort/level
+    dir_pointer: /workspace/current_dir
 operations:
   launch:
     identity: background_id

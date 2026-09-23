@@ -606,6 +606,8 @@ pub struct Statusline {
     pub window_pointer: String,
     pub cost_pointer: Option<String>,
     pub effort_pointer: Option<String>,
+    /// The folder the session works in now, which entering a worktree changes.
+    pub dir_pointer: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1066,6 +1068,9 @@ impl HarnessSpec {
             }
             if let Some(effort) = &statusline.effort_pointer {
                 pointer(effort)?;
+            }
+            if let Some(dir) = &statusline.dir_pointer {
+                pointer(dir)?;
             }
         }
         for message in [

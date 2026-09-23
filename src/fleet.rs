@@ -568,21 +568,21 @@ fn build(
     let parent = read_transcript
         .then(|| transcript.as_deref().and_then(|t| transcript_parent(t, id)))
         .flatten();
-    let (window, cost, effort) = statusline_values(dir, id);
+    let (window, cost, effort, reported_dir) = statusline_values(dir, id);
     let (cost_usd, cost_info) = d.report.costs.report(cost);
+    // Keep background jobs grouped by launch cwd when they move into a worktree. The registry
+    // follows a job's own worktree, but entering one mid-session moves only the statusline.
+    let launch = job["cwd"]
+        .as_str()
+        .map(PathBuf::from)
+        .unwrap_or(cwd.clone());
+    let now = reported_dir.unwrap_or(cwd);
     Session {
         session_id: id.into(),
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
-        // Keep background jobs grouped by launch cwd when their registry cwd moves into a worktree.
-        cwd: job["cwd"]
-            .as_str()
-            .map(PathBuf::from)
-            .unwrap_or(cwd.clone()),
-        moved_to: job["cwd"]
-            .as_str()
-            .filter(|launch| Path::new(launch) != cwd)
-            .map(|_| cwd.clone()),
+        moved_to: (now != launch).then_some(now),
+        cwd: launch,
         state: state(job, v["status"].as_str().unwrap_or("-")),
         started: d.report.started,
         last_activity: d.report.last_activity,
@@ -687,13 +687,16 @@ fn state(job: &Value, status: &str) -> String {
 }
 
 /// Read reported values saved by the user's statusLine command.
-fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>, Option<String>) {
+fn statusline_values(
+    claude: &Path,
+    id: &str,
+) -> (Option<u64>, Option<f64>, Option<String>, Option<PathBuf>) {
     let Some(source) = crate::harness::spec(crate::config::HarnessKind::Claude)
         .transcript
         .statusline
         .as_ref()
     else {
-        return (None, None, None);
+        return (None, None, None, None);
     };
     let values = fs::read(claude.join(&source.directory).join(format!("{id}.json")))
         .ok()
@@ -706,7 +709,11 @@ fn statusline_values(claude: &Path, id: &str) -> (Option<u64>, Option<f64>, Opti
         let pointer = source.effort_pointer.as_deref()?;
         Some(v.pointer(pointer)?.as_str()?.to_owned())
     });
-    (window, cost, effort)
+    let dir = values.as_ref().and_then(|v| {
+        let pointer = source.dir_pointer.as_deref()?;
+        Some(PathBuf::from(v.pointer(pointer)?.as_str()?))
+    });
+    (window, cost, effort, dir)
 }
 
 /// Read reported dollars only from the declared statusline source.
@@ -1097,7 +1104,7 @@ pub(crate) fn run_columns(
         }
     }
     if let Some(id) = session_id {
-        let (window, cost, _) = statusline_values(claude, id);
+        let (window, cost, _, _) = statusline_values(claude, id);
         columns.context_window = window;
         (columns.cost_usd, columns.cost_info) =
             crate::cost::prefer_native(cost, (columns.cost_usd, columns.cost_info));
@@ -1750,6 +1757,19 @@ mod tests {
             "a level that is not a string is not an effort"
         );
         assert_eq!(statusline_values(home, "never-written").2, None);
+
+        // Entering a worktree mid-session moves only the reported folder, not the registry.
+        write(
+            "entered",
+            r#"{"workspace":{"current_dir":"/repo/.claude/worktrees/w"}}"#,
+        );
+        let registry = serde_json::json!({"kind": "bg", "cwd": "/repo"});
+        let job = serde_json::json!({"cwd": "/repo"});
+        let s = build(home, "entered", &registry, &job, None, false);
+        assert_eq!(s.cwd, Path::new("/repo"), "it keeps its launch heading");
+        assert_eq!(s.dir(), Path::new("/repo/.claude/worktrees/w"));
+        let s = build(home, "silent", &registry, &job, None, false);
+        assert_eq!(s.moved_to, None, "no reported folder, no move");
     }
 
     #[test]
@@ -1759,6 +1779,7 @@ mod tests {
             window_pointer: "/window".into(),
             cost_pointer: Some("/billing/dollars".into()),
             effort_pointer: None,
+            dir_pointer: None,
         };
         let payload = serde_json::json!({
             "cost": {"total_cost_usd": 99},
