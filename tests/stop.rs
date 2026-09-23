@@ -381,9 +381,11 @@ fn a_pi_conversation_id_replacing_the_launch_id_stops_its_owned_terminal() {
     .unwrap();
     let rows = f.rows();
     assert!(
-        rows.iter()
-            .any(|row| row["session"]["session_id"] == id && row["session"]["pid"] == host.pid()),
-        "the native id must identify this client in ls: {rows:?}"
+        rows.iter().any(
+            |row| row["session"]["session_id"] == format!("pi-{}", host.pid())
+                && row["session"]["native_id"] == id
+        ),
+        "ls lists the client by its process and names the conversation it reports: {rows:?}"
     );
 
     let out = f.stop(id);

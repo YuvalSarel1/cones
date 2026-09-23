@@ -133,7 +133,7 @@ impl Report {
         .into();
         native.usage = row.usage;
         native.coordinator = row.coordinator;
-        if row.session_id == id || uuid::Uuid::parse_str(&row.session_id).is_err() {
+        if row.native() == id || uuid::Uuid::parse_str(row.native()).is_err() {
             native.forked_from = row.forked_from.clone();
             if native.title.is_none() && row.transcript_path.is_none() {
                 native.title = row.title.clone();

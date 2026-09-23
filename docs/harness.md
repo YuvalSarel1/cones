@@ -64,14 +64,15 @@ A nonempty `PI_CODING_AGENT_SESSION_DIR` selects the complete session directory.
 With exactly one pi process in a cwd, select its most recently written file since process
 start and require the first-line cwd to match. Multiple external candidates remain
 unattributed; owned clients report their own identity and [input](#native-input-signals).
-This accommodates `--continue` appending to an older session. Identity is the file's first-line
-`id`, otherwise `pi-<pid>`. Files appear after the first turn; process exit removes the row.
+This accommodates `--continue` appending to an older session. The row is `pi-<pid>`; its
+conversation is the file's first-line `id`. Files appear after the first turn; process exit
+removes the row.
 
 ### OpenCode
 
-The [definition](../assets/harnesses/opencode.yaml) excludes management commands. External
-clients use `opencode-<pid>` unless a leading `--session`, `--session=` or `-s` names a local
-conversation matching the process cwd. Multiple clients keep separate process rows. `run`,
+The [definition](../assets/harnesses/opencode.yaml) excludes management commands. Rows are
+`opencode-<pid>`. An external client names its conversation only when a leading `--session`,
+`--session=` or `-s` names a local one matching the process cwd. Multiple clients keep separate process rows. `run`,
 remote attachments, forks and prompt text do not identify a local conversation.
 
 Owned viewers load the [TUI reporter](../assets/harnesses/opencode-report.mjs), verified against
@@ -292,8 +293,16 @@ threads remain resumable.
 | --- | --- | --- |
 | Claude | `claude --bg -- <instruction>`. | Returned short id matched to registry/folder; unreported launches expire after 90 seconds. |
 | Codex | Find/start daemon, open remote client with instruction. | Child PID, then exactly one new thread matching folder/start/prompt without competing unresolved launches. |
-| pi | `pi -- <instruction>`. | Child PID/harness/folder, then session-file identity. |
-| OpenCode | `opencode --prompt=<instruction>`. | Child PID/harness/folder, then owned reporter identity. |
+| pi | `pi -- <instruction>`. | Child PID/harness/folder; the session file names its conversation. |
+| OpenCode | `opencode --prompt=<instruction>`. | Child PID/harness/folder; the owned reporter names its conversation. |
+
+A harness whose launch identity is `client_pid` keys its row by the process, `<harness>-<pid>`,
+for every client, whoever started it. The conversation it reports is an attribute of that row:
+it is absent until pi's first reply, and `/new`, `/resume`, an in-app fork or a second client
+in the folder change or withdraw it without adding or removing a row. History, forks and
+coordinator claims use the reported conversation. Discovery never lists a `--version` or
+`--help` probe this dashboard is running; a probe another cones process runs can still appear
+for the moment it takes.
 
 Codex daemon startup returns `socketPath` and is idempotent. The remote client reports no
 initial thread id, so ambiguous launches keep their viewer rows and attribution retries on
@@ -307,8 +316,8 @@ host. Codex stays in the launching terminal and prints no id; detached launch is
 | Harness | Returned identity | Lifetime |
 | --- | --- | --- |
 | Claude | Full native session id resolved from the returned background id. | Native conversation. |
-| OpenCode | Host's stored id, replaced by reporter conversation id. | Re-read the roster after identification/session switch. |
-| pi | `pi-<pid>`, then native id after a session file appears. | Re-read the roster after identification. |
+| OpenCode | `opencode-<pid>`, or the stored host id while discovery reports none. | Hosted client lifetime. |
+| pi | `pi-<pid>`, or the stored host id while discovery reports none. | Hosted client lifetime. |
 | Experimental launchers | Process row, or stored host id when discovery supplies none. | Hosted client lifetime. |
 
 Detached identity uses the owned background id or child PID, never prompt/cwd matching.

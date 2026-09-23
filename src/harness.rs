@@ -406,9 +406,7 @@ fn probe_harness(kind: HarnessKind, probe: &spec::Probe) -> Result<String> {
     let name = kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
-    let output = std::process::Command::new(&path)
-        .args(&probe.args)
-        .output()
+    let output = crate::fleet::probe(std::process::Command::new(&path).args(&probe.args))
         .with_context(|| format!("{name} {}", probe.args.join(" ")))?;
     probe.report(
         output.status.success(),

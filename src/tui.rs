@@ -719,7 +719,7 @@ impl Data {
             .sessions
             .iter()
             .filter(|s| !deleting.contains(s.session_id.as_str()))
-            .map(|s| (s.harness.as_str(), s.cwd.as_path(), s.session_id.as_str()))
+            .map(|s| (s.harness.as_str(), s.cwd.as_path(), s.native()))
             .collect();
         let mut depths = HashMap::new();
         for group in groups.values_mut() {
@@ -2814,6 +2814,8 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
             rows.push(row);
         }
     }
+    // A host record names the conversation its reporter saw; the row stays its process.
+    rows.iter_mut().for_each(fleet::identify);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2926,7 +2928,7 @@ fn fleet_rows_observed(
     let claims = crate::coordinator::claims(state);
     if !claims.is_empty() {
         for s in &mut out {
-            s.coordinator = claims.contains(&(s.session_id.clone(), s.cwd.clone()));
+            s.coordinator = claims.contains(&(s.native().to_owned(), s.cwd.clone()));
         }
     }
     fleet::sort(&mut out);
@@ -8479,6 +8481,7 @@ fn history_session(entry: &history::Entry) -> Session {
         forked_from: None,
         activity: Vec::new(),
         moved_to: entry.moved_to.clone(),
+        native_id: None,
     }
 }
 
@@ -8907,7 +8910,7 @@ struct Pending {
 impl Pending {
     fn matches(&self, s: &Session) -> bool {
         s.harness == self.session.harness
-            && self.session.forked_from.as_deref() != Some(s.session_id.as_str())
+            && self.session.forked_from.as_deref() != Some(s.native())
             && s.cwd == self.session.cwd
             && (self.session.pid.is_some_and(|pid| s.pid == Some(pid))
                 || (harness::by_name(&s.harness).is_some_and(|spec| {
@@ -8954,6 +8957,7 @@ pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str)
         forked_from: None,
         activity: Vec::new(),
         moved_to: None,
+        native_id: None,
     }
 }
 
@@ -8976,6 +8980,7 @@ fn hydrate_pi_forks(data: &mut Data, forks: &[(u32, String, PathBuf, String)]) {
         {
             reported.forked_from = Some(parent.clone());
             *row = reported;
+            fleet::identify(row);
         }
     }
 }
@@ -9635,7 +9640,7 @@ impl App {
         Some(history::Key {
             harness: s.harness.clone(),
             home: self.history.homes.get(&home).cloned().unwrap_or(home),
-            session_id: s.session_id.clone(),
+            session_id: s.native().to_owned(),
         })
     }
 
@@ -10771,6 +10776,7 @@ impl App {
                 })
             {
                 report.apply(row);
+                fleet::identify(row);
             }
         }
         // Resuming a finished run from its row keeps that row: `cones __attach` execs the harness
@@ -10801,7 +10807,7 @@ impl App {
                 p.session.pid.is_some()
                     && p.session.pid == row.pid
                     && p.session.harness == row.harness
-                    && p.session.forked_from.as_deref() == Some(row.session_id.as_str())
+                    && p.session.forked_from.as_deref() == Some(row.native())
             })
         });
         let mut replaced = self.reconcile_launches(&mut data);
@@ -10968,7 +10974,7 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|launch| launch.identity.owns_client_pid())
                         }) && s.harness == old.harness
-                            && old.forked_from.as_deref() != Some(s.session_id.as_str())
+                            && old.forked_from.as_deref() != Some(s.native())
                             && s.cwd == old.cwd
                             && old.pid.is_some_and(|pid| s.pid == Some(pid))
                     })
@@ -11050,7 +11056,7 @@ impl App {
                 let old = self.data.sessions.iter().find(|s| s.session_id == open.key);
                 if let Some(s) = data.sessions.iter_mut().find(|s| &s.session_id == id) {
                     let original = old.and_then(|s| s.title.clone());
-                    s.title = if s.session_id == format!("{}-{}", s.harness, open.viewer.pid()) {
+                    s.title = if s.native() == format!("{}-{}", s.harness, open.viewer.pid()) {
                         // The original prompt is more precise than ps's flattened argv.
                         original.or(s.title.clone())
                     } else {
@@ -11065,22 +11071,20 @@ impl App {
                         s.pid = Some(open.viewer.pid());
                     }
                     if let Some(fork) = &mut open.fork {
-                        let native = s.session_id != format!("{}-{}", s.harness, open.viewer.pid())
-                            && !s.session_id.contains(":start:")
-                            && !s.session_id.starts_with("starting:")
-                            && s.session_id != fork.parent;
+                        let id = s.native().to_owned();
+                        let native = id != format!("{}-{}", s.harness, open.viewer.pid())
+                            && !id.contains(":start:")
+                            && !id.starts_with("starting:")
+                            && id != fork.parent;
                         if native && fork.reported.is_none() {
-                            fork.reported = Some(s.session_id.clone());
+                            fork.reported = Some(id.clone());
                         }
-                        if fork.reported.as_deref() == Some(s.session_id.as_str())
+                        if fork.reported.as_deref() == Some(id.as_str())
                             || (!native && fork.reported.is_none())
                         {
                             s.forked_from = Some(fork.parent.clone());
                         }
-                        if native
-                            && !fork.saved
-                            && fork.reported.as_deref() == Some(s.session_id.as_str())
-                        {
+                        if native && !fork.saved && fork.reported.as_deref() == Some(id.as_str()) {
                             match crate::forks::record(
                                 &self.state,
                                 crate::forks::Link {
@@ -11088,7 +11092,7 @@ impl App {
                                     home: fork.home.clone(),
                                     cwd: s.cwd.clone(),
                                     parent: fork.parent.clone(),
-                                    child: s.session_id.clone(),
+                                    child: id,
                                 },
                             ) {
                                 Ok(()) => fork.saved = true,
@@ -14206,6 +14210,7 @@ impl App {
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         };
         self.terminals.push(session.clone());
         self.data.sessions.push(session);
@@ -18561,6 +18566,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         app.filter = Input::new("209aa1a4");
@@ -18599,6 +18605,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         };
         data.sessions
             .push(session("aaaa-interactive", "interactive"));
@@ -18658,6 +18665,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         };
         data.sessions.push(session("aaaa-worker", "bg", false));
         data.sessions.push(session("bbbb-coordinator", "bg", true));
@@ -18731,6 +18739,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         app.filter = Input::new("codex-77");
@@ -18772,6 +18781,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         app.filter = Input::new("dddd-dae");
@@ -21432,12 +21442,13 @@ states:
         merge_hosts(&mut rows, &hosts);
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            (&*rows[0].session_id, &*rows[0].state, rows[0].pid),
-            (A, "blocked", Some(11))
+            (&*rows[0].session_id, rows[0].native(), &*rows[0].state),
+            ("pi-11", A, "blocked"),
+            "the row stays the process and names the reported conversation"
         );
         assert_eq!(
-            (&*rows[1].session_id, &*rows[1].state, rows[1].pid),
-            (B, "idle", Some(22))
+            (&*rows[1].session_id, rows[1].native(), &*rows[1].state),
+            ("pi-22", B, "idle")
         );
         app.data.sessions = rows;
         app.data.runs.clear();
@@ -21453,7 +21464,7 @@ states:
                 _ => None,
             })
             .collect();
-        assert_eq!(visible, [A]);
+        assert_eq!(visible, ["pi-11"]);
     }
 
     #[test]
@@ -24229,6 +24240,86 @@ states:
         assert!(app.status.contains("cannot be joined"), "{}", app.status);
     }
 
+    /// pi writes its session file only when the first reply lands, and a second pi in the same
+    /// folder makes that file ambiguous again. Through both the row is the process: it keeps its
+    /// place and the selection, and the folder lists one row per client.
+    #[test]
+    fn a_pi_row_is_its_process_through_its_first_reply_and_a_second_client() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.split = false;
+        let home = tempfile::tempdir().unwrap();
+        let cwd = Path::new("/src/one");
+        let first = crate::pi::Process {
+            pid: 4242,
+            started: "2026-08-25T14:06:44Z".parse().unwrap(),
+            cwd: Some(cwd.into()),
+        };
+        let second = crate::pi::Process {
+            pid: 4343,
+            ..first.clone()
+        };
+        let shown = |app: &mut App, procs: &[crate::pi::Process]| {
+            let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+            data.sessions.extend(
+                crate::pi::rows(home.path(), procs)
+                    .into_iter()
+                    .map(|mut s| {
+                        fleet::identify(&mut s);
+                        s
+                    }),
+            );
+            app.apply(data);
+            let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 20)).unwrap();
+            t.draw(|f| app.draw(f)).unwrap();
+            let ids: Vec<_> = app
+                .rows
+                .iter()
+                .filter_map(|r| match &r.kind {
+                    Kind::Session(id, _) => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            (ids, rows(&t, 120).join("\n"))
+        };
+        let (ids, _) = shown(&mut app, std::slice::from_ref(&first));
+        assert_eq!(
+            ids,
+            ["pi-4242"],
+            "before its first reply pi names no conversation"
+        );
+        app.select_row("pi-4242");
+        let folder = crate::pi::session_dir(home.path(), cwd);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(
+            folder.join("2026-08-25T14-06-44-035Z_01a0393e-ad43.jsonl"),
+            concat!(
+                r#"{"type":"session","version":3,"id":"01a0393e-ad43","timestamp":"2026-08-25T14:06:44.035Z","cwd":"/src/one"}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-08-25T14:06:44.053Z","message":{"role":"user","content":[{"type":"text","text":"fix the flaky test"}]}}"#,
+                "\n",
+                r#"{"type":"message","timestamp":"2026-08-25T14:06:46.238Z","message":{"role":"assistant","content":[{"type":"text","text":"Reading it"}],"usage":{"input":1117,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.002}},"stopReason":"stop"}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let (ids, screen) = shown(&mut app, std::slice::from_ref(&first));
+        assert_eq!(
+            ids,
+            ["pi-4242"],
+            "the reply names the conversation, not a new row"
+        );
+        assert_eq!(key(&app).as_deref(), Some("pi-4242"), "the selection stays");
+        assert_eq!(screen.matches("fix the flaky test").count(), 1, "{screen}");
+        assert_eq!(app.data.sessions[0].native(), "01a0393e-ad43");
+        let (ids, screen) = shown(&mut app, &[first, second]);
+        assert_eq!(
+            ids,
+            ["pi-4242", "pi-4343"],
+            "two clients are two rows: {screen}"
+        );
+    }
+
     #[test]
     fn each_harness_returns_from_empty_input_and_reenters_the_same_viewer() {
         for &kind in harness::known() {
@@ -24472,6 +24563,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         }
     }
 
@@ -25805,6 +25897,7 @@ states:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         assert_eq!(key(&app).as_deref(), Some("dddd-daemon"));
@@ -28617,6 +28710,7 @@ while True:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         app.step(-1);
@@ -29157,6 +29251,7 @@ while True:
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         });
         app.apply(data);
         app.settle();

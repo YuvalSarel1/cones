@@ -352,6 +352,7 @@ fn row(p: &Process, file: Option<(PathBuf, Meta)>) -> Session {
         forked_from: None,
         activity: t.activity,
         moved_to: None,
+        native_id: None,
     }
 }
 

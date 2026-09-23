@@ -870,6 +870,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 forked_from: rollout.and_then(|(_, meta)| meta.forked_from.clone()),
                 activity: t.activity,
                 moved_to: None,
+                native_id: None,
             }
         })
         .collect();
@@ -1032,6 +1033,7 @@ pub(crate) fn thread_rows_observed(
                 forked_from: meta.and_then(|m| m.forked_from),
                 activity: tail.activity,
                 moved_to: None,
+                native_id: None,
                 session_id: id,
             })
         })

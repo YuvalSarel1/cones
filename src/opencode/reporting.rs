@@ -127,6 +127,7 @@ impl Report {
 
     pub(crate) fn apply(&self, row: &mut Session) {
         let session = &self.0["session"];
+        row.native_id = None;
         row.session_id = session["id"].as_str().map_or_else(
             || format!("opencode-{}", row.pid.unwrap_or_default()),
             str::to_owned,

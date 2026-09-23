@@ -65,7 +65,7 @@ pub fn apply(links: &[Link], claude: &Path, sessions: &mut [Session]) {
             link.harness == session.harness
                 && link.home == home
                 && link.cwd == session.cwd
-                && link.child == session.session_id
+                && link.child == session.native()
         }) {
             session.forked_from = Some(link.parent.clone());
         }
@@ -77,7 +77,7 @@ pub fn order<'a>(sessions: &[&'a Session]) -> Vec<(&'a Session, usize)> {
     let mut index: HashMap<(&str, &Path, &str), Vec<usize>> = HashMap::new();
     for (i, s) in sessions.iter().enumerate() {
         index
-            .entry((&s.harness, &s.cwd, &s.session_id))
+            .entry((&s.harness, &s.cwd, s.native()))
             .or_default()
             .push(i);
     }

@@ -18,7 +18,11 @@ use std::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
+    /// The row's identity, which the harness definition's launch identity decides; see `identify`.
     pub session_id: String,
+    /// The conversation a `client_pid` client reports now, when it differs from the row key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_id: Option<String>,
     #[serde(default = "claude")]
     pub harness: String,
     /// Native kind: Claude `bg`/`interactive`, or Codex `daemon`.
@@ -178,6 +182,11 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 }
 
 impl Session {
+    /// The conversation id the harness reported: what history, forks and transcripts name.
+    pub fn native(&self) -> &str {
+        self.native_id.as_deref().unwrap_or(&self.session_id)
+    }
+
     /// The folder the session works in now, which a worktree or `cd` moves away from `cwd`.
     pub fn dir(&self) -> &Path {
         self.moved_to.as_deref().unwrap_or(&self.cwd)
@@ -192,6 +201,26 @@ impl Session {
 }
 fn claude() -> String {
     "claude".into()
+}
+
+/// A `client_pid` harness's row is its process. The conversation the client reports is an
+/// attribute: pi names none before its first reply, and `/new`, `/resume`, an in-app fork or a
+/// second client in the folder change or withdraw it while the process runs on. Keying the row
+/// by it would remove and re-add one live client, so the reported id moves to `native_id`.
+pub fn identify(s: &mut Session) {
+    let Some(pid) = s.pid else {
+        return;
+    };
+    let by_process = crate::harness::by_name(&s.harness)
+        .and_then(|spec| spec.launch.as_ref())
+        .is_some_and(|launch| launch.identity == crate::harness::spec::LaunchIdentity::ClientPid);
+    let key = format!("{}-{pid}", s.harness);
+    if !by_process || s.session_id == key {
+        return;
+    }
+    let reported = std::mem::replace(&mut s.session_id, key);
+    // A launch placeholder names the launch, not a conversation.
+    s.native_id = (!reported.contains(":start:")).then_some(reported);
 }
 
 /// Claude's home directory name under the user's home, which also says where a process with
@@ -403,13 +432,50 @@ pub struct ProcessLine<'a> {
     pub command: &'a str,
 }
 
+/// Harness processes this cones process started only to ask a question, such as `--version`,
+/// with when each exited. pi titles itself `pi` before it reads its arguments, so a probe is
+/// indistinguishable from a session in the table; cones knows its pid because it spawned it.
+/// An exited probe stays listed briefly, since a table read while it ran is parsed later.
+static PROBES: Mutex<Vec<(u32, Option<std::time::Instant>)>> = Mutex::new(Vec::new());
+
+/// Run a harness probe that discovery never lists as a session.
+pub fn probe(command: &mut Command) -> std::io::Result<std::process::Output> {
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pid = child.id();
+    let probes = || PROBES.lock().unwrap_or_else(|e| e.into_inner());
+    probes().push((pid, None));
+    let output = child.wait_with_output();
+    let now = std::time::Instant::now();
+    let mut list = probes();
+    list.retain(|(_, exited)| {
+        exited.is_none_or(|at| now - at < std::time::Duration::from_secs(10))
+    });
+    for entry in list.iter_mut().filter(|(p, _)| *p == pid) {
+        entry.1 = Some(now);
+    }
+    output
+}
+
+fn probing(pid: u32) -> bool {
+    PROBES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(p, _)| *p == pid)
+}
+
 pub fn process_lines(ps: &str) -> Vec<ProcessLine<'_>> {
     ps.lines()
         .filter_map(|line| {
             let (pid, rest) = line.trim_start().split_once(' ')?;
             let (start, command) = rest.trim_start().split_at_checked(24)?;
+            let pid = pid.parse().ok().filter(|pid| !probing(*pid))?;
             Some(ProcessLine {
-                pid: pid.parse().ok()?,
+                pid,
                 started: chrono::NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
                     .ok()?
                     .and_utc(),
@@ -589,6 +655,7 @@ fn build(
         harness: claude(),
         kind: v["kind"].as_str().map(Into::into),
         moved_to: (now != launch).then_some(now),
+        native_id: None,
         cwd: launch,
         state: state(job, v["status"].as_str().unwrap_or("-")),
         started: d.report.started,
@@ -1338,7 +1405,10 @@ pub(crate) fn all_observed(
         let started = std::time::Instant::now();
         let result = spec.discovery.handler.sessions(&home);
         observe(&spec.name, &home, started.elapsed(), &result);
-        out.extend(result?);
+        out.extend(result?.into_iter().map(|mut s| {
+            identify(&mut s);
+            s
+        }));
     }
     sort(&mut out);
     Ok(out)
@@ -1358,7 +1428,7 @@ pub fn sort(out: &mut [Session]) {
 pub fn find(claude: &Path, session_id: &str) -> Result<Option<Session>> {
     Ok(all(claude)?
         .into_iter()
-        .find(|s| s.session_id == session_id))
+        .find(|s| s.session_id == session_id || s.native() == session_id))
 }
 
 /// Validate current pid/start identity without loading every transcript.
@@ -1415,7 +1485,11 @@ pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<
             .handler
             .sessions(&spec.home.resolve(claude))?
             .into_iter()
-            .find(|s| s.session_id == session_id)
+            .map(|mut s| {
+                identify(&mut s);
+                s
+            })
+            .find(|s| s.session_id == session_id || s.native() == session_id)
         {
             return Ok(Some(session));
         }
@@ -2372,6 +2446,7 @@ mod tests {
             forked_from: None,
             activity: Vec::new(),
             moved_to: None,
+            native_id: None,
         };
         assert!(rename(&session, "  ").is_err(), "a blank title is refused");
         rename(&session, " Ours ").unwrap();
@@ -2584,6 +2659,49 @@ mod tests {
             .is_some(),
             "the same entry is live when the table reports its pid"
         );
+    }
+
+    /// pi titles itself `pi` before it reads `--version`, so the probe cones runs before every
+    /// launch has a session's shape in the table; only who started it tells them apart.
+    #[test]
+    fn a_probe_cones_runs_is_never_listed_as_a_session() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let pi = dir.path().join("pi");
+        fs::write(&pi, "#!/usr/bin/python3\nimport time\ntime.sleep(3)\n").unwrap();
+        fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
+        let discovery = &crate::harness::spec(crate::config::HarnessKind::Pi).discovery;
+        let mut session = Command::new(&pi).arg("--version").spawn().unwrap();
+        let probe = {
+            let pi = pi.clone();
+            std::thread::spawn(move || probe(Command::new(pi).arg("--version")).unwrap())
+        };
+        let path = pi.to_string_lossy().into_owned();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (listed, probe_pid) = loop {
+            let table = process_table("/bin/ps").unwrap();
+            // The raw table, since the parsed lines are what leave the probe out.
+            let probe_pid = table.lines().find_map(|line| {
+                let (pid, rest) = line.trim_start().split_once(' ')?;
+                let pid: u32 = pid.parse().ok()?;
+                (rest.contains(&path) && pid != session.id()).then_some(pid)
+            });
+            let listed: Vec<_> = discovery.processes(&table).iter().map(|p| p.pid).collect();
+            if let Some(pid) = probe_pid
+                && listed.contains(&session.id())
+            {
+                break (listed, pid);
+            }
+            assert!(std::time::Instant::now() < deadline, "{table}");
+        };
+        assert!(
+            !listed.contains(&probe_pid),
+            "the probe cones started is not a session, while the same client started by \
+             anyone else is"
+        );
+        assert!(probe.join().unwrap().status.success());
+        session.kill().unwrap();
+        session.wait().unwrap();
     }
 
     // The signal itself is covered end to end by the runner suite, which spawns a
