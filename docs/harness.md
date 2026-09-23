@@ -198,7 +198,10 @@ Claude background uses the first matching rule:
 2. Job `done`/`failed`/`stopped` with tempo no longer `active`: that state. Done also requires
    no routine, self-wake or in-flight `session_cron` that could restart it.
 3. Tempo `blocked` or registry `waiting`: input.
-4. Otherwise working; live background jobs are never labelled idle.
+4. Registry `idle`, tempo `idle` and no in-flight tasks, queue or kinds: idle, even when the
+   job still reports `working` while it waits on another agent. Its reported detail stays on
+   the row.
+5. Otherwise working.
 
 Quiet output does not override these reports. Codex and pi native input reporting is not
 integrated into these readers.

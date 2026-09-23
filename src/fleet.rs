@@ -652,7 +652,8 @@ fn transcript_parent(transcript: &Path, id: &str) -> Option<String> {
 }
 
 /// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
-/// Registry busy wins because job state can lag a new turn. Background jobs never idle.
+/// Registry busy wins because job state can lag a new turn. A background job idles only
+/// when the registry, tempo and in-flight work all rest.
 fn state(job: &Value, status: &str) -> String {
     let job_state = job["state"].as_str();
     let tempo = job["tempo"].as_str();
@@ -667,10 +668,18 @@ fn state(job: &Value, status: &str) -> String {
             Some("failed" | "stopped") => true,
             _ => false,
         };
+    let in_flight = &job["inFlight"];
+    let resting = status == "idle"
+        && tempo == Some("idle")
+        && !waking
+        && in_flight["tasks"].as_u64().unwrap_or(0) == 0
+        && in_flight["queued"].as_u64().unwrap_or(0) == 0
+        && in_flight["kinds"].as_array().is_none_or(|k| k.is_empty());
     match job_state {
         _ if status == "busy" || status == "shell" => "active",
         Some(done) if finished => done,
         _ if status == "waiting" || tempo == Some("blocked") => "blocked",
+        Some(_) if resting => "idle",
         Some(_) => "active",
         None => status,
     }
@@ -2115,7 +2124,20 @@ mod tests {
     fn a_job_still_taking_turns_is_working_however_the_registry_rests() {
         let word = |job: Value, status| super::state(&job, status);
         let job = |state, tempo| serde_json::json!({"state": state, "tempo": tempo});
-        assert_eq!(word(job("working", "idle"), "idle"), "active");
+        assert_eq!(
+            word(job("working", "idle"), "idle"),
+            "idle",
+            "a job that says working while nothing runs is waiting on someone else"
+        );
+        let mut tasked = job("working", "idle");
+        tasked["inFlight"] = serde_json::json!({"tasks": 1, "queued": 0, "kinds": ["bash"]});
+        assert_eq!(
+            word(tasked, "idle"),
+            "active",
+            "in-flight work keeps it working"
+        );
+        assert_eq!(word(job("working", "idle"), "busy"), "active");
+        assert_eq!(word(job("working", "active"), "idle"), "active");
         assert_eq!(
             word(job("blocked", "active"), "idle"),
             "active",
