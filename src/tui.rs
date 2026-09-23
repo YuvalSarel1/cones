@@ -11242,33 +11242,32 @@ impl App {
                     .map(|r| r.started.run_id.clone()),
             )
             .collect();
-        if !unread.is_empty() {
-            for table in [&mut self.rows, &mut self.other] {
-                let headers: HashSet<usize> = table
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, row)| {
-                        (row.kind == Kind::Columns
-                            && table[i + 1..]
-                                .iter()
-                                .take_while(|r| r.kind != Kind::Columns)
-                                .any(|r| matches!(r.kind, Kind::Session(..) | Kind::Run(..))))
-                        .then_some(i)
-                    })
-                    .collect();
-                for (i, row) in table.iter_mut().enumerate() {
-                    let marker = match &row.kind {
-                        Kind::Session(id, _) | Kind::Run(id, _) => {
-                            Some(if unread.contains(id) { "● " } else { "  " })
-                        }
-                        _ if headers.contains(&i) => Some("  "),
-                        _ => None,
-                    };
-                    if let Some(marker) = marker
-                        && let Some((text, _)) = row.cells.first_mut()
-                    {
-                        text.insert_str(0, marker);
+        // The gutter is always there so a marker appearing never shifts the columns.
+        for table in [&mut self.rows, &mut self.other] {
+            let headers: HashSet<usize> = table
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    (row.kind == Kind::Columns
+                        && table[i + 1..]
+                            .iter()
+                            .take_while(|r| r.kind != Kind::Columns)
+                            .any(|r| matches!(r.kind, Kind::Session(..) | Kind::Run(..))))
+                    .then_some(i)
+                })
+                .collect();
+            for (i, row) in table.iter_mut().enumerate() {
+                let marker = match &row.kind {
+                    Kind::Session(id, _) | Kind::Run(id, _) => {
+                        Some(if unread.contains(id) { "● " } else { "  " })
                     }
+                    _ if headers.contains(&i) => Some("  "),
+                    _ => None,
+                };
+                if let Some(marker) = marker
+                    && let Some((text, _)) = row.cells.first_mut()
+                {
+                    text.insert_str(0, marker);
                 }
             }
         }
@@ -21687,6 +21686,17 @@ states:
         assert_eq!(app.data.sessions[0].state, "done");
         assert_eq!(app.data.sessions[1].state, "blocked");
         assert!(!app.header_summary().to_string().contains("unread"));
+        app.rebuild();
+        assert!(
+            app.rows
+                .iter()
+                .find(|r| r.kind.key() == Some(A))
+                .unwrap()
+                .cells[0]
+                .0
+                .starts_with("  "),
+            "a read row keeps the gutter so columns never shift"
+        );
         app.filter = Input::new(":attention");
         app.apply_filter();
         assert_eq!(sessions(&app), [B]);
