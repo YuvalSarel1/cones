@@ -2100,7 +2100,7 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
         "age" => (since(s.started), dim()),
         "context" => (fleet::context(s), dim()),
         "tokens" => (fleet::tokens(s), dim()),
-        "folder" => (elide_folder(fleet::tilde(&s.cwd)), dim()),
+        "folder" => (elide_folder(fleet::tilde(s.dir())), dim()),
         "last_active" => (since(s.last_activity), dim()),
         "cost" => (
             crate::cost::display(s.cost_usd, s.cost_info.as_ref()),
@@ -8436,7 +8436,7 @@ fn history_session(entry: &history::Entry) -> Session {
         coordinator: false,
         forked_from: None,
         activity: Vec::new(),
-        moved_to: None,
+        moved_to: entry.moved_to.clone(),
     }
 }
 
@@ -8504,7 +8504,7 @@ impl HistoryView {
                     let s = history_session(&r.entry);
                     // Only folders this read already resolved: a recorded path may be gone, and a
                     // git call per history row would spend a process on every frame.
-                    let worktree = data.worktrees.contains(&s.cwd);
+                    let worktree = data.worktrees.contains(s.dir());
                     session_cells(
                         &s,
                         &data.history_columns,
@@ -13924,6 +13924,7 @@ impl App {
                         session_id: s.session_id.clone(),
                     },
                     cwd: s.cwd.clone(),
+                    moved_to: s.moved_to.clone(),
                     transcript,
                     archived: false,
                     started: s.started,
@@ -27192,6 +27193,34 @@ states:
             row.cells[4].0.trim(),
             fleet::age(entry.last_activity.unwrap())
         );
+    }
+
+    #[test]
+    fn a_history_row_shows_the_worktree_its_conversation_entered() {
+        let (d, mut app, mut terminal) = history_fixture(1);
+        let tree = d.path().join(".claude/worktrees/w");
+        // Claude 2.1.280 writes the worktree as every later line's cwd after EnterWorktree.
+        let path = d
+            .path()
+            .join("projects/history/00000000-aaaa-4aaa-8aaa-aaaaaaaaaaaa.jsonl");
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str(&format!(
+            "{}\n",
+            serde_json::json!({"type":"user","cwd":tree,"timestamp":"2026-09-10T12:00:05Z","message":{"content":"in the worktree"}})
+        ));
+        fs::write(&path, text).unwrap();
+        // Resolved by this read because a live row or pinned folder sits there.
+        app.data.worktrees.insert(tree.clone());
+        app.data.history_columns = vec!["folder".into()];
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| a.history.ready);
+        let table = app.history.table(&app.data, &HashSet::new());
+        let row = table
+            .iter()
+            .find(|r| matches!(r.kind, Kind::History(_)))
+            .unwrap();
+        assert_eq!(row.cells[3].0.trim(), folder_cell(&tree, true));
+        assert!(row.cells[3].0.trim().ends_with("/w ⑂"));
     }
 
     #[test]

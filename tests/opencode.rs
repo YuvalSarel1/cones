@@ -445,6 +445,7 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
                 session_id: "ses_fixture".into(),
             },
             cwd: home.clone(),
+            moved_to: None,
             transcript: home.join("opencode.db"),
             archived: false,
             started: None,

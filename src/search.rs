@@ -1181,6 +1181,7 @@ mod tests {
                 session_id: id.into(),
             },
             cwd: "/project".into(),
+            moved_to: None,
             transcript: path,
             title: Some(format!("Conversation {id}")),
             archived: false,

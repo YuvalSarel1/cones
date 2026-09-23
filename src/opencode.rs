@@ -200,6 +200,7 @@ fn entries(db: &Path, home: &Path, filter: &str) -> Result<Vec<Entry>> {
                 session_id: id.into(),
             },
             cwd: cwd.into(),
+            moved_to: None,
             transcript: db.to_owned(),
             archived: !v["time_archived"].is_null(),
             started: millis(&v["time_created"]),

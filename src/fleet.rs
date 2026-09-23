@@ -24,8 +24,11 @@ pub struct Session {
     /// Native kind: Claude `bg`/`interactive`, or Codex `daemon`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// The launch folder: grouping, transcript lookup and resume read it. What the row shows as
+    /// its folder, branch and worktree mark comes from `dir()`.
     pub cwd: PathBuf,
-    /// Where a background job works now, when EnterWorktree moved it out of its launch `cwd`.
+    /// Where the session works now, when it moved out of its launch `cwd`: EnterWorktree, or a
+    /// plain `cd`, which the worktree mark tells apart by asking git.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<PathBuf>,
     /// Normalized harness state; see `state` and docs/harness.md.
@@ -175,7 +178,7 @@ pub fn bars(values: &[f64], bound: f64) -> String {
 }
 
 impl Session {
-    /// The folder the session works in now, which a background job's worktree moves away from `cwd`.
+    /// The folder the session works in now, which a worktree or `cd` moves away from `cwd`.
     pub fn dir(&self) -> &Path {
         self.moved_to.as_deref().unwrap_or(&self.cwd)
     }
@@ -573,13 +576,14 @@ fn build(
         .flatten();
     let (window, cost, effort, reported_dir) = statusline_values(dir, id);
     let (cost_usd, cost_info) = d.report.costs.report(cost);
-    // Keep background jobs grouped by launch cwd when they move into a worktree. The registry
-    // follows a job's own worktree, but entering one mid-session moves only the statusline.
+    // Keep background jobs grouped by launch cwd when they move into a worktree. The job keeps
+    // the launch folder; the current one comes from the statusline, or before its first write,
+    // the transcript's latest line.
     let launch = job["cwd"]
         .as_str()
         .map(PathBuf::from)
         .unwrap_or(cwd.clone());
-    let now = reported_dir.unwrap_or(cwd);
+    let now = reported_dir.or(d.report.cwd).unwrap_or(cwd);
     Session {
         session_id: id.into(),
         harness: claude(),
@@ -999,6 +1003,8 @@ struct Report {
     model: Option<String>,
     started: Option<DateTime<Utc>>,
     last_activity: Option<DateTime<Utc>>,
+    /// The folder the latest line reports, which EnterWorktree and ExitWorktree move.
+    cwd: Option<PathBuf>,
     activity: Vec<Activity>,
     costs: crate::cost::Accounting<CostAdapter>,
 }
@@ -1150,6 +1156,9 @@ fn report_with_activity(
             continue;
         };
         r.costs.observe(&event, catalog);
+        if let Some(cwd) = event["cwd"].as_str().filter(|c| !c.is_empty()) {
+            r.cwd = Some(cwd.into());
+        }
         if let Some(t) = event["timestamp"]
             .as_str()
             .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
@@ -1806,6 +1815,57 @@ mod tests {
         assert_eq!(s.dir(), Path::new("/repo/.claude/worktrees/w"));
         let s = build(home, "silent", &registry, &job, None, false);
         assert_eq!(s.moved_to, None, "no reported folder, no move");
+    }
+
+    #[test]
+    fn before_a_statusline_write_the_transcript_places_a_session_in_its_worktree() {
+        use std::io::Write;
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path();
+        let (repo, tree) = ("/repo", "/repo/.claude/worktrees/w");
+        let id = "0a0a0a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a";
+        let line = |cwd: &str| {
+            format!(r#"{{"type":"user","cwd":"{cwd}","timestamp":"2026-09-23T13:44:00Z"}}"#)
+        };
+        // Claude 2.1.280 lines as EnterWorktree writes them: the markers carry no cwd.
+        let entered = [
+            line(repo),
+            format!(r#"{{"type":"relocated","sessionId":"{id}","relocatedCwd":"{tree}"}}"#),
+            format!(r#"{{"type":"worktree-state","worktreeSession":{{"originalCwd":"{repo}","worktreePath":"{tree}"}}}}"#),
+            line(tree),
+        ]
+        .join("\n");
+        let transcript = |cwd: &str| {
+            let folder = crate::harness::spec(crate::config::HarnessKind::Claude)
+                .transcript
+                .live_path(home)
+                .join(cwd.replace(|c: char| !c.is_ascii_alphanumeric(), "-"));
+            fs::create_dir_all(&folder).unwrap();
+            let path = folder.join(format!("{id}.jsonl"));
+            fs::write(&path, format!("{entered}\n")).unwrap();
+            path
+        };
+        let job = serde_json::json!({"cwd": repo});
+        let folders = |registry: &str| {
+            let v = serde_json::json!({"kind": "bg", "cwd": registry});
+            let s = build(home, id, &v, &job, None, true);
+            (s.cwd.clone(), s.dir().to_owned())
+        };
+
+        // The registry follows the relocated transcript into the worktree.
+        let relocated = transcript(tree);
+        assert_eq!(folders(tree), (repo.into(), tree.into()));
+        // A registry left at the launch folder still finds the worktree in the transcript.
+        let unmoved = transcript(repo);
+        assert_eq!(folders(repo), (repo.into(), tree.into()));
+
+        // ExitWorktree writes the launch folder again, and the move ends.
+        for path in [relocated, unmoved] {
+            let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+            writeln!(file, "{}", line(repo)).unwrap();
+        }
+        assert_eq!(folders(tree), (repo.into(), repo.into()));
+        assert_eq!(folders(repo), (repo.into(), repo.into()));
     }
 
     #[test]

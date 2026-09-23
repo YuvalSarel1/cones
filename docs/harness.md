@@ -28,7 +28,7 @@ process table fails the refresh rather than reporting that every session exited.
 | --- | --- |
 | Identity/kind | Registry `sessionId` and `kind` (`bg` or `interactive`). |
 | Liveness | Live registry PID with UTC process start matching `procStart`; omit `spare: true` workers. |
-| Directory | Registry `cwd` for interactive sessions; `jobs/<jobId>/state.json` launch cwd for background jobs. Registry cwd locates transcripts after worktree changes and supplies the `⑂` mark and folder cell. |
+| Directory | Rows group by registry `cwd` for interactive sessions and `jobs/<jobId>/state.json` launch cwd for background jobs. Registry cwd locates transcripts after worktree changes. The folder cell, branch and `⑂` mark use the current folder: statusline `workspace.current_dir`, else the latest transcript line's `cwd`, which history rows also use, else registry cwd. Only Git decides `⑂`, so a plain `cd` changes the folder cell alone. |
 | Transcript | `projects/<escaped cwd>/<sessionId>.jsonl`, then job `linkScanPath`. The cwd replaces non-alphanumeric bytes with `-`; interactive paths depend on native layout. |
 | Exit | Interactive rows leave with their registry entry. Background job records reporting `done`, `failed` or `stopped` remain until removal. Killed jobs leave no record; nonterminal records without a live registry entry are omitted. |
 

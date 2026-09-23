@@ -83,6 +83,9 @@ pub struct Columns {
 pub struct Entry {
     pub key: Key,
     pub cwd: PathBuf,
+    /// Where the conversation last worked, when that left `cwd`: see `Session::moved_to`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<PathBuf>,
     pub transcript: PathBuf,
     /// Codex archives are discoverable, but opening one may require native unarchive.
     pub archived: bool,
@@ -983,6 +986,12 @@ fn metadata(
         Native::Opencode => unreachable!("SQLite metadata uses its native reader"),
         Native::External(_) => None,
     };
+    // Claude writes its working folder on every line, so the last one follows EnterWorktree.
+    let moved_to = matches!(definition.transcript.handler, Native::Claude)
+        .then(|| tail.iter().rev().find_map(|v| v["cwd"].as_str()))
+        .flatten()
+        .filter(|last| !last.is_empty() && Path::new(last) != cwd)
+        .map(PathBuf::from);
     Ok(Some(Entry {
         key: Key {
             harness: source.harness.to_string(),
@@ -990,6 +999,7 @@ fn metadata(
             session_id: id,
         },
         cwd,
+        moved_to,
         transcript: path.to_owned(),
         archived,
         started,
