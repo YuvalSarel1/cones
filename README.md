@@ -113,6 +113,7 @@ This runs a supervised Claude Code task in the current directory. See [one-off t
 
 | Guide | Contents |
 | --- | --- |
+| [Comparisons](docs/comparisons/README.md) | Design choices, tradeoffs and which agent workspace fits your work. |
 | [Dashboard](docs/dashboard.md) | Controls and interactions, in screen order. |
 | [Configuration and runs](docs/jobs.md) | All `jobs.yaml` fields, scheduling and run lifecycle. |
 | [Commands](docs/cli.md) | CLI flags, one-off tasks and diagnostics. |
