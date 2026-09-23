@@ -215,10 +215,10 @@ mod tests {
         );
         std::fs::write(&source, &transcript).unwrap();
         let state = dir.path().join("state");
-        std::fs::create_dir_all(state.join("search")).unwrap();
+        std::fs::create_dir_all(state.join("search/models")).unwrap();
         // Obstruct the model directory, before the loader could open a model or run curl.
         std::fs::write(
-            crate::search::model_directory(&state.join("search")),
+            crate::search::model_directory(&state.join("search/models")),
             "blocked",
         )
         .unwrap();
