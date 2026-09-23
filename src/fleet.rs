@@ -346,7 +346,8 @@ fn pass_argv(ps: &str) -> HashMap<u32, String> {
     };
     process_lines(&table)
         .into_iter()
-        .map(|line| (line.pid, line.command.to_owned()))
+        // `lstart` is padded, so the command starts after spaces the `-E` read does not print.
+        .map(|line| (line.pid, line.command.trim_start().to_owned()))
         .collect()
 }
 
@@ -357,8 +358,11 @@ fn pass_argv(ps: &str) -> HashMap<u32, String> {
 ///
 /// Two `ps` reads cover the listed pids alone, because the whole table with environments is
 /// several times larger and every refresh would read it. macOS prints no environment for a
-/// platform binary or another user's process, and a pid can go between the reads: an unreadable
-/// environment keeps the pid, because a hidden environment must never empty the fleet.
+/// platform binary or another user's process: a hidden environment keeps the pid, because it
+/// must never empty the fleet, and so does an environment read that failed outright. A pid that
+/// went between the reads, or whose command line changed, is left out of this pass: a test
+/// fixture started through the `/usr/bin/python3` shim matches discovery only until the shim
+/// execs the real interpreter, and it showed as a row for one refresh.
 ///
 /// This still finds the machine's real clients, so a test that asserts a whole row set must
 /// exclude ids it did not create: a live harness process fails such a test for reasons that have
@@ -383,12 +387,16 @@ pub fn own_home_processes(
     pids.iter()
         .copied()
         .filter(|pid| {
-            with_environment
-                .get(pid)
-                .zip(argv.get(pid))
-                .and_then(|(full, argv)| environment(full, argv))
-                .and_then(|env| home.of_process(env))
-                .is_none_or(|used| read.contains(&used))
+            let Some(argv) = argv.get(pid) else {
+                return true;
+            };
+            match with_environment.get(pid) {
+                None => with_environment.is_empty(),
+                Some(full) if !full.starts_with(argv.as_str()) => false,
+                Some(full) => environment(full, argv)
+                    .and_then(|env| home.of_process(env))
+                    .is_none_or(|used| read.contains(&used)),
+            }
         })
         .collect()
 }
@@ -2511,6 +2519,39 @@ mod tests {
         let me = std::process::id();
         assert!(own_home_processes("/bin/ps", kind, &[me]).contains(&me));
         assert!(own_home_processes("/bin/ps", kind, &[1]).contains(&1));
+    }
+
+    // A test fixture started through the `/usr/bin/python3` shim matches discovery until the
+    // shim execs the real interpreter, and its hidden environment kept it: two fixture pi
+    // clients flickered through the owner's dashboard for one refresh during another gate.
+    // The table pads `lstart`, and an untrimmed command line never matched the `-E` read, so
+    // no environment was ever consulted.
+    #[test]
+    fn a_pid_that_changed_or_went_between_the_reads_waits_for_the_next_pass() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let ps = dir.path().join("ps");
+        fs::write(
+            &ps,
+            "#!/bin/sh\ncase \"$1\" in\n\
+             -axww) printf '%s\\n' \
+             '4201 Wed Sep 23 16:00:00 2026    python3 /x/pi -- words' \
+             '4202 Wed Sep 23 16:00:00 2026    pi' \
+             '4203 Wed Sep 23 16:00:00 2026    pi' ;;\n\
+             *) printf '%s\\n' '4201 Python /x/pi -- words' '4203 pi' ;;\nesac\n",
+        )
+        .unwrap();
+        fs::set_permissions(&ps, fs::Permissions::from_mode(0o755)).unwrap();
+        let own = own_home_processes(
+            ps.to_str().unwrap(),
+            crate::config::HarnessKind::Pi,
+            &[4201, 4202, 4203],
+        );
+        assert_eq!(
+            own,
+            HashSet::from([4203]),
+            "re-exec'd and gone pids wait; a hidden environment still keeps its pid"
+        );
     }
 
     /// `lstart` is locale text. Under a non-English `LANG` ps prints its own month names, so
