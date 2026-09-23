@@ -8779,6 +8779,8 @@ struct App {
     started: Vec<(String, mpsc::Receiver<Launched>)>,
     /// Immediate rows until discovery reports the launched sessions.
     pending: Vec<Pending>,
+    /// Sessions a coordinator launch became, with its keystroke, until their claim lands.
+    claiming: HashMap<String, Instant>,
     opening: Option<Opening>,
     rename: Option<NativeRename>,
     tick: usize,
@@ -9156,6 +9158,7 @@ impl App {
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
+            claiming: HashMap::new(),
             opening: None,
             rename: None,
             tick: 0,
@@ -10782,6 +10785,26 @@ impl App {
             })
         });
         let mut replaced = self.reconcile_launches(&mut data);
+        // The coordinator writes its claim seconds after the harness names its session, so the
+        // mark the placeholder carried stays on that session until the claim takes over.
+        for p in self.pending.iter().filter(|p| p.session.coordinator) {
+            if let Some(id) = replaced
+                .get(&p.session.session_id)
+                .filter(|id| **id != p.session.session_id)
+            {
+                self.claiming.insert(id.clone(), p.at);
+            }
+        }
+        self.claiming.retain(|id, at| {
+            at.elapsed() < PENDING_TTL
+                && data
+                    .sessions
+                    .iter()
+                    .any(|s| &s.session_id == id && !s.coordinator)
+        });
+        for s in &mut data.sessions {
+            s.coordinator |= self.claiming.contains_key(&s.session_id);
+        }
         // A revived session is live from the moment its client starts, while the harness can take
         // minutes to report it. Stand in for its row so it joins the live list at once instead of
         // sitting in history, and the loop below hands the row over when discovery catches up.
@@ -21592,6 +21615,68 @@ states:
             key(&app).as_deref(),
             Some(B),
             "the handover does not pull the cursor back"
+        );
+    }
+
+    #[test]
+    fn a_coordinator_launch_stays_marked_from_its_placeholder_through_its_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path();
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        let mut session = placeholder(HarnessKind::Claude, "starting:1", claude, "coordinator");
+        session.coordinator = true;
+        app.data.sessions.push(session.clone());
+        app.pending.push(Pending {
+            session,
+            short: short_id("started coordinator: backgrounded · aaaaaaaa (idle)"),
+            fork_home: None,
+            at: Instant::now(),
+        });
+        app.rebuild();
+        let marked = |app: &App, id: &str| {
+            let row = app.rows.iter().find(|r| r.kind.key() == Some(id));
+            let session = app.data.sessions.iter().find(|s| s.session_id == id);
+            (
+                row.map(|r| r.cells.iter().any(|(t, _)| t.starts_with(COORDINATOR))),
+                session.map(|s| s.coordinator),
+            )
+        };
+        assert_eq!(marked(&app, "starting:1"), (Some(true), Some(true)));
+        registry(
+            claude,
+            A,
+            claude.to_str().unwrap(),
+            "idle",
+            1_757_682_871_000,
+        );
+        app.refresh().unwrap();
+        assert_eq!(marked(&app, "starting:1"), (None, None), "handed over");
+        assert_eq!(
+            marked(&app, A),
+            (Some(true), Some(true)),
+            "the named session keeps the mark before its claim is written"
+        );
+        let folder = app.state.join("coordinator/folders/fixture");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(
+            folder.join("status.json"),
+            json!({"session": A, "cwd": claude}).to_string(),
+        )
+        .unwrap();
+        app.refresh().unwrap();
+        assert_eq!(
+            marked(&app, A),
+            (Some(true), Some(true)),
+            "the claim marks it"
+        );
+        assert!(app.claiming.is_empty(), "the claim took over");
+        std::fs::remove_file(folder.join("status.json")).unwrap();
+        app.refresh().unwrap();
+        assert_eq!(
+            marked(&app, A),
+            (Some(false), Some(false)),
+            "a released claim leaves no launch mark behind"
         );
     }
 
