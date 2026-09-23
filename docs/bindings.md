@@ -33,9 +33,8 @@ key replaces that inherited key; other inherited keys remain available.
 A `help` block has a `title`, a `when` explanation and `bindings` entries
 referencing an `action` in the state's bindings. Each entry can override the
 Help `description`. Shortcut labels come from the referenced action's keys, so
-remapping an action updates Help with it. Help is a flat list of headings the
-reader opens one at a time; it only selects and organizes, and never changes
-input handling.
+remapping an action updates Help with it. Help shows every heading open; it
+only selects and organizes, and never changes input handling.
 
 Help is a card, not a reference. Only three states carry one: the list, history
 and viewers. Keep it to the cones-specific actions a reader cannot guess, and

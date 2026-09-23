@@ -119,11 +119,11 @@ composer's [launch settings](#launch-settings).
 
 ### Help
 
-Help opens a compact index for the list, history and viewers. Enter expands a heading;
-Left/Right closes or opens it. It covers cones-specific actions; screen footers show navigation.
+Help shows one short card each for the list, history and viewers, scrolled to the one you
+pressed it from. It covers cones-specific actions; screen footers show navigation.
 
 Type to search. `shift+tab` switches between words and meaning using the same local search
-as [history](#history). Word search needs no model download. Matches open their headings;
+as [history](#history). Word search needs no model download. Matches keep their headings;
 Escape or Ctrl+U clears the query, and Escape on an empty query returns to the list. Ctrl+G
 closes Help directly.
 

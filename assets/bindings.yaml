@@ -376,10 +376,10 @@ states:
     bindings:
       - keys: ["up"]
         action: up
-        description: "Move to the previous heading, or scroll while searching."
+        description: "Scroll up a line."
       - keys: ["down"]
         action: down
-        description: "Move to the next heading, or scroll while searching."
+        description: "Scroll down a line."
       - keys: ["home"]
         action: home
         description: "Scroll to the start."
@@ -400,13 +400,10 @@ states:
         description: "Close Help."
       - keys: ["left"]
         action: left
-        description: "Close the heading under the cursor, then leave. While searching, move the cursor."
-      - keys: ["right"]
-        action: right
-        description: "Open the heading under the cursor."
+        description: "Leave Help. While searching, move the cursor."
       - keys: ["enter"]
         action: enter
-        description: "Open or close the heading under the cursor."
+        description: "Ignored; Help launches nothing."
       - keys: ["/"]
         action: search
         description: "Start search when empty; otherwise insert a slash."

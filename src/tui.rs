@@ -1212,7 +1212,7 @@ fn hints(keys: &[(&str, &str)]) -> Line<'static> {
 }
 
 /// One heading in Help: the keys that matter in one place, with the condition that makes
-/// them live. A heading is what the reader opens and closes.
+/// them live.
 struct GuideGroup {
     title: String,
     when: String,
@@ -1307,10 +1307,8 @@ struct Guide {
     top: usize,
     find: Input,
     area: Rect,
-    /// Headings the reader has open. Everything starts closed; `new` selects the heading
-    /// Help was pressed from without expanding it.
-    open: HashSet<usize>,
-    cursor: usize,
+    /// The heading Help was pressed from, scrolled into view on the first frame.
+    origin: usize,
     /// Words or meaning, the same two searches history offers, on the same key.
     search: search::Mode,
     /// Shortcut positions the current search found, and the search that found them.
@@ -1321,15 +1319,15 @@ struct Guide {
 }
 
 impl Guide {
-    /// Start with the short topic index, highlighting where Help was pressed from.
+    /// Start at the heading Help was pressed from.
     fn new(origin: &str) -> Self {
         Self {
-            cursor: guide_group(origin).unwrap_or(0),
+            origin: guide_group(origin).unwrap_or(0),
             ..Self::default()
         }
     }
 
-    /// Searching flattens the tree: every match is shown open, and the cursor stands down.
+    /// Searching keeps only the matching shortcuts and their headings.
     fn searching(&self) -> bool {
         !self.find.text.trim().is_empty()
     }
@@ -1388,7 +1386,6 @@ impl Guide {
             heads: vec![],
             matches: 0,
         };
-        let mut drawn_open = false;
         for (g, group) in guide_groups().iter().enumerate() {
             let keys: Vec<&(String, String)> = group
                 .keys
@@ -1403,26 +1400,17 @@ impl Guide {
             if searching && keys.is_empty() {
                 continue;
             }
-            let open = searching || self.open.contains(&g);
-            // Air around the heading being read; the closed ones stack as one block.
-            if !view.lines.is_empty() && (open || drawn_open) {
+            if !view.lines.is_empty() {
                 view.lines.push(Line::default());
             }
-            drawn_open = open;
             if !searching {
                 view.heads.push(view.lines.len());
             }
             view.lines.extend(hang(
-                vec![Span::styled(
-                    format!("{} {}", if open { "▾" } else { "▸" }, group.title),
-                    bold().fg(ORANGE),
-                )],
+                vec![Span::styled(group.title.clone(), bold().fg(ORANGE))],
                 0,
                 columns,
             ));
-            if !open {
-                continue;
-            }
             view.lines.extend(hang(
                 vec![Span::styled(format!("    {}", group.when), dim())],
                 4,
@@ -1485,34 +1473,12 @@ impl Guide {
             .saturating_sub(self.body_height())
     }
 
-    /// Scroll the smallest amount that brings the cursor's heading back into view.
+    /// Scroll the origin's heading to the top, or as near as the end allows.
     fn follow(&mut self) {
         let view = self.view(self.area.width);
-        let Some(&line) = view.heads.get(self.cursor) else {
-            return;
-        };
-        self.top = self
-            .top
-            .min(line)
-            .max((line + 1).saturating_sub(self.body_height()))
-            .min(view.lines.len().saturating_sub(self.body_height()));
-    }
-
-    fn toggle(&mut self, open: Option<bool>) -> bool {
-        if self.cursor >= guide_groups().len() {
-            return false;
+        if let Some(&line) = view.heads.get(self.origin) {
+            self.top = line.min(view.lines.len().saturating_sub(self.body_height()));
         }
-        let shown = self.open.contains(&self.cursor);
-        if open == Some(shown) {
-            return false;
-        }
-        // Keep only the heading being read expanded.
-        self.open.clear();
-        if !shown {
-            self.open.insert(self.cursor);
-        }
-        self.follow();
-        true
     }
 
     /// Set the search the way typing would, results included.
@@ -1540,49 +1506,28 @@ impl Guide {
     /// Return true only when leaving Help. Search editing never launches an action.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> bool {
         let action = key_action(BindingState::Guide, code, mods);
-        let searching = self.searching();
         match action {
             KeyAction::Cancel if !self.find.text.is_empty() => {
                 self.find = Input::default();
                 self.reindex();
-                self.follow();
             }
             KeyAction::Cancel => return true,
             KeyAction::Guide => return true,
-            KeyAction::Left if self.find.text.is_empty() => {
-                if !self.toggle(Some(false)) {
-                    return true;
-                }
-            }
-            KeyAction::Right if !searching => {
-                self.toggle(Some(true));
-            }
-            KeyAction::Enter if !searching => {
-                self.toggle(None);
-            }
+            KeyAction::Left if self.find.text.is_empty() => return true,
             KeyAction::Enter => {}
             KeyAction::Search if self.find.text.is_empty() => {}
             KeyAction::Filter => {}
             KeyAction::Clear => {
                 self.find = Input::default();
                 self.reindex();
-                self.follow();
             }
             // Help is not a place to launch anything, so its cycle key is free for search.
             KeyAction::Cycle => {
                 self.search = self.search.other();
                 self.reindex();
             }
-            KeyAction::Up if searching => self.top = self.top.saturating_sub(1),
-            KeyAction::Down if searching => self.top = (self.top + 1).min(self.max_scroll()),
-            KeyAction::Up => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.follow();
-            }
-            KeyAction::Down => {
-                self.cursor = (self.cursor + 1).min(guide_groups().len().saturating_sub(1));
-                self.follow();
-            }
+            KeyAction::Up => self.top = self.top.saturating_sub(1),
+            KeyAction::Down => self.top = (self.top + 1).min(self.max_scroll()),
             KeyAction::PageUp => self.top = self.top.saturating_sub(self.body_height()),
             KeyAction::PageDown => {
                 self.top = (self.top + self.body_height()).min(self.max_scroll())
@@ -1642,25 +1587,12 @@ impl Guide {
             )));
             visible.push(Line::default());
         }
-        // The hovered preview has no cursor of its own to show.
-        let cursor = (active && !self.searching())
-            .then(|| view.heads.get(self.cursor).copied())
-            .flatten();
-        for (i, line) in view
-            .lines
-            .into_iter()
-            .enumerate()
-            .skip(self.top)
-            .take(self.body_height())
-        {
-            if Some(i) == cursor {
-                let mut row = [line];
-                on_row(&mut row, area.width);
-                visible.extend(row);
-            } else {
-                visible.push(line);
-            }
-        }
+        visible.extend(
+            view.lines
+                .into_iter()
+                .skip(self.top)
+                .take(self.body_height()),
+        );
         frame.render_widget(Paragraph::new(visible), area);
     }
 
@@ -17450,7 +17382,7 @@ states:
         assert_eq!(found.matches, 1, "one shortcut starts a coordinator");
         let text: Vec<String> = found.lines.iter().map(ToString::to_string).collect();
         assert!(
-            text.iter().any(|line| line.contains("▾ The list"))
+            text.iter().any(|line| line.trim() == "The list")
                 && text.iter().any(|line| line.contains("ctrl+d")),
             "a match carries its heading: {text:#?}"
         );
@@ -17463,7 +17395,6 @@ states:
         guide.find = Input::default();
         for width in [12, 32, 60, 120] {
             let mut guide = Guide::new("The list");
-            guide.toggle(Some(true));
             let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, 10)).unwrap();
             t.draw(|f| guide.draw(f, f.area(), true)).unwrap();
             guide.key(KeyCode::End, KeyModifiers::NONE);
@@ -17486,7 +17417,7 @@ states:
     }
 
     #[test]
-    fn guide_opens_as_a_short_topic_index_even_in_a_small_pane() {
+    fn guide_shows_every_card_open_and_starts_at_the_origin() {
         let d = dir();
         registry(d.path(), A, "/src/one", "idle", 1_757_682_871_000);
         let mut app = app(d.path());
@@ -17497,79 +17428,40 @@ states:
         }
         assert_eq!(app.guide_origin(), "The list");
         assert!(!app.key(KeyCode::Char('g'), KeyModifiers::CONTROL).unwrap());
-        for (width, height, split) in [(90, 24, false), (40, 20, false), (100, 24, true)] {
-            app.split = split;
-            let mut t = Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-            t.draw(|f| app.draw(f)).unwrap();
-            let text = rows(&t, width as usize).join("\n");
-            let Mode::Guide(guide) = &app.mode else {
-                unreachable!()
-            };
-            let whole = guide.view(guide.area.width);
-            assert_eq!(
-                whole.lines.len(),
-                guide_groups().len(),
-                "one line per topic: {text}"
-            );
-            assert_eq!(
-                guide.max_scroll(),
-                0,
-                "the index needs no scrolling: {text}"
-            );
-            assert_eq!(guide.cursor, 0, "the session row belongs to The list");
-            for group in guide_groups() {
-                assert!(
-                    text.contains(&format!("▸ {}", group.title)),
-                    "{} is visible without scrolling: {text}",
-                    group.title
-                );
-            }
-            assert!(!text.contains("▾"), "nothing opens automatically: {text}");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(90, 60)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let text = rows(&t, 90).join("\n");
+        for group in guide_groups() {
             assert!(
-                !text.contains("Fork the selected conversation."),
-                "shortcut details wait until their heading is opened: {text}"
+                text.contains(&group.title),
+                "{} is shown: {text}",
+                group.title
             );
         }
-    }
+        assert!(
+            text.contains("Fork the selected conversation.")
+                && text.contains("Resume; shift+enter"),
+            "every card's shortcuts show without opening anything: {text}"
+        );
+        assert!(!text.contains('▸') && !text.contains('▾'), "{text}");
 
-    #[test]
-    fn guide_headings_open_and_close_under_the_cursor() {
-        let fork = |guide: &Guide| {
-            guide
-                .view(90)
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Fork the selected"))
-        };
-        let resume = |guide: &Guide| {
-            guide
-                .view(90)
-                .lines
-                .iter()
-                .any(|line| line.to_string().contains("Resume; shift+enter"))
-        };
-        let mut guide = Guide::new("The list");
-        guide.area = Rect::new(0, 0, 90, 40);
-        assert!(!fork(&guide), "Help starts with every heading closed");
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(fork(&guide), "enter opens the heading under the cursor");
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(!fork(&guide), "and closes it again");
-        guide.key(KeyCode::Right, KeyModifiers::NONE);
-        assert!(fork(&guide));
-        assert!(!guide.key(KeyCode::Left, KeyModifiers::NONE));
-        assert!(!fork(&guide), "left closes before it leaves");
+        let mut guide = Guide::new("Viewers");
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(90, 8)).unwrap();
+        t.draw(|f| guide.draw(f, f.area(), true)).unwrap();
+        let text = rows(&t, 90).join("\n");
+        assert!(
+            text.contains("Viewers"),
+            "Help scrolls to its origin: {text}"
+        );
+        let top = guide.top;
+        guide.key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(guide.top, top.saturating_sub(1), "up scrolls a line");
+        guide.key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(guide.top, top.min(guide.max_scroll()));
+        assert!(!guide.key(KeyCode::Enter, KeyModifiers::NONE));
         assert!(
             guide.key(KeyCode::Left, KeyModifiers::NONE),
-            "a closed heading lets left leave Help"
-        );
-        guide.key(KeyCode::Right, KeyModifiers::NONE);
-        guide.cursor = guide_group("History").expect("History is a heading");
-        guide.key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(resume(&guide), "the next heading opens on its own");
-        assert!(
-            !fork(&guide),
-            "opening a heading closes the one that was open"
+            "left leaves Help"
         );
     }
 
@@ -17783,10 +17675,8 @@ states:
         for essential in ["ctrl+y", "ctrl+n", "ctrl+x", "ctrl+o", "ctrl+z"] {
             assert!(all.iter().any(|(key, _)| key == essential), "{essential}");
         }
-        let mut expanded = Guide::default();
-        expanded.open.extend(0..guide.len());
         for (width, budget) in [(90, 30), (60, 40), (40, 60)] {
-            let lines = expanded.view(width).lines.len();
+            let lines = Guide::default().view(width).lines.len();
             assert!(
                 lines <= budget,
                 "{lines} lines at {width} columns, budget {budget}"
@@ -17807,7 +17697,7 @@ states:
             .map(|c| c.symbol())
             .collect::<String>();
         assert!(
-            text.contains("▸ The list") && text.contains("Type to search"),
+            text.contains("The list") && text.contains("Type to search"),
             "{text}"
         );
         for phrase in [
@@ -17826,7 +17716,7 @@ states:
         assert_eq!(found.matches, 1);
         let lines: Vec<String> = found.lines.iter().map(ToString::to_string).collect();
         assert!(
-            lines.iter().any(|line| line.contains("▾ History"))
+            lines.iter().any(|line| line.trim() == "History")
                 && lines.iter().any(|line| line.contains("enter")),
             "{lines:#?}"
         );
@@ -17837,11 +17727,11 @@ states:
         let Mode::Guide(g) = &app.mode else {
             unreachable!()
         };
-        let cursor = g.cursor;
+        let top = g.top;
         assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
         assert!(
-            matches!(&app.mode, Mode::Guide(g) if g.cursor == cursor + 1 && g.top == 0),
-            "down walks headings, not lines"
+            matches!(&app.mode, Mode::Guide(g) if g.top == (top + 1).min(g.max_scroll())),
+            "down scrolls a line"
         );
         assert!(!app.key(KeyCode::Esc, KeyModifiers::NONE).unwrap());
         assert!(matches!(app.mode, Mode::Normal));
@@ -25644,15 +25534,10 @@ states:
         assert!(app.menu_is("help"));
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("▸ The list")
-                && pane(&t).contains("▸ Viewers")
+            pane(&t).contains("The list")
+                && pane(&t).contains("Fork the selected conversation.")
                 && pane(&t).contains("Enter to search"),
-            "hovering previews every place, closed: {}",
-            pane(&t)
-        );
-        assert!(
-            !pane(&t).contains("Move between rows"),
-            "and none of their keys: {}",
+            "hovering previews the cards open: {}",
             pane(&t)
         );
         assert!(pane(&t).contains("guide › the keys"), "{}", pane(&t));
@@ -25662,11 +25547,10 @@ states:
         assert!(app.split_active());
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("▸ The list")
-                && pane(&t).contains("▸ Viewers")
-                && pane(&t).contains("search ›")
-                && !pane(&t).contains("▾"),
-            "entering keeps the preview's short topic index: {}",
+            pane(&t).contains("The list")
+                && pane(&t).contains("Fork the selected conversation.")
+                && pane(&t).contains("search ›"),
+            "entering keeps the preview's open cards: {}",
             pane(&t)
         );
         assert!(left(&t).contains(&A[..8]), "{}", left(&t));
@@ -25678,15 +25562,12 @@ states:
         let Mode::Guide(g) = &app.mode else {
             unreachable!()
         };
-        assert_eq!(g.cursor, 0, "the help button's heading holds the cursor");
-        let cursor = g.cursor;
-        assert!(!app.key(KeyCode::Down, KeyModifiers::NONE).unwrap());
-        assert!(matches!(&app.mode, Mode::Guide(g) if g.cursor == cursor + 1));
+        assert_eq!(g.origin, 0, "the help button starts at The list");
         assert!(!app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap());
         assert!(matches!(app.mode, Mode::Normal), "ctrl+z leaves the guide");
         t.draw(|f| app.draw(f)).unwrap();
         assert!(
-            pane(&t).contains("▸ The list"),
+            pane(&t).contains("Fork the selected conversation."),
             "still picked: {}",
             pane(&t)
         );
