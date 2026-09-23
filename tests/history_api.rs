@@ -121,7 +121,11 @@ impl Fixture {
         // The in-process service reads OpenCode below its canonical home.
         .env(
             "OPENCODE_DB",
-            self.sources[3].home.join("opencode.db").canonicalize().unwrap(),
+            self.sources[3]
+                .home
+                .join("opencode.db")
+                .canonicalize()
+                .unwrap(),
         )
         .env("XDG_DATA_HOME", self.root.path())
         .env_remove("PI_CODING_AGENT_SESSION_DIR")
