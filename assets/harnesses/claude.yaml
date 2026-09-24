@@ -74,6 +74,11 @@ operations:
       contains: ["Usage: claude stop"]
       error: "this claude has no `stop`, so a background session could only be ended by deleting its job record; update Claude Code"
       description: "claude: stop a background session and keep its conversation"
+  message:
+    # Claude Code's own cross-session inbox, where SendMessage delivers. Verified against
+    # 2.1.278, 2.1.280 and 2.1.281, which all publish peerProtocol 1.
+    peer_inbox:
+      protocols: [1]
   rename: true
   sessions:
     default: {join: attach, stop: signal, lifetime: daemon}

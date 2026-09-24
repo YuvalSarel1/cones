@@ -575,19 +575,30 @@ pub fn home_of(session: &crate::fleet::Session, claude: &Path) -> PathBuf {
     by_name(&session.harness).map_or_else(|| claude.to_owned(), |spec| spec.home.resolve(claude))
 }
 
-/// One note to a live session, through the delivery command its harness declares.
+/// One note to a live session, through the delivery its harness declares.
 ///
 /// A harness with no `message` operation cannot be written to from here and says so. Faking it
 /// by typing into the session's terminal would put words in the owner's input line, which is
 /// not a message from a peer and is not cones' to do.
-pub fn message(
-    session: &crate::fleet::Session,
-    home: &Path,
-    text: &str,
-) -> Result<std::process::Command> {
+pub fn message(session: &crate::fleet::Session, home: &Path, text: &str) -> Result<()> {
     let spec = by_name(&session.harness).context("unknown session harness")?;
-    check_operation(spec, &spec.operations.message, "message")?;
-    let template = &spec.operations.message.as_ref().expect("checked").args;
+    let operation = spec.operations.message.as_ref().with_context(|| {
+        format!(
+            "{} has no message operation, so a note cannot reach it",
+            spec.name
+        )
+    })?;
+    let template = match operation {
+        spec::Message::PeerInbox { peer_inbox } => {
+            return peer_inbox_send(session, home, text, &peer_inbox.protocols);
+        }
+        spec::Message::Command(operation) => {
+            if let Some(probe) = &operation.probe {
+                probe_harness(spec.kind, probe)?;
+            }
+            &operation.args
+        }
+    };
     let name = spec.kind.to_string();
     let path = executable(&name, &launch_path())
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
@@ -601,16 +612,91 @@ pub fn message(
     if !spec.home.env.is_empty() {
         c.env(&spec.home.env, home);
     }
-    c.args(spec::args(
-        template,
-        &[
-            ("remote", remote.as_ref()),
-            ("id", session.session_id.as_ref()),
-            ("text", text.as_ref()),
-        ],
-    )?)
-    .current_dir(&session.cwd);
-    Ok(c)
+    let out = c
+        .args(spec::args(
+            template,
+            &[
+                ("remote", remote.as_ref()),
+                ("id", session.session_id.as_ref()),
+                ("text", text.as_ref()),
+            ],
+        )?)
+        .current_dir(&session.cwd)
+        .output()
+        .with_context(|| format!("delivering to {}", session.session_id))?;
+    ensure!(
+        out.status.success(),
+        "{} refused the note: {}",
+        session.harness,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// Write one note to a Claude Code session's cross-session inbox, framed as its own
+/// SendMessage frames it: the auth line with the token the session keeps beside its registry
+/// record, then one user message. The session applies its own inbound policy; a sender that
+/// attests no permission mode is held for approval in a session that bypasses prompts.
+fn peer_inbox_send(
+    session: &crate::fleet::Session,
+    home: &Path,
+    text: &str,
+    protocols: &[u64],
+) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::FileTypeExt;
+    let pid = session.pid.context("this Claude session reports no pid")?;
+    let registry = home.join("sessions");
+    let record: Value = serde_json::from_slice(
+        &std::fs::read(registry.join(format!("{pid}.json")))
+            .with_context(|| format!("this Claude session has no registry record for pid {pid}"))?,
+    )?;
+    let version = record["version"].as_str().unwrap_or("unknown");
+    let socket = record["messagingSocketPath"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .with_context(|| {
+            format!("this Claude Code session ({version}) publishes no cross-session inbox")
+        })?;
+    let protocol = record["peerProtocol"].as_u64();
+    ensure!(
+        protocol.is_some_and(|p| protocols.contains(&p)),
+        "this Claude Code session ({version}) speaks peer protocol {}, and cones speaks {protocols:?}",
+        protocol.map_or("none".to_owned(), |p| p.to_string())
+    );
+    let key = registry.join(format!("{pid}.{:x}.key", Sha256::digest(socket.as_bytes())));
+    let key: Value = serde_json::from_slice(
+        &std::fs::read(&key).context("this Claude Code session published no inbox key")?,
+    )?;
+    let token = key["peerToken"]
+        .as_str()
+        .context("the inbox key has no peerToken")?;
+    ensure!(
+        std::fs::symlink_metadata(socket)?.file_type().is_socket(),
+        "{socket} is not a socket"
+    );
+    let frames = format!(
+        "{}\n{}\n",
+        serde_json::json!({"type": "auth", "token": token}),
+        serde_json::json!({
+            "msgV": 1,
+            "msg_id": uuid::Uuid::new_v4().to_string(),
+            "type": "user",
+            "message": {"role": "user", "content": text},
+            "priority": "next",
+        }),
+    );
+    // Claude drops a connection whose line passes 1 MiB, silently.
+    ensure!(
+        frames.len() < 1 << 20,
+        "the note is over Claude's 1 MiB line limit"
+    );
+    let mut stream = std::os::unix::net::UnixStream::connect(socket)
+        .with_context(|| format!("connecting to {socket}"))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
+    stream.write_all(frames.as_bytes())?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    Ok(())
 }
 
 /// One native join contract for Enter and hover. Hover is forbidden from launching a session.

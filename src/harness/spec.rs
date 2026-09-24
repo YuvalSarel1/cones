@@ -147,9 +147,8 @@ pub struct Operations {
     /// cones, and saying so is better than deleting the work instead.
     pub stop: Option<Operation>,
     pub unarchive: Option<Operation>,
-    /// Deliver one note to a live session. `{id}`, `{text}` and, where the harness talks to a
-    /// daemon, `{remote}`. A harness without it cannot be written to from cones.
-    pub message: Option<Operation>,
+    /// Deliver one note to a live session. A harness without it cannot be written to from cones.
+    pub message: Option<Message>,
     #[serde(default)]
     pub rename: bool,
     #[serde(default)]
@@ -161,6 +160,25 @@ pub struct Operations {
 pub struct Operation {
     pub args: Vec<String>,
     pub probe: Option<Probe>,
+}
+
+/// How a note reaches a live session: a native command, or the harness's own peer inbox.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Message {
+    /// `{id}`, `{text}` and, where the harness talks to a daemon, `{remote}`.
+    Command(Operation),
+    PeerInbox {
+        peer_inbox: PeerInbox,
+    },
+}
+
+/// Claude Code's cross-session inbox, the socket its own SendMessage writes to. A session
+/// publishes the protocol it speaks in its registry record; any other is refused.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerInbox {
+    pub protocols: Vec<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1198,6 +1216,11 @@ impl HarnessSpec {
             require_operand(&stop.args, &["{id}", "{short_id}"])?;
         }
         validate_args(&self.commands.unarchive, &["id"])?;
+        ensure!(
+            !matches!(self.operations.message, Some(Message::PeerInbox { .. }))
+                || self.kind == HarnessKind::Claude,
+            "a peer inbox requires the native Claude adapter"
+        );
         ensure!(
             !self.operations.rename
                 || matches!(self.kind, HarnessKind::Claude | HarnessKind::Codex),

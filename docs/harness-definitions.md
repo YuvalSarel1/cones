@@ -98,7 +98,9 @@ resume. Native handlers sequence multi-step operations and stop on failure.
 | Session `forget_client` | Forget/hide the row and close its client; retain the daemon thread. |
 | `operations.stop` | Native CLI stop preserving conversation history. |
 
-Owned-terminal stop uses the host separately. `operations.message` supplies native delivery.
+Owned-terminal stop uses the host separately. `operations.message` supplies native delivery,
+as a command or, for Claude only, `peer_inbox: {protocols: [...]}`
+([message delivery](harness.md#message-delivery)).
 `rename: true` enables a registered native handoff, currently Claude/Codex; YAML supplies no
 file-writing program.
 

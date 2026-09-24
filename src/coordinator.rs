@@ -553,8 +553,8 @@ pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
 /// One note to a live worker in this folder, delivered by that worker's own harness.
 ///
 /// The sender has no authority the owner did not give it, so the note says who it is from and
-/// carries the folder's inbox as the way back. A harness with no delivery command of its own is
-/// refused rather than approximated: typing into somebody's terminal is not a message.
+/// carries the folder's inbox as the way back. A harness with no delivery of its own is refused
+/// rather than approximated: typing into somebody's terminal is not a message.
 pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String> {
     let fleet_rows = folder.fleet()?;
     let row = fleet_rows
@@ -578,16 +578,7 @@ pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String
         json!({"from": format!("{}:{id}", row.harness), "text": "<reply>"}),
     );
     let home = crate::harness::home_of(row, &folder.claude);
-    let mut command = crate::harness::message(row, &home, &note)?;
-    let out = command
-        .output()
-        .with_context(|| format!("delivering to {id}"))?;
-    ensure!(
-        out.status.success(),
-        "{} refused the note: {}",
-        row.harness,
-        String::from_utf8_lossy(&out.stderr).trim()
-    );
+    crate::harness::message(row, &home, &note)?;
     if greet {
         greeted.push(id.to_owned());
         write_atomically(&greeted_path, &serde_json::to_string(&greeted)?)?;

@@ -1571,24 +1571,98 @@ fn a_claim_is_refused_while_another_live_coordinator_holds_the_folder() {
     assert!(record.is_file());
 }
 
-/// A harness cones cannot write to says so. Faking delivery by typing into the session's
-/// terminal would put the coordinator's words in the owner's own input line.
+/// A note to a Claude session goes through Claude Code's own cross-session inbox, framed as its
+/// SendMessage frames it, and a session that publishes no inbox, or speaks a peer protocol cones
+/// does not, is refused with the reason. Typing into the terminal is never the fallback.
 #[test]
-fn a_note_is_refused_for_a_harness_with_no_delivery_command() {
+fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
+    use sha2::Digest;
+    use std::io::Read;
     let f = Coordinated::new();
     f.run(&["claim"]);
-    let out = f.command(&["send", "worker-one", "hello"]);
-    assert!(!out.status.success());
-    let error = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(error.contains("has no message operation"), "{error}");
-    // An unknown recipient is refused before any harness is consulted.
-    let out = f.command(&["send", "nobody", "hello"]);
-    assert!(!out.status.success());
+    let pid = std::process::id();
+    fs::remove_file(f.registry.join("worker-one.json")).unwrap();
+    let socket = f.dir.path().join("in.sock");
+    let record = |extra: serde_json::Value| {
+        let mut r = serde_json::json!({
+            "pid": pid, "sessionId": "worker-one", "cwd": f.work.canonicalize().unwrap(),
+            "kind": "interactive", "status": "idle", "version": "2.1.281"
+        });
+        r.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        fs::write(f.registry.join(format!("{pid}.json")), r.to_string()).unwrap();
+    };
+    let refusal = |args: &[&str]| {
+        let out = f.command(args);
+        assert!(!out.status.success(), "{args:?} was delivered");
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    // An older build, or one with messaging off, has no inbox to write to.
+    record(serde_json::json!({}));
+    let error = refusal(&["send", "worker-one", "hello"]);
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("not on this folder's roster"),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
+        error.contains("session (2.1.281) publishes no cross-session inbox"),
+        "{error}"
     );
+    // A protocol cones has not verified is refused, not guessed at.
+    record(serde_json::json!({"messagingSocketPath": socket, "peerProtocol": 2}));
+    let error = refusal(&["send", "worker-one", "hello"]);
+    assert!(
+        error.contains("speaks peer protocol 2, and cones speaks [1]"),
+        "{error}"
+    );
+
+    record(serde_json::json!({"messagingSocketPath": socket, "peerProtocol": 1}));
+    let digest = sha2::Sha256::digest(socket.to_str().unwrap().as_bytes());
+    fs::write(
+        f.registry.join(format!("{pid}.{digest:x}.key")),
+        r#"{"peerToken":"0123456789abcdef0123456789abcdef"}"#,
+    )
+    .unwrap();
+    let inbox = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let received = std::thread::spawn(move || {
+        let mut text = String::new();
+        inbox.accept().unwrap().0.read_to_string(&mut text).unwrap();
+        text
+    });
+    assert_eq!(
+        f.run(&["send", "worker-one", "hello"]),
+        "sent to worker-one (claude)\n"
+    );
+    let received = received.join().unwrap();
+    let lines: Vec<serde_json::Value> = received
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "{received}");
+    assert_eq!(
+        lines[0],
+        serde_json::json!({"type": "auth", "token": "0123456789abcdef0123456789abcdef"})
+    );
+    let note = &lines[1];
+    assert_eq!(note["msgV"], 1);
+    assert_eq!(note["type"], "user");
+    assert_eq!(note["priority"], "next");
+    assert_eq!(note["message"]["role"], "user");
+    assert!(
+        uuid::Uuid::parse_str(note["msg_id"].as_str().unwrap()).is_ok(),
+        "{note}"
+    );
+    let content = note["message"]["content"].as_str().unwrap();
+    assert!(
+        content.starts_with("[coordinator, not the owner] hello\nReply by appending"),
+        "{content}"
+    );
+    assert!(
+        content.contains(r#""from":"claude:worker-one""#),
+        "{content}"
+    );
+
+    // An unknown recipient is refused before any harness is consulted.
+    let error = refusal(&["send", "nobody", "hello"]);
+    assert!(error.contains("not on this folder's roster"), "{error}");
 }
 
 /// Two coordinators can write the folder's record at once: a replacement overlapping the one it
@@ -1820,7 +1894,7 @@ fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
     let error =
         String::from_utf8_lossy(&f.at("comms", &["send", "worker-one", "hi"]).stderr).into_owned();
     assert!(
-        error.contains("has no message operation"),
+        error.contains("registry record"),
         "sending into a coordinated folder is still allowed: {error}"
     );
 }

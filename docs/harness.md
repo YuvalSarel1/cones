@@ -127,10 +127,24 @@ on every harness.
 
 ### Message delivery
 
-A definition's `message` operation supplies native delivery with `{id}`, `{text}` and optional
-`{remote}`. Codex uses `queue --thread`, verified against 0.154.0, on the daemon owning that
-home. Missing operations are refused; cones never approximates delivery by typing into a
-terminal. See [comms](cli.md#comms).
+A definition's `message` operation supplies native delivery: a command with `{id}`, `{text}`
+and optional `{remote}`, or Claude's `peer_inbox`. Codex uses `queue --thread`, verified
+against 0.154.0, on the daemon owning that home. Claude has no delivery command, so cones
+writes to the cross-session inbox that Claude's own SendMessage uses. The socket comes from
+the session's registry record (`messagingSocketPath`), and the token comes from the key file
+Claude writes beside it (`<pid>.<sha256 of the socket path>.key`). cones sends the same auth
+line and `user` message SendMessage sends. Claude Code 2.1.278, 2.1.280 and 2.1.281 publish
+`peerProtocol` 1 and accept these messages. A session with no inbox, or with a protocol the
+definition does not list, is refused with its version.
+
+The recipient applies its own inbound policy. cones is not a Claude session and does not
+claim a permission mode. A session that bypasses permission prompts therefore holds the note,
+shows it to its user as "Held message from another session" and delivers it only after the
+user approves it. The recipient's `crossSessionInbound: accept` setting delivers these notes
+without approval. cones cannot see whether a note was held.
+
+Missing operations are refused; cones never approximates delivery by typing into a terminal.
+See [comms](cli.md#comms).
 
 ## Reports
 
