@@ -123,7 +123,7 @@ pub enum Kind {
     Run(String, String),
     /// Inserted by `App::rebuild`, outside `Data::rows`.
     Menu,
-    /// A pinned folder with no live sessions, in `~` form.
+    /// An open or pinned folder with no live sessions, in `~` form.
     Folder(String),
     /// The always-present last row of the session list: type a path to pin a folder.
     NewFolder,
@@ -251,6 +251,9 @@ pub struct Data {
     pub highlight: Color,
     /// Pinned folders retained as rows when empty.
     pub folders: Vec<PathBuf>,
+    /// Folders the list has shown, retained as rows when empty until `ctrl+x` closes them.
+    /// The dashboard fills it.
+    pub open: Vec<PathBuf>,
     /// Folders that are linked worktrees, marked wherever the list names a folder.
     pub worktrees: BTreeSet<PathBuf>,
     /// Each worktree's repository, for session grouping and folder suggestions.
@@ -439,6 +442,7 @@ impl Data {
             whole_columns,
             highlight,
             folders,
+            open: Vec::new(),
             worktrees,
             roots,
             unread: HashSet::new(),
@@ -701,7 +705,7 @@ impl Data {
             };
             groups.entry(key).or_default().push(Entry::Session(s));
         }
-        for dir in self.folders.iter().filter(|_| !jobs_view) {
+        for dir in self.folders.iter().chain(&self.open).filter(|_| !jobs_view) {
             let (sort, name) = folder(dir);
             let key = if by_state {
                 (format!("6{sort}"), name)
@@ -7632,6 +7636,34 @@ fn binding_keys(binding: &KeyBinding) -> String {
 
 /// The dashboard's pinned session ids, under the state directory.
 const PINS: &str = "pins.json";
+/// Folders the session list keeps open, under the state directory.
+const OPEN_FOLDERS: &str = "open-folders.json";
+
+/// Keep open the folder of every session not in `known`, so the folder outlasts its sessions,
+/// and hand the open set to `data`. A session already listed adds nothing: its folder was
+/// recorded when it arrived, and one still stopping must not reopen a folder just closed.
+/// Returns whether the set changed.
+fn open_folders(open: &mut BTreeSet<PathBuf>, data: &mut Data, known: &HashSet<String>) -> bool {
+    let before = open.clone();
+    for s in data
+        .sessions
+        .iter()
+        .filter(|s| !known.contains(&s.session_id))
+    {
+        let dir = data.roots.get(&s.cwd).unwrap_or(&s.cwd);
+        if !dir.as_os_str().is_empty() {
+            open.insert(dir.clone());
+        }
+    }
+    open.retain(|dir| dir.is_dir());
+    data.open = open.iter().cloned().collect();
+    *open != before
+}
+
+fn write_open_folders(state: &Path, open: &BTreeSet<PathBuf>) -> std::io::Result<()> {
+    let dirs: Vec<&PathBuf> = open.iter().collect();
+    std::fs::write(state.join(OPEN_FOLDERS), serde_json::to_vec(&dirs).unwrap())
+}
 
 const HISTORY_PAGE: usize = 50;
 const HISTORY_PREFETCH: usize = 10;
@@ -8448,6 +8480,9 @@ struct App {
     highlighted: HashSet<String>,
     /// Session ids pinned with ctrl+t, listed above every group; kept in `state/pins.json`.
     pinned: HashSet<String>,
+    /// Every folder a session has been listed in, kept in `state/open-folders.json` until
+    /// `ctrl+x` closes it or the directory is gone.
+    open_folders: BTreeSet<PathBuf>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     armed_at: Instant,
@@ -8761,8 +8796,17 @@ impl App {
         log: Option<Diagnostics>,
     ) -> Result<Self> {
         let operation = log.as_ref().map(|_| DiagnosticOperation::new());
-        let data = Data::load_observed(jobs_path, state, claude, log.as_ref(), operation.as_ref())?;
+        let mut data =
+            Data::load_observed(jobs_path, state, claude, log.as_ref(), operation.as_ref())?;
         let start = data.start;
+        let mut open: BTreeSet<PathBuf> = std::fs::read(state.join(OPEN_FOLDERS))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        if open_folders(&mut open, &mut data, &HashSet::new()) {
+            // ponytail: a failed write only loses the change on restart; the next one retries.
+            let _ = write_open_folders(state, &open);
+        }
         let dashboard_id = log
             .as_ref()
             .map(|l| l.dashboard_id.clone())
@@ -8821,6 +8865,7 @@ impl App {
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or_default(),
+            open_folders: open,
             armed: None,
             armed_at: Instant::now(),
             quit_armed: None,
@@ -10575,6 +10620,7 @@ impl App {
                 });
             }
         }
+        self.open_folders_of(&mut data);
         self.data = data;
         self.report_load();
         if let Some(log) = &self.log {
@@ -11057,6 +11103,7 @@ impl App {
                 .data
                 .folders
                 .iter()
+                .chain(&self.data.open)
                 .find(|p| &fleet::tilde(p) == dir)
                 .cloned(),
             _ => None,
@@ -13993,11 +14040,39 @@ impl App {
         }
     }
 
+    /// Keep open the folder of every session that arrived since the last read.
+    fn open_folders_of(&mut self, data: &mut Data) {
+        let known = self
+            .data
+            .sessions
+            .iter()
+            .map(|s| s.session_id.clone())
+            .collect();
+        if open_folders(&mut self.open_folders, data, &known) {
+            self.save_open_folders();
+        }
+    }
+
+    fn save_open_folders(&mut self) {
+        if let Err(e) = write_open_folders(&self.state, &self.open_folders) {
+            self.status = format!("open folders kept for this dashboard only: {e}");
+        }
+    }
+
     fn remove_folder(&mut self, dir: String) {
         match self.armed.take() {
             Some(armed) if armed == dir => {
+                self.open_folders.retain(|p| fleet::tilde(p) != dir);
+                self.data.open.retain(|p| fleet::tilde(p) != dir);
+                self.save_open_folders();
+                let pins = self.data.folders.len();
                 self.data.folders.retain(|p| fleet::tilde(p) != dir);
-                self.status = match self.save_folders() {
+                let saved = if self.data.folders.len() == pins {
+                    Ok(())
+                } else {
+                    self.save_folders()
+                };
+                self.status = match saved {
                     Ok(()) => format!("{dir} removed · the folder itself is untouched"),
                     Err(e) => format!("remove failed: {e:#}"),
                 };
@@ -19033,6 +19108,60 @@ states:
             .find(|r| r.kind == Kind::Folder(name.clone()))
             .expect("the pinned folder has a row");
         assert_eq!(row.text(), "no sessions here");
+    }
+
+    /// A folder the list has shown stays after its last session leaves, across restarts,
+    /// until ctrl+x closes it or the directory is deleted. It is not a pin.
+    #[test]
+    fn a_folder_stays_open_after_its_last_session_until_closed() {
+        let d = dir();
+        let claude = d.path();
+        let work = claude.join("work");
+        fs::create_dir(&work).unwrap();
+        let name = fleet::tilde(&work);
+        let folder_row = |app: &App| {
+            app.rows
+                .iter()
+                .position(|r| r.kind == Kind::Folder(name.clone()))
+        };
+        let session = claude.join("sessions").join(format!("{A}.json"));
+        registry(claude, A, work.to_str().unwrap(), "idle", 1_757_682_871_000);
+        let mut app = app(claude);
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_none(), "the session holds the group");
+        fs::remove_file(&session).unwrap();
+        app.refresh().unwrap();
+        let row = folder_row(&app).expect("the folder outlasts its session");
+        assert_eq!(app.rows[row].text(), "no sessions here");
+        assert_eq!(
+            config::file_folders(&claude.join("none.yaml")),
+            None,
+            "nothing is pinned"
+        );
+
+        let mut app = self::app(claude);
+        app.refresh().unwrap();
+        app.cursor = folder_row(&app).expect("a restarted dashboard keeps it open");
+        assert_eq!(app.target_dir(), work, "the composer starts there");
+        app.stop();
+        assert!(app.status.starts_with("ctrl+x again"), "{}", app.status);
+        app.stop();
+        assert!(app.status.contains("removed"), "{}", app.status);
+        assert!(folder_row(&app).is_none(), "closed at once");
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_none(), "and after a reload");
+        let mut app = self::app(claude);
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_none(), "and after a restart");
+
+        registry(claude, A, work.to_str().unwrap(), "idle", 1_757_682_871_000);
+        app.refresh().unwrap();
+        fs::remove_file(&session).unwrap();
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_some(), "a new session opens it again");
+        fs::remove_dir(&work).unwrap();
+        app.refresh().unwrap();
+        assert!(folder_row(&app).is_none(), "a deleted directory closes it");
     }
 
     /// A pending delete already hides the row, so its pinned folder must take the same

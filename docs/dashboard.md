@@ -182,7 +182,7 @@ The row disappears while the action runs and returns if it fails.
 | Running run or job | Stop the run. |
 | Finished run | Hide the run and its owned session; retain output and ledger. Restore through the [hidden file](jobs.md#stored-files). |
 | Idle job | Delete it and reinstall schedules. |
-| Empty pinned folder | Remove its pin; retain the directory. |
+| Empty folder | Close it and remove any pin; retain the directory. |
 
 Run previews read the archived/native conversation, falling back to captured events and
 stderr. They show messages and compact tool calls, excluding thinking and tool output. Live
@@ -202,6 +202,11 @@ It does not build suggestions from past sessions. Down selects an offer, Enter a
 and Tab copies it into the input. Aliases are deduplicated; deleted directories are rejected
 when chosen. Pins share the `folders` configuration with Config. A pin becomes an empty
 folder row whenever its sessions leave.
+
+Every other folder a session is listed in stays open the same way: when its last session
+leaves, the folder remains as an empty row until `ctrl+x` closes it or the directory is
+deleted. Open folders are kept in the state directory, not the configuration, so they survive
+a restart without becoming pins.
 
 ### Fork a conversation
 

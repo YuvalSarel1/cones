@@ -275,6 +275,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
+| `open-folders.json` | Folders the session list keeps open after their last session leaves. See [Add a folder](dashboard.md#add-a-folder). |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |
