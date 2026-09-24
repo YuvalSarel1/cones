@@ -52,14 +52,19 @@ impl Default for Colors {
 
 /// Probe OSC 10/11 after entering raw mode, before crossterm can treat replies as keys.
 /// Keep defaults on timeout; unrelated input read during the probe is dropped.
-pub fn probe_colors(timeout: Duration) -> Colors {
+///
+/// The probe also asks kitty-protocol terminals (Ghostty, kitty, WezTerm, iTerm2) to
+/// disambiguate keys, or they send shift+enter as a bare return; teardown pops it with `[<u`.
+/// The flags they then report come back for the log, `None` from a terminal that ignored it.
+/// Its reply precedes the colors', so waiting for those collects it too.
+pub fn probe_terminal(timeout: Duration) -> (Colors, Option<u16>) {
     let mut out = io::stdout().lock();
     if out
-        .write_all(b"\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
+        .write_all(b"\x1b[>1u\x1b[?u\x1b]10;?\x1b\\\x1b]11;?\x1b\\")
         .and_then(|()| out.flush())
         .is_err()
     {
-        return Colors::default();
+        return (Colors::default(), None);
     }
     let mut deadline = Instant::now() + timeout;
     let mut extended = false;
@@ -99,10 +104,21 @@ pub fn probe_colors(timeout: Duration) -> Colors {
     }
     let (fg, bg) = parse_color_replies(&bytes);
     let defaults = Colors::default();
-    Colors {
+    let colors = Colors {
         fg: fg.unwrap_or(defaults.fg),
         bg: bg.unwrap_or(defaults.bg),
-    }
+    };
+    (colors, parse_keyboard_flags(&bytes))
+}
+
+/// The kitty keyboard reply `CSI ? flags u`.
+fn parse_keyboard_flags(bytes: &[u8]) -> Option<u16> {
+    let start = bytes.windows(3).position(|w| w == b"\x1b[?")? + 3;
+    let rest = &bytes[start..];
+    let end = rest.iter().position(|b| !b.is_ascii_digit())?;
+    (rest.get(end) == Some(&b'u'))
+        .then(|| std::str::from_utf8(&rest[..end]).ok()?.parse().ok())
+        .flatten()
 }
 
 fn parse_color_replies(bytes: &[u8]) -> (Option<String>, Option<String>) {
@@ -1575,6 +1591,16 @@ mod tests {
         assert_eq!(fg, None);
         assert_eq!(bg.as_deref(), Some("rgb:1/2/3"));
         assert_eq!(parse_color_replies(b"\x1b]10;#ffffff\x07"), (None, None));
+    }
+
+    #[test]
+    fn keyboard_flags_come_from_the_kitty_reply_only() {
+        let replies = b"\x1b[?1u\x1b]10;rgb:ffff/ffff/ffff\x07";
+        assert_eq!(parse_keyboard_flags(replies), Some(1));
+        assert_eq!(parse_keyboard_flags(b"\x1b[?0u"), Some(0));
+        // Primary device attributes share the prefix and are not a keyboard answer.
+        assert_eq!(parse_keyboard_flags(b"\x1b[?1;2c"), None);
+        assert_eq!(parse_keyboard_flags(b"\x1b]11;rgb:1/2/3\x07"), None);
     }
 
     #[test]

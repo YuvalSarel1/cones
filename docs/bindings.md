@@ -79,6 +79,12 @@ when the composer is empty. `shift+enter` inserts a line break in a draft and
 opens a viewer fullscreen without a draft. The same action can have different
 descriptions in different states.
 
+A terminal reports shift+enter apart from enter only when a program asks. cones asks
+through the kitty keyboard protocol, which Ghostty, kitty, WezTerm and iTerm2 answer.
+Terminal.app does not, and tmux passes it on only with `set -s extended-keys always` and
+`set -s extended-keys-format csi-u`. Elsewhere, alt+enter does the same thing. The
+`terminal.colors` debug event records whether the terminal accepted.
+
 The `text` state owns cones text-editing shortcuts. Unhandled printable
 characters are inserted into cones prompts. Mouse actions and bracketed paste
 are separate input paths.

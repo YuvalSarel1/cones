@@ -16237,7 +16237,7 @@ pub fn run(
             json!({
                 "build": executable_identity(exe), "jobs_path": jobs_path.to_string_lossy(),
                 "state_dir": state.to_string_lossy(), "native_home": claude.to_string_lossy(),
-                "terminal": term_state(), "trace": trace,
+                "terminal": term_state(), "trace": trace, "terminal_env": terminal_env(),
                 "terminal_size": ratatui::crossterm::terminal::size().ok(),
             }),
         );
@@ -16285,16 +16285,16 @@ pub fn run(
         hand_back_tty();
     })?;
     // Before crossterm's first poll, so the replies do not land as keystrokes.
-    app.colors = viewer::probe_colors(Duration::from_millis(150));
-    app.event(
-        "debug",
-        "terminal.colors",
-        || json!({"foreground": app.colors.fg, "background": app.colors.bg}),
-    );
+    let keyboard;
+    (app.colors, keyboard) = viewer::probe_terminal(Duration::from_millis(150));
+    app.event("debug", "terminal.colors", || {
+        json!({
+            "foreground": app.colors.fg, "background": app.colors.bg,
+            // null: the terminal ignored the kitty keyboard request, so shift+enter is a return.
+            "keyboard_flags": keyboard,
+        })
+    });
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
-    // Kitty-protocol terminals (Ghostty, kitty, WezTerm) send shift+enter as a bare return
-    // unless asked to disambiguate. Others ignore the request; teardown pops it with `[<u`.
-    let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[>1u");
     let result = (|| -> Result<()> {
         let animation = Instant::now();
         let mut drawn_tick = usize::MAX;
@@ -16450,7 +16450,8 @@ fn executable_identity(exe: &Path) -> Value {
         Ok(format!("{:x}", hash.finalize()))
     })();
     json!({
-        "version": env!("CARGO_PKG_VERSION"), "executable": exe.to_string_lossy(),
+        "version": env!("CARGO_PKG_VERSION"), "commit": option_env!("CONES_COMMIT"),
+        "executable": exe.to_string_lossy(),
         "sha256": fingerprint.as_ref().ok(),
         "fingerprint_error": fingerprint.as_ref().err().map(ToString::to_string),
     })
@@ -16524,6 +16525,16 @@ pub(crate) fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> 
         return Err(error);
     }
     Ok(())
+}
+
+/// Which terminal the dashboard runs in, and whether a multiplexer sits between them.
+fn terminal_env() -> Value {
+    let var = |name| std::env::var(name).ok();
+    json!({
+        "term": var("TERM"), "term_program": var("TERM_PROGRAM"),
+        "term_program_version": var("TERM_PROGRAM_VERSION"),
+        "tmux": var("TMUX").is_some(), "screen": var("STY").is_some(),
+    })
 }
 
 fn term_state() -> String {
