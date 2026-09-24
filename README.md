@@ -10,7 +10,9 @@ Experimental terminal launchers also support Gemini CLI, Cursor Agent, Copilot C
 
 <p align="center">
   <a href="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml"><img src="https://github.com/YuvalSarel1/cones/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/YuvalSarel1/cones/releases/latest"><img src="https://img.shields.io/github/v/release/YuvalSarel1/cones" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white" alt="macOS">
+  <a href="docs/harness.md"><img src="https://img.shields.io/badge/harnesses-Claude%20Code%20%C2%B7%20Codex%20%C2%B7%20pi%20%C2%B7%20OpenCode-8b5cf6" alt="Harnesses: Claude Code, Codex, pi, OpenCode"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-3b82f6" alt="MIT or Apache-2.0"></a>
 </p>
 
