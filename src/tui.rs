@@ -16287,11 +16287,20 @@ pub fn run(
     // Before crossterm's first poll, so the replies do not land as keystrokes.
     let keyboard;
     (app.colors, keyboard) = viewer::probe_terminal(Duration::from_millis(150));
+    let tmux = tmux_keys();
+    // tmux ignores the kitty request. With extended-keys on it reports shift+enter only to a
+    // pane that asks for modifyOtherKeys, and cones asks only for csi-u reports: crossterm
+    // drops the xterm format's `CSI 27;mod;key~`, which would lose the key entirely.
+    if tmux.as_ref().is_some_and(|(_, format)| format == "csi-u") {
+        let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[>4;1m");
+    }
     app.event("debug", "terminal.colors", || {
         json!({
             "foreground": app.colors.fg, "background": app.colors.bg,
             // null: the terminal ignored the kitty keyboard request, so shift+enter is a return.
             "keyboard_flags": keyboard,
+            "tmux_extended_keys": tmux.as_ref().map(|(keys, _)| keys),
+            "tmux_extended_keys_format": tmux.as_ref().map(|(_, format)| format),
         })
     });
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
@@ -16525,6 +16534,39 @@ pub(crate) fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> 
         return Err(error);
     }
     Ok(())
+}
+
+/// tmux's `extended-keys` and `extended-keys-format`, when the dashboard runs inside tmux.
+fn tmux_keys() -> Option<(String, String)> {
+    std::env::var_os("TMUX")?;
+    // A wedged tmux server must not hold the dashboard's start.
+    let option = |name| {
+        let mut child = std::process::Command::new("tmux")
+            .args(["show-options", "-sv", name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok()?;
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        };
+        let mut out = String::new();
+        std::io::Read::read_to_string(&mut child.stdout.take()?, &mut out).ok()?;
+        status.success().then(|| out.trim().to_owned())
+    };
+    Some((option("extended-keys")?, option("extended-keys-format")?))
 }
 
 /// Which terminal the dashboard runs in, and whether a multiplexer sits between them.
