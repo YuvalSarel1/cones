@@ -361,8 +361,9 @@ fn pass_argv(ps: &str) -> HashMap<u32, String> {
 /// platform binary or another user's process: a hidden environment keeps the pid, because it
 /// must never empty the fleet, and so does an environment read that failed outright. A pid that
 /// went between the reads, or whose command line changed, is left out of this pass: a test
-/// fixture started through the `/usr/bin/python3` shim matches discovery only until the shim
-/// execs the real interpreter, and it showed as a row for one refresh.
+/// fixture started through the `/usr/bin/python3` shim changes its command line when the shim
+/// execs the real interpreter, and while the shim's environment was hidden it showed as a row
+/// for one refresh.
 ///
 /// This still finds the machine's real clients, so a test that asserts a whole row set must
 /// exclude ids it did not create: a live harness process fails such a test for reasons that have
@@ -2521,8 +2522,8 @@ mod tests {
         assert!(own_home_processes("/bin/ps", kind, &[1]).contains(&1));
     }
 
-    // A test fixture started through the `/usr/bin/python3` shim matches discovery until the
-    // shim execs the real interpreter, and its hidden environment kept it: two fixture pi
+    // A test fixture started through the `/usr/bin/python3` shim is a platform binary until it
+    // execs the real interpreter, and its hidden environment kept it: two fixture pi
     // clients flickered through the owner's dashboard for one refresh during another gate.
     // The table pads `lstart`, and an untrimmed command line never matched the `-E` read, so
     // no environment was ever consulted.

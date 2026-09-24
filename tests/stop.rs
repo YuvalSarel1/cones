@@ -96,15 +96,14 @@ impl Fixture {
         fs::read_to_string(self.home().join("calls.log")).unwrap_or_default()
     }
 
+    /// A pi client discovery recognises for as long as it runs. `ps` prints the path it was
+    /// started by, so `cat` behind a link named `pi` reads as pi. A Python script does not:
+    /// the `/usr/bin/python3` shim re-executes the real interpreter, whose name discovery does
+    /// not match, so it is pi only for its first moments. A link also starts no first-exec scan.
     fn pi(&self) -> PathBuf {
         fs::create_dir_all(self.root.path().join(".pi/agent")).unwrap();
         let program = self.root.path().join(".local/bin/pi");
-        fs::write(
-            &program,
-            "#!/usr/bin/python3\nimport time\nwhile True:\n    time.sleep(1)\n",
-        )
-        .unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink("/bin/cat", &program).unwrap();
         program
     }
 
@@ -361,6 +360,29 @@ fn the_pi_process_id_printed_by_ls_stops_its_owned_terminal() {
     assert_eq!(f.calls(), "");
 }
 
+/// `ls` lists an owned client under its process id before discovery can see it, for instance
+/// while its executable is still being scanned. That listed id stops it too.
+#[test]
+fn an_owned_client_discovery_has_not_seen_stops_by_the_id_ls_prints() {
+    let f = Fixture::new();
+    // `cat` is never discovered as pi, so only the host record lists it.
+    let host = Host::start(&f, "pi", "pi-launch-placeholder", Path::new("/bin/cat"));
+    let id = format!("pi-{}", host.pid());
+    let rows = f.rows();
+    assert!(
+        rows.iter()
+            .any(|row| row["session"]["session_id"] == id && row["session"]["started"].is_null()),
+        "ls lists the record under its process id without discovering it: {rows:?}"
+    );
+
+    let out = f.stop(&id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains(&id));
+    assert!(!host.alive());
+    assert!(!host.path(&f).exists());
+    assert_eq!(f.calls(), "");
+}
+
 #[test]
 fn a_pi_conversation_id_replacing_the_launch_id_stops_its_owned_terminal() {
     let f = Fixture::new();
@@ -370,12 +392,31 @@ fn a_pi_conversation_id_replacing_the_launch_id_stops_its_owned_terminal() {
     fs::create_dir_all(&dir).unwrap();
     let id = "56565656-1111-4111-8111-111111111111";
     let transcript = dir.join(format!("{id}.jsonl"));
+    // pi stamps its header as it boots, so wait until discovery sees the process and stamp the
+    // header with its start. A fresh script can sit in a first-exec scan for seconds, which
+    // would otherwise put the header outside that window.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let started = loop {
+        let started = f
+            .rows()
+            .into_iter()
+            .find(|row| row["session"]["pid"] == host.pid())
+            .map(|row| row["session"]["started"].clone())
+            .filter(|started| !started.is_null());
+        if let Some(started) = started {
+            break started;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pi never started running"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     fs::write(
         &transcript,
         format!(
             "{}\n",
-            json!({"type": "session", "id": id, "cwd": cwd,
-                   "timestamp": chrono::Utc::now().to_rfc3339()})
+            json!({"type": "session", "id": id, "cwd": cwd, "timestamp": started})
         ),
     )
     .unwrap();
@@ -389,7 +430,12 @@ fn a_pi_conversation_id_replacing_the_launch_id_stops_its_owned_terminal() {
     );
 
     let out = f.stop(id);
-    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}\nls now: {:?}",
+        text(&out.stderr),
+        f.rows()
+    );
     assert!(text(&out.stdout).contains(id));
     assert!(!host.alive());
     assert!(!host.path(&f).exists());

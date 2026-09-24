@@ -35,8 +35,13 @@ pub(crate) struct Record {
 impl Record {
     /// Discovery can replace a launch id with a process or native conversation id.
     /// Only the same harness and its owned client can bind that row back to this host.
+    /// The id `ls` prints for the record itself matches too, so a client discovery has not
+    /// seen yet, such as one still starting, can be stopped by the id it was listed under.
     pub(crate) fn matches_session(&self, id: &str, session: Option<&Session>) -> bool {
+        let mut listed = self.session.clone();
+        crate::fleet::identify(&mut listed);
         self.session.session_id == id
+            || listed.session_id == id
             || session.is_some_and(|session| {
                 session.harness == self.session.harness
                     && session.pid.is_some()

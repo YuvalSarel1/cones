@@ -576,6 +576,7 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
         "/tools/bin/gemini mcp list",
         "/tools/bin/agent other-service",
         "/usr/bin/python-backup /tools/bin/kimi",
+        "/Library/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /tools/bin/kimi",
     ];
     let table = commands
         .iter()
@@ -584,7 +585,7 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
         .collect::<String>();
     for (kind, expected) in [
         (HarnessKind::Gemini, vec![1]),
-        (HarnessKind::Kimi, vec![2]),
+        (HarnessKind::Kimi, vec![2, 9]),
         (HarnessKind::Cursor, vec![3]),
     ] {
         assert_eq!(

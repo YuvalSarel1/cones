@@ -254,7 +254,9 @@ impl Discovery {
                         .ok()
                         .and_then(|p| p.file_name().map(OsStr::to_owned))
                         .is_some_and(|name| name == program.as_str());
+                // The `/usr/bin/python3` shim re-executes a framework build named `Python`.
                 let python = executable
+                    .to_ascii_lowercase()
                     .strip_prefix("python")
                     .is_some_and(|tail| tail.bytes().all(|b| b.is_ascii_digit() || b == b'.'));
                 let matches = if native(executable) || alias {
