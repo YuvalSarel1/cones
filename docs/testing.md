@@ -22,7 +22,15 @@ CPU limit.
 Inside a build, `CARGO_BUILD_JOBS` defaults to the number of efficiency cores
 (`hw.perflevel1.logicalcpu`, at least `2`); `RUST_TEST_THREADS` defaults to the number of performance cores (`hw.perflevel0.logicalcpu`), between `2` and `6`.
 Explicit values take precedence. Each checkout retains its own build output;
-sharing a queue does not share build artifacts. `CONES_CHECK_STATE_DIR` overrides
+sharing a queue does not share build artifacts. A linked worktree with no `target/`
+of its own, such as a fresh detached worktree cut to gate a commit, builds instead
+in one of two warm target directories under `~/.cones` (`gate-target.0` and `.1`),
+which it holds for its whole gate, so dependencies are not compiled again. Cargo
+judges the workspace's own path packages fresh by mtime, so when a slot last
+served a different checkout the gate first runs `cargo clean -p cones -p vt100`
+there: registry dependencies stay, and this checkout's crates always rebuild from
+its own source. A set `CARGO_TARGET_DIR` or an existing `target/` opts out.
+`CONES_CHECK_STATE_DIR` overrides
 the lock directory for isolated fixtures. Fixtures that invoke `scripts/check`
 must use a temporary directory to avoid waiting on their outer gate.
 

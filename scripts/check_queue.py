@@ -18,6 +18,7 @@ import tempfile
 import time
 
 BUILD_SLOTS = 2
+GATE_SLOTS = 2
 TASKPOLICY = "/usr/sbin/taskpolicy"
 
 
@@ -189,6 +190,58 @@ def leases(log_dir):
     return [json.loads(line) for line in lines]
 
 
+def gate_target(checkout, mode, env):
+    """A warm target dir for a worktree that has none of its own, held for the gate.
+
+    A fresh worktree would otherwise compile every dependency. Registry
+    dependencies are immutable, so reusing them is safe. The workspace's own path
+    packages are judged fresh by mtime, so another checkout's artifacts for them
+    could pass for this one's; they are cleaned when the slot changes checkout.
+    Returns the lock descriptor, which the gate and everything it runs inherit, and
+    the time spent waiting for it.
+    """
+    if (mode not in ("all", "clippy", "test", "stress") or "CARGO_TARGET_DIR" in env
+            or not (checkout / ".git").is_file() or (checkout / "target").exists()):
+        return None, 0.0
+    root = state_dir()
+    paths = [root / f"gate.{n}.lock" for n in range(GATE_SLOTS)]
+    fds = [open_lock(path) for path in paths]
+
+    def last_checkout(path):
+        try:
+            return json.loads(path.read_text())["checkout"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    # The slot this checkout used last keeps its incremental build; an unused one
+    # evicts nobody.
+    order = sorted(range(GATE_SLOTS), key=lambda n: {str(checkout): 0, None: 1}.get(
+        last_checkout(paths[n]), 2))
+    requested = time.monotonic()
+    waiter = Waiter()
+    while True:
+        for n in order:
+            try:
+                fcntl.flock(fds[n], fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            for other in fds:
+                if other != fds[n]:
+                    os.close(other)
+            target = root / f"gate-target.{n}"
+            # The path packages, named: a new path dependency joins this list.
+            if last_checkout(paths[n]) != str(checkout) and target.exists():
+                subprocess.run(["cargo", "clean", "--quiet", "-p", "cones", "-p", "vt100",
+                                "--target-dir", str(target)], cwd=checkout, env=env, check=True)
+            os.lseek(fds[n], 0, os.SEEK_SET)
+            os.ftruncate(fds[n], 0)
+            os.write(fds[n], json.dumps({"pid": os.getpid(), "checkout": str(checkout)}).encode())
+            env["CARGO_TARGET_DIR"] = str(target)
+            console(f"building in {target}")
+            return fds[n], time.monotonic() - requested
+        waiter.wait(holder(paths))
+
+
 def main():
     if sys.argv[1] == "lease":
         return lease(sys.argv[2], sys.argv[3], sys.argv[4:])
@@ -201,18 +254,23 @@ def main():
         nonlocal cancelled
         cancelled = signum
 
-    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, cancel)
-
     env = os.environ.copy()
     env["CONES_CHECK_PARENT"] = str(os.getpid())
     env.setdefault("RUST_TEST_THREADS", test_threads())
     log_dir = Path(tempfile.mkdtemp(prefix="cones-check.", dir=env.get("TMPDIR")))
     env["CONES_CHECK_LOG_DIR"] = str(log_dir)
+    slot, waited = gate_target(script.parent.parent, sys.argv[2], env)
+    if slot is not None:
+        with open(log_dir / "leases.jsonl", "a") as leases_file:
+            leases_file.write(json.dumps({"stage": "gate target", "kind": "gate",
+                                          "wait_s": waited, "build_jobs": None}) + "\n")
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, cancel)
     child = subprocess.Popen(
         ["/bin/bash", str(script), *sys.argv[2:]],
         env=env,
         start_new_session=True,
+        pass_fds=() if slot is None else (slot,),
     )
     # A soak is asked for explicitly and runs as long as it was asked to, with the
     # five-minute cap left in place for the ordinary stress gate around it. Time

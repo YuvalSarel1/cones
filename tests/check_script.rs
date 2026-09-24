@@ -455,3 +455,69 @@ git -C "$3" rev-parse HEAD >> "$TMPDIR/args"
         "{output:?}"
     );
 }
+
+#[test]
+fn a_worktree_without_a_target_gates_in_a_warm_one_cleaning_another_checkouts_crate() {
+    let fixture = Fixture::new(
+        r#"
+printf '%s|%s\n' "${CARGO_TARGET_DIR-}" "$*" >> "$TMPDIR/args"
+if [[ -n ${CARGO_TARGET_DIR-} ]]; then mkdir -p "$CARGO_TARGET_DIR"; fi
+"#,
+    );
+    let gate = |name: &str| {
+        let scripts = fixture.dir.path().join(name).join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        // A linked worktree's .git is a file.
+        fs::write(
+            scripts.parent().unwrap().join(".git"),
+            "gitdir: elsewhere\n",
+        )
+        .unwrap();
+        for file in ["check", "check_queue.py"] {
+            fs::copy(
+                format!("{}/scripts/{file}", env!("CARGO_MANIFEST_DIR")),
+                scripts.join(file),
+            )
+            .unwrap();
+        }
+        let command = fixture.command();
+        let output = Command::new("/bin/bash")
+            .arg(scripts.join("check"))
+            .args(["test", "--lib"])
+            .envs(command.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+            .env_remove("CARGO_TARGET_DIR")
+            .current_dir(fixture.dir.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let args = fixture.dir.path().join("args");
+        let recorded = fs::read_to_string(&args).unwrap_or_default();
+        let _ = fs::remove_file(&args);
+        recorded
+    };
+    let queue = fixture.dir.path().join("queue");
+    let built = |slot: usize| {
+        let target = queue.join(format!("gate-target.{slot}"));
+        format!(
+            "{t}|test --no-run --lib\n{t}|test --lib\n",
+            t = target.display()
+        )
+    };
+    let cleaned = |slot: usize| {
+        format!(
+            "|clean --quiet -p cones -p vt100 --target-dir {}\n",
+            queue.join(format!("gate-target.{slot}")).display()
+        )
+    };
+    assert_eq!(gate("a"), built(0));
+    // The same checkout keeps its slot and its incremental build.
+    assert_eq!(gate("a"), built(0));
+    // Another checkout takes the unused slot before evicting anyone.
+    assert_eq!(gate("b"), built(1));
+    // With every slot owned elsewhere, the workspace's own crates are rebuilt.
+    assert_eq!(gate("c"), cleaned(0) + &built(0));
+    assert_eq!(gate("a"), cleaned(0) + &built(0));
+    // A checkout with its own target keeps it.
+    fs::create_dir(fixture.dir.path().join("c/target")).unwrap();
+    assert_eq!(gate("c"), "|test --no-run --lib\n|test --lib\n");
+}
