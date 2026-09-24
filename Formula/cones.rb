@@ -1,8 +1,8 @@
 class Cones < Formula
   desc "A terminal workspace for coding agents"
   homepage "https://github.com/YuvalSarel1/cones"
-  url "https://github.com/YuvalSarel1/cones/archive/refs/tags/v0.2.1.tar.gz"
-  sha256 "01fdbda2b2baedde7490b7dadaa7a14caf44aedf2c978a5cab640308d38158ff"
+  url "https://github.com/YuvalSarel1/cones/archive/refs/tags/v0.2.2.tar.gz"
+  sha256 "9da1f062b86836ffacae0e9e04badc4c002aa5708566c19ebbb3832e5f48f6e3"
   license any_of: ["MIT", "Apache-2.0"]
   head "https://github.com/YuvalSarel1/cones.git", branch: "main"
 
