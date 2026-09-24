@@ -107,6 +107,7 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
         policy.aws_profile.as_deref(),
         policy.aws_region.as_deref(),
     );
+    folder_env(c);
     drop_host_identity(c);
     if launch.stdin_prompt && !prompt.is_empty() {
         let Start::Foreground(command) = start else {
@@ -263,17 +264,18 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
             policy.aws_region.as_deref(),
         );
     }
+    folder_env(&mut command);
     drop_host_identity(&mut command);
     Ok(Start::Foreground(command))
 }
 
 /// The environment of the terminal cones was started from names that terminal and, when cones
 /// itself was launched from inside an agent, that agent's live session: its IDE socket, its
-/// messaging socket, its identifiers and the provider its own launcher chose. A pane is neither,
-/// so passing those on makes a session report a host it does not run in. A machine-wide
-/// preference is not identity and stays, and a value cones set on this command is this launch's
-/// own policy and always wins.
-const HOST_IDENTITY: [&str; 15] = [
+/// messaging socket and its identifiers. A pane is neither, so passing those on makes a session
+/// report a host it does not run in. A provider switch is not identity: a shell or directory rule
+/// that exports `CLAUDE_CODE_USE_BEDROCK` means the user's sessions there run on Bedrock, so it
+/// stays, and a value cones set on this command is this launch's own policy and always wins.
+const HOST_IDENTITY: [&str; 14] = [
     "CONES_PI_REPORT",
     "AI_AGENT",
     "CLAUDECODE",
@@ -285,7 +287,6 @@ const HOST_IDENTITY: [&str; 15] = [
     "CLAUDE_CODE_SESSION_ATTENDED",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_SSE_PORT",
-    "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_EFFORT",
     "CLAUDE_JOB_DIR",
     "CLAUDE_PID",
@@ -295,6 +296,106 @@ const HOST_IDENTITY: [&str; 15] = [
 /// for none of them: it encodes shift+enter as a plain return, so an inherited name makes a CLI
 /// offer a newline binding the pane cannot deliver.
 const HOST_TERMINAL: [&str; 2] = ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
+
+/// A `claude` typed in a terminal opened on `dir` sees whatever the user's login shell exports
+/// there: rc files, `chpwd` hooks and direnv can all pick the provider, profile or region per
+/// folder. A launch takes each such value that differs from cones' own environment. A value cones
+/// set on the command is this launch's policy and still wins, and host identity stays out.
+/// Aliases and functions are not run, so a wrapper's inline variables never reach a launch.
+fn folder_env(command: &mut std::process::Command) {
+    let (Some(dir), Some(shell)) = (
+        command.get_current_dir().map(Path::to_owned),
+        std::env::var_os("SHELL").filter(|shell| !shell.is_empty()),
+    ) else {
+        return;
+    };
+    let env = shell_env(&shell, &dir);
+    apply_folder_env(command, env);
+}
+
+fn apply_folder_env(command: &mut std::process::Command, env: Vec<(OsString, OsString)>) {
+    let ours: Vec<OsString> = command
+        .get_envs()
+        .map(|(name, _)| name.to_owned())
+        .collect();
+    for (name, value) in env {
+        let skip = ours.contains(&name)
+            || std::env::var_os(&name).as_ref() == Some(&value)
+            || name.to_str().is_some_and(|name| {
+                SHELL_BOOKKEEPING.contains(&name)
+                    || name.starts_with("CONES_FOLDER_")
+                    || HOST_IDENTITY.contains(&name)
+                    || HOST_TERMINAL.contains(&name)
+            });
+        if !skip {
+            command.env(name, value);
+        }
+    }
+}
+
+const SHELL_BOOKKEEPING: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
+
+/// Run the login shell as `-l -i` in `dir` and read its exported environment. The shell gets its own session
+/// so an interactive rc cannot take the dashboard's terminal, writes to a file so a daemon an rc
+/// leaves behind cannot hold the read open, and is killed after five seconds. Any failure means
+/// no folder environment, never a failed launch.
+// ponytail: one shell per launch, about 0.3s; cache per folder if launches get hot.
+fn shell_env(shell: &OsStr, dir: &Path) -> Vec<(OsString, OsString)> {
+    use std::os::unix::{ffi::OsStrExt, process::CommandExt};
+    let Ok(out) = tempfile::NamedTempFile::new() else {
+        return Vec::new();
+    };
+    let mut c = std::process::Command::new(shell);
+    // Quoted `$NAME` and `&&` read the same in sh, bash, zsh and fish.
+    c.args([
+        "-l",
+        "-i",
+        "-c",
+        r#"cd -- "$CONES_FOLDER_DIR" && env -0 > "$CONES_FOLDER_ENV""#,
+    ])
+    .env("CONES_FOLDER_DIR", dir)
+    .env("CONES_FOLDER_ENV", out.path())
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null());
+    // SAFETY: setsid is async-signal-safe.
+    unsafe {
+        c.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    let Ok(mut child) = c.spawn() else {
+        return Vec::new();
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => break None,
+        }
+    };
+    if !status.is_some_and(|status| status.success()) {
+        // SAFETY: the child leads its own process group, so this reaches only its shell.
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+        let _ = child.wait();
+        return Vec::new();
+    }
+    let bytes = std::fs::read(out.path()).unwrap_or_default();
+    bytes
+        .split(|&b| b == 0)
+        .filter_map(|entry| {
+            let at = entry.iter().position(|&b| b == b'=').filter(|&at| at > 0)?;
+            Some((
+                OsStr::from_bytes(&entry[..at]).to_owned(),
+                OsStr::from_bytes(&entry[at + 1..]).to_owned(),
+            ))
+        })
+        .collect()
+}
 
 fn drop_host_identity(command: &mut std::process::Command) {
     let ours: Vec<OsString> = command
@@ -602,6 +703,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
     if spec.kind == HarnessKind::Pi {
         command.env(crate::pi::reporting::ENABLE, "1");
     }
+    folder_env(&mut command);
     drop_host_identity(&mut command);
     if entry.archived && spec.commands.resume_handler != spec::Resume::SessionId {
         check_operation(spec, &spec.operations.unarchive, "unarchive")?;
@@ -1297,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_provider_outranks_the_identity_a_launch_drops() {
+    fn a_configured_provider_outranks_the_shell_s_bedrock_switch() {
         let launch = spec(HarnessKind::Claude)
             .launch
             .as_ref()
@@ -1310,11 +1412,67 @@ mod tests {
                 .find(|(name, _)| *name == OsStr::new("CLAUDE_CODE_USE_BEDROCK"))
                 .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
         };
-        // The config chose the provider, so the pane keeps it; with nothing configured the
-        // launcher's own switch is identity like the rest and the pane starts without it.
+        // The config chose the provider, so the pane follows it; with nothing configured the
+        // command leaves the switch alone and the pane inherits the shell's, as a direct
+        // `claude` from that shell would.
         assert_eq!(switch(Some(true)), Some(Some("1".to_owned())));
         assert_eq!(switch(Some(false)), Some(None));
-        assert_eq!(switch(None), Some(None));
+        assert_eq!(switch(None), None);
+    }
+
+    #[test]
+    fn a_launch_takes_what_the_user_s_shell_exports_in_that_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        // A stand-in login shell whose cd hook picks Bedrock in folders marked for it, as a
+        // chpwd hook or direnv would.
+        let shell = root.path().join("shell");
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\nshift 3\ncd() { command cd \"$@\" && if [ -f .bedrock ]; then \
+             export CLAUDE_CODE_USE_BEDROCK=1 AWS_PROFILE=folder CLAUDECODE=1; fi; }\n\
+             export CONES_SHELL_RC=loaded\neval \"$1\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (bedrock, plain) = (root.path().join("bedrock"), root.path().join("plain"));
+        std::fs::create_dir(&bedrock).unwrap();
+        std::fs::create_dir(&plain).unwrap();
+        std::fs::write(bedrock.join(".bedrock"), "").unwrap();
+        let launch = |dir: &Path| {
+            let mut c = std::process::Command::new("true");
+            c.current_dir(dir).env("AWS_PROFILE", "configured");
+            apply_folder_env(&mut c, shell_env(shell.as_os_str(), dir));
+            drop_host_identity(&mut c);
+            c.get_envs()
+                .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
+                .collect::<BTreeMap<_, _>>()
+        };
+        let env = launch(&bedrock);
+        assert_eq!(
+            env.get("CLAUDE_CODE_USE_BEDROCK").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            env.get("CONES_SHELL_RC").map(String::as_str),
+            Some("loaded")
+        );
+        // The configured profile wins, and identity and shell bookkeeping stay out.
+        assert_eq!(env["AWS_PROFILE"], "configured");
+        for name in [
+            "CLAUDECODE",
+            "PWD",
+            "SHLVL",
+            "CONES_FOLDER_DIR",
+            "CONES_FOLDER_ENV",
+        ] {
+            assert!(!env.contains_key(name), "{name} leaked into {env:?}");
+        }
+        assert!(!launch(&plain).contains_key("CLAUDE_CODE_USE_BEDROCK"));
+        // A shell that fails or never finishes gives no folder environment.
+        let missing = root.path().join("missing");
+        assert!(shell_env(OsStr::new("/usr/bin/false"), &bedrock).is_empty());
+        assert!(shell_env(OsStr::new("/bin/sh"), &missing).is_empty());
     }
 
     #[test]

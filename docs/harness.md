@@ -287,6 +287,18 @@ For native shell commands, invoke the binary directly: aliases adding flags can 
 subcommand into a prompt. Removed Claude jobs remain in native resume history; forgotten Codex
 threads remain resumable.
 
+### Folder environment
+
+A start, fork or resume runs the user's `$SHELL -l -i` in the session folder first and passes on
+every exported value that differs from cones' own environment, so rc files, `chpwd` hooks and
+direnv choose the provider, profile or region the same way a `claude` typed in that folder would.
+Configured `bedrock`, `aws_profile` and `aws_region` still win, and host identity stays out.
+Aliases and shell functions are not run, so a wrapper's inline variables do not apply; put them in
+an exported rule or the folder's native settings. A shell that fails or takes over five seconds
+contributes nothing. Claude's background daemon hands a launch the Bedrock switch and `AWS_`
+values but not other names, which reach foreground harnesses alone. Scheduled jobs keep their
+[cleared environment](jobs.md#environment).
+
 ### Composer identity
 
 | Harness | Launch | Attribution |
