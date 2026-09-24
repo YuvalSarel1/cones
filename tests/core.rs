@@ -1755,9 +1755,10 @@ fn a_claim_puts_unacknowledged_mail_back_in_front_of_the_watcher() {
 fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
     let f = Coordinated::new();
     let dir = f.coordinator_dir();
-    fs::write(dir.join("inbox.jsonl"), "{\"text\":\"one\"}\n").unwrap();
 
     // A second watcher while the first is armed, told apart by the lease the first one writes.
+    // The mail that wakes the first one arrives only after both refusals: pending mail would
+    // wake it before a slow runner started the second wait, and that wait would find no lease.
     let watcher = dir.join("watcher.json");
     let mut armed = f
         .spawn("comms", &["wait", "--timeout", "60"])
@@ -1775,6 +1776,7 @@ fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    fs::write(dir.join("inbox.jsonl"), "{\"text\":\"one\"}\n").unwrap();
     assert!(
         armed.wait().unwrap().success(),
         "the first watcher kept its wake"
