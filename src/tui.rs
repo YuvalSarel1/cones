@@ -19655,11 +19655,15 @@ states:
         assert_eq!(app.text, "x draft");
         app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
         assert!(!app.history.visible);
+        assert!(
+            app.filter.text.is_empty(),
+            "closing history clears its search"
+        );
+        app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         app.key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         assert_eq!(key(&app).as_deref(), Some(A), "back on the live row");
         app.key(KeyCode::Char('y'), KeyModifiers::NONE).unwrap();
         assert_eq!(app.text, "x drafty");
-        assert_eq!(app.filter.text, "o");
     }
 
     #[test]
