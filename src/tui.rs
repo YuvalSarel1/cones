@@ -2381,6 +2381,29 @@ fn caret_rows(text: &Text<'static>, width: u16) -> u16 {
     rows_of(kept, width)
 }
 
+/// Split a prompt line at its drafted line breaks. Continuation rows start under the text,
+/// past the prompt that ends in `› `.
+fn breaks(line: Line<'static>) -> Text<'static> {
+    let indent = line
+        .spans
+        .iter()
+        .position(|s| s.content.ends_with("› "))
+        .map_or(0, |i| line.spans[..=i].iter().map(Span::width).sum());
+    let mut lines = vec![Line::default()];
+    for span in line.spans {
+        for (i, part) in span.content.split('\n').enumerate() {
+            if i > 0 {
+                lines.push(Line::from(" ".repeat(indent)));
+            }
+            if !part.is_empty() {
+                let last = lines.last_mut().unwrap();
+                last.spans.push(Span::styled(part.to_owned(), span.style));
+            }
+        }
+    }
+    Text::from(lines)
+}
+
 fn rows_of(lines: Vec<Line<'static>>, width: u16) -> u16 {
     Paragraph::new(Text::from(lines))
         .wrap(Wrap { trim: false })
@@ -2395,11 +2418,16 @@ fn typed(value: &str, cursor: usize, placeholder: &str) -> Vec<Span<'static>> {
         let mut rest = rest.chars();
         // At the end the cursor is a space, and a wrap drops a space that lands past the edge,
         // leaving the block on the rule below. A no-break space wraps with the word instead.
-        let under = rest.next().map_or("\u{a0}".to_owned(), |c| c.to_string());
+        // On a line break the block sits at the end of its line and the break follows it.
+        let (under, rest) = match rest.next() {
+            None => ("\u{a0}".to_owned(), String::new()),
+            Some('\n') => ("\u{a0}".to_owned(), format!("\n{}", rest.as_str())),
+            Some(c) => (c.to_string(), rest.as_str().to_owned()),
+        };
         return vec![
             Span::raw(before.to_owned()),
             Span::styled(under, Style::default().add_modifier(block)),
-            Span::raw(rest.as_str().to_owned()),
+            Span::raw(rest),
         ];
     }
     let cursor = block;
@@ -14411,11 +14439,11 @@ impl App {
                 bold(),
             )];
             let input = &self.terminal_input;
-            let shown = input.text.replace('\n', "⏎");
-            let caret = input.text[..snap(&input.text, input.at)]
-                .replace('\n', "⏎")
-                .len();
-            spans.extend(typed(&shown, caret, "Type a command, or Enter to open"));
+            spans.extend(typed(
+                &input.text,
+                input.at,
+                "Type a command, or Enter to open",
+            ));
             return Line::from(spans);
         }
         if self.on_button() || self.on_new_folder() {
@@ -14426,10 +14454,8 @@ impl App {
         let mut spans = vec![Span::styled(logo(&kind), style)];
         spans.push(Span::styled(" › ", style));
         let label = |n: usize| format!("[Image #{}]", n + 1);
-        // The composer is one line; a break shows as its glyph and stays a break in the prompt.
-        let show = |t: &str| expand(t, label).replace('\n', "⏎");
-        let shown = show(&self.text);
-        let caret = show(&self.text[..snap(&self.text, self.caret)]).len();
+        let shown = expand(&self.text, label);
+        let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
         let placeholder = if self.menu_is("jobs") || self.on_new_job() {
             "Type to create a new job…"
         } else {
@@ -15883,7 +15909,7 @@ impl App {
                 Span::styled(*what, dim()),
             ])
         };
-        let (prompt, rows) = self.framed(line, pane.width);
+        let (prompt, rows) = self.framed(breaks(line), pane.width);
         // Reserve matching hint rows so the pane and composer prompts align.
         let [body, foot, hint] = Layout::vertical([
             Constraint::Min(1),
@@ -15967,7 +15993,7 @@ impl App {
         // The config screen's connectivity answer is a row per harness, so the box takes a block.
         let text = match &self.mode {
             Mode::Config(form) if !in_pane && form.scope.is_none() => form.text(),
-            _ => line.into(),
+            _ => breaks(line),
         };
         let (input, rows) = self.framed(text, area.width);
         let [head, list, prompt, foot] = Layout::vertical([
@@ -22017,10 +22043,14 @@ states:
         app.paste("pwd\r\nprintf done");
         let command = "echo caffé\npwd\nprintf done";
         assert_eq!(app.terminal_input.text, command);
+        let rows: Vec<String> = breaks(app.composer())
+            .lines
+            .iter()
+            .map(|l| l.to_string().trim().to_owned())
+            .collect();
         assert!(
-            app.composer()
-                .to_string()
-                .contains("echo caffé⏎pwd⏎printf done")
+            rows[0].ends_with("› echo caffé") && rows[1..] == ["pwd", "printf done"],
+            "each command line is its own row: {rows:?}"
         );
         assert!(app.viewers.is_empty(), "editing does not start a shell");
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
@@ -24714,9 +24744,26 @@ states:
         assert_eq!(app.text, "a\n\nc\nd\neb");
         t.draw(|f| app.draw(f)).unwrap();
         let screen = rows(&t, 200);
-        assert!(
-            screen.iter().any(|r| r.contains("a⏎⏎c⏎d⏎eb")),
-            "the breaks show as a glyph on the one composer line: {screen:#?}"
+        let at = screen
+            .iter()
+            .position(|r| r.contains("› a"))
+            .unwrap_or_else(|| panic!("the draft starts on the prompt row: {screen:#?}"));
+        let drafted: Vec<&str> = screen[at..at + 5]
+            .iter()
+            .map(|r| r.split('│').next().unwrap().trim_end())
+            .collect();
+        let prompt = drafted[0].strip_suffix('a').unwrap();
+        let under = |t: &str| format!("{}{t}", " ".repeat(prompt.chars().count()));
+        assert_eq!(
+            drafted,
+            [
+                format!("{prompt}a"),
+                String::new(),
+                under("c"),
+                under("d"),
+                under("eb")
+            ],
+            "each break starts a row under the text: {screen:#?}"
         );
         assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
         assert!(!app.pending.is_empty(), "plain enter still starts it");
