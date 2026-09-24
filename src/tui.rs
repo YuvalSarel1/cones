@@ -90,6 +90,8 @@ fn reset_terminal_protocols() {
 }
 
 const ORANGE: Color = Color::Indexed(208);
+/// A drag paints the background the way a terminal selection does and leaves the text alone.
+const SELECTION: Color = Color::Rgb(0x32, 0x4e, 0x75);
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 const QUIT_HINT: &str = "ctrl+c again quits · any other key stays";
 /// Repeated endpoints slow the pulse. Use ▇ because █ touches the row above.
@@ -15390,7 +15392,11 @@ impl App {
             for (row, cols) in sel.rows() {
                 for col in cols {
                     if let Some(cell) = buf.cell_mut((sel.area.x + col, sel.area.y + row)) {
-                        cell.set_style(Style::default().add_modifier(Modifier::REVERSED));
+                        cell.set_style(
+                            Style::default()
+                                .bg(SELECTION)
+                                .remove_modifier(Modifier::REVERSED),
+                        );
                     }
                 }
             }
@@ -25129,12 +25135,14 @@ states:
         app.viewers.push(viewer_script(
             A,
             "attach",
-            "printf '\\033[?1003h\\033[?1006h\\033[HHELLO WORLD'; sleep 5",
+            "printf '\\033[?1003h\\033[?1006h\\033[H\\033[31mHEL\\033[7mLO\\033[0m WORLD'; sleep 5",
         ));
         wait_paint(&mut app, 0, "HELLO WORLD");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
         let pane = app.pane;
+        let red = t.backend().buffer().cell((pane.x, pane.y)).unwrap().fg;
+        assert_ne!(red, Color::Reset, "the client coloured its text");
         assert_eq!(
             app.viewers[0].viewer.screen().mouse_protocol_mode(),
             viewer::MouseProtocolMode::AnyMotion
@@ -25164,25 +25172,26 @@ states:
         t.draw(|f| app.draw(f)).unwrap();
         for col in 0..5 {
             assert!(
-                t.backend()
-                    .buffer()
-                    .cell((pane.x + col, pane.y))
-                    .unwrap()
-                    .style()
-                    .add_modifier
-                    .contains(Modifier::REVERSED),
+                selected(&t, pane.x + col, pane.y),
                 "the dragged cells are highlighted"
             );
         }
         assert!(
-            !t.backend()
-                .buffer()
-                .cell((pane.x + 5, pane.y))
-                .unwrap()
-                .style()
-                .add_modifier
-                .contains(Modifier::REVERSED),
+            !selected(&t, pane.x + 5, pane.y),
             "and nothing past them is"
+        );
+        let buf = t.backend().buffer();
+        assert_eq!(
+            buf.cell((pane.x, pane.y)).unwrap().fg,
+            red,
+            "the text keeps its colour"
+        );
+        assert!(
+            !buf.cell((pane.x + 3, pane.y))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED),
+            "a cell the client reversed shows the selection, not its own swap"
         );
         assert_eq!(app.selected_text().as_deref(), Some("HELLO"));
         // Dragging past the pane clamps, and a fresh press drops the highlight.
@@ -25225,14 +25234,8 @@ states:
         app.selected_text()
     }
 
-    fn reversed(t: &Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> bool {
-        t.backend()
-            .buffer()
-            .cell((x, y))
-            .unwrap()
-            .style()
-            .add_modifier
-            .contains(Modifier::REVERSED)
+    fn selected(t: &Terminal<ratatui::backend::TestBackend>, x: u16, y: u16) -> bool {
+        t.backend().buffer().cell((x, y)).unwrap().bg == SELECTION
     }
 
     #[test]
@@ -25280,11 +25283,11 @@ states:
         assert_eq!(copied.as_deref(), Some(shown.trim_end()));
         assert!(shown.contains("bbbbbbbb"), "the row is B's: {shown:?}");
         assert!(
-            reversed(&t, list.right() - 1, row),
+            selected(&t, list.right() - 1, row),
             "the row is highlighted"
         );
         assert!(
-            !reversed(&t, list.right() + 1, row),
+            !selected(&t, list.right() + 1, row),
             "and the pane beside it is not"
         );
         // With the pane closed the list still reads the mouse.
