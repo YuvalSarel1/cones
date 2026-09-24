@@ -79,6 +79,21 @@ The last six are [experimental terminal launchers](harness.md#additional-termina
 
 An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An unset `_in_picker` key means offered too; `false` takes the harness out of the composer cycle and startup selection alone, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. The enabled switch wins: a harness that is off is out of the picker whatever its picker key says, and with every launcher hidden the composer comes up on the terminal. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) sets them beside the composer, for the harness it names. A picker choice is written to `defaults` as it is made, so a job's next run uses it.
 
+Sessions the composer starts skip permission prompts by default, using each harness's own flag. Set the key to `false` to start that harness with its configured permissions. Jobs always run without prompts.
+
+| Harness | Key | Native flag |
+| --- | --- | --- |
+| `claude` | `claude_skip_permissions` | `--dangerously-skip-permissions` |
+| `codex` | `codex_skip_permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `opencode` | `opencode_skip_permissions` | `--auto` |
+| `gemini` | `gemini_skip_permissions` | `--yolo` |
+| `cursor-agent` | `cursor_skip_permissions` | `--force` |
+| `copilot` | `copilot_skip_permissions` | `--allow-all` |
+| `droid` | `droid_skip_permissions` | `--auto high` |
+| `kimi` | `kimi_skip_permissions` | `--auto` |
+
+pi has no permission prompts and amp has no flag for skipping them, so neither harness has a key.
+
 Pi also accepts `pi_provider`, and Codex accepts `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
 
 Two of these keys are also run policy, since a job has no field of its own for either: `defaults.model` supplies a Claude job's omitted `model`, and `defaults.effort` is the reasoning effort of every Claude run. Changing what the composer starts with therefore changes what tonight's job does.

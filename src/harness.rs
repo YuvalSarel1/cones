@@ -470,6 +470,9 @@ pub fn session_args(
             args.extend([OsString::from(flag), value.into()]);
         }
     }
+    if policy.skip_permissions_for(kind) {
+        args.extend(launch.skip_permissions.iter().map(OsString::from));
+    }
     if kind.terminal_only() && prompt.is_empty() {
         return Ok(args);
     }
@@ -1209,7 +1212,14 @@ mod tests {
         };
         assert_eq!(
             session_args(HarnessKind::Claude, None, "fix it", &p).unwrap(),
-            ["--bg", "--model", "opus", "--", "fix it"]
+            [
+                "--bg",
+                "--model",
+                "opus",
+                "--dangerously-skip-permissions",
+                "--",
+                "fix it"
+            ]
         );
         assert_eq!(
             session_args(
@@ -1226,13 +1236,14 @@ mod tests {
                 "/repo",
                 "-m",
                 "gpt-5.6-luna",
+                "--dangerously-bypass-approvals-and-sandbox",
                 "--",
                 "fix it"
             ]
         );
         assert_eq!(
             session_args(HarnessKind::Claude, None, "x", &Policy::default()).unwrap(),
-            ["--bg", "--", "x"]
+            ["--bg", "--dangerously-skip-permissions", "--", "x"]
         );
         // The app-server daemon keeps the provider it started with, so cones passes
         // no provider of its own; config refuses `bedrock` on a Codex job for that reason.
@@ -1243,7 +1254,13 @@ mod tests {
         };
         assert_eq!(
             session_args(HarnessKind::Codex, None, "x", &direct).unwrap(),
-            ["-m", "a-model", "--", "x"]
+            [
+                "-m",
+                "a-model",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--",
+                "x"
+            ]
         );
         // Each harness receives only its own configured model and provider.
         assert_eq!(
@@ -1268,6 +1285,58 @@ mod tests {
         );
     }
 
+    /// Every `*_skip_permissions` key off: sessions start with the harness's own permissions.
+    fn prompting() -> Policy {
+        Policy {
+            claude_skip_permissions: Some(false),
+            codex_skip_permissions: Some(false),
+            opencode_skip_permissions: Some(false),
+            gemini_skip_permissions: Some(false),
+            cursor_skip_permissions: Some(false),
+            copilot_skip_permissions: Some(false),
+            droid_skip_permissions: Some(false),
+            kimi_skip_permissions: Some(false),
+            ..Policy::default()
+        }
+    }
+
+    #[test]
+    fn a_composer_launch_skips_permissions_with_each_harness_s_own_flag_unless_turned_off() {
+        let expected: [(HarnessKind, &[&str]); 10] = [
+            (HarnessKind::Claude, &["--dangerously-skip-permissions"]),
+            (
+                HarnessKind::Codex,
+                &["--dangerously-bypass-approvals-and-sandbox"],
+            ),
+            (HarnessKind::Opencode, &["--auto"]),
+            (HarnessKind::Gemini, &["--yolo"]),
+            (HarnessKind::Cursor, &["--force"]),
+            (HarnessKind::Copilot, &["--allow-all"]),
+            (HarnessKind::Droid, &["--auto", "high"]),
+            (HarnessKind::Kimi, &["--auto"]),
+            // pi has no permission prompts and amp no flag for them, so neither gets one.
+            (HarnessKind::Pi, &[]),
+            (HarnessKind::Amp, &[]),
+        ];
+        for (kind, flag) in expected {
+            assert_eq!(spec(kind).launch.as_ref().unwrap().skip_permissions, flag);
+            assert_eq!(
+                Policy::default().skip_permissions_for(kind),
+                !flag.is_empty()
+            );
+            assert!(!prompting().skip_permissions_for(kind));
+            let on = session_args(kind, None, "go", &Policy::default()).unwrap();
+            let off = session_args(kind, None, "go", &prompting()).unwrap();
+            let stripped: Vec<_> = on
+                .iter()
+                .filter(|a| !flag.contains(&a.to_str().unwrap()))
+                .cloned()
+                .collect();
+            assert_eq!(stripped, off, "{kind}: the flag is the only difference");
+            assert_eq!(on.len(), off.len() + flag.len(), "{kind}");
+        }
+    }
+
     #[test]
     fn a_composer_launch_carries_each_harness_s_own_effort_flag() {
         let p = Policy {
@@ -1279,7 +1348,14 @@ mod tests {
         };
         assert_eq!(
             session_args(HarnessKind::Claude, None, "fix it", &p).unwrap(),
-            ["--bg", "--effort", "high", "--", "fix it"]
+            [
+                "--bg",
+                "--effort",
+                "high",
+                "--dangerously-skip-permissions",
+                "--",
+                "fix it"
+            ]
         );
         assert_eq!(
             session_args(HarnessKind::Pi, None, "fix it", &p).unwrap(),
@@ -1289,11 +1365,17 @@ mod tests {
         // takes none at all, so a level set for Claude or pi reaches neither.
         assert_eq!(
             session_args(HarnessKind::Codex, None, "fix it", &p).unwrap(),
-            ["-m", "gpt-5.6-luna", "--", "fix it"]
+            [
+                "-m",
+                "gpt-5.6-luna",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--",
+                "fix it"
+            ]
         );
         assert_eq!(
             session_args(HarnessKind::Opencode, None, "fix it", &p).unwrap(),
-            ["--model", "provider/model", "--prompt=fix it"]
+            ["--model", "provider/model", "--auto", "--prompt=fix it"]
         );
     }
 
@@ -1543,7 +1625,7 @@ mod tests {
     fn terminal_harness_prompts_remain_single_native_operands_without_permission_bypasses() {
         let prompt = "--model=other; $(echo surprise)\nsecond line";
         for &kind in known().iter().filter(|k| k.terminal_only()) {
-            let args = session_args(kind, None, prompt, &Policy::default()).unwrap();
+            let args = session_args(kind, None, prompt, &prompting()).unwrap();
             let args: Vec<_> = args.iter().map(|s| s.to_str().unwrap()).collect();
             match kind {
                 HarnessKind::Gemini => assert_eq!(args, [format!("--prompt-interactive={prompt}")]),

@@ -59,6 +59,7 @@ transcript:
 operations:
   launch:
     identity: client_pid
+    skip_permissions: [--auto]
     model: --model
     prompt: [--prompt, "{prompt}"]
     probe:

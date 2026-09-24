@@ -17,6 +17,7 @@ transcript:
 operations:
   launch:
     identity: client_pid
+    skip_permissions: [--force]
     prompt: [--, "{prompt}"]
     model: --model
     probe:

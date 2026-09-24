@@ -68,6 +68,7 @@ operations:
   rename: true
   launch:
     identity: reported_thread
+    skip_permissions: [--dangerously-bypass-approvals-and-sandbox]
     session_kind: daemon
     remote: [--remote, "{remote}", -C, "{cwd}"]
     model: -m

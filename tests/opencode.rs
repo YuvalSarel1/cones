@@ -336,6 +336,7 @@ fn launch_preserves_prompt_and_native_permissions_and_home_overrides() {
         prompt,
         &Policy {
             opencode_model: Some("provider/model".into()),
+            opencode_skip_permissions: Some(false),
             ..Policy::default()
         },
     )

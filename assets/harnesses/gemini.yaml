@@ -19,6 +19,7 @@ transcript:
 operations:
   launch:
     identity: client_pid
+    skip_permissions: [--yolo]
     prompt: [--, "{prompt}"]
     prompt_flag: --prompt-interactive
     model: --model

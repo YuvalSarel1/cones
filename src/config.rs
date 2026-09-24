@@ -122,6 +122,18 @@ pub struct Policy {
     pub droid_in_picker: Option<bool>,
     pub kimi_in_picker: Option<bool>,
 
+    /// Start composer sessions with the harness's own no-prompt flag. Unset is on. pi has no
+    /// permission prompts and amp no flag for it, so neither has a key here. Jobs always run
+    /// without prompts, since nobody is there to answer.
+    pub claude_skip_permissions: Option<bool>,
+    pub codex_skip_permissions: Option<bool>,
+    pub opencode_skip_permissions: Option<bool>,
+    pub gemini_skip_permissions: Option<bool>,
+    pub cursor_skip_permissions: Option<bool>,
+    pub copilot_skip_permissions: Option<bool>,
+    pub droid_skip_permissions: Option<bool>,
+    pub kimi_skip_permissions: Option<bool>,
+
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
     /// Passed to whichever harness a run names. Both must be configured when `bedrock`
@@ -205,6 +217,21 @@ impl Policy {
             HarnessKind::Amp => self.amp_enabled,
             HarnessKind::Droid => self.droid_enabled,
             HarnessKind::Kimi => self.kimi_enabled,
+        }
+        .unwrap_or(true)
+    }
+
+    pub fn skip_permissions_for(&self, kind: HarnessKind) -> bool {
+        match kind {
+            HarnessKind::Claude => self.claude_skip_permissions,
+            HarnessKind::Codex => self.codex_skip_permissions,
+            HarnessKind::Opencode => self.opencode_skip_permissions,
+            HarnessKind::Gemini => self.gemini_skip_permissions,
+            HarnessKind::Cursor => self.cursor_skip_permissions,
+            HarnessKind::Copilot => self.copilot_skip_permissions,
+            HarnessKind::Droid => self.droid_skip_permissions,
+            HarnessKind::Kimi => self.kimi_skip_permissions,
+            HarnessKind::Pi | HarnessKind::Amp => return false,
         }
         .unwrap_or(true)
     }
@@ -1054,6 +1081,14 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("amp_in_picker", d.amp_in_picker),
         ("droid_in_picker", d.droid_in_picker),
         ("kimi_in_picker", d.kimi_in_picker),
+        ("claude_skip_permissions", d.claude_skip_permissions),
+        ("codex_skip_permissions", d.codex_skip_permissions),
+        ("opencode_skip_permissions", d.opencode_skip_permissions),
+        ("gemini_skip_permissions", d.gemini_skip_permissions),
+        ("cursor_skip_permissions", d.cursor_skip_permissions),
+        ("copilot_skip_permissions", d.copilot_skip_permissions),
+        ("droid_skip_permissions", d.droid_skip_permissions),
+        ("kimi_skip_permissions", d.kimi_skip_permissions),
     ] {
         put(key, value.map(|v| v.to_string()));
     }

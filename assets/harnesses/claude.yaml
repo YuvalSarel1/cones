@@ -38,6 +38,7 @@ transcript:
 operations:
   launch:
     identity: background_id
+    skip_permissions: [--dangerously-skip-permissions]
     session_kind: bg
     prefix: [--bg]
     model: --model

@@ -16,6 +16,7 @@ transcript:
 operations:
   launch:
     identity: client_pid
+    skip_permissions: [--auto, high]
     prompt: [--, "{prompt}"]
     probe:
       args: [--help]

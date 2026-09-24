@@ -627,6 +627,10 @@ pub struct Launch {
     pub provider: Option<String>,
     /// Native reasoning-effort flag, when the harness has one of its own.
     pub effort: Option<String>,
+    /// Native arguments that start a session without permission prompts. Empty when the
+    /// harness has none, and then no `*_skip_permissions` key exists for it.
+    #[serde(default)]
+    pub skip_permissions: Vec<String>,
     /// Env variable that sends this harness to Amazon Bedrock, when it has one.
     /// AWS_PROFILE and AWS_REGION are not declared here: every harness resolves
     /// AWS the same way, so cones passes them to all of them.
@@ -1133,6 +1137,17 @@ impl HarnessSpec {
                     "invalid model, provider or effort flag"
                 );
             }
+            ensure!(
+                launch
+                    .skip_permissions
+                    .first()
+                    .is_none_or(|a| a.starts_with('-'))
+                    && launch
+                        .skip_permissions
+                        .iter()
+                        .all(|a| !a.contains(['{', '\0']) && !a.contains(char::is_whitespace)),
+                "invalid skip_permissions arguments"
+            );
             ensure!(
                 !launch.stdin_prompt || launch.handler == LaunchHandler::Terminal,
                 "stdin prompts require a terminal adapter"

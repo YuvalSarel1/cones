@@ -17,6 +17,7 @@ transcript:
 operations:
   launch:
     identity: client_pid
+    skip_permissions: [--auto]
     prompt: [--, "{prompt}"]
     prompt_flag: --prompt
     model: --model
