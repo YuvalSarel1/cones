@@ -531,6 +531,9 @@ pub struct Start {
     /// Desktop notifications for newly reported input requests and completions.
     #[serde(default)]
     pub notify: bool,
+    /// Fill the meaning index in the background from the moment cones opens.
+    #[serde(default)]
+    pub index: bool,
 }
 
 fn claude() -> HarnessKind {
@@ -543,6 +546,7 @@ impl Default for Start {
             harness: claude(),
             pane: yes(),
             notify: false,
+            index: false,
         }
     }
 }
@@ -556,6 +560,9 @@ impl Start {
         ];
         if self.notify {
             lines.push("  notify: true".into());
+        }
+        if self.index {
+            lines.push("  index: true".into());
         }
         lines
     }
@@ -2441,6 +2448,7 @@ mod tests {
             harness: HarnessKind::Codex,
             pane: false,
             notify: false,
+            index: true,
         };
         write_config(
             &p,
@@ -2458,7 +2466,9 @@ mod tests {
         .unwrap();
         let text = fs::read_to_string(&p).unwrap();
         assert!(
-            text.contains("start:\n  harness: codex\n  pane: false\nconfirm_secs: 2\n"),
+            text.contains(
+                "start:\n  harness: codex\n  pane: false\n  index: true\nconfirm_secs: 2\n"
+            ),
             "the block sits between pane and confirm_secs: {text}"
         );
         assert_eq!((start(&p), file_start(&p)), (st, Some(st)));
@@ -2469,6 +2479,7 @@ mod tests {
                 harness: HarnessKind::Claude,
                 pane: false,
                 notify: false,
+                index: false,
             },
         );
     }

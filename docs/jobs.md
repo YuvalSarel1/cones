@@ -146,6 +146,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 | `start.harness` | `claude` | Initially selected composer harness, using a key from [composer harnesses](#composer-harnesses). |
 | `start.pane` | `true` | Open the viewer pane at dashboard startup. |
 | `start.notify` | `false` | Desktop notifications for newly reported input requests and completions outside the focused session. Independent of a job's `notify`. |
+| `start.index` | `false` | Fill the [meaning index](dashboard.md#history) in the background from dashboard startup. |
 
 Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. Notification changes take effect on the next configuration refresh.
 

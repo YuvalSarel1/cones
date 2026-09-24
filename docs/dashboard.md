@@ -217,9 +217,9 @@ are reported before launch.
 
 ### History
 
-`ctrl+h` shows conversations below the live list, newest activity first. Live sessions and
-identified Claude run conversations are excluded. Pages contain 50 rows; moving beyond a
-page loads more. [Historical sources](harness.md#historical-sessions) define inclusion.
+`ctrl+h` shows conversations below the live list, newest activity first, and hides them again
+with any search cleared. Live sessions and identified Claude run conversations are excluded.
+Pages contain 50 rows; moving beyond a page loads more. [Historical sources](harness.md#historical-sessions) define inclusion.
 
 Typing or pasting with history selected searches titles, folders, harnesses, IDs and visible
 conversation text beyond loaded pages. Matching conversations appear once, with excerpts
@@ -236,8 +236,9 @@ Ctrl+F field, Enter keeps the filter. Escape clears the query, then hides histor
 
 Ctrl+R refreshes history; reopening it also refreshes. During meaning search it can fill the
 embedding index for every conversation and reports progress; a second Ctrl+R cancels that
-work. Filling stops while history is hidden; [`cones index`](cli.md#building-the-meaning-index)
-finishes it from a terminal. The rebuildable cache is under `STATE_DIR/search/`. Browsing without a query loads no
+work. Filling stops while history is hidden unless `start.index` is on, which fills it in the
+background from startup; [`cones index`](cli.md#building-the-meaning-index) finishes it from a
+terminal. With `start.index` off, meaning search shows a notice and ctrl+o opens that setting. The rebuildable cache is under `STATE_DIR/search/`. Browsing without a query loads no
 model, and live session polling does not rescan history.
 
 Previews show chronological messages, Markdown replies and compact tool calls, excluding

@@ -4195,7 +4195,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 60] = [
+const FIELDS: [Field; 61] = [
     Field {
         group: "cones",
         sub: "",
@@ -4272,6 +4272,16 @@ const FIELDS: [Field; 60] = [
         hint: "Show the viewer pane when cones starts.",
         long: "Whether a new cones terminal opens with the viewer pane beside the list; ctrl+\\ toggles it from there and cones writes nothing back.",
         builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.index",
+        short: "index history on open",
+        hint: "Build the meaning index in the background when cones opens.",
+        long: "Embed every conversation for search by meaning from the moment cones opens, using the local MiniLM model; the first run downloads about 90 MB. Off, meaning search only covers passages already embedded, and ctrl+r in history or `cones index` fills the rest.",
+        builtin: "false",
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -5210,6 +5220,7 @@ impl ConfigForm {
                 "start.harness" => start.map(|s| s.harness.to_string()).unwrap_or_default(),
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "start.notify" => start.map(|s| s.notify.to_string()).unwrap_or_default(),
+                "start.index" => start.map(|s| s.index.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
                 "pane.ratio" => pane(|p| p.ratio.to_string()),
                 "activity.bars" => spark(|s| s.bars.to_string()),
@@ -5472,7 +5483,7 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        let start = if ["harness", "pane", "notify"]
+        let start = if ["harness", "pane", "notify", "index"]
             .iter()
             .all(|f| v(&format!("start.{f}")).is_empty())
         {
@@ -5487,6 +5498,7 @@ impl ConfigForm {
                     .unwrap_or(built.harness),
                 pane: flag("start.pane").unwrap_or(built.pane),
                 notify: flag("start.notify").unwrap_or(built.notify),
+                index: flag("start.index").unwrap_or(built.index),
             })
         };
         let mark = num("confirm_secs", "seconds, as in 2")?;
@@ -8135,6 +8147,12 @@ impl HistoryView {
                 cells: vec![("history".into(), bold())],
             },
         ];
+        if self.search == crate::search::Mode::Meaning && !data.start.index {
+            rows.push(Row {
+                kind: Kind::HistoryStatus,
+                cells: vec![(INDEX_OFF.into(), Style::default().fg(Color::Yellow))],
+            });
+        }
         let shown: Vec<&HistoryRow> = self
             .rows
             .iter()
@@ -8216,6 +8234,8 @@ impl HistoryView {
         rows
     }
 }
+
+const INDEX_OFF: &str = "Background indexing is off, so meaning search covers only passages embedded so far · ctrl+o turns it on";
 
 /// The excerpt line a result needs to explain itself, if it needs one at all.
 fn history_excerpt<'a>(row: &'a HistoryRow, query: &str) -> Option<&'a crate::search::Hit> {
@@ -9322,6 +9342,8 @@ impl App {
         } else {
             self.history.revision += 1;
             self.history.select_first = false;
+            // The query searched history; left on, it would filter the list down to nothing.
+            self.filter = Input::default();
         }
         self.rebuild_with_reason("history_visibility");
         if !self.history.visible
@@ -9335,6 +9357,31 @@ impl App {
             self.cursor = i;
             self.settle();
         }
+    }
+
+    /// Fill the meaning index on a thread of its own, once per process, when `start.index`
+    /// asks for it. The fill lock keeps it from embedding what another process is embedding.
+    fn index_in_background(&self) {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        if !self.data.start.index {
+            return;
+        }
+        let (claude, state) = (self.claude.clone(), self.state.clone());
+        STARTED.call_once(|| {
+            std::thread::spawn(move || {
+                let mut service =
+                    crate::history_api::Service::discover(&claude, state, PathBuf::new());
+                let _ = service.index(None, |_| {});
+            });
+        });
+    }
+
+    /// Open config on the setting that fills the meaning index in the background.
+    fn open_index_setting(&mut self) {
+        let mut form = self.config_form();
+        form.go(field_at("start.index"));
+        self.mode = Mode::Config(form);
+        self.needs_clear = true;
     }
 
     fn history_viewport(&self) -> HashSet<history::Key> {
@@ -10921,6 +10968,11 @@ impl App {
             .filter(|&(n, &i)| {
                 rows[i].kind.selectable()
                     || rows[i].kind == Kind::HistoryStatus
+                    // The blank that pads a history result from the one above it.
+                    || (rows[i].kind == Kind::Blank
+                        && matched
+                            .get(n + 1)
+                            .is_some_and(|&j| matches!(rows[j].kind, Kind::History(_))))
                     || (rows[i].kind == Kind::Header
                         && matched.get(n + 1).is_some_and(|&j| {
                             rows[j].kind.selectable() || rows[j].kind == Kind::HistoryStatus
@@ -11572,6 +11624,8 @@ impl App {
                         self.data.history_columns =
                             history_columns.unwrap_or_else(|| built_column_set("history_columns"));
                         self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
+                        self.data.start.index = start.as_ref().is_some_and(|s| s.index);
+                        self.index_in_background();
                         self.rebuild();
                         self.status = format!("config saved to {}", fleet::tilde(&self.jobs_path));
                         self.invalidate();
@@ -14398,6 +14452,9 @@ impl App {
                 let other = self.history.search.other();
                 let switch = format!("{} search", other.label());
                 keys.push(("shift+tab", &switch));
+                if other == crate::search::Mode::Words && !self.data.start.index {
+                    keys.push(("ctrl+o", "index setting"));
+                }
                 keys.push((
                     "esc",
                     if self.filter.text.is_empty() {
@@ -15102,6 +15159,13 @@ impl App {
                         self.armed = armed;
                         self.stop();
                     }
+                    KeyAction::Settings
+                        if searching_history
+                            && self.history.search == crate::search::Mode::Meaning
+                            && !self.data.start.index =>
+                    {
+                        self.open_index_setting()
+                    }
                     KeyAction::Settings => self.open_harness_settings(),
                     KeyAction::Cancel => {
                         if armed.is_some() {
@@ -15148,6 +15212,11 @@ impl App {
                         self.history.select_first = true;
                         self.history.reset(&self.filter.text, false);
                         self.status = format!("searching by {}", self.history.search.label());
+                        if self.history.search == crate::search::Mode::Meaning
+                            && !self.data.start.index
+                        {
+                            self.status += " · background indexing is off, ctrl+o turns it on";
+                        }
                         self.rebuild();
                     }
                     KeyAction::Cycle => self.cycle_harness(),
@@ -15974,6 +16043,7 @@ pub fn run(
         None
     };
     let mut app = App::new_logged(exe, jobs_path, state, claude, log)?;
+    app.index_in_background();
     app.report_load();
     app.timing("startup_load", started);
     app.feedback = Some(("startup_to_draw", started));
@@ -19283,21 +19353,22 @@ states:
         history_until(&mut app, &mut terminal, |a| {
             a.history.ready && a.history.fetch.is_none() && a.history.rows.len() == 2
         });
+        // What is on screen, so the search filter cannot drop the padding.
         let block = |app: &App| {
-            let first = app
-                .rows
+            let shown: Vec<Kind> = app
+                .visible
                 .iter()
-                .position(|r| matches!(r.kind, Kind::History(_)))
+                .map(|&i| app.rows[i].kind.clone())
+                .collect();
+            let first = shown
+                .iter()
+                .position(|k| matches!(k, Kind::History(_)))
                 .unwrap();
-            let last = app
-                .rows
+            let last = shown
                 .iter()
-                .rposition(|r| matches!(r.kind, Kind::History(_)))
+                .rposition(|k| matches!(k, Kind::History(_)))
                 .unwrap();
-            app.rows[first + 1..last]
-                .iter()
-                .map(|r| r.kind.clone())
-                .collect::<Vec<_>>()
+            shown[first + 1..last].to_vec()
         };
         let between = block(&app);
         assert!(
@@ -19314,6 +19385,18 @@ states:
             !block(&app).contains(&Kind::Blank),
             "history is padded without a search"
         );
+
+        // Closing history mid-search returns to the whole list, not a list the query empties.
+        for c in "reply".chars() {
+            app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none() && a.history.rows.len() == 2
+        });
+        app.key(KeyCode::Char('h'), KeyModifiers::CONTROL).unwrap();
+        assert!(!app.history.visible);
+        assert_eq!(app.filter.text, "");
+        assert_eq!(app.visible.len(), app.rows.len(), "nothing is filtered out");
     }
 
     #[test]
@@ -19435,7 +19518,10 @@ states:
 
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert_eq!(app.history.search, crate::search::Mode::Meaning);
-        assert_eq!(app.status, "searching by meaning");
+        assert_eq!(
+            app.status,
+            "searching by meaning · background indexing is off, ctrl+o turns it on"
+        );
         assert_eq!(app.filter.text, "reply 2");
         assert!(
             app.mode_line()
@@ -19457,6 +19543,26 @@ states:
                 .iter()
                 .any(|r| r.text().contains("no matching history"))
         );
+        // With background indexing off, the list says so in colour and ctrl+o goes to it.
+        let notice = app
+            .visible
+            .iter()
+            .map(|&i| &app.rows[i])
+            .find(|r| r.text().contains(INDEX_OFF))
+            .expect("the index notice is on screen");
+        assert_eq!(notice.cells[0].1.fg, Some(Color::Yellow));
+        assert!(app.mode_hints(0).to_string().contains("index setting"));
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        let Mode::Config(form) = &app.mode else {
+            panic!("ctrl+o opens config");
+        };
+        assert_eq!(FIELDS[form.row].name, "start.index");
+        app.mode = Mode::Normal;
+        app.data.start.index = true;
+        app.rebuild();
+        assert!(!app.rows.iter().any(|r| r.text().contains(INDEX_OFF)));
+        assert!(!app.mode_hints(0).to_string().contains("index setting"));
+        app.data.start.index = false;
 
         app.key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         history_until(&mut app, &mut terminal, |a| {
