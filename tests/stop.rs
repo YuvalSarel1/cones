@@ -96,14 +96,20 @@ impl Fixture {
         fs::read_to_string(self.home().join("calls.log")).unwrap_or_default()
     }
 
-    /// A pi client discovery recognises for as long as it runs. `ps` prints the path it was
-    /// started by, so `cat` behind a link named `pi` reads as pi. A Python script does not:
-    /// the `/usr/bin/python3` shim re-executes the real interpreter, whose name discovery does
-    /// not match, so it is pi only for its first moments. A link also starts no first-exec scan.
+    /// A pi client discovery recognises for as long as it runs, against this fixture's home.
+    /// Discovery matches the framework `Python` the `/usr/bin/python3` shim re-executes, whose
+    /// environment `ps` prints. `cat` behind a link named `pi` also reads as pi, but macOS hides
+    /// a platform binary's environment, so its home is unknown and it reaches every dashboard
+    /// on the machine.
     fn pi(&self) -> PathBuf {
         fs::create_dir_all(self.root.path().join(".pi/agent")).unwrap();
         let program = self.root.path().join(".local/bin/pi");
-        std::os::unix::fs::symlink("/bin/cat", &program).unwrap();
+        fs::write(
+            &program,
+            "#!/usr/bin/python3\nimport time\ntime.sleep(3600)\n",
+        )
+        .unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
         program
     }
 

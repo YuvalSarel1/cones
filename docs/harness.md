@@ -18,8 +18,8 @@ six more have [experimental terminal adapters](#additional-terminal-harnesses).
 
 A missing home or disabled harness skips its reader. Process discovery matches executables,
 not names inside arguments. Native home overrides and `HOME` from the process environment
-exclude clients belonging to other homes; an environment hidden by macOS does not exclude
-the process. Kernel information supplies cwd/open files, with `lsof` fallback. An unreadable
+exclude clients belonging to other homes; an environment hidden by macOS keeps a process out
+for its first ten seconds, then lists it. Kernel information supplies cwd/open files, with `lsof` fallback. An unreadable
 process table fails the refresh rather than reporting that every session exited.
 
 ### Claude Code
