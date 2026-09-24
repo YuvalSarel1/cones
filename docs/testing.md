@@ -20,7 +20,7 @@ applications are outside them. There is no FIFO ordering guarantee or hard machi
 CPU limit.
 
 Inside a build, `CARGO_BUILD_JOBS` defaults to the number of efficiency cores
-(`hw.perflevel1.logicalcpu`, at least `2`); `RUST_TEST_THREADS` defaults to `2`.
+(`hw.perflevel1.logicalcpu`, at least `2`); `RUST_TEST_THREADS` defaults to the number of performance cores (`hw.perflevel0.logicalcpu`), between `2` and `6`.
 Explicit values take precedence. Each checkout retains its own build output;
 sharing a queue does not share build artifacts. `CONES_CHECK_STATE_DIR` overrides
 the lock directory for isolated fixtures. Fixtures that invoke `scripts/check`
@@ -50,7 +50,8 @@ scripts/check test --test integration core_cli::coordinator
 
 The files under `tests/` build as one binary, `integration`, whose modules are the file
 names (`core.rs` is `core_cli`, since `core` names the standard crate). A new file joins it
-through `tests/integration.rs`. Each test binary links the whole crate again, and on a Mac
+through `tests/integration.rs`, unless it changes process-wide state, as `cost.rs` does
+with the price service; such a file is its own `[[test]]` target in `Cargo.toml`. Each test binary links the whole crate again, and on a Mac
 with endpoint scanning its first run of each new binary waits several seconds, so one binary
 saves both.
 

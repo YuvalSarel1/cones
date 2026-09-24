@@ -48,3 +48,8 @@ path = "src/main.rs"
 [[test]]
 name = "integration"
 path = "tests/integration.rs"
+
+# cost.rs owns the process-wide price service, so it keeps a binary of its own.
+[[test]]
+name = "cost"
+path = "tests/cost.rs"

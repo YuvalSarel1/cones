@@ -101,6 +101,19 @@ def take(fd, mode, waiter, paths):
             waiter.wait(holder(paths))
 
 
+def test_threads():
+    # The test slot is exclusive and runs at normal priority, on the performance
+    # cores. Measured on 8 of them: 2 threads 50s+56s, 6 threads 21s+32s, and 8
+    # or 12 no faster, with a wall-clock failure at 12.
+    try:
+        count = int(subprocess.check_output(
+            ["/usr/sbin/sysctl", "-n", "hw.perflevel0.logicalcpu"], text=True
+        ))
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        count = os.cpu_count() or 2
+    return str(min(6, max(2, count)))
+
+
 def build_jobs():
     # Background QoS keeps a build on the efficiency cores, so more jobs than
     # there are of those only queue inside rustc.
@@ -193,7 +206,7 @@ def main():
 
     env = os.environ.copy()
     env["CONES_CHECK_PARENT"] = str(os.getpid())
-    env.setdefault("RUST_TEST_THREADS", "2")
+    env.setdefault("RUST_TEST_THREADS", test_threads())
     log_dir = Path(tempfile.mkdtemp(prefix="cones-check.", dir=env.get("TMPDIR")))
     env["CONES_CHECK_LOG_DIR"] = str(log_dir)
     child = subprocess.Popen(
