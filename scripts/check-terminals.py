@@ -20,7 +20,7 @@ import termios
 import time
 
 
-def main(binary):
+def main(binary, parts):
     with tempfile.TemporaryDirectory(prefix="cones-terminal-ui-") as temporary:
         root = Path(temporary).resolve()
         state = root / "state"
@@ -97,72 +97,74 @@ def main(binary):
             until(fd, lambda: child.poll() is not None, "dashboard did not quit")
 
         try:
-            child, fd = start()
-            wait_draw(fd)
-            os.write(fd, b"\r")
-            until(fd, lambda: len(records()) == 1, "shell host did not start")
-            record = records()[0]
-            native_pid = record["session"]["pid"]
-            os.write(fd, b"print READY > ready\r")
-            until(fd, lambda: (project / "ready").exists(), "shell input was not delivered")
-            os.write(fd, b"print DRAFT_SURVIVED > result")  # deliberately no Enter
-            for _ in range(4):
-                drain(fd)
-            quit_dashboard(child, fd)
-            os.kill(native_pid, 0)
-            assert not (project / "result").exists(), "leaving the dashboard submitted the draft"
-            screens.clear()
-            child, fd = start()
-            wait_draw(fd)
-            os.write(fd, b"\r")
-            until(fd, lambda: b"DRAFT_SURVIVED" in b"".join(screens), "reconnect lost the native editor draft")
-            assert len(records()) == 1 and records()[0]["session"]["pid"] == native_pid
-            os.write(fd, b"\r")
-            until(fd, lambda: (project / "result").exists(), "resumed shell did not submit")
-            assert (project / "result").read_text().strip() == "DRAFT_SURVIVED"
-            quit_dashboard(child, fd, crash=True)
-            os.kill(native_pid, 0)
-            screens.clear()
-            child, fd = start()
-            wait_draw(fd)
-            os.write(fd, b"\r")
-            for _ in range(6):
-                drain(fd)
-            os.write(fd, b"print AFTER_CRASH > crash-result\r")
-            until(fd, lambda: (project / "crash-result").exists(), "crash/reopen lost the shell")
-            assert (project / "crash-result").read_text().strip() == "AFTER_CRASH"
-            os.write(fd, b"\x1a")
-            for _ in range(4):
-                drain(fd)
-            os.write(fd, b"\x18\x18")  # deliberate stop
-            until(fd, lambda: not records(), "stop kept the host alive")
-            try:
-                os.kill(native_pid, 0)
-            except ProcessLookupError:
-                pass
-            else:
-                raise AssertionError("stop left the native shell alive")
-            print("PASS: native shell draft, quit/reopen, crash/reopen, same PID, and explicit stop")
-            quit_dashboard(child, fd)
-            for controlling_tty in [False, True]:
-                screens.clear()
-                child, fd = start(controlling_tty)
+            if "shell" in parts:
+                child, fd = start()
                 wait_draw(fd)
-                # Interrupt an incomplete input event while crossterm is reading it.
-                # Closing a controlling tty sends SIGHUP; closing a fixture tty need not.
-                os.write(fd, b"\x1b[200~unfinished paste")
+                os.write(fd, b"\r")
+                until(fd, lambda: len(records()) == 1, "shell host did not start")
+                record = records()[0]
+                native_pid = record["session"]["pid"]
+                os.write(fd, b"print READY > ready\r")
+                until(fd, lambda: (project / "ready").exists(), "shell input was not delivered")
+                os.write(fd, b"print DRAFT_SURVIVED > result")  # deliberately no Enter
                 for _ in range(4):
                     drain(fd)
-                children[-1] = (child, None)
-                os.close(fd)
+                quit_dashboard(child, fd)
+                os.kill(native_pid, 0)
+                assert not (project / "result").exists(), "leaving the dashboard submitted the draft"
+                screens.clear()
+                child, fd = start()
+                wait_draw(fd)
+                os.write(fd, b"\r")
+                until(fd, lambda: b"DRAFT_SURVIVED" in b"".join(screens), "reconnect lost the native editor draft")
+                assert len(records()) == 1 and records()[0]["session"]["pid"] == native_pid
+                os.write(fd, b"\r")
+                until(fd, lambda: (project / "result").exists(), "resumed shell did not submit")
+                assert (project / "result").read_text().strip() == "DRAFT_SURVIVED"
+                quit_dashboard(child, fd, crash=True)
+                os.kill(native_pid, 0)
+                screens.clear()
+                child, fd = start()
+                wait_draw(fd)
+                os.write(fd, b"\r")
+                for _ in range(6):
+                    drain(fd)
+                os.write(fd, b"print AFTER_CRASH > crash-result\r")
+                until(fd, lambda: (project / "crash-result").exists(), "crash/reopen lost the shell")
+                assert (project / "crash-result").read_text().strip() == "AFTER_CRASH"
+                os.write(fd, b"\x1a")
+                for _ in range(4):
+                    drain(fd)
+                os.write(fd, b"\x18\x18")  # deliberate stop
+                until(fd, lambda: not records(), "stop kept the host alive")
                 try:
-                    code = child.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    raise AssertionError(
-                        f"dashboard survived terminal hangup (controlling={controlling_tty})"
-                    ) from None
-                assert code in [0, 1], f"dashboard died without cleanup: {code}"
-            print("PASS: terminal hangup exits during incomplete input, with and without SIGHUP")
+                    os.kill(native_pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise AssertionError("stop left the native shell alive")
+                print("PASS: native shell draft, quit/reopen, crash/reopen, same PID, and explicit stop")
+                quit_dashboard(child, fd)
+            if "hangup" in parts:
+                for controlling_tty in [False, True]:
+                    screens.clear()
+                    child, fd = start(controlling_tty)
+                    wait_draw(fd)
+                    # Interrupt an incomplete input event while crossterm is reading it.
+                    # Closing a controlling tty sends SIGHUP; closing a fixture tty need not.
+                    os.write(fd, b"\x1b[200~unfinished paste")
+                    for _ in range(4):
+                        drain(fd)
+                    children[-1] = (child, None)
+                    os.close(fd)
+                    try:
+                        code = child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        raise AssertionError(
+                            f"dashboard survived terminal hangup (controlling={controlling_tty})"
+                        ) from None
+                    assert code in [0, 1], f"dashboard died without cleanup: {code}"
+                print("PASS: terminal hangup exits during incomplete input, with and without SIGHUP")
         finally:
             for record in hosts.values():
                 try:
@@ -183,4 +185,5 @@ def main(binary):
 
 
 if __name__ == "__main__":
-    main(str(Path(sys.argv[1]).resolve()))
+    # Name `shell` or `hangup` to run one part, so the suite can run the two in parallel.
+    main(str(Path(sys.argv[1]).resolve()), set(sys.argv[2:]) or {"shell", "hangup"})

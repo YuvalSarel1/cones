@@ -603,17 +603,28 @@ fn replacement_waiting_for_its_old_lease_does_not_block_another_job() {
         Some("replaced")
     );
 }
+fn fails_closed(mode: &str) {
+    let f = Fixture::new(mode, 1.0);
+    assert!(!f.output().status.success(), "{mode}");
+    let r = f.ledger().runs().unwrap().remove(0);
+    assert_eq!(r.terminal.unwrap().status, Status::Failed, "{mode}");
+}
 #[test]
 fn a_launch_cones_cannot_watch_fails_closed() {
     // refused: the harness would not start. unnamed: it started something and named nothing.
-    // mismatch: it named a session that is not the run's. missing: it named one and never
-    // listed it. failed: the session itself ended badly.
-    for mode in ["refused", "unnamed", "mismatch", "missing", "failed"] {
-        let f = Fixture::new(mode, 1.0);
-        assert!(!f.output().status.success(), "{mode}");
-        let r = f.ledger().runs().unwrap().remove(0);
-        assert_eq!(r.terminal.unwrap().status, Status::Failed, "{mode}");
+    // failed: the session itself ended badly.
+    for mode in ["refused", "unnamed", "failed"] {
+        fails_closed(mode);
     }
+}
+// These two wait out the roster settle, so they run beside the rest rather than in turn.
+#[test]
+fn a_launch_naming_a_session_that_is_not_the_runs_fails_closed() {
+    fails_closed("mismatch");
+}
+#[test]
+fn a_launch_naming_a_session_that_is_never_listed_fails_closed() {
+    fails_closed("missing");
 }
 #[test]
 fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {

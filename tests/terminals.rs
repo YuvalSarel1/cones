@@ -298,15 +298,16 @@ fn incompatible_clients_and_broken_streams_do_not_stop_work() {
     host.stop();
 }
 
-#[test]
+/// One part of `scripts/check-terminals.py` against the real dashboard; returns its stdout.
 #[cfg(target_os = "macos")]
-fn real_dashboard_quit_and_crash_preserve_the_same_shell_and_draft() {
+fn real_dashboard(part: &str) -> String {
     let output = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/scripts/check-terminals.py"
         ))
         .arg(env!("CARGO_BIN_EXE_cones"))
+        .arg(part)
         .output()
         .unwrap();
     assert!(
@@ -315,5 +316,17 @@ fn real_dashboard_quit_and_crash_preserve_the_same_shell_and_draft() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8_lossy(&output.stdout).contains("same PID"));
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn real_dashboard_quit_and_crash_preserve_the_same_shell_and_draft() {
+    assert!(real_dashboard("shell").contains("same PID"));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn real_dashboard_exits_on_hangup_during_incomplete_input() {
+    assert!(real_dashboard("hangup").contains("terminal hangup exits"));
 }
