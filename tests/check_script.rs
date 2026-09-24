@@ -521,3 +521,115 @@ if [[ -n ${CARGO_TARGET_DIR-} ]]; then mkdir -p "$CARGO_TARGET_DIR"; fi
     fs::create_dir(fixture.dir.path().join("c/target")).unwrap();
     assert_eq!(gate("c"), "|test --no-run --lib\n|test --lib\n");
 }
+
+#[test]
+fn a_committed_worktree_gates_its_head_in_a_kept_one_and_a_passed_tree_is_not_gated_twice() {
+    let fixture = Fixture::new(
+        r#"
+printf '%s|%s|%s|%s\n' "$PWD" "$(git rev-parse --short HEAD)" "${CARGO_TARGET_DIR-}" "$*" >> "$TMPDIR/args"
+"#,
+    );
+    let dir = fixture.dir.path();
+    fs::write(dir.join("rustc"), "#!/bin/bash\necho rustc 1.0\n").unwrap();
+    fs::set_permissions(dir.join("rustc"), fs::Permissions::from_mode(0o755)).unwrap();
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let output = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    };
+    let repo = dir.join("repo");
+    fs::create_dir_all(repo.join("scripts")).unwrap();
+    for file in ["check", "check_queue.py"] {
+        fs::copy(
+            format!("{}/scripts/{file}", env!("CARGO_MANIFEST_DIR")),
+            repo.join("scripts").join(file),
+        )
+        .unwrap();
+    }
+    fs::write(repo.join(".gitignore"), "__pycache__/\n").unwrap();
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-qm", "one"]);
+    let worktree = dir.join("worktree");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let gate = |args: &[&str]| {
+        let command = fixture.command();
+        let output = Command::new("/bin/bash")
+            .arg(worktree.join("scripts/check"))
+            .args(args)
+            .envs(command.get_envs().filter_map(|(k, v)| v.map(|v| (k, v))))
+            .env_remove("CARGO_TARGET_DIR")
+            .env_remove("CONES_CHECK_FORCE")
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let args = dir.join("args");
+        let recorded = fs::read_to_string(&args).unwrap_or_default();
+        let _ = fs::remove_file(&args);
+        (
+            recorded,
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        )
+    };
+    let queue = dir.join("queue");
+    let slot = queue.join("gate-worktree.0");
+    let head = |cwd: &std::path::Path| git(cwd, &["rev-parse", "--short", "HEAD"]);
+    let one = head(&worktree);
+    let (ran, _) = gate(&["test", "--lib"]);
+    assert_eq!(
+        ran,
+        format!(
+            "{s}|{one}|{t}|test --no-run --lib\n{s}|{one}|{t}|test --lib\n",
+            s = slot.display(),
+            t = queue.join("gate-target.0").display()
+        )
+    );
+    // A later commit is checked out in the same slot, and nothing is cleaned.
+    fs::write(worktree.join("feature"), "two\n").unwrap();
+    git(&worktree, &["add", "feature"]);
+    git(&worktree, &["commit", "-qm", "two"]);
+    let two = head(&worktree);
+    let (ran, _) = gate(&[]);
+    assert!(
+        ran.contains(&format!(
+            "{}|{two}|{}|clippy",
+            slot.display(),
+            queue.join("gate-target.0").display()
+        )),
+        "{ran}"
+    );
+    assert_eq!(fs::read_to_string(slot.join("feature")).unwrap(), "two\n");
+    // The same tree passed the full gate, so it is not gated again.
+    let (ran, printed) = gate(&[]);
+    assert_eq!(ran, "");
+    assert!(
+        printed.contains("this tree passed the full gate"),
+        "{printed}"
+    );
+    // Uncommitted work is gated in place, in the slot nobody used yet.
+    fs::write(worktree.join("feature"), "three\n").unwrap();
+    let (ran, _) = gate(&["test", "--lib"]);
+    assert_eq!(
+        ran,
+        format!(
+            "{w}|{two}|{t}|test --no-run --lib\n{w}|{two}|{t}|test --lib\n",
+            w = worktree.canonicalize().unwrap().display(),
+            t = queue.join("gate-target.1").display()
+        )
+    );
+}

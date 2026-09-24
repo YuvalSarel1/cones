@@ -7,6 +7,7 @@ under load. `check.lock` is the lock every older wrapper takes exclusively for i
 whole gate, so builds hold it shared and test runs hold it exclusively.
 """
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -190,33 +191,52 @@ def leases(log_dir):
     return [json.loads(line) for line in lines]
 
 
-def gate_target(checkout, mode, env):
-    """A warm target dir for a worktree that has none of its own, held for the gate.
+def git(checkout, *arguments):
+    return subprocess.run(["git", *arguments], cwd=checkout, capture_output=True,
+                          text=True, check=True).stdout
 
-    A fresh worktree would otherwise compile every dependency. Registry
-    dependencies are immutable, so reusing them is safe. The workspace's own path
-    packages are judged fresh by mtime, so another checkout's artifacts for them
-    could pass for this one's; they are cleaned when the slot changes checkout.
-    Returns the lock descriptor, which the gate and everything it runs inherit, and
-    the time spent waiting for it.
+
+def committed(checkout):
+    """Whether the checkout is exactly its HEAD, with nothing untracked."""
+    try:
+        return not git(checkout, "status", "--porcelain", "--untracked-files=all")
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def gate_checkout(checkout, mode, env):
+    """A warm place to build a worktree that has no target dir of its own.
+
+    A fresh worktree would otherwise compile every dependency. A slot is a
+    worktree under the state dir with its own target dir, held for the whole gate.
+    A committed checkout is gated there at its HEAD: the path never changes, and
+    Git rewrites only the files that differ, so Cargo's mtime freshness stays
+    right and rustc's incremental cache survives. A checkout with uncommitted work
+    builds in place with the slot's target dir; since the workspace's own path
+    packages are judged fresh by mtime, another checkout's artifacts for them
+    could pass for this one's, so they are cleaned whenever the slot changes
+    checkout. Returns the lock descriptor, which the gate and everything it runs
+    inherit, the checkout to run the gate in, and the time spent waiting.
     """
     if (mode not in ("all", "clippy", "test", "stress") or "CARGO_TARGET_DIR" in env
             or not (checkout / ".git").is_file() or (checkout / "target").exists()):
-        return None, 0.0
+        return None, checkout, 0.0
     root = state_dir()
     paths = [root / f"gate.{n}.lock" for n in range(GATE_SLOTS)]
     fds = [open_lock(path) for path in paths]
 
-    def last_checkout(path):
+    def last_checkout(n):
         try:
-            return json.loads(path.read_text())["checkout"]
+            return json.loads(paths[n].read_text())["checkout"]
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
-    # The slot this checkout used last keeps its incremental build; an unused one
-    # evicts nobody.
-    order = sorted(range(GATE_SLOTS), key=lambda n: {str(checkout): 0, None: 1}.get(
-        last_checkout(paths[n]), 2))
+    here = committed(checkout)
+    # A slot keeps its incremental build for whoever built there last; an unused
+    # one evicts nobody.
+    ours = lambda n: str(root / f"gate-worktree.{n}") if here else str(checkout)
+    order = sorted(range(GATE_SLOTS), key=lambda n: {ours(n): 0, None: 1}.get(
+        last_checkout(n), 2))
     requested = time.monotonic()
     waiter = Waiter()
     while True:
@@ -229,17 +249,51 @@ def gate_target(checkout, mode, env):
                 if other != fds[n]:
                     os.close(other)
             target = root / f"gate-target.{n}"
-            # The path packages, named: a new path dependency joins this list.
-            if last_checkout(paths[n]) != str(checkout) and target.exists():
+            build = checkout
+            if here:
+                slot = root / f"gate-worktree.{n}"
+                try:
+                    head = git(checkout, "rev-parse", "HEAD").strip()
+                    if slot.exists():
+                        git(slot, "checkout", "--quiet", "--detach", "--force", head)
+                        git(slot, "clean", "-qfdx")
+                    else:
+                        git(checkout, "worktree", "add", "--quiet", "--detach", str(slot), head)
+                    build = slot
+                except (OSError, subprocess.CalledProcessError) as error:
+                    console(f"gating in place: {slot} cannot take HEAD ({error})")
+            # ponytail: the path packages by name; a new path dependency joins this list.
+            if last_checkout(n) != str(build) and target.exists():
                 subprocess.run(["cargo", "clean", "--quiet", "-p", "cones", "-p", "vt100",
-                                "--target-dir", str(target)], cwd=checkout, env=env, check=True)
+                                "--target-dir", str(target)], cwd=build, env=env, check=True)
             os.lseek(fds[n], 0, os.SEEK_SET)
             os.ftruncate(fds[n], 0)
-            os.write(fds[n], json.dumps({"pid": os.getpid(), "checkout": str(checkout)}).encode())
+            os.write(fds[n], json.dumps({"pid": os.getpid(), "checkout": str(build)}).encode())
             env["CARGO_TARGET_DIR"] = str(target)
-            console(f"building in {target}")
-            return fds[n], time.monotonic() - requested
+            if build == checkout:
+                console(f"building in {target}")
+            else:
+                console(f"gating {head[:7]} in {build}")
+            return fds[n], build, time.monotonic() - requested
         waiter.wait(holder(paths))
+
+
+def passed_stamp(checkout):
+    """Where a full gate of this exact committed tree records its pass, or None.
+
+    The key is the tree, not the commit, so a fast-forward or a reworded commit
+    is the same gate.
+    """
+    if not committed(checkout):
+        return None
+    try:
+        key = git(checkout, "rev-parse", "HEAD^{tree}") + subprocess.run(
+            ["rustc", "-vV"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    root = state_dir() / "passed"
+    root.mkdir(exist_ok=True)
+    return root / hashlib.sha256(key.encode()).hexdigest()
 
 
 def main():
@@ -254,12 +308,20 @@ def main():
         nonlocal cancelled
         cancelled = signum
 
+    checkout = script.parent.parent
+    stamp = None
+    if sys.argv[2:] == ["all"] and not os.environ.get("CONES_CHECK_FORCE"):
+        stamp = passed_stamp(checkout)
+        if stamp and stamp.exists():
+            print(f"check: this tree passed the full gate in {stamp.read_text().strip()}; "
+                  "CONES_CHECK_FORCE=1 runs it again", flush=True)
+            return 0
     env = os.environ.copy()
     env["CONES_CHECK_PARENT"] = str(os.getpid())
     env.setdefault("RUST_TEST_THREADS", test_threads())
     log_dir = Path(tempfile.mkdtemp(prefix="cones-check.", dir=env.get("TMPDIR")))
     env["CONES_CHECK_LOG_DIR"] = str(log_dir)
-    slot, waited = gate_target(script.parent.parent, sys.argv[2], env)
+    slot, build, waited = gate_checkout(checkout, sys.argv[2], env)
     if slot is not None:
         with open(log_dir / "leases.jsonl", "a") as leases_file:
             leases_file.write(json.dumps({"stage": "gate target", "kind": "gate",
@@ -267,7 +329,7 @@ def main():
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, cancel)
     child = subprocess.Popen(
-        ["/bin/bash", str(script), *sys.argv[2:]],
+        ["/bin/bash", str(build / "scripts/check"), *sys.argv[2:]],
         env=env,
         start_new_session=True,
         pass_fds=() if slot is None else (slot,),
@@ -289,6 +351,9 @@ def main():
                 cancelled = signal.SIGTERM
                 break
             time.sleep(0.05)
+        # Only a tree that stayed as it was keys its pass.
+        if not cancelled and child.returncode == 0 and stamp and stamp == passed_stamp(checkout):
+            stamp.write_text(f"{checkout}\n")
         if cancelled:
             # Interrupt the entire owned gate, not just its shell, and escalate
             # for children ignoring TERM.

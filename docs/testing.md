@@ -23,13 +23,21 @@ Inside a build, `CARGO_BUILD_JOBS` defaults to the number of efficiency cores
 (`hw.perflevel1.logicalcpu`, at least `2`); `RUST_TEST_THREADS` defaults to the number of performance cores (`hw.perflevel0.logicalcpu`), between `2` and `6`.
 Explicit values take precedence. Each checkout retains its own build output;
 sharing a queue does not share build artifacts. A linked worktree with no `target/`
-of its own, such as a fresh detached worktree cut to gate a commit, builds instead
-in one of two warm target directories under `~/.cones` (`gate-target.0` and `.1`),
-which it holds for its whole gate, so dependencies are not compiled again. Cargo
-judges the workspace's own path packages fresh by mtime, so when a slot last
-served a different checkout the gate first runs `cargo clean -p cones -p vt100`
-there: registry dependencies stay, and this checkout's crates always rebuild from
-its own source. A set `CARGO_TARGET_DIR` or an existing `target/` opts out.
+of its own, such as a fresh detached worktree cut to gate a commit, takes one of two
+gate slots under `~/.cones` for its whole gate, so dependencies are not compiled
+again. When the worktree has no uncommitted or untracked files, the gate runs at its
+HEAD in the slot's own kept worktree (`gate-worktree.0` or `.1`). That path never
+changes and Git rewrites only the files that differ, so Cargo's mtime freshness
+holds and rustc's incremental cache survives: a small commit rebuilds in seconds.
+Uncommitted work is gated in place with the slot's target dir; since Cargo judges
+the workspace's own path packages fresh by mtime, the gate first runs
+`cargo clean -p cones -p vt100` whenever the slot last built another checkout.
+A set `CARGO_TARGET_DIR` or an existing `target/` opts out.
+
+A full gate that passes on a committed tree records the tree and the `rustc`
+version under `~/.cones/passed`. Running the full gate again on the same tree, say
+after a fast-forward or in another worktree, prints where it passed and returns at
+once. `CONES_CHECK_FORCE=1` runs it anyway.
 `CONES_CHECK_STATE_DIR` overrides
 the lock directory for isolated fixtures. Fixtures that invoke `scripts/check`
 must use a temporary directory to avoid waiting on their outer gate.
