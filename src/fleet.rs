@@ -2713,10 +2713,18 @@ mod tests {
         fs::write(&pi, "#!/usr/bin/python3\nimport time\ntime.sleep(3)\n").unwrap();
         fs::set_permissions(&pi, fs::Permissions::from_mode(0o755)).unwrap();
         let discovery = &crate::harness::spec(crate::config::HarnessKind::Pi).discovery;
-        let mut session = Command::new(&pi).arg("--version").spawn().unwrap();
+        // Both run against the tempdir as HOME, so the machine's own fleet never lists them.
+        let home = dir.path().to_owned();
+        let mut session = Command::new(&pi)
+            .arg("--version")
+            .env("HOME", &home)
+            .spawn()
+            .unwrap();
         let probe = {
             let pi = pi.clone();
-            std::thread::spawn(move || probe(Command::new(pi).arg("--version")).unwrap())
+            std::thread::spawn(move || {
+                probe(Command::new(pi).arg("--version").env("HOME", home)).unwrap()
+            })
         };
         let path = pi.to_string_lossy().into_owned();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
