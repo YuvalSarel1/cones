@@ -81,7 +81,8 @@ descriptions in different states.
 
 A terminal reports shift+enter apart from enter only when a program asks. cones asks
 through the kitty keyboard protocol, which Ghostty, kitty, WezTerm and iTerm2 answer.
-Terminal.app does not. Inside tmux, cones asks tmux instead, which needs
+Terminal.app sends both as a return, so there cones reads whether Shift is held, as
+Claude Code does. Inside tmux, cones asks tmux instead, which needs
 `set -s extended-keys on` (or `always`) and `set -s extended-keys-format csi-u`; tmux's
 default `xterm` format reports keys in a form cones cannot read. Elsewhere, alt+enter does
 the same thing. The `terminal.colors` debug event records what the terminal and tmux accepted.

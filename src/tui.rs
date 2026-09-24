@@ -16288,6 +16288,8 @@ pub fn run(
     let keyboard;
     (app.colors, keyboard) = viewer::probe_terminal(Duration::from_millis(150));
     let tmux = tmux_keys();
+    // Settle it now rather than on the first Enter, which would wait for the deadline.
+    physical_shift_readable();
     // tmux ignores the kitty request. With extended-keys on it reports shift+enter only to a
     // pane that asks for modifyOtherKeys, and cones asks only for csi-u reports: crossterm
     // drops the xterm format's `CSI 27;mod;key~`, which would lose the key entirely.
@@ -16301,6 +16303,7 @@ pub fn run(
             "keyboard_flags": keyboard,
             "tmux_extended_keys": tmux.as_ref().map(|(keys, _)| keys),
             "tmux_extended_keys_format": tmux.as_ref().map(|(_, format)| format),
+            "physical_shift": physical_shift_readable(),
         })
     });
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
@@ -16395,8 +16398,17 @@ pub fn run(
             // Poll between animation frames for responsive input and reloads without idle repaints.
             let wait = Duration::from_millis(if app.focus.is_some() { 8 } else { 25 });
             if event::poll(wait)? {
-                let e = event::read()?;
+                let mut e = event::read()?;
                 redraw = true;
+                // Terminal.app sends shift+enter as a bare return whatever a program asks for.
+                // Claude Code reads whether Shift is held there, and so does the dashboard.
+                if let Event::Key(k) = &mut e
+                    && k.code == KeyCode::Enter
+                    && k.modifiers.is_empty()
+                    && physical_shift()
+                {
+                    k.modifiers = KeyModifiers::SHIFT;
+                }
                 app.log_input(&e);
                 match e {
                     Event::Key(k) if k.kind == KeyEventKind::Press => {
@@ -16534,6 +16546,41 @@ pub(crate) fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> 
         return Err(error);
     }
     Ok(())
+}
+
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGEventSourceFlagsState(state: i32) -> u64;
+}
+
+/// `kCGEventSourceStateCombinedSessionState` and `kCGEventFlagMaskShift`.
+const COMBINED_SESSION: i32 = 0;
+const SHIFT_MASK: u64 = 0x2_0000;
+
+/// Whether Shift can be read from the window server: only in Terminal.app, the one terminal
+/// that cannot report it, and only if the call answers. A session with no window server, such
+/// as a sandbox, can block in it, so the first call runs on a thread with a deadline.
+fn physical_shift_readable() -> bool {
+    static READABLE: OnceLock<bool> = OnceLock::new();
+    *READABLE.get_or_init(|| {
+        // Over ssh the window server is the far Mac's, not the keyboard being typed on.
+        let remote = ["SSH_TTY", "SSH_CONNECTION"]
+            .iter()
+            .any(|v| std::env::var_os(v).is_some());
+        if remote || std::env::var_os("TERM_PROGRAM").is_none_or(|t| t != "Apple_Terminal") {
+            return false;
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(unsafe { CGEventSourceFlagsState(COMBINED_SESSION) });
+        });
+        rx.recv_timeout(Duration::from_millis(200)).is_ok()
+    })
+}
+
+fn physical_shift() -> bool {
+    physical_shift_readable()
+        && unsafe { CGEventSourceFlagsState(COMBINED_SESSION) } & SHIFT_MASK != 0
 }
 
 /// tmux's `extended-keys` and `extended-keys-format`, when the dashboard runs inside tmux.
