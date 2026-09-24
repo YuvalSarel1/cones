@@ -27597,6 +27597,8 @@ states:
         app.rebuild();
 
         // The repository stays the heading even when all of its sessions are in worktrees.
+        // The subfolder would stay open once its session leaves; that has its own test.
+        app.data.open.clear();
         app.data
             .sessions
             .retain(|s| [B, C].contains(&s.session_id.as_str()));
