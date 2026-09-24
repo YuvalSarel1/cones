@@ -1226,6 +1226,9 @@ pub fn encode_key(code: KeyCode, mods: KeyModifiers, app_cursor: bool) -> Vec<u8
             with_alt(vec![byte])
         }
         KeyCode::Char(c) => with_alt(c.to_string().into_bytes()),
+        // Every client takes ESC CR as a line break; the pane speaks no kitty protocol, so
+        // shift+enter travels the way `/terminal-setup` teaches outer terminals to send it.
+        KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => b"\x1b\r".to_vec(),
         KeyCode::Enter => with_alt(b"\r".to_vec()),
         KeyCode::Tab => with_alt(b"\t".to_vec()),
         KeyCode::BackTab => b"\x1b[Z".to_vec(),
@@ -1475,6 +1478,7 @@ mod tests {
         assert_eq!(encode_key(KeyCode::Char('x'), K::ALT, false), b"\x1bx");
         assert_eq!(plain(KeyCode::Enter), b"\r");
         assert_eq!(encode_key(KeyCode::Enter, K::ALT, false), b"\x1b\r");
+        assert_eq!(encode_key(KeyCode::Enter, K::SHIFT, false), b"\x1b\r");
         assert_eq!(plain(KeyCode::Tab), b"\t");
         assert_eq!(encode_key(KeyCode::Tab, K::ALT, false), b"\x1b\t");
         assert_eq!(plain(KeyCode::BackTab), b"\x1b[Z");

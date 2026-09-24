@@ -293,8 +293,8 @@ const HOST_IDENTITY: [&str; 14] = [
 ];
 
 /// `TERM_PROGRAM` decides which terminal a native CLI adapts its keys to, and the viewer answers
-/// for none of them: it encodes shift+enter as a plain return, so an inherited name makes a CLI
-/// offer a newline binding the pane cannot deliver.
+/// for none of them: it sends shift+enter as ESC CR rather than a kitty sequence, so an inherited
+/// name makes a CLI expect key encodings the pane never produces.
 const HOST_TERMINAL: [&str; 2] = ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
 
 /// A `claude` typed in a terminal opened on `dir` sees whatever the user's login shell exports

@@ -16170,6 +16170,9 @@ pub fn run(
         || json!({"foreground": app.colors.fg, "background": app.colors.bg}),
     );
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+    // Kitty-protocol terminals (Ghostty, kitty, WezTerm) send shift+enter as a bare return
+    // unless asked to disambiguate. Others ignore the request; teardown pops it with `[<u`.
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), b"\x1b[>1u");
     let result = (|| -> Result<()> {
         let animation = Instant::now();
         let mut drawn_tick = usize::MAX;
