@@ -61,6 +61,7 @@ impl Fixture {
     fn command(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_cones"));
         c.env("HOME", self.dir.path())
+            .env("CONES_TEST_FAST", "1")
             .env("FAKE_LEDGER", self.state.join("runs.jsonl"))
             .env("FAKE_CHILD_PID", self.state.join("child.pid"))
             .args([
@@ -680,16 +681,27 @@ fn age_ledger(path: &PathBuf, hours: i64) {
 fn catch_up_names_one_missed_tick_and_says_nothing_when_none_was_missed() {
     let f = Fixture::new("success", 1.0);
     f.add_options("    catch_up: once\n");
+    let minute = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            / 60
+    };
+    let before = minute();
     let scheduled = f
         .command()
         .args(["run", "test", "--trigger", "schedule"])
         .output()
         .unwrap();
     assert!(scheduled.status.success());
-    // The mark is that run, so no tick has passed unattended yet.
+    // The mark is that run, so no tick has passed unattended yet, unless the minute turned
+    // while the run was being recorded: then its tick really is past the mark.
     let quiet = f.command().args(["catchup", "--dry-run"]).output().unwrap();
     assert!(quiet.status.success());
-    assert_eq!(String::from_utf8_lossy(&quiet.stdout), "");
+    if minute() == before {
+        assert_eq!(String::from_utf8_lossy(&quiet.stdout), "");
+    }
     // An hour off the mark. The fixture runs every minute, so 60 ticks were lost.
     age_ledger(&f.state.join("runs.jsonl"), 1);
     let out = f.command().args(["catchup", "--dry-run"]).output().unwrap();

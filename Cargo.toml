@@ -5,6 +5,8 @@ edition = "2024"
 description = "A terminal workspace for coding agents"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/YuvalSarel1/cones"
+# One integration binary; tests/integration.rs lists the files.
+autotests = false
 
 [dependencies]
 anyhow = "1"
@@ -42,3 +44,7 @@ vt100 = { path = "vendor/vt100" }
 [[bin]]
 name = "cones"
 path = "src/main.rs"
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

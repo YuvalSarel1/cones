@@ -29,6 +29,16 @@ use std::{
 /// before a greeting goes out.
 const BEAT: Duration = Duration::from_secs(10);
 
+/// `BEAT`, shortened when `CONES_TEST_FAST` is set so a test's late arrival is read without
+/// a ten-second nap. Nothing else sets it.
+fn beat() -> Duration {
+    if std::env::var_os("CONES_TEST_FAST").is_some() {
+        Duration::from_millis(100)
+    } else {
+        BEAT
+    }
+}
+
 /// One coordinated folder: where its state lives and how its roster is read.
 pub struct Folder {
     pub state: PathBuf,
@@ -445,8 +455,8 @@ pub fn wait(folder: &Folder, ids: &[String], timeout: Option<Duration>) -> Resul
             return Ok(None);
         }
         let nap = match deadline {
-            Some(d) => BEAT.min(d.saturating_duration_since(Instant::now())),
-            None => BEAT,
+            Some(d) => beat().min(d.saturating_duration_since(Instant::now())),
+            None => beat(),
         };
         std::thread::sleep(nap);
     }

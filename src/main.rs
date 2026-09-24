@@ -43,10 +43,10 @@ enum CommsTask {
         /// worker leaving the roster, each reported once. None of them is a finished task.
         #[arg(long = "id")]
         ids: Vec<String>,
-        /// Give up after this many seconds and exit 2, rather than waiting indefinitely. This
-        /// is your own recovery boundary; it does not limit or stop any worker.
-        #[arg(long)]
-        timeout: Option<u64>,
+        /// Give up after this many seconds, fractions allowed, and exit 2, rather than waiting
+        /// indefinitely. This is your own recovery boundary; it does not limit or stop any worker.
+        #[arg(long, value_parser = seconds)]
+        timeout: Option<std::time::Duration>,
     },
     /// Replies nobody has acted on, or --ack N once you have acted on them.
     Mail {
@@ -267,6 +267,14 @@ enum IndexTask {
         #[arg(long)]
         json: bool,
     },
+}
+
+/// A positive, finite number of seconds, which may be fractional.
+fn seconds(value: &str) -> Result<std::time::Duration, String> {
+    match value.parse::<f64>() {
+        Ok(s) if s.is_finite() && s > 0.0 => Ok(std::time::Duration::from_secs_f64(s)),
+        _ => Err(format!("{value} is not a positive number of seconds")),
+    }
 }
 
 fn index_progress(s: &cones::history_api::IndexStatus) -> String {
@@ -957,8 +965,7 @@ fn folder(
 fn comms(folder: &cones::coordinator::Folder, task: CommsTask) -> Result<i32> {
     match task {
         CommsTask::Wait { ids, timeout } => {
-            let limit = timeout.map(std::time::Duration::from_secs);
-            match cones::coordinator::wait(folder, &ids, limit) {
+            match cones::coordinator::wait(folder, &ids, timeout) {
                 Ok(Some(woken)) => print!("{woken}"),
                 Ok(None) => {
                     println!("timeout");

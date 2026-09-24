@@ -48,8 +48,9 @@ run_check() {
     if [[ $kind != none ]]; then
         set -- python3 "$queue" lease "$kind" "$name" "$@"
     fi
+    local started=$SECONDS
     if "$@" >"$log" 2>&1; then
-        printf '%s: ok\n' "$name"
+        printf '%s: ok (%ss)\n' "$name" "$((SECONDS - started))"
         if [[ $name == test || $name == stress ]]; then
             awk '
                 /^[[:space:]]*Running / {
@@ -62,7 +63,7 @@ run_check() {
         fi
     else
         local status=$?
-        printf '%s: FAILED (exit %s)\n' "$name" "$status" >&2
+        printf '%s: FAILED (exit %s, %ss)\n' "$name" "$status" "$((SECONDS - started))" >&2
         printf 'Last 80 lines, capped at 12000 bytes:\n' >&2
         tail -n 80 "$log" | tail -c 12000 >&2
         printf '\nFull log: %s\n' "$log" >&2

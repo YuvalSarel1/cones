@@ -26,7 +26,7 @@ sharing a queue does not share build artifacts. `CONES_CHECK_STATE_DIR` override
 the lock directory for isolated fixtures. Fixtures that invoke `scripts/check`
 must use a temporary directory to avoid waiting on their outer gate.
 
-Full output stays in the printed log directory. The terminal shows stage results
+Full output stays in the printed log directory. The terminal shows stage results with their durations
 and counts per Rust suite; failures retain their exit status and bounded diagnostics.
 `usage.json` records total queue wait, execution time excluding it, worker limits,
 child CPU time, maximum child RSS and each lease's stage, kind and wait. Maximum child RSS is not the combined memory of the process tree.
@@ -43,10 +43,19 @@ expected to be excluded, so unrelated live clients cannot change their counts.
 
 ```sh
 scripts/check test --lib viewer::tests
-scripts/check test --test runner
+scripts/check test --test integration runner::
 scripts/check reporting
-scripts/check test --test core coordinator
+scripts/check test --test integration core_cli::coordinator
 ```
+
+The files under `tests/` build as one binary, `integration`, whose modules are the file
+names (`core.rs` is `core_cli`, since `core` names the standard crate). A new file joins it
+through `tests/integration.rs`. Each test binary links the whole crate again, and on a Mac
+with endpoint scanning its first run of each new binary waits several seconds, so one binary
+saves both.
+
+Integration fixtures set `CONES_TEST_FAST`, which shortens the runner's roster waits and the
+coordinator's watch beat. It changes how long cones waits, never what it decides.
 
 The coordinator is part of the binary, so its checks are Cargo's. `cones coordinator`
 covers the claim, the wake gate, mail and delivery; the skill that reads them ships as

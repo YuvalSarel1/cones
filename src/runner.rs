@@ -707,6 +707,16 @@ const WATCH: Duration = Duration::from_secs(3);
 /// reported as never started. The launch has already returned by then.
 const SETTLE: Duration = Duration::from_secs(20);
 
+/// `SETTLE` and `WATCH`, shortened when `CONES_TEST_FAST` is set so the suite does not sit
+/// through a production wait for a session its fixture never lists. Nothing else sets it.
+fn watch_timing() -> (Duration, Duration) {
+    if std::env::var_os("CONES_TEST_FAST").is_some() {
+        (Duration::from_secs(3), Duration::from_millis(250))
+    } else {
+        (SETTLE, WATCH)
+    }
+}
+
 /// Run a job as a background session and watch it to its end.
 ///
 /// `claude --bg` hands the session to the harness's daemon and returns, so there is no child
@@ -745,7 +755,8 @@ fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i3
     // recorded under the id the roster carries for it, never under one cones invented.
     let short = crate::launch::background_id(&stdout)
         .context("claude --bg started but printed no background id")?;
-    let deadline = Instant::now() + SETTLE;
+    let (settle, watch) = watch_timing();
+    let deadline = Instant::now() + settle;
     let session_id = loop {
         let named: Vec<_> = crate::fleet::sessions(&home)?
             .into_iter()
@@ -767,9 +778,9 @@ fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i3
     };
     report(&json!({"type": "cones_launch", "session_id": session_id, "background_id": short}))?;
     let start = Instant::now();
-    let mut checked = Instant::now() - WATCH;
+    let mut checked = Instant::now() - watch;
     loop {
-        if checked.elapsed() >= WATCH {
+        if checked.elapsed() >= watch {
             checked = Instant::now();
             let session = crate::fleet::find(&home, &session_id)?;
             match session.as_ref().map(|s| s.state.as_str()) {

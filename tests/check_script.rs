@@ -323,7 +323,18 @@ fi
         "test --no-run --all-targets\ntest --all-targets\n",
         "tests are compiled first, then run"
     );
-    assert!(text.contains("build: ok\ntest: ok\n"), "{text}");
+    let stages: Vec<&str> = text
+        .lines()
+        .filter(|l| l.starts_with("build: ") || l.starts_with("test: "))
+        .collect();
+    assert_eq!(stages.len(), 2, "{text}");
+    for (line, stage) in stages.iter().zip(["build", "test"]) {
+        let seconds = line
+            .strip_prefix(&format!("{stage}: ok ("))
+            .and_then(|rest| rest.strip_suffix("s)"))
+            .unwrap_or_else(|| panic!("{stage} reports its duration: {text}"));
+        seconds.parse::<u64>().unwrap();
+    }
     let second = fixture.run(&["fmt"]);
     assert!(second.status.success());
     assert_ne!(fixture.logs(&second), logs);
@@ -356,7 +367,7 @@ fi
         let text = String::from_utf8_lossy(&output.stderr);
         assert!(text.len() < 13000);
         assert!(
-            text.contains(&format!("{shown}: FAILED (exit 37)")),
+            text.contains(&format!("{shown}: FAILED (exit 37, ")),
             "{text}"
         );
         assert!(text.contains("final diagnostic"));

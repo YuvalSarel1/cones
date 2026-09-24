@@ -1271,7 +1271,8 @@ impl Coordinated {
             .env("HOME", self.dir.path())
             .env("CLAUDE_CONFIG_DIR", self.dir.path().join("claude"))
             .env("CODEX_HOME", self.dir.path().join("missing-codex"))
-            .env("PI_CODING_AGENT_DIR", self.dir.path().join("missing-pi"));
+            .env("PI_CODING_AGENT_DIR", self.dir.path().join("missing-pi"))
+            .env("CONES_TEST_FAST", "1");
         command
     }
 
@@ -1332,7 +1333,7 @@ fn the_coordinator_wakes_for_an_arrival_and_for_mail_and_for_nothing_else() {
     let dir = f.coordinator_dir();
     let inbox = dir.join("inbox.jsonl");
     let quiet = |f: &Coordinated, why: &str| {
-        let out = f.command(&["wait", "--timeout", "1"]);
+        let out = f.command(&["wait", "--timeout", "0.3"]);
         assert_eq!(out.status.code(), Some(2), "{why}");
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "timeout\n", "{why}");
     };
@@ -1673,7 +1674,7 @@ fn comms_and_coordinator_are_one_implementation_over_one_folder_state() {
 
     // The wake gate and the refusals are shared too, not reimplemented under the new name.
     for group in ["comms", "coordinator"] {
-        let out = f.at(group, &["wait", "--timeout", "1"]);
+        let out = f.at(group, &["wait", "--timeout", "0.3"]);
         assert_eq!(out.status.code(), Some(2), "{group}");
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "timeout\n");
         let out = f.at(group, &["send", "nobody", "hello"]);
@@ -1706,7 +1707,7 @@ fn a_reply_that_lands_before_the_first_wait_still_wakes_it() {
     let woken = String::from_utf8(woken.stdout).unwrap();
     assert!(woken.contains("1\t{\"from\":\"stream:A\""), "{woken}");
     // And still exactly once: a batch nobody acknowledged is not a wake every ten seconds.
-    let out = f.at("comms", &["wait", "--timeout", "1"]);
+    let out = f.at("comms", &["wait", "--timeout", "0.3"]);
     assert_eq!(
         out.status.code(),
         Some(2),
@@ -1764,7 +1765,7 @@ fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
         .unwrap();
     f.until(&watcher);
     for group in ["comms", "coordinator"] {
-        let out = f.at(group, &["wait", "--timeout", "1"]);
+        let out = f.at(group, &["wait", "--timeout", "0.3"]);
         // Its own exit code, because this is the refusal a caller may retry: an agent that
         // re-arms the instant its wait returns can race its own predecessor out of the folder.
         assert_eq!(out.status.code(), Some(3), "{group} took a second watcher");
@@ -1783,7 +1784,7 @@ fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
         "the lease is released when the watch returns"
     );
     assert!(
-        f.at("comms", &["wait", "--timeout", "1"]).status.code() == Some(2),
+        f.at("comms", &["wait", "--timeout", "0.3"]).status.code() == Some(2),
         "a released lease is free to take"
     );
 
@@ -1798,7 +1799,7 @@ fn a_folder_rejects_a_second_inbox_consumer_and_a_second_watcher() {
     for args in [
         vec!["mail"],
         vec!["mail", "--ack", "1"],
-        vec!["wait", "--timeout", "1"],
+        vec!["wait", "--timeout", "0.3"],
     ] {
         let out = f.at("comms", &args);
         // Exit 1, not the retryable 3: a peer's claim does not clear by waiting for it.
@@ -1922,7 +1923,7 @@ fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
         "--timeout",
     ];
     let quiet = |why: &str| {
-        let out = f.at("comms", &[watch.as_slice(), &["1"]].concat());
+        let out = f.at("comms", &[watch.as_slice(), &["0.3"]].concat());
         assert_eq!(
             out.status.code(),
             Some(2),
@@ -1977,13 +1978,23 @@ fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
     quiet("one pending batch wakes it once");
 
     // A worker cones cannot see is a typo, not a disappearance to report.
-    let out = f.at("comms", &["wait", "--id", "nobody", "--timeout", "1"]);
+    let out = f.at("comms", &["wait", "--id", "nobody", "--timeout", "0.3"]);
     assert!(!out.status.success());
     assert!(
         String::from_utf8_lossy(&out.stderr).contains("nobody is not on this folder's roster"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // A timeout is a positive, finite number of seconds; anything else is refused up front.
+    for bad in ["0", "nan", "inf", "soon"] {
+        let out = f.at("comms", &["wait", "--timeout", bad]);
+        assert_eq!(out.status.code(), Some(2), "{bad}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("is not a positive number of seconds"),
+            "{bad}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
 
 /// An arrival while the first arm is asleep is still an arrival. The first pass records the
