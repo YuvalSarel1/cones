@@ -2858,6 +2858,7 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
     }
     // A host record names the conversation its reporter saw; the row stays its process.
     rows.iter_mut().for_each(fleet::identify);
+    fleet::sort(rows);
 }
 
 #[allow(clippy::too_many_arguments)]

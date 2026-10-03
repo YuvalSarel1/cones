@@ -495,7 +495,6 @@ fn a_draft_in_the_native_shell_survives_leaving_returning_and_a_restart() {
 }
 
 #[test]
-#[ignore = "bug: terminal rows list in host-record directory order, not oldest first by start"]
 fn terminal_rows_list_oldest_first() {
     let (mut d, dirs) = fixture("terminal-row-order", &[], &["project"]);
     let project = &dirs[0];
