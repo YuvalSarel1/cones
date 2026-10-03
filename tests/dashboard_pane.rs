@@ -2,12 +2,12 @@
 //! real binary.
 //!
 //! A zsh terminal from the pinned folder fills the pane, so its pty reports the size it was
-//! given. Covered: the pointer resting on the divider thickens it; a left press there never
-//! reaches the shell or a text selection; dragging moves the divider, the list redraws to
-//! its new width and the shell's pty is resized to the pane's; a drag past the edge stops at
-//! 30 percent for the list; each release saves the share as `pane.ratio` in jobs.yaml, and a
-//! restarted dashboard draws the divider where the last drag left it. No harness or model
-//! is started.
+//! given. Covered: the pointer on the divider thickens only the three cells around it, and
+//! the grip stays under the pointer through a drag; a left press there never reaches the
+//! shell or a text selection; dragging moves the divider, the list redraws to its new width
+//! and the shell's pty is resized to the pane's; a drag past the edge stops at 30 percent
+//! for the list; each release saves the share as `pane.ratio` in jobs.yaml, and a restarted
+//! dashboard draws the divider where the last drag left it. No harness or model is started.
 use crate::dashboard::*;
 use std::fs;
 
@@ -28,14 +28,28 @@ fn mouse(button: u8, column: u16, row: u16, release: bool) -> Vec<u8> {
     .into_bytes()
 }
 
-/// The columns holding `symbol` on every screen row: where the divider is drawn.
-fn divider(screen: &str, symbol: char) -> Vec<usize> {
+/// Where the divider is drawn: each column ruled on every screen row, with the rows its
+/// heavy grip covers.
+fn divider(screen: &str) -> Vec<(usize, Vec<usize>)> {
     let lines: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
     (0..COLS as usize)
         .filter(|&c| {
-            lines.len() == ROWS as usize && lines.iter().all(|l| l.get(c) == Some(&symbol))
+            lines.len() == ROWS as usize
+                && lines
+                    .iter()
+                    .all(|l| matches!(l.get(c), Some('│') | Some('┃')))
+        })
+        .map(|c| {
+            let grip = (0..lines.len()).filter(|&r| lines[r][c] == '┃').collect();
+            (c, grip)
         })
         .collect()
+}
+
+/// The divider at `column`, its grip on the pointer's row and the rows either side.
+fn gripped(column: usize) -> Vec<(usize, Vec<usize>)> {
+    let row = ROW as usize;
+    vec![(column, vec![row - 1, row, row + 1])]
 }
 
 /// The characters from `from` on, line by line.
@@ -69,33 +83,27 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
     let screen = d.wait_for("the list", |s| s.contains("tab pane"));
     d.capture("default-split");
     // Built-in 50 percent: the list takes 70 columns and the divider the next one.
-    assert_eq!(divider(&screen, '│'), [70], "{screen}");
+    assert_eq!(divider(&screen), [(70, vec![])], "{screen}");
     assert_eq!(pty_size(&mut d, "before"), format!("{ROWS} 69"));
 
     d.press("hover the divider", &mouse(35, 70, ROW, false));
-    let screen = d.wait_for("a thick divider", |s| divider(s, '┃') == [70]);
+    d.wait_for("a grip under the pointer", |s| divider(s) == gripped(70));
     d.capture("hover");
-    assert!(divider(&screen, '│').is_empty(), "{screen}");
     d.press("hover the list", &mouse(35, 20, ROW, false));
-    d.wait_for("a thin divider", |s| divider(s, '│') == [70]);
+    d.wait_for("a thin divider", |s| divider(s) == [(70, vec![])]);
 
     // Press on the divider and drag it to column 49: the pane takes 65 percent.
     d.press("press the divider", &mouse(0, 70, ROW, false));
     d.press("drag left", &mouse(32, 60, ROW, false));
     d.press("drag further", &mouse(32, 49, ROW, false));
-    let screen = d.wait_for("the divider at 49", |s| divider(s, '┃') == [49]);
+    d.wait_for("the divider at 49", |s| divider(s) == gripped(49));
     d.capture("dragging");
-    assert!(divider(&screen, '│').is_empty(), "{screen}");
     d.press("release", &mouse(0, 49, ROW, true));
     let screen = d.wait_for("the saved width", |s| {
-        s.contains("pane.ratio 65 saved") && divider(s, '┃') == [49]
+        s.contains("pane.ratio 65 saved") && divider(s) == gripped(49)
     });
     d.capture("released");
     // The list is drawn inside its new width and the shell starts right of the divider.
-    assert!(
-        screen.lines().all(|l| l.chars().nth(49) == Some('┃')),
-        "{screen}"
-    );
     assert!(right_of(&screen, 50).contains(PROMPT), "{screen}");
     assert!(
         !screen.contains("copied"),
@@ -115,7 +123,7 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
     d.press("release", &mouse(0, 2, ROW, true));
     d.press("hover the list", &mouse(35, 10, ROW, false));
     let screen = d.wait_for("the clamped divider", |s| {
-        s.contains("pane.ratio 70 saved") && divider(s, '│') == [42]
+        s.contains("pane.ratio 70 saved") && divider(s) == [(42, vec![])]
     });
     d.capture("clamped");
     let jobs = d.wait_file("jobs.yaml", |s| s.contains("ratio: 70"));
@@ -127,7 +135,7 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
 
     d.start();
     let screen = d.wait_for("the restarted list", |s| {
-        s.contains("start terminal") && divider(s, '│') == [42]
+        s.contains("start terminal") && divider(s) == [(42, vec![])]
     });
     d.capture("restarted");
     assert!(screen.contains("zsh"), "the hosted shell's row:\n{screen}");

@@ -8649,8 +8649,8 @@ struct App {
     drawn: ratatui::buffer::Buffer,
     /// The cell range a drag has highlighted.
     selection: Option<Selection>,
-    /// The pointer rests on the divider between list and pane.
-    divider_hover: bool,
+    /// The pointer's cell while it rests on the divider between list and pane or drags it.
+    divider_hover: Option<(u16, u16)>,
     /// The left button went down on the divider and moves it until release.
     divider_drag: bool,
     /// The pane share a drag chose, held over `pane.ratio` until a reload reads it back from
@@ -9031,7 +9031,7 @@ impl App {
             drag_from: None,
             drawn: ratatui::buffer::Buffer::default(),
             selection: None,
-            divider_hover: false,
+            divider_hover: None,
             divider_drag: false,
             ratio: None,
             needs_clear: false,
@@ -11414,27 +11414,34 @@ impl App {
     fn divider_mouse(&mut self, ev: MouseEvent) -> bool {
         match ev.kind {
             MouseEventKind::Moved => {
-                self.divider_hover = self.on_divider(ev.column, ev.row);
+                self.divider_hover = self.divider_cell(ev);
                 false
             }
             MouseEventKind::Down(MouseButton::Left) if self.on_divider(ev.column, ev.row) => {
                 self.divider_drag = true;
+                self.divider_hover = Some((ev.column, ev.row));
                 self.selection = None;
                 self.drag_from = None;
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) if self.divider_drag => {
                 self.ratio = Some(self.ratio_at(ev.column, ev.row));
+                self.divider_hover = Some((ev.column, ev.row));
                 true
             }
             MouseEventKind::Up(MouseButton::Left) if self.divider_drag => {
                 self.divider_drag = false;
-                self.divider_hover = self.on_divider(ev.column, ev.row);
+                self.divider_hover = self.divider_cell(ev);
                 self.save_ratio();
                 true
             }
             _ => false,
         }
+    }
+
+    fn divider_cell(&self, ev: MouseEvent) -> Option<(u16, u16)> {
+        self.on_divider(ev.column, ev.row)
+            .then_some((ev.column, ev.row))
     }
 
     fn save_ratio(&mut self) {
@@ -15683,25 +15690,37 @@ impl App {
         if self.split_active() {
             let [list, rule, pane] = self.split_areas(area);
             self.draw_dashboard(frame, list);
-            // A heavy orange rule under the pointer shows it can be dragged.
-            let held = self.divider_drag || self.divider_hover;
-            let style = if self.pane_focused() || held {
+            // A short heavy grip follows the pointer along the rule; while dragged the
+            // whole rule lights up and the grip is the hand holding it.
+            let vertical = rule.width == 1;
+            let style = if self.pane_focused() || self.divider_drag {
                 Style::default().fg(ORANGE)
             } else {
                 dim()
             };
-            let symbol = match (rule.width == 1, held) {
-                (true, false) => "│",
-                (true, true) => "┃",
-                (false, false) => "─",
-                (false, true) => "━",
+            // ponytail: cells are about twice as tall as wide, so the grip spans 3 rows or 7 columns.
+            let grip = |x: u16, y: u16| {
+                self.divider_hover.is_some_and(|(px, py)| {
+                    if vertical {
+                        y.abs_diff(py) <= 1
+                    } else {
+                        x.abs_diff(px) <= 3
+                    }
+                })
             };
             let buf = frame.buffer_mut();
             for y in rule.top()..rule.bottom() {
                 for x in rule.left()..rule.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
-                        cell.set_symbol(symbol);
-                        cell.set_style(style);
+                        if grip(x, y) {
+                            cell.set_symbol(if vertical { "┃" } else { "━" });
+                            cell.set_style(
+                                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
+                            );
+                        } else {
+                            cell.set_symbol(if vertical { "│" } else { "─" });
+                            cell.set_style(style);
+                        }
                     }
                 }
             }
