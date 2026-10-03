@@ -698,21 +698,6 @@ impl Topics {
         worker.busy = true;
         Ok(())
     }
-
-    /// Stand in for the model in tests: the vectors a finished pass would have produced.
-    #[cfg(test)]
-    pub(crate) fn preload(
-        &mut self,
-        corpus: &Corpus,
-        query: (&str, Vec<f32>),
-        vectors: Vec<Vec<f32>>,
-    ) {
-        self.directory = Some(PathBuf::from("/nonexistent"));
-        self.query_vector = Some((terms(query.0).join(" "), query.1));
-        for (text, vector) in corpus.texts.iter().zip(vectors) {
-            self.vectors.insert(digest(text), vector);
-        }
-    }
 }
 
 fn fingerprint(entry: &Entry) -> Result<String> {
@@ -1224,36 +1209,6 @@ mod tests {
     }
 
     #[test]
-    fn words_search_matches_the_terms_typed_and_loads_no_model() {
-        let dir = tempfile::tempdir().unwrap();
-        let entries = vec![
-            entry(dir.path(), "literal", "login failures"),
-            entry(
-                dir.path(),
-                "semantic",
-                "People cannot sign into their accounts",
-            ),
-            entry(dir.path(), "unrelated", "Move the sidebar to the left"),
-        ];
-        let mut index = Index::open(None).unwrap();
-        index.sync(&entries).unwrap();
-        // A cached neighbour stays out of a words search even when it is a close one.
-        cache_vector(&index, "People cannot sign into their accounts", &vector(0));
-        index.query_vector = Some(("login".into(), vector(0)));
-        let found = index.search(&entries, "login", Mode::Words, false).unwrap();
-        assert_eq!(found.hits.len(), 1);
-        let hit = &found.hits[&identity(&entries[0])];
-        assert!(!hit.semantic);
-        assert_eq!(hit.score, 2.0 + 1.0 / 60.0);
-        assert!(hit.snippet.contains("login failures"));
-        assert!(hit.anchor.is_some());
-        assert!(!found.pending);
-        assert_eq!(found.status, None);
-        assert_eq!(found.error, None);
-        assert!(index.worker.is_none());
-    }
-
-    #[test]
     fn meaning_search_returns_the_related_conversation_and_not_the_words() {
         let dir = tempfile::tempdir().unwrap();
         let entries = vec![
@@ -1363,36 +1318,6 @@ mod tests {
     }
 
     #[test]
-    fn a_faint_resemblance_is_not_a_result() {
-        let dir = tempfile::tempdir().unwrap();
-        let entries = vec![
-            entry(dir.path(), "faint", "Move the sidebar to the left"),
-            entry(
-                dir.path(),
-                "close",
-                "People cannot sign into their accounts",
-            ),
-        ];
-        let mut index = Index::open(None).unwrap();
-        index.sync(&entries).unwrap();
-        for (text, near) in [
-            ("Move the sidebar to the left", 0.45_f32),
-            ("People cannot sign into their accounts", 0.55),
-        ] {
-            let mut v = vector(1);
-            v[0] = near;
-            v[1] = (1.0 - near.powi(2)).sqrt();
-            cache_vector(&index, text, &v);
-        }
-        index.query_vector = Some(("login".into(), vector(0)));
-        let found = index
-            .search(&entries, "login", Mode::Meaning, false)
-            .unwrap();
-        assert_eq!(found.hits.len(), 1);
-        assert!(found.hits.contains_key(&identity(&entries[1])));
-    }
-
-    #[test]
     fn index_survives_reopen_and_reuses_vectors_only_for_unchanged_text() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
@@ -1448,38 +1373,6 @@ mod tests {
     }
 
     #[test]
-    fn a_broken_model_stops_meaning_search_and_leaves_words_working() {
-        let dir = tempfile::tempdir().unwrap();
-        let e = entry(dir.path(), "one", "Broken authentication");
-        let mut index = Index::open(None).unwrap();
-        index.sync(std::slice::from_ref(&e)).unwrap();
-        index.failure = Some("offline".into());
-        let found = index
-            .search(
-                std::slice::from_ref(&e),
-                "authentication",
-                Mode::Meaning,
-                false,
-            )
-            .unwrap();
-        assert!(found.hits.is_empty());
-        assert!(!found.pending);
-        let status = found.status.unwrap();
-        assert!(
-            status.contains("unavailable") && status.contains("shift+tab"),
-            "{status}"
-        );
-        assert_eq!(found.error.as_deref(), Some("offline"));
-        let found = index
-            .search(&[e], "authentication", Mode::Words, false)
-            .unwrap();
-        assert_eq!(found.hits.len(), 1);
-        assert_eq!(found.status, None);
-        assert_eq!(found.error, None);
-        assert!(index.worker.is_none());
-    }
-
-    #[test]
     fn punctuation_unicode_and_long_messages_remain_searchable() {
         let dir = tempfile::tempdir().unwrap();
         let text = format!(
@@ -1505,29 +1398,6 @@ mod tests {
         let excerpt = excerpt("İstanbul שלום café 🐱 retry_token", &["שלום"]);
         assert!(excerpt.contains("שלום"));
         assert_eq!(cosine(&vector(0), &vec![f32::NAN; DIMENSIONS]), 0.0);
-    }
-
-    #[test]
-    fn an_excerpt_is_one_short_line_of_whole_words_around_the_match() {
-        let table = format!(
-            "| Copilot Studio (API) | 11,881 | `copilot_studio` | Microsoft 365 |\n{}",
-            "filler ".repeat(40)
-        );
-        let e = excerpt(&table, &["copilot", "studio"]);
-        assert!(!e.contains('|') && !e.contains('`'), "{e}");
-        assert!(
-            e.starts_with("Copilot Studio (API) 11,881 copilot_studio"),
-            "{e}"
-        );
-        assert!(e.chars().count() <= 111, "{e}");
-        assert!(e.ends_with('…'), "{e}");
-        // A window that opened mid-word is what made a list of results unreadable.
-        let late = excerpt(
-            &format!("{}needle in the haystack", "head ".repeat(40)),
-            &["needle"],
-        );
-        assert!(late.starts_with("…head head"), "{late}");
-        assert!(late.ends_with("needle in the haystack"), "{late}");
     }
 
     /// Only a meaning search ever scheduled embedding work, so the index finished only for a

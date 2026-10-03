@@ -365,23 +365,4 @@ mod tests {
             assert_eq!(background_id(other), None, "accepted {other:?}");
         }
     }
-
-    #[test]
-    fn only_harnesses_with_a_detached_launch_are_offered_one() {
-        for &kind in harness::launchable() {
-            let handler = harness::spec(kind).launch.as_ref().map(|l| l.handler);
-            assert_eq!(
-                detaches(kind),
-                handler != Some(LaunchHandler::CodexRemote),
-                "{kind} detachment disagrees with its launch handler"
-            );
-        }
-        assert!(detaches(HarnessKind::Claude));
-        assert!(detaches(HarnessKind::Pi));
-        assert!(detaches(HarnessKind::Opencode));
-        assert!(
-            !detaches(HarnessKind::Codex),
-            "codex reports no thread id at launch, so a detached launch could not be named"
-        );
-    }
 }

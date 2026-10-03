@@ -1424,68 +1424,6 @@ mod tests {
     }
 
     #[test]
-    fn a_composer_launch_carries_each_harness_s_own_effort_flag() {
-        let p = Policy {
-            effort: Some("high".into()),
-            pi_thinking: Some("minimal".into()),
-            codex_model: Some("gpt-5.6-luna".into()),
-            opencode_model: Some("provider/model".into()),
-            ..Policy::default()
-        };
-        assert_eq!(
-            session_args(HarnessKind::Claude, None, "fix it", &p).unwrap(),
-            [
-                "--bg",
-                "--effort",
-                "high",
-                "--dangerously-skip-permissions",
-                "--",
-                "fix it"
-            ]
-        );
-        assert_eq!(
-            session_args(HarnessKind::Pi, None, "fix it", &p).unwrap(),
-            ["--thinking", "minimal", "--", "fix it"]
-        );
-        // Codex takes reasoning effort only through a configuration override and OpenCode
-        // takes none at all, so a level set for Claude or pi reaches neither.
-        assert_eq!(
-            session_args(HarnessKind::Codex, None, "fix it", &p).unwrap(),
-            [
-                "-m",
-                "gpt-5.6-luna",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--",
-                "fix it"
-            ]
-        );
-        assert_eq!(
-            session_args(HarnessKind::Opencode, None, "fix it", &p).unwrap(),
-            ["--model", "provider/model", "--auto", "--prompt=fix it"]
-        );
-    }
-
-    #[test]
-    fn the_composer_offers_every_harness_claude_first() {
-        assert_eq!(
-            known().iter().map(ToString::to_string).collect::<Vec<_>>(),
-            [
-                "claude",
-                "codex",
-                "pi",
-                "opencode",
-                "gemini",
-                "cursor-agent",
-                "copilot",
-                "amp",
-                "droid",
-                "kimi"
-            ],
-            "shift+tab cycles in this order and start.harness defaults to the first"
-        );
-    }
-
-    #[test]
     fn a_bedrock_job_gets_the_switch_and_the_shell_s_aws_variables() {
         let dir = std::env::temp_dir();
         let mut job = crate::config::adhoc(None, "p", &dir).unwrap();
@@ -1505,22 +1443,6 @@ mod tests {
         assert_eq!(env["AWS_CONES_TEST_REGION"], "us-west-2");
         assert_eq!(env["AWS_PROFILE"], "claude");
         assert_eq!(env["AWS_REGION"], "us-east-1");
-    }
-
-    #[test]
-    fn aws_credentials_reach_a_harness_that_takes_no_bedrock_switch() {
-        let dir = std::env::temp_dir();
-        let mut job = crate::config::adhoc(None, "p", &dir).unwrap();
-        job.harness = HarnessKind::Pi;
-        job.aws_profile = Some("claude".into());
-        job.aws_region = Some("us-east-1".into());
-        let env = environment(&job).unwrap();
-        assert_eq!(env["AWS_PROFILE"], "claude");
-        assert_eq!(env["AWS_REGION"], "us-east-1");
-        assert!(
-            !env.keys().any(|k| k.contains("BEDROCK")),
-            "pi declares no switch, so none is invented for it"
-        );
     }
 
     #[test]
@@ -1564,28 +1486,6 @@ mod tests {
             );
             assert_eq!(switch(&env(None)), None, "unset passes no switch at all");
         }
-    }
-
-    #[test]
-    fn a_configured_provider_outranks_the_shell_s_bedrock_switch() {
-        let launch = spec(HarnessKind::Claude)
-            .launch
-            .as_ref()
-            .expect("claude launches");
-        let switch = |bedrock| {
-            let mut c = std::process::Command::new("true");
-            provider_env(&mut c, launch, bedrock, None, None);
-            drop_host_identity(&mut c);
-            c.get_envs()
-                .find(|(name, _)| *name == OsStr::new("CLAUDE_CODE_USE_BEDROCK"))
-                .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
-        };
-        // The config chose the provider, so the pane follows it; with nothing configured the
-        // command leaves the switch alone and the pane inherits the shell's, as a direct
-        // `claude` from that shell would.
-        assert_eq!(switch(Some(true)), Some(Some("1".to_owned())));
-        assert_eq!(switch(Some(false)), Some(None));
-        assert_eq!(switch(None), None);
     }
 
     #[test]

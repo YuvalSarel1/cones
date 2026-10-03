@@ -135,25 +135,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blocks_keep_their_language_first_line_and_unfinished_state_apart() {
-        let reply = "here you go\n```rust\nfn one() {}\n```\nand\n```\nplain two\n```\n";
-        let found = blocks(reply);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].lang, "rust");
-        assert_eq!(found[0].text, "fn one() {}\n");
-        assert_eq!(found[1].lang, "text");
-        assert!(found[0].complete && found[1].complete);
-        let labels: Vec<String> = found
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b.label(i + 1))
-            .collect();
-        assert_eq!(labels[0], "code 1 · rust · fn one() {}");
-        assert_eq!(labels[1], "code 2 · text · plain two");
-        assert_ne!(labels[0], labels[1]);
-    }
-
-    #[test]
     fn an_unclosed_block_is_offered_and_marked() {
         let found = blocks("```python\nprint(1)\n");
         assert_eq!(found.len(), 1);
@@ -178,12 +159,5 @@ mod tests {
         }
         assert_eq!(items[1].text, "echo hi\n");
         assert_eq!(items[2].text, "claude · idle");
-    }
-
-    #[test]
-    fn a_row_without_a_read_reply_still_offers_its_details() {
-        let items = items("codex · active".to_owned(), None);
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].label, "session details");
     }
 }

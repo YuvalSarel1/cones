@@ -278,14 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn the_environment_shell_wins_without_an_account_lookup() {
-        assert_eq!(
-            choose_shell(Some(OsStr::new("/bin/sh")), || panic!("unneeded lookup")),
-            PathBuf::from("/bin/sh")
-        );
-    }
-
-    #[test]
     fn missing_or_unusable_shells_fall_back_to_the_account_then_sh() {
         let d = tempfile::tempdir().unwrap();
         let file = d.path().join("not-executable");

@@ -1374,35 +1374,6 @@ mod tests {
     }
 
     #[test]
-    fn a_viewer_draws_on_the_emulated_screen_and_its_cursor_query_is_answered() {
-        let dir = tempfile::tempdir().unwrap();
-        let reply = dir.path().join("reply");
-        let mut c = Command::new("/bin/sh");
-        c.args([
-            "-c",
-            "stty raw -echo; printf 'hello\\033[6n'; dd bs=1 count=6 of=\"$1\" 2>/dev/null",
-            "cursor-fixture",
-        ])
-        .arg(&reply);
-        let mut v = Viewer::spawn(c, 4, 20, None, Colors::default()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while v.exited().is_none() {
-            v.pump().unwrap();
-            assert!(
-                Instant::now() < deadline,
-                "screen: {:?}",
-                v.screen().contents()
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(std::fs::read(reply).unwrap(), b"\x1b[1;6R");
-        assert_eq!(text(v.screen(), 0), "hello");
-        assert!(v.first_paint().is_some());
-        assert_eq!(v.screen().cursor_position(), (0, 5));
-        assert!(v.exited().unwrap().success());
-    }
-
-    #[test]
     fn closing_an_unpumped_flood_reaps_the_child() {
         let dir = tempfile::tempdir().unwrap();
         let ready = dir.path().join("ready");

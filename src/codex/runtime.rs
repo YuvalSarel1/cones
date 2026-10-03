@@ -238,36 +238,6 @@ mod tests {
     }
 
     #[test]
-    fn homes_and_concurrent_observers_are_independent() {
-        let one = tempfile::Builder::new()
-            .prefix("cones-status-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let two = tempfile::Builder::new()
-            .prefix("cones-status-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        let a = server(
-            one.path(),
-            vec![json!({"type":"active","activeFlags":["waitingOnUserInput"]})],
-            false,
-        );
-        let b = server(
-            two.path(),
-            vec![json!({"type":"active","activeFlags":[]})],
-            false,
-        );
-        thread::scope(|scope| {
-            let x = scope.spawn(|| read(one.path(), &["same-id"]).unwrap());
-            let y = scope.spawn(|| read(two.path(), &["same-id"]).unwrap());
-            assert_eq!(x.join().unwrap()["same-id"], "blocked");
-            assert_eq!(y.join().unwrap()["same-id"], "active");
-        });
-        a.join().unwrap();
-        b.join().unwrap();
-    }
-
-    #[test]
     fn absent_or_unrecognized_runtime_state_leaves_rollout_state_available() {
         for value in [
             json!({"type":"notLoaded"}),

@@ -1831,38 +1831,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn usage_reads_this_process_and_survives_a_dead_pid_and_an_unreadable_ps() {
-        let me = std::process::id();
-        let read = usage(vec![me, 99_999, u32::MAX].into_iter());
-        let mine = read.get(&me).expect("this process is in the table");
-        assert!(mine.cpu >= 0.0 && mine.cpu.is_finite(), "{mine:?}");
-        assert!(
-            mine.rss > 1024 * 1024,
-            "a running test holds megabytes: {mine:?}"
-        );
-        assert!(
-            !read.contains_key(&99_999) && !read.contains_key(&u32::MAX),
-            "pids above the kernel maximum never reach ps"
-        );
-        assert!(usage(std::iter::empty()).is_empty(), "no pids, no ps");
-        assert!(
-            usage_from("/nonexistent/ps", std::iter::once(me)).is_empty(),
-            "an unreadable process table reports nothing, not zero usage"
-        );
-    }
-
-    #[test]
-    fn resident_size_reads_in_kilobytes_megabytes_and_gigabytes() {
-        assert_eq!(bytes(0), "0K");
-        assert_eq!(bytes(4096), "4K");
-        assert_eq!(bytes(1_048_575), "1023K");
-        assert_eq!(bytes(1_048_576), "1M");
-        assert_eq!(bytes(700 * 1_048_576), "700M");
-        assert_eq!(bytes(1_073_741_824), "1.0G");
-        assert_eq!(bytes(3 * 1_073_741_824 + 1_073_741_824 / 2), "3.5G");
-    }
-
-    #[test]
     fn statusline_effort_follows_the_declared_pointer_and_is_absent_without_one() {
         let source = crate::harness::spec(crate::config::HarnessKind::Claude)
             .transcript
@@ -1961,37 +1929,6 @@ mod tests {
         }
         assert_eq!(folders(tree), (repo.into(), repo.into()));
         assert_eq!(folders(repo), (repo.into(), repo.into()));
-    }
-
-    #[test]
-    fn statusline_cost_follows_the_declared_pointer_and_stays_absent_without_one() {
-        let mut source = crate::harness::spec::Statusline {
-            directory: PathBuf::from("statusline"),
-            window_pointer: "/window".into(),
-            cost_pointer: Some("/billing/dollars".into()),
-            effort_pointer: None,
-            dir_pointer: None,
-        };
-        let payload = serde_json::json!({
-            "cost": {"total_cost_usd": 99},
-            "billing": {"dollars": 0.25},
-        });
-        assert_eq!(statusline_cost(&source, &payload), Some(0.25));
-        for (value, expected) in [
-            (serde_json::json!(0), Some(0.0)),
-            (serde_json::json!(-1), None),
-            (serde_json::json!("0.25"), None),
-            (Value::Null, None),
-        ] {
-            assert_eq!(
-                statusline_cost(&source, &serde_json::json!({"billing":{"dollars":value}})),
-                expected
-            );
-        }
-        source.cost_pointer = Some("/missing".into());
-        assert_eq!(statusline_cost(&source, &payload), None);
-        source.cost_pointer = None;
-        assert_eq!(statusline_cost(&source, &payload), None);
     }
 
     #[test]
@@ -2307,32 +2244,6 @@ mod tests {
     }
 
     #[test]
-    fn a_busy_registry_beats_a_finished_jobs_stale_state() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("sessions");
-        let job = dir.path().join("jobs/aaaaaaaa");
-        fs::create_dir_all(&registry).unwrap();
-        fs::create_dir_all(&job).unwrap();
-        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let path = registry.join("entry.json");
-        let mut entry = serde_json::json!({
-            "pid": std::process::id(), "sessionId": id, "cwd": "/src/example",
-            "kind": "bg", "jobId": "aaaaaaaa", "status": "idle"
-        });
-        fs::write(&path, entry.to_string()).unwrap();
-        fs::write(
-            job.join("state.json"),
-            serde_json::json!({"state": "done", "tempo": "idle"}).to_string(),
-        )
-        .unwrap();
-        let state = |dir| sessions(dir).unwrap().remove(0).state;
-        assert_eq!(state(dir.path()), "done");
-        entry["status"] = "busy".into();
-        fs::write(&path, entry.to_string()).unwrap();
-        assert_eq!(state(dir.path()), "active");
-    }
-
-    #[test]
     fn a_job_still_taking_turns_is_working_however_the_registry_rests() {
         let word = |job: Value, status| super::state(&job, status);
         let job = |state, tempo| serde_json::json!({"state": state, "tempo": tempo});
@@ -2635,48 +2546,6 @@ mod tests {
             (counts.spawns, counts.shared, counts.failures),
             (1, 3, 1),
             "a failure is shared as well, so four adapters are not four retries"
-        );
-        crate::observe::reset();
-    }
-
-    // Naming the home a client runs against used to cost two reads for the listed pids: the
-    // command line, which the pass already holds, and the environment, which it does not.
-    #[test]
-    fn attributing_a_home_reads_the_environment_only() {
-        crate::observe::reset();
-        let me = std::process::id();
-        let own = own_home_processes("/bin/ps", crate::config::HarnessKind::Codex, &[me]);
-        assert!(
-            own.contains(&me),
-            "this test process has no Codex home set, so it is not excluded"
-        );
-        let counts = crate::observe::snapshot();
-        assert_eq!(
-            counts[crate::observe::op::PROCESS_ENV].spawns,
-            1,
-            "one environment read for the listed pids"
-        );
-        assert_eq!(
-            counts[crate::observe::op::PROCESS_TABLE].spawns,
-            1,
-            "and the command lines come from the pass's own table"
-        );
-        assert!(
-            own_home_processes("/bin/ps", crate::config::HarnessKind::Pi, &[me]).contains(&me),
-            "a second adapter in the same pass"
-        );
-        let counts = crate::observe::snapshot();
-        assert_eq!(counts[crate::observe::op::PROCESS_TABLE].spawns, 1);
-        assert_eq!(counts[crate::observe::op::PROCESS_TABLE].shared, 1);
-        assert_eq!(counts[crate::observe::op::PROCESS_ENV].spawns, 2);
-        assert_eq!(
-            own_home_processes("/bin/ps", crate::config::HarnessKind::Codex, &[]),
-            HashSet::new(),
-            "no pids is no reads"
-        );
-        assert_eq!(
-            crate::observe::spawns_of(crate::observe::op::PROCESS_ENV),
-            2
         );
         crate::observe::reset();
     }

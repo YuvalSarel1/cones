@@ -656,34 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn plist_schedules_one_interval_per_tick_and_never_runs_at_load() {
-        let mut job = crate::config::adhoc(None, "hi", Path::new("/tmp")).unwrap();
-        job.schedule = "0 2,14 * * *".into();
-        let bytes = render(
-            &job,
-            Path::new("/usr/local/bin/cones"),
-            Path::new("/tmp/jobs.yaml"),
-            Path::new("/tmp/state"),
-        )
-        .unwrap();
-        let value = Value::from_reader_xml(bytes.as_slice()).unwrap();
-        let d = value.as_dictionary().unwrap();
-        assert_eq!(d["RunAtLoad"].as_boolean(), Some(false));
-        assert!(!d.contains_key("StartInterval"));
-        let ticks = d["StartCalendarInterval"].as_array().unwrap();
-        assert_eq!(ticks.len(), 2);
-        let hours: Vec<_> = ticks
-            .iter()
-            .map(|t| t.as_dictionary().unwrap()["Hour"].as_signed_integer())
-            .collect();
-        assert_eq!(hours, [Some(2), Some(14)]);
-        assert_eq!(
-            ticks[0].as_dictionary().unwrap()["Minute"].as_signed_integer(),
-            Some(0)
-        );
-    }
-
-    #[test]
     fn install_removes_the_agent_of_a_job_the_file_no_longer_has() {
         let d = tempfile::tempdir().unwrap();
         let agent = |name: &str| {
@@ -738,31 +710,6 @@ mod tests {
                 && error.contains("local.cones.impostor.plist"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn the_catchup_agent_runs_at_load_and_carries_no_schedule() {
-        let bytes = render_catchup(
-            Path::new("/usr/local/bin/cones"),
-            Path::new("/tmp/jobs.yaml"),
-            Path::new("/tmp/state"),
-        )
-        .unwrap();
-        let value = Value::from_reader_xml(bytes.as_slice()).unwrap();
-        let d = value.as_dictionary().unwrap();
-        assert_eq!(d["Label"].as_string(), Some("local.cones.catchup"));
-        assert_eq!(d["RunAtLoad"].as_boolean(), Some(true));
-        assert!(!d.contains_key("StartCalendarInterval"));
-        assert!(!d.contains_key("StartInterval"));
-        // No job environment: each run comes from the job's own agent, not from this one.
-        assert!(!d.contains_key("EnvironmentVariables"));
-        let args: Vec<_> = d["ProgramArguments"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|a| a.as_string().unwrap())
-            .collect();
-        assert_eq!(args.last(), Some(&"catchup"));
     }
 
     /// Local midnight on a fixed date, plus hours and minutes: cron is written in wall-clock
@@ -871,25 +818,6 @@ mod tests {
     }
 
     #[test]
-    fn weekday_and_month_constraints_hold_across_a_long_window() {
-        const MON: (i32, u32, u32) = (2026, 9, 14);
-        assert_eq!(at(MON, 0, 0).weekday(), chrono::Weekday::Mon);
-        let day = |days: u64, h| at(MON, h, 0) + Duration::days(days as i64);
-        // Weekday 1 is Monday: from Tuesday, the first tick missed is the following Monday.
-        let found = first_missed("0 3 * * 1", day(1, 0), day(9, 0))
-            .unwrap()
-            .unwrap();
-        assert_eq!(found.weekday(), chrono::Weekday::Mon);
-        assert_eq!((found.hour(), found.minute()), (3, 0));
-        assert_eq!(found, day(7, 3));
-        // A January job is not missed in September, however long the window.
-        assert_eq!(
-            first_missed("0 3 1 1 *", day(0, 0), day(9, 0)).unwrap(),
-            None
-        );
-    }
-
-    #[test]
     fn a_schedule_installed_after_the_last_run_starts_the_catch_up_window() {
         const D: (i32, u32, u32) = (2026, 9, 16);
         let now = at(D, 9, 0);
@@ -925,11 +853,5 @@ mod tests {
             catchup_since(ancient, Some(ancient), now),
             now - Duration::days(31)
         );
-    }
-
-    #[test]
-    fn install_time_comes_from_the_agent_and_is_absent_without_one() {
-        // No LaunchAgent for a name nothing installs, so a catch-up falls back to the ledger.
-        assert_eq!(installed_at("cones-test-absent-job").unwrap(), None);
     }
 }

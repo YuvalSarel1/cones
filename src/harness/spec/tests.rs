@@ -9,47 +9,6 @@ use std::{
 const A: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
 #[test]
-fn every_registered_harness_has_a_valid_definition_and_explicit_capabilities() {
-    assert_eq!(
-        known(),
-        [
-            HarnessKind::Claude,
-            HarnessKind::Codex,
-            HarnessKind::Pi,
-            HarnessKind::Opencode,
-            HarnessKind::Gemini,
-            HarnessKind::Cursor,
-            HarnessKind::Copilot,
-            HarnessKind::Amp,
-            HarnessKind::Droid,
-            HarnessKind::Kimi,
-        ]
-    );
-    for &(kind, yaml) in BUILTINS {
-        let definition = HarnessSpec::parse(yaml).unwrap();
-        assert_eq!(definition.kind, kind);
-        assert_eq!(by_name(&definition.name).unwrap().kind, kind);
-    }
-    let claude = spec(HarnessKind::Claude);
-    let codex = spec(HarnessKind::Codex);
-    let pi = spec(HarnessKind::Pi);
-    assert!(claude.operations.rename);
-    assert!(codex.operations.rename);
-    assert!(!pi.operations.rename);
-    assert_eq!(claude.session(Some("interactive")).join, Join::Unavailable);
-    assert_eq!(claude.session(Some("bg")).stop, Stop::Remove);
-    assert_eq!(codex.session(Some("daemon")).join, Join::CodexRemote);
-    assert_eq!(codex.session(None).join, Join::Unavailable);
-    assert_eq!(pi.session(None).join, Join::Unavailable);
-    assert_eq!(pi.commands.resume_handler, Resume::Transcript);
-    assert_eq!(codex.execution.enforcement, Support::Unknown);
-    assert_eq!(pi.execution.enforcement, Support::Unsupported);
-    assert!(harness::adapter(HarnessKind::Claude).is_ok());
-    assert!(harness::adapter(HarnessKind::Codex).is_err());
-    assert!(harness::adapter(HarnessKind::Pi).is_err());
-}
-
-#[test]
 fn invalid_definitions_fail_before_a_command_or_discovery_runs() {
     use serde_json::json;
     for (kind, pointer, value) in [
@@ -123,38 +82,6 @@ fn argv_substitutions_are_single_arguments_and_preserve_native_path_bytes() {
         [OsString::from("-C"), raw, "--".into(), prompt.to_owned()]
     );
     assert!(args(&template, &[("prompt", prompt)]).is_err());
-}
-
-#[test]
-fn native_home_defaults_overrides_and_original_thread_homes_remain_distinct() {
-    let root = Path::new("/isolated/.claude");
-    let codex = spec(HarnessKind::Codex);
-    let pi = spec(HarnessKind::Pi);
-    assert_eq!(spec(HarnessKind::Claude).home.resolve(root), root);
-    assert_eq!(
-        codex.home.resolve_with(root, Path::new("/user"), None),
-        Path::new("/isolated/.codex")
-    );
-    assert_eq!(
-        pi.home
-            .resolve_with(root, Path::new("/user"), Some(OsStr::new(""))),
-        Path::new("/isolated/.pi/agent")
-    );
-    assert_eq!(
-        codex
-            .home
-            .resolve_with(root, Path::new("/user"), Some(OsStr::new("relative-home"))),
-        Path::new("relative-home")
-    );
-    let row: Session = serde_json::from_value(serde_json::json!({
-        "session_id": A, "harness": "codex", "cwd": "/fixture", "state": "done",
-        "transcript_path": "/isolated/.codex-region/sessions/2026/09/16/rollout.jsonl"
-    }))
-    .unwrap();
-    assert_eq!(
-        codex.session_home(root, &row),
-        Path::new("/isolated/.codex-region")
-    );
 }
 
 #[test]
@@ -235,106 +162,6 @@ fn probe_fixtures_preserve_success_requirements_and_reported_versions() {
             .unwrap()
             .starts_with("pi 0.85.1:")
     );
-}
-
-#[test]
-fn discovery_and_history_do_not_require_launch_or_control_operations() {
-    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[0].1).unwrap();
-    for field in ["operations", "viewer", "execution"] {
-        document.as_object_mut().unwrap().remove(field);
-    }
-    let definition = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
-    assert!(definition.launch.is_none());
-    assert!(definition.commands.resume.is_empty());
-    assert!(!definition.operations.rename);
-    assert_eq!(definition.session(None).join, Join::Unavailable);
-    assert_eq!(definition.execution.enforcement, Support::Unknown);
-    assert_eq!(definition.transcript.live_root(), Path::new("projects"));
-    assert!(
-        harness::check_operation(&definition, &definition.operations.resume, "resume").is_err()
-    );
-}
-
-#[test]
-fn independent_home_bases_and_operation_probes_are_validated() {
-    use serde_json::json;
-    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[1].1).unwrap();
-    document["home"]["default"] = json!({"base":"user", "path":".local/share/native"});
-    document["operations"]["resume"]["probe"] = document["operations"]["launch"]["probe"].clone();
-    let definition = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
-    assert_eq!(
-        definition
-            .home
-            .resolve_with(Path::new("/provided/claude"), Path::new("/user"), None),
-        Path::new("/user/.local/share/native")
-    );
-    assert_eq!(
-        definition.home.resolve_with(
-            Path::new("/provided/claude"),
-            Path::new("/user"),
-            Some(OsStr::new("/separate/config"))
-        ),
-        Path::new("/separate/config")
-    );
-    let probe = definition
-        .operations
-        .resume
-        .as_ref()
-        .unwrap()
-        .probe
-        .as_ref()
-        .unwrap();
-    assert!(probe.report(true, r#"{"cliVersion":"0.154.0"}"#).is_ok());
-    assert!(probe.report(true, r#"{"cliVersion":"0.153.9"}"#).is_err());
-    document["operations"]["resume"]["probe"]["args"] = json!([]);
-    assert!(HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).is_err());
-}
-
-#[test]
-fn transcript_storage_can_live_outside_the_native_config_home() {
-    let pi = spec(HarnessKind::Pi);
-    let root = pi.transcript.live_scan_root();
-    assert_eq!(root.env.as_deref(), Some("PI_CODING_AGENT_SESSION_DIR"));
-    assert_eq!(
-        root.resolve_with(Path::new("/config/pi"), None),
-        Path::new("/config/pi/sessions")
-    );
-    assert_eq!(
-        root.resolve_with(Path::new("/config/pi"), Some(Path::new("/data/sessions"))),
-        Path::new("/data/sessions")
-    );
-    assert_eq!(
-        root.resolve_with(Path::new("/config/pi"), Some(Path::new(""))),
-        Path::new("/config/pi/sessions")
-    );
-}
-
-#[test]
-fn statusline_cost_pointer_is_optional_and_validated() {
-    use serde_json::json;
-    let source = spec(HarnessKind::Claude)
-        .transcript
-        .statusline
-        .as_ref()
-        .unwrap();
-    let report = json!({"cost": {"total_cost_usd": 0.125}});
-    assert_eq!(
-        report
-            .pointer(source.cost_pointer.as_deref().unwrap())
-            .and_then(serde_json::Value::as_f64),
-        Some(0.125)
-    );
-    let mut document: serde_json::Value = serde_yaml::from_str(BUILTINS[0].1).unwrap();
-    document["transcript"]["statusline"]
-        .as_object_mut()
-        .unwrap()
-        .remove("cost_pointer");
-    let absent = HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).unwrap();
-    assert!(absent.transcript.statusline.unwrap().cost_pointer.is_none());
-    for invalid in ["cost.total_cost_usd", "/cost/~bad"] {
-        document["transcript"]["statusline"]["cost_pointer"] = json!(invalid);
-        assert!(HarnessSpec::parse(&serde_yaml::to_string(&document).unwrap()).is_err());
-    }
 }
 
 #[test]

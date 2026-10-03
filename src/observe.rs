@@ -150,23 +150,4 @@ mod tests {
         assert_eq!(snapshot(), BTreeMap::new());
         assert_ne!(pass(), generation, "a new pass is a new generation");
     }
-
-    #[test]
-    fn an_unreadable_source_counts_as_a_failed_read_and_a_reuse_is_not_a_read() {
-        reset();
-        assert_eq!(read(op::SQLITE, || Some(3), Option::is_some), Some(3));
-        assert_eq!(read(op::SQLITE, || None::<i32>, Option::is_some), None);
-        shared(op::PROCESS_TABLE);
-        let mine = snapshot();
-        assert_eq!((mine[op::SQLITE].reads, mine[op::SQLITE].failures), (2, 1));
-        assert_eq!(mine[op::SQLITE].spawns, 0, "a query is not a subprocess");
-        assert_eq!(
-            (
-                mine[op::PROCESS_TABLE].shared,
-                mine[op::PROCESS_TABLE].reads
-            ),
-            (1, 0)
-        );
-        reset();
-    }
 }

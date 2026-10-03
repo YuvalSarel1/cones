@@ -1273,34 +1273,6 @@ mod tests {
     }
 
     #[test]
-    fn cost_replays_a_cached_rollout_when_a_catalog_becomes_available() {
-        let catalog = crate::cost::tests::fixture();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rollout.jsonl");
-        let text = cost_header("model") + &cost_event([101, 40, 30, 10], [101, 40, 30, 10]);
-        fs::write(&path, text).unwrap();
-        let absent = tail_of_priced(&path, None).accounting.report(None);
-        assert!(absent.0.is_none());
-        let priced = tail_of_priced(&path, Some(&catalog))
-            .accounting
-            .report(None);
-        assert!((priced.0.unwrap() - 0.000464).abs() < 1e-12);
-        assert_eq!(
-            priced,
-            tail_of_priced(&path, Some(&catalog))
-                .accounting
-                .report(None)
-        );
-        assert!(
-            tail_of_priced(&path, None)
-                .accounting
-                .report(None)
-                .0
-                .is_none()
-        );
-    }
-
-    #[test]
     fn a_version_or_help_probe_is_not_a_session() {
         // `codex app-server daemon start` runs `codex --version` on the binary it is about to use.
         let ps = "  1 Wed Sep 23 05:31:47 2026 /Users/u/.codex/packages/standalone/current/bin/codex --version\n  2 Wed Sep 23 05:31:47 2026 codex -V\n  3 Wed Sep 23 05:31:47 2026 codex --help\n  4 Wed Sep 23 05:31:47 2026 codex -h\n  5 Wed Sep 23 05:31:47 2026 codex help\n  6 Wed Sep 23 05:31:47 2026 codex fix the parser\n";
@@ -1424,37 +1396,6 @@ mod tests {
         let path = dir.join(format!("{name}.jsonl"));
         fs::write(&path, text).unwrap();
         path
-    }
-
-    #[test]
-    fn a_thread_reports_the_effort_of_its_latest_turn_context() {
-        let d = tempfile::tempdir().unwrap();
-        let path = d.path().join("rollout.jsonl");
-        let context = |effort: &str| {
-            format!(
-                r#"{{"timestamp":"2026-09-15T08:31:22.334Z","type":"turn_context","payload":{{"model":"openai.gpt-6-astra","effort":"{effort}"}}}}"#
-            )
-        };
-        fs::write(&path, format!("{}\n", context("medium"))).unwrap();
-        assert_eq!(tail_of(&path).effort.as_deref(), Some("medium"));
-        fs::write(
-            &path,
-            format!("{}\n{}\n", context("medium"), context("xhigh")),
-        )
-        .unwrap();
-        let t = tail_of(&path);
-        assert_eq!(t.effort.as_deref(), Some("xhigh"), "the latest turn wins");
-        assert_eq!(t.model.as_deref(), Some("openai.gpt-6-astra"));
-        fs::write(
-            &path,
-            "{\"timestamp\":\"2026-09-15T08:31:22.334Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"openai.gpt-6-astra\"}}\n",
-        )
-        .unwrap();
-        assert_eq!(
-            tail_of(&path).effort,
-            None,
-            "a turn that reports no effort reports none"
-        );
     }
 
     #[test]

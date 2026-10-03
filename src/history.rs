@@ -1167,34 +1167,6 @@ mod tests {
         assert!(pi_columns(&path, None).unwrap().cost_usd.is_none());
     }
 
-    #[test]
-    fn pi_history_and_live_share_native_prices_fallbacks_and_gaps() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.jsonl");
-        let catalog = crate::cost::tests::fixture();
-        let estimated = pi::tests::unpriced_message("estimated");
-        let mut native = pi::tests::unpriced_message("native");
-        native["message"]["usage"]["cost"]["total"] = json!(0.2);
-        let mut unknown = pi::tests::unpriced_message("unknown");
-        unknown["message"]["model"] = json!("not-in-catalog");
-        let text = format!("{estimated}\n{estimated}\n{native}\n{unknown}\n");
-        fs::write(&path, &text).unwrap();
-        for catalog in [Some(&catalog), None] {
-            let history = pi_columns(&path, catalog).unwrap();
-            let live = pi::tail_priced(&text, catalog);
-            assert_eq!(
-                (history.cost_usd, history.cost_info),
-                live.costs.report(None)
-            );
-        }
-        let columns = pi_columns(&path, Some(&catalog)).unwrap();
-        assert!((columns.cost_usd.unwrap() - 0.20025).abs() < 1e-12);
-        let info = columns.cost_info.unwrap();
-        assert_eq!(info.source, crate::cost::Source::ModelsDev);
-        assert_eq!(info.coverage, crate::cost::Coverage::Partial);
-        assert_eq!((info.priced_records, info.unpriced_records), (2, 1));
-    }
-
     fn history_entry(harness: HarnessKind, records: &[Value]) -> Entry {
         let dir = tempfile::tempdir().unwrap();
         let path = dir

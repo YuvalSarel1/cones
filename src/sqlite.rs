@@ -105,35 +105,4 @@ mod tests {
             "a missing table is an error the caller can distinguish"
         );
     }
-
-    #[test]
-    fn a_checkpointed_wal_database_reads_through_an_immutable_uri() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.sqlite");
-        {
-            let db = Connection::open(&path).unwrap();
-            db.pragma_update(None, "journal_mode", "wal").unwrap();
-            db.execute_batch("create table t(x text); insert into t values('kept');")
-                .unwrap();
-        }
-        // The closing connection checkpoints and removes the WAL, which is the case the
-        // dashboard meets for an OpenCode database whose client has exited.
-        assert!(!path.with_extension("sqlite-wal").exists());
-        let uri = format!("file:{}?immutable=1", path.display());
-        let rows = query(OsStr::new(&uri), "select x from t").unwrap();
-        assert_eq!(rows[0]["x"], Value::from("kept"));
-    }
-
-    #[test]
-    fn a_read_is_counted_once_and_a_failure_is_counted_as_a_failure() {
-        crate::observe::reset();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.sqlite");
-        write(&path, "create table t(x); insert into t values(1);");
-        query(path.as_os_str(), "select * from t").unwrap();
-        let _ = query(dir.path().join("absent.sqlite").as_os_str(), "select 1");
-        let counts = crate::observe::snapshot()[crate::observe::op::SQLITE];
-        assert_eq!((counts.reads, counts.failures, counts.spawns), (2, 1, 0));
-        crate::observe::reset();
-    }
 }

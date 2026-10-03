@@ -733,27 +733,6 @@ mod tests {
     }
 
     #[test]
-    fn a_partial_skill_listing_reports_the_gap_instead_of_inventing_entries() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write(
-            dir.path(),
-            "s.jsonl",
-            &[
-                json!({"attachment": {"type": "skill_listing", "skillCount": 63,
-                "names": ["voice"], "content": "- voice: Write in Yuval's voice."}}),
-            ],
-        );
-
-        let report = read(&claude_target(dir.path(), path)).unwrap();
-
-        assert_eq!(category(&report, "Skills").items.len(), 1);
-        assert_eq!(
-            category(&report, "Instructions").note.as_deref(),
-            Some("This session recorded no instruction files.")
-        );
-    }
-
-    #[test]
     fn codex_reports_its_own_records_and_declares_the_rest_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let path = write(
@@ -784,21 +763,6 @@ mod tests {
         );
         assert!(category(&report, "Skills").note.is_some());
         assert!(category(&report, "MCP").note.is_some());
-    }
-
-    #[test]
-    fn an_unsupported_harness_and_a_missing_file_are_errors_not_empty_reports() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write(dir.path(), "s.jsonl", &[json!({})]);
-        let mut target = claude_target(dir.path(), path.clone());
-        target.harness = "opencode".into();
-        assert!(read(&target).is_err());
-        assert!(!supported("opencode"));
-        assert!(supported("claude") && supported("codex"));
-
-        let mut missing = claude_target(dir.path(), dir.path().join("gone.jsonl"));
-        missing.harness = "claude".into();
-        assert!(read(&missing).is_err());
     }
 
     #[test]

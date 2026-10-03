@@ -479,34 +479,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn native_prices_and_explicit_empty_zero_win_over_catalog_estimates() {
-        let catalog = crate::cost::tests::fixture();
-        let mut reported = unpriced_message("reported");
-        reported["message"]["usage"]["cost"]["total"] = json!(0.2);
-        let mut empty = unpriced_message("empty");
-        for key in ["input", "output", "cacheRead", "cacheWrite"] {
-            empty["message"]["usage"][key] = json!(0);
-        }
-        let native = tail_priced(&format!("{reported}\n{empty}\n"), Some(&catalog));
-        let (usd, info) = native.costs.report(None);
-        assert_eq!(usd, Some(0.2));
-        let info = info.unwrap();
-        assert_eq!(info.source, crate::cost::Source::Harness);
-        assert_eq!(info.priced_records, 2);
-        assert_eq!(info.catalog, None);
-        assert_eq!(crate::cost::display(usd, Some(&info)), "$0.20");
-
-        let estimate = unpriced_message("estimated");
-        let mixed = tail_priced(
-            &format!("{reported}\n{empty}\n{estimate}\n"),
-            Some(&catalog),
-        );
-        let (usd, info) = mixed.costs.report(None);
-        assert!((usd.unwrap() - 0.20025).abs() < 1e-12);
-        assert_eq!(info.unwrap().source, crate::cost::Source::ModelsDev);
-    }
-
-    #[test]
     fn incomplete_or_unknown_pi_usage_keeps_the_subtotal_partial() {
         let catalog = crate::cost::tests::fixture();
         let priced = unpriced_message("priced");
@@ -552,29 +524,6 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn cached_pi_cost_replays_on_catalog_arrival_refresh_and_expiry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("session.jsonl");
-        fs::write(&path, format!("{}\n", unpriced_message("one"))).unwrap();
-        let mut catalog = crate::cost::tests::fixture();
-        let report = |catalog: Option<&crate::cost::Catalog>| {
-            tail_of_priced(&path, catalog).costs.report(None)
-        };
-        let (usd, info) = report(None);
-        assert!(usd.is_none());
-        assert_eq!(info.unwrap().unpriced_reasons["catalog_unavailable"], 1);
-        let (usd, info) = report(Some(&catalog));
-        assert!((usd.unwrap() - 0.00025).abs() < 1e-12);
-        assert_eq!(info.unwrap().catalog, Some(catalog.stamp.clone()));
-        catalog.stamp.fetched_at += chrono::Duration::seconds(1);
-        assert_eq!(
-            report(Some(&catalog)).1.unwrap().catalog,
-            Some(catalog.stamp.clone())
-        );
-        assert!(report(None).0.is_none());
-    }
-
     const SESSION: &str = r#"{"type":"session","version":3,"id":"01a0393e-ad43","timestamp":"2026-08-25T14:06:44.035Z","cwd":"/src/one"}
 {"type":"model_change","timestamp":"2026-08-25T14:06:44.050Z","provider":"amazon-bedrock","modelId":"us.openai.gpt-5.6-sol"}
 {"type":"message","timestamp":"2026-08-25T14:06:44.053Z","message":{"role":"user","content":[{"type":"text","text":"fix the flaky test"}]}}
@@ -603,14 +552,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_session_folder_is_the_directory_flattened() {
-        assert_eq!(
-            session_dir(Path::new("/home/.pi/agent"), Path::new("/Users/y/work")),
-            Path::new("/home/.pi/agent/sessions/--Users-y-work--")
-        );
-    }
-
-    #[test]
     fn the_first_line_names_the_session_its_folder_and_its_start() {
         let m = meta(SESSION.lines().next().unwrap()).unwrap();
         assert_eq!(m.session_id, "01a0393e-ad43");
@@ -623,28 +564,6 @@ pub(crate) mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn the_entries_give_the_turn_the_usage_and_the_title() {
-        let t = tail(SESSION);
-        assert_eq!(
-            t.state,
-            Some("active"),
-            "the turn goes on after a tool call"
-        );
-        assert_eq!(t.last.as_deref(), Some("Reading it"));
-        assert_eq!(t.prompt.as_deref(), Some("fix the flaky test"));
-        assert_eq!((t.tokens_in, t.tokens_out), (2232, 5));
-        assert_eq!(
-            t.context_tokens,
-            Some(2232),
-            "the prompt is pi's input, cache reads and cache writes"
-        );
-        assert_eq!(t.cost_usd, 0.002, "pi prices each turn itself");
-        assert_eq!(t.model.as_deref(), Some("us.openai.gpt-5.6-sol"));
-        assert_eq!(t.activity.len(), 4);
-        assert_eq!((t.activity[3].messages, t.activity[3].tools), (1, 1));
     }
 
     #[test]

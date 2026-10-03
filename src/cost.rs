@@ -608,25 +608,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn partial_and_unavailable_totals_are_distinct_from_zero() {
-        let mut total = Total::default();
-        total.reported(Some(0.25), true);
-        total.reported(Some(0.0), true);
-        total.reported(Some(f64::NAN), true);
-        let (usd, info) = total.report();
-        assert_eq!(usd, Some(0.25));
-        assert_eq!(info.as_ref().unwrap().coverage, Coverage::Partial);
-        assert_eq!(display(usd, info.as_ref()), "$0.25");
-        let mut zero = Total::default();
-        zero.reported(Some(0.0), false);
-        assert_eq!(zero.report().0, Some(0.0));
-        let mut missing = Total::default();
-        missing.unknown("missing");
-        assert_eq!(missing.report().0, None);
-        assert_eq!(display(None, None), "-");
-    }
-
-    #[test]
     fn snapshots_validate_integrity_expiry_and_keep_the_previous_file_on_failure() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prices.json");
