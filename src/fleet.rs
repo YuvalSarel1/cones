@@ -592,9 +592,9 @@ fn job_state(dir: &Path, short: Option<&str>) -> Value {
         .unwrap_or_default()
 }
 
-/// Background jobs the daemon has settled. Their registry entries are gone, and
-/// `jobs/<jobId>/state.json` keeps reporting the terminal state until `claude rm` removes the
-/// record; killed jobs leave no record. See docs/harness.md.
+/// Background jobs with no live process. Their registry entries are gone, and
+/// `jobs/<jobId>/state.json` keeps its last report until `claude rm` removes the record;
+/// killed jobs leave no record. See docs/harness.md.
 fn settled(dir: &Path, live: &HashSet<&str>, read_transcript: bool) -> Vec<Session> {
     let Ok(entries) = fs::read_dir(dir.join("jobs")) else {
         return Vec::new();
@@ -612,11 +612,8 @@ fn settled(dir: &Path, live: &HashSet<&str>, read_transcript: bool) -> Vec<Sessi
         if live.contains(id) {
             continue;
         }
-        // No process reports for it, so only a terminal report makes a row: a record a crash
-        // left mid-turn says nothing cones can show as a state.
-        if !matches!(state(&job, "-").as_str(), "done" | "failed" | "stopped") {
-            continue;
-        }
+        // `claude agents` lists every record, including one a crash left mid-turn, at its
+        // last reported state; list the same rows.
         // The fields a registry entry would carry; the launch cwd comes from the job.
         let registry = serde_json::json!({"kind": "bg", "jobId": short});
         out.push(build(dir, id, &registry, &job, None, read_transcript));
@@ -2231,9 +2228,17 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert!(rows[0].pid.is_some(), "the live row, not the record");
         fs::remove_file(&entry).unwrap();
-        // A record a crash left mid-turn reports no state cones can show.
-        fs::write(job.join("state.json"), record("working")).unwrap();
-        assert!(sessions(dir.path()).unwrap().is_empty());
+        // A record a crash left mid-turn stays listed at its last report, as `claude agents`
+        // lists it.
+        let blocked = serde_json::json!({
+            "state": "blocked", "tempo": "blocked", "sessionId": id, "cwd": "/src/example",
+        });
+        fs::write(job.join("state.json"), blocked.to_string()).unwrap();
+        let rows = sessions(dir.path()).unwrap();
+        assert_eq!(
+            (rows.len(), rows[0].state.as_str(), rows[0].pid),
+            (1, "blocked", None)
+        );
         for terminal in ["failed", "stopped"] {
             fs::write(job.join("state.json"), record(terminal)).unwrap();
             assert_eq!(sessions(dir.path()).unwrap()[0].state, terminal);
