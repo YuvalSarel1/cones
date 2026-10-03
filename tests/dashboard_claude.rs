@@ -295,7 +295,6 @@ fn a_refused_launch_keeps_the_instruction_and_shows_the_error() {
     assert!(error.contains("fixture refused this launch"), "{error}");
 
     // The instruction is restored to the folder's composer.
-    d.press("up", UP);
     let screen = d.wait_text("no sessions here");
     d.capture("instruction-restored");
     assert!(selected(&screen).contains("no sessions here"), "{screen}");
@@ -578,7 +577,6 @@ fn a_launch_in_a_folder_pinned_through_a_symlink_lists_under_that_folder() {
 }
 
 #[test]
-#[ignore = "bug: a refused launch leaves the selection on + add folder, hiding the restored instruction"]
 fn a_refused_launch_shows_its_instruction_without_moving() {
     let mut d = Dashboard::new("claude-refused-selection", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");

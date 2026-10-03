@@ -10349,6 +10349,7 @@ impl App {
     fn poll(&mut self) {
         self.poll_stops();
         let mut launched = false;
+        let mut refused = None;
         for (id, rx) in std::mem::take(&mut self.started) {
             match rx.try_recv() {
                 Ok((message, retry)) => {
@@ -10361,6 +10362,11 @@ impl App {
                     }));
                     match retry {
                         Some(prompt) => {
+                            refused = self
+                                .pending
+                                .iter()
+                                .find(|p| p.session.session_id == id)
+                                .map(|p| p.session.cwd.clone());
                             self.pending.retain(|p| p.session.session_id != id);
                             if self.text.is_empty() {
                                 self.fill(prompt);
@@ -10401,6 +10407,11 @@ impl App {
                         .any(|p| p.session.session_id == s.session_id)
             });
             self.rebuild();
+            // The placeholder held the selection; hand it back to the folder it replaced.
+            if let Some(dir) = refused {
+                let folder = folder_label(&dir, self.data.worktrees.contains(&dir));
+                self.select_row(&folder);
+            }
             self.invalidate();
         }
         let Some(rx) = &self.loading else {
