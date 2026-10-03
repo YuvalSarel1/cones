@@ -317,10 +317,13 @@ values but not other names, which reach foreground harnesses alone. Scheduled jo
 
 | Harness | Launch | Attribution |
 | --- | --- | --- |
-| Claude | `claude --bg -- <instruction>`. | Returned short id matched to registry/folder; unreported launches expire after 90 seconds. |
+| Claude | `claude --bg -- <instruction>`; in a folder Claude has not trusted yet, the same command without `--bg` in the pane, so Claude asks its own trust question. | Returned short id matched to registry/folder; the untrusted-folder start by child PID; unreported launches expire after 90 seconds. |
 | Codex | Find/start daemon, open remote client with instruction. | Child PID, then exactly one new thread matching folder/start/prompt without competing unresolved launches. |
 | pi | `pi -- <instruction>`. | Child PID/harness/folder; the session file names its conversation. |
 | OpenCode | `opencode --prompt=<instruction>`. | Child PID/harness/folder; the owned reporter names its conversation. |
+
+Folder trust stays the harness's decision. Foreground clients such as Codex show their own trust
+question in the pane before the instruction runs; cones never writes a trust setting.
 
 A harness whose launch identity is `client_pid` keys its row by the process, `<harness>-<pid>`,
 for every client, whoever started it. The conversation it reports is an attribute of that row:

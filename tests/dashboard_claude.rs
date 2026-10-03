@@ -595,3 +595,51 @@ fn a_refused_launch_shows_its_instruction_without_moving() {
     );
     d.quit();
 }
+
+#[test]
+fn a_launch_refused_for_an_untrusted_folder_asks_claude_trust_question_in_the_pane() {
+    let mut d = Dashboard::new("claude-untrusted", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    real_project(&d);
+    fs::write(d.home().join("fake-launch"), "untrusted").unwrap();
+    d.start();
+    d.wait_text("✻ claude › ");
+    d.typed("count the flaky tests");
+    d.press("enter", b"\r");
+    let screen = d.wait_text("Quick safety check: do you trust");
+    d.capture("trust-question");
+    assert!(!screen.contains("failed: "), "{screen}");
+    assert!(
+        selected(&screen).contains("count the flaky tests"),
+        "the launch row stays listed while Claude asks:\n{screen}"
+    );
+
+    // Claude's own question is answered in its own client; cones grants nothing.
+    assert!(!d.home().join("trusted").exists());
+    d.press("enter", b"\r");
+    d.press("enter", b"\r");
+    let screen = d.wait_text("fixture trusted the folder and started: count the flaky tests");
+    d.capture("trusted");
+    assert!(d.home().join("trusted").exists());
+    let launches: Vec<_> = calls(&d)
+        .into_iter()
+        .filter(|c| c.last().map(String::as_str) == Some("count the flaky tests"))
+        .collect();
+    assert_eq!(launches.len(), 2, "{launches:?}");
+    assert_eq!(launches[0][0], "--bg", "{launches:?}");
+    assert!(!launches[1].contains(&"--bg".to_owned()), "{launches:?}");
+    assert_eq!(launches[0][1..], launches[1][..], "{launches:?}");
+    assert!(
+        registry(&d).iter().any(|r| r["kind"] == "interactive"),
+        "{screen}"
+    );
+    let debug = d.wait_file("state/tui-debug.log", |t| {
+        records(t).iter().any(|r| r["event"] == "launch.applied")
+    });
+    let applied = records(&debug)
+        .into_iter()
+        .find(|r| r["event"] == "launch.applied")
+        .unwrap();
+    assert_eq!(applied["data"]["outcome"], "foreground_for_trust");
+    d.quit();
+}

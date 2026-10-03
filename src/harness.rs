@@ -118,6 +118,33 @@ pub fn start(kind: HarnessKind, dir: &Path, prompt: &str, policy: &Policy) -> Re
     Ok(start)
 }
 
+/// What Claude prints when `--bg` meets a folder the owner has not trusted yet. A background
+/// session has no screen to ask on, so it refuses instead of showing its trust dialog.
+pub const UNTRUSTED_WORKSPACE: &str = "Workspace not trusted";
+
+/// The refused background start, run in the foreground so Claude asks its own trust question in
+/// the pane. Trust stays the harness's decision; cones only gives it a screen.
+pub fn foreground(background: &std::process::Command) -> std::process::Command {
+    let mut command = std::process::Command::new(background.get_program());
+    let mut options = true;
+    for arg in background.get_args() {
+        options &= arg != "--";
+        if !(options && arg == "--bg") {
+            command.arg(arg);
+        }
+    }
+    if let Some(dir) = background.get_current_dir() {
+        command.current_dir(dir);
+    }
+    for (name, value) in background.get_envs() {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    command
+}
+
 /// Copilot's npm shim waits on a native child. Spawn that same packaged binary so
 /// the viewer PID is the client PID; arbitrary user wrappers keep their behavior.
 fn native_executable(kind: HarnessKind, path: PathBuf) -> PathBuf {

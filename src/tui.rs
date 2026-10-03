@@ -8699,7 +8699,9 @@ const MAX_FOCUSED_VIEWERS: usize = 3;
 const SPECULATIVE_VIEWERS: usize = 2;
 
 /// Launch status and, on failure, the prompt to restore.
-type Launched = (String, Option<String>);
+/// The launch report, the prompt to restore when it failed, and the foreground start to open
+/// instead when the harness refused to run in the background before the owner trusts the folder.
+type Launched = (String, Option<String>, Option<Command>);
 
 /// Match a launch by Claude's returned id or the foreground viewer's child pid.
 struct Pending {
@@ -10362,7 +10364,22 @@ impl App {
         let mut refused = None;
         for (id, rx) in std::mem::take(&mut self.started) {
             match rx.try_recv() {
-                Ok((message, retry)) => {
+                Ok((what, retry, Some(command))) => {
+                    self.event("debug", "launch.applied", || {
+                        json!({
+                            "operation_id": id, "outcome": "foreground_for_trust",
+                        })
+                    });
+                    if let Some(p) = self.pending.iter_mut().find(|p| p.session.session_id == id) {
+                        p.session.kind = Some("interactive".into());
+                    }
+                    for s in self.data.sessions.iter_mut().filter(|s| s.session_id == id) {
+                        s.kind = Some("interactive".into());
+                    }
+                    self.prepare_viewer(what, id, None, retry, move || Ok(command));
+                    launched = true;
+                }
+                Ok((message, retry, None)) => {
                     self.event(if retry.is_some() { "error" } else { "debug" }, "launch.applied", || json!({
                         "operation_id": id,
                         "outcome": if retry.is_some() { "failed" } else { "awaiting_discovery" },
@@ -13820,6 +13837,7 @@ impl App {
         std::thread::spawn(move || {
             let mut preparation_ms = None;
             let mut command_ms = None;
+            let mut foreground = None;
             // Capability checks and the command both run off the input thread.
             let result = (|| -> Result<String> {
                 let Start::Background(mut command) = (match start {
@@ -13833,6 +13851,12 @@ impl App {
                 let output = command.stdin(Stdio::null()).output();
                 command_ms = Some(executing.elapsed().as_secs_f64() * 1000.0);
                 let output = output?;
+                if !output.status.success()
+                    && String::from_utf8_lossy(&output.stderr)
+                        .contains(harness::UNTRUSTED_WORKSPACE)
+                {
+                    foreground = Some(harness::foreground(&command));
+                }
                 anyhow::ensure!(
                     output.status.success(),
                     "{}",
@@ -13858,8 +13882,9 @@ impl App {
                 );
             }
             let feedback = match result {
-                Ok(message) => (message, None),
-                Err(error) => (format!("{what} failed: {error:#}"), Some(prompt)),
+                Ok(message) => (message, None, None),
+                Err(_) if foreground.is_some() => (what, Some(prompt), foreground),
+                Err(error) => (format!("{what} failed: {error:#}"), Some(prompt), None),
             };
             let _ = tx.send(feedback);
         });

@@ -6,6 +6,9 @@ commands the dashboard ran. `$HOME/fake-launch` selects how `--bg` behaves (defa
   ok    hand the session to a stand-in daemon (`/bin/sleep`), list it in the registry with a
         transcript and an AI title, and print the background id the way Claude does
   fail  refuse to start, with a diagnostic on stderr
+  untrusted  refuse `--bg` with Claude's own trust error until `$HOME/trusted` exists; a
+        foreground start asks Claude's trust question on the pty, and enter trusts the folder,
+        lists the session in the registry under the fixture's pid and holds the pty
 `attach` holds the pty as a viewer client until hung up; `rm` ends the session the way the
 daemon does: registry entry and job record removed, stand-in killed.
 """
@@ -64,6 +67,28 @@ if mode == "fail":
     sys.exit(3)
 
 prompt = args[args.index("--") + 1] if "--" in args else ""
+trusted = HOME / "trusted"
+if mode == "untrusted" and "--bg" in args and not trusted.exists():
+    print(f"Workspace not trusted. Run `claude` in {os.getcwd()} once and accept the trust "
+          "prompt, then retry.", file=sys.stderr)
+    sys.exit(1)
+if "--bg" not in args:
+    sys.stdout.write(f"Quick safety check: do you trust {os.getcwd()}?\r\n")
+    sys.stdout.flush()
+    sys.stdin.readline()
+    trusted.touch()
+    session = str(uuid.uuid4())
+    registry = CLAUDE / "sessions"
+    registry.mkdir(parents=True, exist_ok=True)
+    (registry / f"{os.getpid()}.json").write_text(json.dumps({
+        "pid": os.getpid(), "sessionId": session, "cwd": os.getcwd(), "kind": "interactive",
+        "status": "busy", "startedAt": int(time.time() * 1000),
+    }))
+    sys.stdout.write(f"fixture trusted the folder and started: {prompt}\r\n")
+    sys.stdout.flush()
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    while True:
+        time.sleep(0.05)
 session = str(uuid.uuid4())
 short = session[:8]
 cwd = os.getcwd()
