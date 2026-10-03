@@ -8,6 +8,7 @@ mod codex;
 // `core` would shadow the standard crate of that name.
 #[path = "core.rs"]
 mod core_cli;
+mod dashboard;
 mod history;
 mod history_api;
 mod launch;
