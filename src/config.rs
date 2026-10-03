@@ -1249,6 +1249,17 @@ pub fn write_highlight(path: &Path, name: &str) -> Result<()> {
     )
 }
 
+/// Replace the pane block, preserving every other setting and the job blocks. Dragging the
+/// dashboard's divider writes it on its own, as the pin list is. A file this build cannot
+/// read is left alone, as `write_config` leaves it.
+pub fn write_pane(path: &Path, pane: &Pane) -> Result<()> {
+    pane.check()?;
+    if path.exists() {
+        parse(path).with_context(|| format!("{} was left alone", path.display()))?;
+    }
+    write_top_level(path, "pane", Some(pane.lines().join("\n")))
+}
+
 /// Replace the pinned folders, preserving every other setting and the job blocks. Paths are
 /// quoted, so one holding a colon or a leading `~` reads back as the string it was written as.
 pub fn write_folders(path: &Path, folders: &[String]) -> Result<()> {

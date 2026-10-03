@@ -152,7 +152,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `pane.at` | `right` | `right` puts the list left of the viewer; `bottom` puts it above the viewer. Both have a divider. |
-| `pane.ratio` | `50` | Viewer percentage of the frame, from `30` to `70`. The list takes the rest, less the divider. There is no minimum terminal size for a split. |
+| `pane.ratio` | `50` | Viewer percentage of the frame, from `30` to `70`. The list takes the rest, less the divider. There is no minimum terminal size for a split. Dragging the divider in the dashboard writes this field. |
 
 ## Start
 
@@ -163,7 +163,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 | `start.notify` | `false` | Desktop notifications for newly reported input requests and completions outside the focused session. Independent of a job's `notify`. |
 | `start.index` | `false` | Fill the [meaning index](dashboard.md#history) in the background from dashboard startup. |
 
-Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. Notification changes take effect on the next configuration refresh.
+Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. A divider drag changes the current dashboard and saves `pane.ratio` on release. Notification changes take effect on the next configuration refresh.
 
 ## Activity
 

@@ -303,7 +303,10 @@ screen.
 
 Cones reads the mouse on every screen. The wheel moves through the list and scrolls the
 pane, preview, Help or editor under the pointer. A left drag selects text in any of them and
-copies it on release, kept inside the region where the press landed. `alt+m` hands the
+copies it on release, kept inside the region where the press landed. A left drag on the
+divider between list and pane moves it instead; the divider thickens under the pointer, the
+pane keeps 30 to 70 percent of the frame, its viewer is resized as for a terminal resize,
+and the release saves the share as [`pane.ratio`](jobs.md#pane). `alt+m` hands the
 mouse to the terminal, for a selection that crosses regions, and takes it back. See
 [diagnostics](cli.md#diagnostics) for delays.
 

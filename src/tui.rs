@@ -4343,7 +4343,7 @@ const FIELDS: [Field; 69] = [
         name: "pane.ratio",
         short: "pane share (%)",
         hint: "Percentage of the screen used by the pane.",
-        long: "Percent of the frame the pane takes, 30 to 70 in tens. The list keeps the rest, less the divider between them; a taller or wider terminal gives both more.",
+        long: "Percent of the frame the pane takes, 30 to 70. The list keeps the rest, less the divider between them; a taller or wider terminal gives both more. Dragging the divider with the mouse sets any whole percent in that range and saves it here.",
         builtin: "50",
         input: Answer::Pick(&["-", "30", "40", "50", "60", "70"]),
     },
@@ -8649,6 +8649,13 @@ struct App {
     drawn: ratatui::buffer::Buffer,
     /// The cell range a drag has highlighted.
     selection: Option<Selection>,
+    /// The pointer rests on the divider between list and pane.
+    divider_hover: bool,
+    /// The left button went down on the divider and moves it until release.
+    divider_drag: bool,
+    /// The pane share a drag chose, held over `pane.ratio` until a reload reads it back from
+    /// the file, or for this dashboard alone when the write failed.
+    ratio: Option<u16>,
     needs_clear: bool,
     /// The last frame's rows and columns.
     size: (u16, u16),
@@ -9022,6 +9029,9 @@ impl App {
             drag_from: None,
             drawn: ratatui::buffer::Buffer::default(),
             selection: None,
+            divider_hover: false,
+            divider_drag: false,
+            ratio: None,
             needs_clear: false,
             size: (24, 80),
             pane: Rect::new(0, 0, 80, 23),
@@ -10766,6 +10776,9 @@ impl App {
             }
         }
         self.open_folders_of(&mut data);
+        if !self.divider_drag && self.ratio == Some(data.pane.ratio) {
+            self.ratio = None;
+        }
         self.data = data;
         self.report_load();
         if let Some(log) = &self.log {
@@ -11328,11 +11341,12 @@ impl App {
         }
     }
 
-    /// The pane takes `pane.ratio` percent of the frame and the list keeps the rest,
-    /// less the divider between them.
+    /// The pane takes `pane.ratio` percent of the frame, or the share a divider drag chose,
+    /// and the list keeps the rest, less the divider between them.
     fn split_areas(&self, frame: Rect) -> [Rect; 3] {
+        let ratio = self.ratio.unwrap_or(self.data.pane.ratio);
         let list = |total: u16| {
-            let share = u32::from(100u16.saturating_sub(self.data.pane.ratio));
+            let share = u32::from(100u16.saturating_sub(ratio));
             (u32::from(total) * share / 100) as u16
         };
         if self.data.pane.at == "bottom" {
@@ -11349,6 +11363,85 @@ impl App {
             Constraint::Min(1),
         ])
         .areas(frame)
+    }
+
+    /// Whether a cell is the divider between list and pane, where no overlay covers it.
+    fn on_divider(&self, column: u16, row: u16) -> bool {
+        let at = (column, row).into();
+        let covered = match &self.mode {
+            Mode::Guide(guide) => guide.area.contains(at),
+            Mode::Config(form) => form.area.contains(at),
+            Mode::Columns(form) => form.area.contains(at),
+            _ => false,
+        };
+        self.split_active() && !covered && self.split_areas(self.frame())[1].contains(at)
+    }
+
+    /// The pane share that puts the divider under the pointer, within the 30 to 70 percent
+    /// `pane.ratio` accepts, so neither side can be squeezed shut.
+    fn ratio_at(&self, column: u16, row: u16) -> u16 {
+        let frame = self.frame();
+        let (at, total) = if self.data.pane.at == "bottom" {
+            (row.saturating_sub(frame.y), frame.height)
+        } else {
+            (column.saturating_sub(frame.x), frame.width)
+        };
+        let total = u32::from(total.max(1));
+        let list = (u32::from(at) * 100 + total / 2) / total;
+        (100u32.saturating_sub(list) as u16).clamp(30, 70)
+    }
+
+    /// A left press on the divider moves it until release, which saves the share as
+    /// `pane.ratio`. The press never reaches the list, the viewer or a text selection.
+    /// Returns whether the event was spent on the divider.
+    fn divider_mouse(&mut self, ev: MouseEvent) -> bool {
+        match ev.kind {
+            MouseEventKind::Moved => {
+                self.divider_hover = self.on_divider(ev.column, ev.row);
+                false
+            }
+            MouseEventKind::Down(MouseButton::Left) if self.on_divider(ev.column, ev.row) => {
+                self.divider_drag = true;
+                self.selection = None;
+                self.drag_from = None;
+                true
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.divider_drag => {
+                self.ratio = Some(self.ratio_at(ev.column, ev.row));
+                true
+            }
+            MouseEventKind::Up(MouseButton::Left) if self.divider_drag => {
+                self.divider_drag = false;
+                self.divider_hover = self.on_divider(ev.column, ev.row);
+                self.save_ratio();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn save_ratio(&mut self) {
+        let Some(ratio) = self.ratio else {
+            return;
+        };
+        if ratio == self.data.pane.ratio {
+            self.ratio = None;
+            return;
+        }
+        let pane = config::Pane {
+            ratio,
+            ..self.data.pane.clone()
+        };
+        self.status = match config::write_pane(&self.jobs_path, &pane) {
+            Ok(()) => {
+                self.data.pane = pane;
+                format!(
+                    "pane.ratio {ratio} saved to {}",
+                    fleet::tilde(&self.jobs_path)
+                )
+            }
+            Err(e) => format!("pane width kept for this dashboard only: {e:#}"),
+        };
     }
 
     /// Use the same viewer size for spawn, focus and draw. In split view, overlay hints
@@ -12850,6 +12943,9 @@ impl App {
     fn mouse(&mut self, ev: MouseEvent) {
         if !matches!(ev.kind, MouseEventKind::Moved) {
             self.rename = None;
+        }
+        if self.divider_mouse(ev) {
+            return;
         }
         if self.drag_select(ev) {
             return;
@@ -15562,12 +15658,19 @@ impl App {
         if self.split_active() {
             let [list, rule, pane] = self.split_areas(area);
             self.draw_dashboard(frame, list);
-            let style = if self.pane_focused() {
+            // A heavy orange rule under the pointer shows it can be dragged.
+            let held = self.divider_drag || self.divider_hover;
+            let style = if self.pane_focused() || held {
                 Style::default().fg(ORANGE)
             } else {
                 dim()
             };
-            let symbol = if rule.width == 1 { "│" } else { "─" };
+            let symbol = match (rule.width == 1, held) {
+                (true, false) => "│",
+                (true, true) => "┃",
+                (false, false) => "─",
+                (false, true) => "━",
+            };
             let buf = frame.buffer_mut();
             for y in rule.top()..rule.bottom() {
                 for x in rule.left()..rule.right() {

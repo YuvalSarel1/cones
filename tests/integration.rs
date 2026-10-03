@@ -13,6 +13,7 @@ mod dashboard_claude;
 mod dashboard_config;
 mod dashboard_history;
 mod dashboard_jobs;
+mod dashboard_pane;
 mod dashboard_pi;
 mod dashboard_terminal;
 mod history;
