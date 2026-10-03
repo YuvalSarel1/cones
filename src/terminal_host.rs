@@ -277,7 +277,14 @@ pub(crate) fn launch(
             Ok(())
         });
     }
-    let mut child = host.spawn()?;
+    // The dashboard re-executes its own binary, which an install or cleanup may have removed.
+    let mut child = host.spawn().map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => io::Error::new(
+            e.kind(),
+            format!("{} is gone, restart cones", exe.display()),
+        ),
+        _ => e,
+    })?;
     let result = (|| {
         child.stdin.take().unwrap().write_all(&frame(&launch)?)?;
         // Startup has no model calls and returns as soon as the native process
