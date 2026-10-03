@@ -459,7 +459,9 @@ impl Data {
         self.sessions.iter().any(|s| {
             !deleting.contains(s.session_id.as_str())
                 && !pinned.contains(&s.session_id)
-                && (s.cwd == dir || self.roots.get(&s.cwd) == Some(&repository))
+                && (s.cwd == dir
+                    || s.cwd == repository
+                    || self.roots.get(&s.cwd) == Some(&repository))
         })
     }
 
@@ -670,6 +672,12 @@ impl Data {
                 .roots
                 .values()
                 .find(|root| **root == real)
+                // A folder pinned through a symlink heads the sessions in its resolved path.
+                .or_else(|| {
+                    self.folders
+                        .iter()
+                        .find(|f| f.canonicalize().is_ok_and(|f| f == real))
+                })
                 .map_or(dir, PathBuf::as_path);
             let name = if dir.as_os_str().is_empty() {
                 "no directory".to_owned()

@@ -561,7 +561,6 @@ fn ctrl_x_twice_removes_a_background_session_through_claude_rm() {
 }
 
 #[test]
-#[ignore = "bug: a folder pinned through a symlink (/tmp) gets an empty group beside its session's"]
 fn a_launch_in_a_folder_pinned_through_a_symlink_lists_under_that_folder() {
     let mut d = Dashboard::new("claude-alias", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
