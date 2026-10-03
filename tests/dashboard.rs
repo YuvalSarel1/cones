@@ -189,14 +189,47 @@ impl Dashboard {
         out
     }
 
-    /// Wait until `ready` holds for the screen, failing with the last screen.
+    /// The foreground colour of the first cell of the first `text` on the screen.
+    pub fn colour_of(&self, text: &str) -> Option<vt100::Color> {
+        let parser = self.screen.lock().unwrap();
+        let screen = parser.screen();
+        for row in 0..ROWS {
+            let mut line = String::new();
+            let mut cols = Vec::new();
+            for col in 0..COLS {
+                if let Some(cell) = screen.cell(row, col)
+                    && !cell.is_wide_continuation()
+                {
+                    let text = cell.contents();
+                    let text = if text.is_empty() { " " } else { text };
+                    cols.extend(std::iter::repeat_n(col, text.len()));
+                    line.push_str(text);
+                }
+            }
+            if let Some(at) = line.find(text) {
+                return screen.cell(row, cols[at]).map(|c| c.fgcolor());
+            }
+        }
+        None
+    }
+
+    /// Wait until `ready` holds on a settled screen, failing with the last screen. Settled
+    /// means unchanged for 100ms: one action can draw several frames (a notice, then the
+    /// reloaded table), and callers assert on more than what they waited for.
     pub fn wait_for(&self, what: &str, mut ready: impl FnMut(&str) -> bool) -> String {
         let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last = String::new();
         loop {
             let screen = self.screen();
-            if ready(&screen) {
+            if ready(&screen) && screen == last {
                 return screen;
             }
+            if ready(&screen) {
+                last = screen;
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            last.clear();
             if Instant::now() > deadline {
                 panic!("timed out waiting for {what}; screen:\n{screen}");
             }
@@ -265,8 +298,12 @@ impl Dashboard {
 
     /// Copy a file cones wrote into the artifact.
     pub fn keep(&self, rel: &str) {
+        self.keep_as(rel, &rel.replace('/', "_"));
+    }
+
+    /// Copy a file cones wrote into the artifact under `name`, for a file kept at several steps.
+    pub fn keep_as(&self, rel: &str, name: &str) {
         let text = fs::read_to_string(self.path(rel)).unwrap();
-        let name = rel.replace('/', "_");
         fs::write(self.artifact.join(name), self.rooted(&text)).unwrap();
     }
 

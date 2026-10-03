@@ -9,6 +9,12 @@ mod codex;
 #[path = "core.rs"]
 mod core_cli;
 mod dashboard;
+mod dashboard_claude;
+mod dashboard_config;
+mod dashboard_history;
+mod dashboard_jobs;
+mod dashboard_pi;
+mod dashboard_terminal;
 mod history;
 mod history_api;
 mod launch;
