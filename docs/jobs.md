@@ -113,7 +113,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
 | `highlight` | `magenta`: colour of a session title highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`, `orange`, `pink`, `purple`, `teal`, `white`, or a hex colour as `#rrggbb`, such as `#ff8800`, on a terminal that renders true colour. The config screen draws each choice in the colour it names. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
-| `folders` | `[]`: folders pinned in the session list, each absolute or under `~`. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it; `+ add folder` and `ctrl+x` on a pinned row in the session list write the same setting. A path carrying a comma, a quote or a bracket is refused. |
+| `folders` | `[]`: pinned folders, each absolute or under `~`, which `+ add folder` in the session list offers whenever they are not open. A pin is never a row by itself. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it. A path carrying a comma, a quote or a bracket is refused. |
 
 The agent `folder` column appears when grouped by state. Normal folder groups identify it in their headings. Agent defaults hide `last_reply` while the preview pane is open; explicitly selecting it in `columns` keeps it visible. Grouping never changes last reply into a folder. History always uses its own selection, independently of grouping and pane visibility.
 
@@ -290,7 +290,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
-| `open-folders.json` | Folders the session list keeps open after their last session leaves. See [Add a folder](dashboard.md#add-a-folder). |
+| `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |

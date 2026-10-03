@@ -29,8 +29,8 @@ const PROMPT: &str = "zsh-ready>";
 const LIST: usize = 70;
 const SHELL_ROW: &str = "–  $  -      zsh";
 
-/// A fixture whose pinned folders are `folders` (relative to the root, created here), in
-/// canonical form so the dashboard's `/private/tmp` cwd and the pins name the same folder.
+/// A fixture whose open folders are `folders` (relative to the root, created here), in
+/// canonical form so the dashboard's `/private/tmp` cwd and the open folders name the same folder.
 fn fixture(test: &str, enabled: &[&str], folders: &[&str]) -> (Dashboard, Vec<PathBuf>) {
     let d = Dashboard::new(test, enabled);
     fs::write(d.home().join(".zshrc"), format!("PROMPT='{PROMPT} '\n")).unwrap();
@@ -41,8 +41,7 @@ fn fixture(test: &str, enabled: &[&str], folders: &[&str]) -> (Dashboard, Vec<Pa
             d.path(rel).canonicalize().unwrap()
         })
         .collect();
-    let pins: String = dirs.iter().map(|p| format!("{}\n", p.display())).collect();
-    fs::write(d.path("state/folders"), pins).unwrap();
+    d.open_folders(&dirs);
     (d, dirs)
 }
 
@@ -226,7 +225,7 @@ fn a_shell_from_the_folder_row_works_in_the_folder_and_returns_to_its_row() {
     until("the exited shell", &d, || {
         !alive(shell) && records(&d).is_empty()
     });
-    d.keep("state/folders");
+    d.keep("state/open-folders.json");
     d.keep("project/made");
     d.quit();
 }
@@ -362,7 +361,7 @@ fn a_composer_command_runs_in_the_selected_folder_and_keeps_its_own_draft() {
     );
     let (project, other) = (&dirs[0], &dirs[1]);
     d.start();
-    // Pinned folders list in path order: `other dir` first, selected.
+    // Open folders list in path order: `other dir` first, selected.
     let screen = d.wait_text("pi ›");
     assert_eq!(group(&screen, other), ["▌ no sessions here"], "{screen}");
     assert_eq!(group(&screen, project), ["  no sessions here"], "{screen}");
@@ -416,7 +415,7 @@ fn a_composer_command_runs_in_the_selected_folder_and_keeps_its_own_draft() {
     d.capture("agent-draft-kept");
     assert!(!screen.contains("terminal (zsh) ›"), "{screen}");
     d.keep("other dir/here");
-    d.keep("state/folders");
+    d.keep("state/open-folders.json");
     d.quit();
 }
 

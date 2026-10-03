@@ -23,14 +23,14 @@ const DRAFT_FOOTER: &str = "ctrl+z back · ctrl+\\ full screen";
 const FULLSCREEN_STRIP: &str = "tab back · ctrl+\\ split";
 const EMPTY_COMPOSER: &str = "π pi › Type to start a new agent…";
 
-/// A dashboard with only pi enabled and the fixture client installed as `pi`. The pin is
-/// written canonically, as `+ add folder` would, so the launch lands under the pinned heading.
+/// A dashboard with only pi enabled and the fixture client installed as `pi`. The open
+/// folder is written canonically, as `+ add folder` would, so the launch lands under its heading.
 fn pi_dashboard(test: &str) -> Dashboard {
     let d = Dashboard::new(test, &["pi"]);
     d.install("pi", "fake_pi.py");
     fs::create_dir_all(d.home().join(".pi")).unwrap();
     let project = d.project().canonicalize().unwrap();
-    fs::write(d.path("state/folders"), format!("{}\n", project.display())).unwrap();
+    d.open_folders(&[project]);
     d
 }
 

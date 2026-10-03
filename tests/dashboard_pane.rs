@@ -1,7 +1,7 @@
 //! The divider between the session list and the pane, dragged with the mouse through the
 //! real binary.
 //!
-//! A zsh terminal from the pinned folder fills the pane, so its pty reports the size it was
+//! A zsh terminal from the open folder fills the pane, so its pty reports the size it was
 //! given. Covered: the pointer on the divider thickens only the three cells around it, and
 //! the grip stays under the pointer through a drag; a left press there never reaches the
 //! shell or a text selection; dragging moves the divider, the list redraws to its new width

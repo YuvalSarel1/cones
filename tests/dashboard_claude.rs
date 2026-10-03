@@ -134,11 +134,11 @@ fn row(screen: &str, text: &str) -> usize {
         .unwrap_or_else(|| panic!("{text:?} is not on screen:\n{screen}"))
 }
 
-/// Pin the project folder by its real path. Claude records the resolved cwd, and `/tmp` is a
+/// Open the project folder by its real path. Claude records the resolved cwd, and `/tmp` is a
 /// symlink on macOS; the alias case is its own test below.
 fn real_project(d: &Dashboard) -> std::path::PathBuf {
     let project = d.project().canonicalize().unwrap();
-    fs::write(d.path("state/folders"), format!("{}\n", project.display())).unwrap();
+    d.open_folders(std::slice::from_ref(&project));
     project
 }
 
@@ -560,7 +560,7 @@ fn ctrl_x_twice_removes_a_background_session_through_claude_rm() {
 }
 
 #[test]
-fn a_launch_in_a_folder_pinned_through_a_symlink_lists_under_that_folder() {
+fn a_launch_in_a_folder_opened_through_a_symlink_lists_under_that_folder() {
     let mut d = Dashboard::new("claude-alias", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
     d.start();
@@ -571,7 +571,7 @@ fn a_launch_in_a_folder_pinned_through_a_symlink_lists_under_that_folder() {
     d.capture("launched");
     assert!(
         !screen.contains("no sessions here"),
-        "the pinned folder and the session's resolved cwd are one folder:\n{screen}"
+        "the open folder and the session's resolved cwd are one folder:\n{screen}"
     );
     d.quit();
 }

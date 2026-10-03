@@ -20,6 +20,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn open_folders(root: &Path, dirs: &[PathBuf]) {
+    fs::write(
+        root.join("state/open-folders.json"),
+        serde_json::to_vec(dirs).unwrap(),
+    )
+    .unwrap();
+}
+
 pub const ROWS: u16 = 35;
 pub const COLS: u16 = 140;
 const HARNESSES: [&str; 10] = [
@@ -54,11 +62,7 @@ impl Dashboard {
         jobs.push_str("jobs: []\n");
         fs::write(root.path().join("jobs.yaml"), jobs).unwrap();
         let project = root.path().join("project");
-        fs::write(
-            root.path().join("state/folders"),
-            format!("{}\n", project.display()),
-        )
-        .unwrap();
+        open_folders(root.path(), &[project]);
         let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("e2e")
             .join(test);
@@ -81,6 +85,11 @@ impl Dashboard {
 
     pub fn home(&self) -> PathBuf {
         self.path("home")
+    }
+
+    /// Keep `dirs` open in the list, as `+ add folder` would, replacing the project folder.
+    pub fn open_folders(&self, dirs: &[PathBuf]) {
+        open_folders(self.root.path(), dirs);
     }
 
     pub fn project(&self) -> PathBuf {
@@ -364,7 +373,7 @@ impl Drop for Dashboard {
 }
 
 #[test]
-fn smoke_the_dashboard_draws_the_pinned_folder() {
+fn smoke_the_dashboard_draws_the_open_folder() {
     let mut d = Dashboard::new("smoke", &[]);
     d.start();
     let screen = d.capture("first-frame");

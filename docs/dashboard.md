@@ -182,7 +182,7 @@ The row disappears while the action runs and returns if it fails.
 | Running run or job | Stop the run. |
 | Finished run | Hide the run and its owned session; retain output and ledger. Restore through the [hidden file](jobs.md#stored-files). |
 | Idle job | Delete it and reinstall schedules. |
-| Empty folder | Close it and remove any pin; retain the directory. |
+| Empty folder | Close it; retain the directory and any pin. |
 
 Run previews read the archived/native conversation, falling back to captured events and
 stderr. They show messages and compact tool calls, excluding thinking and tool output. Live
@@ -194,19 +194,18 @@ run. A resumed run retains its row and original ledger outcome while displaying 
 
 `+ add folder` is the last session-list row. Type an existing path there; `~` expands and
 relative paths use the dashboard's cwd. Tab completes directories; a second Tab lists matches.
-Hidden names require a `.` prefix. Enter pins the folder and selects it; invalid paths retain
+Hidden names require a `.` prefix. Enter opens the folder and selects it; invalid paths retain
 the input. Escape clears it.
 
-The row offers pinned folders not already represented in the list, filtered by path fragment.
-It does not build suggestions from past sessions. Down selects an offer, Enter accepts it,
-and Tab copies it into the input. Aliases are deduplicated; deleted directories are rejected
-when chosen. Pins share the `folders` configuration with Config. A pin becomes an empty
-folder row whenever its sessions leave.
+Pinned folders, the `folders` setting in Config, are suggestions, not rows. The row offers
+every pin the list does not already hold open, filtered by path fragment. It does not build
+suggestions from past sessions. Down selects an offer, Enter opens it, and Tab copies it into
+the input. Aliases are deduplicated; deleted directories are rejected when chosen.
 
-Every other folder a session is listed in stays open the same way: when its last session
-leaves, the folder remains as an empty row until `ctrl+x` closes it or the directory is
-deleted. Open folders are kept in the state directory, not the configuration, so they survive
-a restart without becoming pins.
+An open folder stays in the list: when its last session leaves, it remains as an empty row
+until `ctrl+x` closes it or the directory is deleted. Every folder a session is listed in
+opens this way. Open folders are kept in the state directory, not the configuration, so they
+survive a restart without becoming pins. Closing a pinned folder offers it again.
 
 ### Fork a conversation
 

@@ -358,7 +358,7 @@ pub struct JobsFile {
     /// Leave out a table column the list's right edge would cut through.
     #[serde(default)]
     pub whole_columns: Option<bool>,
-    /// Folders pinned in the list, kept as rows when they hold no session.
+    /// Pinned folders, offered under `+ add folder` while they are not open.
     #[serde(default)]
     pub folders: Option<Vec<String>>,
     /// Colour of a session row marked in the dashboard with ctrl+p.

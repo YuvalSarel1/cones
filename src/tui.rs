@@ -125,12 +125,12 @@ pub enum Kind {
     Run(String, String),
     /// Inserted by `App::rebuild`, outside `Data::rows`.
     Menu,
-    /// An open or pinned folder with no live sessions, in `~` form.
+    /// An open folder with no live sessions, in `~` form.
     Folder(String),
-    /// The always-present last row of the session list: type a path to pin a folder.
+    /// The always-present last row of the session list: type a path to open a folder.
     NewFolder,
     /// A folder offered under `+ add folder`: a row key of its own, then the path as shown.
-    /// The key is not the path, so an offer never collides with the pinned folder's row.
+    /// The key is not the path, so an offer never collides with a folder row.
     Suggestion(String, String),
     NewJob,
 }
@@ -251,7 +251,7 @@ pub struct Data {
     pub whole_columns: bool,
     /// Colour of the titles highlighted with ctrl+p.
     pub highlight: Color,
-    /// Pinned folders retained as rows when empty.
+    /// Pinned folders, offered under `+ add folder` while they are not open. Never rows.
     pub folders: Vec<PathBuf>,
     /// Folders the list has shown, retained as rows when empty until `ctrl+x` closes them.
     /// The dashboard fills it.
@@ -568,16 +568,16 @@ impl Data {
             .filter(|s| !matches!(s.state.as_str(), "exited" | "done" | "stopped"))
     }
 
-    /// Folders to offer under `+ add folder`: the pinned ones, `query` keeping those whose
-    /// path contains it. The caller drops the ones the list already holds, which is what an
-    /// offer would otherwise duplicate.
+    /// Folders to offer under `+ add folder`: the pinned ones not open, `query` keeping those
+    /// whose path contains it. A pin and an open folder are one folder when they resolve to one.
     ///
     /// Nothing is read here; the configured paths carry everything this needs. Only aliases
     /// are resolved, so a folder that has since been deleted stays on the list and the usual
     /// path validation reports it when the offer is accepted.
     pub fn folder_suggestions(&self, query: &str, limit: usize) -> Vec<String> {
         let needle = query.trim().to_lowercase();
-        let mut taken: BTreeSet<PathBuf> = BTreeSet::new();
+        let real = |dir: &PathBuf| dir.canonicalize().unwrap_or_else(|_| dir.clone());
+        let mut taken: BTreeSet<PathBuf> = self.open.iter().map(real).collect();
         self.folders
             .iter()
             .filter(|dir| {
@@ -587,7 +587,7 @@ impl Data {
                     || dir.to_string_lossy().to_lowercase().contains(&needle)
             })
             // Aliases of one folder are one offer: a symlinked path resolves to the same file.
-            .filter(|dir| taken.insert(dir.canonicalize().unwrap_or_else(|_| (*dir).clone())))
+            .filter(|dir| taken.insert(real(dir)))
             .map(|dir| fleet::tilde(dir))
             .take(limit)
             .collect()
@@ -672,9 +672,9 @@ impl Data {
                 .roots
                 .values()
                 .find(|root| **root == real)
-                // A folder pinned through a symlink heads the sessions in its resolved path.
+                // A folder opened through a symlink heads the sessions in its resolved path.
                 .or_else(|| {
-                    self.folders
+                    self.open
                         .iter()
                         .find(|f| f.canonicalize().is_ok_and(|f| f == real))
                 })
@@ -715,7 +715,7 @@ impl Data {
             };
             groups.entry(key).or_default().push(Entry::Session(s));
         }
-        for dir in self.folders.iter().chain(&self.open).filter(|_| !jobs_view) {
+        for dir in self.open.iter().filter(|_| !jobs_view) {
             let (sort, name) = folder(dir);
             let key = if by_state {
                 (format!("6{sort}"), name)
@@ -4270,8 +4270,8 @@ const FIELDS: [Field; 69] = [
         sub: "",
         name: "folders",
         short: "pinned folders",
-        hint: "Folders the list keeps a row for.",
-        long: "Paths pinned in the session list, one folder per row, each absolute or under ~. Enter opens the list: enter edits the selected folder or adds one under `+ add folder`, and ctrl+x removes the selected folder. A pinned folder keeps its row while it holds no session, so an instruction can start there. `+ add folder` at the foot of the session list writes the same setting, and ctrl+x on a pinned row removes one.",
+        hint: "Folders `+ add folder` always offers.",
+        long: "Paths offered under `+ add folder` at the foot of the session list whenever they are not already open, one folder per row, each absolute or under ~. Enter opens the list: enter edits the selected folder or adds one under `+ add folder`, and ctrl+x removes the selected folder. A pin is a suggestion, not a row: closing an open folder with ctrl+x keeps its pin.",
         builtin: "",
         input: Answer::Folders,
     },
@@ -11276,9 +11276,8 @@ impl App {
                 .and_then(|r| r.started.cwd.clone()),
             Kind::Folder(dir) => self
                 .data
-                .folders
+                .open
                 .iter()
-                .chain(&self.data.open)
                 .find(|p| &fleet::tilde(p) == dir)
                 .cloned(),
             _ => None,
@@ -14334,45 +14333,32 @@ impl App {
         }
     }
 
+    /// Close an empty folder. A pin stays in the config and is offered again under
+    /// `+ add folder`.
     fn remove_folder(&mut self, dir: String) {
         match self.armed.take() {
             Some(armed) if armed == dir => {
                 self.open_folders.retain(|p| fleet::tilde(p) != dir);
                 self.data.open.retain(|p| fleet::tilde(p) != dir);
                 self.save_open_folders();
-                let pins = self.data.folders.len();
-                self.data.folders.retain(|p| fleet::tilde(p) != dir);
-                let saved = if self.data.folders.len() == pins {
-                    Ok(())
-                } else {
-                    self.save_folders()
-                };
-                self.status = match saved {
-                    Ok(()) => format!("{dir} removed · the folder itself is untouched"),
-                    Err(e) => format!("remove failed: {e:#}"),
-                };
+                self.status = format!("{dir} closed · the folder itself is untouched");
                 self.rebuild();
             }
             _ => {
-                self.status = "ctrl+x again to remove this folder · any other key keeps it".into();
+                self.status = "ctrl+x again to close this folder · any other key keeps it".into();
                 self.arm(dir);
             }
         }
     }
 
-    /// Select a newly pinned empty folder; preserve selection if it already has session rows.
-    fn pin_folder(&mut self, dir: PathBuf) -> Result<()> {
-        if !self.data.folders.contains(&dir) {
-            self.data.folders.push(dir.clone());
-            self.save_folders()?;
+    /// Open a folder and select it; preserve selection if it already has session rows.
+    fn open_folder(&mut self, dir: PathBuf) {
+        if self.open_folders.insert(dir.clone()) {
+            self.data.open = self.open_folders.iter().cloned().collect();
+            self.save_open_folders();
         }
         self.rebuild();
         self.select_new(&fleet::tilde(&dir));
-        Ok(())
-    }
-
-    fn save_folders(&self) -> Result<()> {
-        config::write_folders(&self.jobs_path, &tilde_all(&self.data.folders))
     }
 
     fn on_new_folder(&self) -> bool {
@@ -14420,22 +14406,10 @@ impl App {
         let Some(at) = self.rows.iter().position(|r| r.kind == Kind::NewFolder) else {
             return;
         };
-        // A folder the list already holds needs no offer: pinning it again changes nothing.
-        let listed: HashSet<String> = self
-            .rows
-            .iter()
-            .filter_map(|r| match &r.kind {
-                Kind::Header => Some(r.text()),
-                Kind::Folder(label) => Some(label.trim_end_matches(" ⑂").to_owned()),
-                _ => None,
-            })
-            .collect();
         let rows: Vec<Row> = self
             .data
-            .folder_suggestions(query, SUGGESTIONS + listed.len())
+            .folder_suggestions(query, SUGGESTIONS)
             .into_iter()
-            .filter(|dir| !listed.contains(dir))
-            .take(SUGGESTIONS)
             .map(|dir| Row {
                 kind: Kind::Suggestion(format!("offer {dir}"), dir.clone()),
                 cells: vec![(dir, plain())],
@@ -14444,14 +14418,14 @@ impl App {
         self.rows.splice(at + 1..at + 1, rows);
     }
 
-    /// Pin an offered folder through the same path a typed one takes, so a folder that is
-    /// gone reports itself rather than being pinned.
+    /// Open an offered folder through the same path a typed one takes, so a folder that is
+    /// gone reports itself rather than being opened.
     fn add_suggestion(&mut self, dir: String) {
         self.folder = Input::new(dir);
         self.add_folder();
     }
 
-    /// Pin the folder typed on the last row and move the cursor to where it sorted.
+    /// Open the folder typed on the last row and move the cursor to where it sorted.
     fn add_folder(&mut self) {
         let text = self.folder.text.clone();
         if text.trim().is_empty() {
@@ -14468,13 +14442,10 @@ impl App {
         let name = fleet::tilde(&dir);
         self.folder = Input::default();
         self.suggested = None;
-        self.status = match self.pin_folder(dir) {
-            Ok(()) => {
-                self.select_row(&name);
-                format!("{name} added · type an instruction and enter starts a session there")
-            }
-            Err(e) => format!("folder not saved: {e:#}"),
-        };
+        self.open_folder(dir);
+        self.select_row(&name);
+        self.status =
+            format!("{name} added · type an instruction and enter starts a session there");
     }
 
     /// The last row draws its own cells: what is typed changes without a rebuild.
@@ -18103,14 +18074,14 @@ states:
     /// A folder outside git has no branch to show, and the row still has to be visible:
     /// a blank line the cursor lands on reads as a rendering fault.
     #[test]
-    fn a_pinned_folder_outside_git_still_shows_a_row() {
+    fn an_added_folder_outside_git_still_shows_a_row() {
         let d = dir();
         let claude = d.path();
         let work = claude.join("work");
         fs::create_dir(&work).unwrap();
         let mut app = app(claude);
         app.refresh().unwrap();
-        app.pin_folder(work.clone()).unwrap();
+        app.open_folder(work.clone());
         app.refresh().unwrap();
         poll_until(&mut app, |a| a.loading.is_none());
         let name = fleet::tilde(&work);
@@ -18118,15 +18089,15 @@ states:
             .rows
             .iter()
             .find(|r| r.kind == Kind::Folder(name.clone()))
-            .expect("the pinned folder has a row");
+            .expect("the added folder has a row");
         assert_eq!(row.text(), "no sessions here");
     }
 
-    /// A pending delete already hides the row, so its pinned folder must take the same
+    /// A pending delete already hides the row, so its open folder must take the same
     /// frame, complete: waiting for the next read made the row blink out, come back empty,
     /// then gain its git state a second later.
     #[test]
-    fn deleting_the_last_session_leaves_its_pinned_folder_in_the_same_frame() {
+    fn deleting_the_last_session_leaves_its_open_folder_in_the_same_frame() {
         let d = dir();
         let claude = d.path();
         let work = claude.join("work");
@@ -18160,7 +18131,7 @@ states:
         registry(claude, A, work.to_str().unwrap(), "idle", 1_757_682_871_000);
         let mut app = app(claude);
         app.refresh().unwrap();
-        app.pin_folder(work.clone()).unwrap();
+        app.open_folder(work.clone());
         // As in use, the folder was added before the deletion, so a read has seen it.
         app.refresh().unwrap();
         poll_until(&mut app, |a| a.loading.is_none());
@@ -19556,7 +19527,7 @@ states:
         app.refresh().unwrap();
         let folder = d.path().join("working folder");
         fs::create_dir(&folder).unwrap();
-        app.pin_folder(folder.clone()).unwrap();
+        app.open_folder(folder.clone());
         app.shell = "/bin/sh".into();
         app.fill("an unfinished agent instruction".into());
         for _ in harness::launchable() {
@@ -19639,7 +19610,7 @@ states:
             }
             let mut app = app(d.path());
             app.refresh().unwrap();
-            app.pin_folder(folder.clone()).unwrap();
+            app.open_folder(folder.clone());
             app.shell = wrapper;
             app.harness = harness::launchable().len();
             app.fill("do not run the agent draft".into());
@@ -21124,7 +21095,7 @@ states:
         );
         let mut app = app(d.path());
         app.refresh().unwrap();
-        app.pin_folder(work.clone()).unwrap();
+        app.data.folders.push(work.clone());
         let at = app
             .visible
             .iter()
@@ -21140,10 +21111,6 @@ states:
             .find(|r| r.kind == Kind::Folder(name.clone()))
             .expect("the folder keeps a row beside the pinned session");
         assert_eq!(row.text(), "no sessions here");
-        assert!(
-            app.data.folder_suggestions("", 10).contains(&name),
-            "the folder is still configured"
-        );
         app.cursor = app
             .visible
             .iter()
@@ -21852,7 +21819,7 @@ states:
         .unwrap();
         let mut app = app(d.path());
         app.data.columns = vec!["state".into(), "folder".into()];
-        app.data.folders = vec![repo.clone(), nested.clone()];
+        app.data.open.extend([repo.clone(), nested.clone()]);
         for s in &mut app.data.sessions {
             s.title = Some(format!("session {}", &s.session_id[..8]));
         }
@@ -21879,7 +21846,7 @@ states:
         );
         assert!(
             app.rows.iter().all(|r| !matches!(r.kind, Kind::Folder(_))),
-            "populated worktrees and their pinned repository have no empty placeholders"
+            "populated worktrees and their open repository have no empty placeholders"
         );
         for (id, cwd, marked) in [
             (A, &alias, false),
@@ -21911,7 +21878,7 @@ states:
 
         // The repository stays the heading even when all of its sessions are in worktrees.
         // The subfolder would stay open once its session leaves; that has its own test.
-        app.data.open.clear();
+        app.data.open = vec![repo.clone(), nested.clone()];
         app.data
             .sessions
             .retain(|s| [B, C].contains(&s.session_id.as_str()));
@@ -21928,7 +21895,7 @@ states:
             assert_eq!(app.target_dir(), *cwd);
         }
 
-        // Hiding the final sessions restores both explicitly pinned folders.
+        // Hiding the final sessions restores both open folders.
         let hidden = HashSet::from([B, C]);
         let rows = app.data.rows_excluding(
             false,

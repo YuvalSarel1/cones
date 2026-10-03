@@ -2,8 +2,8 @@
 //! between group tabs with `[` and `]`, saving a choice (Right, Space) and a text setting
 //! (Enter edits, Enter saves, Escape restores) into jobs.yaml while the file's comments and
 //! other settings stay; the session column picker changing the live table and jobs.yaml,
-//! with backspace restoring the defaults; adding a pinned folder that appears as a folder
-//! row and removing it with ctrl+x; and a failed write or a validation error keeping the
+//! with backspace restoring the defaults; adding a pinned folder, which `+ add folder`
+//! offers until it is open and offers again once ctrl+x closes it; and a failed write or a validation error keeping the
 //! typed value on screen with the reason. Connectivity checks are not run: they probe the
 //! machine's installed CLIs.
 use crate::dashboard::*;
@@ -59,9 +59,13 @@ fn line<'a>(screen: &'a str, text: &str) -> &'a str {
 /// Whether the list draws `folder` as an empty folder row.
 fn empty_folder_row(screen: &str, folder: &str) -> bool {
     let lines: Vec<&str> = screen.lines().collect();
-    lines
-        .windows(2)
-        .any(|w| w[0].starts_with(&format!("{folder} ")) && w[1].starts_with("  no sessions here "))
+    lines.windows(2).any(|w| {
+        // The selected row starts with the cursor bar instead of two spaces.
+        w[0].starts_with(&format!("{folder} "))
+            && w[1]
+                .trim_start_matches(['▌', ' '])
+                .starts_with("no sessions here ")
+    })
 }
 
 /// A live Claude background session in the project, held by a disposable `sleep` the
@@ -374,11 +378,28 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
     d.quit();
 }
 
+/// Press `key` until the selected list line, given with the line above it, satisfies `pick`.
+fn select(d: &mut Dashboard, key: &[u8], what: &str, pick: impl Fn(&str, &str) -> bool) {
+    for _ in 0..12 {
+        let screen = d.wait_for("a settled list", |_| true);
+        let lines: Vec<&str> = screen.lines().collect();
+        if let Some(at) = lines.iter().position(|l| l.starts_with('▌'))
+            && pick(lines[at], lines[at.saturating_sub(1)])
+        {
+            return;
+        }
+        d.press(if key == UP { "up" } else { "down" }, key);
+    }
+    panic!("never selected {what}:\n{}", d.screen());
+}
+
 #[test]
-fn pinned_folders_add_a_folder_row_and_ctrl_x_removes_it() {
+fn a_pinned_folder_is_offered_under_add_folder_until_it_is_open() {
     let mut d = Dashboard::new("config_pins", &["claude"]);
     let extra = d.path("extra");
     fs::create_dir_all(&extra).unwrap();
+    // An opened folder is listed by its resolved path; the pin keeps the path as written.
+    let real = extra.canonicalize().unwrap().display().to_string();
     let extra = extra.display().to_string();
     let project = d.project().display().to_string();
     d.start();
@@ -390,14 +411,12 @@ fn pinned_folders_add_a_folder_row_and_ctrl_x_removes_it() {
     d.press("down", DOWN);
     d.wait_text("› pinned folders");
     d.press("enter", b"\r");
-    d.wait_text("↑↓ folder · enter edit · ctrl+x remove");
+    d.wait_text("↑↓ folder · enter add");
     let screen = d.capture("pins-open");
-    assert!(line(&screen, "↑↓ folder").contains("1 / 2"), "{screen}");
-    assert!(screen.contains(&format!("│ › {project}")), "{screen}");
-    assert!(screen.contains("│   + add folder"), "{screen}");
+    assert!(line(&screen, "↑↓ folder").contains("1 / 1"), "{screen}");
+    assert!(screen.contains("│ › + add folder"), "{screen}");
 
     // `+ add folder` types a new pin; Enter saves it.
-    d.press("down", DOWN);
     d.press("enter", b"\r");
     d.typed(&extra);
     d.wait_text("enter save · esc revert");
@@ -405,46 +424,57 @@ fn pinned_folders_add_a_folder_row_and_ctrl_x_removes_it() {
     d.press("enter", b"\r");
     let yaml = d.wait_file("jobs.yaml", |t| t.contains(&extra));
     assert!(
-        yaml.contains(&format!("\nfolders: [\"{project}\", \"{extra}\"]\n")),
+        yaml.contains(&format!("\nfolders: [\"{extra}\"]\n")),
         "{yaml}"
     );
-    d.wait_text("2 / 3");
+    d.wait_text("1 / 2");
     let screen = d.capture("pin-added");
     assert!(screen.contains(&format!("│ › {extra}")), "{screen}");
     d.keep("jobs.yaml");
 
-    // The list draws the new pin as an empty folder row.
+    // A pin is not a row: the list shows only the open project folder.
     d.press("esc", ESC);
-    d.wait_text("[ 2 folders ] *");
+    d.wait_text("[ 1 folder ] *");
     d.press("esc", ESC);
     d.press("ctrl+z", CTRL_Z);
-    let screen = d.wait_for("the pinned folder's row", |s| empty_folder_row(s, &extra));
-    d.capture("folder-row");
-    assert!(empty_folder_row(&screen, &project), "{screen}");
+    let screen = d.wait_for("the list", |s| empty_folder_row(s, &project));
+    d.capture("pin-not-a-row");
+    assert!(!screen.contains(&extra), "{screen}");
 
-    // ctrl+x on the pin removes it from the file and the list.
-    open_config(&mut d);
-    d.press("down", DOWN);
-    d.press("down", DOWN);
+    // `+ add folder` offers it, and Enter on the offer opens it.
+    select(&mut d, DOWN, "+ add folder", |l, _| l.contains("+ "));
+    let screen = d.wait_text(&extra);
+    d.capture("offered");
+    assert_eq!(screen.matches(&extra).count(), 1, "{screen}");
+    select(&mut d, DOWN, "the offer", |l, _| l.contains(&extra));
     d.press("enter", b"\r");
-    d.press("down", DOWN);
-    d.wait_text(&format!("│ › {extra}"));
+    let screen = d.wait_for("the opened folder's row", |s| empty_folder_row(s, &real));
+    d.capture("opened");
+    assert!(empty_folder_row(&screen, &project), "{screen}");
+    d.wait_file("state/open-folders.json", |t| t.contains(&real));
+    d.keep("state/open-folders.json");
+
+    // An open folder is not offered again.
+    select(&mut d, DOWN, "+ add folder", |l, _| l.contains("+ "));
+    let screen = d.capture("open-not-offered");
+    assert_eq!(screen.matches(&extra).count(), 1, "{screen}");
+
+    // ctrl+x closes the folder and keeps the pin, which is offered again.
+    select(&mut d, UP, "the opened folder", |_, above| {
+        above.starts_with(&real)
+    });
     d.press("ctrl+x", CTRL_X);
-    let yaml = d.wait_file("jobs.yaml", |t| !t.contains(&extra));
+    d.press("ctrl+x", CTRL_X);
+    d.wait_for("the folder row to leave", |s| !empty_folder_row(s, &real));
+    d.wait_file("state/open-folders.json", |t| !t.contains(&real));
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
     assert!(
-        yaml.contains(&format!("\nfolders: [\"{project}\"]\n")),
+        yaml.contains(&format!("\nfolders: [\"{extra}\"]\n")),
         "{yaml}"
     );
-    d.wait_text("2 / 2");
-    let screen = d.capture("pin-removed");
-    assert!(!screen.contains(&extra), "{screen}");
-    assert!(screen.contains(&format!("│   {project}\n")), "{screen}");
-    assert!(screen.contains("│ › + add folder"), "{screen}");
-    d.press("esc", ESC);
-    d.press("esc", ESC);
-    d.press("ctrl+z", CTRL_Z);
-    d.wait_for("the folder row to leave", |s| !s.contains(&extra));
-    let screen = d.capture("folder-row-gone");
+    select(&mut d, DOWN, "+ add folder", |l, _| l.contains("+ "));
+    let screen = d.wait_text(&extra);
+    d.capture("offered-again");
     assert!(empty_folder_row(&screen, &project), "{screen}");
     d.quit();
 }
