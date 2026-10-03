@@ -5234,6 +5234,8 @@ pub struct ConfigForm {
     choice_top: usize,
     /// Scroll position in the selected field's full explanation.
     help: Option<usize>,
+    /// The last save failed, so the values differ from the file even where a row is unchanged.
+    unsaved: bool,
 }
 
 impl ConfigForm {
@@ -5376,6 +5378,7 @@ impl ConfigForm {
             top: 0,
             choice_top: 0,
             help: None,
+            unsaved: false,
         }
     }
 
@@ -5786,7 +5789,7 @@ impl ConfigForm {
 
     /// Validate changed values and focus the field named by a validation error.
     fn commit(&mut self) -> ConfigAction {
-        let changed = self.values[self.row] != self.before;
+        let changed = self.values[self.row] != self.before || self.unsaved;
         match self.config() {
             Err(e) if e.starts_with(&format!("{}:", self.field().name)) => {
                 self.error = Some(e);
@@ -5804,6 +5807,7 @@ impl ConfigForm {
             Ok((p, c, s, pn, st, m, w, rc, jc, hc)) => {
                 self.open = false;
                 if changed {
+                    self.unsaved = false;
                     ConfigAction::Save(Box::new(p), c, s.map(Box::new), pn, st, m, w, rc, jc, hc)
                 } else {
                     ConfigAction::Stay
@@ -11804,8 +11808,10 @@ impl App {
                         let error = Some(format!("{e:#}"));
                         if let Mode::Config(form) = &mut self.mode {
                             form.error = error;
+                            form.unsaved = true;
                         } else {
                             before.error = error;
+                            before.unsaved = true;
                             self.mode = Mode::Config(before);
                         }
                     }

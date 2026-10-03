@@ -501,7 +501,6 @@ fn failed_write_and_invalid_value_keep_the_typed_value_with_the_reason() {
 }
 
 #[test]
-#[ignore = "bug: after a failed write, Enter Enter on the retained value saves nothing, though the row shows it set"]
 fn a_failed_write_can_be_retried_once_the_cause_is_fixed() {
     let mut d = Dashboard::new("config_retry", &["claude"]);
     d.start();
