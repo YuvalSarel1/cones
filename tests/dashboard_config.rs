@@ -216,7 +216,6 @@ fn config_saves_choice_and_text_settings_into_jobs_yaml() {
 }
 
 #[test]
-#[ignore = "bug: a config save drops the gemini, cursor, copilot, amp, droid and kimi switches from defaults"]
 fn config_save_keeps_every_harness_switch() {
     let mut d = Dashboard::new("config_harness_switches", &["claude"]);
     d.start();
