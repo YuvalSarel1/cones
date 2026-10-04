@@ -14800,13 +14800,20 @@ impl App {
         keys.push(("↑↓", "select"));
         keys.push(("ctrl+g", "help"));
         let room = (self.hint_width() as usize).saturating_sub(label);
-        while keys.len() > 1 && hints(&keys).width() > room {
+        // A newer release outranks every key but help, so it shows beside a pane too; a
+        // bar too narrow for the upgrade command still names the version.
+        let notice = crate::update::notice().and_then(|full| {
+            let short = full.split(" · ").next().unwrap_or_default().to_owned();
+            [full, short]
+                .into_iter()
+                .find(|n| hints(&keys[keys.len() - 1..]).width() + n.chars().count() + 3 <= room)
+        });
+        let reserve = notice.as_ref().map_or(0, |n| n.chars().count() + 3);
+        while keys.len() > 1 && hints(&keys).width() + reserve > room {
             keys.remove(keys.len() - 2);
         }
         let mut navigation = hints(&keys);
-        if let Some(notice) =
-            crate::update::notice().filter(|n| navigation.width() + n.chars().count() + 3 <= room)
-        {
+        if let Some(notice) = notice {
             navigation
                 .spans
                 .push(Span::styled(format!(" · {notice}"), dim()));
