@@ -33,10 +33,20 @@ fn capture() -> Result<()> {
     app.rebuild();
     let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
     terminal.draw(|frame| app.draw(frame))?;
+    let mut recording = Recording::new(&fixture)?;
     for spec in input["viewers"].as_array().context("viewers")? {
         spawn_viewer(&mut app, spec)?;
+        // Claude rows sort by their first transcript event; wait for it so rows keep CAST order.
+        if spec["harness"] == "claude" && spec["deferred_prompt"].is_null() {
+            let id = spec["session"].as_str().context("session")?;
+            recording.until(&mut app, &mut terminal, "Claude session started", |app| {
+                app.data
+                    .sessions
+                    .iter()
+                    .any(|session| session.session_id == id && session.started.is_some())
+            })?;
+        }
     }
-    let mut recording = Recording::new(&fixture)?;
     for spec in input["viewers"].as_array().unwrap() {
         if let Some(prompt) = spec["deferred_prompt"].as_str() {
             let session = spec["session"].as_str().unwrap();
@@ -77,39 +87,25 @@ fn capture() -> Result<()> {
                 .write(format!("{prompt}\r").as_bytes());
         }
     }
-    {
-        let title = "Retry failed webhooks";
-        recording.until(&mut app, &mut terminal, "initial change completed", |app| {
-            reported_state(app, title) == Some("idle")
-        })?;
-        let id = app
-            .data
-            .sessions
-            .iter()
-            .find(|session| session.title.as_deref() == Some(title))
-            .context("initial change session")?
-            .session_id
-            .clone();
-        let open = app
-            .viewers
-            .iter_mut()
-            .find(|open| open.key == id)
-            .context("initial change viewer")?;
-        open.viewer.write(b"Run the regression checks.\r");
-    }
     recording.until(
         &mut app,
         &mut terminal,
         "initial states and native context reports",
         |app| {
-            ["api/.ready-retry", "api/.ready-events"]
-                .iter()
-                .all(|path| fixture.join("projects").join(path).is_file())
+            [
+                "web/.ready-retry",
+                "web/.ready-pagination",
+                "api/.ready-events",
+            ]
+            .iter()
+            .all(|path| fixture.join("projects").join(path).is_file())
                 && input["viewers"].as_array().unwrap().iter().all(|spec| {
                     reported_state(app, spec["title"].as_str().unwrap())
                         == spec["initial_state"].as_str()
                 })
-                && app.data.sessions.len() == input["viewers"].as_array().unwrap().len()
+                && app.data.sessions.len()
+                    == input["viewers"].as_array().unwrap().len()
+                        + input["finished"].as_u64().unwrap_or(0) as usize
                 && app.data.sessions.iter().all(|session| {
                     session.context_tokens.is_some() && session.context_window.is_some()
                 })
@@ -134,7 +130,8 @@ fn capture() -> Result<()> {
     std::fs::write(fixture.join("rolling"), b"")?;
     recording.saving = true;
     recording.scene = "list";
-    recording.hold(&mut app, &mut terminal, 4500)?;
+    // Reading time is recorded live, so working rows keep moving while the caption shows.
+    recording.hold(&mut app, &mut terminal, 6500)?;
 
     recording.scene = "peek";
     app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL)?;
@@ -191,7 +188,8 @@ fn capture() -> Result<()> {
             break;
         }
         app.key(KeyCode::Down, KeyModifiers::NONE)?;
-        recording.hold(&mut app, &mut terminal, NAVIGATION_MS)?;
+        // Dwell live on each passed agent so its pane preview is visible.
+        recording.hold(&mut app, &mut terminal, 1600)?;
     }
     anyhow::ensure!(
         matches!(app.selected().map(|row| &row.kind), Some(Kind::NewFolder)),

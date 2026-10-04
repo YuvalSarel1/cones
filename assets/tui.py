@@ -3,13 +3,14 @@
 
 Run: python3 assets/tui.py [--claude /path/to/claude] [--codex /path/to/codex]
 Re-render saved cells without starting CLIs: python3 assets/tui.py --render-from /path/to/capture
+The README records 100x30; record 80x24 with --size 80x24 for phone feeds such as LinkedIn.
 Requires Pillow and CairoSVG (python3 -m pip install Pillow CairoSVG).
 Use --output-dir to render a local preview; --video also exports MP4, desktop/mobile
 playback versions and a poster, and requires FFmpeg.
 
 Native CLIs execute the example tasks in isolated homes against a loopback provider.
 Cones reads their real state and renders their live terminals. The recording browses
-five sessions in the list, opens a native pane, types a follow-up that runs regression
+eight sessions in the list, opens a native pane, types a follow-up that runs regression
 checks, then adds a folder and starts a Codex session. Short captions come from
 tui_captions.json. Claude uses its native focus view with compact edit counts.
 No external model is called. See tui_demo.py for the sample tasks.
@@ -18,7 +19,7 @@ The cost column uses ~/.cones/prices.json, cached by opening cones.
 import argparse
 import html
 from functools import lru_cache
-from itertools import groupby
+from itertools import groupby, takewhile
 import json
 import os
 from pathlib import Path
@@ -27,17 +28,25 @@ import shutil
 import signal
 import subprocess
 import tempfile
-from tui_demo import CAST, MODELS, prepare, provider
+from tui_demo import CAST, FINISHED, MODELS, prepare, provider
 
 
 REPO = Path(__file__).resolve().parent.parent
-COLS, ROWS = 80, 24
+# README and Slack size; --size 80x24 suits phone feeds such as LinkedIn.
+COLS, ROWS = 100, 30
 # Terminal background, text and muted colours from the owner's Claude Code reference.
 BG, FG = "#191a1b", "#cccccc"
 # Square half-block pixels keep terminal sprites at their native proportions.
 CW, LH, PAD, VPAD, FS = 13, 26, 20, 12, 21
 CAPTION_HEIGHT = 72
-RASTER_SCALE = 2
+# The terminal sits in a macOS-style window on a wallpaper, captions above it.
+MARGIN, TITLE_BAR = 56, 30
+TITLE_FILL, TITLE_TEXT = (48, 49, 52), (170, 172, 178)
+# A dusk gradient, corner by corner: indigo and violet above, warm orange and plum below.
+WALLPAPER = ((34, 28, 72), (64, 38, 104), (196, 96, 58), (112, 48, 96))
+LIGHTS = ((255, 95, 87), (254, 188, 46), (40, 200, 64))
+# Browsers play a GIF this size smoothly; video exports render at 2x for feed sharpness.
+RASTER_SCALE = 1
 CAPTIONS = json.loads((REPO / "assets/tui_captions.json").read_text())
 # The README art plays at its own speed; five seconds shows it without a long tail.
 CLOSING_MS = 5000
@@ -259,13 +268,14 @@ def recorded_frames(root):
                           "/Users/", "cones-readme-", "~/personal", "unread", "✉"):
             assert forbidden not in text, f"{path.name}: unwanted capture content: {forbidden}"
         assert frame["pane_visible"] == (frame["scene"] != "list"), path.name
-        expected = {5, 6} if frame["scene"] == "launch" else {5}
+        listed = len(CAST) + len(FINISHED)
+        expected = {listed, listed + 1} if frame["scene"] == "launch" else {listed}
         assert len(frame["sessions"]) in expected, path.name
         if frame["scene"] == "typing":
             assert frame["pane_focused"], "typing must reach the native agent"
         frames.append(frame)
     assert len(frames) > 1, "capture produced no animation"
-    assert frames[0]["scene"] == "list" and len(frames[-1]["sessions"]) == 6
+    assert frames[0]["scene"] == "list" and len(frames[-1]["sessions"]) == len(CAST) + len(FINISHED) + 1
     opening = "".join(cell["text"] for cell in frames[0]["cells"])
     assert all(label in opening for label in ("context", "model", "activity", "cost")), (
         "the opening must show context, model, activity and cost columns"
@@ -276,6 +286,9 @@ def recorded_frames(root):
     ]
     header = next(line for line in lines if "context" in line and "model" in line)
     expected_models = {title: MODELS[task].removesuffix("[1m]") for _, _, task, title in CAST}
+    expected_models.update({title: MODELS[task].removesuffix("[1m]") for task, (_, title, *_) in FINISHED.items()})
+    finished = [s for s in frames[0]["sessions"] if s["title"] in {f[1] for f in FINISHED.values()}]
+    assert len(finished) == len(FINISHED) and all(s["state"] == "done" for s in finished), finished
     for session in frames[0]["sessions"]:
         assert session["model"].removesuffix("[1m]") == expected_models[session["title"]], (
             f"native model does not match the selected model: {session['title']}: {session['model']}"
@@ -297,6 +310,13 @@ def recorded_frames(root):
             cell["text"] for cell in frames[0]["cells"][row * COLS + header.index("cost"):(row + 1) * COLS]
         ).strip()
         assert re.fullmatch(r"~?\$\d+(?:\.\d+)?", cost), f"cost is not visible: {session['title']}: {cost!r}"
+    passed = [
+        session for frame in frames if frame["scene"] == "folder"
+        for session in frame["sessions"] if session["id"] == frame["selected"]
+    ]
+    titles = list(dict.fromkeys(s["title"] for s in passed))
+    assert titles == ["Retry failed requests", "Paginate search results"], titles
+    assert all(s["state"] == "active" for s in passed), "moving to the new folder must pass only working agents"
     follow_up = "Run the regression checks."
     assert follow_up in (root / "native-typed-input.txt").read_text()
     assert "test_keyboard.py" in (root / "native-after-reply.txt").read_text()
@@ -304,7 +324,7 @@ def recorded_frames(root):
     for frame in frames:
         if frame["scene"] == "typing":
             text = "\n".join(
-                "".join(cell["text"] for cell in frame["cells"][row * COLS + 43:(row + 1) * COLS])
+                "".join(cell["text"] for cell in frame["cells"][row * COLS + pane_divider(frame):(row + 1) * COLS])
                 for row in range(ROWS)
             )
             progress.add(max([0] + [n for n in range(1, len(follow_up) + 1) if follow_up[:n] in text]))
@@ -316,18 +336,18 @@ def caption_frames(frames):
     """Allow reading time on static views and carry captions into the next action."""
     result = []
     elapsed, caption_started, active_caption = 0, 0, None
+    # The folder caption and highlight wait until the selection reaches the add-folder row.
+    reached = False
+    frames = [dict(frame) for frame in frames]
+    for frame in frames:
+        reached = reached or (frame["scene"] == "folder" and frame["selected"] == "new folder")
+        if frame["scene"] == "folder" and not reached:
+            frame["scene"] = "browse"
     for scene, group in groupby(frames, key=lambda frame: frame["scene"]):
-        if scene == "peek":
-            continue
         group = [dict(frame) for frame in group]
-        if scene == "folder":
-            for _, selection in groupby(group, key=lambda frame: frame["selected"]):
-                navigation_ms = 0
-                for frame in selection:
-                    navigation_ms += frame["duration_ms"]
-                    if navigation_ms >= 600:
-                        frame["row_pause_after"] = True
-                        break
+        if scene == "peek":
+            # A moment of the opened pane, so typing does not start on the frame it appears.
+            group = list(takewhile(lambda frame: frame["scene_elapsed_ms"] < 1200, group))
         spec = CAPTIONS.get(scene)
         if spec:
             active_caption, caption_started = spec, elapsed
@@ -366,21 +386,9 @@ def caption_frames(frames):
                 "duration_ms": min(step, frame["duration_ms"] - offset),
                 "scene_elapsed_ms": frame["scene_elapsed_ms"] + offset,
                 "caption_elapsed_ms": elapsed + offset,
-                "row_pause_after": frame.get("row_pause_after", False)
-                and offset + min(step, frame["duration_ms"] - offset) == frame["duration_ms"],
             })
-    paced = []
-    for scene, group in groupby(animated, key=lambda frame: frame["scene"]):
-        for frame in group:
-            paced.append(frame)
-            if frame.get("row_pause_after"):
-                paced.append({**frame, "duration_ms": 1000, "row_pause_after": False})
-        if scene == "list":
-            last = paced[-1]
-            paced.append({
-                **last, "duration_ms": 2000,
-                "caption_elapsed_ms": CAPTIONS["list"]["duration_ms"],
-            })
+    # Every frame is recorded live; no still frame is held to pad the timing.
+    paced = animated
     last = paced[-1]
     for offset in range(0, CLOSING_MS, 50):
         paced.append({
@@ -397,6 +405,14 @@ def highlight_opacity(frame):
     duration = frame["caption"]["duration_ms"]
     progress = max(0, min(1, (elapsed - 350) / 600, (duration - 350 - elapsed) / 600))
     return progress * progress * (3 - 2 * progress)
+
+
+def pane_divider(frame):
+    """Find the column of the line between the session list and the native pane."""
+    return next(
+        col for col in range(COLS // 3, COLS * 2 // 3)
+        if frame["cells"][col]["text"] == "│"
+    )
 
 
 def highlight_box(frame):
@@ -418,10 +434,7 @@ def highlight_box(frame):
         right = max(len(line.rstrip()) for line in lines[header:bottom])
         return left - .5, header - .35, right + .5, bottom + .35
 
-    divider = next(
-        col for col in range(COLS // 3, COLS * 2 // 3)
-        if frame["cells"][col]["text"] == "│"
-    )
+    divider = pane_divider(frame)
     if target == "pane":
         return divider + .5, -.25, COLS + .25, ROWS + .25
     if target == "input":
@@ -455,13 +468,49 @@ def highlight_box(frame):
     return -.25, row - .4, divider - .5, row + 1.4
 
 
+def desktop(scale):
+    """Draw the wallpaper and an empty window frame; return it with the terminal's origin."""
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    term_w, term_h = (COLS * CW + PAD * 2) * scale, (ROWS * LH + VPAD * 2) * scale
+    margin, bar = MARGIN * scale, TITLE_BAR * scale
+    size = (term_w + 2 * margin, CAPTION_HEIGHT * scale + bar + term_h + margin)
+    corners = Image.new("RGB", (2, 2))
+    corners.putdata(WALLPAPER)
+    canvas = corners.resize((4, 4), Image.Resampling.BILINEAR).resize(size, Image.Resampling.BICUBIC)
+    left, top = margin, CAPTION_HEIGHT * scale
+    window = (left, top, left + term_w, top + bar + term_h)
+    shadow = Image.new("L", size, 0)
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        (window[0], window[1] + 10 * scale, window[2], window[3] + 10 * scale), radius=12 * scale, fill=170)
+    canvas.paste((0, 0, 0), mask=shadow.filter(ImageFilter.GaussianBlur(18 * scale)))
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(window, radius=11 * scale, fill=TITLE_FILL)
+    for i, color in enumerate(LIGHTS):
+        x, y = left + (20 + 20 * i) * scale, top + bar // 2
+        draw.ellipse((x - 6 * scale, y - 6 * scale, x + 6 * scale, y + 6 * scale), fill=color)
+    draw.text(((window[0] + window[2]) // 2, top + bar // 2), "cones", anchor="mm", fill=TITLE_TEXT,
+              font=ImageFont.truetype("/System/Library/Fonts/SFNS.ttf", 13 * scale))
+    return canvas, (left, top + bar)
+
+
+DESKTOP = {}
+
+
 def captioned(image, frame):
-    """Keep brief, plain captions above the live terminal and its input area."""
+    """Place the live terminal in its window, with brief, plain captions above it."""
     from PIL import Image, ImageDraw, ImageFont
 
     scale = image.width // (COLS * CW + PAD * 2)
-    canvas = Image.new("RGB", (image.width, image.height + CAPTION_HEIGHT * scale), BG)
-    canvas.paste(image, (0, CAPTION_HEIGHT * scale))
+    if scale not in DESKTOP:
+        DESKTOP[scale] = desktop(scale)
+    background, (left, top) = DESKTOP[scale]
+    canvas = background.copy()
+    # Round the window's lower corners over the terminal's square ones.
+    mask = Image.new("L", image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, -20 * scale, image.width - 1, image.height - 1),
+                                    radius=10 * scale, fill=255)
+    canvas.paste(image, (left, top), mask)
     spec = frame["caption"]
     if spec is None:
         return canvas
@@ -475,15 +524,15 @@ def captioned(image, frame):
     if highlight_alpha > 0 and (box := highlight_box(frame)):
         x0, y0, x1, y1 = box
         draw.rounded_rectangle(
-            ((PAD + x0 * CW) * scale, (CAPTION_HEIGHT + VPAD + y0 * LH) * scale,
-             (PAD + x1 * CW) * scale, (CAPTION_HEIGHT + VPAD + y1 * LH) * scale),
+            (left + (PAD + x0 * CW) * scale, top + (VPAD + y0 * LH) * scale,
+             left + (PAD + x1 * CW) * scale, top + (VPAD + y1 * LH) * scale),
             radius=7 * scale, outline=(128, 205, 230, round(235 * highlight_alpha)),
             fill=(80, 170, 205, round(24 * highlight_alpha)), width=4 * scale,
         )
     font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Bold.ttf", 38 * scale)
     width = draw.textlength(spec["text"], font=font)
     assert width <= canvas.width - 32 * scale, "caption is too long for the video"
-    draw.text((canvas.width // 2, 36 * scale), spec["text"], font=font,
+    draw.text((canvas.width // 2, 38 * scale), spec["text"], font=font,
               fill=(245, 246, 248, round(255 * opacity)), anchor="mm")
     return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
 
@@ -531,8 +580,8 @@ def closing_screen(time_ms=0):
     from PIL import Image
 
     scale = RASTER_SCALE
-    width = (COLS * CW + PAD * 2) * scale
-    height = (ROWS * LH + VPAD * 2 + CAPTION_HEIGHT) * scale
+    width = (COLS * CW + PAD * 2 + 2 * MARGIN) * scale
+    height = (ROWS * LH + VPAD * 2 + CAPTION_HEIGHT + TITLE_BAR + MARGIN) * scale
     image = Image.new("RGB", (width, height), BG)
     svg = ET.fromstring((REPO / "assets/cones.svg").read_text())
     for parent in list(svg.iter()):
@@ -563,8 +612,8 @@ def render_gif(frames, output_dir, video=False, gif=True):
     from PIL import Image
 
     frames = caption_frames(frames)
-    paint = rasterizer()
-    width = (COLS * CW + PAD * 2) * RASTER_SCALE
+    paint = rasterizer(RASTER_SCALE)
+    width = (COLS * CW + PAD * 2 + 2 * MARGIN) * RASTER_SCALE
     durations = [frame["duration_ms"] for frame in frames]
     with tempfile.TemporaryDirectory(prefix="cones-render-") as folder:
         folder = Path(folder)
@@ -584,11 +633,27 @@ def render_gif(frames, output_dir, video=False, gif=True):
                 poster_saved = True
         output = output_dir / ("tui.gif" if gif else "tui.mp4")
         if gif:
-            palette = samples.quantize(colors=256)
+            from PIL import ImageChops
+            # The wallpaper gets its own palette entries and is dithered once, so its
+            # gradient stays smooth and identical in every frame. Terminal cells are
+            # never dithered, and the window controls are too small for the thumbnails.
+            background = DESKTOP[RASTER_SCALE][0]
+            wallpaper = background.quantize(colors=24).getpalette()[:3 * 24]
+            reserved = [TITLE_FILL, TITLE_TEXT, *LIGHTS]
+            count = 256 - 24 - len(reserved)
+            palette = samples.quantize(colors=count)
+            palette.putpalette(palette.getpalette()[:3 * count] + wallpaper
+                               + [value for color in reserved for value in color])
+            still = background.quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG)
             indexed = []
             for i in range(len(frames)):
                 with Image.open(folder / f"{i:05}.png") as image:
-                    indexed.append(image.quantize(palette=palette, dither=Image.Dither.NONE))
+                    frame = image.quantize(palette=palette, dither=Image.Dither.NONE)
+                    if image.size == background.size:
+                        unchanged = ImageChops.difference(image, background).convert("L").point(
+                            lambda value: 255 if value == 0 else 0)
+                        frame.paste(still, mask=unchanged)
+                    indexed.append(frame)
             # Round cumulative timing, preserving the duration of native keystrokes.
             elapsed, previous, gif_durations = 0, 0, []
             for duration in durations:
@@ -664,6 +729,7 @@ def run_capture(command, env):
 
 
 def main():
+    global COLS, ROWS, RASTER_SCALE
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--claude", type=Path, default=shutil.which("claude"))
     parser.add_argument("--codex", type=Path, default=shutil.which("codex"))
@@ -671,8 +737,11 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=REPO / "assets")
     parser.add_argument("--video", action="store_true", help="also export MP4 and a poster; requires FFmpeg")
     parser.add_argument("--video-only", action="store_true", help="update video previews without encoding the GIF")
+    parser.add_argument("--size", default=f"{COLS}x{ROWS}", help="terminal COLSxROWS for a new recording")
     args = parser.parse_args()
     args.video = args.video or args.video_only
+    if args.video:
+        RASTER_SCALE = 2
     if args.video and shutil.which("ffmpeg") is None:
         parser.error("--video requires ffmpeg")
     if args.render_from is not None:
@@ -682,6 +751,7 @@ def main():
         binary = getattr(args, name)
         if binary is None or not binary.is_file():
             parser.error(f"{name} must be installed; pass --{name} /path/to/{name}")
+    COLS, ROWS = map(int, args.size.split("x"))
     root = record(args.claude.resolve(), args.codex.resolve())
     export(root, args.output_dir.resolve(), args.video, args.video_only)
 
@@ -699,6 +769,10 @@ def record(claude, codex):
             "RUSTUP_HOME": os.environ.get("RUSTUP_HOME", str(original_home / ".rustup")),
             "PATH": os.environ["PATH"],
             "CONES_README_FIXTURE": str(root),
+            # The fixture's HOME would give scripts/check a cold state dir: a full build
+            # every recording, outside the machine-wide check slot.
+            "CONES_CHECK_STATE_DIR": os.environ.get(
+                "CONES_CHECK_STATE_DIR", str(original_home / ".cones")),
         })
         if target := os.environ.get("CARGO_TARGET_DIR"):
             env["CARGO_TARGET_DIR"] = str(Path(target).resolve())
@@ -712,11 +786,13 @@ def record(claude, codex):
             # Composer-created Codex threads belong to this isolated daemon.
             (root / "rolling").touch()
             (root / "recording-complete").touch()
-            try:
-                subprocess.run([str(codex), "app-server", "daemon", "stop"],
-                               env=env, cwd=root, capture_output=True, timeout=15, check=False)
-            except subprocess.TimeoutExpired:
-                pass
+            for command in ([str(codex), "app-server", "daemon", "stop"],
+                            # The fixture's own Claude daemon, which hosts the finished sessions.
+                            [str(claude), "daemon", "stop", "--any"]):
+                try:
+                    subprocess.run(command, env=env, cwd=root, capture_output=True, timeout=15, check=False)
+                except subprocess.TimeoutExpired:
+                    pass
             # A managed fixture daemon can outlive its clients. Only terminate
             # binaries installed inside this fixture, never the user's daemon.
             processes = subprocess.run(
@@ -736,7 +812,8 @@ def export(root, output_dir=None, video=False, video_only=False):
     output_dir = output_dir or REPO / "assets"
     output_dir.mkdir(parents=True, exist_ok=True)
     metadata = json.loads((root / "capture.json").read_text())
-    assert (metadata["cols"], metadata["rows"]) == (COLS, ROWS), "capture dimensions do not match"
+    global COLS, ROWS
+    COLS, ROWS = metadata["cols"], metadata["rows"]
     frames = recorded_frames(root)
     cells = frames[0]["cells"]
     text = "\n".join(

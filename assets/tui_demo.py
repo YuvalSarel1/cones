@@ -18,17 +18,36 @@ import uuid
 
 
 CAST = [
-    ("api", "claude", "retry", "Retry failed webhooks"),
     ("api", "codex", "events", "Deduplicate events"),
+    ("api", "claude", "timeout", "Session timeout policy"),
+    ("api", "codex", "settings", "Validate settings"),
+    # Moving down from the reviewed agent passes two working Claude Code sessions.
     ("web", "claude", "keyboard", "Keyboard navigation"),
-    ("web", "claude", "timeout", "Session timeout policy"),
-    ("web", "codex", "settings", "Settings page"),
+    ("web", "claude", "retry", "Retry failed requests"),
+    ("web", "claude", "pagination", "Paginate search results"),
 ]
 
+# Claude Code background sessions that finish before the recording, so the list opens with
+# natively reported done rows at the top: task -> (folder, title, file read, contents, reply,
+# the one-line detail Claude's background classifier reports).
+FINISHED = {
+    "changelog": ("api", "Draft the changelog", "CHANGELOG.md",
+                  "## Unreleased\n\n- Retry webhooks with exponential backoff.\n",
+                  "**Changelog drafted.** `CHANGELOG.md` lists the merged fixes under *Unreleased*.",
+                  "drafted the Unreleased section of CHANGELOG.md"),
+    "licenses": ("api", "Audit dependency licenses", "requirements.txt",
+                 "requests==2.32.3\nurllib3==2.2.2\n",
+                 "**Both dependencies are permissively licensed** (Apache-2.0 and MIT). Nothing to change.",
+                 "both dependencies permissive, nothing to change"),
+}
+
 MODELS = {
+    "changelog": "claude-sonnet-5-5",
+    "licenses": "claude-opus-5-5[1m]",
     "retry": "claude-opus-5-5[1m]",
     "events": "gpt-6-astra",
     "keyboard": "claude-fable-5-1",
+    "pagination": "claude-sonnet-5-5",
     "timeout": "claude-opus-5-5[1m]",
     "settings": "gpt-6.1-sol",
     "docs": "gpt-6.1-sol",
@@ -36,9 +55,12 @@ MODELS = {
 
 # Representative sample workloads, reported through the loopback model responses.
 USAGE = {
+    "changelog": (22000, 300),
+    "licenses": (36000, 420),
     "retry": (64000, 400),
     "events": (196000, 640),
     "keyboard": (312000, 800),
+    "pagination": (128000, 520),
     "timeout": (48000, 240),
     "settings": (24000, 80),
     "docs": (12000, 800),
@@ -46,17 +68,18 @@ USAGE = {
 
 # Completed native read calls provide a short history before the visible demo.
 OUTPUT_HISTORY = {
+    "changelog": [900, 2200, 1600, 700],
+    "licenses": [1400, 2800, 2000, 1000],
     "retry": [6500, 5000, 3500, 2500, 3000, 4000, 3500, 2000],
     "events": [2000, 3500, 5000, 6500, 5000, 3500, 2500, 1500],
     "keyboard": [1500, 2500, 4000, 6000, 8000, 6500, 4000, 2000],
+    "pagination": [800, 1800, 3200, 4800, 5600, 4800, 3000, 1600],
     "timeout": [2500, 4000, 5000, 4500, 3500, 3000, 2000, 1200],
     "settings": [300, 600, 1000, 1400, 1200, 800, 500, 300],
 }
 
 WORKING = {"retry", "events", "keyboard", "pagination", "settings", "health"}
 PRELUDES = {
-    "retry": "**Backoff is in place.** `retry.py` now doubles the delay on each attempt, "
-             "up to a **60-second cap**.\n\nThe change is ready for the regression checks.",
     "keyboard": "**Keyboard focus now wraps.** `keyboard.py` returns to the first item "
                 "at the end of the menu.\n\nThe change is ready for the regression checks.",
 }
@@ -75,6 +98,7 @@ FOLDERS = sorted({folder for folder, _, _, _ in CAST} | {"docs"})
 # Which scripted task a Codex thread belongs to, decided once and kept: (lock, {thread: task}).
 CODEX_THREADS = (threading.Lock(), {})
 TASKS = {task: (folder, harness, title) for folder, harness, task, title in CAST}
+TASKS.update({task: (folder, "claude", title) for task, (folder, title, *_) in FINISHED.items()})
 
 FILES = {
     "retry": ("retry.py", "def retry_delay(attempt):\n    return 2\n",
@@ -330,13 +354,15 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
     )
     if daemon.returncode:
         raise RuntimeError(f"starting the demo Codex daemon: {daemon.stderr.strip()}")
+    finish_in_background(root, claude, env)
     address = next(
         json.loads(line)["socketPath"] for line in daemon.stdout.splitlines()
         if line.startswith("{") and "socketPath" in json.loads(line)
     )
     viewers = []
-    for folder, harness, task, title in CAST:
-        session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cones-readme/{task}"))
+    for index, (folder, harness, task, title) in enumerate(CAST):
+        # Sessions started in the same second sort by id; lead with the index to keep CAST order.
+        session = f"{index:x}" + str(uuid.uuid5(uuid.NAMESPACE_URL, f"cones-readme/{task}"))[1:]
         command = (
             [str(claude), "--session-id", session, "--name", title,
              "--permission-mode", "acceptEdits", "--model", MODELS[task],
@@ -358,6 +384,7 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
         })
     write_json(root / "capture.json", {
         "cols": cols, "rows": rows, "cwd": str(root / "projects/api"), "viewers": viewers,
+        "finished": len(FINISHED),
         "colors": {
             name: "rgb:" + "/".join(value[i:i + 2] * 2 for i in (1, 3, 5))
             for name, value in (("fg", foreground), ("bg", background))
@@ -371,6 +398,30 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
         "pane:\n  at: right\n  ratio: 47\njobs: []\n"
     )
     return env
+
+
+def finish_in_background(root, claude, env):
+    """Run each FINISHED task as a native background session and wait until Claude reports it done."""
+    jobs = Path(env["CLAUDE_CONFIG_DIR"]) / "jobs"
+    for task, (folder, title, filename, contents, *_) in FINISHED.items():
+        cwd = root / "projects" / folder
+        (cwd / filename).write_text(contents)
+        launched = subprocess.run(
+            [str(claude), "--bg", "--name", title, "--model", MODELS[task], title],
+            env=env, cwd=cwd, capture_output=True, text=True, timeout=60,
+        )
+        if launched.returncode:
+            raise RuntimeError(f"starting {title} in the background: {launched.stderr.strip()}")
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        try:
+            states = [json.loads(path.read_text()).get("state") for path in jobs.glob("*/state.json")]
+        except json.JSONDecodeError:
+            continue  # Claude is rewriting a state file.
+        if len(states) == len(FINISHED) and all(state == "done" for state in states):
+            return
+        time.sleep(0.5)
+    raise RuntimeError(f"background sessions did not finish: {states}")
 
 
 @contextmanager
@@ -420,7 +471,7 @@ def provider(root):
         def claude(self, body):
             history = json.dumps(body.get("messages", []))
             task = next(
-                (key for _, harness, key, title in CAST if harness == "claude" and title in history),
+                (key for key, (_, harness, title) in TASKS.items() if harness == "claude" and title in history),
                 self.path.split("/")[2],
             )
             input_tokens, output_tokens = USAGE[task]
@@ -443,14 +494,23 @@ def provider(root):
             content = []
             warmup = root / f".reviewed-{task}"
             history_step = sum(key.startswith(f"demo_{task}_history_") for key in results)
-            if history_step < len(OUTPUT_HISTORY[task]):
+            if not tools and "decide which of four states" in json.dumps(body.get("system")):
+                # Claude's background-session classifier; only FINISHED tasks run in the background.
+                *_, reply, detail = FINISHED[task]
+                content = [{"type": "text", "text": json.dumps({
+                    "state": "done", "detail": detail, "tempo": "idle",
+                    "output": {"result": reply.replace("**", "")},
+                })}]
+            elif history_step < len(OUTPUT_HISTORY[task]):
                 assert "Read" in tools, tools
                 output_tokens = history_usage(task, history_step)
                 content = [
                     {"type": "text", "text": f"Reviewing {TASKS[task][2].lower()}."},
                     {"type": "tool_use", "id": f"demo_{task}_history_{history_step}",
-                     "name": "Read", "input": {"file_path": FILES[task][0]}},
+                     "name": "Read", "input": {"file_path": FINISHED[task][2] if task in FINISHED else FILES[task][0]}},
                 ]
+            elif task in FINISHED:
+                content = [{"type": "text", "text": FINISHED[task][4]}]
             elif task == "timeout" and not warmup.exists():
                 content = [{"type": "text", "text":
                             "The current policy keeps inactive sessions signed in for an hour.\n\n"
@@ -499,6 +559,19 @@ def provider(root):
                 content = [{"type": "text", "text": f"**All {len(CASES[task][1])} checks passed.** "
                             f"The change in `{FILES[task][0]}` is ready for review."}]
             stop = "tool_use" if content[-1]["type"] == "tool_use" else "end_turn"
+            if not body.get("stream"):
+                # Side queries such as the background classifier ask for one plain message.
+                data = json.dumps({
+                    "id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
+                    "model": body["model"], "content": content, "stop_reason": stop,
+                    "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
