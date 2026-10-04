@@ -1,0 +1,207 @@
+<!doctype html>
+<!--
+Editable source for architecture.png. Open in a browser with network access for
+Rough.js, Caveat and Kalam. Once document.fonts.ready resolves and the SVG is
+populated, capture the #s element at 1120 CSS pixels wide and 3x device scale.
+The seeded strokes, fixture session labels and embedded logos keep the image
+repeatable. The dashboard layout and mascot follow tui.svg and little-feet.txt.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How cones works</title>
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&family=Kalam:wght@400;700&display=block" rel="stylesheet">
+<script src="https://unpkg.com/roughjs@4.6.6/bundled/rough.js"></script>
+<style>
+  body { background:#fbf9f3; margin:0; }
+  .wrap { max-width: 1120px; margin: 30px auto; }
+  svg text { font-family: Kalam, cursive; }
+  .hand { font-family: Caveat, cursive; }
+</style>
+</head>
+<body>
+<div class="wrap"><svg id="s" viewBox="0 0 1120 1330" width="100%" role="img" aria-label="How cones discovers native sessions, streams a terminal into its peek pane, and launches an agent in another folder."></svg></div>
+<!-- Logo sources: claude.com, pi.dev, opencode.ai/favicon.svg, openai.com/favicon.svg -->
+<script type="application/json" id="harness-logos">{"Claude Code":{"box":[0,0,125,125],"paths":[{"d":"M54.375 118.75L56.125 111L58.125 101L59.75 93L61.25 83.125L62.125 79.875L62 79.625L61.375 79.75L53.875 90L42.5 105.375L33.5 114.875L31.375 115.75L27.625 113.875L28 110.375L30.125 107.375L42.5 91.5L50 81.625L54.875 76L54.75 75.25H54.5L21.5 96.75L15.625 97.5L13 95.125L13.375 91.25L14.625 90L24.5 83.125L49.125 69.375L49.5 68.125L49.125 67.5H47.875L43.75 67.25L29.75 66.875L17.625 66.375L5.75 65.75L2.75 65.125L0 61.375L0.25 59.5L2.75 57.875L6.375 58.125L14.25 58.75L26.125 59.5L34.75 60L47.5 61.375H49.5L49.75 60.5L49.125 60L48.625 59.5L36.25 51.25L23 42.5L16 37.375L12.25 34.75L10.375 32.375L9.625 27.125L13 23.375L17.625 23.75L18.75 24L23.375 27.625L33.25 35.25L46.25 44.875L48.125 46.375L49 45.875V45.5L48.125 44.125L41.125 31.375L33.625 18.375L30.25 13L29.375 9.75C29.0417 8.625 28.875 7.375 28.875 6L32.75 0.750006L34.875 0L40.125 0.750006L42.25 2.625L45.5 10L50.625 21.625L58.75 37.375L61.125 42.125L62.375 46.375L62.875 47.75H63.75V47L64.375 38L65.625 27.125L66.875 13.125L67.25 9.125L69.25 4.375L73.125 1.87501L76.125 3.25L78.625 6.875L78.25 9.125L76.875 18.75L73.875 33.875L72 44.125H73.125L74.375 42.75L79.5 36L88.125 25.25L91.875 21L96.375 16.25L99.25 14H104.625L108.5 19.875L106.75 26L101.25 33L96.625 38.875L90 47.75L86 54.875L86.375 55.375H87.25L102.125 52.125L110.25 50.75L119.75 49.125L124.125 51.125L124.625 53.125L122.875 57.375L112.625 59.875L100.625 62.25L82.75 66.5L82.5 66.625L82.75 67L90.75 67.75L94.25 68H102.75L118.5 69.125L122.625 71.875L125 75.125L124.625 77.75L118.25 80.875L109.75 78.875L89.75 74.125L83 72.5H82V73L87.75 78.625L98.125 88L111.25 100.125L111.875 103.125L110.25 105.625L108.5 105.375L97 96.625L92.5 92.75L82.5 84.375H81.875V85.25L84.125 88.625L96.375 107L97 112.625L96.125 114.375L92.875 115.5L89.5 114.875L82.25 104.875L74.875 93.5L68.875 83.375L68.25 83.875L64.625 121.625L63 123.5L59.25 125L56.125 122.625L54.375 118.75Z","color":"#c66c45"}]},"pi":{"box":[165.29,165.29,469.43,469.43],"paths":[{"d":"M165.29 165.29H517.36V400H400V282.65H165.29Z","color":"#F09082"},{"d":"M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z","color":"#4D9ABF"},{"d":"M517.36 400H634.72V634.72H517.36Z","color":"#F1BE58"}]},"OpenCode":{"box":[128,96,256,320],"paths":[{"d":"M320 224V352H192V224H320Z","color":"#a29a8d"},{"d":"M384 416H128V96H384V416ZM320 160H192V352H320V160Z","color":"#38332e"}]},"Codex":{"box":[29.487,29.964,121.035,119.954],"paths":[{"d":"M75.91 73.628V62.232c0-.96.36-1.68 1.199-2.16l22.912-13.194c3.119-1.8 6.838-2.639 10.676-2.639 14.394 0 23.511 11.157 23.511 23.032 0 .839 0 1.799-.12 2.758l-23.752-13.914c-1.439-.84-2.879-.84-4.318 0L75.91 73.627Zm53.499 44.383v-27.23c0-1.68-.72-2.88-2.159-3.719L97.142 69.55l9.836-5.638c.839-.48 1.559-.48 2.399 0l22.912 13.195c6.598 3.839 11.035 11.995 11.035 19.912 0 9.116-5.397 17.513-13.915 20.992v.001Zm-60.577-23.99-9.836-5.758c-.84-.48-1.2-1.2-1.2-2.16v-26.39c0-12.834 9.837-22.55 23.152-22.55 5.039 0 9.716 1.679 13.676 4.678L70.993 55.516c-1.44.84-2.16 2.039-2.16 3.719v34.787-.002Zm21.173 12.234L75.91 98.339V81.546l14.095-7.917 14.094 7.917v16.793l-14.094 7.916Zm9.056 36.467c-5.038 0-9.716-1.68-13.675-4.678l23.631-13.676c1.439-.839 2.159-2.038 2.159-3.718V85.863l9.956 5.757c.84.48 1.2 1.2 1.2 2.16v26.389c0 12.835-9.957 22.552-23.27 22.552v.001Zm-28.43-26.75L47.72 102.778c-6.599-3.84-11.036-11.996-11.036-19.913 0-9.236 5.518-17.513 14.034-20.992v27.35c0 1.68.72 2.879 2.16 3.718l29.989 17.393-9.837 5.638c-.84.48-1.56.48-2.399 0Zm-1.318 19.673c-13.555 0-23.512-10.196-23.512-22.792 0-.959.12-1.919.24-2.879l23.63 13.675c1.44.84 2.88.84 4.32 0l30.108-17.392v11.395c0 .96-.361 1.68-1.2 2.16l-22.912 13.194c-3.119 1.8-6.837 2.639-10.675 2.639Zm29.748 14.274c14.515 0 26.63-10.316 29.39-23.991 13.434-3.479 22.071-16.074 22.071-28.91 0-8.396-3.598-16.553-10.076-22.43.6-2.52.96-5.039.96-7.557 0-17.153-13.915-29.99-29.989-29.99-3.239 0-6.358.48-9.477 1.56-5.398-5.278-12.835-8.637-20.992-8.637-14.515 0-26.63 10.316-29.39 23.991-13.434 3.48-22.07 16.074-22.07 28.91 0 8.396 3.598 16.553 10.075 22.431-.6 2.519-.96 5.038-.96 7.556 0 17.154 13.915 29.989 29.99 29.989 3.238 0 6.357-.479 9.476-1.559 5.397 5.278 12.835 8.637 20.992 8.637Z","color":"#373b40"}]}}</script>
+<script>
+Promise.all(['700 44px Caveat','500 25px Caveat','400 20px Kalam','700 20px Kalam'].map(f => document.fonts.load(f))).then(() => {
+const svg = document.getElementById('s');
+const rc = rough.svg(svg);
+const NS = 'http://www.w3.org/2000/svg';
+let seed = 1;
+const o = (x = {}) => ({ seed: seed++, roughness: 1.3, bowing: 1.2, strokeWidth: 2, ...x });
+const add = n => svg.appendChild(n);
+function text(x, y, s, { size = 20, color = '#2a2a2a', weight = 400, hand = false, anchor = 'middle', rot = 0 } = {}) {
+  const t = document.createElementNS(NS, 'text');
+  t.setAttribute('x', x); t.setAttribute('y', y);
+  t.setAttribute('font-size', size); t.setAttribute('fill', color);
+  t.setAttribute('font-weight', weight); t.setAttribute('text-anchor', anchor);
+  if (hand) t.setAttribute('class', 'hand');
+  if (rot) t.setAttribute('transform', `rotate(${rot} ${x} ${y})`);
+  t.textContent = s; add(t); return t;
+}
+const box = (x, y, w, h, stroke, fill, extra = {}) =>
+  add(rc.rectangle(x, y, w, h, o({ stroke, fill, fillStyle: 'hachure', hachureGap: 7, fillWeight: 1.2, hachureAngle: -41, ...extra })));
+const line = (x1, y1, x2, y2, stroke = '#333', extra = {}) => add(rc.line(x1, y1, x2, y2, o({ stroke, ...extra })));
+function arrow(pts, stroke = '#333', { both = false, dashed = false } = {}) {
+  add(rc.curve(pts, o({ stroke, strokeWidth: 2.2, ...(dashed ? { strokeLineDash: [8, 7] } : {}) })));
+  const head = (a, b) => {
+    const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), L = 14;
+    for (const d of [0.45, -0.45])
+      line(b[0], b[1], b[0] - L * Math.cos(ang + d), b[1] - L * Math.sin(ang + d), stroke, { strokeWidth: 2.2, roughness: 0.8 });
+  };
+  head(pts[pts.length - 2], pts[pts.length - 1]);
+  if (both) head(pts[1], pts[0]);
+}
+function highlight(x, y, w, color) {
+  add(rc.rectangle(x, y, w, 26, o({ stroke: 'none', fill: color, fillStyle: 'solid', roughness: 2.2 })));
+}
+
+const t1 = text(40, 58, 'how', { size: 44, hand: true, weight: 700, anchor: 'start' });
+const x2 = 40 + t1.getComputedTextLength() + 14;
+const t2 = text(x2, 58, 'cones works', { size: 44, hand: true, weight: 700, anchor: 'start' });
+highlight(x2 - 6, 34, t2.getComputedTextLength() + 14, '#fde68a');
+svg.insertBefore(svg.lastChild, t1);
+
+const ORANGE = '#b85c1e', BLUE = '#2b5fa8', GREEN = '#2f7d4a', RED = '#c0392b', GREY = '#777';
+const badge = (x, y, n, diameter = 32) => {
+  add(rc.circle(x, y, diameter, o({ stroke: '#333', fill: '#fde68a', fillStyle: 'solid', roughness: 1 })));
+  text(x, y + diameter * 0.22, n, { size: diameter * 0.625, weight: 700 });
+};
+const logos = JSON.parse(document.getElementById('harness-logos').textContent);
+function logo(name, cx, cy, size = 36, opacity = 1) {
+  const { box: [x, y, w, h], paths } = logos[name];
+  const scale = size / Math.max(w, h);
+  const group = document.createElementNS(NS, 'g');
+  group.setAttribute('aria-label', `${name} logo`);
+  group.setAttribute('opacity', opacity);
+  group.setAttribute('transform',
+    `translate(${cx - w * scale / 2} ${cy - h * scale / 2}) scale(${scale}) translate(${-x} ${-y})`);
+  paths.forEach(({ d, color }) => group.appendChild(rc.path(d, o({
+    stroke: color, fill: color, fillStyle: 'hachure',
+    strokeWidth: 0.65 / scale, roughness: 0.45 / scale,
+    hachureGap: 2.2 / scale, fillWeight: 0.75 / scale, hachureAngle: -41
+  }))));
+  add(group);
+}
+
+// the dashboard: real layout, drawn by hand
+const INK = '#2a2a2a', DIM = '#8a8a8a', CORANGE = '#e07a1c', AMBER = '#b8860b';
+const mono = (x, y, str, color = INK, { weight = 400, size = 17, anchor = 'start' } = {}) =>
+  text(x, y, str, { size, color, weight, anchor });
+const seq = (x, y, parts, size = 17) => parts.forEach(([str, color, weight = 400]) => {
+  x += mono(x, y, str, color, { weight, size }).getComputedTextLength() + 8; });
+add(rc.rectangle(120, 120, 880, 350, o({ stroke: INK, strokeWidth: 2.6, fill: '#fffdf7', fillStyle: 'solid' })));
+line(582, 130, 584, 460, DIM, { strokeWidth: 1.6 });
+
+// mascot: the real sprite, assets/little-feet.txt
+const SPRITE = ['...o...', '..ooo..', '.wwwww.', 'oo.o.oo', 'ooooooo', '.oo.oo.'];
+const P = 7;
+SPRITE.forEach((row, r) => [...row].forEach((c, k) => {
+  if (c === '.') return;
+  const q = document.createElementNS(NS, 'rect');
+  q.setAttribute('x', 134 + k * P); q.setAttribute('y', 132 + r * P); q.setAttribute('width', P); q.setAttribute('height', P);
+  q.setAttribute('fill', c === 'o' ? '#ff8700' : '#f1eadf'); add(q);
+}));
+const band = document.createElementNS(NS, 'rect');
+band.setAttribute('x', 134 + P); band.setAttribute('y', 132 + 2 * P); band.setAttribute('width', 5 * P); band.setAttribute('height', P);
+band.setAttribute('fill', 'none'); band.setAttribute('stroke', '#b9ae9a'); band.setAttribute('stroke-width', 1); add(band);
+
+// status box
+add(rc.rectangle(200, 136, 370, 36, o({ stroke: DIM, strokeWidth: 1.5 })));
+add(rc.rectangle(208, 126, 52, 18, o({ stroke: 'none', fill: '#fffdf7', fillStyle: 'solid', roughness: 0 })));
+mono(212, 141, 'cones', CORANGE, { weight: 700 });
+seq(212, 163, [['● 1 unread ·', GREEN], ['2 working ·', INK], ['▌1 input ·', AMBER], ['✓ 1 done', GREEN]], 16);
+
+// tabs
+[['jobs', 134], ['config', 190], ['help', 262]].forEach(([t, x]) => {
+  add(rc.rectangle(x - 4, 184, t.length * 9 + 14, 24, o({ stroke: DIM, fill: '#e8e4da', fillStyle: 'solid', roughness: 1 })));
+  mono(x + 3, 202, t, INK, { size: 16 });
+});
+mono(255, 230, 'state', DIM, { size: 15 }); mono(335, 230, 'title', DIM, { size: 15 });
+
+const groupRows = [
+  ['~/projects/api', 254, [['>_ codex', DIM, 'working', INK, 'Deduplicate events', true],
+                            ['✱ claude', CORANGE, 'input', AMBER, 'Token rotation'],
+                            ['✱ claude', CORANGE, 'working', INK, 'Retry failed webhooks']]],
+  ['~/projects/web', 342, [['>_ codex', DIM, 'done', GREEN, 'Settings page'],
+                            ['✱ claude', CORANGE, 'idle', DIM, 'Table virtualization']]],
+];
+groupRows.forEach(([folder, y, rows]) => {
+  mono(132, y, folder, INK, { weight: 700 });
+  rows.forEach(([h, hc, st, sc, title, sel], k) => {
+    const ry = y + 22 + k * 21;
+    if (sel) add(rc.line(129, ry - 14, 129, ry + 3, o({ stroke: '#ff8700', strokeWidth: 4, roughness: 0.5 })));
+    mono(160, ry, h, hc); mono(255, ry, st, sc); mono(335, ry, title, INK, { weight: sel ? 700 : 400 });
+  });
+});
+seq(140, 420, [['+ add folder', CORANGE, 700]]);
+line(128, 434, 572, 434, DIM, { strokeWidth: 1.2 });
+seq(132, 458, [['✱ claude ›', CORANGE, 700], ['Type to start a new agent…', DIM]]);
+
+// peek pane: the real Codex UI
+add(rc.rectangle(598, 134, 330, 62, o({ stroke: DIM, strokeWidth: 1.5 })));
+mono(612, 158, '>_ OpenAI Codex', INK, { weight: 700 });
+mono(612, 184, 'directory: ~/projects/api', DIM);
+const peekBand = y => add(rc.rectangle(598, y, 388, 30, o({ stroke: 'none', fill: '#d9d4c8', fillStyle: 'hachure', hachureGap: 5, roughness: 1 })));
+peekBand(212); mono(612, 233, '› Deduplicate events', INK);
+mono(606, 270, '• I’ll read events.py first.', INK);
+mono(606, 296, '• Explored', INK, { weight: 700 });
+mono(620, 317, '└ Read events.py', BLUE);
+mono(606, 344, '• Working (7s · esc to interrupt)', DIM);
+peekBand(392); mono(612, 413, '› Ask Codex to do anything', DIM);
+text(790, 108, 'native terminal', { size: 34, hand: true, weight: 700, color: BLUE });
+text(350, 108, 'sessions by folder', { size: 34, hand: true, weight: 700, color: BLUE });
+
+// Native records sit between the harnesses and the discovery view.
+add(rc.rectangle(225, 512, 690, 52, o({ stroke: GREY, fill: '#ddd', fillStyle: 'hachure', hachureGap: 6 })));
+text(570, 547, 'session records + live telemetry', { size: 28, weight: 700, color: '#333' });
+
+['Claude Code', 'pi', 'OpenCode', 'Codex'].forEach((n, i) => {
+  const cx = [295, 485, 665, 845][i];
+  box(cx - 75, 600, 150, 88, ORANGE, '#fffdf7', { fillStyle: 'solid' });
+  logo(n, cx, 625, 44);
+  text(cx, 676, n, { size: 26, weight: 700 });
+  arrow([[cx, 596], [cx + 1, 582], [cx, 568]], GREY, { dashed: true });
+});
+
+add(rc.rectangle(30, 600, 150, 88, o({ stroke: ORANGE, strokeLineDash: [8, 7] })));
+text(105, 652, 'new agent', { size: 26, weight: 700, color: '#555' });
+text(105, 720, 'in ~/new-idea', { size: 28, hand: true, color: '#666' });
+
+// 1 read, 2 peek, 3 launch
+arrow([[390, 508], [391, 493], [390, 478]], RED);
+badge(420, 494, '1');
+// The terminal stream bypasses the records used for discovery.
+arrow([[845, 596], [950, 584], [969, 548], [953, 498], [845, 478]], BLUE, { both: true });
+badge(1008, 548, '2');
+text(1010, 591, 'PTY ↔ pane', { size: 24, hand: true, color: BLUE });
+arrow([[132, 420], [78, 463], [76, 533], [95, 594]], '#333', { dashed: true });
+badge(48, 536, '3');
+
+const key = (y, n, a, lines) => {
+  badge(60, y - 10, n, 40);
+  text(96, y, a, { size: 38, hand: true, weight: 700, anchor: 'start' });
+  lines.forEach((s, i) => text(96, y + 42 + i * 36, s, { size: 28, color: '#333', anchor: 'start' }));
+};
+// Sources: cones docs/harness.md (Discovery, Native input signals) and src/viewer.rs.
+key(790, '1', 'discovery', [
+  'harnesses leave many clues behind. cones reads the same',
+  'signals as Claude Agents, and more: transcripts, lock files,',
+  'live reports, etc.'
+]);
+key(980, '2', 'pty streaming', [
+  'harnesses interact with a terminal. cones catches that',
+  'with a pseudo-terminal.',
+  'native cli → pty → vt100 screen cells → pane'
+]);
+key(1170, '3', 'start in any folder', [
+  '+ add folder → path → prompt',
+  'a folder picker. simple, but useful when you don’t want',
+  'to interrupt your flow.'
+]);
+});
+</script>
+</body>
+</html>

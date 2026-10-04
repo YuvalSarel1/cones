@@ -1,0 +1,17 @@
+{
+  "list": {
+    "text": "more metadata - context, model, activity, cost",
+    "duration_ms": 4500,
+    "highlight": "metadata"
+  },
+  "typing": {
+    "text": "type directly to the agent",
+    "duration_ms": 3500,
+    "highlight": "pane"
+  },
+  "folder": {
+    "text": "start an agent in another folder",
+    "duration_ms": 3500,
+    "highlight": "new_folder"
+  }
+}

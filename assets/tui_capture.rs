@@ -5,7 +5,7 @@
 use super::*;
 use ratatui::{Terminal, backend::TestBackend};
 
-const NAVIGATION_MS: u64 = 150;
+const NAVIGATION_MS: u64 = 600;
 
 #[test]
 #[ignore = "run through python3 assets/tui.py"]
@@ -14,6 +14,7 @@ fn capture() -> Result<()> {
     let input: Value = serde_json::from_slice(&std::fs::read(fixture.join("capture.json"))?)?;
     let cols = input["cols"].as_u64().context("cols")? as u16;
     let rows = input["rows"].as_u64().context("rows")? as u16;
+    crate::cost::init(&fixture.join("state"), false);
     let mut app = App::new(
         Path::new("cones"),
         &fixture.join("jobs.yaml"),
@@ -36,7 +37,48 @@ fn capture() -> Result<()> {
         spawn_viewer(&mut app, spec)?;
     }
     let mut recording = Recording::new(&fixture)?;
-    for title in ["Retry failed webhooks", "Keyboard navigation"] {
+    for spec in input["viewers"].as_array().unwrap() {
+        if let Some(prompt) = spec["deferred_prompt"].as_str() {
+            let session = spec["session"].as_str().unwrap();
+            let report = fixture
+                .join(".claude/statusline")
+                .join(format!("{session}.json"));
+            recording.until(
+                &mut app,
+                &mut terminal,
+                "initial native status report",
+                |_| report.is_file(),
+            )?;
+            if let Some(warmup) = spec["warmup_prompt"].as_str() {
+                app.viewers
+                    .iter_mut()
+                    .find(|open| open.key == session)
+                    .context("question viewer")?
+                    .viewer
+                    .write(format!("{warmup}\r").as_bytes());
+                recording.until(
+                    &mut app,
+                    &mut terminal,
+                    "completed policy review and native cost",
+                    |app| {
+                        app.data.sessions.iter().any(|row| {
+                            row.session_id == session
+                                && row.state == "idle"
+                                && row.cost_usd.is_some_and(|cost| cost > 0.0)
+                        })
+                    },
+                )?;
+            }
+            app.viewers
+                .iter_mut()
+                .find(|open| open.key == session)
+                .context("question viewer")?
+                .viewer
+                .write(format!("{prompt}\r").as_bytes());
+        }
+    }
+    {
+        let title = "Retry failed webhooks";
         recording.until(&mut app, &mut terminal, "initial change completed", |app| {
             reported_state(app, title) == Some("idle")
         })?;
@@ -58,81 +100,91 @@ fn capture() -> Result<()> {
     recording.until(
         &mut app,
         &mut terminal,
-        "initial sessions running and question waiting",
+        "initial states and native context reports",
         |app| {
-            [
-                "api/.ready-retry",
-                "api/.ready-events",
-                "web/.ready-keyboard",
-            ]
-            .iter()
-            .all(|path| fixture.join("projects").join(path).is_file())
+            ["api/.ready-retry", "api/.ready-events"]
+                .iter()
+                .all(|path| fixture.join("projects").join(path).is_file())
                 && input["viewers"].as_array().unwrap().iter().all(|spec| {
                     reported_state(app, spec["title"].as_str().unwrap())
                         == spec["initial_state"].as_str()
                 })
                 && app.data.sessions.len() == input["viewers"].as_array().unwrap().len()
+                && app.data.sessions.iter().all(|session| {
+                    session.context_tokens.is_some() && session.context_window.is_some()
+                })
         },
     )?;
-    recording.dump(&app)?;
-    let mut browse = [
-        "Retry failed webhooks",
-        "Deduplicate events",
-        "Keyboard navigation",
-    ]
-    .map(|title| Ok((title_index(&app, title)?, title)))
-    .into_iter()
-    .collect::<Result<Vec<_>>>()?;
-    browse.sort_by_key(|(index, _)| *index);
-    recording.select_title(&mut app, &mut terminal, browse[0].1)?;
+    // Review the completed edit through its real pane before recording.
+    recording.select_title(&mut app, &mut terminal, "Keyboard navigation")?;
+    recording.hold(&mut app, &mut terminal, 600)?;
+    recording.until(
+        &mut app,
+        &mut terminal,
+        "viewed completion is read",
+        |app| !app.header_summary().to_string().contains("unread"),
+    )?;
+    app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL)?;
+    anyhow::ensure!(
+        !app.split_active(),
+        "the opening view must be the list alone"
+    );
     terminal.draw(|frame| app.draw(frame))?;
     write_cells(&terminal, &fixture.join("cells.json"))?;
     std::fs::write(fixture.join("rolling"), b"")?;
     recording.saving = true;
-    recording.scene = "browse";
-    for (_, title) in browse {
-        recording.select_title(&mut app, &mut terminal, title)?;
-        anyhow::ensure!(
-            reported_state(&app, title) == Some("active"),
-            "{title} finished before browsing"
-        );
-        let shown = app
-            .shown()
-            .context(format!("{title} has no native preview"))?;
-        let screen = app.viewers[shown].viewer.screen().contents();
-        anyhow::ensure!(
-            screen.contains("Edited 1 file") || screen.contains("event ordering"),
-            "{title} preview is not populated: {screen}"
-        );
-        if title != "Deduplicate events" {
-            anyhow::ensure!(
-                !screen.contains("Update("),
-                "Claude edit diff is expanded: {screen}"
-            );
-        }
-        recording.hold(&mut app, &mut terminal, 1800)?;
-    }
-    recording.scene = "input";
-    recording.select_title(&mut app, &mut terminal, "Session timeout policy")?;
+    recording.scene = "list";
+    recording.hold(&mut app, &mut terminal, 4500)?;
+
+    recording.scene = "peek";
+    app.key(KeyCode::Char('\\'), KeyModifiers::CONTROL)?;
+    anyhow::ensure!(app.split_active(), "the native side pane did not open");
+    recording.hold(&mut app, &mut terminal, 4000)?;
+
+    recording.scene = "typing";
+    app.key(KeyCode::Enter, KeyModifiers::NONE)?;
     anyhow::ensure!(
-        reported_state(&app, "Session timeout policy") == Some("blocked"),
-        "question is not waiting"
+        app.focus.is_some() && app.split_active(),
+        "Enter must focus the agent inside the side pane"
     );
-    recording.hold(&mut app, &mut terminal, 1800)?;
-    app.key(KeyCode::Enter, KeyModifiers::NONE)?;
-    anyhow::ensure!(app.focus.is_some(), "Enter did not focus the question");
+    recording.hold(&mut app, &mut terminal, 400)?;
+    let follow_up = "Run the regression checks.";
+    recording.type_text(&mut app, &mut terminal, follow_up, 85)?;
     recording.hold(&mut app, &mut terminal, 700)?;
-    app.key(KeyCode::Enter, KeyModifiers::NONE)?;
-    recording.hold(&mut app, &mut terminal, 700)?;
+    let shown = app.shown().context("the focused agent has no viewer")?;
+    let typed_screen = app.viewers[shown].viewer.screen().contents();
+    anyhow::ensure!(
+        typed_screen.contains(follow_up) && app.composer_text().is_empty(),
+        "the follow-up must be visible in the native terminal, not the cones composer"
+    );
+    std::fs::write(fixture.join("native-typed-input.txt"), typed_screen)?;
     app.key(KeyCode::Enter, KeyModifiers::NONE)?;
     recording.scene = "reply";
-    recording.until(&mut app, &mut terminal, "answer resumes work", |app| {
-        reported_state(app, "Session timeout policy") == Some("active")
-    })?;
-    recording.hold(&mut app, &mut terminal, 2200)?;
+    recording.until(
+        &mut app,
+        &mut terminal,
+        "typed follow-up runs the checks",
+        |app| {
+            reported_state(app, "Keyboard navigation") == Some("active")
+                && fixture.join("projects/web/.ready-keyboard").is_file()
+                && app.shown().is_some_and(|shown| {
+                    app.viewers[shown]
+                        .viewer
+                        .screen()
+                        .contents()
+                        .contains("test_keyboard.py")
+                })
+        },
+    )?;
+    recording.hold(&mut app, &mut terminal, 2400)?;
+    let shown = app.shown().context("the responding agent has no viewer")?;
+    std::fs::write(
+        fixture.join("native-after-reply.txt"),
+        app.viewers[shown].viewer.screen().contents(),
+    )?;
     app.key(KeyCode::Char('z'), KeyModifiers::CONTROL)?;
     anyhow::ensure!(app.focus.is_none(), "Ctrl+Z did not return to list");
-    recording.hold(&mut app, &mut terminal, 300)?;
+    recording.hold(&mut app, &mut terminal, 400)?;
     recording.scene = "folder";
     for _ in 0..app.rows.len() {
         if matches!(app.selected().map(|row| &row.kind), Some(Kind::NewFolder)) {
@@ -145,7 +197,7 @@ fn capture() -> Result<()> {
         matches!(app.selected().map(|row| &row.kind), Some(Kind::NewFolder)),
         "the add folder row was not reached"
     );
-    recording.hold(&mut app, &mut terminal, 1200)?;
+    recording.hold(&mut app, &mut terminal, 900)?;
     recording.type_text(&mut app, &mut terminal, "~/projects/docs", 120)?;
     recording.hold(&mut app, &mut terminal, 700)?;
     app.key(KeyCode::Enter, KeyModifiers::NONE)?;
@@ -153,7 +205,8 @@ fn capture() -> Result<()> {
         app.target_dir() == fixture.join("projects/docs"),
         "new folder was not selected"
     );
-    recording.hold(&mut app, &mut terminal, 1200)?;
+    recording.scene = "compose";
+    recording.hold(&mut app, &mut terminal, 700)?;
     app.key(KeyCode::BackTab, KeyModifiers::SHIFT)?;
     anyhow::ensure!(
         harness::launchable()[app.harness] == HarnessKind::Codex,
@@ -171,7 +224,8 @@ fn capture() -> Result<()> {
         |app| {
             fixture.join("projects/docs/QUICKSTART.md").is_file()
                 && app.data.sessions.iter().any(|session| {
-                    session.cwd == fixture.join("projects/docs") && session.state == "done"
+                    session.cwd == fixture.join("projects/docs")
+                        && matches!(session.state.as_str(), "idle" | "done")
                 })
         },
     )?;
@@ -396,9 +450,16 @@ impl Recording {
                 serde_json::to_vec(&json!({
                     "duration_ms": millis,
                     "scene": self.scene,
+                    "pane_visible": app.split_active(),
+                    "pane_focused": app.focus.is_some(),
                     "cells": cells(terminal),
                     "sessions": app.data.sessions.iter().map(|session| json!({
                         "id": session.session_id, "title": session.title, "state": session.state,
+                        "model": session.model,
+                        "context_tokens": session.context_tokens,
+                        "context_window": session.context_window,
+                        "cost_usd": session.cost_usd,
+                        "cost_info": session.cost_info,
                     })).collect::<Vec<_>>(),
                     "selected": app.selected().and_then(|row| row.kind.key()),
                 }))?,

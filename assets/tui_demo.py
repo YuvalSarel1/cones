@@ -6,8 +6,11 @@ own interfaces. Only the example tasks and model responses are fixtures.
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -17,17 +20,38 @@ import uuid
 CAST = [
     ("api", "claude", "retry", "Retry failed webhooks"),
     ("api", "codex", "events", "Deduplicate events"),
-    ("api", "claude", "pagination", "Pagination cursors"),
-    ("api", "claude", "rotation", "Token rotation"),
     ("web", "claude", "keyboard", "Keyboard navigation"),
     ("web", "claude", "timeout", "Session timeout policy"),
     ("web", "codex", "settings", "Settings page"),
-    ("web", "claude", "virtualization", "Table virtualization"),
-    ("infra", "codex", "cache", "CI cache keys"),
-    ("infra", "claude", "health", "Container health checks"),
-    ("infra", "claude", "failover", "Database failover"),
-    ("infra", "codex", "images", "Build images"),
 ]
+
+MODELS = {
+    "retry": "claude-opus-5-5[1m]",
+    "events": "gpt-6-astra",
+    "keyboard": "claude-fable-5-1",
+    "timeout": "claude-opus-5-5[1m]",
+    "settings": "gpt-6.1-sol",
+    "docs": "gpt-6.1-sol",
+}
+
+# Representative sample workloads, reported through the loopback model responses.
+USAGE = {
+    "retry": (64000, 400),
+    "events": (196000, 640),
+    "keyboard": (312000, 800),
+    "timeout": (48000, 240),
+    "settings": (24000, 80),
+    "docs": (12000, 800),
+}
+
+# Completed native read calls provide a short history before the visible demo.
+OUTPUT_HISTORY = {
+    "retry": [6500, 5000, 3500, 2500, 3000, 4000, 3500, 2000],
+    "events": [2000, 3500, 5000, 6500, 5000, 3500, 2500, 1500],
+    "keyboard": [1500, 2500, 4000, 6000, 8000, 6500, 4000, 2000],
+    "timeout": [2500, 4000, 5000, 4500, 3500, 3000, 2000, 1200],
+    "settings": [300, 600, 1000, 1400, 1200, 800, 500, 300],
+}
 
 WORKING = {"retry", "events", "keyboard", "pagination", "settings", "health"}
 PRELUDES = {
@@ -177,6 +201,11 @@ def write_json(path, value):
 
 
 def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
+    prices = Path.home() / ".cones/prices.json"
+    if not prices.is_file():
+        raise RuntimeError("Open cones once to cache model prices before recording the cost column.")
+    (root / "state").mkdir(exist_ok=True)
+    shutil.copy2(prices, root / "state/prices.json")
     native_bin = root / ".local/bin"
     native_bin.mkdir(parents=True)
     for name, binary in (("claude", claude), ("codex", codex)):
@@ -199,6 +228,13 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
             f"{imports}\nfrom pathlib import Path\nimport time\n"
             f"root = Path({str(root)!r})\n"
             f"cases = {cases!r}\n"
+            "def demo_pause(i):\n"
+            "    if i < 2:\n"
+            "        time.sleep(0.2)\n"
+            "        return\n"
+            "    deadline = time.monotonic() + 15\n"
+            "    while time.monotonic() < deadline and not (root / 'recording-complete').exists():\n"
+            "        time.sleep(0.1)\n"
             "for i, (name, expression) in enumerate(cases):\n"
             "    assert eval(expression), name\n"
             '    print(f"PASS  {name}", flush=True)\n'
@@ -206,7 +242,7 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
             f"        Path('.ready-{task}').touch()\n"
             "        while not (root / 'rolling').exists():\n"
             "            time.sleep(0.1)\n"
-            f"    time.sleep({6.0 if task in {'pagination', 'settings', 'health'} else 3.0 if task in WORKING else 1.8 if task == 'timeout' else 0.08})\n"
+            "    demo_pause(i)\n"
             f'print("\\n{len(cases)} passed", flush=True)\n'
             f"Path('.done-{task}').touch()\n"
         )
@@ -222,6 +258,18 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
     )
     native_home = root / ".claude"
     native_home.mkdir()
+    status_script = native_home / "save-statusline.py"
+    status_script.write_text(
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "raw = sys.stdin.read()\n"
+        "report = json.loads(raw)\n"
+        "directory = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'statusline'\n"
+        "directory.mkdir(exist_ok=True)\n"
+        "target = directory / (report['session_id'] + '.json')\n"
+        "pending = target.with_suffix('.' + str(os.getpid()) + '.tmp')\n"
+        "pending.write_text(raw)\n"
+        "pending.replace(target)\n"
+    )
     write_json(native_home / ".claude.json", {
         "hasCompletedOnboarding": True, "theme": "dark",
         "customApiKeyResponses": {"approved": ["fixture"], "rejected": []},
@@ -234,6 +282,7 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
         "autoUpdatesChannel": "stable",
         "verbose": False,
         "viewMode": "focus",
+        "statusLine": {"type": "command", "command": f"python3 {shlex.quote(str(status_script))}"},
         "env": {
             "ANTHROPIC_API_KEY": "fixture",
             "ANTHROPIC_BASE_URL": f"{api_url}/claude/retry",
@@ -252,21 +301,23 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
     standalone.mkdir(parents=True)
     (standalone / "current").symlink_to(codex.parent, target_is_directory=True)
     (codex_home / "config.toml").write_text(
-        'model_provider = "demo"\napproval_policy = "never"\nsandbox_mode = "workspace-write"\n'
+        f'model = "{MODELS["docs"]}"\nmodel_context_window = 1050000\n'
+        'model_provider = "openai"\napproval_policy = "never"\nsandbox_mode = "workspace-write"\n'
+        f'openai_base_url = "{api_url}/codex/v1"\n'
         'check_for_update_on_startup = false\n'
-        '[model_providers.demo]\nname = "OpenAI"\nwire_api = "responses"\n'
-        f'base_url = "{api_url}/codex/v1"\nsupports_websockets = false\n'
         + "".join(
             f'[projects.{json.dumps(str(root / "projects" / folder))}]\ntrust_level = "trusted"\n'
             for folder in FOLDERS
         )
     )
+    write_json(codex_home / "auth.json", {"OPENAI_API_KEY": "fixture"})
     env = {
         "HOME": str(root), "CLAUDE_CONFIG_DIR": str(native_home), "CODEX_HOME": str(codex_home),
         "PATH": f"{native_bin}:/usr/bin:/bin:/usr/sbin:/sbin", "TERM": "xterm-256color",
         "COLORTERM": "truecolor", "FORCE_COLOR": "3",
         "LANG": "en_US.UTF-8", "SHELL": "/bin/bash",
         "ANTHROPIC_API_KEY": "fixture", "ANTHROPIC_BASE_URL": f"{api_url}/claude/timeout",
+        "OPENAI_API_KEY": "fixture",
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
         "CLAUDE_CODE_NO_FLICKER": "1",
         "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1",
@@ -287,18 +338,21 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
     for folder, harness, task, title in CAST:
         session = str(uuid.uuid5(uuid.NAMESPACE_URL, f"cones-readme/{task}"))
         command = (
-            [str(claude), *(["--bare"] if task not in QUESTIONS else []),
-             "--session-id", session, "--name", title,
-             "--permission-mode", "acceptEdits", "--model", "claude-sonnet-4-6", title]
+            [str(claude), "--session-id", session, "--name", title,
+             "--permission-mode", "acceptEdits", "--model", MODELS[task],
+             *([] if task in QUESTIONS else [title])]
             if harness == "claude" else [
                 str(codex), "--no-alt-screen", "--remote", f"unix://{address}",
-                "-C", str(root / "projects" / folder), title,
+                "--model", MODELS[task], "-C", str(root / "projects" / folder), title,
             ]
         )
         viewers.append({
             "session": session, "task": task, "title": title, "harness": harness,
-            "initial_state": "active" if task in WORKING else "blocked" if task in QUESTIONS
-            else "done" if harness == "codex" else "idle",
+            "model": MODELS[task],
+            "deferred_prompt": title if task in QUESTIONS else None,
+            "warmup_prompt": f"{title}: review the current behavior first." if task in QUESTIONS else None,
+            "initial_state": "idle" if task == "keyboard" else "active" if task in WORKING
+            else "blocked" if task in QUESTIONS else "idle",
             "cwd": str(root / "projects" / folder), "command": command,
             "env": {**env, "ANTHROPIC_BASE_URL": f"{api_url}/claude/{task}"},
         })
@@ -310,7 +364,8 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
         },
     })
     (root / "jobs.yaml").write_text(
-        "version: 4\ncolumns: [harness, state, context]\n"
+        "version: 4\ncolumns: [context, model, activity, cost]\n"
+        "activity:\n  bars: 8\n  bucket: 4s\n  metric: tokens\n  bound: fleet\n"
         "defaults:\n  gemini_enabled: false\n  cursor_enabled: false\n"
         "  copilot_enabled: false\n  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\n"
         "pane:\n  at: right\n  ratio: 47\njobs: []\n"
@@ -321,7 +376,23 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
 @contextmanager
 def provider(root):
     """Supply deterministic responses using each CLI's normal provider protocol."""
+    history_starts = {}
+    history_lock = threading.Lock()
+
+    def history_usage(task, step):
+        with history_lock:
+            start = history_starts.setdefault(task, math.floor(time.time() / 2) * 2 + 0.35)
+        time.sleep(max(0, start + (step + 1) * 2 - time.time()))
+        return OUTPUT_HISTORY[task][step]
+
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.protocol_version = "HTTP/1.1"
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                self.send_error(426, "Use the HTTP Responses endpoint")
+            else:
+                self.send_error(404)
+
         def log_message(self, *_args):
             pass
 
@@ -347,18 +418,19 @@ def provider(root):
                 self.send_error(400, "Invalid demo response; see provider-error.txt")
 
         def claude(self, body):
-            if self.path.endswith("/count_tokens"):
-                data = json.dumps({"input_tokens": 2048}).encode()
-                self.send_response(200)
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-                return
             history = json.dumps(body.get("messages", []))
             task = next(
                 (key for _, harness, key, title in CAST if harness == "claude" and title in history),
                 self.path.split("/")[2],
             )
+            input_tokens, output_tokens = USAGE[task]
+            if self.path.endswith("/count_tokens"):
+                data = json.dumps({"input_tokens": input_tokens}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             tools = {tool["name"] for tool in body.get("tools", [])}
             question_id, edit_id, test_id = (f"demo_{task}_{step}" for step in ("question", "edit", "test"))
             results = {
@@ -369,7 +441,22 @@ def provider(root):
             if task == "timeout" and question_id in results:
                 assert "15 minutes" in json.dumps(results[question_id]), "expected the 15-minute answer"
             content = []
-            if task in QUESTIONS and question_id not in results:
+            warmup = root / f".reviewed-{task}"
+            history_step = sum(key.startswith(f"demo_{task}_history_") for key in results)
+            if history_step < len(OUTPUT_HISTORY[task]):
+                assert "Read" in tools, tools
+                output_tokens = history_usage(task, history_step)
+                content = [
+                    {"type": "text", "text": f"Reviewing {TASKS[task][2].lower()}."},
+                    {"type": "tool_use", "id": f"demo_{task}_history_{history_step}",
+                     "name": "Read", "input": {"file_path": FILES[task][0]}},
+                ]
+            elif task == "timeout" and not warmup.exists():
+                content = [{"type": "text", "text":
+                            "The current policy keeps inactive sessions signed in for an hour.\n\n"
+                            "The timeout is configured in `timeout.py`."}]
+                warmup.touch()
+            elif task in QUESTIONS and question_id not in results:
                 assert "AskUserQuestion" in tools, tools
                 header, question, options = QUESTIONS[task]
                 content = [
@@ -418,7 +505,7 @@ def provider(root):
             self.event("message_start", message={
                 "id": f"msg_{uuid.uuid4().hex}", "type": "message", "role": "assistant",
                 "model": body["model"], "content": [], "stop_reason": None,
-                "usage": {"input_tokens": 2048, "output_tokens": 32},
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
             })
             for i, block in enumerate(content):
                 if block["type"] == "text":
@@ -432,7 +519,7 @@ def provider(root):
                                delta={"type": "input_json_delta", "partial_json": json.dumps(block["input"])})
                 self.event("content_block_stop", index=i)
             self.event("message_delta", delta={"stop_reason": stop, "stop_sequence": None},
-                       usage={"output_tokens": 32})
+                       usage={"output_tokens": output_tokens})
             self.event("message_stop")
 
         def codex(self, body):
@@ -462,6 +549,7 @@ def provider(root):
                     with CODEX_THREADS[0]:
                         CODEX_THREADS[1][thread_id] = task
             docs = task == "docs"
+            input_tokens, output_tokens = USAGE[task]
             title = "Write a quick-start guide" if docs else TASKS[task][2]
             if not title_request:
                 write_json(root / "threads" / f"{task}.json", {"id": metadata["thread_id"]})
@@ -476,18 +564,54 @@ def provider(root):
             latest = results[-1].get("output", "") if results else ""
             latest = latest if isinstance(latest, str) else "\n".join(part.get("text", "") for part in latest)
             pending = re.search(r"Script running with cell ID (\S+)", latest)
-            complete = bool(results) and pending is None
+            process = re.search(r"Process running with session ID (\d+)", latest)
+            complete = bool(results) and pending is None and process is None
             definitions = list(body.get("tools", []))
             for value in body.get("input", []):
                 if value.get("type") == "additional_tools":
                     definitions.extend(value.get("tools", []))
             tool_names = {tool.get("name") for tool in definitions}
             output = []
-            if pending:
+            history_step = sum(key.startswith(f"{call}_history_") for key in outputs)
+            if not docs and not title_request and history_step < len(OUTPUT_HISTORY[task]):
+                output_tokens = history_usage(task, history_step)
+                text = f"Reviewing {title.lower()}."
+                output.append({
+                    "type": "message", "id": f"msg_{uuid.uuid4().hex}", "role": "assistant",
+                    "phase": "commentary", "status": "completed",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                })
+                arguments = {
+                    "cmd": f"cat {CODEX_FILES[task][0]}",
+                    "yield_time_ms": 1000, "max_output_tokens": 1000,
+                }
+                call_id = f"{call}_history_{history_step}"
+                if "functions" in tool_names:
+                    output.append({
+                        "type": "custom_tool_call", "id": f"ct_{uuid.uuid4().hex}",
+                        "call_id": call_id, "name": "exec", "namespace": "functions",
+                        "input": f"const r = await tools.exec_command({json.dumps(arguments)}); text(r.output);",
+                    })
+                else:
+                    output.append({
+                        "type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
+                        "call_id": call_id, "name": "exec_command", "arguments": json.dumps(arguments),
+                    })
+            elif pending:
                 output.append({
                     "type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
                     "call_id": f"{call}_wait_{len(outputs)}", "name": "wait", "namespace": "functions",
                     "arguments": json.dumps({"cell_id": pending[1], "yield_time_ms": 10000, "max_tokens": 2000}),
+                })
+            elif process:
+                assert "write_stdin" in tool_names, tool_names
+                output.append({
+                    "type": "function_call", "id": f"fc_{uuid.uuid4().hex}",
+                    "call_id": f"{call}_wait_{len(outputs)}", "name": "write_stdin",
+                    "arguments": json.dumps({
+                        "session_id": int(process[1]), "chars": "",
+                        "yield_time_ms": 10000, "max_output_tokens": 2000,
+                    }),
                 })
             else:
                 if title_request:
@@ -564,7 +688,8 @@ def provider(root):
                 event("response.output_item.done", output_index=i, item=value)
             event("response.completed", response={
                 **response, "status": "completed", "output": output,
-                "usage": {"input_tokens": 2048, "output_tokens": 32, "total_tokens": 2080,
+                "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                          "total_tokens": input_tokens + output_tokens,
                           "input_tokens_details": {"cached_tokens": 0},
                           "output_tokens_details": {"reasoning_tokens": 0}},
             })
