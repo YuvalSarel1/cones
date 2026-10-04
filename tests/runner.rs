@@ -692,6 +692,17 @@ fn reading_the_ledger_closes_a_run_whose_supervisor_died() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(f.ledger().runs().unwrap()[0].terminal.is_none());
+    // The worker removes the session a dead supervisor leaves, as a reboot takes it.
+    assert_dead(f.state.join("child.pid"));
+    let registry = f.dir.path().join(".claude/sessions");
+    let until = Instant::now() + Duration::from_secs(10);
+    while fs::read_dir(&registry)
+        .unwrap()
+        .any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x == "json")))
+    {
+        assert!(Instant::now() < until, "the session outlived its worker");
+        thread::sleep(Duration::from_millis(20));
+    }
     for _ in 0..2 {
         let out = f
             .command()
@@ -716,6 +727,56 @@ fn reading_the_ledger_closes_a_run_whose_supervisor_died() {
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].terminal.as_ref().unwrap().status, Status::Failed);
     assert_dead(f.state.join("child.pid"));
+}
+#[test]
+fn reading_the_ledger_leaves_a_session_that_outlived_its_supervisor() {
+    // Supervisor and worker die at once, so nothing removes the session the daemon holds.
+    // That agent may still be working; only the job's next admission may stop it.
+    let f = Fixture::new("hang", 0.5);
+    let mut child = OwnedChild(
+        f.command()
+            .args(["run", "test"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let started = f.ledger().runs().unwrap().remove(0).started;
+    unsafe { libc::kill(-started.pgid.unwrap(), libc::SIGKILL) };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let registry = f.dir.path().join(".claude/sessions");
+    let session = fs::read_dir(&registry)
+        .unwrap()
+        .filter_map(Result::ok)
+        .find(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .map(|e| e.path())
+        .expect("the daemon's session outlives the supervisor");
+    let out = f
+        .command()
+        .args(["ls", "--job", "test", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let run: serde_json::Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .find(|r: &serde_json::Value| r["kind"] == "run")
+        .unwrap();
+    assert_eq!(run["status"], "started");
+    assert!(f.ledger().runs().unwrap()[0].terminal.is_none());
+    assert!(session.exists());
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&session).unwrap()).unwrap();
+    let pid = value["pid"].as_i64().unwrap() as i32;
+    unsafe { libc::kill(-pid, libc::SIGKILL) };
 }
 /// Move every timestamp in the ledger back, standing in for a Mac that was off that long.
 fn age_ledger(path: &PathBuf, hours: i64) {
