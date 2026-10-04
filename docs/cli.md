@@ -290,6 +290,9 @@ cones comms --dir ~/src/app wait [--id SESSION_ID]... [--timeout SECONDS]
 | `mail` | Read pending replies. Only `--ack N` marks them handled. |
 | `wait` | Block for new roster sessions or mail. With repeated `--id`, watch named workers for native input, failure or departure, plus mail. Unknown worker ids fail. |
 
+A Claude session that bypasses permission prompts holds notes for its user's approval; see
+[message delivery](harness.md#message-delivery) for the setting that delivers them directly.
+
 Wait events are announced once per condition. A worker event prompts inspection; its result
 report establishes task completion. Timeout only ends the wait. Exit 2 means timeout, exit 3
 means a competing watcher and permits retry; other refusals exit 1.

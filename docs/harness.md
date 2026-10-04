@@ -140,8 +140,9 @@ definition does not list, is refused with its version.
 The recipient applies its own inbound policy. cones is not a Claude session and does not
 claim a permission mode. A session that bypasses permission prompts therefore holds the note,
 shows it to its user as "Held message from another session" and delivers it only after the
-user approves it. The recipient's `crossSessionInbound: accept` setting delivers these notes
-without approval. cones cannot see whether a note was held.
+user approves it. Setting `"crossSessionInbound": "accept"` in `~/.claude/settings.json`
+delivers these notes without approval; a note held before the change still needs one approval.
+cones cannot see whether a note was held, and never releases one by typing into the terminal.
 
 Missing operations are refused; cones never approximates delivery by typing into a terminal.
 See [comms](cli.md#comms).
