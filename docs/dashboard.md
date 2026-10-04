@@ -209,10 +209,20 @@ survive a restart without becoming pins. Closing a pinned folder offers it again
 
 ### Fork a conversation
 
-`ctrl+y` forks a live or historical Claude, Codex, pi or OpenCode conversation through the
-native harness. It creates a new identity in the same folder, sends no instruction and
-preserves the composer draft. Claude forks use persistent interactive terminals. Forks do
-not create worktrees or transfer conversations between harnesses.
+`ctrl+y` asks where the fork goes. Each row names the harness and the model `ctrl+o` set for
+it; Enter on the first row is the native fork.
+
+The native fork covers live or historical Claude, Codex, pi and OpenCode conversations. It
+creates a new identity in the same folder, sends no instruction and preserves the composer
+draft. Claude forks use persistent interactive terminals. Forks do not create worktrees.
+
+Any other row starts a new session in that harness, in the same folder, whose first prompt
+is the conversation's last 40 messages as `cones show` prints them (at most 64 KB, newest
+end kept) and the transcript's path, to read further back. It asks the agent to wait
+for your next instruction. This is a new
+conversation, not a fork: it records no parent link, and it carries none of the source's
+tool results beyond their names and inputs, files read, system prompt, hidden reasoning or
+earlier messages. A harness whose transcript cones cannot read offers only its native fork.
 
 The new row appears beneath its visible parent, with indentation confined to the title.
 `STATE_DIR/forks.json` records confirmed links. Hidden parents leave a branch marker; absent
