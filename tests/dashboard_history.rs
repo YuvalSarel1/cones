@@ -25,6 +25,7 @@ const END: &[u8] = b"\x1b[F";
 const PAGE_UP: &[u8] = b"\x1b[5~";
 const CTRL_F: &[u8] = b"\x06";
 const CTRL_H: &[u8] = b"\x08";
+const CTRL_Y: &[u8] = b"\x19";
 const ESC: &[u8] = b"\x1b";
 
 /// Newest first: pi, Codex, the named Claude conversation, the long Claude one.
@@ -427,4 +428,97 @@ fn resuming_a_history_row_whose_transcript_was_deleted_is_refused() {
             .map(|e| e.count() == 0)
             .unwrap_or(true)
     );
+}
+
+/// ctrl+y asks where the fork goes before anything starts. Picking another harness starts a
+/// new session seeded with the conversation's tail, recorded in the launch ledger like any
+/// launch and carrying no fork link. The codex on the launch path refuses to start, so no
+/// native client runs.
+#[test]
+fn ctrl_y_asks_for_a_harness_and_seeds_a_cross_harness_fork() {
+    let mut d = Dashboard::new("history-fork-picker", &["claude", "codex", "pi"]);
+    conversations(&d);
+    let codex = d.home().join(".local/bin/codex");
+    fs::write(&codex, "#!/bin/sh\nexit 1\n").unwrap();
+    fs::set_permissions(&codex, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    d.start();
+    open_history(&mut d);
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
+    d.wait_for("the long preview", |s| pane(s).contains("Login step 39"));
+    d.press("ctrl+y", CTRL_Y);
+    let screen = d.wait_text("fork to");
+    d.capture("fork-picker");
+    // The overlay covers the bottom of the list; the pane keeps drawing beside it.
+    let picker: Vec<&str> = screen
+        .lines()
+        .skip_while(|l| !l.contains("fork to"))
+        .skip(1)
+        .take(4)
+        .collect();
+    assert!(
+        picker[0].contains("› claude fork"),
+        "native fork leads\n{screen}"
+    );
+    assert!(
+        picker[1].contains("  new codex session with this conversation"),
+        "{screen}"
+    );
+    assert!(
+        picker[2].contains("  new pi session with this conversation"),
+        "{screen}"
+    );
+    assert!(
+        !picker[3].contains("with this conversation"),
+        "disabled harnesses are not offered\n{screen}"
+    );
+    assert!(
+        !d.path("state/launches.jsonl").exists(),
+        "nothing starts before a choice"
+    );
+
+    d.press("down", DOWN);
+    d.press("enter", b"\r");
+    let launches = d.wait_file("state/launches.jsonl", |t| !t.is_empty());
+    d.quit();
+    d.keep("state/launches.jsonl");
+    let events: Vec<Value> = launches
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(events.len(), 1, "{launches}");
+    assert_eq!(events[0]["event"], "launch.submitted");
+    assert_eq!(events[0]["data"]["harness"], "codex");
+    assert_eq!(events[0]["data"]["cwd"], d.project().display().to_string());
+    let prompt = events[0]["data"]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.starts_with("Continue from Fix the flaky login test\n"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains(&format!("held in claude (session {LONG})")),
+        "{prompt}"
+    );
+    let transcript = claude_transcript(&d, LONG)
+        .canonicalize()
+        .unwrap()
+        .display()
+        .to_string();
+    assert!(
+        prompt.contains(&format!("transcript is {transcript};")),
+        "{prompt}"
+    );
+    assert!(prompt.contains("wait for my next instruction"), "{prompt}");
+    // The tail is the last 40 messages: every step, and the first instruction left out.
+    for n in 0..40 {
+        assert!(
+            prompt.contains(&format!("Login step {n:02}")),
+            "{n}: {prompt}"
+        );
+    }
+    assert!(!prompt.contains("--all"), "{prompt}");
+    assert!(!prompt.contains("user "), "{prompt}");
+    // A seeded session is a new conversation: no fork link is recorded.
+    assert!(!d.path("state/forks.json").exists());
 }

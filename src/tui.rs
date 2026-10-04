@@ -14061,6 +14061,7 @@ impl App {
             rows.extend(
                 harness::launchable()
                     .iter()
+                    .filter(|&&kind| policy.in_picker(kind))
                     .filter(|&&kind| kind != source.kind || source.operations.fork.is_none())
                     .map(|&kind| PickRow {
                         label: format!("new {kind} session with this conversation{}", model(kind)),
@@ -14102,13 +14103,15 @@ impl App {
         } else {
             transcript::Source::Conversation(entry.transcript.clone())
         };
-        let export = match transcript::export(&source, &entry.key.harness, Some(SEED_TAIL)) {
+        let mut export = match transcript::export(&source, &entry.key.harness, Some(SEED_TAIL)) {
             Ok(export) => export,
             Err(e) => {
                 self.status = format!("fork failed: {e:#}");
                 return;
             }
         };
+        // The prompt names the transcript instead; `cones show --all` means nothing to the agent.
+        export.omitted = 0;
         let prompt = seed_prompt(&entry, &crate::show::render(&export));
         let what = format!("{kind} fork of {}", entry.key.harness);
         self.launch_as(kind, entry.cwd.clone(), prompt, what, None);
@@ -23261,71 +23264,6 @@ while True:
         assert!(app.pending.is_empty() && app.opening.is_none());
         assert_eq!(app.data.sessions.len(), 1);
     }
-    /// ctrl+y asks first: the native fork leads, and another harness gets a new session
-    /// seeded with the conversation, recorded in the launch ledger like any launch.
-    #[test]
-    fn ctrl_y_offers_harnesses_and_seeds_a_cross_harness_fork() {
-        let (_d, mut app, mut terminal) = history_fixture(1);
-        app.toggle_history();
-        history_until(&mut app, &mut terminal, |a| a.history.ready);
-        let entry = app.history.rows[0].entry.clone();
-        app.history.select_first = false;
-        app.cursor = app
-            .visible
-            .iter()
-            .position(|&i| matches!(app.rows[i].kind, Kind::History(_)))
-            .expect("a history row");
-        app.text = "unfinished instruction".into();
-        app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
-        let Mode::Pick(pick) = &app.mode else {
-            panic!("ctrl+y opens the fork picker, status: {}", app.status);
-        };
-        assert_eq!(
-            pick.rows[0].label, "claude fork",
-            "native fork is the default"
-        );
-        assert!(pick.rows[0].text.is_empty());
-        assert!(
-            !pick.rows.iter().any(|r| r.text == "claude"),
-            "the native fork stands for its own harness"
-        );
-        let codex = pick
-            .rows
-            .iter()
-            .position(|r| r.text == "codex")
-            .expect("codex is offered");
-        assert_eq!(
-            pick.rows[codex].label,
-            "new codex session with this conversation"
-        );
-        assert!(app.pending.is_empty(), "nothing starts before a choice");
-        for _ in 0..codex {
-            app.key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        }
-        app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.text, "unfinished instruction");
-        let rows = diagnostic_records(&app.state.join("launches.jsonl"));
-        let launch = rows
-            .iter()
-            .find(|r| r["event"] == "launch.submitted")
-            .expect("the seeded fork is in the ledger");
-        assert_eq!(launch["data"]["harness"], "codex");
-        assert_eq!(launch["data"]["cwd"], entry.cwd.to_string_lossy().as_ref());
-        let prompt = launch["data"]["prompt"].as_str().unwrap();
-        assert!(prompt.starts_with("Continue from "), "{prompt}");
-        assert!(prompt.contains(&entry.key.session_id), "{prompt}");
-        assert!(prompt.contains(&entry.transcript.to_string_lossy().into_owned()));
-        assert!(
-            prompt.contains("old session 000") && prompt.contains("reply 0"),
-            "{prompt}"
-        );
-        assert!(
-            app.pending[0].session.forked_from.is_none(),
-            "a seeded session is not a native fork"
-        );
-    }
-
     /// Fails if the cut lands inside a multi-byte character (a slice panic) or keeps the
     /// oldest end instead of the newest. No fixture conversation is long enough to reach it.
     #[test]
