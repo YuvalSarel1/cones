@@ -103,6 +103,12 @@ if "--help" in args:
 
 if args[:1] == ["rm"]:
     short = args[1]
+    # A test holds removal open to keep the worker that asked for it running.
+    hold = pathlib.Path(os.environ.get("FAKE_LEDGER", "/nonexistent")).parent / "hold-rm"
+    if hold.exists():
+        hold.with_name("rm-held").touch()
+    while hold.exists():
+        time.sleep(0.01)
     for entry in SESSIONS.glob("*.json"):
         value = json.loads(entry.read_text())
         if value.get("jobId") == short:

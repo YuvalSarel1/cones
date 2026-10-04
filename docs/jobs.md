@@ -274,7 +274,7 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | `failed` | `missing_result` | The supervisor ended without an account of the session. | 1 |
 | `failed` | `validation: ...`, `spawn: ...`, `runner: ...` | Compilation, worker launch or supervision failed. | 1 |
 | `failed` | `exit`, or native result subtype | Nonzero exit without another explanation, or a result other than `success`, recorded verbatim. | 1 |
-| `failed` | `orphan` | The supervisor died. When a reboot took the session too, the dashboard or `cones ls` records it; a session still running is stopped only by the next run of the job. | |
+| `failed` | `orphan` | The supervisor died. When its worker and session died too, as in a reboot, the dashboard or `cones ls` records it; a worker or session still running is stopped only by the next run of the job. | |
 | `crashed` | | Derived on read: no terminal record more than five seconds beyond the run's timeout. | |
 
 A background launch prints no usage totals. Run tokens come from the conversation's reported usage; a saved status line supplies the context window and takes precedence for cost. Without a native dollar total, a displayed estimate requires reported provider, model and usage plus matching cached prices. Missing inputs leave cost unavailable.

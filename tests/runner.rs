@@ -778,6 +778,87 @@ fn reading_the_ledger_leaves_a_session_that_outlived_its_supervisor() {
     let pid = value["pid"].as_i64().unwrap() as i32;
     unsafe { libc::kill(-pid, libc::SIGKILL) };
 }
+#[test]
+fn reading_the_ledger_leaves_a_worker_that_outlived_its_supervisor() {
+    // Any harness: a worker still running may be doing the job, so reading leaves it, and
+    // records the run once the worker is gone. Holding `claude rm` keeps the worker that an
+    // orphaned supervisor sets cleaning up alive while the session itself is already gone.
+    let f = Fixture::new("hang", 0.5);
+    fs::write(f.state.join("hold-rm"), "").unwrap();
+    let mut child = OwnedChild(
+        f.command()
+            .args(["run", "test"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let worker = f.ledger().runs().unwrap().remove(0).started.pgid.unwrap();
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while !f.state.join("rm-held").exists() {
+        assert!(
+            Instant::now() < until,
+            "the worker never asked to remove its session"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+    // The session is gone, so only the worker keeps the run open.
+    let registry = f.dir.path().join(".claude/sessions");
+    for entry in fs::read_dir(&registry).unwrap().filter_map(Result::ok) {
+        if entry.path().extension().is_some_and(|x| x == "json") {
+            let value: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(entry.path()).unwrap()).unwrap();
+            unsafe { libc::kill(-(value["pid"].as_i64().unwrap() as i32), libc::SIGKILL) };
+            fs::remove_file(entry.path()).unwrap();
+        }
+    }
+    let status = || {
+        let out = f
+            .command()
+            .args(["ls", "--job", "test", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|r| r["kind"] == "run")
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(status(), "started");
+    assert!(f.ledger().runs().unwrap()[0].terminal.is_none());
+    assert_eq!(
+        unsafe { libc::kill(-worker, 0) },
+        0,
+        "reading left the worker"
+    );
+    fs::remove_file(f.state.join("hold-rm")).unwrap();
+    let until = Instant::now() + Duration::from_secs(10);
+    while unsafe { libc::kill(-worker, 0) } == 0 {
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(status(), "failed");
+    assert_eq!(
+        f.ledger().runs().unwrap()[0]
+            .terminal
+            .as_ref()
+            .unwrap()
+            .reason
+            .as_deref(),
+        Some("orphan")
+    );
+}
 /// Move every timestamp in the ledger back, standing in for a Mac that was off that long.
 fn age_ledger(path: &PathBuf, hours: i64) {
     let text = fs::read_to_string(path).unwrap();
