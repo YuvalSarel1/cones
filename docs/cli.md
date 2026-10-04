@@ -13,6 +13,8 @@ Plain `cones` opens the dashboard. `launch` starts a session in a folder; `run` 
 | `--debug` | off | Append [diagnostics](#diagnostics) to the state directory. |
 | `--trace` | off | Enable debug diagnostics plus input text, commands and individual timing samples. |
 
+`cones --version` prints the version; Help shows it beside its title. Once a day the dashboard reads the Homebrew tap's formula from GitHub and, when it names a newer release, says so in the footer and Help, with `brew upgrade cones` for a Homebrew install. Set `CONES_NO_UPDATE_CHECK=1` to turn the check off. The formula is kept as [`formula.rb`](jobs.md#stored-files).
+
 ## Native CLI lookup
 
 Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/.cargo/bin`, `~/.opencode/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin` and `/sbin`, in that order. Shell aliases and additional shell PATH entries are not used. Make executables installed elsewhere available in one of these directories. Config's connectivity check reports missing binaries or required flags.

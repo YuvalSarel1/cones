@@ -16,6 +16,7 @@ mod dashboard_jobs;
 mod dashboard_pane;
 mod dashboard_pi;
 mod dashboard_terminal;
+mod dashboard_update;
 mod history;
 mod history_api;
 mod launch;

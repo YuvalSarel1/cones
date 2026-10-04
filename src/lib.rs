@@ -30,6 +30,7 @@ pub mod terminal;
 pub mod terminal_host;
 pub mod transcript;
 pub mod tui;
+pub mod update;
 mod viewer;
 
 use anyhow::{Context, Result, bail};

@@ -28,6 +28,13 @@ fn open_folders(root: &Path, dirs: &[PathBuf]) {
     .unwrap();
 }
 
+/// The tap formula's `url` line, the only line the update check reads.
+pub fn formula(version: &str) -> String {
+    format!(
+        "class Cones < Formula\n  url \"https://github.com/YuvalSarel1/cones/archive/refs/tags/v{version}.tar.gz\"\nend\n"
+    )
+}
+
 pub const ROWS: u16 = 35;
 pub const COLS: u16 = 140;
 const HARNESSES: [&str; 10] = [
@@ -63,6 +70,12 @@ impl Dashboard {
         fs::write(root.path().join("jobs.yaml"), jobs).unwrap();
         let project = root.path().join("project");
         open_folders(root.path(), &[project]);
+        // A fresh tap formula at this version, so no dashboard checks GitHub for updates.
+        fs::write(
+            root.path().join("state/formula.rb"),
+            formula(env!("CARGO_PKG_VERSION")),
+        )
+        .unwrap();
         let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("e2e")
             .join(test);

@@ -1584,7 +1584,16 @@ impl Guide {
             .min(view.lines.len().saturating_sub(self.body_height()));
         let mut visible = vec![];
         if area.height >= 4 {
-            visible.push(Line::from(Span::styled("help", lit())));
+            let mut title = Line::from(vec![
+                Span::styled("help", lit()),
+                Span::styled(concat!("  cones ", env!("CARGO_PKG_VERSION")), dim()),
+            ]);
+            if let Some(notice) = crate::update::notice() {
+                title
+                    .spans
+                    .push(Span::styled(format!(" · {notice}"), dim()));
+            }
+            visible.push(title);
             visible.push(Line::from(Span::styled(
                 if self.searching() {
                     let found = self.status.clone().unwrap_or_else(|| {
@@ -14795,6 +14804,13 @@ impl App {
             keys.remove(keys.len() - 2);
         }
         let mut navigation = hints(&keys);
+        if let Some(notice) =
+            crate::update::notice().filter(|n| navigation.width() + n.chars().count() + 3 <= room)
+        {
+            navigation
+                .spans
+                .push(Span::styled(format!(" · {notice}"), dim()));
+        }
         navigation
             .spans
             .insert(0, Span::styled(format!("{:label$}", "Navigation"), bold()));
@@ -16482,6 +16498,7 @@ pub fn run(
 ) -> Result<i32> {
     let started = Instant::now();
     crate::cost::init(state, true);
+    crate::update::init(state);
     let log = if debug || trace {
         std::fs::create_dir_all(state)?;
         let log = Diagnostics::new(state.join("tui-debug.log"), trace);
