@@ -143,6 +143,25 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
     Ok(true)
 }
 
+/// Close every run whose supervisor died without a terminal record, such as one a reboot
+/// cut off, instead of leaving it `started` until its job is next admitted. A job being
+/// admitted right now is left to that admission, which reaps the same way.
+pub fn reap_orphans(ledger: &Ledger) -> Result<()> {
+    for run in ledger.runs()? {
+        let Some(job) = run.started.job.as_deref() else {
+            continue;
+        };
+        if run.terminal.is_some() || run.started.status != Status::Started || active(ledger, &run)?
+        {
+            continue;
+        }
+        if let Some(_admission) = ledger.try_admission_lock(job)? {
+            reap_run(ledger, &run, false)?;
+        }
+    }
+    Ok(())
+}
+
 /// `CONES_NOTIFIER` overrides osascript and receives (title, message).
 fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
     let wanted = matches!(status, Status::Failed | Status::Timeout);

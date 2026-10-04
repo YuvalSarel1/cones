@@ -668,6 +668,55 @@ fn killed_runner_leaves_one_orphan_and_next_tick_reaps_it() {
     assert_eq!(runs[1].terminal.as_ref().unwrap().status, Status::Ok);
     assert_dead(f.state.join("child.pid"));
 }
+#[test]
+fn reading_the_ledger_closes_a_run_whose_supervisor_died() {
+    // A reboot kills the supervisor and nothing admits the job again until its next tick;
+    // reading the runs must not show the dead one as started until then.
+    let f = Fixture::new("hang", 0.5);
+    let mut child = OwnedChild(
+        f.command()
+            .args(["run", "test"])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(5);
+    while !f.state.join("child.pid").exists() {
+        assert!(Instant::now() < until);
+        thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(f.ledger().runs().unwrap()[0].terminal.is_none());
+    for _ in 0..2 {
+        let out = f
+            .command()
+            .args(["ls", "--job", "test", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .filter(|r: &serde_json::Value| r["kind"] == "run")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["status"], "failed");
+        assert_eq!(rows[0]["terminal"]["reason"], "orphan");
+    }
+    let runs = f.ledger().runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].terminal.as_ref().unwrap().status, Status::Failed);
+    assert_dead(f.state.join("child.pid"));
+}
 /// Move every timestamp in the ledger back, standing in for a Mac that was off that long.
 fn age_ledger(path: &PathBuf, hours: i64) {
     let text = fs::read_to_string(path).unwrap();

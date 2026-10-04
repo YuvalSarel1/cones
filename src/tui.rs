@@ -294,6 +294,8 @@ impl Data {
             }};
         }
         let ledger = phase!("ledger.open", Ledger::new(state));
+        // A dashboard that cannot reap still shows the ledger as it stands.
+        let _ = crate::runner::reap_orphans(&ledger);
         let hidden = phase!("ledger.hidden", ledger.hidden());
         let mut runs = phase!("ledger.runs", ledger.runs());
         // Read before discovery: the harnesses config offers decide what is scanned.
@@ -21485,6 +21487,8 @@ states:
         record.cwd = Some(d.path().into());
         record.trigger = Some("manual".into());
         record.fired_at = Some(chrono::Utc::now());
+        // A live supervisor, or the dashboard reaps the run as an orphan.
+        record.pid = Some(std::process::id());
         record.output = Some(output.clone());
         record.policy = Some(serde_json::json!({"model":"unreported-config-model"}));
         let ledger = Ledger::new(d.path()).unwrap();

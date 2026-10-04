@@ -158,13 +158,25 @@ impl Ledger {
     }
     /// Serialize admission for one job; replacement must not hold up other jobs.
     pub fn admission_lock(&self, job: &str) -> Result<File> {
+        let f = self.admission_file(job)?;
+        f.lock_exclusive()?;
+        Ok(f)
+    }
+    /// The admission lock if free; `None` means the job is being admitted right now.
+    pub fn try_admission_lock(&self, job: &str) -> Result<Option<File>> {
+        let f = self.admission_file(job)?;
+        match f.try_lock_exclusive() {
+            Ok(()) => Ok(Some(f)),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+    fn admission_file(&self, job: &str) -> Result<File> {
         use sha2::{Digest, Sha256};
         let directory = self.state.join("locks").join("admission");
         private_dir(&directory)?;
         let name = format!("{:x}.lock", Sha256::digest(job.as_bytes()));
-        let f = private_file(&directory.join(name))?;
-        f.lock_exclusive()?;
-        Ok(f)
+        private_file(&directory.join(name))
     }
     /// Try the run's lifetime lease; `None` means it is still held.
     pub fn run_lock(&self, run_id: &str) -> Result<Option<File>> {

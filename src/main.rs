@@ -556,6 +556,9 @@ fn execute(cli: Cli) -> Result<i32> {
         } => {
             cones::cost::init(&state, false);
             let ledger = Ledger::new(&state)?;
+            if let Err(e) = cones::runner::reap_orphans(&ledger) {
+                eprintln!("cones: {e:#}");
+            }
             // ponytail: canonicalize both sides, so /var and /private/var compare equal on macOS
             // and a worktree reached through a symlink still belongs to its folder. A path that
             // cannot be resolved stays as given.
