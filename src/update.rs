@@ -1,6 +1,6 @@
 //! The newest cones the Homebrew tap offers. The dashboard keeps the tap's formula in the
 //! state dir and downloads it again in the background when it is a day old, so drawing
-//! never waits on the network. `CONES_NO_UPDATE_CHECK=1` turns the check off.
+//! never waits on the network. `start.update_check: false` turns the check off.
 use std::{
     fs,
     io::Write,
@@ -17,8 +17,10 @@ const REFRESH_AFTER: Duration = Duration::from_secs(24 * 3600);
 
 static NEWER: Mutex<Option<String>> = Mutex::new(None);
 
-pub fn init(state: &Path) {
-    if std::env::var_os("CONES_NO_UPDATE_CHECK").is_some_and(|v| v != "0") {
+/// Called at startup and again when the config editor saves `start.update_check`.
+pub fn init(state: &Path, enabled: bool) {
+    if !enabled {
+        *NEWER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         return;
     }
     let path = state.join("formula.rb");

@@ -162,6 +162,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 | `start.pane` | `true` | Open the viewer pane at dashboard startup. |
 | `start.notify` | `false` | Desktop notifications for newly reported input requests and completions outside the focused session. Independent of a job's `notify`. |
 | `start.index` | `false` | Fill the [meaning index](dashboard.md#history) in the background from dashboard startup. |
+| `start.update_check` | `true` | Once a day, read the Homebrew tap's formula from GitHub and announce a newer release in the footer and Help. Off, cones never contacts GitHub for it. |
 
 Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. A divider drag changes the current dashboard and saves `pane.ratio` on release. Notification changes take effect on the next configuration refresh.
 
@@ -289,7 +290,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | --- | --- |
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
-| `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it shows `cones <version> available` in the footer and Help. `CONES_NO_UPDATE_CHECK=1` stops the download and the notice. |
+| `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it shows `cones <version> available` in the footer and Help. [`start.update_check`](#start) turns it off. |
 | `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
 | `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |

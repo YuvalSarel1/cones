@@ -4249,7 +4249,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 69] = [
+const FIELDS: [Field; 70] = [
     Field {
         group: "cones",
         sub: "",
@@ -4336,6 +4336,16 @@ const FIELDS: [Field; 69] = [
         hint: "Build the meaning index in the background when cones opens.",
         long: "Embed every conversation for search by meaning from the moment cones opens, using the local MiniLM model; the first run downloads about 90 MB. Off, meaning search only covers passages already embedded, and ctrl+r in history or `cones index` fills the rest.",
         builtin: "false",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.update_check",
+        short: "check for updates",
+        hint: "Announce a newer cones release.",
+        long: "Once a day, read the Homebrew tap's formula from GitHub and, when it names a newer release, show it in the footer and Help with `brew upgrade cones` for a Homebrew install. Off, cones never contacts GitHub for it.",
+        builtin: "true",
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -5365,6 +5375,9 @@ impl ConfigForm {
                 "start.pane" => start.map(|s| s.pane.to_string()).unwrap_or_default(),
                 "start.notify" => start.map(|s| s.notify.to_string()).unwrap_or_default(),
                 "start.index" => start.map(|s| s.index.to_string()).unwrap_or_default(),
+                "start.update_check" => start
+                    .map(|s| s.update_check.to_string())
+                    .unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
                 "pane.ratio" => pane(|p| p.ratio.to_string()),
                 "activity.bars" => spark(|s| s.bars.to_string()),
@@ -5636,7 +5649,7 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        let start = if ["harness", "pane", "notify", "index"]
+        let start = if ["harness", "pane", "notify", "index", "update_check"]
             .iter()
             .all(|f| v(&format!("start.{f}")).is_empty())
         {
@@ -5652,6 +5665,7 @@ impl ConfigForm {
                 pane: flag("start.pane").unwrap_or(built.pane),
                 notify: flag("start.notify").unwrap_or(built.notify),
                 index: flag("start.index").unwrap_or(built.index),
+                update_check: flag("start.update_check").unwrap_or(built.update_check),
             })
         };
         let mark = num("confirm_secs", "seconds, as in 2")?;
@@ -11972,6 +11986,8 @@ impl App {
                             history_columns.unwrap_or_else(|| built_column_set("history_columns"));
                         self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
                         self.data.start.index = start.as_ref().is_some_and(|s| s.index);
+                        let check = start.as_ref().is_none_or(|s| s.update_check);
+                        crate::update::init(&self.state, check);
                         self.index_in_background();
                         self.rebuild();
                         self.status = format!("config saved to {}", fleet::tilde(&self.jobs_path));
@@ -16505,7 +16521,7 @@ pub fn run(
 ) -> Result<i32> {
     let started = Instant::now();
     crate::cost::init(state, true);
-    crate::update::init(state);
+    crate::update::init(state, config::start(jobs_path).update_check);
     let log = if debug || trace {
         std::fs::create_dir_all(state)?;
         let log = Diagnostics::new(state.join("tui-debug.log"), trace);

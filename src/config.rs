@@ -561,6 +561,9 @@ pub struct Start {
     /// Fill the meaning index in the background from the moment cones opens.
     #[serde(default)]
     pub index: bool,
+    /// Check the Homebrew tap once a day and announce a newer release.
+    #[serde(default = "yes")]
+    pub update_check: bool,
 }
 
 fn claude() -> HarnessKind {
@@ -574,6 +577,7 @@ impl Default for Start {
             pane: yes(),
             notify: false,
             index: false,
+            update_check: yes(),
         }
     }
 }
@@ -590,6 +594,9 @@ impl Start {
         }
         if self.index {
             lines.push("  index: true".into());
+        }
+        if !self.update_check {
+            lines.push("  update_check: false".into());
         }
         lines
     }
