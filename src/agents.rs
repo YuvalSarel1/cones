@@ -68,6 +68,7 @@ pub fn sessions(kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
                 cost_usd: None,
                 cost_info: None,
                 effort: None,
+                bypass: None,
                 usage: None,
                 title: None,
                 last: None,

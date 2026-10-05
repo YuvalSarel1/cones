@@ -70,6 +70,10 @@ pub struct Session {
     /// Reasoning effort as the harness reports it, verbatim; see docs/harness.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Whether the session runs without permission prompts, from the mode the harness reports
+    /// or else its declared skip flag on the live command line; see docs/harness.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bypass: Option<bool>,
     /// Kernel-reported process usage, read once per refresh; excluded from JSON output.
     #[serde(skip)]
     pub usage: Option<Usage>,
@@ -697,6 +701,11 @@ fn build(
         cost_usd,
         cost_info,
         effort,
+        bypass: d
+            .report
+            .permission_mode
+            .as_deref()
+            .map(|m| m == "bypassPermissions"),
         usage: None,
         title: d
             .title
@@ -1099,6 +1108,8 @@ struct Report {
     last_activity: Option<DateTime<Utc>>,
     /// The folder the latest line reports, which EnterWorktree and ExitWorktree move.
     cwd: Option<PathBuf>,
+    /// The latest `permissionMode`, which Claude writes on each prompt.
+    permission_mode: Option<String>,
     activity: Vec<Activity>,
     costs: crate::cost::Accounting<CostAdapter>,
 }
@@ -1252,6 +1263,9 @@ fn report_with_activity(
         r.costs.observe(&event, catalog);
         if let Some(cwd) = event["cwd"].as_str().filter(|c| !c.is_empty()) {
             r.cwd = Some(cwd.into());
+        }
+        if let Some(mode) = event["permissionMode"].as_str() {
+            r.permission_mode = Some(mode.into());
         }
         if let Some(t) = event["timestamp"]
             .as_str()
@@ -1421,6 +1435,7 @@ pub(crate) fn all_observed(
     // acquire is acquired once and shared between them, and nothing older is reused.
     crate::observe::reset();
     let mut out = Vec::new();
+    let mut argv = None;
     for &kind in crate::harness::known() {
         if !offered.enabled_for(kind) {
             continue;
@@ -1432,13 +1447,40 @@ pub(crate) fn all_observed(
         let started = std::time::Instant::now();
         let result = spec.discovery.handler.sessions(&home);
         observe(&spec.name, &home, started.elapsed(), &result);
-        out.extend(result?.into_iter().map(|mut s| {
+        let skip = spec
+            .launch
+            .as_ref()
+            .map_or(&[][..], |l| &l.skip_permissions[..]);
+        for mut s in result? {
             identify(&mut s);
-            s
-        }));
+            // A harness that reports no mode still shows the skip flag it was launched with.
+            // Without the flag the mode is unknown, not prompting: its own config may skip them.
+            if s.bypass.is_none()
+                && !skip.is_empty()
+                && let Some(pid) = s.pid
+            {
+                let argv = argv.get_or_insert_with(|| pass_argv("/bin/ps"));
+                s.bypass = argv
+                    .get(&pid)
+                    .is_some_and(|(command, _)| launched_with(command, skip))
+                    .then_some(true);
+            }
+            out.push(s);
+        }
     }
     sort(&mut out);
     Ok(out)
+}
+
+/// Whether `command` carries the harness's `skip` arguments in order before a `--`, after
+/// which the words are prompt text.
+// ponytail: whitespace words; an option value spelling the flag reads as the flag.
+fn launched_with(command: &str, skip: &[String]) -> bool {
+    let words: Vec<&str> = command
+        .split_whitespace()
+        .take_while(|w| *w != "--")
+        .collect();
+    words.windows(skip.len()).any(|w| w == skip)
 }
 
 /// Sort by oldest start, unknown starts last, then id.
@@ -2387,6 +2429,7 @@ mod tests {
             title: Some("Mine".into()),
             last: None,
             effort: None,
+            bypass: None,
             usage: None,
             coordinator: false,
             forked_from: None,

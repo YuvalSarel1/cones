@@ -88,6 +88,8 @@ pub struct Tail {
     pub next_model: Option<String>,
     /// `turn_context.effort` on the last turn, verbatim.
     pub effort: Option<String>,
+    /// Whether `turn_context.approval_policy` on the last turn is `never`.
+    pub bypass: Option<bool>,
     /// Latest `total_token_usage`: input includes cache hits; context uses `last_token_usage.total_tokens`.
     pub tokens_in: Option<u64>,
     pub tokens_out: Option<u64>,
@@ -473,6 +475,9 @@ impl Tail {
                 if let Some(effort) = v["payload"]["effort"].as_str() {
                     t.effort = Some(effort.to_owned());
                 }
+                if let Some(policy) = v["payload"]["approval_policy"].as_str() {
+                    t.bypass = Some(policy == "never");
+                }
             }
             // `/model` mid-turn applies from the next turn; the running turn keeps its model.
             if payload["type"] == "thread_settings_applied" {
@@ -855,6 +860,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 next_model: t.next_model,
                 model: t.model,
                 effort: t.effort,
+                bypass: t.bypass,
                 usage: None,
                 started: Some(p.started),
                 pid: Some(p.pid),
@@ -1015,6 +1021,7 @@ pub(crate) fn thread_rows_observed(
                 next_model: tail.next_model,
                 model: tail.model,
                 effort: tail.effort,
+                bypass: tail.bypass,
                 // A saved launch the daemon no longer holds is detached, and reports no process.
                 usage: record.is_none().then_some(held).flatten(),
                 started: meta

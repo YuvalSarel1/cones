@@ -126,6 +126,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `branch` | Agents | Current Git branch of the displayed folder, or `@<commit>` for a detached checkout. Read once per distinct folder during background refresh, only when selected. |
 | `model` | All | Reported model; jobs show their configured model. |
 | `effort` | Agents | Reasoning effort as the harness reports it. Claude reports it through the [saved statusLine payload](harness.md#claude-code), Codex on each turn. A harness that reports none shows `-`. |
+| `bypass` | Agents | `bypass`, in yellow, for a session that runs without permission prompts; `-` otherwise or when unknown. Claude reports the mode on each prompt (`permissionMode: bypassPermissions`), Codex on each turn (`approval_policy: never`); a mode changed since is shown after the next one. pi has no prompts. Before a first report, and for the other harnesses, the column shows it when the live command line carries the [skip flag](#composer-harnesses) before any `--`; a mode set in their own config or inside the session is not seen. amp has no flag. |
 | `cpu` | Agents | Percent of one core the process running the session is using, as the kernel reports it. |
 | `memory` | Agents | Resident memory of the process running the session. |
 | `context` | Agents, runs, history | Latest reported prompt/window tokens; prompt alone if no window was reported. |

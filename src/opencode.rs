@@ -582,6 +582,7 @@ pub fn rows(home: &Path, procs: &[Process]) -> Result<Vec<Session>> {
                 cost_info: report.cost_info,
                 last: report.last,
                 effort: None,
+                bypass: None,
                 usage: None,
                 coordinator: false,
                 forked_from: None,

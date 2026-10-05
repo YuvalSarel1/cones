@@ -289,7 +289,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         "{screen}"
     );
     d.press("enter", b"\r");
-    d.wait_text("8 of 15 shown · defaults");
+    d.wait_text("8 of 16 shown · defaults");
     let screen = d.capture("picker-defaults");
     assert!(
         screen.contains(" sessions   runs   jobs   history"),
@@ -313,7 +313,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         ),
         "{yaml}"
     );
-    d.wait_text("7 of 15 shown · custom");
+    d.wait_text("7 of 16 shown · custom");
     let screen = d.capture("state-hidden");
     assert!(line(&screen, "› [ ]").contains("state"), "{screen}");
     assert!(
@@ -345,7 +345,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         ),
         "{yaml}"
     );
-    d.wait_text("8 of 15 shown · custom");
+    d.wait_text("8 of 16 shown · custom");
     let screen = d.capture("harness-shown");
     assert!(
         line(&screen, "› [x]").contains("harness         07"),
@@ -354,7 +354,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
 
     // Backspace restores the table's defaults and removes the override from the file.
     d.press("backspace", BACKSPACE);
-    d.wait_text("8 of 15 shown · defaults");
+    d.wait_text("8 of 16 shown · defaults");
     let yaml = d.wait_file("jobs.yaml", |t| !t.contains("columns:"));
     let screen = d.capture("defaults-restored");
     assert!(

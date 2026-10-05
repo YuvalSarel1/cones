@@ -539,7 +539,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     fs::write(
         &transcript,
         format!(
-            "{{\"type\":\"user\"}}\n{{\"type\":\"attachment\",\"timestamp\":\"2026-09-12T10:56:31.487Z\"}}\n{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{}\n{}\nnot json\n{}\n{}\n",
+            "{{\"type\":\"user\",\"permissionMode\":\"plan\"}}\n{{\"type\":\"attachment\",\"timestamp\":\"2026-09-12T10:56:31.487Z\"}}\n{{\"type\":\"ai-title\",\"aiTitle\":\"fix the widget\"}}\n{}\n{}\nnot json\n{{\"type\":\"user\",\"permissionMode\":\"bypassPermissions\"}}\n{}\n{}\n",
             usage("m1", 100, 5, "2026-09-12T10:56:35.556Z"),
             usage("m1", 100, 5, "2026-09-12T10:56:35.556Z"),
             usage("m2", 200, 7, "2026-09-12T10:57:00.250Z"),
@@ -567,6 +567,11 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         "title and last line come from the transcript, not the registry name"
     );
     assert_eq!((s.tokens_in, s.tokens_out), (Some(320), Some(12)));
+    assert_eq!(
+        s.bypass,
+        Some(true),
+        "the latest prompt's permission mode wins over the first"
+    );
     assert_eq!(
         (s.context_tokens, s.context_window, s.model.as_deref()),
         (Some(210), None, Some("claude-fable-5-1")),
@@ -783,6 +788,74 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
             .is_empty()
     );
 }
+/// A harness that reports no permission mode shows the skip flag its live command line carries,
+/// and nothing when the flag is absent or only follows `--` as prompt text. Disposable
+/// `gemini` stand-ins, no model.
+#[test]
+fn a_skip_flag_on_the_command_line_marks_a_session_that_reports_no_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let program = dir.path().join("gemini");
+    fs::write(
+        &program,
+        "#!/usr/bin/python3\nimport time\ntime.sleep(600)\n",
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    struct Kill(Vec<std::process::Child>);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            for c in &mut self.0 {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+    }
+    let spawn = |args: &[&str]| {
+        std::process::Command::new(&program)
+            .args(args)
+            .current_dir(dir.path())
+            .spawn()
+            .unwrap()
+    };
+    let children = Kill(vec![
+        spawn(&["--yolo"]),
+        spawn(&[]),
+        spawn(&["--", "--yolo"]),
+    ]);
+    let pids: Vec<u32> = children.0.iter().map(|c| c.id()).collect();
+    let claude = dir.path().join(".claude");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let rows = loop {
+        // The python shim hides a fresh fixture's environment for its first seconds.
+        let rows: Vec<_> = cones::fleet::all(&claude)
+            .unwrap()
+            .into_iter()
+            .filter(|s| s.pid.is_some_and(|p| pids.contains(&p)))
+            .collect();
+        if rows.len() == pids.len() || std::time::Instant::now() > deadline {
+            break rows;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let found: Vec<(u32, Option<bool>)> = pids
+        .iter()
+        .map(|pid| {
+            let row = rows
+                .iter()
+                .find(|s| s.pid == Some(*pid))
+                .unwrap_or_else(|| panic!("gemini {pid} never listed: {rows:?}"));
+            assert_eq!(row.harness, "gemini");
+            (*pid, row.bypass)
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [(pids[0], Some(true)), (pids[1], None), (pids[2], None)],
+        "the flag marks the row; its absence is unknown, and after -- it is prompt text"
+    );
+}
+
 fn plain(s: &str) -> String {
     let mut out = String::new();
     let mut skip = false;

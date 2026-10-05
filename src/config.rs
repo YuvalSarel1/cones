@@ -407,7 +407,7 @@ pub fn check_confirm_secs(secs: f64) -> Result<()> {
     Ok(())
 }
 
-pub const COLUMNS: [&str; 15] = [
+pub const COLUMNS: [&str; 16] = [
     "harness",
     "state",
     "model",
@@ -423,6 +423,7 @@ pub const COLUMNS: [&str; 15] = [
     "cost",
     "cpu",
     "memory",
+    "bypass",
 ];
 pub const DEFAULT_COLUMNS: [&str; 8] = [
     "state",

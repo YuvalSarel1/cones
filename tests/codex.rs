@@ -69,6 +69,11 @@ fn rollout_lines_give_meta_last_reply_and_turn_state() {
     );
     assert_eq!(t.state, Some("done"));
     assert_eq!(t.model.as_deref(), Some("openai.gpt-6-astra"));
+    assert_eq!(t.bypass, Some(true));
+    assert_eq!(
+        tail(&CODEX_TURN.replace("\"never\"", "\"on-request\"")).bypass,
+        Some(false)
+    );
     assert_eq!(
         t.last_activity.unwrap().to_rfc3339(),
         "2026-09-12T09:35:32.613+00:00"
@@ -201,6 +206,11 @@ fn rows_read_the_rollout_and_the_session_index() {
     );
     assert_eq!(matched.last_activity, Some(at("2026-09-12T09:35:32.613Z")));
     assert_eq!(matched.model.as_deref(), Some("openai.gpt-6-astra"));
+    assert_eq!(
+        (matched.bypass, bare.bypass),
+        (Some(true), None),
+        "approval_policy never runs without prompts; without a rollout nothing is reported"
+    );
     assert_eq!(matched.started, Some(at("2026-09-12T09:16:50Z")));
     assert_eq!(matched.pid, Some(700));
     assert_eq!(matched.transcript_path.as_deref(), Some(rollout.as_path()));

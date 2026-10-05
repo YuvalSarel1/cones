@@ -347,6 +347,8 @@ fn row(p: &Process, file: Option<(PathBuf, Meta)>) -> Session {
         cost_info,
         last: t.last,
         effort: None,
+        // pi has no permission prompts.
+        bypass: Some(true),
         usage: None,
         coordinator: false,
         forked_from: None,
