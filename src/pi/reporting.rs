@@ -135,6 +135,7 @@ impl Report {
         native.coordinator = row.coordinator;
         if row.native() == id || uuid::Uuid::parse_str(row.native()).is_err() {
             native.forked_from = row.forked_from.clone();
+            native.forked_from_harness = row.forked_from_harness.clone();
             if native.title.is_none() && row.transcript_path.is_none() {
                 native.title = row.title.clone();
             }

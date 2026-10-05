@@ -219,8 +219,8 @@ draft. Claude forks use persistent interactive terminals. Forks do not create wo
 Any other row starts a new session in that harness, in the same folder, whose first prompt
 is the conversation's last 40 messages as `cones show` prints them (at most 64 KB, newest
 end kept) and the transcript's path, to read further back. It asks the agent to wait
-for your next instruction. This is a new
-conversation, not a fork: it records no parent link, and it carries none of the source's
+for your next instruction. It is listed beneath its parent like a native fork, but it is a
+new conversation: it carries none of the source's
 tool results beyond their names and inputs, files read, system prompt, hidden reasoning or
 earlier messages. A harness whose transcript cones cannot read offers only its native fork.
 

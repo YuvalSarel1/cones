@@ -17,6 +17,9 @@ pub struct Link {
     pub cwd: PathBuf,
     pub parent: String,
     pub child: String,
+    /// Set when the parent ran in another harness; the child was seeded from its transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_harness: Option<String>,
 }
 
 pub fn read(state: &Path) -> Result<Vec<Link>> {
@@ -68,6 +71,7 @@ pub fn apply(links: &[Link], claude: &Path, sessions: &mut [Session]) {
                 && link.child == session.native()
         }) {
             session.forked_from = Some(link.parent.clone());
+            session.forked_from_harness = link.parent_harness.clone();
         }
     }
 }
@@ -92,14 +96,15 @@ pub fn order<'a>(sessions: &[&'a Session]) -> Vec<(&'a Session, usize)> {
         let Some(parent) = s.forked_from.as_deref() else {
             continue;
         };
-        let Some(candidates) = index.get(&(s.harness.as_str(), s.cwd.as_path(), parent)) else {
+        let Some(candidates) = index.get(&(s.parent_harness(), s.cwd.as_path(), parent)) else {
             continue;
         };
+        // Homes only compare within one harness; a seeded fork's parent lives in another.
         let matching: Vec<_> = candidates
             .iter()
             .copied()
             .filter(|&p| match (native_home(s), native_home(sessions[p])) {
-                (Some(child), Some(parent)) => child == parent,
+                (Some(child), Some(parent)) if s.forked_from_harness.is_none() => child == parent,
                 _ => true,
             })
             .collect();
@@ -180,6 +185,7 @@ mod tests {
                 cwd: "/project".into(),
                 parent: "parent".into(),
                 child: "child".into(),
+                parent_harness: None,
             },
         )
         .unwrap();

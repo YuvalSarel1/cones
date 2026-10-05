@@ -82,6 +82,9 @@ pub struct Session {
     pub coordinator: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<String>,
+    /// The parent's harness when it differs: a cross-harness fork seeded from another transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_from_harness: Option<String>,
     /// Timestamped activity for sparklines; excluded from JSON output.
     #[serde(skip)]
     pub activity: Vec<Activity>,
@@ -185,6 +188,11 @@ impl Session {
     /// The conversation id the harness reported: what history, forks and transcripts name.
     pub fn native(&self) -> &str {
         self.native_id.as_deref().unwrap_or(&self.session_id)
+    }
+
+    /// The harness the `forked_from` id belongs to.
+    pub fn parent_harness(&self) -> &str {
+        self.forked_from_harness.as_deref().unwrap_or(&self.harness)
     }
 
     /// The folder the session works in now, which a worktree or `cd` moves away from `cwd`.
@@ -709,6 +717,7 @@ fn build(
             .or(d.last),
         coordinator: false,
         forked_from: parent,
+        forked_from_harness: None,
         activity: d.report.activity,
     }
 }
@@ -2381,6 +2390,7 @@ mod tests {
             usage: None,
             coordinator: false,
             forked_from: None,
+            forked_from_harness: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,

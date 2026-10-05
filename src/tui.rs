@@ -799,7 +799,7 @@ impl Data {
                         s.forked_from
                             .as_deref()
                             .filter(|parent| {
-                                present.contains(&(s.harness.as_str(), s.cwd.as_path(), parent))
+                                present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
                             })
                             .map(|_| {
                                 depths
@@ -2852,6 +2852,7 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
                 }
                 if row.forked_from.is_none() && row.session_id == host.session.session_id {
                     row.forked_from = host.session.forked_from.clone();
+                    row.forked_from_harness = host.session.forked_from_harness.clone();
                 }
             }
         } else {
@@ -8315,6 +8316,7 @@ fn history_session(entry: &history::Entry) -> Session {
         usage: None,
         coordinator: false,
         forked_from: None,
+        forked_from_harness: None,
         activity: Vec::new(),
         moved_to: entry.moved_to.clone(),
         native_id: None,
@@ -8644,6 +8646,8 @@ struct App {
     started: Vec<(String, mpsc::Receiver<Launched>)>,
     /// Immediate rows until discovery reports the launched sessions.
     pending: Vec<Pending>,
+    /// Cross-harness forks keyed by their current row id, until the child reports its own id.
+    seeded: Vec<Seeded>,
     /// Sessions a coordinator launch became, with its keystroke, until their claim lands.
     claiming: HashMap<String, Instant>,
     opening: Option<Opening>,
@@ -8811,6 +8815,7 @@ pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str)
         usage: None,
         coordinator: false,
         forked_from: None,
+        forked_from_harness: None,
         activity: Vec::new(),
         moved_to: None,
         native_id: None,
@@ -8839,6 +8844,12 @@ fn hydrate_pi_forks(data: &mut Data, forks: &[(u32, String, PathBuf, String)]) {
             fleet::identify(row);
         }
     }
+}
+
+struct Seeded {
+    key: String,
+    parent_harness: String,
+    parent: String,
 }
 
 struct ForkedSession {
@@ -9043,6 +9054,7 @@ impl App {
             terminals: Vec::new(),
             started: Vec::new(),
             pending: Vec::new(),
+            seeded: Vec::new(),
             claiming: HashMap::new(),
             opening: None,
             rename: None,
@@ -10810,6 +10822,7 @@ impl App {
             .map(|p| p.session.clone())
             .collect();
         data.sessions.extend(placeholders);
+        self.link_seeded(&replaced, &mut data);
         if let Some(d) = &mut data.diagnostics {
             for p in &self.pending {
                 d.sources.insert(
@@ -11019,6 +11032,7 @@ impl App {
                                     cwd: s.cwd.clone(),
                                     parent: fork.parent.clone(),
                                     child: id,
+                                    parent_harness: None,
                                 },
                             ) {
                                 Ok(()) => fork.saved = true,
@@ -14117,8 +14131,8 @@ impl App {
     }
 
     /// A harness cannot fork another harness's conversation, so this is a fresh session
-    /// whose first prompt carries the latest messages of the old one. It has no fork link,
-    /// none of the source's tool state, files read or hidden context, and only the tail.
+    /// whose first prompt carries the latest messages of the old one. It is linked under its
+    /// parent for display only and has none of the source's tool state, files read or hidden context, and only the tail.
     fn seed_fork(&mut self, entry: history::Entry, kind: HarnessKind) {
         let source = if entry.key.harness == "opencode" {
             transcript::Source::Opencode {
@@ -14139,7 +14153,67 @@ impl App {
         export.omitted = 0;
         let prompt = seed_prompt(&entry, &crate::show::render(&export));
         let what = format!("{kind} fork of {}", entry.key.harness);
-        self.launch_as(kind, entry.cwd.clone(), prompt, what, None);
+        let id = self.launch_as(kind, entry.cwd.clone(), prompt, what, None);
+        let parent = entry.key.session_id;
+        for s in self
+            .pending
+            .iter_mut()
+            .map(|p| &mut p.session)
+            .chain(self.data.sessions.iter_mut())
+            .filter(|s| s.session_id == id)
+        {
+            s.forked_from = Some(parent.clone());
+            s.forked_from_harness = Some(entry.key.harness.clone());
+        }
+        self.seeded.push(Seeded {
+            key: id,
+            parent_harness: entry.key.harness,
+            parent,
+        });
+        self.rebuild_with_reason("fork_placeholder");
+    }
+
+    /// A seeded fork keeps its parent mark through each re-identification, and records the
+    /// link once the child reports a native id so later loads place it under its parent.
+    fn link_seeded(&mut self, replaced: &HashMap<String, String>, data: &mut Data) {
+        let mut failed = None;
+        self.seeded.retain_mut(|seed| {
+            if let Some(id) = replaced.get(&seed.key) {
+                seed.key = id.clone();
+            }
+            let Some(row) = data.sessions.iter_mut().find(|s| s.session_id == seed.key) else {
+                return false;
+            };
+            row.forked_from = Some(seed.parent.clone());
+            row.forked_from_harness = Some(seed.parent_harness.clone());
+            let id = row.native();
+            let synthetic = id
+                .strip_prefix(&format!("{}-", row.harness))
+                .is_some_and(|pid| pid.parse::<u32>().is_ok());
+            if synthetic || id.contains(":start:") || id.starts_with("starting:") {
+                return true;
+            }
+            let Some(spec) = harness::by_name(&row.harness) else {
+                return false;
+            };
+            if let Err(e) = crate::forks::record(
+                &self.state,
+                crate::forks::Link {
+                    harness: row.harness.clone(),
+                    home: spec.session_home(&self.claude, row),
+                    cwd: row.cwd.clone(),
+                    parent: seed.parent.clone(),
+                    child: id.to_owned(),
+                    parent_harness: Some(seed.parent_harness.clone()),
+                },
+            ) {
+                failed = Some(e);
+            }
+            false
+        });
+        if let Some(e) = failed {
+            self.status = format!("fork relationship could not be saved: {e}");
+        }
     }
 
     fn fork_entry(&mut self, entry: history::Entry) {
@@ -14297,6 +14371,7 @@ impl App {
             usage: None,
             coordinator: false,
             forked_from: None,
+            forked_from_harness: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,
@@ -21096,6 +21171,7 @@ states:
             usage: None,
             coordinator: false,
             forked_from: None,
+            forked_from_harness: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,
@@ -22840,6 +22916,7 @@ while True:
             usage: None,
             coordinator: false,
             forked_from: None,
+            forked_from_harness: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,
@@ -23486,6 +23563,104 @@ while True:
             "switching conversations must not manufacture another fork"
         );
         assert_eq!(crate::forks::read(d.path()).unwrap().len(), 1);
+    }
+    /// A fork into another harness is a fresh launch the parent's harness never reports as a
+    /// fork, so cones carries the parentage itself. It fails if the arrow is lost while the
+    /// child passes from placeholder to process id to native id, if the child sorts by start
+    /// instead of under its parent, if a process id is persisted as a conversation, or if the
+    /// recorded link loses the parent's harness and stops matching on the next load.
+    #[test]
+    fn a_cross_harness_fork_sits_under_its_parent_with_the_fork_arrow() {
+        let d = dir();
+        let mut app = app(d.path());
+        let make = |id: &str, harness: &str, title: &str, pid: Option<u32>| -> Session {
+            serde_json::from_value(json!({
+                "session_id":id, "harness":harness, "cwd":d.path(), "state":"idle",
+                "pid":pid, "title":title,
+            }))
+            .unwrap()
+        };
+        let parent = make(A, "claude", "parent", None);
+        let later = make(C, "claude", "later", None);
+        app.data.sessions = vec![parent.clone(), later.clone()];
+        let key = "codex:start:seed";
+        let mut placeholder = make(key, "codex", "seeded", Some(4242));
+        placeholder.forked_from = Some(A.into());
+        placeholder.forked_from_harness = Some("claude".into());
+        app.data.sessions.push(placeholder.clone());
+        app.pending.push(Pending {
+            session: placeholder,
+            short: None,
+            fork_home: None,
+            at: Instant::now(),
+        });
+        app.seeded.push(Seeded {
+            key: key.into(),
+            parent_harness: "claude".into(),
+            parent: A.into(),
+        });
+        let snapshot = |sessions| {
+            let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+            data.sessions = sessions;
+            data
+        };
+        let titles = |app: &App| -> Vec<String> {
+            app.rows
+                .iter()
+                .filter(|r| matches!(r.kind, Kind::Session(..)))
+                .map(|r| r.text())
+                .collect()
+        };
+        let under_parent = |app: &App| {
+            let rows = titles(app);
+            assert_eq!(rows.len(), 3, "{rows:?}");
+            assert!(rows[0].contains("parent"), "{rows:?}");
+            assert!(rows[1].contains("↳ seeded"), "{rows:?}");
+            assert!(
+                rows[2].contains("later") && !rows[2].contains('↳'),
+                "{rows:?}"
+            );
+        };
+        app.rebuild();
+        under_parent(&app);
+
+        app.apply(snapshot(vec![
+            parent.clone(),
+            later.clone(),
+            make("codex-4242", "codex", "seeded", Some(4242)),
+        ]));
+        under_parent(&app);
+        assert!(crate::forks::read(d.path()).unwrap().is_empty());
+
+        let mut child = make(B, "codex", "seeded", Some(4242));
+        app.apply(snapshot(vec![parent.clone(), later.clone(), child.clone()]));
+        under_parent(&app);
+        assert!(app.seeded.is_empty());
+        let links = crate::forks::read(d.path()).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            (
+                links[0].harness.as_str(),
+                links[0].parent_harness.as_deref(),
+                links[0].parent.as_str(),
+                links[0].child.as_str(),
+            ),
+            ("codex", Some("claude"), A, B)
+        );
+
+        let mut sessions = vec![parent, later, child.clone()];
+        crate::forks::apply(&links, d.path(), &mut sessions);
+        assert_eq!(sessions[2].forked_from.as_deref(), Some(A));
+        assert_eq!(sessions[2].forked_from_harness.as_deref(), Some("claude"));
+        app.apply(snapshot(sessions));
+        under_parent(&app);
+        child.harness = "pi".into();
+        let mut other = vec![child];
+        crate::forks::apply(&links, d.path(), &mut other);
+        assert!(
+            other[0].forked_from.is_none(),
+            "the link names its child's harness"
+        );
     }
     /// A hosted fork is reported by its own terminal host under the placeholder id before the
     /// registry names the conversation. That echo is not the native session: taking it as the

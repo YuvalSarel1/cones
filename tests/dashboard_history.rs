@@ -432,8 +432,7 @@ fn resuming_a_history_row_whose_transcript_was_deleted_is_refused() {
 
 /// ctrl+y asks where the fork goes before anything starts. Picking another harness starts a
 /// new session seeded with the conversation's tail, recorded in the launch ledger like any
-/// launch and carrying no fork link. The codex on the launch path refuses to start, so no
-/// native client runs.
+/// launch. The codex on the launch path refuses to start, so no native client runs.
 #[test]
 fn ctrl_y_asks_for_a_harness_and_seeds_a_cross_harness_fork() {
     let mut d = Dashboard::new("history-fork-picker", &["claude", "codex", "pi"]);
@@ -519,6 +518,6 @@ fn ctrl_y_asks_for_a_harness_and_seeds_a_cross_harness_fork() {
     }
     assert!(!prompt.contains("--all"), "{prompt}");
     assert!(!prompt.contains("user "), "{prompt}");
-    // A seeded session is a new conversation: no fork link is recorded.
+    // A link waits for the child's native id, which a failed launch never reports.
     assert!(!d.path("state/forks.json").exists());
 }
