@@ -4250,7 +4250,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 70] = [
+const FIELDS: [Field; 71] = [
     Field {
         group: "cones",
         sub: "",
@@ -4348,6 +4348,16 @@ const FIELDS: [Field; 70] = [
         long: "Once a day, read the Homebrew tap's formula from GitHub and, when it names a newer release, show it in the footer and Help with `brew upgrade cones` for a Homebrew install. Off, cones never contacts GitHub for it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "cones",
+        sub: "start",
+        name: "start.min_prompt",
+        short: "shortest instruction",
+        hint: "Characters an instruction needs to start an agent.",
+        long: "Enter with a shorter composer instruction keeps the draft and starts nothing, so a stray keystroke cannot launch an agent. `claude agents` uses 4. 0 accepts any text. Terminal commands are not affected.",
+        builtin: "4",
+        input: Answer::Number(1.0),
     },
     Field {
         group: "cones",
@@ -5379,6 +5389,7 @@ impl ConfigForm {
                 "start.update_check" => start
                     .map(|s| s.update_check.to_string())
                     .unwrap_or_default(),
+                "start.min_prompt" => start.map(|s| s.min_prompt.to_string()).unwrap_or_default(),
                 "pane.at" => pane(|p| p.at.clone()),
                 "pane.ratio" => pane(|p| p.ratio.to_string()),
                 "activity.bars" => spark(|s| s.bars.to_string()),
@@ -5650,9 +5661,16 @@ impl ConfigForm {
             })?;
             Some(p)
         };
-        let start = if ["harness", "pane", "notify", "index", "update_check"]
-            .iter()
-            .all(|f| v(&format!("start.{f}")).is_empty())
+        let start = if [
+            "harness",
+            "pane",
+            "notify",
+            "index",
+            "update_check",
+            "min_prompt",
+        ]
+        .iter()
+        .all(|f| v(&format!("start.{f}")).is_empty())
         {
             None
         } else {
@@ -5667,6 +5685,12 @@ impl ConfigForm {
                 notify: flag("start.notify").unwrap_or(built.notify),
                 index: flag("start.index").unwrap_or(built.index),
                 update_check: flag("start.update_check").unwrap_or(built.update_check),
+                min_prompt: match v("start.min_prompt") {
+                    "" => built.min_prompt,
+                    t => t.parse().map_err(|_| {
+                        format!("start.min_prompt: a whole number, as in 4, not {t:?}")
+                    })?,
+                },
             })
         };
         let mark = num("confirm_secs", "seconds, as in 2")?;
@@ -12000,6 +12024,9 @@ impl App {
                             history_columns.unwrap_or_else(|| built_column_set("history_columns"));
                         self.data.whole_columns = whole.unwrap_or(config::WHOLE_COLUMNS);
                         self.data.start.index = start.as_ref().is_some_and(|s| s.index);
+                        self.data.start.min_prompt = start
+                            .as_ref()
+                            .map_or(config::Start::default().min_prompt, |s| s.min_prompt);
                         let check = start.as_ref().is_none_or(|s| s.update_check);
                         crate::update::init(&self.state, check);
                         self.index_in_background();
@@ -13853,6 +13880,10 @@ impl App {
         }
         if self.menu_is("jobs") || self.on_new_job() {
             self.new_job();
+            return;
+        }
+        if self.text.trim().chars().count() < self.data.start.min_prompt {
+            self.status = "too short, describe the task".into();
             return;
         }
         let dir = self.target_dir();

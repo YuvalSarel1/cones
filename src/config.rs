@@ -564,6 +564,13 @@ pub struct Start {
     /// Check the Homebrew tap once a day and announce a newer release.
     #[serde(default = "yes")]
     pub update_check: bool,
+    /// Fewest characters a composer instruction needs to start an agent, as in `claude agents`.
+    #[serde(default = "four")]
+    pub min_prompt: usize,
+}
+
+fn four() -> usize {
+    4
 }
 
 fn claude() -> HarnessKind {
@@ -578,6 +585,7 @@ impl Default for Start {
             notify: false,
             index: false,
             update_check: yes(),
+            min_prompt: four(),
         }
     }
 }
@@ -597,6 +605,9 @@ impl Start {
         }
         if !self.update_check {
             lines.push("  update_check: false".into());
+        }
+        if self.min_prompt != four() {
+            lines.push(format!("  min_prompt: {}", self.min_prompt));
         }
         lines
     }

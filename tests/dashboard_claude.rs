@@ -4,7 +4,8 @@
 //! in the fixture's Claude registry behind live `/bin/sleep` stand-ins and logs every call it
 //! gets to `$HOME/claude-calls.jsonl`. The flows cover a composer launch (harness cycling,
 //! the placeholder becoming the discovered row, the recovery and debug records that tie the
-//! launch to its native id), a refused launch that keeps the instruction, pre-existing
+//! launch to its native id), a refused launch that keeps the instruction, an instruction
+//! shorter than `start.min_prompt` that starts nothing until it is long enough, pre-existing
 //! sessions in every state grouped by folder and by state, arrows, the filter, pins and
 //! highlights, and `ctrl+x` twice removing a session through `claude rm`.
 use crate::dashboard::*;
@@ -329,6 +330,63 @@ fn a_refused_launch_keeps_the_instruction_and_shows_the_error() {
     );
     assert_eq!(registry(&d).len(), 1);
     d.keep("state/launches.jsonl");
+    d.quit();
+}
+
+/// `--bg` launches the fixture logged, by their prompts.
+fn launched_prompts(d: &Dashboard) -> Vec<String> {
+    calls(d)
+        .into_iter()
+        .filter(|c| c.first().map(String::as_str) == Some("--bg"))
+        .map(|c| c.last().unwrap().clone())
+        .collect()
+}
+
+#[test]
+fn an_instruction_shorter_than_the_minimum_starts_nothing() {
+    let mut d = Dashboard::new("claude-min-prompt", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    real_project(&d);
+    d.start();
+    d.wait_text("✻ claude › ");
+    // The default minimum is 4 characters, as in `claude agents`; padding does not count.
+    d.typed("  ok ");
+    d.press("enter", b"\r");
+    let screen = d.wait_text("too short, describe the task");
+    d.capture("too-short");
+    assert!(composer(&screen).contains("✻ claude ›   ok"), "{screen}");
+    assert!(screen.contains("no sessions here"), "{screen}");
+    assert!(launched_prompts(&d).is_empty());
+    assert!(!d.path("state/launches.jsonl").exists());
+
+    d.typed("go");
+    d.press("enter", b"\r");
+    let screen = d.wait_text("Fixture title for the launch");
+    d.capture("long-enough");
+    assert!(
+        composer(&screen).contains("Type to start a new agent"),
+        "{screen}"
+    );
+    assert_eq!(launched_prompts(&d), ["ok go"]);
+    d.quit();
+
+    // 0 accepts any text.
+    let mut d = Dashboard::new("claude-min-prompt-off", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    real_project(&d);
+    let jobs = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{jobs}start:\n  min_prompt: 0\n"),
+    )
+    .unwrap();
+    d.start();
+    d.wait_text("✻ claude › ");
+    d.typed("x");
+    d.press("enter", b"\r");
+    d.wait_text("Fixture title for the launch");
+    d.capture("any-length");
+    assert_eq!(launched_prompts(&d), ["x"]);
     d.quit();
 }
 

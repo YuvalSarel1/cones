@@ -163,6 +163,7 @@ Claude run details come from saved output, falling back to an archived transcrip
 | `start.notify` | `false` | Desktop notifications for newly reported input requests and completions outside the focused session. Independent of a job's `notify`. |
 | `start.index` | `false` | Fill the [meaning index](dashboard.md#history) in the background from dashboard startup. |
 | `start.update_check` | `true` | Once a day, read the Homebrew tap's formula from GitHub and announce a newer release in the footer and Help. Off, cones never contacts GitHub for it. |
+| `start.min_prompt` | `4` | Fewest characters, ignoring surrounding spaces, a [composer](dashboard.md#composer) instruction needs to start an agent; Enter on a shorter one keeps the draft and starts nothing. `claude agents` uses 4. `0` accepts any text. Terminal commands are not affected. |
 
 Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. A divider drag changes the current dashboard and saves `pane.ratio` on release. Notification changes take effect on the next configuration refresh.
 

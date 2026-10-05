@@ -322,7 +322,8 @@ mouse to the terminal, for a selection that crosses regions, and takes it back. 
 ## Composer
 
 Type an instruction and Enter to launch in the selected folder. With no folder selection,
-the dashboard's cwd is used. Submitting on Jobs opens its wizard. Shift+Tab cycles through
+the dashboard's cwd is used. An instruction shorter than
+[`start.min_prompt`](jobs.md#start), 4 characters by default, starts nothing. Submitting on Jobs opens its wizard. Shift+Tab cycles through
 [visible enabled harnesses](jobs.md#composer-harnesses), then the terminal. If every launcher
 is hidden, the terminal remains available.
 
