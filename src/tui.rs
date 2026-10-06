@@ -14580,6 +14580,8 @@ impl App {
         };
         self.terminals.push(session.clone());
         self.data.sessions.push(session);
+        // A read already in flight has no host record for this shell and would drop its row.
+        self.invalidate();
         self.jobs_view = false;
         self.history.select_first = false;
         self.rebuild();
