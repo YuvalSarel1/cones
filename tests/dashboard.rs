@@ -356,6 +356,12 @@ impl Dashboard {
 impl Drop for Dashboard {
     fn drop(&mut self) {
         let _ = fs::write(self.artifact.join("keys.txt"), &self.keys);
+        if std::thread::panicking() {
+            let _ = fs::copy(
+                self.path("state/tui-debug.log"),
+                self.artifact.join("tui-debug.log"),
+            );
+        }
         eprintln!("e2e artifact: {}", self.artifact.display());
         if let Some(child) = self.child.as_mut()
             && child.try_wait().ok().flatten().is_none()

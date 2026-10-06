@@ -70,7 +70,10 @@ def main(binary, parts):
         def records():
             found = []
             for path in (state / "terminals").glob("*.json"):
-                record = json.loads(path.read_text())
+                try:
+                    record = json.loads(path.read_text())
+                except FileNotFoundError:
+                    continue  # the host removed it between glob and read
                 found.append(record)
                 hosts[record["id"]] = record
             return found
