@@ -275,20 +275,28 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
 
 /// Parse `TZ=UTC ps -axww -o pid=,lstart=,command=`; `cwd` is filled from lsof.
 pub fn processes(ps: &str) -> Vec<Process> {
-    crate::harness::spec(crate::config::HarnessKind::Codex)
-        .discovery
+    let discovery = &crate::harness::spec(crate::config::HarnessKind::Codex).discovery;
+    discovery
         .processes(ps)
         .into_iter()
-        .map(|line| {
+        .filter_map(|line| {
             let (remote, thread, prompt) = client_options(line.command.split_whitespace().skip(1));
-            Process {
+            // Global options can precede a subcommand: editor extensions run
+            // `codex -c key=value app-server`, which the first-word filter lets through.
+            let first = prompt.as_deref().and_then(|p| p.split_whitespace().next());
+            if thread.is_none()
+                && first.is_some_and(|w| discovery.exclude_subcommands.iter().any(|e| e == w))
+            {
+                return None;
+            }
+            Some(Process {
                 pid: line.pid,
                 started: line.started,
                 cwd: None,
                 thread,
                 remote,
                 prompt,
-            }
+            })
         })
         .collect()
 }
@@ -1287,6 +1295,13 @@ mod tests {
         let ps = "  1 Wed Sep 23 05:31:47 2026 /Users/u/.codex/packages/standalone/current/bin/codex --version\n  2 Wed Sep 23 05:31:47 2026 codex -V\n  3 Wed Sep 23 05:31:47 2026 codex --help\n  4 Wed Sep 23 05:31:47 2026 codex -h\n  5 Wed Sep 23 05:31:47 2026 codex help\n  6 Wed Sep 23 05:31:47 2026 codex fix the parser\n";
         let pids: Vec<u32> = processes(ps).iter().map(|p| p.pid).collect();
         assert_eq!(pids, [6]);
+    }
+
+    #[test]
+    fn a_subcommand_after_global_options_is_not_a_session() {
+        let ps = "  1 Wed Sep 23 05:31:47 2026 /x/bin/codex -c features.x=true app-server --analytics-default-enabled\n  2 Wed Sep 23 05:31:47 2026 codex --enable foo mcp-server\n  3 Wed Sep 23 05:31:47 2026 codex -m o3 fix the parser\n";
+        let pids: Vec<u32> = processes(ps).iter().map(|p| p.pid).collect();
+        assert_eq!(pids, [3]);
     }
 
     #[test]
