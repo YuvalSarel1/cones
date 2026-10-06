@@ -701,3 +701,192 @@ fn a_launch_refused_for_an_untrusted_folder_asks_claude_trust_question_in_the_pa
     assert_eq!(applied["data"]["outcome"], "foreground_for_trust");
     d.quit();
 }
+
+/// Idan's layout: `~/cyera` the main checkout, `~/cyera-cost-vis` a sibling worktree of it,
+/// and sessions in a folder of that worktree. A worktree with two sessions heads them inside
+/// the main checkout's folder. Opening the folder used to report "added" and draw nothing,
+/// leaving the cursor on `+ add folder`; now the opened folder heads its own session, Enter
+/// selects it, and the worktree's one remaining session joins the main checkout's own.
+/// A main checkout (the project), a sibling worktree `cost-vis` and its folder
+/// `research/cost_visibility`, with a session in each: "Rank tenants" in the checkout,
+/// "Cost visibility dashboard" in the folder and "Autoscaling plan" at the worktree's top.
+struct Worktree {
+    d: Dashboard,
+    main: std::path::PathBuf,
+    tree: std::path::PathBuf,
+    folder: std::path::PathBuf,
+    _sessions: Vec<Seeded>,
+}
+
+fn worktree(test: &str) -> Worktree {
+    let d = Dashboard::new(test, &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let main = real_project(&d);
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(["-c", "user.name=e2e", "-c", "user.email=e2e@example.com"])
+            .args(args)
+            .current_dir(&main)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    let tree = d.path("cost-vis");
+    git(&["worktree", "add", "-q", tree.to_str().unwrap()]);
+    let tree = tree.canonicalize().unwrap();
+    let folder = tree.join("research/cost_visibility");
+    fs::create_dir_all(&folder).unwrap();
+    let _sessions = vec![
+        seed(&d, &main, 1, "Rank tenants", "idle", None),
+        seed(&d, &folder, 2, "Cost visibility dashboard", "idle", None),
+        seed(&d, &tree, 3, "Autoscaling plan", "idle", None),
+    ];
+    Worktree {
+        d,
+        main,
+        tree,
+        folder,
+        _sessions,
+    }
+}
+
+/// Type `path` into `+ add folder` and press Enter.
+fn add_folder(d: &mut Dashboard, path: &str) {
+    for _ in 0..12 {
+        if selected(&d.screen()).contains("+ add folder") {
+            break;
+        }
+        d.press("down", DOWN);
+    }
+    d.wait_for("+ add folder selected", |s| {
+        selected(s).contains("+ add folder")
+    });
+    d.typed(path);
+    d.press("enter", b"\r");
+}
+
+#[test]
+fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
+    let Worktree {
+        mut d,
+        main,
+        tree,
+        folder,
+        _sessions,
+    } = worktree("claude-worktree-folder");
+    d.start();
+
+    let main_name = main.display().to_string();
+    let tree_heading = format!("  ⑂ {}", tree.display());
+    let folder_name = folder.display().to_string();
+    let folder_heading = format!("  ⑂ {folder_name}");
+    let screen = d.wait_text("Autoscaling plan");
+    d.capture("worktree-nested");
+    let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
+    let nested = heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}"));
+    let order = [
+        at,
+        row(&screen, "Rank tenants"),
+        nested,
+        row(&screen, "Cost visibility dashboard"),
+        row(&screen, "Autoscaling plan"),
+    ];
+    assert!(order.is_sorted(), "{order:?}\n{screen}");
+    assert_eq!(
+        column(&screen, "Autoscaling plan"),
+        column(&screen, "Rank tenants") + 2,
+        "a session under a worktree heading is indented:\n{screen}"
+    );
+
+    add_folder(&mut d, &folder_name);
+    let screen = d.wait_for("the folder's heading", |s| {
+        heading(s, &folder_heading).is_some()
+    });
+    d.capture("opened");
+    let opened = heading(&screen, &folder_heading).unwrap();
+    let order = [
+        heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}")),
+        row(&screen, "Rank tenants"),
+        row(&screen, "Autoscaling plan"),
+        opened,
+        row(&screen, "Cost visibility dashboard"),
+    ];
+    assert!(order.is_sorted(), "{order:?}\n{screen}");
+    assert_eq!(order[4], opened + 1, "{screen}");
+    assert!(
+        heading(&screen, &tree_heading).is_none(),
+        "one session nobody opened needs no heading:\n{screen}"
+    );
+    assert!(
+        selected(&screen).contains("Cost visibility dashboard"),
+        "Enter selects the opened folder's session:\n{screen}"
+    );
+    assert!(!screen.contains("no sessions here"), "{screen}");
+    d.wait_file("state/open-folders.json", |t| t.contains(&folder_name));
+    d.keep("state/open-folders.json");
+    d.quit();
+}
+
+/// Where `text` starts on its line, in characters.
+fn column(screen: &str, text: &str) -> usize {
+    let line = line_of(screen, text);
+    line[..line.find(text).unwrap()].chars().count()
+}
+
+/// With `worktrees: flat` the worktree's sessions sit among the main checkout's own, marked
+/// `⑂`. Opening a folder in it still heads that folder's session, and the status line names
+/// the setting that heads every worktree.
+#[test]
+fn a_flat_list_heads_only_the_worktree_folder_you_open() {
+    let Worktree {
+        mut d,
+        main,
+        folder,
+        _sessions,
+        ..
+    } = worktree("claude-worktree-flat");
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(d.path("jobs.yaml"), format!("{yaml}worktrees: flat\n")).unwrap();
+    d.start();
+
+    let main_name = main.display().to_string();
+    let folder_name = folder.display().to_string();
+    let folder_heading = format!("  ⑂ {folder_name}");
+    let screen = d.wait_text("Autoscaling plan");
+    d.capture("flat");
+    assert!(
+        !screen.contains("  ⑂ $ROOT") && !screen.contains("  ⑂ /"),
+        "{screen}"
+    );
+    let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
+    for title in [
+        "Rank tenants",
+        "Cost visibility dashboard",
+        "Autoscaling plan",
+    ] {
+        assert!(row(&screen, title) > at, "{title}:\n{screen}");
+    }
+    assert_eq!(
+        column(&screen, "⑂ Autoscaling plan"),
+        column(&screen, "Rank tenants"),
+        "{screen}"
+    );
+
+    add_folder(&mut d, &folder_name);
+    let screen = d.wait_text("worktrees: nested heads every worktree");
+    d.capture("opened");
+    let opened = heading(&screen, &folder_heading).unwrap_or_else(|| panic!("{screen}"));
+    assert_eq!(
+        row(&screen, "Cost visibility dashboard"),
+        opened + 1,
+        "{screen}"
+    );
+    assert!(row(&screen, "Autoscaling plan") < opened, "{screen}");
+    assert!(
+        selected(&screen).contains("Cost visibility dashboard"),
+        "{screen}"
+    );
+    d.quit();
+}

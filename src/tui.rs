@@ -273,6 +273,10 @@ pub struct Data {
     pub worktrees: BTreeSet<PathBuf>,
     /// Each worktree's repository, for session grouping and folder suggestions.
     pub roots: BTreeMap<PathBuf, PathBuf>,
+    /// Each worktree folder's checkout: the top of the linked worktree it lies in.
+    trees: BTreeMap<PathBuf, PathBuf>,
+    /// Head each linked worktree inside its repository's folder, as `worktrees: nested` says.
+    pub nest: bool,
     /// Sessions and runs whose completion nobody has reviewed; the dashboard fills it.
     pub unread: HashSet<String>,
     diagnostics: Option<LoadDiagnostics>,
@@ -432,6 +436,10 @@ impl Data {
             .filter_map(|dir| worktree_root(dir).map(|root| (dir.clone(), root)))
             .collect();
         let worktrees = roots.keys().cloned().collect();
+        let trees = roots
+            .keys()
+            .filter_map(|dir| worktree_top(dir).map(|top| (dir.clone(), top)))
+            .collect();
         if let Some(d) = &mut diagnostics {
             d.phase("git", git_started);
             d.observation = crate::observe::snapshot();
@@ -462,6 +470,8 @@ impl Data {
             open: Vec::new(),
             worktrees,
             roots,
+            trees,
+            nest: config::nest_worktrees(jobs_path),
             unread: HashSet::new(),
             diagnostics,
         })
@@ -697,22 +707,30 @@ impl Data {
             };
             (name.to_lowercase(), name)
         };
-        let ranked = |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned());
-        let mut groups: BTreeMap<(String, String), Vec<Entry>> = BTreeMap::new();
-        for j in self.jobs.iter().filter(|_| jobs_view) {
-            groups
-                .entry(ranked(0, "jobs"))
-                .or_default()
-                .push(Entry::Job(j));
-        }
+        let ranked =
+            |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned(), String::new());
+        let real = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
+        let opened: HashSet<PathBuf> = self.open.iter().map(|f| real(f)).collect();
+        // The heading a linked worktree's session sits under inside its repository's folder:
+        // the folder itself when it was opened, else the worktree's checkout when worktrees
+        // nest or that checkout was opened. `None` lists it among the repository's own.
+        let sub = |cwd: &Path| -> Option<(PathBuf, bool)> {
+            if opened.contains(&real(cwd)) {
+                return Some((cwd.to_owned(), true));
+            }
+            let top = self.trees.get(cwd)?;
+            let open = opened.contains(&real(top));
+            (self.nest || open).then(|| (top.clone(), open))
+        };
+        let mut placed: Vec<(&Session, (String, String, String), bool)> = Vec::new();
         for s in self
             .sessions
             .iter()
             .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
         {
             // An empty sort key puts pins above every state rank and folder path.
-            let key = if pinned.contains(&s.session_id) {
-                (String::new(), "pinned".to_owned())
+            let (key, open) = if pinned.contains(&s.session_id) {
+                ((String::new(), "pinned".to_owned(), String::new()), true)
             } else if by_state {
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
@@ -720,18 +738,53 @@ impl Data {
                     "idle" => 3,
                     _ => 4,
                 };
-                ranked(rank, label(&s.state))
+                (ranked(rank, label(&s.state)), true)
+            } else if let Some(root) = self.roots.get(&s.cwd) {
+                let (sort, name) = folder(root);
+                match sub(&s.cwd) {
+                    Some((dir, open)) => ((sort, name, fleet::tilde(&dir)), open),
+                    None => ((sort, name, String::new()), true),
+                }
             } else {
-                folder(self.roots.get(&s.cwd).unwrap_or(&s.cwd))
+                let (sort, name) = folder(&s.cwd);
+                ((sort, name, String::new()), true)
             };
+            placed.push((s, key, open));
+        }
+        // A worktree heading over one session nobody opened is noise, which agent worktrees
+        // made one per session would be: that session stays among its repository's own.
+        let mut sizes: HashMap<&(String, String, String), usize> = HashMap::new();
+        for (_, key, _) in &placed {
+            *sizes.entry(key).or_default() += 1;
+        }
+        let lone: HashSet<(String, String, String)> = placed
+            .iter()
+            .filter(|(_, key, open)| !open && sizes[key] == 1)
+            .map(|(_, key, _)| key.clone())
+            .collect();
+        let mut groups: BTreeMap<(String, String, String), Vec<Entry>> = BTreeMap::new();
+        for j in self.jobs.iter().filter(|_| jobs_view) {
+            groups
+                .entry(ranked(0, "jobs"))
+                .or_default()
+                .push(Entry::Job(j));
+        }
+        for (s, mut key, _) in placed {
+            if lone.contains(&key) {
+                key.2.clear();
+            }
             groups.entry(key).or_default().push(Entry::Session(s));
         }
         for dir in self.open.iter().filter(|_| !jobs_view) {
-            let (sort, name) = folder(dir);
             let key = if by_state {
-                (format!("6{sort}"), name)
+                let (sort, name) = folder(dir);
+                (format!("6{sort}"), name, String::new())
+            } else if let Some(root) = worktree_root(dir) {
+                let (sort, name) = folder(&root);
+                (sort, name, fleet::tilde(dir))
             } else {
-                (sort, name)
+                let (sort, name) = folder(dir);
+                (sort, name, String::new())
             };
             let group = groups.entry(key).or_default();
             if group.is_empty() && !self.has_rows_in(dir, deleting, pinned) {
@@ -770,7 +823,7 @@ impl Data {
                 .collect();
         }
         // One table across all groups, so columns line up between directories.
-        let flat: Vec<(&(String, String), &Entry)> = groups
+        let flat: Vec<(&(String, String, String), &Entry)> = groups
             .iter()
             .flat_map(|(key, group)| group.iter().map(move |e| (key, e)))
             .collect();
@@ -793,29 +846,34 @@ impl Data {
         let cells = flat
             .iter()
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
-            .map(|(_, e)| match e {
+            .map(|(key, e)| match e {
                 Entry::Folder(_) => vec![],
-                Entry::Session(s) => unread(
-                    self.unread.contains(&s.session_id),
+                Entry::Session(s) => indent(
+                    !key.2.is_empty(),
                     title,
-                    session_cells(
-                        s,
-                        set,
-                        by_state,
-                        sparks.get(&s.session_id).map(String::as_str),
-                        self.branches.get(s.dir()).map(String::as_str),
-                        self.worktrees.contains(s.dir()),
-                        s.forked_from
-                            .as_deref()
-                            .filter(|parent| {
-                                present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
-                            })
-                            .map(|_| {
-                                depths
-                                    .get(&(s.harness.as_str(), s.session_id.as_str()))
-                                    .copied()
-                                    .unwrap_or(0)
-                            }),
+                    unread(
+                        self.unread.contains(&s.session_id),
+                        title,
+                        session_cells(
+                            s,
+                            set,
+                            by_state,
+                            sparks.get(&s.session_id).map(String::as_str),
+                            self.branches.get(s.dir()).map(String::as_str),
+                            // A worktree heading already marks the sessions under it.
+                            self.worktrees.contains(s.dir()) && key.2.is_empty(),
+                            s.forked_from
+                                .as_deref()
+                                .filter(|parent| {
+                                    present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
+                                })
+                                .map(|_| {
+                                    depths
+                                        .get(&(s.harness.as_str(), s.session_id.as_str()))
+                                        .copied()
+                                        .unwrap_or(0)
+                                }),
+                        ),
                     ),
                 ),
                 Entry::Job(j) => {
@@ -862,9 +920,9 @@ impl Data {
             out.push(names);
         }
         let mut cells = cells.into_iter();
-        let mut current: Option<&(String, String)> = None;
+        let mut current: Option<&(String, String, String)> = None;
         for (key, e) in flat.iter().copied() {
-            if current != Some(key) {
+            if current.map(|c| (&c.0, &c.1)) != Some((&key.0, &key.1)) {
                 if current.is_none() && table {
                     out.push(Row {
                         kind: Kind::Header,
@@ -873,8 +931,14 @@ impl Data {
                 } else {
                     header(&mut out, &key.1);
                 }
-                current = Some(key);
             }
+            if current != Some(key) && !key.2.is_empty() {
+                out.push(Row {
+                    kind: Kind::Header,
+                    cells: vec![(format!("  ⑂ {}", key.2), bold())],
+                });
+            }
+            current = Some(key);
             let row = match e {
                 Entry::Session(s) => Row {
                     kind: Kind::Session(s.session_id.clone(), s.state.clone()),
@@ -884,9 +948,13 @@ impl Data {
                     kind: Kind::Job(j.name.clone()),
                     cells: cells.next().unwrap_or_default(),
                 },
+                // A row with no text at all is an invisible line the cursor can still land on.
+                // Under a worktree heading it is named as `+ add folder` names it.
+                Entry::Folder(dir) if !key.2.is_empty() => Row {
+                    kind: Kind::Folder(fleet::tilde(dir)),
+                    cells: vec![("  no sessions here".to_owned(), dim())],
+                },
                 Entry::Folder(dir) => Row {
-                    // A row with no text at all is an invisible line the cursor can still
-                    // land on.
                     kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
                     cells: vec![("no sessions here".to_owned(), dim())],
                 },
@@ -2058,6 +2126,14 @@ fn job_cell(
     }
 }
 
+/// Indent cell `title` of a row listed under a worktree heading.
+fn indent(under: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    if under && let Some((text, _)) = row.get_mut(title) {
+        *text = format!("  {text}");
+    }
+    row
+}
+
 /// Mark cell `title` of an unread row. The mark goes in before the table pads its columns.
 fn unread(unread: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
     if unread && let Some((text, _)) = row.get_mut(title) {
@@ -3160,6 +3236,13 @@ fn worktree_root(dir: &Path) -> Option<PathBuf> {
         .then(|| dirs.common.parent())
         .flatten()
         .map(Path::to_path_buf)
+}
+
+/// The top of the linked worktree `dir` lies in, which its git directory's `gitdir` file
+/// names as `<top>/.git`. Read rather than asked for, as the branch is.
+fn worktree_top(dir: &Path) -> Option<PathBuf> {
+    let gitdir = std::fs::read_to_string(git_dirs(dir)?.own.join("gitdir")).ok()?;
+    Path::new(gitdir.trim()).parent().map(Path::to_path_buf)
 }
 
 /// The widest a folder cell grows before it loses its middle.
@@ -4268,7 +4351,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 71] = [
+const FIELDS: [Field; 72] = [
     Field {
         group: "cones",
         sub: "",
@@ -4294,6 +4377,16 @@ const FIELDS: [Field; 71] = [
             ],
             "a hex colour",
         ),
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "worktrees",
+        short: "worktree sessions",
+        hint: "Head each linked worktree inside its repository.",
+        long: "nested lists a linked worktree's sessions under a heading of their own inside the repository's folder, indented, once the worktree has two sessions. flat lists them among the repository's own sessions, marked ⑂. Either way a folder opened with `+ add folder` heads the sessions that run in it.",
+        builtin: "nested",
+        input: Answer::Pick(&["-", "nested", "flat"]),
     },
     Field {
         group: "cones",
@@ -5392,7 +5485,7 @@ impl ConfigForm {
                 "kimi_in_picker" => flag(d.kimi_in_picker),
                 "kimi_skip_permissions" => flag(d.kimi_skip_permissions),
 
-                "check" | "folders" | "highlight" => String::new(),
+                "check" | "folders" | "highlight" | "worktrees" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -6949,7 +7042,17 @@ fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm
         .unwrap_or_default()
         .join(", ");
     form.values[field_at("highlight")] = config::file_highlight(jobs_path).unwrap_or_default();
+    form.values[field_at("worktrees")] = worktrees_value(jobs_path);
     form
+}
+
+/// The worktree layout as the file states it, empty when it does not.
+fn worktrees_value(jobs_path: &Path) -> String {
+    match config::file_worktrees(jobs_path) {
+        Some(config::Worktrees::Nested) => "nested".into(),
+        Some(config::Worktrees::Flat) => "flat".into(),
+        None => String::new(),
+    }
 }
 
 const COLUMN_SETS: [(&str, &str); 4] = [
@@ -11997,6 +12100,20 @@ impl App {
                         self.data.highlight = highlight_colour(&config::highlight(&self.jobs_path));
                     }
                 }
+                // So is the worktree layout, which no other block carries.
+                if let Mode::Config(form) = &self.mode {
+                    let typed = form.values[field_at("worktrees")].clone();
+                    if typed != worktrees_value(&self.jobs_path) {
+                        let value = (!typed.is_empty()).then_some(typed.as_str());
+                        if let Err(e) = config::write_setting(&self.jobs_path, "worktrees", value) {
+                            if let Mode::Config(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                            return;
+                        }
+                        self.data.nest = config::nest_worktrees(&self.jobs_path);
+                    }
+                }
                 // The pin list is written on its own, the way the column sets are: it is the
                 // one setting the session list also edits, and the folder rows follow it.
                 if let Mode::Config(form) = &self.mode {
@@ -14701,10 +14818,23 @@ impl App {
         let name = fleet::tilde(&dir);
         self.folder = Input::default();
         self.suggested = None;
-        self.open_folder(dir);
+        self.open_folder(dir.clone());
         self.select_row(&name);
-        self.status =
-            format!("{name} added · type an instruction and enter starts a session there");
+        // A folder that has sessions has no row of its own: its first session stands for it.
+        if self.selected().and_then(|r| r.kind.key()) != Some(name.as_str())
+            && let Some(id) = self.data.sessions.iter().find_map(|s| {
+                (s.cwd.canonicalize().unwrap_or_else(|_| s.cwd.clone()) == dir)
+                    .then(|| s.session_id.clone())
+            })
+        {
+            self.select_row(&id);
+        }
+        self.status = if !self.data.nest && worktree_root(&dir).is_some() {
+            // The hint leads: a worktree folder's path is long enough to push it off the line.
+            format!("worktrees: nested heads every worktree · {name} added")
+        } else {
+            format!("{name} added · type an instruction and enter starts a session there")
+        };
     }
 
     /// The last row draws its own cells: what is typed changes without a rebuild.
@@ -22144,8 +22274,13 @@ states:
         let repo_label = fleet::tilde(&repo.canonicalize().unwrap());
         assert_eq!(
             headers(&app),
-            [repo_label.clone(), fleet::tilde(&under_repo)],
-            "nested and external worktrees share the repository heading; ordinary subfolders keep theirs"
+            [
+                repo_label.clone(),
+                format!("  ⑂ {}", fleet::tilde(&nested)),
+                fleet::tilde(&under_repo)
+            ],
+            "nested and external worktrees share the repository heading, where an opened one \
+             heads its own sessions; ordinary subfolders keep theirs"
         );
         assert!(
             app.rows.iter().all(|r| !matches!(r.kind, Kind::Folder(_))),
@@ -22153,7 +22288,8 @@ states:
         );
         for (id, cwd, marked) in [
             (A, &alias, false),
-            (B, &nested, true),
+            // Its heading marks the opened worktree's session.
+            (B, &nested, false),
             (C, &under_worktree, true),
             (sub_id, &under_repo, false),
         ] {
@@ -22186,7 +22322,10 @@ states:
             .sessions
             .retain(|s| [B, C].contains(&s.session_id.as_str()));
         app.rebuild();
-        assert_eq!(headers(&app), [repo_label]);
+        assert_eq!(
+            headers(&app),
+            [repo_label, format!("  ⑂ {}", fleet::tilde(&nested))]
+        );
         app.by_state = true;
         app.rebuild();
         assert_eq!(headers(&app), ["idle"]);
@@ -22215,7 +22354,8 @@ states:
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>(),
-            BTreeSet::from([folder_label(&repo, false), folder_label(&nested, true)])
+            // Under its worktree heading the empty folder is named as `+ add folder` names it.
+            BTreeSet::from([folder_label(&repo, false), fleet::tilde(&nested)])
         );
     }
 

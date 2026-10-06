@@ -126,6 +126,16 @@ fn config_saves_choice_and_text_settings_into_jobs_yaml() {
         "{screen}"
     );
 
+    // The worktree layout saves on its own, as the colour does.
+    d.press("down", DOWN);
+    d.press("right", RIGHT);
+    d.wait_file("jobs.yaml", |t| t.contains("\nworktrees: flat\n"));
+    let screen = d.capture("worktrees-flat");
+    assert!(
+        line(&screen, "worktree sessions").ends_with("‹ flat › *"),
+        "{screen}"
+    );
+
     // Space cycles and saves too.
     for _ in 0..3 {
         d.press("down", DOWN);
@@ -407,8 +417,9 @@ fn a_pinned_folder_is_offered_under_add_folder_until_it_is_open() {
     assert!(!screen.contains(&extra), "{screen}");
 
     open_config(&mut d);
-    d.press("down", DOWN);
-    d.press("down", DOWN);
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
     d.wait_text("› pinned folders");
     d.press("enter", b"\r");
     d.wait_text("↑↓ folder · enter add");

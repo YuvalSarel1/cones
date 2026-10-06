@@ -364,6 +364,18 @@ pub struct JobsFile {
     /// Colour of a session row marked in the dashboard with ctrl+p.
     #[serde(default)]
     pub highlight: Option<String>,
+    /// How the session list shows sessions in a linked worktree.
+    #[serde(default)]
+    pub worktrees: Option<Worktrees>,
+}
+
+/// `nested` heads each linked worktree inside its repository's folder; `flat` lists its
+/// sessions among the repository's own.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Worktrees {
+    Nested,
+    Flat,
 }
 
 pub const WHOLE_COLUMNS: bool = true;
@@ -893,6 +905,16 @@ pub fn file_highlight(path: &Path) -> Option<String> {
         .ok()
         .and_then(|d| d.highlight)
         .filter(|name| check_highlight(name).is_ok())
+}
+
+/// Whether the session list nests linked worktrees, the built-in when the file does not say.
+pub fn nest_worktrees(path: &Path) -> bool {
+    file_worktrees(path) != Some(Worktrees::Flat)
+}
+
+/// Read without applying defaults; missing or invalid files return `None`.
+pub fn file_worktrees(path: &Path) -> Option<Worktrees> {
+    parse(path).ok().and_then(|d| d.worktrees)
 }
 
 /// Read the pinned folders as written; missing or invalid files return `None`.

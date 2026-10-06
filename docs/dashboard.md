@@ -133,8 +133,11 @@ key source and how to change it. There is no runtime binding editor or override 
 ## Sessions and runs
 
 Sessions group by directory or state, with input requests first in state grouping. Linked
-Git worktrees share their repository heading and carry `⑂`; actions use the actual working
-directory. Sessions sort oldest first by reported start, with unknown starts last. Forks
+Git worktrees share their repository heading. A worktree with two or more sessions gets an
+indented `⑂` heading of its own inside it; a lone session stays among the repository's own,
+marked `⑂`. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
+way. A folder opened inside a worktree heads the sessions that run in it, under either
+setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last. Forks
 follow visible parents. Runs show the newest 200 visible records.
 
 [Column settings](jobs.md#list-settings) control each table independently. Identity and row
@@ -195,8 +198,8 @@ resumed run retains its row and original ledger outcome while displaying live va
 
 `+ add folder` is the last session-list row. Type an existing path there; `~` expands and
 relative paths use the dashboard's cwd. Tab completes directories; a second Tab lists matches.
-Hidden names require a `.` prefix. Enter opens the folder and selects it; invalid paths retain
-the input. Escape clears it.
+Hidden names require a `.` prefix. Enter opens the folder and selects it, or its first
+session when it has any; invalid paths retain the input. Escape clears it.
 
 Pinned folders, the `folders` setting in Config, are suggestions, not rows. The row offers
 every pin the list does not already hold open, filtered by path fragment. It does not build

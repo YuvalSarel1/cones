@@ -85,8 +85,8 @@ fn turning_the_check_off_hides_the_notice() {
     d.wait_text("←→ group · ↓ fields");
     d.press("down", DOWN);
     d.wait_text("↑↓ field");
-    // From ctrl+x armed: highlight, folders, then the start rows down to the check.
-    for _ in 0..7 {
+    // From ctrl+x armed: highlight, worktrees, folders, then the start rows down to the check.
+    for _ in 0..8 {
         d.press("down", DOWN);
     }
     d.wait_for("check for updates selected", |s| {

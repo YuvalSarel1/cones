@@ -23,7 +23,7 @@ jobs:
 | `version` | Schema version, currently `4`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `worktrees`, `confirm_secs` | [List settings](#list-settings). |
 | `folders` | [Pinned folders](dashboard.md#add-a-folder). |
 | `pane` | [Viewer position and size](#pane). |
 | `start` | [Initial dashboard settings](#start). |
@@ -112,6 +112,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `history_columns` | `[last_active, folder, model, context, last_reply]` |
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
 | `highlight` | `magenta`: colour of a session title highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`, `orange`, `pink`, `purple`, `teal`, `white`, or a hex colour as `#rrggbb`, such as `#ff8800`, on a terminal that renders true colour. The config screen draws each choice in the colour it names. |
+| `worktrees` | `nested`: a linked worktree with two or more sessions gets an indented heading inside its repository's folder. `flat` lists worktree sessions among the repository's own, marked `⑂`. A folder opened inside a worktree heads its own sessions either way. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
 | `folders` | `[]`: pinned folders, each absolute or under `~`, which `+ add folder` in the session list offers whenever they are not open. A pin is never a row by itself. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it. A path carrying a comma, a quote or a bracket is refused. |
 
