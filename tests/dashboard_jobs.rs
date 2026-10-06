@@ -359,7 +359,7 @@ fn enter_on_a_job_runs_it_with_its_own_policy_and_the_row_shows_the_outcome() {
             .filter(|w| !w.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
-        squashed.contains("▌ ◆ ✻ ok triage") && squashed.contains("✓ ✻ ok triage")
+        squashed.contains("▌ ◆ ✻ ok triage") && squashed.contains("✓ ✻ ok ✉ triage")
     });
     // Column widths follow the widest status, so compare with runs of spaces collapsed.
     let squashed = screen
@@ -371,9 +371,10 @@ fn enter_on_a_job_runs_it_with_its_own_policy_and_the_row_shows_the_outcome() {
         squashed.contains("▌ ◆ ✻ ok triage 0 3 * * * success"),
         "{screen}"
     );
-    // The run joins the session list's runs. Its unread mark (✉) is cleared as soon as the
-    // pane shows the run, so the settled screen does not carry it.
-    assert!(squashed.contains("✓ ✻ ok triage"), "{screen}");
+    // The run joins the session list's runs, unread (✉) whether or not a reload caught it
+    // running.
+    assert!(squashed.contains("✓ ✻ ok ✉ triage"), "{screen}");
+    assert!(screen.contains("● 1 unread"), "{screen}");
     d.capture("ran");
     assert_eq!(started["job"], "triage");
     assert_eq!(started["trigger"], "manual");

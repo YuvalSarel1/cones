@@ -78,6 +78,8 @@ struct Entry {
 #[derive(Default)]
 pub(crate) struct Tracker {
     entries: HashMap<String, Entry>,
+    /// The first update took its snapshot as the baseline.
+    baselined: bool,
 }
 
 pub(crate) struct Notice {
@@ -159,11 +161,25 @@ impl Tracker {
                 None => {
                     // An initial snapshot is a baseline, not hundreds of unseen
                     // historical completions. New input requests still filter in.
+                    // A run the ledger gains later started after the baseline, so one
+                    // that finished between two reads completed as surely as one seen
+                    // starting. Sessions keep the baseline: history indexing adds old
+                    // ones after it.
+                    let completed = self.baselined
+                        && observation.key.starts_with("run:")
+                        && observation.complete()
+                        && !reviewed.contains(&observation.key);
+                    if completed {
+                        notices.push(Notice {
+                            title: observation.title.clone(),
+                            input: false,
+                        });
+                    }
                     self.entries.insert(
                         observation.key.clone(),
                         Entry {
                             observation: observation.clone(),
-                            unread: false,
+                            unread: completed,
                             touched: now,
                         },
                     );
@@ -171,6 +187,7 @@ impl Tracker {
                 }
             }
         }
+        self.baselined = true;
         if self.entries.len() > 2048 {
             let current: HashSet<_> = observations.iter().map(|o| &o.key).collect();
             let mut older: Vec<_> = self
