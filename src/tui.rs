@@ -8905,6 +8905,11 @@ const SUGGESTIONS: usize = 6;
 
 const AGENT_VIEW_TITLE: &str = "claude agents";
 
+/// Claude Code 2.1.291 prefixes the title with counts: "3 awaiting input · claude agents".
+fn shows_agent_view(title: Option<&str>) -> bool {
+    title.is_some_and(|t| t == AGENT_VIEW_TITLE || t.ends_with(" · claude agents"))
+}
+
 /// Focused viewers only, so this is not the number of harness clients a dashboard runs: the
 /// prespawned pool sits outside it and the ceiling is `MAX_FOCUSED_VIEWERS + SPECULATIVE_VIEWERS`,
 /// each client its own process at roughly 165MB. Five is deliberate rather than a bug to fix: the
@@ -12882,9 +12887,7 @@ impl App {
             })
         });
         // Drop viewers left in Claude's agent list so the row cannot show or attach another session.
-        if !self.viewers[i].is_terminal()
-            && self.viewers[i].viewer.title() == Some(AGENT_VIEW_TITLE)
-        {
+        if !self.viewers[i].is_terminal() && shows_agent_view(self.viewers[i].viewer.title()) {
             self.close_for(i, "viewer_showing_agent_list");
         }
         self.report_view("viewer_leave");
@@ -12919,7 +12922,11 @@ impl App {
             }
             let exited = open.viewer.exited();
             let speculative = open.speculative;
-            let return_to_list = open.viewer.take_return_to_list() && open.is_terminal() && focused;
+            // A key that reached Claude Code at its empty prompt opens its own agent list; the
+            // dashboard's list is the one wanted, so go back to it.
+            let return_to_list = (open.viewer.take_return_to_list() && open.is_terminal()
+                || !open.is_terminal() && shows_agent_view(open.viewer.title()))
+                && focused;
             let context = json!({
                 "operation_id": open.operation.as_ref().map(|o| &o.id),
                 "row_id": open.key, "harness": open.harness, "viewer_pid": open.viewer.pid(),
@@ -23505,33 +23512,38 @@ while True:
     }
 
     #[test]
-    fn a_viewer_left_in_the_agent_view_is_dropped_and_a_session_is_kept() {
+    fn a_viewer_showing_the_agent_list_returns_to_the_list_and_a_session_is_kept() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
-        let titled = |app: &mut App, title: &str| {
+        // Pumps until the viewer has a title or gave up the focus on its own.
+        let titled = |app: &mut App, key: &str, title: &str| {
             let mut c = Command::new("/bin/sh");
             c.args(["-c", &format!("printf '\\x1b]2;{title}\\x07'; sleep 5")]);
-            let mut open = silent_open(A);
+            let mut open = silent_open(key);
             open.viewer = Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap();
             app.viewers.push(open);
             let i = app.viewers.len() - 1;
             app.focus = Some(i);
             let deadline = Instant::now() + Duration::from_secs(3);
-            while app.viewers[i].viewer.title().is_none() {
+            while app.focus.is_some() && app.viewers[i].viewer.title().is_none() {
                 app.pump();
                 assert!(Instant::now() < deadline, "the viewer set no title");
                 std::thread::sleep(Duration::from_millis(5));
             }
         };
-        titled(&mut app, AGENT_VIEW_TITLE);
-        app.unfocus();
-        assert!(app.viewers.is_empty(), "the agent view outlived leaving it");
-        assert!(app.status.is_empty(), "{}", app.status);
-        titled(&mut app, "◑ a session");
+        titled(&mut app, A, "◑ a session");
+        assert!(app.focus.is_some(), "a session's client gave up the focus");
         app.unfocus();
         assert_eq!(app.viewers.len(), 1, "a session's client stays alive");
-        assert!(app.status.is_empty(), "{}", app.status);
+        // Older Claude Code titles its agent list plainly; 2.1.291 prefixes counts.
+        for title in [AGENT_VIEW_TITLE, "3 awaiting input · claude agents"] {
+            titled(&mut app, B, title);
+            assert_eq!(app.focus, None, "{title:?} kept the focus");
+            assert_eq!(app.viewers.len(), 1, "{title:?} outlived leaving it");
+            assert_eq!(app.viewers[0].key, A, "the session's client went instead");
+            assert!(app.status.is_empty(), "{}", app.status);
+        }
     }
 
     /// `MAX_FOCUSED_VIEWERS` bounds the focused pool alone, so the count that matters for the

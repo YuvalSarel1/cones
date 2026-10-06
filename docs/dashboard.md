@@ -311,6 +311,8 @@ behavior remains native.
 OpenCode returns with Left from its standard empty editor but keeps Tab native. Experimental
 launchers keep both keys native. Zsh returns with Tab/Left from an empty command line;
 continuations and foreground programs keep them. Other shells keep both native.
+If a key does reach Claude Code at its empty prompt and opens its own agent list, cones
+returns to its list and closes that client.
 
 Clicks in scrolled emulator history stay with the emulator. Typing returns to the live
 screen.
