@@ -35,6 +35,16 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Action>,
 }
+#[derive(Subcommand)]
+enum ConfigTask {
+    /// Set one setting by its dotted path, such as `columns`, `highlight` or `defaults.model`.
+    /// The value is YAML, so a list is `'[state, bypass, model]'`. A value the file would refuse
+    /// is refused and the file is left as it was.
+    Set { key: String, value: String },
+    /// Remove one setting, restoring its built-in.
+    Unset { key: String },
+}
+
 /// Talking to the agents working in one folder, and noticing when one of them stops. The same
 /// commands answer to `cones comms` and to the older `cones coordinator` spelling, against the
 /// same folder state, because a session started before an upgrade still has the old skill loaded.
@@ -201,6 +211,8 @@ enum Action {
     Config {
         #[arg(long)]
         check: bool,
+        #[command(subcommand)]
+        task: Option<ConfigTask>,
     },
     #[command(name = "__list", hide = true)]
     List,
@@ -342,14 +354,21 @@ const CONFIG_GUIDE: &str = "\
 # Changing cones settings
 
 Every setting lives in one YAML file: __JOBS__
-There is no setter command. Edit the file directly:
+
+`cones config set KEY VALUE` sets one value by its dotted path and `cones config unset KEY`
+restores its built-in; both refuse a value the file would not accept. VALUE is YAML:
+
+    cones config set columns '[state, bypass, context, activity, model, age, last_active, folder, last_reply]'
+    cones config set highlight cyan
+    cones config set defaults.model sonnet
+
+Jobs and anything else can be edited in the file directly:
 
 - Keep the comments, layout and fields you were not asked to change.
 - A missing file starts as `version: 4` and `jobs: []`.
 - Setting a column list replaces the defaults, so copy the default list from the table
-  below and add to it. Example, adding the bypass column:
-  `columns: [state, bypass, context, activity, model, age, last_active, folder, last_reply]`
-- Run `cones config --check` afterwards. An invalid file is not loaded and the dashboard
+  below and add to it, as the columns example above does.
+- Run `cones config --check` after editing by hand. An invalid file is not loaded and the dashboard
   falls back to built-in defaults without saying why.
 - A running dashboard rereads the file on its next refresh. Scheduled jobs also need their
   LaunchAgents rewritten: run `cones __install` after adding, changing or removing a job.
@@ -697,8 +716,14 @@ fn execute(cli: Cli) -> Result<i32> {
             print!("{text}");
             Ok(0)
         }
-        Action::Config { check } => {
-            if check {
+        Action::Config { check, task } => {
+            if let Some(task) = task {
+                let (key, value) = match &task {
+                    ConfigTask::Set { key, value } => (key, Some(value.as_str())),
+                    ConfigTask::Unset { key } => (key, None),
+                };
+                config::write_setting(&jobs_path, key, value)?;
+            } else if check {
                 config::read_jobs(&jobs_path)?;
                 println!("{} is valid", jobs_path.display());
             } else {

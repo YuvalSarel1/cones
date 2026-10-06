@@ -1309,6 +1309,82 @@ fn an_agent_learns_the_config_file_from_cones_config_and_checks_its_edit() {
     );
 }
 
+#[test]
+fn cones_config_set_changes_one_value_and_refuses_what_the_file_would_not_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = dir.path().join("jobs.yaml");
+    let cones = |args: &[&str]| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .arg("--jobs")
+            .arg(&jobs)
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    // A missing file is created the way the config screen creates it.
+    assert_eq!(
+        cones(&["config", "set", "defaults.model", "sonnet"]),
+        (Some(0), String::new())
+    );
+    fs::write(
+        &jobs,
+        fs::read_to_string(&jobs)
+            .unwrap()
+            .replace("jobs: []", "# mine\njobs: []"),
+    )
+    .unwrap();
+    for args in [
+        &["config", "set", "columns", "[state, bypass, model]"][..],
+        &["config", "set", "highlight", "#ff8800"],
+        &["config", "set", "defaults.timeout_min", "45"],
+        &["config", "set", "confirm_secs", "0"],
+    ] {
+        assert_eq!(cones(args), (Some(0), String::new()), "{args:?}");
+    }
+    let good = fs::read_to_string(&jobs).unwrap();
+
+    // Each refusal names the problem and leaves the file as it was.
+    for (args, says) in [
+        (
+            &["config", "set", "columns", "[mode]"][..],
+            "unknown column \"mode\"",
+        ),
+        (
+            &["config", "set", "highlight", "chartreuse"],
+            "highlight chartreuse",
+        ),
+        (
+            &["config", "set", "defaults.modle", "sonnet"],
+            "unknown field `modle`",
+        ),
+        (&["config", "set", "confirm_secs", "9999"], "confirm_secs"),
+        (&["config", "set", "jobs", "[]"], "jobs: not a setting"),
+        (&["config", "set", "columns", "[a"], "the value is not YAML"),
+    ] {
+        let (code, err) = cones(args);
+        assert_eq!(code, Some(1), "{args:?}");
+        assert!(err.contains(says), "{args:?}: {err}");
+        assert_eq!(fs::read_to_string(&jobs).unwrap(), good, "{args:?}");
+    }
+
+    assert_eq!(
+        cones(&["config", "unset", "defaults.model"]),
+        (Some(0), String::new())
+    );
+    assert_eq!(
+        cones(&["config", "unset", "confirm_secs"]),
+        (Some(0), String::new())
+    );
+    assert_eq!(
+        fs::read_to_string(&jobs).unwrap(),
+        "version: 4\n# mine\njobs: []\ndefaults:\n  timeout_min: 45\ncolumns: [state, bypass, model]\nhighlight: \"#ff8800\"\n"
+    );
+}
+
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).unwrap().flatten() {

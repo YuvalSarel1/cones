@@ -36,6 +36,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
 | `cones comms [--dir PATH] send\|mail\|wait ...` | [Write to the agents in a folder, read their replies and wait for one](#comms). |
 | `cones config [--check]` | Print the `jobs.yaml` path, editing notes and the full [configuration reference](jobs.md), for you or an agent to edit the file directly. `--check` validates the file. |
+| `cones config set KEY VALUE`, `cones config unset KEY` | Set one [setting](jobs.md) by dotted path, such as `columns`, `highlight` or `defaults.model`, or remove it to restore the built-in. VALUE is YAML, so a list is `'[state, bypass, model]'`. Only that top-level block is rewritten; a value the file would refuse leaves it unchanged. Jobs are not settable here. |
 | `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
 
 ### Reading runs and sessions

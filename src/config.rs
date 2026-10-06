@@ -1297,6 +1297,82 @@ pub fn write_folders(path: &Path, folders: &[String]) -> Result<()> {
     write_flow_list(path, "folders", (!items.is_empty()).then_some(&items[..]))
 }
 
+/// Set one setting by its dotted path, as `cones config set` does: `value` is YAML and `None`
+/// removes the key, restoring the built-in. Only the named top-level block is rewritten, in
+/// the file's own place, and the write is refused unless the whole file still loads. Jobs
+/// belong to the job wizard and the version to cones, so neither is settable here.
+pub fn write_setting(path: &Path, key: &str, value: Option<&str>) -> Result<()> {
+    use serde_yaml::{Mapping, Value};
+    let parts: Vec<&str> = key.split('.').collect();
+    ensure!(
+        parts.iter().all(|p| !p.is_empty()) && !matches!(parts[0], "version" | "jobs"),
+        "{key}: not a setting; jobs are edited in the file or the dashboard's job wizard"
+    );
+    if path.exists() {
+        parse(path).with_context(|| format!("{} was left alone", path.display()))?;
+    }
+    let text =
+        fs::read_to_string(path).unwrap_or_else(|_| format!("version: {VERSION}\njobs: []\n"));
+    let mut doc: Mapping = serde_yaml::from_str(&text).context("invalid jobs.yaml")?;
+    let value = value
+        .map(|raw| match serde_yaml::from_str::<Value>(raw) {
+            // YAML reads a bare `#ff8800` as a comment; on a command line it is the colour.
+            Ok(Value::Null) if raw.trim_start().starts_with('#') => Ok(raw.into()),
+            parsed => parsed,
+        })
+        .transpose()
+        .with_context(|| format!("{key}: the value is not YAML"))?;
+    fn put(map: &mut Mapping, path: &[&str], value: Option<Value>) -> Result<()> {
+        let k = Value::from(path[0]);
+        if path.len() == 1 {
+            match value {
+                Some(v) => map.insert(k, v),
+                None => map.remove(&k),
+            };
+            return Ok(());
+        }
+        if !map.contains_key(&k) {
+            map.insert(k.clone(), Mapping::new().into());
+        }
+        let child = map.get_mut(&k).and_then(Value::as_mapping_mut);
+        let child = child.with_context(|| format!("{} holds a value, not settings", path[0]))?;
+        put(child, &path[1..], value)?;
+        if child.is_empty() {
+            map.remove(&k);
+        }
+        Ok(())
+    }
+    put(&mut doc, &parts, value)?;
+    let top = parts[0];
+    let scalar = |v: &Value| serde_yaml::to_string(v).map(|s| s.trim_end().to_owned());
+    match doc.get(top) {
+        // Both carry checks the reader does not repeat, so they keep their own writers.
+        Some(Value::String(name)) if top == "highlight" => write_highlight(path, name),
+        Some(Value::Sequence(items)) if top == "folders" => {
+            let items: Option<Vec<String>> = items
+                .iter()
+                .map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            write_folders(path, &items.context("folders: a list of paths")?)
+        }
+        // A list of names stays one flow line, the way the file and the config screen state it.
+        Some(Value::Sequence(items))
+            if items.iter().all(|v| !v.is_sequence() && !v.is_mapping()) =>
+        {
+            let items = items.iter().map(scalar).collect::<Result<Vec<_>, _>>()?;
+            write_flow_list(path, top, Some(&items))
+        }
+        Some(v) => {
+            let mut block = Mapping::new();
+            block.insert(top.into(), v.clone());
+            let line = serde_yaml::to_string(&block)?.trim_end().to_owned();
+            write_top_level(path, top, Some(line))
+        }
+        None => write_top_level(path, top, None),
+    }
+    .with_context(|| format!("{key} was not changed"))
+}
+
 /// Validate and replace dashboard settings and defaults while preserving job blocks.
 /// Create a missing file with `jobs: []`; validate defaults even when no jobs exist.
 /// One argument per top-level setting, since each is written on its own.
