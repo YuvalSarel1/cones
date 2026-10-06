@@ -264,6 +264,40 @@ fn a_composer_launch_becomes_a_listed_background_session_with_its_native_id() {
     d.quit();
 }
 
+/// A `claude` typed in a terminal runs the user's alias, so a launch takes the variables the
+/// alias sets before its command, as Bedrock setups do, but not its flags.
+#[test]
+fn a_launch_takes_the_variables_the_user_s_claude_alias_sets() {
+    let mut d = Dashboard::new("claude-alias-env", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    real_project(&d);
+    fs::write(
+        d.home().join(".zshrc"),
+        "alias claude='AWS_PROFILE=claude CLAUDE_CODE_USE_BEDROCK=1 CONES_ALIAS_NOTE=\"two words\" command claude --verbose'\n",
+    )
+    .unwrap();
+    d.start();
+    d.wait_text("✻ claude › ");
+    d.typed("count the flaky tests");
+    d.press("enter", b"\r");
+    d.wait_text("Fixture title for the launch");
+    let launch = calls(&d)
+        .iter()
+        .position(|c| c.first().map(String::as_str) == Some("--bg"))
+        .expect("a --bg launch");
+    assert!(
+        !calls(&d)[launch].contains(&"--verbose".to_owned()),
+        "the alias's flags stay out: {:?}",
+        calls(&d)[launch]
+    );
+    let env = &records(&fs::read_to_string(d.home().join("claude-env.jsonl")).unwrap())[launch];
+    assert_eq!(env["AWS_PROFILE"], "claude", "{env}");
+    assert_eq!(env["CLAUDE_CODE_USE_BEDROCK"], "1", "{env}");
+    assert_eq!(env["CONES_ALIAS_NOTE"], "two words", "{env}");
+    d.keep("home/claude-env.jsonl");
+    d.quit();
+}
+
 #[test]
 fn a_refused_launch_keeps_the_instruction_and_shows_the_error() {
     let mut d = Dashboard::new("claude-refused", &["claude"]);

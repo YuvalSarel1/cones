@@ -328,7 +328,8 @@ const HOST_TERMINAL: [&str; 2] = ["TERM_PROGRAM", "TERM_PROGRAM_VERSION"];
 /// there: rc files, `chpwd` hooks and direnv can all pick the provider, profile or region per
 /// folder. A launch takes each such value that differs from cones' own environment. A value cones
 /// set on the command is this launch's policy and still wins, and host identity stays out.
-/// Aliases and functions are not run, so a wrapper's inline variables never reach a launch.
+/// Aliases and functions are not run, but the variables an alias of the harness's own name sets
+/// before its command, as in `alias claude='CLAUDE_CODE_USE_BEDROCK=1 claude'`, are taken too.
 fn folder_env(command: &mut std::process::Command) {
     let (Some(dir), Some(shell)) = (
         command.get_current_dir().map(Path::to_owned),
@@ -336,7 +337,10 @@ fn folder_env(command: &mut std::process::Command) {
     ) else {
         return;
     };
-    let env = shell_env(&shell, &dir);
+    let name = Path::new(command.get_program())
+        .file_name()
+        .map(OsStr::to_owned);
+    let env = shell_env(&shell, &dir, name.as_deref());
     apply_folder_env(command, env);
 }
 
@@ -362,26 +366,33 @@ fn apply_folder_env(command: &mut std::process::Command, env: Vec<(OsString, OsS
 
 const SHELL_BOOKKEEPING: [&str; 4] = ["PWD", "OLDPWD", "SHLVL", "_"];
 
-/// Run the login shell as `-l -i` in `dir` and read its exported environment. The shell gets its own session
+/// Run the login shell as `-l -i` in `dir` and read its exported environment, then the
+/// assignments `alias` leads with, which win as they would on a typed command. The shell gets its own session
 /// so an interactive rc cannot take the dashboard's terminal, writes to a file so a daemon an rc
 /// leaves behind cannot hold the read open, and is killed after five seconds. Any failure means
 /// no folder environment, never a failed launch.
 // ponytail: one shell per launch, about 0.3s; cache per folder if launches get hot.
-fn shell_env(shell: &OsStr, dir: &Path) -> Vec<(OsString, OsString)> {
+fn shell_env(shell: &OsStr, dir: &Path, alias: Option<&OsStr>) -> Vec<(OsString, OsString)> {
     use std::os::unix::{ffi::OsStrExt, process::CommandExt};
-    let Ok(out) = tempfile::NamedTempFile::new() else {
+    let (Ok(out), Ok(aliases)) = (
+        tempfile::NamedTempFile::new(),
+        tempfile::NamedTempFile::new(),
+    ) else {
         return Vec::new();
     };
     let mut c = std::process::Command::new(shell);
-    // Quoted `$NAME` and `&&` read the same in sh, bash, zsh and fish.
+    // Quoted `$NAME`, `&&` and `;` read the same in sh, bash, zsh and fish. A missing alias
+    // fails `alias`, which must not fail the read, so `true` ends the command.
     c.args([
         "-l",
         "-i",
         "-c",
-        r#"cd -- "$CONES_FOLDER_DIR" && env -0 > "$CONES_FOLDER_ENV""#,
+        r#"cd -- "$CONES_FOLDER_DIR" && env -0 > "$CONES_FOLDER_ENV" && alias "$CONES_FOLDER_ALIAS" > "$CONES_FOLDER_ALIASES" 2>/dev/null; true"#,
     ])
     .env("CONES_FOLDER_DIR", dir)
     .env("CONES_FOLDER_ENV", out.path())
+    .env("CONES_FOLDER_ALIAS", alias.unwrap_or_default())
+    .env("CONES_FOLDER_ALIASES", aliases.path())
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null());
@@ -412,16 +423,72 @@ fn shell_env(shell: &OsStr, dir: &Path) -> Vec<(OsString, OsString)> {
         return Vec::new();
     }
     let bytes = std::fs::read(out.path()).unwrap_or_default();
-    bytes
-        .split(|&b| b == 0)
-        .filter_map(|entry| {
-            let at = entry.iter().position(|&b| b == b'=').filter(|&at| at > 0)?;
-            Some((
-                OsStr::from_bytes(&entry[..at]).to_owned(),
-                OsStr::from_bytes(&entry[at + 1..]).to_owned(),
-            ))
+    let exported = bytes.split(|&b| b == 0).filter_map(|entry| {
+        let at = entry.iter().position(|&b| b == b'=').filter(|&at| at > 0)?;
+        Some((
+            OsStr::from_bytes(&entry[..at]).to_owned(),
+            OsStr::from_bytes(&entry[at + 1..]).to_owned(),
+        ))
+    });
+    let aliased = alias_env(&std::fs::read_to_string(aliases.path()).unwrap_or_default());
+    // A map, so an alias's value replaces the exported one of the same name.
+    exported
+        .chain(aliased)
+        .collect::<BTreeMap<_, _>>()
+        .into_iter()
+        .collect()
+}
+
+/// The `NAME=value` words an alias definition starts with, as `alias NAME` prints it in zsh
+/// (`claude='A=1 claude'`) or bash (`alias claude='A=1 claude'`). Flags and the command are
+/// not taken: they would change what the launch runs, not where it runs.
+// ponytail: stops at a value needing expansion (`$`, backticks); evaluate it in the shell if wrappers need it.
+fn alias_env(printed: &str) -> Vec<(OsString, OsString)> {
+    let line = printed.trim_end();
+    let line = line.strip_prefix("alias ").unwrap_or(line);
+    let Some((_, body)) = line.split_once('=') else {
+        return Vec::new();
+    };
+    let name = |n: &str| {
+        n.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    shell_words(&shell_words(body).concat())
+        .into_iter()
+        .map_while(|word| {
+            let (n, v) = word.split_once('=')?;
+            (name(n) && !v.contains(['$', '`'])).then(|| (n.into(), v.into()))
         })
         .collect()
+}
+
+/// Split shell text into words, removing single quotes, double quotes and backslashes.
+fn shell_words(text: &str) -> Vec<String> {
+    let (mut words, mut word) = (Vec::new(), None::<String>);
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' | '\n' => words.extend(word.take()),
+            '\'' => {
+                let w = word.get_or_insert_default();
+                w.extend(chars.by_ref().take_while(|&c| c != '\''));
+            }
+            '"' => {
+                let w = word.get_or_insert_default();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => w.extend(chars.next()),
+                        c => w.push(c),
+                    }
+                }
+            }
+            '\\' => word.get_or_insert_default().extend(chars.next()),
+            c => word.get_or_insert_default().push(c),
+        }
+    }
+    words.extend(word);
+    words
 }
 
 fn drop_host_identity(command: &mut std::process::Command) {
@@ -1540,7 +1607,7 @@ mod tests {
         let launch = |dir: &Path| {
             let mut c = std::process::Command::new("true");
             c.current_dir(dir).env("AWS_PROFILE", "configured");
-            apply_folder_env(&mut c, shell_env(shell.as_os_str(), dir));
+            apply_folder_env(&mut c, shell_env(shell.as_os_str(), dir, None));
             drop_host_identity(&mut c);
             c.get_envs()
                 .filter_map(|(k, v)| Some((k.to_str()?.to_owned(), v?.to_str()?.to_owned())))
@@ -1569,8 +1636,8 @@ mod tests {
         assert!(!launch(&plain).contains_key("CLAUDE_CODE_USE_BEDROCK"));
         // A shell that fails or never finishes gives no folder environment.
         let missing = root.path().join("missing");
-        assert!(shell_env(OsStr::new("/usr/bin/false"), &bedrock).is_empty());
-        assert!(shell_env(OsStr::new("/bin/sh"), &missing).is_empty());
+        assert!(shell_env(OsStr::new("/usr/bin/false"), &bedrock, None).is_empty());
+        assert!(shell_env(OsStr::new("/bin/sh"), &missing, None).is_empty());
     }
 
     #[test]

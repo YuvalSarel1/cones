@@ -308,10 +308,14 @@ A start, fork or resume runs the user's `$SHELL -l -i` in the session folder fir
 every exported value that differs from cones' own environment, so rc files, `chpwd` hooks and
 direnv choose the provider, profile or region the same way a `claude` typed in that folder would.
 Configured `bedrock`, `aws_profile` and `aws_region` still win, and host identity stays out.
-Aliases and shell functions are not run, so a wrapper's inline variables do not apply; put them in
-an exported rule or the folder's native settings. A shell that fails or takes over five seconds
-contributes nothing. Claude's background daemon hands a launch the Bedrock switch and `AWS_`
-values but not other names, which reach foreground harnesses alone. Scheduled jobs keep their
+Aliases and shell functions are not run, but an alias named after the harness lends the
+`NAME=value` words it starts with, so `alias claude='CLAUDE_CODE_USE_BEDROCK=1 claude'` reaches
+the launch and its flags do not. Values that need expansion stop the read, and a function's
+variables never apply; put those in an exported rule or the folder's native settings. A shell that
+fails or takes over five seconds contributes nothing. Claude's background daemon hands a launch the
+Bedrock switch and `AWS_` values but not other names, which reach foreground harnesses alone, and
+a session reopened with `claude attach` runs on the daemon's own environment, whatever the folder
+exports. Only native settings reach both. Scheduled jobs keep their
 [cleared environment](jobs.md#environment).
 
 ### Composer identity

@@ -2,7 +2,7 @@
 """A `claude` for the dashboard flows in tests/dashboard_claude.rs. No model is contacted.
 
 Every call appends its argv to `$HOME/claude-calls.jsonl`, so a test can assert which native
-commands the dashboard ran. `$HOME/fake-launch` selects how `--bg` behaves (default `ok`):
+commands the dashboard ran, and its environment to `$HOME/claude-env.jsonl`. `$HOME/fake-launch` selects how `--bg` behaves (default `ok`):
   ok    hand the session to a stand-in daemon (`/bin/sleep`), list it in the registry with a
         transcript and an AI title, and print the background id the way Claude does
   fail  refuse to start, with a diagnostic on stderr
@@ -29,6 +29,8 @@ args = sys.argv[1:]
 
 with open(HOME / "claude-calls.jsonl", "a") as log:
     log.write(json.dumps(args) + "\n")
+with open(HOME / "claude-env.jsonl", "a") as log:
+    log.write(json.dumps(dict(os.environ)) + "\n")
 
 if "--help" in args and args[:1] != ["stop"]:
     print("--bg  start a background session\nattach  join one\n--fork-session  fork one")
