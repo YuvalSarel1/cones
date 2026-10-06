@@ -1259,6 +1259,56 @@ fn a_running_agent_reads_a_bundled_skill_without_starting_a_coordinator() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+#[test]
+fn an_agent_learns_the_config_file_from_cones_config_and_checks_its_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    let jobs = dir.path().join("jobs.yaml");
+    let cones = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .arg("--jobs")
+            .arg(&jobs)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let out = cones(&["--help"]);
+    assert!(String::from_utf8_lossy(&out.stdout).contains("run `cones config`"));
+
+    let out = cones(&["config"]);
+    assert!(out.status.success());
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with("# Changing cones settings\n"), "{text}");
+    assert!(text.contains(&format!("one YAML file: {}\n", jobs.display())));
+    // The whole reference follows, so a column the guide names is one the reference documents.
+    assert!(text.contains("# Configuration and runs"));
+    assert!(text.contains("| `bypass` | Agents |"));
+
+    // The edit the guide's example makes, then one the file refuses.
+    fs::write(
+        &jobs,
+        "version: 4\njobs: []\ncolumns: [state, bypass, context, activity, model, age, last_active, folder, last_reply]\n",
+    )
+    .unwrap();
+    let out = cones(&["config", "--check"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("{} is valid\n", jobs.display())
+    );
+    fs::write(&jobs, "version: 4\njobs: []\ncolumns: [mode]\n").unwrap();
+    let out = cones(&["config", "--check"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unknown column \"mode\" in columns"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
     for entry in fs::read_dir(dir).unwrap().flatten() {

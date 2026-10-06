@@ -15,7 +15,11 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(version, about = "A terminal workspace for coding agents")]
+#[command(
+    version,
+    about = "A terminal workspace for coding agents",
+    after_help = "Agents changing settings: run `cones config` for the file and its reference."
+)]
 struct Cli {
     #[arg(long, global = true, default_value = "~/.cones/jobs.yaml")]
     jobs: PathBuf,
@@ -192,6 +196,12 @@ enum Action {
         /// Skill name; omitted, the bundled names are listed one per line.
         name: Option<String>,
     },
+    /// How to change settings: the jobs.yaml path and its full field reference, for you or your
+    /// agent to edit the file directly. --check validates the file instead.
+    Config {
+        #[arg(long)]
+        check: bool,
+    },
     #[command(name = "__list", hide = true)]
     List,
     #[command(name = "__worker", hide = true)]
@@ -326,6 +336,26 @@ fn index_summary(s: &cones::history_api::IndexStatus) -> String {
         s.cache_bytes as f64 / 1e6
     )
 }
+
+/// `cones config` prints this ahead of docs/jobs.md, so the reference stays the one in docs/.
+const CONFIG_GUIDE: &str = "\
+# Changing cones settings
+
+Every setting lives in one YAML file: __JOBS__
+There is no setter command. Edit the file directly:
+
+- Keep the comments, layout and fields you were not asked to change.
+- A missing file starts as `version: 4` and `jobs: []`.
+- Setting a column list replaces the defaults, so copy the default list from the table
+  below and add to it. Example, adding the bypass column:
+  `columns: [state, bypass, context, activity, model, age, last_active, folder, last_reply]`
+- Run `cones config --check` afterwards. An invalid file is not loaded and the dashboard
+  falls back to built-in defaults without saying why.
+- A running dashboard rereads the file on its next refresh. Scheduled jobs also need their
+  LaunchAgents rewritten: run `cones __install` after adding, changing or removing a job.
+- Links below are relative to https://github.com/YuvalSarel1/cones/tree/main/docs.
+
+";
 
 fn main() {
     let code = match execute(Cli::parse()) {
@@ -665,6 +695,19 @@ fn execute(cli: Cli) -> Result<i32> {
                 );
             };
             print!("{text}");
+            Ok(0)
+        }
+        Action::Config { check } => {
+            if check {
+                config::read_jobs(&jobs_path)?;
+                println!("{} is valid", jobs_path.display());
+            } else {
+                print!(
+                    "{}",
+                    CONFIG_GUIDE.replace("__JOBS__", &jobs_path.display().to_string())
+                );
+                print!("{}", include_str!("../docs/jobs.md"));
+            }
             Ok(0)
         }
         Action::List => {

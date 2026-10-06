@@ -35,6 +35,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones mcp` | Serve [history tools over MCP stdio](#history-over-mcp). |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
 | `cones comms [--dir PATH] send\|mail\|wait ...` | [Write to the agents in a folder, read their replies and wait for one](#comms). |
+| `cones config [--check]` | Print the `jobs.yaml` path, editing notes and the full [configuration reference](jobs.md), for you or an agent to edit the file directly. `--check` validates the file. |
 | `cones skill [NAME]` | Print a [bundled skill](#dispatching-your-own-workers) for a session that is already running; no name lists them. |
 
 ### Reading runs and sessions
