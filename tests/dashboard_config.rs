@@ -156,8 +156,10 @@ fn config_saves_choice_and_text_settings_into_jobs_yaml() {
     // `]` moves to the harnesses group; a text field edits on Enter and saves on Enter.
     d.press("]", b"]");
     d.wait_text("› connectivity");
-    d.press("down", DOWN);
-    d.press("down", DOWN);
+    // Past skip permissions and use Bedrock to the AWS profile.
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
     d.press("enter", b"\r");
     d.typed("e2e-profile");
     d.wait_text("enter keep · esc revert");
@@ -506,8 +508,10 @@ fn failed_write_and_invalid_value_keep_the_typed_value_with_the_reason() {
     // A write the file system refuses: the typed value stays, with the error.
     d.press("]", b"]");
     d.wait_text("› connectivity");
-    d.press("down", DOWN);
-    d.press("down", DOWN);
+    // Past skip permissions and use Bedrock to the AWS profile.
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
     writable(&d, false);
     d.press("enter", b"\r");
     d.typed("e2e-profile");
@@ -548,8 +552,10 @@ fn a_failed_write_can_be_retried_once_the_cause_is_fixed() {
     open_config(&mut d);
     d.press("]", b"]");
     d.wait_text("› connectivity");
-    d.press("down", DOWN);
-    d.press("down", DOWN);
+    // Past skip permissions and use Bedrock to the AWS profile.
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
     writable(&d, false);
     d.press("enter", b"\r");
     d.typed("e2e-profile");

@@ -122,9 +122,11 @@ pub struct Policy {
     pub droid_in_picker: Option<bool>,
     pub kimi_in_picker: Option<bool>,
 
-    /// Start composer sessions with the harness's own no-prompt flag. Unset is on. pi has no
-    /// permission prompts and amp no flag for it, so neither has a key here. Jobs always run
-    /// without prompts, since nobody is there to answer.
+    /// Start composer sessions with each harness's own no-prompt flag. Unset is on. A
+    /// harness's own key below overrides it. pi has no permission prompts and amp no flag for
+    /// it, so neither has a key. Jobs always run without prompts, since nobody is there to
+    /// answer.
+    pub skip_permissions: Option<bool>,
     pub claude_skip_permissions: Option<bool>,
     pub codex_skip_permissions: Option<bool>,
     pub opencode_skip_permissions: Option<bool>,
@@ -233,6 +235,7 @@ impl Policy {
             HarnessKind::Kimi => self.kimi_skip_permissions,
             HarnessKind::Pi | HarnessKind::Amp => return false,
         }
+        .or(self.skip_permissions)
         .unwrap_or(true)
     }
 
@@ -1128,6 +1131,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("amp_in_picker", d.amp_in_picker),
         ("droid_in_picker", d.droid_in_picker),
         ("kimi_in_picker", d.kimi_in_picker),
+        ("skip_permissions", d.skip_permissions),
         ("claude_skip_permissions", d.claude_skip_permissions),
         ("codex_skip_permissions", d.codex_skip_permissions),
         ("opencode_skip_permissions", d.opencode_skip_permissions),

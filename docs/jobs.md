@@ -79,7 +79,7 @@ The last six are [experimental terminal launchers](harness.md#additional-termina
 
 An unset enabled switch means offered. `false` removes the harness from the composer, startup selection and discovery. An unset `_in_picker` key means offered too; `false` takes the harness out of the composer cycle and startup selection alone, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. The enabled switch wins: a harness that is off is out of the picker whatever its picker key says, and with every launcher hidden the composer comes up on the terminal. An already open viewer keeps running. These switches do not change a job's enabled state or grant it execution support. Config's harnesses group exposes the same switches, the Bedrock and AWS settings, and a connectivity check for each installed CLI's required launch flags. The model, effort and provider keys are not there: the dashboard's [`ctrl+o` picker](dashboard.md#launch-settings) sets them beside the composer, for the harness it names. A picker choice is written to `defaults` as it is made, so a job's next run uses it.
 
-Sessions the composer starts skip permission prompts by default, using each harness's own flag. Set the key to `false` to start that harness with its configured permissions. Jobs always run without prompts.
+Sessions the composer starts skip permission prompts by default, using each harness's own flag. `skip_permissions: false` starts every harness with its configured permissions; a harness's own key, when set, overrides it for that harness. Jobs always run without prompts.
 
 | Harness | Key | Native flag |
 | --- | --- | --- |

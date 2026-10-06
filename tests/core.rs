@@ -2301,3 +2301,52 @@ fn a_worker_that_arrives_while_the_first_arm_sleeps_still_wakes_it() {
         "already there before the arm: {woken}"
     );
 }
+
+/// One switch for every harness: `cones config set defaults.skip_permissions false` starts
+/// composer sessions with their configured permissions, and a harness's own key, set
+/// afterwards, overrides it for that harness alone.
+#[test]
+fn one_skip_permissions_switch_covers_every_harness_and_a_harness_key_overrides_it() {
+    use cones::{config::HarnessKind, harness};
+    let d = tempfile::tempdir().unwrap();
+    let jobs = d.path().join("jobs.yaml");
+    fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
+    let set = |key: &str, value: &str| {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args(["config", "--jobs"])
+            .arg(&jobs)
+            .args(["set", key, value])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    };
+    let flags = |kind: HarnessKind| -> Vec<String> {
+        harness::session_args(
+            kind,
+            None,
+            "count the flaky tests",
+            &config::defaults(&jobs),
+        )
+        .unwrap()
+        .into_iter()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+    };
+    let claude = "--dangerously-skip-permissions";
+    let codex = "--dangerously-bypass-approvals-and-sandbox";
+    assert!(flags(HarnessKind::Claude).iter().any(|a| a == claude));
+    assert!(flags(HarnessKind::Codex).iter().any(|a| a == codex));
+
+    set("defaults.skip_permissions", "false");
+    let text = fs::read_to_string(&jobs).unwrap();
+    assert!(
+        text.contains("defaults:\n  skip_permissions: false\n"),
+        "{text}"
+    );
+    assert!(!flags(HarnessKind::Claude).iter().any(|a| a == claude));
+    assert!(!flags(HarnessKind::Codex).iter().any(|a| a == codex));
+
+    set("defaults.claude_skip_permissions", "true");
+    assert!(flags(HarnessKind::Claude).iter().any(|a| a == claude));
+    assert!(!flags(HarnessKind::Codex).iter().any(|a| a == codex));
+}

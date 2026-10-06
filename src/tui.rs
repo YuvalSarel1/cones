@@ -4334,11 +4334,15 @@ const SYSTEM: &str = "system default";
 /// resolution chain of the launching shell and ~/.aws/config, not the harness.
 const AWS: &str = "AWS default";
 
+/// A harness's skip setting left unset follows the one for every harness.
+const INHERIT: &str = "follows skip permissions";
+
 /// What a row says for an empty value whose answer is owned outside cones.
 fn outside(builtin: &str) -> Option<&'static str> {
     match builtin {
         SYSTEM => Some("harness default"),
         AWS => Some("AWS default"),
+        INHERIT => Some("follows skip permissions"),
         _ => None,
     }
 }
@@ -4351,7 +4355,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 72] = [
+const FIELDS: [Field; 73] = [
     Field {
         group: "cones",
         sub: "",
@@ -4543,6 +4547,16 @@ const FIELDS: [Field; 72] = [
     Field {
         group: "harnesses",
         sub: "",
+        name: "skip_permissions",
+        short: "skip permissions",
+        hint: "Start new sessions without permission prompts.",
+        long: "true passes each harness's own no-prompt flag, such as claude's --dangerously-skip-permissions, to sessions the composer starts, so they run without asking before each action; false starts them with the harness's configured permissions. A harness's own skip setting below overrides this one. Scheduled jobs always run without prompts.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
         name: "bedrock",
         short: "use Bedrock",
         hint: "Use Amazon Bedrock for Claude.",
@@ -4605,8 +4619,8 @@ const FIELDS: [Field; 72] = [
         name: "claude_skip_permissions",
         short: "claude skips permissions",
         hint: "Start new claude sessions without permission prompts.",
-        long: "true passes claude's own --dangerously-skip-permissions to sessions the composer starts, so they run without asking before each action; false starts them with claude's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes claude's own --dangerously-skip-permissions to sessions the composer starts, so they run without asking before each action; false starts them with claude's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4666,8 +4680,8 @@ const FIELDS: [Field; 72] = [
         name: "codex_skip_permissions",
         short: "codex skips permissions",
         hint: "Start new codex sessions without permission prompts.",
-        long: "true passes codex's own --dangerously-bypass-approvals-and-sandbox to sessions the composer starts, so they run without asking before each action; false starts them with codex's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes codex's own --dangerously-bypass-approvals-and-sandbox to sessions the composer starts, so they run without asking before each action; false starts them with codex's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4777,8 +4791,8 @@ const FIELDS: [Field; 72] = [
         name: "opencode_skip_permissions",
         short: "opencode skips permissions",
         hint: "Start new opencode sessions without permission prompts.",
-        long: "true passes opencode's own --auto to sessions the composer starts, so they run without asking before each action; false starts them with opencode's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes opencode's own --auto to sessions the composer starts, so they run without asking before each action; false starts them with opencode's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4817,8 +4831,8 @@ const FIELDS: [Field; 72] = [
         name: "gemini_skip_permissions",
         short: "gemini skips permissions",
         hint: "Start new gemini sessions without permission prompts.",
-        long: "true passes gemini's own --yolo to sessions the composer starts, so they run without asking before each action; false starts them with gemini's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes gemini's own --yolo to sessions the composer starts, so they run without asking before each action; false starts them with gemini's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4857,8 +4871,8 @@ const FIELDS: [Field; 72] = [
         name: "cursor_skip_permissions",
         short: "cursor skips permissions",
         hint: "Start new cursor sessions without permission prompts.",
-        long: "true passes cursor's own --force to sessions the composer starts, so they run without asking before each action; false starts them with cursor's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes cursor's own --force to sessions the composer starts, so they run without asking before each action; false starts them with cursor's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4897,8 +4911,8 @@ const FIELDS: [Field; 72] = [
         name: "copilot_skip_permissions",
         short: "copilot skips permissions",
         hint: "Start new copilot sessions without permission prompts.",
-        long: "true passes copilot's own --allow-all to sessions the composer starts, so they run without asking before each action; false starts them with copilot's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes copilot's own --allow-all to sessions the composer starts, so they run without asking before each action; false starts them with copilot's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4957,8 +4971,8 @@ const FIELDS: [Field; 72] = [
         name: "droid_skip_permissions",
         short: "droid skips permissions",
         hint: "Start new droid sessions without permission prompts.",
-        long: "true passes droid's own --auto high to sessions the composer starts, so they run without asking before each action; false starts them with droid's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes droid's own --auto high to sessions the composer starts, so they run without asking before each action; false starts them with droid's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -4987,8 +5001,8 @@ const FIELDS: [Field; 72] = [
         name: "kimi_skip_permissions",
         short: "kimi skips permissions",
         hint: "Start new kimi sessions without permission prompts.",
-        long: "true passes kimi's own --auto to sessions the composer starts, so they run without asking before each action; false starts them with kimi's configured permissions. Scheduled jobs always run without prompts.",
-        builtin: "true",
+        long: "true passes kimi's own --auto to sessions the composer starts, so they run without asking before each action; false starts them with kimi's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
         input: Answer::Pick(BOOL),
     },
     Field {
@@ -5467,6 +5481,7 @@ impl ConfigForm {
                 "kimi_model" => d.kimi_model.clone().unwrap_or_default(),
                 "kimi_enabled" => flag(d.kimi_enabled),
                 "claude_in_picker" => flag(d.claude_in_picker),
+                "skip_permissions" => flag(d.skip_permissions),
                 "claude_skip_permissions" => flag(d.claude_skip_permissions),
                 "codex_in_picker" => flag(d.codex_in_picker),
                 "codex_skip_permissions" => flag(d.codex_skip_permissions),
@@ -5675,6 +5690,7 @@ impl ConfigForm {
 
             claude_enabled: flag("claude_enabled"),
             claude_in_picker: flag("claude_in_picker"),
+            skip_permissions: flag("skip_permissions"),
             claude_skip_permissions: flag("claude_skip_permissions"),
             codex_in_picker: flag("codex_in_picker"),
             codex_skip_permissions: flag("codex_skip_permissions"),
