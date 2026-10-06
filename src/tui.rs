@@ -16649,6 +16649,12 @@ pub fn run(
                 "terminal_size": ratatui::crossterm::terminal::size().ok(),
             }),
         );
+        // Hashing a 70 MB debug build takes seconds on a loaded machine; the first frame
+        // must not wait for it.
+        let (background, exe) = (log.clone(), exe.to_owned());
+        std::thread::spawn(move || {
+            background.event("debug", "dashboard.build", executable_fingerprint(&exe));
+        });
         Some(log)
     } else {
         None
@@ -16863,6 +16869,13 @@ pub fn run(
 }
 
 fn executable_identity(exe: &Path) -> Value {
+    json!({
+        "version": env!("CARGO_PKG_VERSION"), "commit": option_env!("CONES_COMMIT"),
+        "executable": exe.to_string_lossy(),
+    })
+}
+
+fn executable_fingerprint(exe: &Path) -> Value {
     use sha2::{Digest, Sha256};
     use std::io::Read;
     let fingerprint = (|| -> std::io::Result<String> {
@@ -16879,7 +16892,6 @@ fn executable_identity(exe: &Path) -> Value {
         Ok(format!("{:x}", hash.finalize()))
     })();
     json!({
-        "version": env!("CARGO_PKG_VERSION"), "commit": option_env!("CONES_COMMIT"),
         "executable": exe.to_string_lossy(),
         "sha256": fingerprint.as_ref().ok(),
         "fingerprint_error": fingerprint.as_ref().err().map(ToString::to_string),

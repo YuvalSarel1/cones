@@ -335,6 +335,7 @@ row events include native identity and discovery source when known.
 | Events | Contents |
 | --- | --- |
 | `dashboard.started`, `dashboard.stopped` | Build version and release commit, configuration, terminal program, tmux or screen, terminal state and exit reason. |
+| `dashboard.build` | SHA-256 of the running executable, logged once it is hashed so startup does not wait for it. |
 | `row.*`, `view.changed` | Row identity, selection, focus and status changes. |
 | `input.*`, `terminal.*` | Shortcut routes, paste sizes, terminal dimensions, colors and accepted keyboard flags. |
 | `viewer.*` | Preparation, spawn, first output, focus, closure and failures with PID/timing. |
