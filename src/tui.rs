@@ -12419,7 +12419,7 @@ impl App {
 
     /// Only pre-open joins of a live session: a Claude attach or a Codex resume against the
     /// daemon that holds the thread. Resuming a finished run or starting a session changes the
-    /// fleet, so those still wait for enter. Done background jobs still have a joinable worker.
+    /// fleet, so those still wait for enter. Done background jobs wake their worker on rest.
     #[cfg(test)]
     fn prespawn_target(&self) -> Option<(String, PathBuf)> {
         self.prespawn_decision().ok()
@@ -12480,9 +12480,6 @@ impl App {
         }
         let spec = harness::by_name(&s.harness).ok_or("unknown_harness")?;
         spec_permits_prespawn(spec)?;
-        if s.pid.is_none() && spec.viewer.peek == harness::spec::Peek::Join {
-            return Err("session_settled");
-        }
         let home = spec.session_home(&self.claude, s);
         if !harness::can_peek(s, &home) {
             return Err("native_viewer_unavailable");
@@ -22791,12 +22788,12 @@ while True:
         (one, job)
     }
 
-    /// Joining a settled session wakes a worker, which a hover must never do: like a saved
-    /// Codex thread whose daemon is gone, it waits for enter.
+    /// Resting on a settled done session opens it the way enter would, waking its worker.
+    /// Failed and stopped jobs have no worker to wake, so they still wait for enter.
     #[test]
-    fn a_settled_background_session_is_never_a_prespawn_target() {
+    fn a_settled_done_background_session_is_a_prespawn_target() {
         let d = dir();
-        let (one, _) = settled_fixture(d.path());
+        let (one, job) = settled_fixture(d.path());
         let mut app = app(d.path());
         app.split = false;
         app.refresh().unwrap();
@@ -22810,18 +22807,30 @@ while True:
         fs::remove_file(d.path().join("sessions").join(format!("{A}.json"))).unwrap();
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
-        rested(&mut app, A, OLD);
-        assert_eq!(app.prespawn_decision(), Err("session_settled"));
         let s = app
             .data
             .sessions
             .iter()
             .find(|s| s.session_id == A)
             .unwrap();
-        assert!(
-            !harness::can_peek(s, d.path()),
-            "the harness layer refuses too, for every peek path"
+        assert_eq!((s.pid, s.state.as_str()), (None, "done"), "the row settled");
+        rested(&mut app, A, OLD);
+        assert_eq!(
+            app.prespawn_target(),
+            Some((A.to_owned(), one.clone())),
+            "a settled done session opens on rest"
         );
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({
+                "state": "failed", "tempo": "idle", "sessionId": A, "cwd": one, "name": "model bars"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        app.refresh().unwrap();
+        rested(&mut app, A, OLD);
+        assert_eq!(app.prespawn_decision(), Err("native_kind_cannot_peek"));
     }
 
     #[test]

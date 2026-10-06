@@ -762,9 +762,9 @@ pub fn can_peek(session: &crate::fleet::Session, home: &Path) -> bool {
         return false;
     }
     match spec.viewer.peek {
-        // A settled background session has no process; joining it wakes one, which a hover
-        // must never do. It waits for enter, like a saved Codex thread whose daemon is gone.
-        spec::Peek::Join => session.pid.is_some(),
+        // A settled background session has no process; joining it wakes one, so resting on
+        // the row opens it the way enter would.
+        spec::Peek::Join => true,
         spec::Peek::ExistingDaemon => crate::codex::daemon_pid(home).is_some(),
         spec::Peek::Unavailable => false,
     }

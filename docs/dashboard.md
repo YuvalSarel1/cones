@@ -281,7 +281,8 @@ starts no native client.
 
 A focused viewer stays in the pane; otherwise it follows the selection. Rows never display
 another session's output. Folder and job rows may retain the last focused viewer. Resting on
-a joinable session prepares its client; a session needing revival waits for explicit entry.
+a joinable session prepares its client, waking the worker of a done Claude background
+session; a session needing revival waits for explicit entry.
 Saved Codex threads also wait for entry if their daemon is gone.
 
 Quitting or crashing the dashboard leaves hosted shells, pi, OpenCode, experimental launchers
