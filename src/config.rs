@@ -1573,6 +1573,13 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
 /// Validate the new text in a sibling file before it replaces the old one. The sibling is
 /// created fresh so a planted symlink there cannot redirect the write.
 fn save(path: &Path, text: String) -> Result<()> {
+    // A fresh install has no ~/.cones yet.
+    if let Some(dir) = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty() && !d.exists())
+    {
+        crate::private_dir(dir)?;
+    }
     let tmp = path.with_extension("tmp");
     let _ = fs::remove_file(&tmp);
     let checked = fs::OpenOptions::new()

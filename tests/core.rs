@@ -1312,7 +1312,8 @@ fn an_agent_learns_the_config_file_from_cones_config_and_checks_its_edit() {
 #[test]
 fn cones_config_set_changes_one_value_and_refuses_what_the_file_would_not_load() {
     let dir = tempfile::tempdir().unwrap();
-    let jobs = dir.path().join("jobs.yaml");
+    // A fresh install has no ~/.cones, so the folder is missing too.
+    let jobs = dir.path().join(".cones/jobs.yaml");
     let cones = |args: &[&str]| {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
             .arg("--jobs")
