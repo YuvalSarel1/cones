@@ -10936,7 +10936,19 @@ impl App {
             if self.viewers.iter().any(|o| &o.key == key)
                 && !data.sessions.iter().any(|s| self.history_matches(key, s))
             {
-                data.sessions.push(history_session(entry));
+                let s = history_session(entry);
+                // Discovery resolved worktrees before this row existed. Without its repository
+                // the row would head a folder of its own, and that folder would stay open.
+                if !data.roots.contains_key(&s.cwd)
+                    && let Some(root) = worktree_root(&s.cwd)
+                {
+                    data.worktrees.insert(s.cwd.clone());
+                    data.roots.insert(s.cwd.clone(), root);
+                    if let Some(top) = worktree_top(&s.cwd) {
+                        data.trees.insert(s.cwd.clone(), top);
+                    }
+                }
+                data.sessions.push(s);
             }
         }
         for key in self.history.opened.keys() {

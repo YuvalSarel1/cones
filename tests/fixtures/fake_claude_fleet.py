@@ -9,6 +9,8 @@ commands the dashboard ran. `$HOME/fake-launch` selects how `--bg` behaves (defa
   untrusted  refuse `--bg` with Claude's own trust error until `$HOME/trusted` exists; a
         foreground start asks Claude's trust question on the pty, and enter trusts the folder,
         lists the session in the registry under the fixture's pid and holds the pty
+`$HOME/registry-delay` holds a `--bg` session's registry entry back that many seconds, the
+way the daemon can take a while to report a session.
 `attach` holds the pty as a viewer client until hung up; `rm` ends the session the way the
 daemon does: registry entry and job record removed, stand-in killed.
 """
@@ -107,8 +109,19 @@ transcript.write_text(
 )
 registry = CLAUDE / "sessions"
 registry.mkdir(parents=True, exist_ok=True)
-(registry / f"{daemon.pid}.json").write_text(json.dumps({
+entry = json.dumps({
     "pid": daemon.pid, "sessionId": session, "cwd": cwd, "kind": "bg",
     "jobId": short, "status": "busy", "startedAt": int(time.time() * 1000),
-}))
+})
+delay_file = HOME / "registry-delay"
+if delay_file.exists() and os.fork() == 0:
+    os.setsid()
+    null = os.open(os.devnull, os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    time.sleep(float(delay_file.read_text()))
+    (registry / f"{daemon.pid}.json").write_text(entry)
+    os._exit(0)
+if not delay_file.exists():
+    (registry / f"{daemon.pid}.json").write_text(entry)
 print(f"backgrounded · {short} (busy)")

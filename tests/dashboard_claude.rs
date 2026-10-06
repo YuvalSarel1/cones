@@ -890,3 +890,78 @@ fn a_flat_list_heads_only_the_worktree_folder_you_open() {
     );
     d.quit();
 }
+
+/// A past conversation resumed from history in a worktree that no live session uses. Its
+/// row stands in before Claude reports it, and the dashboard used to resolve worktrees
+/// before adding that row: the worktree went unrecognised, opened as a folder of its own and
+/// stayed open. Now the row sits among the repository's own, marked `⑂`, and no folder
+/// opens.
+#[test]
+fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
+    let Worktree {
+        mut d,
+        main,
+        _sessions,
+        ..
+    } = worktree("claude-worktree-resume");
+    let old = d.path("old-tree");
+    let out = Command::new("git")
+        .args(["worktree", "add", "-q", old.to_str().unwrap()])
+        .current_dir(&main)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let old = old.canonicalize().unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let cwd = old.display().to_string();
+    let key: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let transcript = d.home().join(".claude/projects").join(key);
+    fs::create_dir_all(&transcript).unwrap();
+    fs::write(
+        transcript.join(format!("{id}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            json!({"sessionId": id, "type": "user", "cwd": cwd,
+                   "timestamp": "2026-10-01T08:00:00.000Z",
+                   "message": {"role": "user", "content": "please trim the old tree"}}),
+            json!({"type": "ai-title", "sessionId": id, "aiTitle": "Old tree work"}),
+        ),
+    )
+    .unwrap();
+    // Claude reports the resumed session late, so its row stands in meanwhile.
+    fs::write(d.home().join("registry-delay"), "3").unwrap();
+    // Flat, so any heading of the worktree's own is a folder that opened.
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(d.path("jobs.yaml"), format!("{yaml}worktrees: flat\n")).unwrap();
+    d.start();
+    d.wait_text("Autoscaling plan");
+
+    d.press("ctrl+h", b"\x08");
+    d.wait_text("Old tree work");
+    for _ in 0..12 {
+        if selected(&d.screen()).contains("Old tree work") {
+            break;
+        }
+        d.press("down", DOWN);
+    }
+    d.wait_for("the history row selected", |s| {
+        selected(s).contains("Old tree work")
+    });
+    d.press("enter", b"\r");
+    let old_heading = format!("  ⑂ {cwd}");
+    let screen = d.wait_for("the resumed row in the live list", |s| {
+        s.contains("fixture attached to")
+            && (s.contains("⑂ Old tree work") || heading(s, &old_heading).is_some())
+    });
+    d.capture("resumed");
+    assert!(heading(&screen, &old_heading).is_none(), "{screen}");
+    let at = heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}"));
+    assert!(row(&screen, "⑂ Old tree work") > at, "{screen}");
+    let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap_or_default();
+    assert!(!open.contains(&cwd), "{open}");
+    d.keep("state/open-folders.json");
+    d.quit();
+}
