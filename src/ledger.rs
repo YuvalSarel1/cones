@@ -18,6 +18,10 @@ pub enum Status {
     Failed,
     Timeout,
     Skipped,
+    /// The session stopped to ask for input. It stays up for an answer; the run is over.
+    Input,
+    /// Someone stopped the run: a dashboard stop, or SIGTERM/SIGINT to the supervisor.
+    Stopped,
 }
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,6 +31,8 @@ impl std::fmt::Display for Status {
             Self::Failed => "failed",
             Self::Timeout => "timeout",
             Self::Skipped => "skipped",
+            Self::Input => "input",
+            Self::Stopped => "stopped",
         })
     }
 }
@@ -42,6 +48,9 @@ pub struct Record {
     pub trigger: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fired_at: Option<DateTime<Utc>>,
+    /// [`awake_s`] at `fired_at`, so a run's age leaves out the time the machine slept.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fired_awake_s: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +103,7 @@ impl Record {
             job: None,
             trigger: None,
             fired_at: None,
+            fired_awake_s: None,
             ended_at: None,
             harness: None,
             session_id: None,
@@ -132,17 +142,46 @@ impl Run {
         if self.started.status == Status::Skipped {
             return "skipped".into();
         }
-        let elapsed = self
-            .started
-            .fired_at
-            .map(|t| (Utc::now() - t).num_milliseconds() as f64 / 1000.0)
-            .unwrap_or(0.0);
+        let elapsed = self.elapsed_s().unwrap_or(0.0);
         if elapsed > self.started.timeout_s.unwrap_or(1800.0) + 5.0 {
             "crashed".into()
         } else {
             "started".into()
         }
     }
+}
+
+impl Run {
+    /// Seconds since the run fired, counting only time the machine was awake: the clock its
+    /// timeout and recorded duration use. A record from before a reboot, or one written
+    /// without the reading, falls back to wall time.
+    pub fn elapsed_s(&self) -> Option<f64> {
+        let awake = awake_s();
+        match self.started.fired_awake_s {
+            Some(at) if at <= awake => Some(awake - at),
+            _ => self
+                .started
+                .fired_at
+                .map(|t| ((Utc::now() - t).num_milliseconds() as f64 / 1000.0).max(0.0)),
+        }
+    }
+}
+
+/// Seconds the machine has been awake since boot. `Instant` reads the same clock on macOS,
+/// so this agrees with the supervisor's timeout across processes.
+// ponytail: a reboot whose uptime overtakes the reading is not detected; the run died with it
+// and is reaped as an orphan anyway.
+pub fn awake_s() -> f64 {
+    #[cfg(target_os = "macos")]
+    const CLOCK: libc::clockid_t = libc::CLOCK_UPTIME_RAW;
+    #[cfg(not(target_os = "macos"))]
+    const CLOCK: libc::clockid_t = libc::CLOCK_MONOTONIC;
+    let mut t = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe { libc::clock_gettime(CLOCK, &mut t) };
+    t.tv_sec as f64 + t.tv_nsec as f64 / 1e9
 }
 
 pub struct Ledger {

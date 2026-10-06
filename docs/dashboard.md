@@ -179,7 +179,7 @@ The row disappears while the action runs and returns if it fails.
 | --- | --- |
 | Live session | Its [native stop or removal](harness.md#native-actions). |
 | Settled Claude background | Remove the job record; retain the transcript. |
-| Running run or job | Stop the run. |
+| Running run or job | Stop the run and hide its row; the ledger records `stopped`. |
 | Finished run | Hide the run and its owned session; retain output and ledger. Restore through the [hidden file](jobs.md#stored-files). |
 | Idle job | Delete it and reinstall schedules. |
 | Empty folder | Close it; retain the directory and any pin. |
@@ -188,7 +188,8 @@ Run previews read the archived/native conversation, falling back to captured eve
 stderr. They show messages and compact tool calls, excluding thinking and tool output. Live
 output refreshes once per second and follows new text until scrolled back. Enter joins an
 available native session, follows a running run's output if unjoinable, or revives a settled
-run. A resumed run retains its row and original ledger outcome while displaying live values.
+run. A running run's state comes from its agent, so one waiting on input reads `input`. A
+resumed run retains its row and original ledger outcome while displaying live values.
 
 ### Add a folder
 

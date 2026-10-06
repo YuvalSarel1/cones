@@ -367,16 +367,9 @@ fn following_output_can_detach_without_stopping_the_job() {
     assert!(follower.wait().unwrap().success());
     assert!(job.try_wait().unwrap().is_none());
     f.stop(&id, &mut job);
-    assert_eq!(
-        f.ledger()
-            .resolve(&id)
-            .unwrap()
-            .terminal
-            .unwrap()
-            .reason
-            .as_deref(),
-        Some("interrupted")
-    );
+    let ended = f.ledger().resolve(&id).unwrap().terminal.unwrap();
+    assert_eq!(ended.status, Status::Stopped);
+    assert_eq!(ended.reason.as_deref(), Some("interrupted"));
 }
 
 #[test]

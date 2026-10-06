@@ -135,10 +135,7 @@ fn reap_run(ledger: &Ledger, run: &Run, replaced: bool) -> Result<bool> {
     );
     terminal.ended_at = Some(Utc::now());
     terminal.reason = Some(if replaced { "replaced" } else { "orphan" }.into());
-    terminal.duration_s = run
-        .started
-        .fired_at
-        .map(|t| ((Utc::now() - t).num_milliseconds() as f64 / 1000.0).max(0.0));
+    terminal.duration_s = run.elapsed_s();
     ledger.append(&terminal)?;
     Ok(true)
 }
@@ -175,7 +172,7 @@ pub fn reap_orphans(ledger: &Ledger) -> Result<()> {
 
 /// `CONES_NOTIFIER` overrides osascript and receives (title, message).
 fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
-    let wanted = matches!(status, Status::Failed | Status::Timeout);
+    let wanted = matches!(status, Status::Failed | Status::Timeout | Status::Input);
     if !job.notify || !wanted {
         return;
     }
@@ -413,6 +410,9 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     initial.job = Some(job.name.clone());
     initial.trigger = Some(trigger.into());
     initial.fired_at = Some(Utc::now());
+    initial.fired_awake_s = Some(crate::ledger::awake_s());
+    // The run's clock starts when it fires, which is where the dashboard counts it from.
+    let start = Instant::now();
     initial.harness = Some(job.harness);
     initial.cwd = Some(job.cwd.clone());
     initial.pid = Some(std::process::id());
@@ -450,7 +450,6 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     let pgid = guard.child.id() as i32;
     initial.pgid = Some(pgid);
     let signals = Signals::new()?;
-    let start = Instant::now();
     let mut terminal = Record::new(run_id.clone(), Status::Failed);
     let mut outcome = Outcome::default();
     let mut input = guard.child.stdin.take();
@@ -524,6 +523,7 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
                 break;
             }
             if signals.cancelled.load(Ordering::Relaxed) {
+                terminal.status = Status::Stopped;
                 terminal.reason = Some("interrupted".into());
                 break;
             }
@@ -558,7 +558,9 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
             }
             if done && let Some(exit) = exited {
                 terminal.exit = exit.code().or_else(|| exit.signal().map(|s| 128 + s));
-                if exit.success() && outcome.result_seen && !outcome.failed {
+                if exit.success() && outcome.result_seen && outcome.input {
+                    terminal.status = Status::Input;
+                } else if exit.success() && outcome.result_seen && !outcome.failed {
                     terminal.status = Status::Ok;
                 } else {
                     terminal.reason = Some(outcome.reason.clone().unwrap_or_else(|| {
@@ -812,8 +814,21 @@ fn background_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i3
     loop {
         if checked.elapsed() >= watch {
             checked = Instant::now();
-            let session = crate::fleet::find(&home, &session_id)?;
+            // A stop signals this whole group, so the `ps` a read is running dies with it.
+            // That failure is the stop arriving, which the check below handles.
+            let session = match crate::fleet::find(&home, &session_id) {
+                Ok(session) => session,
+                Err(_) if cancelled.load(Ordering::Relaxed) => None,
+                Err(e) => return Err(e),
+            };
             match session.as_ref().map(|s| s.state.as_str()) {
+                _ if cancelled.load(Ordering::Relaxed) => {}
+                // A session asking for input has ended its run, but not its work: it stays up
+                // so the question can be answered.
+                Some("blocked") => {
+                    report(&json!({"type": "cones_result", "state": "blocked"}))?;
+                    return Ok(0);
+                }
                 Some(state @ ("done" | "failed" | "stopped")) => {
                     // The session is the run, so the run ending ends it. What it did is in
                     // its conversation, which `claude rm` leaves resumable.

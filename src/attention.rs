@@ -63,7 +63,7 @@ impl Observation {
     fn complete(&self) -> bool {
         matches!(
             self.state.as_str(),
-            "idle" | "done" | "ok" | "failed" | "timeout" | "crashed"
+            "idle" | "done" | "ok" | "input" | "failed" | "timeout" | "crashed"
         )
     }
 }

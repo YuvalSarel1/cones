@@ -137,7 +137,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `last_active` | Agents, history | Time since the latest recorded activity. |
 | `last_reply` | Agents, runs, history | Latest recorded reply or agent status text. |
 | `started`, `ended` | Runs | Start and end time in the local timezone, including the date. |
-| `duration` | Runs | The live agent's age when reported, including for a resumed run; otherwise recorded duration, or elapsed seconds while supervision is running. |
+| `duration` | Runs | Awake seconds since firing while supervision is running; then the live agent's age for a resumed run, otherwise the recorded duration. |
 | `reason` | Runs | Failure, timeout or skip reason. |
 | `trigger` | Runs | `manual` or `schedule`. |
 | `schedule` | Jobs | Configured local cron rule, separate from status. |
@@ -268,10 +268,11 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | --- | --- | --- | --- |
 | `started` | | Running; a saved status line may supply live cost. | |
 | `ok` | | The harness reported the session done. | 0 |
+| `input` | | The session ended its turn asking for input. The session stays up to answer, and `notify` fires. | 0 |
 | `skipped` | `disabled`, `overlap`, `replace_unconfirmed` | Admission refused the run for the reason above. | 0 |
 | `timeout` | `timeout` | The clock ran out. | 124 |
 | `timeout` | `replaced` | A later run replaced this one. | 124 |
-| `failed` | `interrupted` | Dashboard stop, or SIGTERM/SIGINT to the supervisor. | 1 |
+| `stopped` | `interrupted` | Dashboard stop, or SIGTERM/SIGINT to the supervisor. A dashboard stop also hides the run's row. | 1 |
 | `failed` | `session_failed`, `session_stopped` | The harness reported the session as failed, or as stopped by something other than this run. | 1 |
 | `failed` | `session_mismatch` | An event's session id differs from the native id recorded at launch. | 1 |
 | `failed` | `missing_result` | The supervisor ended without an account of the session. | 1 |
@@ -282,7 +283,9 @@ Each run starts with a cleared environment. Installed schedules capture values i
 
 A background launch prints no usage totals. Run tokens come from the conversation's reported usage; a saved status line supplies the context window and takes precedence for cost. Without a native dollar total, a displayed estimate requires reported provider, model and usage plus matching cached prices. Missing inputs leave cost unavailable.
 
-The start record contains `trigger` (`manual` or `schedule`), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. The policy excludes the session id; job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
+A run's clock starts when it fires and counts only time the Mac is awake: the timeout, the recorded `duration_s` and the dashboard's duration while the run is supervised all use it. A closed lid pauses it, though launchd can fire a job during a brief dark wake and the agent works in the wakes that follow.
+
+The start record contains `trigger` (`manual` or `schedule`), `fired_awake_s` (the awake clock at firing), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. The policy excludes the session id; job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
 
 ### Stored files
 

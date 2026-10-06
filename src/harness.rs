@@ -1208,6 +1208,8 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
 pub struct Outcome {
     pub result_seen: bool,
     pub failed: bool,
+    /// The session ended its turn asking for input; it stays up for the answer.
+    pub input: bool,
     pub permission_denied: bool,
     pub reason: Option<String>,
     pub session_mismatch: bool,
@@ -1237,8 +1239,9 @@ impl Outcome {
         if event["type"] == "cones_result" {
             self.result_seen = true;
             let state = event["state"].as_str().unwrap_or("unreported");
-            self.failed = state != "done";
-            self.reason = (state != "done").then(|| format!("session_{state}"));
+            self.input = state == "blocked";
+            self.failed = !matches!(state, "done" | "blocked");
+            self.reason = self.failed.then(|| format!("session_{state}"));
         }
         if event["type"] == "result" {
             // Claude ends a headless turn with a result and then answers again when a

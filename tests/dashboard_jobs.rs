@@ -5,7 +5,9 @@
 //! (what, where, when, at, name), shown as a Jobs row and written as its own block while the
 //! file's comment and other jobs stay byte for byte; `ctrl+e` reopening it with its answers,
 //! and an edit of the task, schedule and run settings replacing the block; `ctrl+x` arming and
-//! a second `ctrl+x` deleting it; and `enter` on a job running it, recorded in the ledger.
+//! a second `ctrl+x` deleting it; `enter` on a job running it, recorded in the ledger; a run
+//! whose session asks for input ending as `input` with the session left up; and `ctrl+x`
+//! twice on a running job stopping its run as `stopped` and closing the run's row.
 //!
 //! The harness is `fake_claude.py`, copied as a real executable into the fixture's
 //! `~/.local/bin`, and its `--model` picks the outcome. No model is called.
@@ -387,6 +389,67 @@ fn enter_on_a_job_runs_it_with_its_own_policy_and_the_row_shows_the_outcome() {
     assert_eq!(started["timeout_s"], 300.0);
     assert_eq!(ended["run_id"], started["run_id"]);
     assert_eq!(ended["status"], "ok", "{ended}");
+    d.keep("state/runs.jsonl");
+    d.quit();
+}
+
+/// A job whose agent stops to ask a question has finished its run, but the question still
+/// needs an answer: the run records `input` and the session stays up to answer it.
+#[test]
+fn a_run_whose_session_asks_for_input_ends_as_input_and_leaves_the_session_up() {
+    let job = "  - name: ask\n    schedule: '0 3 * * *'\n    cwd: project\n    prompt: ask me\n    model: blocked\n    timeout_min: 5\n";
+    let mut d = fixture("jobs-run-input", job);
+    d.start();
+    open_jobs(&mut d);
+    select_job(&mut d, "ask");
+    d.press("enter", ENTER);
+    let (started, ended) = finished_run(&d);
+    assert_eq!(ended["run_id"], started["run_id"]);
+    assert_eq!(ended["status"], "input", "{ended}");
+    assert!(ended.get("reason").is_none(), "{ended}");
+    let session = started["session_id"].as_str().unwrap();
+    let listed = fs::read_dir(d.home().join(".claude/sessions"))
+        .unwrap()
+        .filter_map(|e| fs::read_to_string(e.unwrap().path()).ok())
+        .any(|t| t.contains(session));
+    assert!(listed, "the session waiting on its answer is still listed");
+    // The job's row and the run's row, unread, both say the session is waiting on input.
+    d.wait_for("the job and run rows to show input", |s| {
+        let squashed = s
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        squashed.contains("▌ ◆ ✻ input ask") && squashed.contains("▇ ✻ input ✉ ask")
+    });
+    d.keep("state/runs.jsonl");
+    d.quit();
+}
+
+/// One stop closes a running job's run: the ledger records `stopped` rather than a failure,
+/// and the run's row leaves with it instead of waiting for a second `ctrl+x` to hide it.
+#[test]
+fn stopping_a_running_job_records_stopped_and_closes_the_runs_row() {
+    let job = "  - name: long\n    schedule: '0 3 * * *'\n    cwd: project\n    prompt: keep going\n    model: working\n    timeout_min: 5\n";
+    let mut d = fixture("jobs-run-stop", job);
+    d.start();
+    open_jobs(&mut d);
+    select_job(&mut d, "long");
+    d.press("enter", ENTER);
+    d.wait_file("state/runs.jsonl", |t| t.lines().count() >= 1);
+    let started = records(&d).remove(0);
+    let run_id = started["run_id"].as_str().unwrap().to_owned();
+    // Until the dashboard reads the run, ctrl+x on the job would offer to delete it.
+    d.wait_text("▌ ◆  ✻  started  long");
+    d.press("ctrl+x", CTRL_X);
+    d.wait_text("ctrl+x again to stop");
+    d.press("ctrl+x", CTRL_X);
+    let (_, ended) = finished_run(&d);
+    assert_eq!(ended["run_id"], run_id.as_str());
+    assert_eq!(ended["status"], "stopped", "{ended}");
+    assert_eq!(ended["reason"], "interrupted", "{ended}");
+    let hidden = d.wait_file("state/hidden", |t| t.contains(&run_id));
+    assert_eq!(hidden.lines().collect::<Vec<_>>(), [run_id.as_str()]);
     d.keep("state/runs.jsonl");
     d.quit();
 }

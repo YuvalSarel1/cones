@@ -76,8 +76,9 @@ def stand_in(session, mode, short):
     if mode == "failed":
         job(short, "failed", "idle")
     elif mode == "blocked":
-        job(short, "blocked", "idle")
-    elif mode != "hang":
+        # Claude's own record for a job that ended its turn on a question.
+        job(short, "blocked", "blocked")
+    elif mode not in ("hang", "working"):
         write(STATUSLINE / f"{session}.json", {"cost": {"total_cost_usd": 0.01}})
         job(short, "done", "idle")
     # A finished background session stays listed, and attachable, until it is removed.

@@ -193,7 +193,20 @@ impl Row {
         self.cells.iter().map(|(t, _)| t.as_str()).collect()
     }
     fn working(&self) -> bool {
-        matches!(&self.kind, Kind::Session(_, s) | Kind::Run(_, s) if s == "active" || s == "started")
+        match &self.kind {
+            Kind::Session(_, s) => s == "active",
+            // A supervised run's icon carries its agent's state, so one that is waiting on
+            // input or idle is still while its kind keeps `started` for the run's own keys.
+            Kind::Run(_, s) => {
+                s == "active"
+                    || s == "started"
+                        && self
+                            .cells
+                            .first()
+                            .is_some_and(|(_, style)| *style == color("active"))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -490,6 +503,7 @@ impl Data {
 
     fn resolve_run(&self, run: &Run) -> RunView {
         let ledger = run.status();
+        let supervised = ledger == "started";
         let last = run.terminal.as_ref().unwrap_or(&run.started);
         let blank = history::Columns::default();
         let report = self.run_reports.get(&run.started.run_id).unwrap_or(&blank);
@@ -513,20 +527,15 @@ impl Data {
             // A resumed run has no second fired_at, so its live figure is the agent's own age,
             // the same reading the fleet prints for any agent. It spans the gap the run spent
             // stopped; the recorded duration is what the run itself took.
+            // While supervised, a run's age is the awake time its timeout counts, not the
+            // agent's wall-clock age, which keeps counting while the machine sleeps.
             duration_s: match live {
+                _ if supervised => run.elapsed_s(),
                 Some(s) => s
                     .started
                     .map(|at| (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0)
                     .or(last.duration_s),
-                None => last.duration_s.or_else(|| {
-                    (run.terminal.is_none() && run.status() == "started")
-                        .then(|| {
-                            run.started.fired_at.map(|at| {
-                                (chrono::Utc::now() - at).num_milliseconds().max(0) as f64 / 1000.0
-                            })
-                        })
-                        .flatten()
-                }),
+                None => last.duration_s,
             },
             cost_usd,
             cost_info,
@@ -936,7 +945,12 @@ impl Data {
                 .iter()
                 .map(|r| {
                     let view = self.view(&r.started.run_id).unwrap_or_default();
-                    let status = &view.status;
+                    // A supervised run shows what its agent reports, so one waiting on input
+                    // does not read as working. The row's kind keeps `started` for its keys.
+                    let status = match (view.status.as_str(), &view.agent) {
+                        ("started", Some(agent)) => agent,
+                        _ => &view.status,
+                    };
                     let h = r.started.harness.map(|h| h.to_string()).unwrap_or_default();
                     let harness = if h.is_empty() {
                         "-".into()
@@ -2678,7 +2692,7 @@ fn expand(text: &str, mut f: impl FnMut(usize) -> String) -> String {
 fn icon(state: &str) -> &str {
     match state {
         "active" | "started" => "▁",
-        "blocked" => "▇",
+        "blocked" | "input" => "▇",
         "idle" | "exited" | "stopped" => "▁",
         "ok" | "done" => "✓",
         "skipped" | "-" => "–",
@@ -2739,7 +2753,7 @@ fn color(status: &str) -> Style {
     match status {
         "active" | "started" => plain(),
         "ok" | "done" => Style::default().fg(Color::Green),
-        "blocked" | "skipped" => Style::default().fg(Color::Yellow),
+        "blocked" | "input" | "skipped" => Style::default().fg(Color::Yellow),
         "idle" | "exited" | "stopped" | "-" => dim(),
         _ => Style::default().fg(Color::Red),
     }
@@ -15212,6 +15226,7 @@ impl App {
                     }
                 }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
+                let run = self.data.runs.iter().any(|r| r.started.run_id == id);
                 // Terminate the attached client to release the daemon-held thread; it remains resumable.
                 // No registry lists a Codex client, so signal its pid rather than looking it up.
                 self.queue_stop(id, verb, move || {
@@ -15227,7 +15242,13 @@ impl App {
                     } else if ended_with_viewer {
                         Ok(true)
                     } else {
-                        Ledger::new(&state).and_then(|l| runner::stop(&l, &claude, &target))
+                        let ledger = Ledger::new(&state)?;
+                        let stopped = runner::stop(&ledger, &claude, &target)?;
+                        // Stopping a run closes its row too; the ledger keeps the record.
+                        if stopped && run {
+                            ledger.hide(&target)?;
+                        }
+                        Ok(stopped)
                     }
                 });
             }
@@ -23194,6 +23215,55 @@ while True:
                     "{at}: the transcript prices what the killed harness never totalled: {text:?}"
                 );
             }
+        }
+    }
+
+    /// A supervised run's row says what its agent reports, and its age is the awake time the
+    /// run's timeout counts. Showing `started` for every supervised run is what drew an agent
+    /// waiting on a question as working, and the agent's wall-clock age is what kept counting
+    /// while the lid was closed.
+    #[test]
+    fn a_supervised_run_shows_its_agents_state_and_its_awake_age() {
+        let d = dir();
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        // Fired three hours ago on the wall clock, of which the machine was awake 100 seconds.
+        start.fired_at = Some(chrono::Utc::now() - chrono::TimeDelta::hours(3));
+        start.fired_awake_s = Some(crate::ledger::awake_s() - 100.0);
+        start.timeout_s = Some(7200.0);
+        start.session_id = Some(B.into());
+        ledger.append(&start).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        for (state, shown, pulsing) in [
+            ("active", "working", true),
+            ("blocked", "input", false),
+            ("idle", "idle", false),
+        ] {
+            let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+            let mut agent = session(B, state, "supervised", 0);
+            agent.started = Some(chrono::Utc::now() - chrono::TimeDelta::hours(3));
+            data.run_sessions.push(agent);
+            app.apply(data);
+            let at = format!("state={state}");
+            let row = row_for_run(&app);
+            assert!(
+                matches!(&row.kind, Kind::Run(_, s) if s == "started"),
+                "{at}: the row keeps the run's own keys"
+            );
+            assert_eq!(row.working(), pulsing, "{at}: only a working agent pulses");
+            let cells = run_row_cells(&app);
+            let text: Vec<&str> = cells.iter().map(|(t, _)| t.as_str()).collect();
+            assert!(text.contains(&shown), "{at}: {text:?}");
+            assert_eq!(cells[0].1, color(state), "{at}: the icon says it too");
+            let age: f64 = text
+                .iter()
+                .find_map(|t| t.strip_suffix('s')?.parse().ok())
+                .expect("a duration cell");
+            assert!(
+                (100.0..110.0).contains(&age),
+                "{at}: awake age, not 3h: {text:?}"
+            );
         }
     }
 

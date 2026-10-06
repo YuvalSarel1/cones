@@ -151,7 +151,7 @@ enum Action {
     Ls {
         #[arg(long)]
         job: Option<String>,
-        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","active","idle","blocked","done","stopped","exited"])]
+        #[arg(long,value_parser=["started","ok","failed","timeout","skipped","crashed","input","active","idle","blocked","done","stopped","exited"])]
         status: Option<String>,
         /// Only rows in this folder or under it, so a project's worktrees stay with the project.
         #[arg(long)]
@@ -509,7 +509,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 },
             )?;
             Ok(match status {
-                Status::Ok | Status::Skipped => 0,
+                Status::Ok | Status::Skipped | Status::Input => 0,
                 Status::Timeout => 124,
                 _ => 1,
             })
