@@ -1,15 +1,16 @@
 //! Shell terminals started from the dashboard composer, driven through the real binary.
 //!
-//! Each flow opens zsh from a folder row with the fixture's own `.zshrc` (a fixed prompt, no
-//! user configuration) and asserts on the dashboard screen, the files the shell writes in the
-//! fixture folders and the host records cones keeps under `state/terminals/`. Covered: Enter
-//! on an empty folder opens a shell in that folder, ctrl+z returns to a `zsh` row, Enter on
-//! that row reconnects to the same process and `exit` removes the row; a drafted command
-//! opens a second shell, the first ctrl+x only arms the stop and the second stops that shell
-//! alone, its process and record gone; a composer command runs in the selected folder, keeps
-//! its draft apart from the agent instruction and leaves the shell open; a draft typed in the
-//! native shell survives leaving, returning and a dashboard restart, and Tab returns from the
-//! shell only once its command line is empty. No harness or model is started.
+//! Each flow opens zsh from a folder row with the fixture's own `.zshrc` (a fixed prompt, no user
+//! configuration) and asserts on the dashboard screen, the files the shell writes in the fixture
+//! folders and the host records cones keeps under `state/terminals/`. Covered: Enter on an empty
+//! folder opens a shell in that folder, ctrl+z returns to a `zsh` row, Enter on that row reconnects
+//! to the same process and `exit` removes the row; a drafted command opens a second shell, the
+//! first ctrl+x only arms the stop and the second stops that shell alone, its process and record
+//! gone, and ctrl+x from a Hebrew layout warns that shortcuts need an English layout; a composer
+//! command runs in the selected folder, keeps its draft apart from the agent instruction and leaves
+//! the shell open; a draft typed in the native shell survives leaving, returning and a dashboard
+//! restart, and Tab returns from the shell only once its command line is empty. No harness or model
+//! is started.
 use crate::dashboard::*;
 use serde_json::Value;
 use std::{
@@ -21,6 +22,8 @@ use std::{
 const ENTER: &[u8] = b"\r";
 const CTRL_Z: &[u8] = b"\x1a";
 const CTRL_X: &[u8] = b"\x18";
+/// ctrl+x on a Hebrew layout under the kitty keyboard protocol: ctrl with the key's letter, ס.
+const CTRL_X_HEBREW: &[u8] = b"\x1b[1505;5u";
 const UP: &[u8] = b"\x1b[A";
 const DOWN: &[u8] = b"\x1b[B";
 const SHIFT_TAB: &[u8] = b"\x1b[Z";
@@ -332,6 +335,9 @@ fn a_second_terminal_opens_beside_the_first_and_ctrl_x_twice_stops_only_one() {
     assert_eq!(written.trim(), kept.to_string());
     d.press("ctrl+z", CTRL_Z);
     wait_list(&d);
+    d.press("ctrl+x on a Hebrew layout", CTRL_X_HEBREW);
+    d.wait_text("ctrl+ס: shortcuts need an English keyboard layout");
+    d.capture("hebrew-layout-warning");
     d.press("ctrl+x", CTRL_X);
     d.press("ctrl+x", CTRL_X);
     let screen = d.wait_for("no shell rows", |s| {

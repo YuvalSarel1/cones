@@ -17013,6 +17013,15 @@ pub fn run(
                         if app.key(k.code, k.modifiers)? {
                             return Ok(());
                         }
+                        // Under the kitty protocol a non-Latin layout reports ctrl+x as ctrl+ס,
+                        // and crossterm drops the base-layout key that would map it back.
+                        if k.modifiers.contains(KeyModifiers::CONTROL)
+                            && let KeyCode::Char(c) = k.code
+                            && !c.is_ascii()
+                        {
+                            app.status =
+                                format!("ctrl+{c}: shortcuts need an English keyboard layout");
+                        }
                     }
                     Event::Paste(text) => app.paste(&text),
                     Event::Mouse(m) => app.mouse(m),
