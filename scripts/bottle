@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# scripts/bottle VERSION: build the Apple silicon bottle for tag vVERSION,
+# attach it to that GitHub release and point Formula/cones.rb at both.
+# Homebrew skips its Xcode version check only when it pours a bottle. The
+# binary needs macOS 11, and Homebrew pours an older macOS's bottle on newer
+# ones, so a single big_sur bottle covers every Apple silicon Mac.
+# ponytail: no Intel bottle; Intel Macs build from source and need a current Xcode.
+set -euo pipefail
+v=${1:?usage: scripts/bottle VERSION}
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+repo=YuvalSarel1/cones
+work=$(mktemp -d "${TMPDIR:-/tmp}/cones-bottle.XXXXXX")
+trap 'git worktree remove --force "$work/src" 2>/dev/null; rm -rf "$work"' EXIT
+
+git worktree add --quiet --detach "$work/src" "v$v"
+cargo build --release --locked --manifest-path "$work/src/Cargo.toml" --target-dir "$work/target"
+mkdir -p "$work/cones/$v/bin"
+cp "$work/target/release/cones" "$work/cones/$v/bin/"
+bottle=cones-$v.arm64_big_sur.bottle.tar.gz
+tar -C "$work" -czf "$work/$bottle" cones
+gh release upload "v$v" "$work/$bottle" --repo "$repo" --clobber
+
+source_sha=$(curl -fsSL "https://github.com/$repo/archive/refs/tags/v$v.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+bottle_sha=$(shasum -a 256 "$work/$bottle" | cut -d' ' -f1)
+cat > Formula/cones.rb <<EOF
+class Cones < Formula
+  desc "A terminal workspace for coding agents"
+  homepage "https://github.com/$repo"
+  url "https://github.com/$repo/archive/refs/tags/v$v.tar.gz"
+  sha256 "$source_sha"
+  license any_of: ["MIT", "Apache-2.0"]
+  head "https://github.com/$repo.git", branch: "main"
+
+  bottle do
+    root_url "https://github.com/$repo/releases/download/v$v"
+    sha256 cellar: :any_skip_relocation, arm64_big_sur: "$bottle_sha"
+  end
+
+  depends_on "rust" => :build
+  depends_on :macos
+
+  def install
+    system "cargo", "install", *std_cargo_args
+  end
+
+  test do
+    assert_match "cones #{version}", shell_output("#{bin}/cones --version")
+  end
+end
+EOF
+git diff --stat Formula/cones.rb
