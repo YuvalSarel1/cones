@@ -362,5 +362,6 @@ text; Shift+Enter inserts a newline. Ctrl+E edits a selected job only when the c
 empty. See [the binding source](../assets/bindings.yaml) for all aliases.
 
 Ctrl+V pastes clipboard images through macOS `osascript`. Temporary PNGs appear as
-`[Image #n]` markers, delete as one unit and expand to their paths at launch. Text pastes
-insert at the cursor.
+`[Image #n]` markers, delete as one unit and expand to their paths at launch. A paste of
+only existing image file paths, escaped or quoted as Finder drags write them, becomes the
+same markers. Other text pastes insert at the cursor.

@@ -2729,6 +2729,38 @@ fn paste_image() -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The image files a paste names, as a drag from Finder or a copied path writes them:
+/// backslash-escaped or quoted, separated by spaces. None unless every name is an image
+/// file that exists.
+fn image_paths(text: &str) -> Option<Vec<PathBuf>> {
+    let mut names = vec![String::new()];
+    let (mut quote, mut escaped) = (None, false);
+    for c in text.trim().chars() {
+        match c {
+            _ if escaped => {
+                names.last_mut()?.push(c);
+                escaped = false;
+            }
+            '\\' if quote.is_none() => escaped = true,
+            '\'' | '"' if quote == Some(c) => quote = None,
+            '\'' | '"' if quote.is_none() => quote = Some(c),
+            _ if c.is_whitespace() && quote.is_none() => names.push(String::new()),
+            _ => names.last_mut()?.push(c),
+        }
+    }
+    let image = |p: &Path| {
+        p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            ["png", "jpg", "jpeg", "gif", "webp"].contains(&e.to_ascii_lowercase().as_str())
+        }) && p.is_file()
+    };
+    let paths: Vec<PathBuf> = names
+        .into_iter()
+        .filter(|n| !n.is_empty())
+        .map(PathBuf::from)
+        .collect();
+    (!paths.is_empty() && paths.iter().all(|p| image(p))).then_some(paths)
+}
+
 /// Private-use markers encode image indices as single editable characters.
 /// Expand them to labels for display and PNG paths at launch.
 const IMAGE: u32 = 0xE000;
@@ -13191,6 +13223,14 @@ impl App {
             } else {
                 open.viewer.write(text.as_bytes());
             }
+        } else if matches!(self.mode, Mode::Normal)
+            && !self.terminal_selected()
+            && let Some(paths) = image_paths(text)
+        {
+            for path in paths {
+                self.caret = attach(&mut self.text, self.caret, self.images.len());
+                self.images.push(path);
+            }
         } else if matches!(self.mode, Mode::Normal) {
             // A bracketed paste breaks lines with CR; the composer keeps one kind of break.
             let pasted = text.replace("\r\n", "\n").replace('\r', "\n");
@@ -17683,6 +17723,27 @@ states:
         assert!(shown.contains("see [Image #1]"), "{shown}");
         assert_eq!(app.take_prompt(), "see /tmp/cones/pasted-1.png");
         assert!(app.text.is_empty() && app.images.is_empty() && app.caret == 0);
+        let shot = d.path().join("My Shot.PNG");
+        let other = d.path().join("b.jpg");
+        std::fs::write(&shot, b"").unwrap();
+        std::fs::write(&other, b"").unwrap();
+        let escaped = shot.display().to_string().replace(' ', "\\ ");
+        app.paste(&format!("{escaped} '{}'\n", other.display()));
+        let shown: String = app
+            .composer()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(shown.contains("[Image #1] [Image #2]"), "{shown}");
+        assert_eq!(app.images, [shot.clone(), other]);
+        app.take_prompt();
+        app.paste(&format!(
+            "{escaped} {}",
+            d.path().join("missing.png").display()
+        ));
+        assert!(app.images.is_empty(), "a missing file pastes as text");
+        assert!(app.text.ends_with("missing.png"), "{}", app.text);
     }
 
     fn typed(f: &mut JobForm, text: &str) {
