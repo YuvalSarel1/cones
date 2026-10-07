@@ -16,7 +16,7 @@ brew trust YuvalSarel1/cones
 brew install cones
 ```
 
-Or use Cargo: `cargo install --git https://github.com/YuvalSarel1/cones`.
+Homebrew builds cones from source and refuses when Xcode is older than macOS. Update Xcode, or use Cargo: `cargo install --git https://github.com/YuvalSarel1/cones`.
 
 ## Quick start
 
