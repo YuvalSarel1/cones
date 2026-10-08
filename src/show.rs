@@ -16,7 +16,7 @@ use std::{
 pub const DEFAULT_TAIL: usize = 40;
 
 /// The shortest prefix allowed to stand in for a session id. Shorter matches too much.
-const MIN_PREFIX: usize = 4;
+pub(crate) const MIN_PREFIX: usize = 4;
 
 /// A resolved session: which harness recorded it, where, and what to read.
 pub struct Located {

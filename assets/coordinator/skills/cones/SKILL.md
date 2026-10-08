@@ -15,7 +15,10 @@ harnesses' own records, so you can use it to reach beyond your own session.
    state and model, and the conversation of any of them, finished or archived ones included.
    Start with `cones ls --dir PATH --json`, then `cones show ID` or `cones search QUERY`.
 2. **Talk to it.** Send a note to a live session in a folder, read the replies, and wait until a
-   worker needs input, fails, leaves or answers. `cones comms --dir PATH send ID TEXT`.
+   worker needs input, fails, leaves or answers. `cones comms --dir PATH send ID TEXT`. The
+   folder's roster is every live session `cones ls --dir PATH` lists, whoever launched it; you
+   need not be on it. Replies come back to that folder: `cones comms --dir PATH wait` blocks
+   until one lands, `mail` prints it, and `mail --ack N` marks it handled.
 3. **Start new work.** Launch a session in any folder on any enabled harness, the way the
    owner's dashboard does, and get its id back. `cones launch --dir PATH PROMPT`.
 4. **Hand off coordination.** For a task you hold, run your own workers with the dispatch
@@ -33,7 +36,8 @@ turn.
 
 `cones --help` lists every command, and `cones help COMMAND` gives its flags, such as
 `cones help launch` or `cones help comms`. Add `--json` where offered when you are going to parse
-the output. IDs come from `cones ls` or `cones launch`; a prefix of four or more characters
+the output; `cones ls --json` prints one object per line, with a live session's fields under
+`.session`. IDs come from `cones ls` or `cones launch`; a prefix of four or more characters
 works, and an ambiguous one is an error rather than a guess. `cones stop ID` ends a session's
 work and keeps its conversation.
 

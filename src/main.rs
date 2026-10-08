@@ -52,9 +52,10 @@ enum ConfigTask {
 enum CommsTask {
     /// Block until something worth a model call happens; nothing else wakes it.
     Wait {
-        /// Watch only these workers, repeated once per id. Then arrivals are somebody else's
-        /// business and the wake reasons are a native input request, a native failure and a
-        /// worker leaving the roster, each reported once. None of them is a finished task.
+        /// Watch only these workers, repeated once per id or unambiguous prefix. Then arrivals
+        /// are somebody else's business and the wake reasons are a native input request, a
+        /// native failure and a worker leaving the roster, each reported once. None of them is
+        /// a finished task.
         #[arg(long = "id")]
         ids: Vec<String>,
         /// Give up after this many seconds, fractions allowed, and exit 2, rather than waiting
@@ -69,7 +70,7 @@ enum CommsTask {
     },
     /// One note to a live worker, through its own harness's delivery command.
     Send {
-        /// The session id as the roster prints it.
+        /// The session id as the roster prints it, or an unambiguous prefix of one.
         id: String,
         text: String,
         /// The once-per-session introduction. Repeating it is a no-op, not a second message.

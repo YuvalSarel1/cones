@@ -392,17 +392,22 @@ pub fn wait(folder: &Folder, ids: &[String], timeout: Option<Duration>) -> Resul
     let _watcher = Watcher::arm(&dir)?;
     let seen_path = dir.join("wait.json");
     let mut seen: Seen = read_json(&seen_path).unwrap_or_default();
-    // A watch names workers the caller launched, so an id cones has never seen is a typo. One
-    // it has watched before is not: a worker leaving is the disappearance this mode reports.
-    if !ids.is_empty() {
-        let roster = folder.roster()?;
-        for id in ids {
-            ensure!(
-                roster.iter().any(|s| s.session_id == *id) || seen.workers.contains_key(id),
-                "{id} is not on this folder's roster"
-            );
+    // A watch names workers the caller launched, so an id cones has never seen is a typo.
+    let ids: Vec<String> = match ids.is_empty() {
+        true => Vec::new(),
+        false => {
+            // One it has watched before still resolves after it leaves: a worker leaving is the
+            // disappearance this mode reports.
+            let roster = folder.roster()?;
+            let mut known: Vec<&str> = roster.iter().map(|s| s.session_id.as_str()).collect();
+            known.extend(seen.workers.keys().map(String::as_str));
+            known.sort_unstable();
+            ids.iter()
+                .map(|id| resolve(&folder.path, &known, id).map(str::to_owned))
+                .collect::<Result<_>>()?
         }
-    }
+    };
+    let ids = &ids[..];
     let deadline = timeout.map(|t| Instant::now() + t);
     // A roster read can fail transiently while a harness rewrites a registry. Retrying keeps the
     // watcher armed; an hour of failures is a broken install and belongs in front of the model.
@@ -550,6 +555,33 @@ pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
     Ok(format!("acknowledged through line {through}\n"))
 }
 
+/// The one id in `known` that `id` names: itself, else an unambiguous prefix as `cones show`
+/// takes one.
+fn resolve<'a>(folder: &Path, known: &[&'a str], id: &str) -> Result<&'a str> {
+    let mut found: Vec<&str> = known.iter().copied().filter(|k| *k == id).collect();
+    if found.is_empty() && id.len() >= crate::show::MIN_PREFIX {
+        found = known
+            .iter()
+            .copied()
+            .filter(|k| k.starts_with(id))
+            .collect();
+    }
+    found.dedup();
+    match found[..] {
+        [one] => Ok(one),
+        [] => bail!(
+            "no live session {id} in {}. `cones ls --dir {}` prints the ids it can reach",
+            folder.display(),
+            folder.display()
+        ),
+        _ => bail!(
+            "{id} matches {} sessions in this folder:\n{}",
+            found.len(),
+            found.iter().map(|k| format!("  {k}\n")).collect::<String>()
+        ),
+    }
+}
+
 /// One note to a live worker in this folder, delivered by that worker's own harness.
 ///
 /// The sender has no authority the owner did not give it, so the note says who it is from and
@@ -557,10 +589,16 @@ pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
 /// rather than approximated: typing into somebody's terminal is not a message.
 pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String> {
     let fleet_rows = folder.fleet()?;
-    let row = fleet_rows
+    let roster: Vec<&Session> = fleet_rows
         .iter()
-        .find(|s| s.session_id == id && fleet::contains(&folder.path, &s.cwd))
-        .with_context(|| format!("{id} is not on this folder's roster"))?;
+        .filter(|s| fleet::contains(&folder.path, &s.cwd))
+        .collect();
+    let known: Vec<&str> = roster.iter().map(|s| s.session_id.as_str()).collect();
+    let id = resolve(&folder.path, &known, id)?;
+    let row = roster
+        .iter()
+        .find(|s| s.session_id == id)
+        .expect("resolved from the roster");
     let dir = folder.dir();
     crate::private_dir(&dir)?;
     let greeted_path = dir.join("greeted.json");

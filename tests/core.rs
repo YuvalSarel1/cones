@@ -1897,8 +1897,9 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
         inbox.accept().unwrap().0.read_to_string(&mut text).unwrap();
         text
     });
+    // A prefix names the session as `cones show` takes one, and the note carries the full id.
     assert_eq!(
-        f.run(&["send", "worker-one", "hello"]),
+        f.run(&["send", "work", "hello"]),
         "sent to worker-one (claude)\n"
     );
     let received = received.join().unwrap();
@@ -1932,7 +1933,17 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
 
     // An unknown recipient is refused before any harness is consulted.
     let error = refusal(&["send", "nobody", "hello"]);
-    assert!(error.contains("not on this folder's roster"), "{error}");
+    assert!(error.contains("no live session nobody in "), "{error}");
+    assert!(error.contains("`cones ls --dir "), "{error}");
+    // A prefix two sessions share is refused with both ids, never a guess.
+    f.worker("worker-two");
+    let error = refusal(&["send", "work", "hello"]);
+    assert!(error.contains("work matches 2 sessions"), "{error}");
+    assert!(error.contains("  worker-one\n"), "{error}");
+    assert!(error.contains("  worker-two\n"), "{error}");
+    // Shorter than four characters is never a prefix.
+    let error = refusal(&["send", "wor", "hello"]);
+    assert!(error.contains("no live session wor in "), "{error}");
 }
 
 /// Two coordinators can write the folder's record at once: a replacement overlapping the one it
@@ -2023,7 +2034,7 @@ fn comms_and_coordinator_are_one_implementation_over_one_folder_state() {
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "timeout\n");
         let out = f.at(group, &["send", "nobody", "hello"]);
         assert!(
-            String::from_utf8_lossy(&out.stderr).contains("not on this folder's roster"),
+            String::from_utf8_lossy(&out.stderr).contains("no live session nobody in "),
             "{group}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
@@ -2265,7 +2276,8 @@ fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
         "--id",
         "worker-one",
         "--id",
-        "worker-two",
+        // A prefix, which still names the worker after it leaves the roster.
+        "worker-tw",
         "--timeout",
     ];
     let quiet = |why: &str| {
@@ -2327,7 +2339,7 @@ fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
     let out = f.at("comms", &["wait", "--id", "nobody", "--timeout", "0.3"]);
     assert!(!out.status.success());
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("nobody is not on this folder's roster"),
+        String::from_utf8_lossy(&out.stderr).contains("no live session nobody in "),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
