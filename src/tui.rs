@@ -10805,6 +10805,13 @@ impl App {
             .sessions
             .iter()
             .find(|s| s.session_id == id)
+            // A viewer opened from history keeps its history key after the row turns native.
+            .or_else(|| {
+                self.data
+                    .sessions
+                    .iter()
+                    .find(|s| self.history_matches(id, s))
+            })
             .and_then(attention::Observation::session)
             .or_else(|| {
                 self.data
@@ -19068,6 +19075,17 @@ states:
             app.history_excluded().contains(&entry.key),
             "a revived row is no longer a history row to enter"
         );
+        // Its viewer keeps the history key, and showing it reviews the row's completion.
+        assert_eq!(
+            app.attention_for(&viewer_key).map(|o| o.key),
+            app.data
+                .sessions
+                .iter()
+                .find(|s| app.history_matches(&viewer_key, s))
+                .and_then(attention::Observation::session)
+                .map(|o| o.key),
+        );
+        assert!(app.attention_for(&viewer_key).is_some());
         // The harness has reported nothing yet, which is exactly when the second resume landed.
         assert!(
             !app.data
