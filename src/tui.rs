@@ -11653,12 +11653,18 @@ impl App {
             ])
             .areas(frame);
         }
-        Layout::horizontal([
+        let [list_area, rule, pane] = Layout::horizontal([
             Constraint::Length(list(frame.width)),
             Constraint::Length(1),
             Constraint::Min(1),
         ])
-        .areas(frame)
+        .areas(frame);
+        // A column of air before the rule, matching the one after it.
+        let list_area = Rect {
+            width: list_area.width.saturating_sub(1),
+            ..list_area
+        };
+        [list_area, rule, pane]
     }
 
     /// Whether a cell is the divider between list and pane, where no overlay covers it.
@@ -22945,8 +22951,9 @@ while True:
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        // One blank column between the rule and the viewer.
+        // One blank column on each side of the rule.
         assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
+        assert!((0..30).all(|y| cells(&t, y, 99..100) == " "));
         // B has a transcript, but no live viewer. The previous screen must clear.
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
