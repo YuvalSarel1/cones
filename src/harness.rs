@@ -1030,7 +1030,7 @@ pub fn launch_path() -> String {
 /// Embedded coordinator plugin, loaded only for the session that starts it. The skill is prose
 /// and nothing else: the plumbing it used to ship as shell and Python is `cones coordinator`.
 pub const COORDINATOR_SKILL: &str = "start-coordinator";
-const COORDINATOR_FILES: [(&str, &str); 3] = [
+const COORDINATOR_FILES: [(&str, &str); 4] = [
     (
         ".claude-plugin/plugin.json",
         include_str!("../assets/coordinator/.claude-plugin/plugin.json"),
@@ -1042,6 +1042,10 @@ const COORDINATOR_FILES: [(&str, &str); 3] = [
     (
         "skills/dispatch/SKILL.md",
         include_str!("../assets/coordinator/skills/dispatch/SKILL.md"),
+    ),
+    (
+        "skills/cones/SKILL.md",
+        include_str!("../assets/coordinator/skills/cones/SKILL.md"),
     ),
 ];
 
@@ -1055,6 +1059,35 @@ pub fn skills() -> impl Iterator<Item = (&'static str, &'static str)> {
             text,
         ))
     })
+}
+
+/// Install the `cones` skill where Claude Code and the harnesses that read `~/.agents/skills`
+/// find it, so a session learns cones without being told. The state copy records what was
+/// installed: a file still equal to it is cones' to upgrade, and one edited or deleted since is
+/// the user's choice. A skill already present before the first install is left alone.
+pub fn install_skill(state: &Path, claude: &Path, home: &Path) -> Result<()> {
+    let (_, text) = skills().find(|(name, _)| *name == "cones").unwrap();
+    let record = state.join("skill/cones/SKILL.md");
+    let installed = std::fs::read_to_string(&record).ok();
+    if installed.as_deref() == Some(text) {
+        return Ok(());
+    }
+    for dir in [claude.join("skills"), home.join(".agents/skills")] {
+        let path = dir.join("cones/SKILL.md");
+        let current = std::fs::read_to_string(&path).ok();
+        let ours = match (&installed, &current) {
+            (None, None) => true,
+            (Some(installed), Some(current)) => installed == current,
+            _ => false,
+        };
+        if ours {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(&path, text)?;
+        }
+    }
+    std::fs::create_dir_all(record.parent().unwrap())?;
+    std::fs::write(&record, text)?;
+    Ok(())
 }
 
 /// The folder's live coordinator record, including one claimed outside cones.

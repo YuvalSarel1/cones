@@ -1207,6 +1207,7 @@ fn coordinator_plugin_is_prose_and_nothing_else() {
         files,
         [
             ".claude-plugin/plugin.json",
+            "skills/cones/SKILL.md",
             "skills/dispatch/SKILL.md",
             "skills/start-coordinator/SKILL.md"
         ]
@@ -1229,7 +1230,7 @@ fn a_running_agent_reads_a_bundled_skill_without_starting_a_coordinator() {
     assert!(out.status.success());
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "start-coordinator\ndispatch\n"
+        "start-coordinator\ndispatch\ncones\n"
     );
 
     let out = cones(&["skill", "dispatch"]);
@@ -1259,6 +1260,67 @@ fn a_running_agent_reads_a_bundled_skill_without_starting_a_coordinator() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+/// The `cones` skill lands on the first dashboard start, follows upgrades while nobody touches
+/// it, and stays as the user left it once edited or deleted.
+#[test]
+fn the_cones_skill_installs_once_and_upgrades_only_an_untouched_copy() {
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let claude = home.path().join(".claude");
+    let claude_skill = claude.join("skills/cones/SKILL.md");
+    let agents_skill = home.path().join(".agents/skills/cones/SKILL.md");
+    let record = state.path().join("skill/cones/SKILL.md");
+    let (_, text) = cones::harness::skills()
+        .find(|(name, _)| *name == "cones")
+        .unwrap();
+    let install = || cones::harness::install_skill(state.path(), &claude, home.path()).unwrap();
+    let read = |path: &std::path::Path| std::fs::read_to_string(path).ok();
+
+    install();
+    assert_eq!(read(&claude_skill).as_deref(), Some(text));
+    assert_eq!(read(&agents_skill).as_deref(), Some(text));
+    assert_eq!(read(&record).as_deref(), Some(text));
+
+    // An older build installed these; the Claude copy was edited, the other was not.
+    std::fs::write(&record, "old").unwrap();
+    std::fs::write(&agents_skill, "old").unwrap();
+    std::fs::write(&claude_skill, "mine").unwrap();
+    install();
+    assert_eq!(read(&agents_skill).as_deref(), Some(text));
+    assert_eq!(read(&claude_skill).as_deref(), Some("mine"));
+
+    // A deleted skill is a choice, and a later upgrade does not undo it.
+    std::fs::remove_file(&agents_skill).unwrap();
+    std::fs::write(&record, "old").unwrap();
+    install();
+    assert_eq!(read(&agents_skill), None);
+    assert_eq!(read(&record).as_deref(), Some(text));
+
+    // A skill of that name the user had before cones is never replaced.
+    let state = tempfile::tempdir().unwrap();
+    cones::harness::install_skill(state.path(), &claude, home.path()).unwrap();
+    assert_eq!(read(&claude_skill).as_deref(), Some("mine"));
+    assert_eq!(read(&agents_skill).as_deref(), Some(text));
+
+    // Every command the skill names exists, so the prose cannot drift from the binary.
+    let verbs: std::collections::BTreeSet<&str> = text
+        .split("`cones ")
+        .skip(1)
+        .filter_map(|rest| rest.split([' ', '`']).next())
+        .collect();
+    assert!(
+        verbs.contains("ls") && verbs.contains("config"),
+        "{verbs:?}"
+    );
+    for verb in verbs {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args(["help", verb].iter().filter(|a| **a != "--help"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "the skill names `cones {verb}`");
+    }
+}
+
 #[test]
 fn an_agent_learns_the_config_file_from_cones_config_and_checks_its_edit() {
     let dir = tempfile::tempdir().unwrap();

@@ -414,6 +414,10 @@ fn execute(cli: Cli) -> Result<i32> {
         if let Err(e) = launchd::relearn_signatures() {
             eprintln!("cones: schedules may not fire: {e:#}");
         }
+        let home = dirs::home_dir().context("missing home directory")?;
+        if let Err(e) = cones::harness::install_skill(&state, &claude, &home) {
+            eprintln!("cones: the cones skill was not installed: {e:#}");
+        }
         return cones::tui::run(
             &std::env::current_exe()?,
             &jobs_path,

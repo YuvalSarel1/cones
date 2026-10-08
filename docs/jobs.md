@@ -299,6 +299,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it shows `cones <version> available` in the footer and Help. [`start.update_check`](#start) turns it off. |
 | `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
 | `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
+| `skill/cones/SKILL.md` | The [cones skill](cli.md#dispatching-your-own-workers) as last installed, so an untouched copy can follow upgrades. |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |

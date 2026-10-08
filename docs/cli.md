@@ -321,6 +321,13 @@ A running session can read these instructions without restarting. Refreshing a p
 not load it into existing sessions; `coordinator start` loads it only into the session it starts.
 The skills contain prose and no helpers.
 
+The [cones skill](../assets/coordinator/skills/cones/SKILL.md) tells any agent what cones can do for it,
+where to find the commands and how to change settings. The dashboard installs it on start into
+`skills/cones/SKILL.md` under the Claude Code home and `~/.agents/skills`, which Codex, pi and
+OpenCode read. `STATE_DIR/skill/cones/SKILL.md` records the installed text: a copy still equal
+to it follows upgrades, while one edited or deleted afterwards, or present before the first
+install, is left alone.
+
 The [dispatch skill](../assets/coordinator/skills/dispatch/SKILL.md) covers launching owned
 workers, collecting results, checking integration and stopping them. Decomposition remains
 with the dispatcher. It may claim an unowned task folder; an existing coordinator requires
