@@ -52,16 +52,35 @@ work and keeps its conversation.
 
 ## Configuring cones
 
-All settings live in one `jobs.yaml`. Run `cones config` before touching it; it is the current
-reference and longer than this summary.
+All settings live in one `jobs.yaml`, and `cones config` prints its path, the editing rules
+and the full reference. Read it first whenever the owner wants to change:
 
-- `cones config set KEY VALUE` sets one setting by dotted path, VALUE in YAML:
-  `cones config set defaults.model sonnet`. `cones config unset KEY` restores the built-in.
-- Edit jobs and anything else in the file directly, keeping comments and fields you were not
-  asked to change, then run `cones config --check`. An invalid file is not loaded and the
-  dashboard silently falls back to built-ins.
-- After adding, changing or removing a job, run `cones __install` to rewrite its schedule.
-- Only Claude jobs can be scheduled. `defaults.model` and `defaults.effort` are also what the
-  next scheduled Claude run uses.
-- A column list replaces the defaults, so copy the default list and add to it.
-- Native harness settings belong to the harness; cones never edits them.
+- how the dashboard looks or behaves: its columns, colors, worktree grouping, viewer pane;
+- what new sessions start with: which harnesses are offered, model, effort, permission prompts,
+  Bedrock;
+- the folders pinned in the session list;
+- scheduled work: adding, changing or removing a job, its schedule, timeout or notifications.
+
+Its rules cover setting one value, editing the file by hand and validating it, and when a
+changed job needs its schedule reinstalled; follow them rather than guessing. Settings inside a
+harness itself, such as its own config files, belong to that harness and are not cones'.
+
+## Reporting a problem
+
+When cones gets something wrong, file it as an issue: a command fails or contradicts its help,
+a session is missing or shows the wrong state, or the owner needs something cones can't do yet.
+The repository is public, so draft the issue, show it to the owner, and file it only once they
+agree, with `gh issue create --repo YuvalSarel1/cones` or at
+https://github.com/YuvalSarel1/cones/issues/new.
+
+A useful report lets someone reproduce the problem without access to this machine:
+
+- `cones --version`, the macOS version and the harness's version, such as `claude --version`;
+- the exact command, its output and exit code, or the dashboard steps;
+- what you expected and what happened instead;
+- `cones config --check`, and only the settings involved, not the whole file;
+- the matching lines from `~/.cones/tui-debug.log` after reproducing with `cones --debug`, for a
+  dashboard problem.
+
+Leave out conversation text, prompts, secrets, tokens, hostnames and unrelated paths; replace a
+home directory with `~`. Don't use `--trace` for a report, because it records typed input.

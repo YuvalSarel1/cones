@@ -1312,12 +1312,20 @@ fn the_cones_skill_installs_once_and_upgrades_only_an_untouched_copy() {
         verbs.contains("ls") && verbs.contains("config"),
         "{verbs:?}"
     );
-    for verb in verbs {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
-            .args(["help", verb].iter().filter(|a| **a != "--help"))
+    let help = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args(args)
             .output()
-            .unwrap();
-        assert!(out.status.success(), "the skill names `cones {verb}`");
+            .unwrap()
+    };
+    let global = String::from_utf8_lossy(&help(&["--help"]).stdout).into_owned();
+    for verb in verbs {
+        if verb.starts_with('-') {
+            assert!(global.contains(verb), "the skill names `cones {verb}`");
+        } else {
+            let out = help(&["help", verb]);
+            assert!(out.status.success(), "the skill names `cones {verb}`");
+        }
     }
 }
 
