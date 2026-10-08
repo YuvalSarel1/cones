@@ -67,7 +67,7 @@ fn list(screen: &str) -> String {
 fn pane(screen: &str) -> String {
     screen
         .lines()
-        .map(|line| line.chars().skip(LIST + 1).collect::<String>())
+        .map(|line| line.chars().skip(LIST + 2).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
 }

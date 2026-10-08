@@ -11751,7 +11751,16 @@ impl App {
     /// on its last row so focus changes never resize the harness.
     fn pane(&self, frame: Rect) -> Rect {
         if self.split_active() {
-            return self.split_areas(frame)[2];
+            let pane = self.split_areas(frame)[2];
+            // A column of air beside the vertical rule, so the text is not against it.
+            if self.data.pane.at == "bottom" {
+                return pane;
+            }
+            return Rect {
+                x: pane.x + 1,
+                width: pane.width.saturating_sub(1),
+                ..pane
+            };
         }
         let height = frame.height.saturating_sub(1).max(1);
         Rect { height, ..frame }
@@ -16152,7 +16161,7 @@ impl App {
         self.size = (area.height, area.width);
         self.pane = self.pane(area);
         if self.split_active() {
-            let [list, rule, pane] = self.split_areas(area);
+            let [list, rule, _] = self.split_areas(area);
             self.draw_dashboard(frame, list);
             // A short heavy grip follows the pointer along the rule; while dragged the
             // whole rule lights up and the grip is the hand holding it.
@@ -16189,7 +16198,7 @@ impl App {
                 }
             }
             if let Some(name) = self.panel() {
-                self.draw_panel(frame, name, pane);
+                self.draw_panel(frame, name, self.pane);
                 return;
             }
             let inner = self.pane;
@@ -16522,16 +16531,6 @@ impl App {
     }
 
     fn draw_panel(&mut self, frame: &mut Frame, name: &str, pane: Rect) {
-        // A column of air beside the vertical rule, so the text is not against it.
-        let pane = if self.data.pane.at == "bottom" {
-            pane
-        } else {
-            Rect {
-                x: pane.x + 1,
-                width: pane.width.saturating_sub(1),
-                ..pane
-            }
-        };
         let (_, verb, what) = MENU.iter().find(|(n, ..)| *n == name).unwrap_or(&MENU[0]);
         let line = if self.panel_focused() {
             self.mode_line()
@@ -22946,7 +22945,8 @@ while True:
         wait_paint(&mut app, 0, "VIEW");
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(200, 30)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+        // One blank column between the rule and the viewer.
+        assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
         // B has a transcript, but no live viewer. The previous screen must clear.
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
@@ -22954,7 +22954,7 @@ while True:
         assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
         app.step(-1);
         t.draw(|f| app.draw(f)).unwrap();
-        assert!(cells(&t, 0, 101..200).starts_with("VIEW"));
+        assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
     }
 
     #[test]

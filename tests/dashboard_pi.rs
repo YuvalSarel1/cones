@@ -85,7 +85,7 @@ fn launch(d: &mut Dashboard, prompt: &str) -> u32 {
         d.wait_text(&format!("π pi › {prompt}"));
     }
     d.press("enter", b"\r");
-    d.wait_text(&format!("│pi fixture ready: {prompt}"));
+    d.wait_text(&format!("│ pi fixture ready: {prompt}"));
     d.wait_for("the idle pi row", |s| row(s, prompt).is_some());
     wait_until("the host record", || hosted(d).len() == 1);
     let record = hosted(d).remove(0);
@@ -176,16 +176,19 @@ fn a_composer_pi_runs_in_its_viewer_and_enter_on_its_row_returns_to_the_same_pro
     d.press("enter", b"\r");
     d.wait_text(PANE_FOOTER);
     d.typed("hello pi");
-    let screen = d.wait_text("│ hello pi");
+    let screen = d.wait_text("│  hello pi");
     assert!(
         screen.contains(EMPTY_COMPOSER),
         "keys went to pi, not the composer: {screen}"
     );
     d.capture("typing-in-viewer");
     d.press("enter", b"\r");
-    let screen = d.wait_text("│pi heard: hello pi");
+    let screen = d.wait_text("│ pi heard: hello pi");
     d.capture("submitted-in-viewer");
-    assert!(!screen.contains("│ hello pi"), "pi took the line: {screen}");
+    assert!(
+        !screen.contains("│  hello pi"),
+        "pi took the line: {screen}"
+    );
     wait_until("the client to record the line", || {
         clients(&d)[0]["submitted"] == serde_json::json!(["hello pi"])
     });
@@ -195,17 +198,17 @@ fn a_composer_pi_runs_in_its_viewer_and_enter_on_its_row_returns_to_the_same_pro
     d.capture("back-to-list");
     assert!(row(&screen, "fix the tests").unwrap().starts_with("▌"));
     assert!(
-        screen.contains("│pi heard: hello pi"),
+        screen.contains("│ pi heard: hello pi"),
         "the pane keeps the selected session's screen: {screen}"
     );
 
     d.press("enter", b"\r");
     let screen = d.wait_text(PANE_FOOTER);
     d.capture("reentered");
-    assert!(screen.contains("│pi heard: hello pi"), "{screen}");
+    assert!(screen.contains("│ pi heard: hello pi"), "{screen}");
     d.typed("again");
     d.press("enter", b"\r");
-    d.wait_text("│pi heard: again");
+    d.wait_text("│ pi heard: again");
     wait_until("the same client to take the second line", || {
         clients(&d)[0]["submitted"] == serde_json::json!(["hello pi", "again"])
     });
@@ -283,22 +286,25 @@ fn ctrl_backslash_switches_fullscreen_and_the_pane_and_left_or_tab_return_from_a
     d.press("ctrl+\\", b"\x1c");
     let screen = d.wait_text(PANE_FOOTER);
     d.capture("split-again");
-    assert!(screen.contains("│pi fixture ready: lay it out"), "{screen}");
+    assert!(
+        screen.contains("│ pi fixture ready: lay it out"),
+        "{screen}"
+    );
     assert!(screen.contains("jobs   config   help"), "{screen}");
 
     // A draft keeps Left and Tab in pi.
     d.typed("draft");
-    d.wait_text("│ draft");
+    d.wait_text("│  draft");
     d.press("left", b"\x1b[D");
     d.press("tab", b"\t");
     let screen = d.capture("draft-keeps-keys");
     assert!(screen.contains(DRAFT_FOOTER), "{screen}");
     assert!(!screen.contains(PANE_FOOTER), "{screen}");
-    assert!(screen.contains("│ draft"), "{screen}");
+    assert!(screen.contains("│  draft"), "{screen}");
     for _ in 0.."draft".len() {
         d.press("backspace", b"\x7f");
     }
-    d.wait_for("the empty editor", |s| !s.contains("│ draft"));
+    d.wait_for("the empty editor", |s| !s.contains("│  draft"));
     d.press("tab", b"\t");
     let screen = d.wait_text(LIST_FOOTER);
     d.capture("tab-returns");
@@ -310,7 +316,7 @@ fn ctrl_backslash_switches_fullscreen_and_the_pane_and_left_or_tab_return_from_a
     d.capture("left-returns");
 
     d.press("ctrl+\\", b"\x1c");
-    let screen = d.wait_for("the pane to close", |s| !s.contains("│pi fixture"));
+    let screen = d.wait_for("the pane to close", |s| !s.contains("│ pi fixture"));
     d.capture("pane-off");
     assert!(
         screen.lines().any(|l| l.contains("last reply")),
@@ -318,7 +324,7 @@ fn ctrl_backslash_switches_fullscreen_and_the_pane_and_left_or_tab_return_from_a
     );
     assert!(row(&screen, "lay it out").unwrap().starts_with("▌"));
     d.press("ctrl+\\", b"\x1c");
-    let screen = d.wait_text("│pi fixture ready: lay it out");
+    let screen = d.wait_text("│ pi fixture ready: lay it out");
     d.capture("pane-on");
     assert!(
         !screen.lines().any(|l| l.contains("last reply")),
@@ -340,7 +346,7 @@ fn a_pi_outlives_the_dashboard_and_enter_reconnects_to_it_with_its_draft() {
     d.press("enter", b"\r");
     d.wait_text(PANE_FOOTER);
     d.typed("half typed");
-    d.wait_text("│ half typed");
+    d.wait_text("│  half typed");
     d.press("ctrl+z", b"\x1a");
     d.wait_text(LIST_FOOTER);
     d.capture("before-quit");
@@ -357,10 +363,13 @@ fn a_pi_outlives_the_dashboard_and_enter_reconnects_to_it_with_its_draft() {
         row(s, "survive me").is_some_and(|l| l.starts_with("▌"))
     });
     d.press("enter", b"\r");
-    let screen = d.wait_text("│ half typed");
+    let screen = d.wait_text("│  half typed");
     d.capture("reconnected-with-draft");
     assert!(screen.contains(DRAFT_FOOTER), "{screen}");
-    assert!(screen.contains("│pi fixture ready: survive me"), "{screen}");
+    assert!(
+        screen.contains("│ pi fixture ready: survive me"),
+        "{screen}"
+    );
     let started = clients(&d);
     assert_eq!(started.len(), 1, "reconnecting started no client");
     assert_eq!(started[0]["pid"], pid);
@@ -402,7 +411,7 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
     d.capture("stopped");
     assert!(screen.contains("▁ 0 idle"), "{screen}");
     assert!(!screen.contains("stop me"), "{screen}");
-    assert!(!screen.contains("│pi fixture"), "{screen}");
+    assert!(!screen.contains("│ pi fixture"), "{screen}");
     assert_eq!(clients(&d).len(), 1, "stopping started nothing");
     d.keep("state/launches.jsonl");
     d.quit();

@@ -84,7 +84,7 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
     d.capture("default-split");
     // Built-in 50 percent: the list takes 70 columns and the divider the next one.
     assert_eq!(divider(&screen), [(70, vec![])], "{screen}");
-    assert_eq!(pty_size(&mut d, "before"), format!("{ROWS} 69"));
+    assert_eq!(pty_size(&mut d, "before"), format!("{ROWS} 68"));
 
     d.press("hover the divider", &mouse(35, 70, ROW, false));
     d.wait_for("a grip under the pointer", |s| divider(s) == gripped(70));
@@ -115,7 +115,7 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
     // The press never reached the shell: its line holds no mouse report.
     assert!(!right_of(&screen, 50).contains("[<"), "{screen}");
     // 140 columns less the 49 the list keeps and the divider.
-    assert_eq!(pty_size(&mut d, "after"), format!("{ROWS} 90"));
+    assert_eq!(pty_size(&mut d, "after"), format!("{ROWS} 89"));
 
     // Past the left edge the list stops at 30 percent, 42 columns.
     d.press("press the divider", &mouse(0, 49, ROW, false));
