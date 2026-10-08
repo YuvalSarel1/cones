@@ -1024,10 +1024,10 @@ pub fn at_empty_prompt(screen: &vt100::Screen, input: &crate::harness::spec::Inp
         EmptyPrompt::Opencode => return at_empty_opencode_prompt(screen),
         EmptyPrompt::Marker => {}
     }
-    if screen.hide_cursor() || screen.scrollback() != 0 {
+    // Claude's fullscreen renderer hides the terminal cursor behind its own caret.
+    let Some((row, col)) = command_cursor(screen) else {
         return false;
-    }
-    let (row, col) = screen.cursor_position();
+    };
     let left = screen.contents_between(row, 0, row, col);
     // Codex sprinkles braille dots around its composer as an ambient animation; one
     // can land between the marker and the caret, so they count as blanks.

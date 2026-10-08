@@ -651,6 +651,51 @@ fn ctrl_x_twice_removes_a_background_session_through_claude_rm() {
     d.quit();
 }
 
+/// Claude's fullscreen renderer hides the terminal cursor and draws its own caret. Left and
+/// Tab still return from its empty composer; with a draft they reach Claude. Claude itself
+/// treats Left on an empty prompt as "background this session", so a missed return forks it.
+#[test]
+fn left_and_tab_return_from_claude_s_fullscreen_composer_only_when_it_is_empty() {
+    let mut d = Dashboard::new("claude-fullscreen-left", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    fs::write(d.home().join("fake-attach-fullscreen"), "").unwrap();
+    let project = real_project(&d);
+    let only = seed(&d, &project, 1, "Rest a while", "idle", None);
+    d.start();
+    d.wait_text(&format!("fixture attached to {}", only.short));
+    let pane = "tab back · ctrl+\\ full screen";
+    let draft = "ctrl+z back · ctrl+\\ full screen";
+
+    d.press("right", b"\x1b[C");
+    let screen = d.wait_text(pane);
+    d.capture("empty-composer");
+    assert!(screen.contains("❯"), "{screen}");
+    d.typed("d");
+    d.wait_text("❯ d");
+    d.press("left", b"\x1b[D");
+    let screen = d.wait_text(draft);
+    d.capture("draft-keeps-left");
+    assert!(!screen.contains(pane), "{screen}");
+    d.press("backspace", b"\x7f");
+    d.wait_text(pane);
+    d.press("left", b"\x1b[D");
+    let screen = d.wait_for("the list focused", |s| {
+        !s.contains(pane) && !s.contains(draft)
+    });
+    d.capture("left-returns");
+    assert!(selected(&screen).contains("Rest a while"), "{screen}");
+
+    d.press("right", b"\x1b[C");
+    d.wait_text(pane);
+    d.press("tab", b"\t");
+    d.wait_for("the list focused", |s| !s.contains(pane));
+    let input: Vec<Value> =
+        records(&fs::read_to_string(d.home().join("attach-input.jsonl")).unwrap());
+    assert_eq!(input, [json!("d"), json!("\u{1b}[D"), json!("\u{7f}")]);
+    d.keep("home/attach-input.jsonl");
+    d.quit();
+}
+
 #[test]
 fn a_launch_in_a_folder_opened_through_a_symlink_lists_under_that_folder() {
     let mut d = Dashboard::new("claude-alias", &["claude"]);

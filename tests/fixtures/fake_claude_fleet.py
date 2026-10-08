@@ -11,7 +11,10 @@ commands the dashboard ran, and its environment to `$HOME/claude-env.jsonl`. `$H
         lists the session in the registry under the fixture's pid and holds the pty
 `$HOME/registry-delay` holds a `--bg` session's registry entry back that many seconds, the
 way the daemon can take a while to report a session.
-`attach` holds the pty as a viewer client until hung up; `rm` ends the session the way the
+`attach` holds the pty as a viewer client until hung up. With `$HOME/fake-attach-fullscreen` it
+draws the composer of Claude's fullscreen renderer (`CLAUDE_CODE_NO_FLICKER=1`): hidden terminal
+cursor, inverse software caret after `❯`. Typed text becomes a draft and every read from the pty
+is logged to `$HOME/attach-input.jsonl`; `rm` ends the session the way the
 daemon does: registry entry and job record removed, stand-in killed.
 """
 import json
@@ -39,6 +42,30 @@ if "--help" in args and args[:1] != ["stop"]:
 if args[:1] == ["stop"]:
     print("Usage: claude stop <id>")
     sys.exit(0)
+
+if args[:1] == ["attach"] and (HOME / "fake-attach-fullscreen").exists():
+    import select
+    import tty
+    fd = sys.stdin.fileno()
+    tty.setraw(fd)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    draft = ""
+    while True:
+        sys.stdout.write(f"\x1b[?25l\x1b[2J\x1b[Hfixture attached to {args[1]}\r\n"
+                         f"{'─' * 20}\r\n❯ {draft}\x1b[7m \x1b[0m\r\n{'─' * 20}")
+        sys.stdout.flush()
+        if not select.select([fd], [], [], 0.5)[0]:
+            continue
+        data = os.read(fd, 1024)
+        if not data:
+            sys.exit(0)
+        text = data.decode(errors="replace")
+        with open(HOME / "attach-input.jsonl", "a") as log:
+            log.write(json.dumps(text) + "\n")
+        if text == "\x7f":
+            draft = draft[:-1]
+        elif text.isprintable():
+            draft += text
 
 if args[:1] == ["attach"]:
     sys.stdout.write(f"fixture attached to {args[1]}\r\n")
