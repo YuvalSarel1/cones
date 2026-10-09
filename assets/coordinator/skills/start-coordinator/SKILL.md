@@ -117,11 +117,12 @@ worktrees. Every command below is `cones coordinator`.
    state moving between active, idle and blocked, and an edit to the tree are facts to read from
    a tick once you are already awake. Waking for them spends a call to learn that somebody else
    is still working. Re-arm first after it returns, and capture its whole output.
-4. Reach a worker with `cones coordinator --dir "$WB" send <id> "<text>"`, adding `--greet` for
-   the once-per-session introduction; repeating a greeting is a no-op. It goes through that
-   harness's own delivery command, and a harness with none is refused rather than approximated.
-   When you are a Claude session yourself, a Claude worker is better reached with your native
-   SendMessage, which is a conversation rather than a queued user turn. Either way the message
+4. Reach a Claude worker with your native SendMessage: the worker sees who wrote and replies in
+   the same conversation, and its reply wakes you without the watcher. `send` refuses a Claude
+   worker when you are Claude. Reach any other worker with
+   `cones coordinator --dir "$WB" send <id> "<text>"`, adding `--greet` for the once-per-session
+   introduction; repeating a greeting is a no-op. It goes through that harness's own delivery
+   command, and a harness with none is refused rather than approximated. Either way the message
    spends the worker's time, and a sender label is attribution, not owner authority.
 5. A worker with no native way to reply answers by appending one JSON line to the folder's inbox;
    `send` tells it the path and the shape. `cones coordinator --dir "$WB" mail` prints what is

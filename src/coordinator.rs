@@ -599,6 +599,17 @@ pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String
         .iter()
         .find(|s| s.session_id == id)
         .expect("resolved from the roster");
+    // Between two Claude sessions SendMessage is the native channel: the recipient sees who wrote
+    // and answers in the same conversation. A note from cones arrives as an anonymous prompt.
+    if let Some(me) = own_session(&fleet_rows)
+        .filter(|me| me.harness == "claude" && row.harness == "claude" && me.session_id != id)
+    {
+        bail!(
+            "{} and {id} are both Claude sessions: use your native SendMessage, \
+             which ListAgents addresses. `send` is for workers on other harnesses",
+            me.session_id
+        );
+    }
     let dir = folder.dir();
     crate::private_dir(&dir)?;
     let greeted_path = dir.join("greeted.json");

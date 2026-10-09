@@ -15,7 +15,8 @@ harnesses' own records, so you can use it to reach beyond your own session.
    state and model, and the conversation of any of them, finished or archived ones included.
    Start with `cones ls --dir PATH --json`, then `cones show ID` or `cones search QUERY`.
 2. **Talk to it.** Send a note to a live session in a folder, read the replies, and wait until a
-   worker needs input, fails, leaves or answers. `cones comms --dir PATH send ID TEXT`. The
+   worker needs input, fails, leaves or answers. `cones comms --dir PATH send ID TEXT`, or your
+   native SendMessage when you and the recipient are both Claude, which `send` refuses. The
    folder's roster is every live session `cones ls --dir PATH` lists, whoever launched it; you
    need not be on it. Replies come back to that folder: `cones comms --dir PATH wait` blocks
    until one lands, `mail` prints it, and `mail --ack N` marks it handled.

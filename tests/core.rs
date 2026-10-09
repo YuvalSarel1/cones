@@ -1946,6 +1946,42 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
     assert!(error.contains("no live session wor in "), "{error}");
 }
 
+/// A Claude session writing to another Claude session is told to use SendMessage, before any
+/// inbox is consulted: through cones the note arrives as a prompt from nobody, which the worker
+/// can only answer through a file, while SendMessage keeps both ends in one conversation.
+#[test]
+fn a_claude_sender_reaches_a_claude_worker_through_send_message() {
+    let f = Coordinated::new();
+    let cones = f.spawn("comms", &["send", "worker-one", "hello"]);
+    // The sender is a shell registered as its own Claude session that becomes cones, so the
+    // process chain reaches its row before the worker's.
+    let out = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!(
+                "printf '{{\"pid\":%s,\"sessionId\":\"peer-claude\",\"cwd\":\"{}\",\
+                 \"kind\":\"interactive\",\"status\":\"idle\"}}' $$ > {}/peer-claude.json\n\
+                 exec \"$@\"",
+                f.work.canonicalize().unwrap().display(),
+                f.registry.display(),
+            ),
+            "sh",
+            cones.get_program().to_str().unwrap(),
+        ])
+        .args(cones.get_args())
+        .envs(cones.get_envs().filter_map(|(k, v)| Some((k, v?))))
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the note went through cones");
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        error.contains(
+            "peer-claude and worker-one are both Claude sessions: use your native SendMessage"
+        ),
+        "{error}"
+    );
+}
+
 /// Two coordinators can write the folder's record at once: a replacement overlapping the one it
 /// takes over from, or a watcher left armed from an earlier arm. A shared temporary name means
 /// the second writer's rename destroys the first writer's source, and that process dies.

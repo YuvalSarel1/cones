@@ -290,7 +290,7 @@ cones comms --dir ~/src/app wait [--id SESSION_ID]... [--timeout SECONDS]
 
 | Command | Behavior |
 | --- | --- |
-| `send` | Deliver through the roster recipient's native [message operation](harness.md#message-delivery). Missing operations fail; `--greet` sends at most once per session. Notes identify their sender. |
+| `send` | Deliver through the roster recipient's native [message operation](harness.md#message-delivery). Missing operations fail; `--greet` sends at most once per session. Notes identify their sender. A Claude sender writing to another Claude session is refused: SendMessage is its native channel. |
 | `mail` | Read pending replies. Only `--ack N` marks them handled. |
 | `wait` | Block for new roster sessions or mail. With repeated `--id`, watch named workers for native input, failure or departure, plus mail. Unknown worker ids fail. |
 

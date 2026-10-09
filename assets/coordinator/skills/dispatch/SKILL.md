@@ -38,7 +38,7 @@ Method is yours.
 | Launch a worker | `cones launch --dir PATH --harness NAME --model MODEL [PROMPT]` |
 | Discover sessions | `cones ls --dir PATH --json` |
 | Read a worker's conversation | `cones show ID [--tail N \| --all]` |
-| Send a note | `cones comms --dir PATH send ID TEXT` |
+| Send a note | SendMessage between Claude sessions, otherwise `cones comms --dir PATH send ID TEXT` |
 | Read and acknowledge replies | `cones comms --dir PATH mail [--ack N]` |
 | Wait for your workers | `cones comms --dir PATH wait [--id ID]... [--timeout SECONDS]` |
 | Stop supported work | `cones stop ID` |
