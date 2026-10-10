@@ -1369,11 +1369,11 @@ fn report_with_activity(
     Ok(r)
 }
 
-/// What the kernel charges a session's own process. Commands it spawns are not counted,
-/// so the number answers how hard the agent itself is working, not its whole process tree.
+/// What the kernel charges a session: cpu covers its process and every command it spawns, so a
+/// session running a heavy search shows that cost; memory is its own process only.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Usage {
-    /// Percent of one core, as `ps` reports it.
+    /// Percent of one core summed over the process tree, as `ps` reports each process.
     pub cpu: f32,
     /// Resident set size in bytes.
     pub rss: u64,
@@ -1386,30 +1386,47 @@ pub fn usage(pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
 
 /// `usage` against a named `ps`, so a test can point it at one that cannot run.
 fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
-    // ps rejects the whole list when one pid is above the kernel's maximum, as in `starts_from`.
-    let list = pids
-        .filter(|p| *p <= 99_998)
-        .map(|p| p.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    if list.is_empty() {
+    let wanted: std::collections::HashSet<u32> = pids.collect();
+    if wanted.is_empty() {
         return HashMap::new();
     }
     let out = crate::observe::spawn(
         crate::observe::op::PROCESS_USAGE,
         Command::new(ps)
-            .args(["-o", "pid=,%cpu=,rss=", "-p", &list])
+            .args(["-Ao", "pid=,ppid=,%cpu=,rss="])
             .stdin(Stdio::null()),
     )
     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     .unwrap_or_default();
-    out.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let pid = fields.next()?.parse().ok()?;
-            let cpu = fields.next()?.parse().ok()?;
-            // ps prints resident size in kibibytes.
-            let rss = fields.next()?.parse::<u64>().ok()? * 1024;
+    let mut own = HashMap::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for line in out.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(ppid), Some(cpu), Some(rss)) = (
+            fields.next().and_then(|f| f.parse::<u32>().ok()),
+            fields.next().and_then(|f| f.parse::<u32>().ok()),
+            fields.next().and_then(|f| f.parse::<f32>().ok()),
+            fields.next().and_then(|f| f.parse::<u64>().ok()),
+        ) else {
+            continue;
+        };
+        // ps prints resident size in kibibytes.
+        own.insert(pid, (cpu, rss * 1024));
+        children.entry(ppid).or_default().push(pid);
+    }
+    wanted
+        .iter()
+        .filter_map(|&pid| {
+            let &(mut cpu, rss) = own.get(&pid)?;
+            let mut stack = children.get(&pid).cloned().unwrap_or_default();
+            while let Some(child) = stack.pop() {
+                // A listed session under another one is charged to its own row, not twice.
+                if wanted.contains(&child) {
+                    continue;
+                }
+                cpu += own.get(&child).map_or(0.0, |u| u.0);
+                stack.extend(children.get(&child).into_iter().flatten());
+            }
             Some((pid, Usage { cpu, rss }))
         })
         .collect()

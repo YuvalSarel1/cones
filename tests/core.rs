@@ -2469,3 +2469,52 @@ fn one_skip_permissions_switch_covers_every_harness_and_a_harness_key_overrides_
     assert!(flags(HarnessKind::Claude).iter().any(|a| a == claude));
     assert!(!flags(HarnessKind::Codex).iter().any(|a| a == codex));
 }
+
+#[test]
+fn cpu_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_session_below_it() {
+    use std::io::BufRead;
+    use std::process::{Command, Stdio};
+    // An idle shell stands in for the agent, a busy loop for the search it started.
+    let mut shell = Command::new("/bin/sh")
+        .args(["-c", "yes >/dev/null & echo $!; wait"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(shell.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let busy: u32 = line.trim().parse().unwrap();
+    struct Reap(u32, std::process::Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            unsafe { libc::kill(self.0 as i32, libc::SIGKILL) };
+            let _ = self.1.wait();
+        }
+    }
+    let shell = Reap(busy, shell);
+    let agent = shell.1.id();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while cones::fleet::usage(std::iter::once(busy))[&busy].cpu < 5.0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the busy loop never registered cpu"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let tree = cones::fleet::usage(std::iter::once(agent))[&agent];
+    let both = cones::fleet::usage([agent, busy].into_iter());
+    assert!(
+        tree.cpu >= 5.0,
+        "the spawned command is charged to its session: {tree:?}"
+    );
+    assert!(both[&busy].cpu >= 5.0, "{both:?}");
+    assert!(
+        both[&agent].cpu < tree.cpu - 2.5,
+        "a listed session below another is charged once, to itself: {both:?}"
+    );
+    assert!(
+        tree.rss > 0 && tree.rss == both[&agent].rss,
+        "memory stays the agent's own"
+    );
+}
