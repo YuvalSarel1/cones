@@ -1044,3 +1044,117 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     d.keep("state/open-folders.json");
     d.quit();
 }
+
+/// Every way the dashboard starts a Claude session follows the skip setting: a composer
+/// launch, the coordinator, a resume from history and a native fork. Each built its own
+/// command once, and only the composer passed the flag, so the others came up in the mode
+/// Claude's own settings name.
+#[test]
+fn every_claude_start_follows_the_skip_permissions_setting() {
+    const FLAG: &str = "--dangerously-skip-permissions";
+    const CTRL_D: &[u8] = b"\x04";
+    const CTRL_Y: &[u8] = b"\x19";
+    for skip in [true, false] {
+        let mut d = Dashboard::new(&format!("claude-skip-{skip}"), &["claude"]);
+        d.install("claude", "fake_claude_fleet.py");
+        if !skip {
+            let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+            let yaml = yaml.replace("defaults:\n", "defaults:\n  skip_permissions: false\n");
+            fs::write(d.path("jobs.yaml"), yaml).unwrap();
+        }
+        let project = real_project(&d);
+        let _live = seed(&d, &project, 1, "Fix the parser", "idle", None);
+        let old = uuid::Uuid::new_v4().to_string();
+        let cwd = project.display().to_string();
+        let key: String = cwd
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let dir = d.home().join(".claude/projects").join(key);
+        fs::write(
+            dir.join(format!("{old}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                json!({"sessionId": old, "type": "user", "cwd": cwd,
+                       "timestamp": "2026-10-01T08:00:00.000Z",
+                       "message": {"role": "user", "content": "please trim the tree"}}),
+                json!({"type": "ai-title", "sessionId": old, "aiTitle": "Old tree work"}),
+            ),
+        )
+        .unwrap();
+        d.start();
+        d.wait_text("Fix the parser");
+        let started = |d: &Dashboard, what: &str, is: &dyn Fn(&[String]) -> bool| {
+            d.wait_for(what, |_| calls(d).iter().any(|c| is(c)));
+            calls(d).into_iter().find(|c| is(c)).unwrap()
+        };
+
+        d.typed("count the flaky tests");
+        d.press("enter", b"\r");
+        let launch = started(&d, "the launch", &|c| {
+            c.iter().any(|a| a == "count the flaky tests")
+        });
+        d.wait_text("Fixture title for the launch");
+
+        d.press("ctrl+d", CTRL_D);
+        let coordinator = started(&d, "the coordinator", &|c| {
+            c.iter().any(|a| a == "/cones:start-coordinator")
+        });
+
+        d.press("ctrl+h", b"\x08");
+        d.wait_text("Old tree work");
+        for _ in 0..12 {
+            if selected(&d.screen()).contains("Old tree work") {
+                break;
+            }
+            d.press("down", DOWN);
+        }
+        d.wait_for("the history row selected", |s| {
+            selected(s).contains("Old tree work")
+        });
+        d.press("enter", b"\r");
+        let resume = started(&d, "the resume", &|c| {
+            c.iter().any(|a| a == "--resume") && !c.iter().any(|a| a == "--fork-session")
+        });
+        // The resumed session's viewer takes focus; back on its row, fork it.
+        d.wait_text("ctrl+z back");
+        d.press("ctrl+z", b"\x1a");
+        d.wait_for("the list focused", |s| !s.contains("ctrl+z back"));
+        d.press("ctrl+y", CTRL_Y);
+        d.wait_text("fork to");
+        d.press("enter", b"\r");
+        let fork = started(&d, "the fork", &|c| c.iter().any(|a| a == "--fork-session"));
+        d.capture("started");
+        d.keep("home/claude-calls.jsonl");
+        d.quit();
+
+        for (what, argv) in [
+            ("launch", &launch),
+            ("coordinator", &coordinator),
+            ("fork", &fork),
+            ("resume", &resume),
+        ] {
+            let at = argv.iter().position(|a| a == FLAG);
+            let end = argv.iter().position(|a| a == "--").unwrap_or(argv.len());
+            assert_eq!(at.is_some(), skip, "{what}: {argv:?}");
+            assert!(
+                at.is_none_or(|i| i < end),
+                "{what}: flag after --: {argv:?}"
+            );
+        }
+        assert_eq!(
+            fork[..3],
+            [
+                "--resume".to_owned(),
+                old.clone(),
+                "--fork-session".to_owned()
+            ],
+            "{fork:?}"
+        );
+        assert_eq!(
+            resume[..3],
+            ["--bg", "--resume", old.as_str()],
+            "{resume:?}"
+        );
+    }
+}

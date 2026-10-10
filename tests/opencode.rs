@@ -455,10 +455,10 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
             columns: None,
             hit: None,
         };
-        let command = harness::resume_history(&entry).unwrap();
+        let command = harness::resume_history(&entry, &Policy::default()).unwrap();
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
-            ["--session", "ses_fixture"]
+            ["--session", "ses_fixture", "--auto"]
         );
         let env: std::collections::HashMap<_, _> = command.get_envs().collect();
         assert_eq!(

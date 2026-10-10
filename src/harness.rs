@@ -247,7 +247,10 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
             "pi fork requires an exact new session UUID"
         );
     }
-    let template = &spec.operations.fork.as_ref().expect("checked fork").args;
+    let template = with_flags(
+        &spec.operations.fork.as_ref().expect("checked fork").args,
+        skip_permissions(spec.kind, policy),
+    );
     let path = executable(&spec.name, &launch_path())
         .with_context(|| format!("{} not found", spec.name))?;
     let mut command = if spec.kind == HarnessKind::Codex {
@@ -255,14 +258,14 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
             &entry.key.home,
             &entry.key.session_id,
             &entry.cwd,
-            template,
+            &template,
             false,
         )?
     } else {
         let mut command = std::process::Command::new(path);
         command
             .args(spec::args(
-                template,
+                &template,
                 &[
                     ("id", entry.key.session_id.as_ref()),
                     ("transcript", entry.transcript.as_os_str()),
@@ -533,6 +536,24 @@ fn provider_env(
     }
 }
 
+/// The harness's own no-prompt flag when the owner's settings ask for it. Every way cones
+/// starts a session, a launch, fork, resume or coordinator, takes it from here.
+pub fn skip_permissions(kind: HarnessKind, policy: &Policy) -> &'static [String] {
+    match &spec(kind).launch {
+        Some(launch) if policy.skip_permissions_for(kind) => &launch.skip_permissions,
+        _ => &[],
+    }
+}
+
+/// `template` with `flags` before its `--`, after which the words are positional.
+fn with_flags(template: &[String], flags: &[String]) -> Vec<String> {
+    let at = template
+        .iter()
+        .position(|a| a == "--")
+        .unwrap_or(template.len());
+    [&template[..at], flags, &template[at..]].concat()
+}
+
 /// Model, provider and effort overrides for native sessions; Claude selects its provider
 /// through env.
 pub fn session_args(
@@ -564,9 +585,7 @@ pub fn session_args(
             args.extend([OsString::from(flag), value.into()]);
         }
     }
-    if policy.skip_permissions_for(kind) {
-        args.extend(launch.skip_permissions.iter().map(OsString::from));
-    }
+    args.extend(skip_permissions(kind, policy).iter().map(OsString::from));
     if kind.terminal_only() && prompt.is_empty() {
         return Ok(args);
     }
@@ -617,14 +636,19 @@ fn probe_harness(kind: HarnessKind, probe: &spec::Probe) -> Result<String> {
 
 /// Resume a thread against the daemon of the home that holds it, not the ambient one:
 /// a home pinned to another provider region keeps its own daemon and its own socket.
-pub fn codex_resume(home: &Path, id: &str, cwd: &Path) -> Result<std::process::Command> {
+pub fn codex_resume(
+    home: &Path,
+    id: &str,
+    cwd: &Path,
+    flags: &[String],
+) -> Result<std::process::Command> {
     let definition = spec(HarnessKind::Codex);
     check_operation(definition, &definition.operations.resume, "resume")?;
     codex_client(
         home,
         id,
         cwd,
-        &spec(HarnessKind::Codex).commands.resume,
+        &with_flags(&definition.commands.resume, flags),
         false,
     )
 }
@@ -838,7 +862,10 @@ pub fn can_peek(session: &crate::fleet::Session, home: &Path) -> bool {
 }
 
 /// Historical resume always carries the entry's canonical native home.
-pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Command> {
+pub fn resume_history(
+    entry: &crate::history::Entry,
+    policy: &Policy,
+) -> Result<std::process::Command> {
     ensure!(
         entry.cwd.is_dir(),
         "session directory no longer exists: {}",
@@ -849,10 +876,13 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
         "session transcript no longer exists; reload history"
     );
     let spec = by_name(&entry.key.harness).context("unknown history harness")?;
+    let flags = skip_permissions(spec.kind, policy);
     let mut command = match spec.commands.resume_handler {
-        spec::Resume::BackgroundThenAttach => Claude.resume(&entry.key.session_id, &entry.cwd)?,
+        spec::Resume::BackgroundThenAttach => {
+            claude_resume(&entry.key.session_id, &entry.cwd, flags)?
+        }
         spec::Resume::CodexRemote => {
-            codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd)?
+            codex_resume(&entry.key.home, &entry.key.session_id, &entry.cwd, flags)?
         }
         spec::Resume::Transcript => {
             check_operation(spec, &spec.operations.resume, "resume")?;
@@ -860,7 +890,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
                 .with_context(|| format!("{} not found", spec.name))?;
             let mut c = std::process::Command::new(path);
             c.args(spec::args(
-                &spec.commands.resume,
+                &with_flags(&spec.commands.resume, flags),
                 &[("transcript", entry.transcript.as_os_str())],
             )?)
             .current_dir(&entry.cwd);
@@ -873,7 +903,7 @@ pub fn resume_history(entry: &crate::history::Entry) -> Result<std::process::Com
                 .with_context(|| format!("{} not found", spec.name))?;
             let mut c = std::process::Command::new(path);
             c.args(spec::args(
-                &spec.commands.resume,
+                &with_flags(&spec.commands.resume, flags),
                 &[("id", entry.key.session_id.as_ref())],
             )?)
             .env("OPENCODE_DB", &entry.transcript)
@@ -1113,12 +1143,13 @@ pub fn coordinator_plugin(state: &Path) -> Result<PathBuf> {
 }
 
 /// The skill itself prevents duplicate coordinators for a folder.
-pub fn coordinator(dir: &Path, state: &Path) -> Result<std::process::Command> {
+pub fn coordinator(dir: &Path, state: &Path, policy: &Policy) -> Result<std::process::Command> {
     let plugin = coordinator_plugin(state)?;
     let path =
         executable("claude", &launch_path()).ok_or_else(|| anyhow::anyhow!("claude not found"))?;
     let mut cmd = std::process::Command::new(path);
     cmd.arg("--bg")
+        .args(skip_permissions(HarnessKind::Claude, policy))
         .arg("--plugin-dir")
         .arg(plugin)
         .arg(format!("/cones:{COORDINATOR_SKILL}"))
@@ -1219,20 +1250,7 @@ impl Harness for Claude {
         })
     }
     fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
-        uuid::Uuid::parse_str(session_id)?;
-        // Resume in the background so ctrl+z detaches without suspending the agent.
-        let spec = spec(HarnessKind::Claude);
-        check_operation(spec, &spec.operations.resume, "resume")?;
-        Ok(then_exec(
-            spec::args(
-                &spec.commands.resume,
-                &[
-                    ("id", session_id.as_ref()),
-                    ("short_id", session_id[..8].as_ref()),
-                ],
-            )?,
-            self.attach(session_id, cwd)?,
-        ))
+        claude_resume(session_id, cwd, &[])
     }
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
         uuid::Uuid::parse_str(session_id)?;
@@ -1258,6 +1276,23 @@ impl Harness for Claude {
             .join(".claude");
         claude_transcript(&home, session_id, cwd)
     }
+}
+
+/// Resume in the background so ctrl+z detaches without suspending the agent.
+fn claude_resume(session_id: &str, cwd: &Path, flags: &[String]) -> Result<std::process::Command> {
+    uuid::Uuid::parse_str(session_id)?;
+    let spec = spec(HarnessKind::Claude);
+    check_operation(spec, &spec.operations.resume, "resume")?;
+    Ok(then_exec(
+        spec::args(
+            &with_flags(&spec.commands.resume, flags),
+            &[
+                ("id", session_id.as_ref()),
+                ("short_id", session_id[..8].as_ref()),
+            ],
+        )?,
+        Claude.attach(session_id, cwd)?,
+    ))
 }
 
 /// Where Claude keeps one session's conversation under a given native home. Separate from

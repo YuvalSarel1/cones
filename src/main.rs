@@ -851,9 +851,10 @@ fn execute(cli: Cli) -> Result<i32> {
                             status["session"].as_str().unwrap_or("-")
                         );
                     }
-                    let started = harness::coordinator(&folder.path, &state)?
-                        .status()
-                        .context("start claude")?;
+                    let started =
+                        harness::coordinator(&folder.path, &state, &config::defaults(&jobs_path))?
+                            .status()
+                            .context("start claude")?;
                     Ok(started.code().unwrap_or(1))
                 }
                 CoordinatorTask::Claim { release } => {

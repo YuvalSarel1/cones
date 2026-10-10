@@ -8531,8 +8531,8 @@ fn history_session(entry: &history::Entry) -> Session {
 }
 
 /// Build native resume commands on the preparation thread; opening history alone does nothing.
-fn history_command(entry: &history::Entry) -> Result<Command> {
-    harness::resume_history(entry)
+fn history_command(entry: &history::Entry, policy: &config::Policy) -> Result<Command> {
+    harness::resume_history(entry, policy)
 }
 
 impl HistoryView {
@@ -13997,7 +13997,10 @@ impl App {
                     entry.title.as_deref().unwrap_or_default(),
                 );
                 self.history.opened.insert(key.clone(), entry.clone());
-                self.prepare_viewer(what, key, record, None, move || history_command(&entry));
+                self.prepare_viewer(what, key, record, None, {
+                    let policy = self.session_policy();
+                    move || history_command(&entry, &policy)
+                });
             }
             Kind::Menu => self.open_menu(),
             Kind::NewFolder => self.add_folder(),
@@ -14298,7 +14301,8 @@ impl App {
     /// start` does. The live claim is read here so the list can name the session already
     /// holding the folder; the command refuses it again for a shell caller.
     fn coordinate_selected(&mut self) {
-        self.coordinate_with(harness::coordinator);
+        let policy = self.session_policy();
+        self.coordinate_with(move |dir, state| harness::coordinator(dir, state, &policy));
     }
 
     fn coordinate_with(
@@ -19260,7 +19264,7 @@ states:
         let mut entry = app.history.rows[0].entry.clone();
         entry.cwd = d.path().join("gone");
         assert!(
-            history_command(&entry)
+            history_command(&entry, &config::Policy::default())
                 .unwrap_err()
                 .to_string()
                 .contains("directory")
@@ -19268,7 +19272,7 @@ states:
         entry.cwd = d.path().to_owned();
         fs::remove_file(&entry.transcript).unwrap();
         assert!(
-            history_command(&entry)
+            history_command(&entry, &config::Policy::default())
                 .unwrap_err()
                 .to_string()
                 .contains("transcript")
