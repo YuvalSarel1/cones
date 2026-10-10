@@ -23,7 +23,13 @@ pub struct Invocation {
 
 pub trait Harness {
     fn compile(&self, job: &ResolvedJob) -> Result<Invocation>;
-    fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
+    /// `policy` says whether the resumed session skips permission prompts, as a new one would.
+    fn resume(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        policy: &Policy,
+    ) -> Result<std::process::Command>;
     /// Open a session that is still running elsewhere in this terminal; resume would refuse it.
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command>;
     fn transcript(&self, session_id: &str, cwd: &Path) -> Result<PathBuf>;
@@ -1249,8 +1255,17 @@ impl Harness for Claude {
             timeout_s: job.timeout_min * 60.0,
         })
     }
-    fn resume(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
-        claude_resume(session_id, cwd, &[])
+    fn resume(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        policy: &Policy,
+    ) -> Result<std::process::Command> {
+        claude_resume(
+            session_id,
+            cwd,
+            skip_permissions(HarnessKind::Claude, policy),
+        )
     }
     fn attach(&self, session_id: &str, cwd: &Path) -> Result<std::process::Command> {
         uuid::Uuid::parse_str(session_id)?;

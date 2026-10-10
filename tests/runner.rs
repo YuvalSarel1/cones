@@ -143,6 +143,10 @@ fn durable_start_success_cost_and_archived_native_resume() {
             && printed.contains("attach"),
         "a finished session resumes in the background and is attached: {printed}"
     );
+    assert!(
+        printed.contains("'--dangerously-skip-permissions'"),
+        "a job runs without prompts, and so does its resumed session: {printed}"
+    );
     assert_eq!(
         fs::read_to_string(f.state.join("runs.jsonl"))
             .unwrap()
@@ -1089,4 +1093,65 @@ fn coordinator_start_fails_while_the_folder_has_a_live_coordinator() {
     assert!(shown.contains("8077985c"), "{shown}");
     // No plugin is written for a folder somebody else is already coordinating.
     assert!(!f.state.join("coordinator/plugin").exists());
+}
+
+/// Attaching to a Claude session that is no longer running resumes it with the skip
+/// setting a new session would get.
+#[test]
+fn attach_resumes_a_stopped_session_with_the_skip_permissions_setting() {
+    for skip in [true, false] {
+        let f = Fixture::new("ok", 5.0);
+        if !skip {
+            f.add_options("defaults:\n  skip_permissions: false\n");
+        }
+        let dir = f.dir.path().canonicalize().unwrap();
+        let session = uuid::Uuid::new_v4().to_string();
+        let claude = f.dir.path().join(".claude");
+        let key: String = dir
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let projects = claude.join("projects").join(key);
+        fs::create_dir_all(&projects).unwrap();
+        fs::write(
+            projects.join(format!("{session}.jsonl")),
+            serde_json::json!({"sessionId": session, "type": "user", "cwd": dir,
+                               "message": {"role": "user", "content": "trim the tree"}})
+            .to_string()
+                + "\n",
+        )
+        .unwrap();
+        // A background session whose daemon is gone stays listed through its job record.
+        let job = claude.join("jobs").join(&session[..8]);
+        fs::create_dir_all(&job).unwrap();
+        fs::create_dir_all(claude.join("sessions")).unwrap();
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({"state": "done", "tempo": "idle", "sessionId": session,
+                               "cwd": dir})
+            .to_string(),
+        )
+        .unwrap();
+        let out = f
+            .command()
+            .args(["__attach", &session, "--print-command"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let printed = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            printed.contains(&format!("'--bg' '--resume' '{session}'")),
+            "{printed}"
+        );
+        assert_eq!(
+            printed.contains("'--dangerously-skip-permissions'"),
+            skip,
+            "{printed}"
+        );
+    }
 }

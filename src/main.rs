@@ -781,7 +781,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         );
                         adapter.attach(&s.session_id, &s.cwd)?
                     } else {
-                        adapter.resume(&s.session_id, &s.cwd)?
+                        adapter.resume(&s.session_id, &s.cwd, &config::defaults(&jobs_path))?
                     };
                     if print_command {
                         println!("{}", shell_command(s.cwd.as_os_str(), &command));

@@ -700,6 +700,8 @@ pub fn resume_finished(run: &Run, harness: &dyn harness::Harness) -> Result<Comm
             .cwd
             .as_deref()
             .context("run has no working directory")?,
+        // A job always runs without prompts, so its resumed session does too.
+        &crate::config::Policy::default(),
     )
 }
 
