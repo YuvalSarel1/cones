@@ -350,6 +350,7 @@ fn row(p: &Process, file: Option<(PathBuf, Meta)>) -> Session {
         // pi has no permission prompts.
         bypass: Some(true),
         usage: None,
+        tasks: None,
         coordinator: false,
         forked_from: None,
         forked_from_harness: None,

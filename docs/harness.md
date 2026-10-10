@@ -30,6 +30,7 @@ process table fails the refresh rather than reporting that every session exited.
 | Liveness | Live registry PID with UTC process start matching `procStart`; omit `spare: true` workers. |
 | Directory | Rows group by registry `cwd` for interactive sessions and `jobs/<jobId>/state.json` launch cwd for background jobs. Registry cwd locates transcripts after worktree changes. The folder cell, branch and `⑂` mark use the current folder: statusline `workspace.current_dir`, else the latest transcript line's `cwd`, which history rows also use, else registry cwd. Only Git decides `⑂`, so a plain `cd` changes the folder cell alone. |
 | Transcript | `projects/<escaped cwd>/<sessionId>.jsonl`, then job `linkScanPath`. The cwd replaces non-alphanumeric bytes with `-`; interactive paths depend on native layout. |
+| Background tasks | A background job's `fan` lists one entry per running task with its `kind`, such as `shell`; a record without `fan` gives only the `inFlight.tasks` count. Interactive sessions write no job record, so their tasks are not reported. |
 | Exit | Interactive rows leave with their registry entry. Background job records remain at their last reported state until removal, as `claude agents` lists them, including a record a crash left mid-turn. Killed jobs leave no record. |
 
 Subagents share their parent's process and have no separate registry rows.

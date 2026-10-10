@@ -1158,3 +1158,58 @@ fn every_claude_start_follows_the_skip_permissions_setting() {
         );
     }
 }
+
+/// `tasks` shows the background tasks Claude lists in a job record, by kind; `children`
+/// counts processes under the session. An interactive session writes no job record, so its
+/// tasks are unknown. `commands`, the column's old name, still selects `children`.
+#[test]
+fn tasks_shows_what_claude_reports_and_children_counts_processes() {
+    let mut d = Dashboard::new("claude-tasks-column", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    let busy = seed(&d, &project, 1, "Run the gate", "busy", Some("working"));
+    let _quiet = seed(&d, &project, 2, "Just talking", "idle", None);
+    fs::write(
+        d.home()
+            .join(".claude/jobs")
+            .join(&busy.short)
+            .join("state.json"),
+        json!({"state": "working", "tempo": "active", "sessionId": busy.id,
+               "inFlight": {"tasks": 3, "queued": 0, "kinds": ["local_bash", "monitor"]},
+               "fan": [{"id": "b1", "kind": "shell"}, {"id": "m1", "kind": "monitor"},
+                       {"id": "b2", "kind": "shell"}]})
+        .to_string(),
+    )
+    .unwrap();
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{yaml}columns: [state, tasks, commands]\n"),
+    )
+    .unwrap();
+    d.start();
+    let screen = d.wait_text("2 shells 1 monitor");
+    d.capture("tasks");
+    let header = line_of(&screen, "title");
+    assert!(
+        header.contains("tasks") && header.contains("children"),
+        "{header}"
+    );
+    let cells = |title: &str| -> Vec<String> {
+        let line = line_of(&screen, title);
+        let list = line.split('│').next().unwrap();
+        list[list.find(title).unwrap() + title.len()..]
+            .split("  ")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(String::from)
+            .collect()
+    };
+    assert_eq!(
+        cells("Run the gate"),
+        ["2 shells 1 monitor", "0"],
+        "{screen}"
+    );
+    assert_eq!(cells("Just talking"), ["-", "0"], "{screen}");
+    d.quit();
+}

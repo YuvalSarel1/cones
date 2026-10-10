@@ -2518,7 +2518,7 @@ fn usage_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_sessi
         "memory adds up the same tree: {tree:?} {both:?}"
     );
     assert_eq!(
-        (tree.commands, both[&agent].commands, both[&busy].commands),
+        (tree.children, both[&agent].children, both[&busy].children),
         (1, 0, 0),
         "the busy loop is the one command running, and only under the agent"
     );

@@ -584,6 +584,7 @@ pub fn rows(home: &Path, procs: &[Process]) -> Result<Vec<Session>> {
                 effort: None,
                 bypass: None,
                 usage: None,
+                tasks: None,
                 coordinator: false,
                 forked_from: None,
                 forked_from_harness: None,

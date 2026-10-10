@@ -870,6 +870,7 @@ pub fn rows(codex: &Path, procs: &[Process]) -> Vec<Session> {
                 effort: t.effort,
                 bypass: t.bypass,
                 usage: None,
+                tasks: None,
                 started: Some(p.started),
                 pid: Some(p.pid),
                 transcript_path: rollout.map(|(path, _)| path.clone()),
@@ -1032,6 +1033,7 @@ pub(crate) fn thread_rows_observed(
                 bypass: tail.bypass,
                 // A saved launch the daemon no longer holds is detached, and reports no process.
                 usage: record.is_none().then_some(held).flatten(),
+                tasks: None,
                 started: meta
                     .as_ref()
                     .map(|m| m.started)

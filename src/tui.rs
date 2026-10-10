@@ -2235,17 +2235,37 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
             s.usage.map_or_else(|| "-".into(), |u| fleet::bytes(u.rss)),
             dim(),
         ),
-        "commands" => (
+        "children" => (
             s.usage
-                .map_or_else(|| "-".into(), |u| u.commands.to_string()),
+                .map_or_else(|| "-".into(), |u| u.children.to_string()),
             dim(),
         ),
+        "tasks" => (s.tasks.as_deref().map_or_else(|| "-".into(), tasks), dim()),
         "last_reply" => (
             s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default(),
             dim(),
         ),
         _ => ("?".into(), dim()),
     }
+}
+
+/// Each kind with its count, in the order the harness lists them: `2 shells 1 monitor`.
+fn tasks(kinds: &[String]) -> String {
+    if kinds.is_empty() {
+        return "0".into();
+    }
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for kind in kinds {
+        match counts.iter_mut().find(|(k, _)| k == kind) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((kind, 1)),
+        }
+    }
+    counts
+        .iter()
+        .map(|(kind, n)| format!("{n} {kind}{}", if *n == 1 { "" } else { "s" }))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn local_stamp(at: Option<chrono::DateTime<chrono::Utc>>) -> String {
@@ -7527,7 +7547,10 @@ fn column_help(name: &str) -> &'static str {
         "bypass" => "Runs without permission prompts, as the harness reports or was launched.",
         "cpu" => "Processor share of the session and the commands it runs.",
         "memory" => "Resident memory of the session and the commands it runs.",
-        "commands" => "Processes the session is running under its own.",
+        "children" => {
+            "Processes running under the session's own: shells, commands and tool servers."
+        }
+        "tasks" => "Background shells, monitors and agents the harness reports running.",
         "context" => "Reported context usage and window.",
         "tokens" => "Reported input and output tokens.",
         "cost" => "Session or run cost; ~ marks an estimate.",
@@ -8521,6 +8544,7 @@ fn history_session(entry: &history::Entry) -> Session {
         effort: None,
         bypass: None,
         usage: None,
+        tasks: None,
         coordinator: false,
         forked_from: None,
         forked_from_harness: None,
@@ -9028,6 +9052,7 @@ pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str)
         effort: None,
         bypass: None,
         usage: None,
+        tasks: None,
         coordinator: false,
         forked_from: None,
         forked_from_harness: None,
@@ -14649,6 +14674,7 @@ impl App {
             effort: None,
             bypass: None,
             usage: None,
+            tasks: None,
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
@@ -19823,7 +19849,7 @@ states:
         row.usage = Some(fleet::Usage {
             cpu: 7.5,
             rss: 123456,
-            commands: 2,
+            children: 2,
         });
         let mut report = row.clone();
         report.usage = None;
@@ -21541,6 +21567,7 @@ states:
             effort: None,
             bypass: None,
             usage: None,
+            tasks: None,
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
@@ -22248,7 +22275,7 @@ states:
         reporting.usage = Some(fleet::Usage {
             cpu: 42.7,
             rss: 3 * 1_073_741_824 / 2,
-            commands: 3,
+            children: 3,
         });
         let silent = session(B, "idle", "silent", 5);
         app.data.sessions = vec![reporting, silent];
@@ -22256,7 +22283,7 @@ states:
             "effort".into(),
             "cpu".into(),
             "memory".into(),
-            "commands".into(),
+            "children".into(),
         ];
         app.size = (30, 200);
         app.rebuild();
@@ -22283,7 +22310,7 @@ states:
             ["-", "-", "-", "-"],
             "unreported effort and an unread process stay blank, never zero"
         );
-        for name in ["effort", "cpu", "memory", "commands"] {
+        for name in ["effort", "cpu", "memory", "children"] {
             assert!(config::COLUMNS.contains(&name), "{name} is offered");
             assert!(!column_help(name).is_empty(), "{name} explains itself");
         }
@@ -23320,6 +23347,7 @@ while True:
             effort: None,
             bypass: None,
             usage: None,
+            tasks: None,
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,

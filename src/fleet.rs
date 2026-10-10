@@ -77,6 +77,10 @@ pub struct Session {
     /// Kernel-reported process usage, read once per refresh; excluded from JSON output.
     #[serde(skip)]
     pub usage: Option<Usage>,
+    /// The kind of each background task the harness reports running, such as a shell or a
+    /// monitor, in its own words; `None` when it reports none at all. See docs/harness.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tasks: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -595,6 +599,20 @@ fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// The background tasks a job record lists: one `fan` entry per task, or, from a record
+/// without one, only the `inFlight` count.
+fn tasks(job: &Value) -> Option<Vec<String>> {
+    if let Some(fan) = job["fan"].as_array() {
+        return Some(
+            fan.iter()
+                .map(|t| t["kind"].as_str().unwrap_or("task").to_owned())
+                .collect(),
+        );
+    }
+    let count = job["inFlight"]["tasks"].as_u64()?;
+    Some(vec!["task".to_owned(); count as usize])
+}
+
 /// A background job's own record. The short job id becomes a directory name, so it is checked first.
 fn job_state(dir: &Path, short: Option<&str>) -> Value {
     short
@@ -707,6 +725,7 @@ fn build(
             .as_deref()
             .map(|m| m == "bypassPermissions"),
         usage: None,
+        tasks: tasks(job),
         title: d
             .title
             .or_else(|| {
@@ -1378,7 +1397,7 @@ pub struct Usage {
     /// Resident set size in bytes, summed over the process tree.
     pub rss: u64,
     /// Processes running under the session's own, such as shells, searches and tool servers.
-    pub commands: u32,
+    pub children: u32,
 }
 
 /// Usage for the listed pids in one `ps` read, so a fleet costs one process, not one per row.
@@ -1401,7 +1420,7 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     .unwrap_or_default();
     let mut own = HashMap::new();
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    let mut below: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in out.lines() {
         let mut fields = line.split_whitespace();
         let (Some(pid), Some(ppid), Some(cpu), Some(rss)) = (
@@ -1414,14 +1433,14 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
         };
         // ps prints resident size in kibibytes.
         own.insert(pid, (cpu, rss * 1024));
-        children.entry(ppid).or_default().push(pid);
+        below.entry(ppid).or_default().push(pid);
     }
     wanted
         .iter()
         .filter_map(|&pid| {
             let &(mut cpu, mut rss) = own.get(&pid)?;
-            let mut commands = 0;
-            let mut stack = children.get(&pid).cloned().unwrap_or_default();
+            let mut children = 0;
+            let mut stack = below.get(&pid).cloned().unwrap_or_default();
             while let Some(child) = stack.pop() {
                 // A listed session under another one is charged to its own row, not twice.
                 if wanted.contains(&child) {
@@ -1430,11 +1449,11 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
                 if let Some(&(c, r)) = own.get(&child) {
                     cpu += c;
                     rss += r;
-                    commands += 1;
+                    children += 1;
                 }
-                stack.extend(children.get(&child).into_iter().flatten());
+                stack.extend(below.get(&child).into_iter().flatten());
             }
-            Some((pid, Usage { cpu, rss, commands }))
+            Some((pid, Usage { cpu, rss, children }))
         })
         .collect()
 }
@@ -2455,6 +2474,7 @@ mod tests {
             effort: None,
             bypass: None,
             usage: None,
+            tasks: None,
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,

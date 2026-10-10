@@ -70,6 +70,7 @@ pub fn sessions(kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
                 effort: None,
                 bypass: None,
                 usage: None,
+                tasks: None,
                 title: None,
                 last: None,
                 coordinator: false,

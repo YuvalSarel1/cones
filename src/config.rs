@@ -422,7 +422,7 @@ pub fn check_confirm_secs(secs: f64) -> Result<()> {
     Ok(())
 }
 
-pub const COLUMNS: [&str; 17] = [
+pub const COLUMNS: [&str; 18] = [
     "harness",
     "state",
     "model",
@@ -438,10 +438,11 @@ pub const COLUMNS: [&str; 17] = [
     "cost",
     "cpu",
     "memory",
-    "commands",
+    "children",
+    "tasks",
     "bypass",
 ];
-pub const DEFAULT_COLUMNS: [&str; 9] = [
+pub const DEFAULT_COLUMNS: [&str; 10] = [
     "state",
     "context",
     "activity",
@@ -449,7 +450,8 @@ pub const DEFAULT_COLUMNS: [&str; 9] = [
     "age",
     "last_active",
     "folder",
-    "commands",
+    "tasks",
+    "children",
     "last_reply",
 ];
 pub const RUN_COLUMNS: [&str; 13] = [
@@ -496,6 +498,7 @@ pub fn column_name(name: &str) -> &str {
         "dir" => "folder",
         "took" => "duration",
         "last" => "last_reply",
+        "commands" => "children",
         name => name,
     }
 }
