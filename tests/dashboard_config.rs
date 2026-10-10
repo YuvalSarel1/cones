@@ -3,7 +3,8 @@
 //! (Enter edits, Enter saves, Escape restores) into jobs.yaml while the file's comments and
 //! other settings stay; the session column picker changing the live table and jobs.yaml,
 //! with backspace restoring the defaults; adding a pinned folder, which `+ add folder`
-//! offers until it is open and offers again once ctrl+x closes it; and a failed write or a validation error keeping the
+//! offers until it is open and offers again once ctrl+x closes it; tab listing
+//! folders on `+ add folder` and Enter twice creating a missing one; and a failed write or a validation error keeping the
 //! typed value on screen with the reason. Connectivity checks are not run: they probe the
 //! machine's installed CLIs.
 use crate::dashboard::*;
@@ -493,6 +494,45 @@ fn a_pinned_folder_is_offered_under_add_folder_until_it_is_open() {
 }
 
 /// Make the fixture root, which holds jobs.yaml, read-only or writable again.
+#[test]
+fn add_folder_completes_like_a_shell_and_creates_a_missing_folder_after_asking() {
+    let mut d = Dashboard::new("config_add_folder", &["claude"]);
+    for name in ["alpha", "alps"] {
+        fs::create_dir_all(d.project().join(name)).unwrap();
+    }
+    d.start();
+    d.wait_text("+ add folder");
+    select(&mut d, DOWN, "+ add folder", |l, _| l.contains("+ "));
+
+    // The first tab grows to the shared prefix and lists both folders.
+    d.typed("a");
+    d.press("tab", b"\t");
+    let screen = d.wait_text("alpha/  alps/");
+    d.capture("listed");
+    assert!(screen.contains("+ alp"), "{screen}");
+    for _ in 0..3 {
+        d.press("backspace", BACKSPACE);
+    }
+
+    // A missing folder asks; another key cancels, and enter twice creates it.
+    let made = d.project().join("made/deep");
+    d.typed("made/deep");
+    d.press("enter", b"\r");
+    d.wait_text("no such folder · enter creates");
+    d.capture("asked");
+    assert!(!made.exists());
+    d.press("right", RIGHT);
+    d.press("enter", b"\r");
+    d.wait_text("no such folder · enter creates");
+    assert!(!made.exists(), "a key between the presses asks again");
+    d.press("enter", b"\r");
+    let real = made.canonicalize().unwrap().display().to_string();
+    let screen = d.wait_for("the created folder's row", |s| empty_folder_row(s, &real));
+    d.capture("created");
+    assert!(screen.contains("added"), "{screen}");
+    d.wait_file("state/open-folders.json", |t| t.contains(&real));
+}
+
 fn writable(d: &Dashboard, yes: bool) {
     let mode = if yes { 0o755 } else { 0o555 };
     fs::set_permissions(d.root.path(), fs::Permissions::from_mode(mode)).unwrap();

@@ -2691,14 +2691,13 @@ impl Input {
         }
     }
 
-    /// Complete the path; return matching names only when the prefix cannot grow.
+    /// Complete the path and return what it could still become, as zsh lists on the first tab.
     fn complete(&mut self, base: &Path) -> Vec<String> {
         let (grown, names) = complete_dir(&self.text, base);
-        if grown == self.text {
-            return names;
+        if grown != self.text {
+            *self = Self::new(grown);
         }
-        *self = Self::new(grown);
-        Vec::new()
+        names
     }
 
     fn spans(&self, placeholder: &str) -> Vec<Span<'static>> {
@@ -3361,7 +3360,8 @@ fn next_runs(jobs: &[ResolvedJob]) -> BTreeMap<String, chrono::DateTime<chrono::
         .collect()
 }
 
-/// Complete to the longest shared directory prefix; append `/` for a single match.
+/// Complete to the longest shared directory prefix; append `/` for a single match or for a
+/// typed folder such as `~` or `..`. Matches carry the `/` a shell lists them with.
 /// Hidden directories require a `.` prefix.
 pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
     let (parent, partial) = match text.rfind('/') {
@@ -3385,8 +3385,14 @@ pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
         .filter(|n| n.starts_with(partial) && (!n.starts_with('.') || partial.starts_with('.')))
         .collect();
     names.sort();
+    let listed = || names.iter().map(|n| format!("{n}/")).collect();
     match names.as_slice() {
-        [] => (text.to_string(), names),
+        [] if !partial.is_empty()
+            && crate::expand_path(Path::new(text), base).is_ok_and(|p| p.is_dir()) =>
+        {
+            (format!("{text}/"), Vec::new())
+        }
+        [] => (text.to_string(), Vec::new()),
         [one] => (format!("{parent}{one}/"), Vec::new()),
         _ => {
             let first = &names[0];
@@ -3398,7 +3404,7 @@ pub fn complete_dir(text: &str, base: &Path) -> (String, Vec<String>) {
                         .all(|n| n.get(..i + 1).is_some_and(|p| first.starts_with(p)))
                 })
                 .map_or(first.len(), |(i, _)| i);
-            (format!("{parent}{}", &first[..common]), names)
+            (format!("{parent}{}", &first[..common]), listed())
         }
     }
 }
@@ -8870,6 +8876,8 @@ struct App {
     open_folders: BTreeSet<PathBuf>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
+    /// A missing folder typed on `+ add folder` that a second Enter creates.
+    create_folder: Option<PathBuf>,
     armed_at: Instant,
     /// Require a second ctrl+c so an interrupt aimed at a closing viewer cannot quit the dashboard.
     quit_armed: Option<Instant>,
@@ -9275,6 +9283,7 @@ impl App {
                 .unwrap_or_default(),
             open_folders: open,
             armed: None,
+            create_folder: None,
             armed_at: Instant::now(),
             quit_armed: None,
             log,
@@ -14557,10 +14566,7 @@ impl App {
         };
         let word = self.composer_text()[start..at].to_owned();
         let (grown, names) = complete_dir(&word, &self.target_dir());
-        if grown == word {
-            self.status = names.join("  ");
-            return;
-        }
+        self.status = names.join("  ");
         let (text, caret) = self.composer_input_mut();
         text.replace_range(start..at, &grown);
         *caret = start + grown.len();
@@ -14906,6 +14912,22 @@ impl App {
         if text.trim().is_empty() {
             self.status = "type a path · tab completes it".into();
             return;
+        }
+        // A missing folder asks first; Enter again creates it, as `mkdir -p` would.
+        if let Some(path) = crate::expand_path(Path::new(text.trim()), &self.cwd)
+            .ok()
+            .filter(|p| !p.exists())
+        {
+            if self.create_folder.take().as_ref() != Some(&path) {
+                // The hint leads: a long path would push it off the line.
+                self.status = format!("no such folder · enter creates {}", fleet::tilde(&path));
+                self.create_folder = Some(path);
+                return;
+            }
+            if let Err(e) = std::fs::create_dir_all(&path) {
+                self.status = format!("{}: {e}", fleet::tilde(&path));
+                return;
+            }
         }
         let dir = match launch_dir(&text, &self.cwd, &self.cwd) {
             Ok(dir) => dir,
@@ -15955,6 +15977,9 @@ impl App {
                         _ => {}
                     }
                 } else if self.on_new_folder() {
+                    if action != KeyAction::Enter {
+                        self.create_folder = None;
+                    }
                     match action {
                         // An empty path has nothing to complete, so tab reaches the pane.
                         KeyAction::Tab if !self.folder.text.is_empty() => {
@@ -18167,7 +18192,7 @@ states:
             complete_dir("a", base),
             (
                 "alp".to_string(),
-                vec!["alpha".to_string(), "alps".to_string()]
+                vec!["alpha/".to_string(), "alps/".to_string()]
             ),
             "a file is not offered and two folders grow to the shared prefix"
         );
@@ -18179,10 +18204,16 @@ states:
         assert_eq!(complete_dir("zzz", base), ("zzz".to_string(), vec![]));
         assert_eq!(
             complete_dir("", base).1,
-            vec!["alpha", "alps", "beta"],
+            vec!["alpha/", "alps/", "beta/"],
             "hidden folders stay out until a dot is typed"
         );
         assert_eq!(complete_dir(".h", base).0, ".hidden/");
+        assert_eq!(
+            complete_dir("..", base).0,
+            "../",
+            "a typed folder gains its slash"
+        );
+        assert_eq!(complete_dir("beta", base).0, "beta/");
         let abs = format!("{}/be", base.display());
         assert_eq!(
             complete_dir(&abs, Path::new("/nowhere")).0,

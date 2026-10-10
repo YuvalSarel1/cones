@@ -196,15 +196,18 @@ resumed run retains its row and original ledger outcome while displaying live va
 
 ### Add a folder
 
-`+ add folder` is the last session-list row. Type an existing path there; `~` expands and
-relative paths use the dashboard's cwd. Tab completes directories; a second Tab lists matches.
-Hidden names require a `.` prefix. Enter opens the folder and selects it, or its first
-session when it has any; invalid paths retain the input. Escape clears it.
+`+ add folder` is the last session-list row. Type a path there; `~` expands and relative
+paths use the dashboard's cwd. Tab completes directories as a shell does: it grows the path to
+the longest shared prefix, lists the matches when more than one remains, and adds the `/` to
+a complete name such as `~` or `..`. Hidden names require a `.` prefix. Enter opens the
+folder and selects it, or its first session when it has any. A path that does not exist asks
+first; a second Enter creates it with its parents, any other key keeps typing. Other invalid
+paths retain the input. Escape clears it.
 
 Pinned folders, the `folders` setting in Config, are suggestions, not rows. The row offers
 every pin the list does not already hold open, filtered by path fragment. It does not build
 suggestions from past sessions. Down selects an offer, Enter opens it, and Tab copies it into
-the input. Aliases are deduplicated; deleted directories are rejected when chosen.
+the input. Aliases are deduplicated; a deleted directory asks to be created again when chosen.
 
 An open folder stays in the list: when its last session leaves, it remains as an empty row
 until `ctrl+x` closes it or the directory is deleted. Every folder a session is listed in
