@@ -302,7 +302,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         "{screen}"
     );
     d.press("enter", b"\r");
-    d.wait_text("9 of 17 shown · defaults");
+    d.wait_text("10 of 18 shown · defaults");
     let screen = d.capture("picker-defaults");
     assert!(
         screen.contains(" sessions   runs   jobs   history"),
@@ -322,11 +322,11 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
     let yaml = d.wait_file("jobs.yaml", |t| t.contains("\ncolumns:"));
     assert!(
         yaml.contains(
-            "\ncolumns: [context, activity, model, age, last_active, folder, commands, last_reply]\n"
+            "\ncolumns: [context, activity, model, age, last_active, folder, tasks, children, last_reply]\n"
         ),
         "{yaml}"
     );
-    d.wait_text("8 of 17 shown · custom");
+    d.wait_text("9 of 18 shown · custom");
     let screen = d.capture("state-hidden");
     assert!(line(&screen, "› [ ]").contains("state"), "{screen}");
     assert!(
@@ -344,7 +344,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
     assert!(screen.contains("columns saved"), "{screen}");
 
     // Showing an optional column appends it; `[` moves it earlier.
-    for _ in 0..9 {
+    for _ in 0..10 {
         d.press("down", DOWN);
     }
     d.wait_text("› [ ]   harness");
@@ -354,20 +354,20 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
     let yaml = d.wait_file("jobs.yaml", |t| t.contains("harness, last_reply]"));
     assert!(
         yaml.contains(
-            "\ncolumns: [context, activity, model, age, last_active, folder, commands, harness, last_reply]\n"
+            "\ncolumns: [context, activity, model, age, last_active, folder, tasks, children, harness, last_reply]\n"
         ),
         "{yaml}"
     );
-    d.wait_text("9 of 17 shown · custom");
+    d.wait_text("10 of 18 shown · custom");
     let screen = d.capture("harness-shown");
     assert!(
-        line(&screen, "› [x]").contains("harness         08"),
+        line(&screen, "› [x]").contains("harness         09"),
         "{screen}"
     );
 
     // Backspace restores the table's defaults and removes the override from the file.
     d.press("backspace", BACKSPACE);
-    d.wait_text("9 of 17 shown · defaults");
+    d.wait_text("10 of 18 shown · defaults");
     let yaml = d.wait_file("jobs.yaml", |t| !t.contains("columns:"));
     let screen = d.capture("defaults-restored");
     assert!(
