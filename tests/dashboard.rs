@@ -237,17 +237,20 @@ impl Dashboard {
 
     /// Wait until `ready` holds on a settled screen, failing with the last screen. Settled
     /// means unchanged for 100ms: one action can draw several frames (a notice, then the
-    /// reloaded table), and callers assert on more than what they waited for.
+    /// reloaded table), and callers assert on more than what they waited for. A working row's
+    /// spinner steps every 160ms, so its glyphs do not count as a change; otherwise a loaded
+    /// machine can miss every still moment before a 2s ctrl+x mark expires.
     pub fn wait_for(&self, what: &str, mut ready: impl FnMut(&str) -> bool) -> String {
+        let still = |s: &str| s.replace(['▁', '▂', '▃', '▄', '▅', '▆', '▇'], "▁");
         let deadline = Instant::now() + Duration::from_secs(15);
         let mut last = String::new();
         loop {
             let screen = self.screen();
-            if ready(&screen) && screen == last {
+            if ready(&screen) && still(&screen) == last {
                 return screen;
             }
             if ready(&screen) {
-                last = screen;
+                last = still(&screen);
                 std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
