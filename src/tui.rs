@@ -2235,6 +2235,11 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
             s.usage.map_or_else(|| "-".into(), |u| fleet::bytes(u.rss)),
             dim(),
         ),
+        "commands" => (
+            s.usage
+                .map_or_else(|| "-".into(), |u| u.commands.to_string()),
+            dim(),
+        ),
         "last_reply" => (
             s.last.as_deref().map(|l| clip(l, 100)).unwrap_or_default(),
             dim(),
@@ -7520,8 +7525,9 @@ fn column_help(name: &str) -> &'static str {
         "model" => "Model reported by the harness.",
         "effort" => "Reasoning effort reported by the harness.",
         "bypass" => "Runs without permission prompts, as the harness reports or was launched.",
-        "cpu" => "Processor share of the process running the session.",
-        "memory" => "Resident memory of the process running the session.",
+        "cpu" => "Processor share of the session and the commands it runs.",
+        "memory" => "Resident memory of the session and the commands it runs.",
+        "commands" => "Processes the session is running under its own.",
         "context" => "Reported context usage and window.",
         "tokens" => "Reported input and output tokens.",
         "cost" => "Session or run cost; ~ marks an estimate.",
@@ -19813,6 +19819,7 @@ states:
         row.usage = Some(fleet::Usage {
             cpu: 7.5,
             rss: 123456,
+            commands: 2,
         });
         let mut report = row.clone();
         report.usage = None;
@@ -22229,7 +22236,7 @@ states:
     }
 
     #[test]
-    fn effort_cpu_and_memory_columns_show_what_the_harness_and_kernel_report() {
+    fn effort_cpu_memory_and_commands_columns_show_what_the_harness_and_kernel_report() {
         let d = dir();
         let mut app = app(d.path());
         let mut reporting = session(A, "active", "reporting", 5);
@@ -22237,10 +22244,16 @@ states:
         reporting.usage = Some(fleet::Usage {
             cpu: 42.7,
             rss: 3 * 1_073_741_824 / 2,
+            commands: 3,
         });
         let silent = session(B, "idle", "silent", 5);
         app.data.sessions = vec![reporting, silent];
-        app.data.columns = vec!["effort".into(), "cpu".into(), "memory".into()];
+        app.data.columns = vec![
+            "effort".into(),
+            "cpu".into(),
+            "memory".into(),
+            "commands".into(),
+        ];
         app.size = (30, 200);
         app.rebuild();
         let cells = |title: &str| {
@@ -22256,14 +22269,17 @@ states:
                 .unwrap_or_else(|| panic!("no row for {title}"))
         };
         let reported = cells("reporting");
-        assert_eq!(&reported[reported.len() - 3..], ["xhigh", "43%", "1.5G"]);
+        assert_eq!(
+            &reported[reported.len() - 4..],
+            ["xhigh", "43%", "1.5G", "3"]
+        );
         let silent = cells("silent");
         assert_eq!(
-            &silent[silent.len() - 3..],
-            ["-", "-", "-"],
+            &silent[silent.len() - 4..],
+            ["-", "-", "-", "-"],
             "unreported effort and an unread process stay blank, never zero"
         );
-        for name in ["effort", "cpu", "memory"] {
+        for name in ["effort", "cpu", "memory", "commands"] {
             assert!(config::COLUMNS.contains(&name), "{name} is offered");
             assert!(!column_help(name).is_empty(), "{name} explains itself");
         }

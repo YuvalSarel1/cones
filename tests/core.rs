@@ -2471,7 +2471,7 @@ fn one_skip_permissions_switch_covers_every_harness_and_a_harness_key_overrides_
 }
 
 #[test]
-fn cpu_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_session_below_it() {
+fn usage_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_session_below_it() {
     use std::io::BufRead;
     use std::process::{Command, Stdio};
     // An idle shell stands in for the agent, a busy loop for the search it started.
@@ -2514,7 +2514,12 @@ fn cpu_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_session
         "a listed session below another is charged once, to itself: {both:?}"
     );
     assert!(
-        tree.rss > 0 && tree.rss == both[&agent].rss,
-        "memory stays the agent's own"
+        both[&agent].rss > 0 && tree.rss == both[&agent].rss + both[&busy].rss,
+        "memory adds up the same tree: {tree:?} {both:?}"
+    );
+    assert_eq!(
+        (tree.commands, both[&agent].commands, both[&busy].commands),
+        (1, 0, 0),
+        "the busy loop is the one command running, and only under the agent"
     );
 }

@@ -1369,14 +1369,16 @@ fn report_with_activity(
     Ok(r)
 }
 
-/// What the kernel charges a session: cpu covers its process and every command it spawns, so a
-/// session running a heavy search shows that cost; memory is its own process only.
+/// What the kernel charges a session: its process and every command it spawns, so a session
+/// running a heavy search shows that cost.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Usage {
     /// Percent of one core summed over the process tree, as `ps` reports each process.
     pub cpu: f32,
-    /// Resident set size in bytes.
+    /// Resident set size in bytes, summed over the process tree.
     pub rss: u64,
+    /// Processes running under the session's own, such as shells, searches and tool servers.
+    pub commands: u32,
 }
 
 /// Usage for the listed pids in one `ps` read, so a fleet costs one process, not one per row.
@@ -1417,17 +1419,22 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
     wanted
         .iter()
         .filter_map(|&pid| {
-            let &(mut cpu, rss) = own.get(&pid)?;
+            let &(mut cpu, mut rss) = own.get(&pid)?;
+            let mut commands = 0;
             let mut stack = children.get(&pid).cloned().unwrap_or_default();
             while let Some(child) = stack.pop() {
                 // A listed session under another one is charged to its own row, not twice.
                 if wanted.contains(&child) {
                     continue;
                 }
-                cpu += own.get(&child).map_or(0.0, |u| u.0);
+                if let Some(&(c, r)) = own.get(&child) {
+                    cpu += c;
+                    rss += r;
+                    commands += 1;
+                }
                 stack.extend(children.get(&child).into_iter().flatten());
             }
-            Some((pid, Usage { cpu, rss }))
+            Some((pid, Usage { cpu, rss, commands }))
         })
         .collect()
 }
