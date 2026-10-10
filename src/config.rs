@@ -445,11 +445,11 @@ pub const DEFAULT_COLUMNS: [&str; 9] = [
     "state",
     "context",
     "activity",
-    "commands",
     "model",
     "age",
     "last_active",
     "folder",
+    "commands",
     "last_reply",
 ];
 pub const RUN_COLUMNS: [&str; 13] = [

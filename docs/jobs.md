@@ -106,7 +106,7 @@ Each category has an independent column picker. Visible columns can be reordered
 
 | Field | Default |
 | --- | --- |
-| `columns` | `[state, context, activity, commands, model, age, last_active, folder, last_reply]` |
+| `columns` | `[state, context, activity, model, age, last_active, folder, commands, last_reply]` |
 | `run_columns` | `[status, started, duration, model, cost, folder, reason]` |
 | `job_columns` | `[status, schedule, next_run, model, last_run, folder]` |
 | `history_columns` | `[last_active, folder, model, context, last_reply]` |
