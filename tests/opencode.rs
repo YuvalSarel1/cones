@@ -436,7 +436,7 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
         host_identity_is_not_inherited(&command);
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
-            ["--prompt=--auto literal"]
+            ["--auto", "--prompt=--auto literal"]
         );
         assert_eq!(command.get_current_dir(), Some(home.as_path()));
         let entry = history::Entry {
@@ -470,19 +470,48 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
             Some(home.join("native").as_os_str())
         );
         host_identity_is_not_inherited(&command);
+        // A fork skips permission prompts the way a launch and a resume do, unless turned off.
+        // A fork needs the conversation recorded in the folder it forks into.
+        sql(
+            &entry.transcript,
+            &format!("UPDATE session SET directory='{}';", home.display()),
+        );
+        let fork = |policy: &Policy| match harness::fork(&entry, None, policy).unwrap() {
+            harness::Start::Foreground(c) => c
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            harness::Start::Background(_) => panic!("an OpenCode fork is a terminal client"),
+        };
+        assert_eq!(
+            fork(&Policy::default()),
+            ["--session", "ses_fixture", "--fork", "--auto"]
+        );
+        let prompting = Policy {
+            opencode_skip_permissions: Some(false),
+            ..Policy::default()
+        };
+        assert_eq!(fork(&prompting), ["--session", "ses_fixture", "--fork"]);
+        let command = harness::resume_history(&entry, &prompting).unwrap();
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            ["--session", "ses_fixture"]
+        );
+        println!("opencode command fixture ran");
         return;
     }
     let (dir, _) = fixture();
     let bin = dir.path().join(".opencode/bin");
     fs::create_dir_all(&bin).unwrap();
     let fake = bin.join("opencode");
-    fs::write(&fake, "#!/bin/sh\n[ \"$1\" = --help ] || exit 91\nprintf '%s\\n' '--prompt --session --model' >&2\n").unwrap();
+    fs::write(&fake, "#!/bin/sh\n[ \"$1\" = --help ] || exit 91\nprintf '%s\\n' '--prompt --session --model --fork' >&2\n").unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(fake, fs::Permissions::from_mode(0o700)).unwrap();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "native_launch_and_resume_preserve_the_database_and_probe_stderr",
+            // The full path: a bare name matches no test, and the child would pass by running none.
+            "opencode::native_launch_and_resume_preserve_the_database_and_probe_stderr",
             "--nocapture",
         ])
         .env(CHILD, dir.path())
@@ -499,10 +528,10 @@ fn native_launch_and_resume_preserve_the_database_and_probe_stderr() {
         .env("CLAUDE_CODE_NO_FLICKER", "1")
         .output()
         .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        output.status.success(),
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
+        output.status.success() && stdout.contains("opencode command fixture ran"),
+        "{stdout}{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

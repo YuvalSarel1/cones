@@ -302,3 +302,93 @@ fn a_rollout_names_the_home_that_holds_it() {
     );
     assert_eq!(home_of(Path::new("/tmp/loose.jsonl")), None);
 }
+
+/// A Codex fork and a resume from history pass the skip flag before `--`, where Codex still
+/// reads options, and leave it out when the setting is off. The `codex` here answers only the
+/// daemon's address and the fork probe; nothing is run.
+#[test]
+fn a_codex_fork_and_resume_follow_the_skip_permissions_setting() {
+    use cones::{config::Policy, harness, history};
+    use std::os::unix::fs::PermissionsExt;
+    const CHILD: &str = "CONES_CODEX_COMMAND_FIXTURE";
+    const FLAG: &str = "--dangerously-bypass-approvals-and-sandbox";
+    if let Some(home) = std::env::var_os(CHILD) {
+        let home = PathBuf::from(home);
+        let rollout = home.join("rollout.jsonl");
+        fs::write(&rollout, format!("{CODEX_META}\n")).unwrap();
+        let entry = history::Entry {
+            key: history::Key {
+                harness: "codex".into(),
+                home: home.join(".codex"),
+                session_id: "01a094e7-c194-7980-9804-34f24290597e".into(),
+            },
+            cwd: home.clone(),
+            moved_to: None,
+            transcript: rollout,
+            archived: false,
+            started: None,
+            last_activity: None,
+            title: None,
+            columns: None,
+            hit: None,
+        };
+        let args = |c: &std::process::Command| -> Vec<String> {
+            c.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let fork = |policy: &Policy| match harness::fork(&entry, None, policy).unwrap() {
+            harness::Start::Foreground(c) => args(&c),
+            harness::Start::Background(_) => panic!("a Codex fork is a terminal client"),
+        };
+        let remote = "unix:///tmp/cones-codex-fixture.sock";
+        let id = "01a094e7-c194-7980-9804-34f24290597e";
+        assert_eq!(
+            fork(&Policy::default()),
+            ["--remote", remote, "fork", FLAG, "--", id]
+        );
+        assert_eq!(
+            args(&harness::resume_history(&entry, &Policy::default()).unwrap()),
+            ["--remote", remote, "resume", FLAG, "--", id]
+        );
+        let prompting = Policy {
+            codex_skip_permissions: Some(false),
+            ..Policy::default()
+        };
+        assert_eq!(fork(&prompting), ["--remote", remote, "fork", "--", id]);
+        assert_eq!(
+            args(&harness::resume_history(&entry, &prompting).unwrap()),
+            ["--remote", remote, "resume", "--", id]
+        );
+        println!("codex command fixture ran");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::create_dir_all(dir.path().join(".codex")).unwrap();
+    let fake = bin.join("codex");
+    fs::write(
+        &fake,
+        "#!/bin/sh\ncase \"$*\" in\n  'app-server daemon start') echo '{\"socketPath\":\"/tmp/cones-codex-fixture.sock\"}' ;;\n  --help) echo 'fork  fork a thread' ;;\n  *) exit 91 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "codex::a_codex_fork_and_resume_follow_the_skip_permissions_setting",
+            "--nocapture",
+        ])
+        .env(CHILD, dir.path())
+        .env("HOME", dir.path())
+        .env_remove("CODEX_HOME")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("codex command fixture ran"),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
