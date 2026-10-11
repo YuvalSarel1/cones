@@ -588,7 +588,15 @@ fn session(
         return None;
     }
     let job = job_state(dir, v["jobId"].as_str());
-    Some(build(dir, id, v, &job, Some(pid), read_transcript))
+    let mut s = build(dir, id, v, &job, Some(pid), read_transcript);
+    if let Some(launched) = launch_id(&job).filter(|l| *l != id) {
+        s.native_id = Some(std::mem::replace(&mut s.session_id, launched.into()));
+    }
+    Some(s)
+}
+
+fn launch_id(job: &Value) -> Option<&str> {
+    job["sessionId"].as_str().filter(|id| valid_id(id))
 }
 
 /// The id names a transcript file, so it is checked before it becomes a path.
@@ -1568,7 +1576,9 @@ pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<
                 else {
                     continue;
                 };
-                if value["sessionId"].as_str() == Some(session_id) {
+                if value["sessionId"].as_str() == Some(session_id)
+                    || launch_id(&job_state(claude, value["jobId"].as_str())) == Some(session_id)
+                {
                     let starts = process_starts(value["pid"].as_u64().into_iter())?;
                     if let Some(s) = session(claude, &value, &starts, false) {
                         return Ok(Some(s));
@@ -2340,6 +2350,49 @@ mod tests {
         // `claude rm` removes the record and the row with it.
         fs::remove_dir_all(&job).unwrap();
         assert!(sessions(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_resumed_background_job_lists_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = dir.path().join("sessions");
+        let job = dir.path().join("jobs/aaaaaaaa");
+        fs::create_dir_all(&registry).unwrap();
+        fs::create_dir_all(&job).unwrap();
+        let launched = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let resumed = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        fs::write(
+            job.join("state.json"),
+            serde_json::json!({
+                "state": "working", "tempo": "active", "sessionId": launched,
+                "resumeSessionId": resumed, "cwd": "/src/example", "name": "resumed work",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            registry.join("entry.json"),
+            serde_json::json!({
+                "pid": std::process::id(), "sessionId": resumed, "cwd": "/src/example",
+                "kind": "bg", "jobId": "aaaaaaaa", "status": "busy"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let rows = sessions(dir.path()).unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(
+            rows[0].session_id, launched,
+            "`claude attach` knows the job by it"
+        );
+        assert_eq!(rows[0].native(), resumed);
+        assert!(rows[0].pid.is_some());
+        assert_eq!(
+            control_session(dir.path(), launched)
+                .unwrap()
+                .and_then(|s| s.pid),
+            Some(std::process::id())
+        );
     }
 
     #[test]
