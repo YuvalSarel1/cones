@@ -2353,49 +2353,6 @@ mod tests {
     }
 
     #[test]
-    fn a_resumed_background_job_lists_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let registry = dir.path().join("sessions");
-        let job = dir.path().join("jobs/aaaaaaaa");
-        fs::create_dir_all(&registry).unwrap();
-        fs::create_dir_all(&job).unwrap();
-        let launched = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-        let resumed = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-        fs::write(
-            job.join("state.json"),
-            serde_json::json!({
-                "state": "working", "tempo": "active", "sessionId": launched,
-                "resumeSessionId": resumed, "cwd": "/src/example", "name": "resumed work",
-            })
-            .to_string(),
-        )
-        .unwrap();
-        fs::write(
-            registry.join("entry.json"),
-            serde_json::json!({
-                "pid": std::process::id(), "sessionId": resumed, "cwd": "/src/example",
-                "kind": "bg", "jobId": "aaaaaaaa", "status": "busy"
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let rows = sessions(dir.path()).unwrap();
-        assert_eq!(rows.len(), 1, "{rows:?}");
-        assert_eq!(
-            rows[0].session_id, launched,
-            "`claude attach` knows the job by it"
-        );
-        assert_eq!(rows[0].native(), resumed);
-        assert!(rows[0].pid.is_some());
-        assert_eq!(
-            control_session(dir.path(), launched)
-                .unwrap()
-                .and_then(|s| s.pid),
-            Some(std::process::id())
-        );
-    }
-
-    #[test]
     fn a_job_still_taking_turns_is_working_however_the_registry_rests() {
         let word = |job: Value, status| super::state(&job, status);
         let job = |state, tempo| serde_json::json!({"state": state, "tempo": tempo});

@@ -172,6 +172,85 @@ fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
     assert_eq!(kinds, ["\"run\"", "\"session\""], "row kinds: {json}");
 }
 
+/// `/resume` inside a Claude background job moves the registry entry to the resumed
+/// conversation while the job record keeps the id the job launched with. The job is one
+/// row, keyed by the id `claude attach` knows, and either id reaches it.
+#[test]
+fn a_background_job_resumed_inside_lists_once_and_attaches_by_its_launch_id() {
+    use std::{os::unix::fs::PermissionsExt, process::Command};
+    let d = tempfile::tempdir().unwrap();
+    let jobs = d.path().join("jobs.yaml");
+    fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
+    let claude = d.path().join("claude");
+    let cwd = d.path().canonicalize().unwrap();
+    let launched = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    let resumed = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    let job = claude.join("jobs/aaaaaaaa");
+    fs::create_dir_all(&job).unwrap();
+    fs::write(
+        job.join("state.json"),
+        serde_json::json!({
+            "state": "working", "tempo": "active", "sessionId": launched,
+            "resumeSessionId": resumed, "cwd": cwd, "name": "resumed work",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::create_dir_all(claude.join("sessions")).unwrap();
+    fs::write(
+        claude.join("sessions/entry.json"),
+        serde_json::json!({
+            "pid": std::process::id(), "sessionId": resumed, "cwd": cwd,
+            "kind": "bg", "jobId": "aaaaaaaa", "status": "busy"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let bin = d.path().join(".local/bin");
+    fs::create_dir_all(&bin).unwrap();
+    fs::write(bin.join("claude"), "#!/bin/sh\n").unwrap();
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_cones"))
+            .args([
+                "--jobs",
+                jobs.to_str().unwrap(),
+                "--state-dir",
+                d.path().to_str().unwrap(),
+            ])
+            .args(args)
+            .env("HOME", d.path())
+            .env("CLAUDE_CONFIG_DIR", &claude)
+            .env("CODEX_HOME", d.path().join("missing-codex"))
+            .env("PI_CODING_AGENT_DIR", d.path().join("missing-pi"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let json = run(&["ls", "--json"]);
+    let rows: Vec<serde_json::Value> = json
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .filter(|r: &serde_json::Value| r["kind"] == "session")
+        .collect();
+    assert_eq!(rows.len(), 1, "one job, one row: {json}");
+    assert_eq!(rows[0]["session"]["session_id"], launched, "{json}");
+    assert_eq!(rows[0]["session"]["native_id"], resumed, "{json}");
+    assert_eq!(rows[0]["session"]["pid"], std::process::id(), "{json}");
+    for id in [launched, resumed] {
+        let printed = run(&["__attach", id, "--print-command"]);
+        assert!(
+            printed.contains("'attach' 'aaaaaaaa'"),
+            "{id} joins the live job by its launch short id: {printed}"
+        );
+    }
+}
+
 #[test]
 fn cron_preserves_day_or_weekday_semantics() {
     let rows = launchd::calendar_intervals("0 2 1 * 1").unwrap();
