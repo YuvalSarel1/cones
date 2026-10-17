@@ -254,14 +254,19 @@ pub fn sessions(codex: &Path) -> anyhow::Result<Vec<Session>> {
 
 /// `sessions` against a named `ps`, so a test can point it at one that cannot run.
 pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
+    sessions_in(ps, codex, &[codex.to_owned()])
+}
+
+/// Read one home's rows using the same prepared clients for every home in this pass.
+pub(crate) fn sessions_in(
+    ps: &str,
+    codex: &Path,
+    homes: &[PathBuf],
+) -> anyhow::Result<Vec<Session>> {
     if !codex.is_dir() {
         return Ok(Vec::new());
     }
-    let table = crate::fleet::pass_table(ps)?;
-    let mut procs = processes(&table);
-    if procs.is_empty() {
-        return Ok(Vec::new());
-    }
+    let mut procs = prepared_processes(ps, homes)?;
     let own = crate::fleet::own_home_processes(
         ps,
         crate::config::HarnessKind::Codex,
@@ -269,17 +274,6 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
         &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
     );
     procs.retain(|p| own.contains(&p.pid));
-    // An npm install runs the client under a node wrapper with the same arguments: the child is
-    // the client, and two rows in one folder would leave its rollout to neither.
-    #[cfg(target_os = "macos")]
-    {
-        let key = |p: &Process| (p.remote, p.thread.clone(), p.prompt.clone());
-        let wrappers: Vec<(u32, _)> = procs
-            .iter()
-            .filter_map(|p| Some((crate::process_info::parent(p.pid)?, key(p))))
-            .collect();
-        procs.retain(|p| !wrappers.contains(&(p.pid, key(p))));
-    }
     #[cfg(target_os = "macos")]
     for p in &mut procs {
         p.cwd = crate::process_info::cwd(p.pid);
@@ -310,6 +304,48 @@ pub fn sessions_from(ps: &str, codex: &Path) -> anyhow::Result<Vec<Session>> {
         }
     }
     Ok(rows(codex, &procs))
+}
+
+/// Wrapper removal needs the complete child list, before daemon viewers are excluded.
+/// Share this preparation across both observation and control's per-home readers, just
+/// as `pass_table` shares their process snapshot. A new pass always checks sockets again.
+fn prepared_processes(ps: &str, homes: &[PathBuf]) -> anyhow::Result<Vec<Process>> {
+    type Held = Option<(u64, String, Vec<PathBuf>, Result<Vec<Process>, String>)>;
+    thread_local! {
+        static HELD: std::cell::RefCell<Held> = const { std::cell::RefCell::new(None) };
+    }
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        let pass = crate::observe::pass();
+        if let Some((at, for_ps, for_homes, value)) = held.as_ref()
+            && *at == pass
+            && for_ps == ps
+            && for_homes == homes
+        {
+            crate::observe::shared(crate::observe::op::OPEN_FILES);
+            return value.clone().map_err(anyhow::Error::msg);
+        }
+        let read = (|| {
+            let mut procs = processes(&crate::fleet::pass_table(ps)?);
+            // An npm install runs the client under a node wrapper with the same arguments: the child is
+            // the client, and two rows in one folder would leave its rollout to neither.
+            #[cfg(target_os = "macos")]
+            {
+                let key = |p: &Process| (p.remote, p.thread.clone(), p.prompt.clone());
+                let wrappers: Vec<(u32, _)> = procs
+                    .iter()
+                    .filter_map(|p| Some((crate::process_info::parent(p.pid)?, key(p))))
+                    .collect();
+                procs.retain(|p| !wrappers.contains(&(p.pid, key(p))));
+            }
+            let excluded = daemon_clients(homes, &procs);
+            procs.retain(|p| !excluded.contains(&p.pid));
+            Ok(procs)
+        })()
+        .map_err(|e: anyhow::Error| format!("{e:#}"));
+        *held = Some((pass, ps.to_owned(), homes.to_vec(), read.clone()));
+        read.map_err(anyhow::Error::msg)
+    })
 }
 
 /// Parse `TZ=UTC ps -axww -o pid=,lstart=,command=`; `cwd` is filled from lsof.
@@ -822,6 +858,55 @@ pub fn daemon_pid(codex: &Path) -> Option<u32> {
         |_| true,
     )
     .then_some(pid)
+}
+
+/// Clients connected to a socket the daemon holds. Match kernel socket handles: the
+/// accepted socket's path alone does not identify the process at the other end.
+#[cfg(target_os = "macos")]
+fn socket_clients(daemons: &BTreeSet<u32>, pids: impl Iterator<Item = u32>) -> BTreeSet<u32> {
+    let ends: BTreeSet<u64> = daemons
+        .iter()
+        .filter_map(|&pid| crate::process_info::unix_sockets(pid).ok())
+        .flatten()
+        .map(|s| s.handle)
+        .collect();
+    if ends.is_empty() {
+        return BTreeSet::new();
+    }
+    pids.filter(|pid| !daemons.contains(pid))
+        .filter(|&pid| {
+            crate::process_info::unix_sockets(pid)
+                .is_ok_and(|own| own.iter().any(|s| s.peer != 0 && ends.contains(&s.peer)))
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn socket_clients(_: &BTreeSet<u32>, _: impl Iterator<Item = u32>) -> BTreeSet<u32> {
+    BTreeSet::new()
+}
+
+/// Unidentified clients of any daemon in this scan have no process row. Threads are
+/// discovered separately. Check all homes before attributing clients to rollouts so a
+/// different home's pass cannot restore a viewer or mistake it for a standalone writer.
+fn daemon_clients(homes: &[PathBuf], procs: &[Process]) -> BTreeSet<u32> {
+    let daemons: BTreeSet<_> = homes.iter().filter_map(|home| daemon_pid(home)).collect();
+    if daemons.is_empty() {
+        return BTreeSet::new();
+    }
+    let pids: Vec<_> = procs
+        .iter()
+        .filter(|p| p.thread.is_none())
+        .map(|p| p.pid)
+        .collect();
+    let writers: BTreeSet<_> = homes
+        .iter()
+        .flat_map(|home| locks(home, &pids).into_values())
+        .collect();
+    socket_clients(
+        &daemons,
+        pids.into_iter().filter(|pid| !writers.contains(pid)),
+    )
 }
 
 /// Prefer the database rollout path; fall back to `sessions/**/*-<id>.jsonl`.
