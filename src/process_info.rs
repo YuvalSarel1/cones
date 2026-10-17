@@ -22,6 +22,54 @@ struct VnodeFdInfo {
 }
 
 const PROC_PIDFDVNODEPATHINFO: libc::c_int = 2;
+const PROC_PIDFDSOCKETINFO: libc::c_int = 3;
+const SOCKINFO_UN: i32 = 3;
+
+// sys/proc_info.h: sockbuf_info, socket_info and socket_fdinfo, also absent from libc.
+#[repr(C)]
+struct SockbufInfo {
+    cc: u32,
+    hiwat: u32,
+    mbcnt: u32,
+    mbmax: u32,
+    lowat: u32,
+    flags: i16,
+    timeo: i16,
+}
+
+#[repr(C)]
+struct SocketInfo {
+    stat: libc::vinfo_stat,
+    so: u64,
+    pcb: u64,
+    kind_type: i32,
+    protocol: i32,
+    family: i32,
+    options: i16,
+    linger: i16,
+    state: i16,
+    qlen: i16,
+    incqlen: i16,
+    qlimit: i16,
+    timeo: i16,
+    error: u16,
+    oobmark: u32,
+    rcv: SockbufInfo,
+    snd: SockbufInfo,
+    kind: i32,
+    rfu: u32,
+    /// socket_info.soi_proto; for SOCKINFO_UN, pri_un.unsi_conn_so is the first field.
+    proto: [u64; 66],
+}
+
+#[repr(C)]
+struct SocketFdInfo {
+    file: ProcFileInfo,
+    socket: SocketInfo,
+}
+
+// The kernel rejects a buffer smaller than its own `struct socket_fdinfo`.
+const _: () = assert!(size_of::<SocketFdInfo>() == 792);
 
 fn path(value: &libc::vnode_info_path) -> Option<PathBuf> {
     let bytes: Vec<u8> = value
@@ -93,6 +141,81 @@ pub fn open_files(pid: u32) -> io::Result<Vec<OpenFile>> {
 }
 
 fn open_files_of(pid: u32) -> io::Result<Vec<OpenFile>> {
+    let (pid, fds) = fds(pid)?;
+    let mut paths = Vec::new();
+    for fd in fds
+        .iter()
+        .filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
+    {
+        let mut info: VnodeFdInfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<VnodeFdInfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidfdinfo(
+                pid,
+                fd.proc_fd,
+                PROC_PIDFDVNODEPATHINFO,
+                (&mut info as *mut VnodeFdInfo).cast(),
+                size,
+            )
+        };
+        // Descriptors can close between the list and this read.
+        if read == size {
+            paths.push(OpenFile {
+                device: u64::from(info.vnode.vip_vi.vi_stat.vst_dev),
+                inode: info.vnode.vip_vi.vi_stat.vst_ino,
+                path: path(&info.vnode),
+            });
+        }
+    }
+    Ok(paths)
+}
+
+/// A Unix-domain socket a process holds, by the kernel's handles as lsof prints them: its own
+/// and the one it is connected to, zero when unconnected. A connection is the pair of sockets
+/// whose handles name each other, whichever processes hold them.
+pub struct UnixSocket {
+    pub handle: u64,
+    pub peer: u64,
+}
+
+pub fn unix_sockets(pid: u32) -> io::Result<Vec<UnixSocket>> {
+    crate::observe::read(
+        crate::observe::op::OPEN_FILES,
+        || unix_sockets_of(pid),
+        Result::is_ok,
+    )
+}
+
+fn unix_sockets_of(pid: u32) -> io::Result<Vec<UnixSocket>> {
+    let (pid, fds) = fds(pid)?;
+    let mut sockets = Vec::new();
+    for fd in fds
+        .iter()
+        .filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_SOCKET as u32)
+    {
+        let mut info: SocketFdInfo = unsafe { std::mem::zeroed() };
+        let size = size_of::<SocketFdInfo>() as libc::c_int;
+        let read = unsafe {
+            libc::proc_pidfdinfo(
+                pid,
+                fd.proc_fd,
+                PROC_PIDFDSOCKETINFO,
+                (&mut info as *mut SocketFdInfo).cast(),
+                size,
+            )
+        };
+        if read == size && info.socket.kind == SOCKINFO_UN {
+            sockets.push(UnixSocket {
+                handle: info.socket.so,
+                peer: info.socket.proto[0],
+            });
+        }
+    }
+    Ok(sockets)
+}
+
+/// The process's descriptors, with the pid as libproc takes it.
+fn fds(pid: u32) -> io::Result<(i32, Vec<libc::proc_fdinfo>)> {
     let pid = i32::try_from(pid)
         .ok()
         .filter(|&p| p > 1)
@@ -130,32 +253,7 @@ fn open_files_of(pid: u32) -> io::Result<Vec<OpenFile>> {
             continue;
         }
         fds.truncate(read as usize / size_of::<libc::proc_fdinfo>());
-        let mut paths = Vec::new();
-        for fd in fds
-            .iter()
-            .filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_VNODE as u32)
-        {
-            let mut info: VnodeFdInfo = unsafe { std::mem::zeroed() };
-            let size = size_of::<VnodeFdInfo>() as libc::c_int;
-            let read = unsafe {
-                libc::proc_pidfdinfo(
-                    pid,
-                    fd.proc_fd,
-                    PROC_PIDFDVNODEPATHINFO,
-                    (&mut info as *mut VnodeFdInfo).cast(),
-                    size,
-                )
-            };
-            // Descriptors can close between the list and this read.
-            if read == size {
-                paths.push(OpenFile {
-                    device: u64::from(info.vnode.vip_vi.vi_stat.vst_dev),
-                    inode: info.vnode.vip_vi.vi_stat.vst_ino,
-                    path: path(&info.vnode),
-                });
-            }
-        }
-        return Ok(paths);
+        return Ok((pid, fds));
     }
     Err(io::Error::other("process fd list kept growing"))
 }

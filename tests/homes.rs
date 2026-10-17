@@ -121,6 +121,32 @@ impl Fixture {
         pid
     }
 
+    /// A stand-in Codex client with a real socket connection to this test process.
+    #[cfg(target_os = "macos")]
+    fn connected_codex(
+        &mut self,
+        home: &Path,
+        args: &[&str],
+        script: &str,
+    ) -> (u32, std::os::unix::net::UnixStream) {
+        use std::os::unix::net::UnixListener;
+        let socket = self
+            .path()
+            .join(format!("client-{}.sock", self.children.len()));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let user = self.path().to_owned();
+        let pid = self.scripted(
+            "codex",
+            args,
+            &[("HOME", &user), ("CODEX_HOME", home)],
+            &format!(
+                "{script}; require('net').createConnection({});",
+                json!(socket)
+            ),
+        );
+        (pid, accept_connection(&listener))
+    }
+
     /// An OpenCode client under `user`'s HOME showing the fixture session, which the database
     /// under `data` holds. Returns its pid and that database.
     fn opencode(&mut self, user: &Path, data: &Path) -> (u32, PathBuf) {
@@ -223,6 +249,27 @@ impl Drop for Fixture {
         for child in &mut self.children {
             let _ = child.kill();
             let _ = child.wait();
+        }
+    }
+}
+
+/// Wait for a fixture client, but fail if it exits or never connects.
+pub(super) fn accept_connection(
+    listener: &std::os::unix::net::UnixListener,
+) -> std::os::unix::net::UnixStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => return stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "fixture client did not connect within 3 seconds"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("accepting fixture client: {e}"),
         }
     }
 }
@@ -726,15 +773,21 @@ fn an_npm_wrapper_and_the_client_it_runs_are_one_row() {
     let mut f = Fixture::new();
     let user = f.path().to_owned();
     fs::create_dir_all(f.path().join(".codex")).unwrap();
+    let socket = f.path().join("wrapper.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let client = format!(
+        "require('net').createConnection({}); setInterval(() => process.ppid === 1 && process.exit(), 200)",
+        json!(socket)
+    );
     // The child leaves with its wrapper, which the fixture ends.
     let wrapper = f.scripted(
         "codex",
         &["exec", "review the wrapper"],
         &[("HOME", &user)],
-        r#"const child = require("child_process").spawn(process.execPath, ["-", ...process.argv.slice(2)],
-            { argv0: "codex", stdio: ["pipe", "ignore", "ignore"] });
-        child.stdin.end("setInterval(() => process.ppid === 1 && process.exit(), 200)");
-        setTimeout(() => {}, 600000)"#,
+        &format!(r#"const child = require("child_process").spawn(process.execPath, ["-", ...process.argv.slice(2)],
+            {{ argv0: "codex", stdio: ["pipe", "ignore", "ignore"] }});
+        child.stdin.end({});
+        setTimeout(() => {{}}, 600000)"#, json!(client)),
     );
     // Both processes are in the table before either row is judged.
     let rows = f.rows_when("codex", |row| {
@@ -746,4 +799,118 @@ fn an_npm_wrapper_and_the_client_it_runs_are_one_row() {
         .collect();
     assert_eq!(mine.len(), 1, "{rows:?}");
     assert_ne!(mine[0]["pid"], wrapper, "{}", mine[0]);
+    let _connection = accept_connection(&listener);
+    #[cfg(target_os = "macos")]
+    {
+        let dir = f.path().join(".codex/app-server-daemon");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("app-server.pid"),
+            json!({"pid":std::process::id()}).to_string(),
+        )
+        .unwrap();
+        let listed = f.ok(&["ls", "--json"]);
+        assert!(!listed.contains("review the wrapper"), "{listed}");
+        let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-daemon-wrapper.json");
+        fs::write(artifact, listed).unwrap();
+    }
+}
+
+/// External clients have real socket connections but no `--resume` identity. Only the
+/// daemon's thread is a row, including when the client names a different Codex home.
+#[cfg(target_os = "macos")]
+#[test]
+fn external_codex_daemon_clients_have_no_duplicate_row() {
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-daemon-clients.json");
+    let mut cases = Vec::new();
+    for other_home in [false, true] {
+        let mut f = Fixture::new();
+        let daemon_home = f.path().join(".codex");
+        let client_home = if other_home {
+            f.path().join("task-codex")
+        } else {
+            daemon_home.clone()
+        };
+        fs::create_dir_all(&client_home).unwrap();
+        fs::write(client_home.join("config.toml"), "").unwrap();
+        let (pid, _connection) = f.connected_codex(&client_home, &[], "");
+        let (prompted, _prompt_connection) =
+            f.connected_codex(&client_home, &["fix the widget"], "");
+        // First prove both stand-ins are discoverable without a known daemon.
+        let before = f.rows_when("codex", |row| row["pid"] == pid);
+        assert!(
+            before.iter().any(|row| row["pid"] == prompted),
+            "{before:?}"
+        );
+        fs::create_dir_all(daemon_home.join("app-server-daemon")).unwrap();
+        fs::write(
+            daemon_home.join("app-server-daemon/app-server.pid"),
+            json!({"pid":std::process::id()}).to_string(),
+        )
+        .unwrap();
+        let day = daemon_home.join("sessions/2026/10/11");
+        fs::create_dir_all(&day).unwrap();
+        fs::create_dir_all(daemon_home.join("thread-writer-locks")).unwrap();
+        fs::write(
+            day.join(format!("rollout-{RUN}.jsonl")),
+            format!(
+                "{}\n",
+                json!({"type":"session_meta","payload":{"id":RUN,"session_id":RUN,
+                "timestamp":"2026-10-11T10:00:05Z","cwd":f.path()}})
+            ),
+        )
+        .unwrap();
+        let _lock =
+            fs::File::create(daemon_home.join(format!("thread-writer-locks/{RUN}.lock"))).unwrap();
+        let after = f.rows_when("codex", |row| row["session_id"] == RUN);
+        let stop = f.cones(&["stop", &format!("codex-{pid}")]);
+        let result = json!({
+            "other_home":other_home,
+            "client_rows":after.iter().filter(|row| row["pid"] == pid || row["pid"] == prompted).count(),
+            "thread_rows":after.iter().filter(|row| row["session_id"] == RUN).count(),
+            "stop_succeeded":stop.status.success(),
+            "client_alive":cones::fleet::alive(pid),
+        });
+        assert_eq!(
+            result,
+            json!({"other_home":other_home, "client_rows":0,
+            "thread_rows":1, "stop_succeeded":false, "client_alive":true})
+        );
+        cases.push(result);
+    }
+    fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+    fs::write(&artifact, serde_json::to_string_pretty(&cases).unwrap()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Vec<Value>>(&fs::read_to_string(artifact).unwrap()).unwrap(),
+        cases
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_socket_connected_codex_writer_keeps_its_row() {
+    let mut f = Fixture::new();
+    let home = f.path().join(".codex");
+    fs::create_dir_all(home.join("thread-writer-locks")).unwrap();
+    fs::create_dir_all(home.join("app-server-daemon")).unwrap();
+    fs::write(
+        home.join("app-server-daemon/app-server.pid"),
+        json!({"pid":std::process::id()}).to_string(),
+    )
+    .unwrap();
+    let script = format!(
+        "require('fs').openSync({}, 'w')",
+        json!(home.join("thread-writer-locks/standalone.lock"))
+    );
+    let (pid, _connection) = f.connected_codex(&home, &[], &script);
+    let rows = f.rows_when("codex", |row| row["pid"] == pid);
+    assert_eq!(
+        rows.iter().filter(|row| row["pid"] == pid).count(),
+        1,
+        "{rows:?}"
+    );
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-socket-writer.json");
+    let result = json!({"writer_rows":rows.iter().filter(|row| row["pid"] == pid).count()});
+    fs::write(artifact, serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    assert_eq!(result, json!({"writer_rows":1}));
 }
