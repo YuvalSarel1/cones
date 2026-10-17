@@ -425,6 +425,15 @@ impl Native {
         }
     }
 
+    /// Cross-home context is shared by listing and control discovery. Only Codex needs
+    /// it to exclude clients connected to a daemon in a different home.
+    pub(crate) fn sessions_in(self, home: &Path, homes: &[PathBuf]) -> Result<Vec<Session>> {
+        match self {
+            Self::Codex => crate::codex::sessions_in("/bin/ps", home, homes),
+            _ => self.sessions(home),
+        }
+    }
+
     /// Adding a native reader requires an adapter for the shared accounting path.
     /// Terminal-only entries cannot interpret usage until they acquire native readers.
     pub(crate) fn accounting(self) -> Box<dyn crate::cost::Reader> {

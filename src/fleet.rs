@@ -1749,10 +1749,10 @@ pub(crate) fn all_observed(
         let mut found = Vec::new();
         let homes = spec.home.all(claude);
         let passes = homes.len();
-        for (i, home) in homes.into_iter().enumerate() {
+        for (i, home) in homes.iter().enumerate() {
             let started = std::time::Instant::now();
-            let result = spec.discovery.handler.sessions(&home);
-            observe(&spec.name, &home, started.elapsed(), &result);
+            let result = spec.discovery.handler.sessions_in(home, &homes);
+            observe(&spec.name, home, started.elapsed(), &result);
             match result {
                 Ok(rows) => found.extend(rows),
                 // The harness's own home failing is the refresh failing. Another home, which
@@ -1859,11 +1859,12 @@ pub(crate) fn control_session(claude: &Path, session_id: &str) -> Result<Option<
         if spec.discovery.registry.is_some() {
             continue;
         }
-        for home in spec.home.all(claude) {
+        let homes = spec.home.all(claude);
+        for home in &homes {
             if let Some(session) = spec
                 .discovery
                 .handler
-                .sessions(&home)?
+                .sessions_in(home, &homes)?
                 .into_iter()
                 .map(|mut s| {
                     identify(&mut s);

@@ -428,3 +428,121 @@ fn a_codex_fork_takes_the_skip_setting_through_the_daemon_and_a_resume_passes_no
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A daemon-connected launch has no process row, but its dashboard placeholder must
+/// survive a completed refresh and then become exactly one identified conversation.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_daemon_client_launch_keeps_its_placeholder_until_the_thread_arrives() {
+    use crate::dashboard::Dashboard;
+    use serde_json::json;
+    use std::{
+        os::unix::{fs::PermissionsExt, net::UnixListener},
+        time::Duration,
+    };
+
+    let mut d = Dashboard::new("codex-pending-daemon-client", &["codex"]);
+    let home = d.home().join(".codex");
+    fs::create_dir_all(home.join("app-server-daemon")).unwrap();
+    fs::create_dir_all(home.join("thread-writer-locks")).unwrap();
+    fs::write(
+        home.join("app-server-daemon/app-server.pid"),
+        json!({"pid": std::process::id()}).to_string(),
+    )
+    .unwrap();
+    let listener = UnixListener::bind(home.join("fixture.sock")).unwrap();
+    let program = d.home().join(".local/bin/codex");
+    fs::write(
+        &program,
+        r#"#!/usr/bin/python3
+import json, os, pathlib, socket, sys, time
+home = pathlib.Path(os.environ["CODEX_HOME"])
+if sys.argv[1:] == ["app-server", "daemon", "start"]:
+    print(json.dumps({"cliVersion": "0.163.0", "socketPath": str(home / "fixture.sock")}))
+    sys.exit(0)
+sock = socket.socket(socket.AF_UNIX)
+sock.connect(str(home / "fixture.sock"))
+(home / "viewer.pid").write_text(str(os.getpid()))
+while True:
+    time.sleep(0.1)
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    d.start();
+    d.typed("keep the pending launch");
+    d.press("launch", b"\r");
+    let pid: u32 = d
+        .wait_file("home/.codex/viewer.pid", |s| s.parse::<u32>().is_ok())
+        .trim()
+        .parse()
+        .unwrap();
+    // Close only the fixture client on failure too; the daemon here is the test process.
+    struct Client(u32);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            unsafe {
+                libc::kill(self.0 as i32, libc::SIGTERM);
+            }
+        }
+    }
+    let _client = Client(pid);
+    let _connection = crate::homes::accept_connection(&listener);
+    d.press("back to list", b"\x1a");
+    let cwd = d.project().canonicalize().unwrap();
+    let write_thread = |id: &str, title: &str| {
+        let day = home.join("sessions/2026/10/16");
+        fs::create_dir_all(&day).unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        fs::write(
+            day.join(format!("rollout-{id}.jsonl")),
+            format!(
+                "{}\n{}\n{}\n",
+                json!({"type":"session_meta", "payload":{"id":id,"session_id":id,
+                "timestamp":now,"cwd":cwd}}),
+                json!({"type":"event_msg","payload":{"item":{"type":"UserMessage",
+                "content":[{"type":"text","text":title}]}}}),
+                json!({"type":"event_msg","payload":{"type":"task_started"}})
+            ),
+        )
+        .unwrap();
+        fs::File::create(home.join(format!("thread-writer-locks/{id}.lock"))).unwrap()
+    };
+    let _marker = write_thread("01a14435-4399-7903-96fb-35d94a9f6201", "refresh marker");
+    // Seeing the newly created marker proves discovery completed after the socket connected.
+    d.wait_text("refresh marker");
+    let pending = d.capture("pending-after-refresh");
+    assert_eq!(
+        pending.matches("keep the pending launch").count(),
+        1,
+        "{pending}"
+    );
+    let id = "01a14435-4399-7903-96fb-35d94a9f6202";
+    let _thread = write_thread(id, "keep the pending launch");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !cones::codex::threads(&d.path("state"))
+        .iter()
+        .any(|t| t.id == id)
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "launch identity was not recorded: {}",
+            d.screen()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    d.wait_for("one identified launch", |s| {
+        s.matches("keep the pending launch").count() == 1
+    });
+    let identified = d.capture("identified-launch");
+    assert_eq!(
+        identified.matches("keep the pending launch").count(),
+        1,
+        "{identified}"
+    );
+    assert!(
+        cones::fleet::alive(pid),
+        "identity replacement preserves the viewer"
+    );
+    d.quit();
+}
