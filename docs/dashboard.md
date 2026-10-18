@@ -8,7 +8,7 @@ defaults and accepted values.
 
 ## Navigation
 
-The summary counts working, input, idle and done sessions, jobs and runs. A blue `❯ shell`
+The summary counts working, input, idle and done sessions. A blue `❯ shell`
 count joins them while a session's turn has ended with a background shell still running; only
 Claude Code reports that, see [state](harness.md#state). That ended turn is an unread completion
 like any other. `! stale` means a

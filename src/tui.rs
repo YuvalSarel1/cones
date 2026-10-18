@@ -758,16 +758,6 @@ impl Data {
             spans.push(Span::styled(format!(" {title}"), style));
             spans.push(sep());
         }
-        spans.push(Span::styled("·  ", dim()));
-        for (n, title) in [(self.jobs.len(), "jobs"), (self.runs.len(), "runs")] {
-            let style = if n == 0 { dim() } else { plain() };
-            spans.push(Span::styled(
-                n.to_string(),
-                style.add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(format!(" {title}"), style));
-            spans.push(sep());
-        }
         spans.pop();
         Line::from(spans)
     }
