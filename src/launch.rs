@@ -845,8 +845,10 @@ pub fn wait(
                         ),
                         Some(row) => {
                             seen[i] = true;
-                            let busy =
-                                matches!(row.state.as_str(), "working" | "active" | "-" | "");
+                            let busy = matches!(
+                                row.state.as_str(),
+                                "working" | "active" | "shell" | "-" | ""
+                            );
                             moved[i] |= busy
                                 || since.is_some_and(|since| {
                                     row.last_activity.is_some_and(|at| at >= since)

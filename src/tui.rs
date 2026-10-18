@@ -734,11 +734,16 @@ impl Data {
         let mut spans = Vec::new();
         for (state, title) in [
             ("active", "working"),
+            ("shell", "shell"),
             ("blocked", "input"),
             ("idle", "idle"),
             ("done", "done"),
         ] {
             let n = self.count(state);
+            // Only Claude reports `shell`, so its count stays out of the way until it does.
+            if state == "shell" && n == 0 {
+                continue;
+            }
             let style = if n == 0 { dim() } else { color(state) };
             let glyph = if state == "active" && n > 0 {
                 SPINNER[frame]
@@ -850,8 +855,9 @@ impl Data {
                 let rank = match s.state.as_str() {
                     "blocked" => 1,
                     "active" => 2,
-                    "idle" => 3,
-                    _ => 4,
+                    "shell" => 3,
+                    "idle" => 4,
+                    _ => 5,
                 };
                 (ranked(rank, label(&s.state)), true)
             } else if let Some(root) = self.roots.get(&s.cwd) {
@@ -3130,6 +3136,7 @@ fn icon(state: &str) -> &str {
     match state {
         "active" | "started" => "▁",
         "blocked" | "input" => "▇",
+        "shell" => "❯",
         "idle" | "exited" | "stopped" => "▁",
         "ok" | "done" => "✓",
         "skipped" | "-" => "–",
@@ -3191,6 +3198,7 @@ fn color(status: &str) -> Style {
         "active" | "started" => plain(),
         "ok" | "done" => Style::default().fg(Color::Green),
         "blocked" | "input" | "skipped" => Style::default().fg(Color::Yellow),
+        "shell" => Style::default().fg(Color::Blue),
         "idle" | "exited" | "stopped" | "-" => dim(),
         _ => Style::default().fg(Color::Red),
     }

@@ -278,7 +278,7 @@ live session, the ledger precedes saved-output accounting.
 
 | Harness | Mapping |
 | --- | --- |
-| Claude interactive | Registry `busy`/`shell`: working; `waiting`: input; `idle`: idle. Other words are preserved. |
+| Claude interactive | Registry `busy`: working; `shell`: shell, a finished turn with a background shell still running; `waiting`: input; `idle`: idle. Other words are preserved. |
 | Claude background | Precedence below, following native listing behavior in 2.1.272. |
 | Codex | Daemon threads: [native runtime state](#native-input-signals), including approvals and questions. Otherwise rollout `task_started`: working; `task_complete`: done; `turn_aborted`: stopped; no rollout means `-`. |
 | pi | User/tool-result: working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown/no turn: `-`. Owned clients report native idle/working and dialogs as [input](#native-input-signals). |
@@ -286,7 +286,7 @@ live session, the ledger precedes saved-output accounting.
 
 Claude background uses the first matching rule:
 
-1. Registry `busy`/`shell`: working, ahead of any previous job result.
+1. Registry `busy`: working, and `shell`: shell, ahead of any previous job result.
 2. Job `done`/`failed`/`stopped` with tempo no longer `active`: that state. Done also requires
    no routine, self-wake, in-flight `session_cron` or `monitor` that could restart it.
 3. Tempo `blocked` or registry `waiting`: input.
@@ -296,7 +296,9 @@ Claude background uses the first matching rule:
    keeps tempo `active` beside a running monitor. Its reported detail stays on the row.
 5. Otherwise working.
 
-Quiet output does not override these reports.
+Quiet output does not override these reports. No other harness reports a turn that ended
+beside a running background shell: Codex 0.163's thread status carries only approval and
+input flags, so its sessions, like pi's and OpenCode's, stay working or idle as reported.
 
 ### Native input signals
 

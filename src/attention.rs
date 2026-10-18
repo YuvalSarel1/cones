@@ -127,7 +127,7 @@ impl Tracker {
                         && changed
                         && (matches!(
                             entry.observation.state.as_str(),
-                            "active" | "started" | "blocked"
+                            "active" | "shell" | "started" | "blocked"
                         ) || (entry.observation.complete()
                             && !observation.revision.is_empty()
                             && entry.observation.revision != observation.revision));
@@ -138,7 +138,7 @@ impl Tracker {
                     }
                     if matches!(
                         observation.state.as_str(),
-                        "active" | "started" | "stopped" | "exited"
+                        "active" | "shell" | "started" | "stopped" | "exited"
                     ) {
                         entry.unread = false;
                     }

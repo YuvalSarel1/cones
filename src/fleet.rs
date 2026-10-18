@@ -954,7 +954,8 @@ fn transcript_parent(transcript: &Path, id: &str) -> Option<String> {
 }
 
 /// Mirror Claude Code 2.1.272 state precedence; see docs/harness.md.
-/// Registry busy wins because job state can lag a new turn. A background job idles only
+/// Registry busy wins because job state can lag a new turn. Registry `shell` is a turn that
+/// ended with a background shell still running. A background job idles only
 /// when the registry, tempo and in-flight work all rest; a pending wake counts as resting.
 fn state(job: &Value, status: &str) -> String {
     let job_state = job["state"].as_str();
@@ -987,7 +988,8 @@ fn state(job: &Value, status: &str) -> String {
             kinds.iter().all(is_wake)
         };
     match job_state {
-        _ if status == "busy" || status == "shell" => "active",
+        _ if status == "busy" => "active",
+        _ if status == "shell" => "shell",
         Some(done) if finished => done,
         _ if status == "waiting" || tempo == Some("blocked") => "blocked",
         Some(_) if resting => "idle",

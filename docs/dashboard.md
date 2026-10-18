@@ -8,7 +8,9 @@ defaults and accepted values.
 
 ## Navigation
 
-The summary counts working, input, idle and done sessions, jobs and runs. `! stale` means a
+The summary counts working, input, idle and done sessions, jobs and runs. A blue `❯ shell`
+count joins them while a session's turn has ended with a background shell still running; only
+Claude Code reports that, see [state](harness.md#state). `! stale` means a
 read failed: previous rows remain visible with the error until a refresh succeeds.
 
 A green `✉` before the title marks an unread completion. Viewing its painted live pane or focusing its loaded output

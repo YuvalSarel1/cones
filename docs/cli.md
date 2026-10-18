@@ -249,7 +249,8 @@ verification limits](harness.md#detached-launch) before using the returned id wi
 
 `--wait` keeps the command running after it prints the id, until the harness reports that the
 session stopped moving on its own: its turn ended, it asks for input, it failed or stopped, or
-it left the roster. It then prints `ID<TAB>STATE`. A state reported before the first turn does
+it left the roster. A turn that ended beside a running background shell, state `shell`, still
+counts as moving, because the shell's exit wakes it. It then prints `ID<TAB>STATE`. A state reported before the first turn does
 not count; the session must have been seen working or have written since the launch. An agent
 runs it as a background task, so the command's exit wakes it. The state says where to look,
 not that the task is done. `--timeout S` gives up after S seconds and exits 2 with `timeout`,

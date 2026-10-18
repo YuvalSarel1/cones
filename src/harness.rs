@@ -965,7 +965,7 @@ pub fn compact(session: &crate::fleet::Session, home: &Path, state: &Path) -> Re
         spec.name
     );
     ensure!(
-        !matches!(session.state.as_str(), "working" | "active"),
+        !matches!(session.state.as_str(), "working" | "active" | "shell"),
         "{id} is working; compact it once its turn ends, which `cones wait {id}` reports"
     );
     match spec.kind {

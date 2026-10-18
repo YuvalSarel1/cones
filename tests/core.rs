@@ -718,7 +718,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     assert_eq!((big.tokens_in, big.tokens_out), (Some(300_330), Some(13)));
     for (status, state) in [
         ("idle", "idle"),
-        ("shell", "active"),
+        ("shell", "shell"),
         ("busy", "active"),
         ("waiting", "blocked"),
         ("parked", "parked"),
