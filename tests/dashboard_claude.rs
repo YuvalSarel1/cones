@@ -1466,21 +1466,30 @@ fn tasks_shows_what_claude_reports_and_children_counts_processes() {
 
 /// Claude's registry `shell` is a turn that ended with a background shell still running: not
 /// working, not idle. The record is Claude Code 2.1.302's for that case. The row and the
-/// summary say `shell` behind a blue `❯`, and the `tasks` column names what it waits on.
+/// summary say `shell` behind a blue `❯`, the `tasks` column names what it waits on, and the
+/// ended turn is unread like any other, since its reply may ask something.
 #[test]
 fn a_turn_left_running_a_background_shell_shows_shell() {
     let mut d = Dashboard::new("claude-shell-state", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
     let project = real_project(&d);
+    let _busy = seed(&d, &project, 1, "Fix the parser", "busy", None);
     let waiting = seed(
         &d,
         &project,
-        1,
+        2,
         "Wait for the notes",
-        "shell",
+        "busy",
         Some("working"),
     );
-    let _busy = seed(&d, &project, 2, "Fix the parser", "busy", None);
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{yaml}columns: [state, tasks]\n"),
+    )
+    .unwrap();
+    d.start();
+    d.wait_text("2 working");
     fs::write(
         d.home()
             .join(".claude/jobs")
@@ -1492,14 +1501,14 @@ fn a_turn_left_running_a_background_shell_shows_shell() {
         .to_string(),
     )
     .unwrap();
-    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
-    fs::write(
-        d.path("jobs.yaml"),
-        format!("{yaml}columns: [state, tasks]\n"),
-    )
-    .unwrap();
-    d.start();
-    let screen = d.wait_text("1 shell");
+    let entry = d
+        .home()
+        .join(".claude/sessions")
+        .join(format!("{}.json", waiting.daemon.id()));
+    let mut record: Value = serde_json::from_slice(&fs::read(&entry).unwrap()).unwrap();
+    record["status"] = "shell".into();
+    fs::write(&entry, record.to_string()).unwrap();
+    let screen = d.wait_text("✉ Wait for the notes");
     d.capture("shell");
     assert!(
         screen.contains("1 working  ❯ 1 shell  ▇ 0 input"),
@@ -1515,7 +1524,7 @@ fn a_turn_left_running_a_background_shell_shows_shell() {
         .collect();
     assert_eq!(
         cells,
-        ["❯", "✻", "shell", "Wait for the notes", "1 shell"],
+        ["❯", "✻", "shell", "✉ Wait for the notes", "1 shell"],
         "{screen}"
     );
     assert!(

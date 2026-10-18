@@ -63,7 +63,7 @@ impl Observation {
     fn complete(&self) -> bool {
         matches!(
             self.state.as_str(),
-            "idle" | "done" | "ok" | "input" | "failed" | "timeout" | "crashed"
+            "idle" | "shell" | "done" | "ok" | "input" | "failed" | "timeout" | "crashed"
         )
     }
 }
@@ -127,7 +127,7 @@ impl Tracker {
                         && changed
                         && (matches!(
                             entry.observation.state.as_str(),
-                            "active" | "shell" | "started" | "blocked"
+                            "active" | "started" | "blocked"
                         ) || (entry.observation.complete()
                             && !observation.revision.is_empty()
                             && entry.observation.revision != observation.revision));
@@ -138,7 +138,7 @@ impl Tracker {
                     }
                     if matches!(
                         observation.state.as_str(),
-                        "active" | "shell" | "started" | "stopped" | "exited"
+                        "active" | "started" | "stopped" | "exited"
                     ) {
                         entry.unread = false;
                     }
