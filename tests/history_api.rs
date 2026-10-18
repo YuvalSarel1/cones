@@ -314,6 +314,8 @@ fn show_returns_exact_identity_messages_tools_omissions_and_partial_record_state
         home: None,
         tail: Some(1),
         all: false,
+        at: None,
+        context: None,
     };
     assert!(
         service
@@ -678,4 +680,188 @@ fn index_status_and_index_report_progress_without_a_model() {
             .starts_with(&format!("0/{} passages embedded", status["passages"]))
     );
     assert_eq!(f.snapshot(), before, "native archives are never written");
+}
+
+/// Three Claude conversations mentioning the parser cache: a strong match 200 days old, a
+/// medium one 100 days old and a weak one from yesterday. The strong one is a longer exchange.
+/// Dates follow the clock, so the `when` windows hold whenever the suite runs.
+fn ranked_fixture(f: &Fixture) {
+    let now = chrono::Utc::now();
+    let day = |n: i64| (now - chrono::Duration::days(n)).to_rfc3339();
+    let session = |id: &str, age: i64, messages: Vec<(&str, String)>| {
+        let rows: Vec<Value> = messages
+            .into_iter()
+            .enumerate()
+            .map(|(i, (role, text))| {
+                let mut row = json!({"type":role,"timestamp":day(age),"message":{"content":text}});
+                if i == 0 {
+                    row["sessionId"] = json!(id);
+                    row["cwd"] = json!(f.project);
+                }
+                row
+            })
+            .collect();
+        write(
+            &f.sources[0]
+                .home
+                .join(format!("projects/fixture/{id}.jsonl")),
+            &rows,
+        );
+    };
+    let mut strong = vec![("user", "start the old work".to_owned())];
+    for i in 0..20 {
+        strong.push((
+            "assistant",
+            if i == 10 {
+                "parser cache: parser cache invalidation".to_owned()
+            } else {
+                format!("routine step {i}")
+            },
+        ));
+    }
+    session(OLD, 200, strong);
+    session(
+        MID,
+        100,
+        vec![
+            ("user", "investigate slowness".into()),
+            ("assistant", "the parser cache was slow".into()),
+        ],
+    );
+    session(
+        NEW,
+        1,
+        vec![(
+            "user",
+            "check whether the cache used by the parser module is stale before we ship this release"
+                .into(),
+        )],
+    );
+}
+
+const OLD: &str = "eeeeeeee-0000-4000-8000-000000000000";
+const NEW: &str = "ffffffff-0000-4000-8000-000000000000";
+const MID: &str = "abababab-0000-4000-8000-000000000000";
+
+#[test]
+fn words_need_two_terms_when_nudges_a_window_up_and_show_opens_at_the_hit() {
+    let f = Fixture::new();
+    ranked_fixture(&f);
+    let mut service = f.service();
+    let ids = |r: &cones::history_api::Results| {
+        r.entries
+            .iter()
+            .map(|e| e.key.session_id.clone())
+            .collect::<Vec<_>>()
+    };
+    // A word the history lacks no longer hides passages holding the other two.
+    let partial = service
+        .search(Search {
+            query: "needle cobalt zebra".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(partial.total, 5, "{:?}", ids(&partial));
+    // One matching word of two is not a match, so a common word cannot flood the results.
+    let lone = service
+        .search(Search {
+            query: "needle zebra".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(lone.total, 0, "{:?}", ids(&lone));
+    let parser = |when| Search {
+        query: "parser cache".into(),
+        when,
+        ..Default::default()
+    };
+    use cones::history_api::When;
+    let any = service.search(parser(When::Any)).unwrap();
+    assert_eq!(ids(&any), [OLD, MID, NEW], "BM25 order");
+    let recent = service.search(parser(When::Recent)).unwrap();
+    assert_eq!(
+        ids(&recent),
+        [OLD, NEW, MID],
+        "the recent hit climbs past a weaker one, not past the strongest"
+    );
+    let old = service.search(parser(When::Old)).unwrap();
+    assert_eq!(ids(&old), [OLD, MID, NEW]);
+    let month = service.search(parser(When::Month)).unwrap();
+    assert_eq!(
+        ids(&month),
+        [OLD, MID, NEW],
+        "no hit in the window keeps the order"
+    );
+
+    let anchor = any.entries[0].hit.as_ref().unwrap().anchor.clone().unwrap();
+    let shown = service
+        .show(Show {
+            id: OLD.into(),
+            harness: None,
+            home: None,
+            tail: None,
+            all: false,
+            at: Some(anchor.offset),
+            context: Some(2),
+        })
+        .unwrap();
+    let messages = shown["messages"].as_array().unwrap();
+    let texts: Vec<_> = messages
+        .iter()
+        .map(|m| m["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "routine step 8",
+            "routine step 9",
+            "parser cache: parser cache invalidation",
+            "routine step 11",
+            "routine step 12"
+        ]
+    );
+    assert_eq!(shown["matched"], 2);
+    assert_eq!(shown["omitted"], 9, "the first prompt and steps 0 to 7");
+    assert_eq!(shown["omitted_after"], 7);
+
+    let out = f
+        .command()
+        .args([
+            "show",
+            OLD,
+            "--at",
+            &anchor.offset.to_string(),
+            "--context",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("[11 earlier messages omitted"), "{text}");
+    assert!(text.contains("[the search hit]\nassistant"), "{text}");
+    assert!(
+        text.contains("parser cache: parser cache invalidation"),
+        "{text}"
+    );
+    assert!(text.contains("[9 later messages omitted"), "{text}");
+    for args in [
+        vec!["show", OLD, "--at", "0", "--tail", "1"],
+        vec!["show", OLD, "--context", "1"],
+        vec!["search", "parser", "--when", "someday"],
+    ] {
+        let out = f.command().args(&args).output().unwrap();
+        assert!(!out.status.success(), "{args:?}");
+    }
+    let json = f
+        .command()
+        .args(["search", "parser cache", "--when", "recent", "--json"])
+        .output()
+        .unwrap();
+    let json: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(json["entries"][1]["key"]["session_id"], NEW);
 }

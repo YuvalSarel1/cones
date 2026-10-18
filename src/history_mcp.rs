@@ -208,9 +208,11 @@ pub fn tools() -> Value {
     search.extend(json!({
         "query": {"type": "string", "minLength": 1, "maxLength": 8192},
         "mode": {"type": "string", "enum": ["words", "meaning"], "default": "words",
-                 "description": "Words never loads a model. Meaning uses local MiniLM, downloaded on first use."},
+                 "description": "Words matches passages holding at least two of the query's words, or its one word; use it for identifiers, paths and commit ids. Meaning compares the whole query to passages with local MiniLM, downloaded on first use; use it for questions and paraphrase."},
         "dir": {"type": "string", "description": "Project directory, including descendants. Relative paths use the server's working directory."},
-        "since": {"type": "string", "format": "date-time", "description": "Earliest native last-activity timestamp, RFC 3339."},
+        "since": {"type": "string", "format": "date-time", "description": "Earliest native last-activity timestamp, RFC 3339. A filter."},
+        "when": {"type": "string", "enum": ["any", "recent", "month", "old"], "default": "any",
+                 "description": "When the conversation is remembered happening: recent is the last two weeks, month two weeks to two months ago, old earlier. A hint, not a filter: a hit last active in the window ranks as if a third as deep, so a strong match outside it can still come first."},
         "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
         "offset": {"type": "integer", "minimum": 0, "default": 0},
         "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 60, "default": 30,
@@ -220,12 +222,14 @@ pub fn tools() -> Value {
     show.extend(json!({
         "id": {"type": "string", "minLength": 1, "description": "Native session id or unambiguous prefix of at least four characters."},
         "tail": {"type": "integer", "minimum": 1, "default": 40, "description": "Most recent messages. Mutually exclusive with all."},
-        "all": {"type": "boolean", "default": false, "description": "Read the entire conversation. Prefer the default tail first."}
+        "all": {"type": "boolean", "default": false, "description": "Read the entire conversation. Prefer the default tail first."},
+        "at": {"type": "integer", "minimum": 0, "description": "A search hit's anchor.offset: read the messages around the hit instead of the tail. Excludes tail and all."},
+        "context": {"type": "integer", "minimum": 0, "default": 5, "description": "Messages on each side of at."}
     }).as_object().unwrap().clone());
     json!([
         {
             "name": "cones_search",
-            "description": "Search Claude, Codex, pi and OpenCode history, including archived conversations. Returns identities, excerpts, ranks and coverage. Only cones' local search cache is written; transcripts stay unchanged. No harness client or remote model is called.",
+            "description": "Search Claude, Codex, pi and OpenCode history, including archived conversations. Returns identities, excerpts, ranks and coverage. hit.score only orders results; it is not a confidence. Read a hit with cones_show and its anchor.offset as at. Only cones' local search cache is written; transcripts stay unchanged. No harness client or remote model is called.",
             "inputSchema": {"type": "object", "properties": search, "required": ["query"], "additionalProperties": false},
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true}
         },

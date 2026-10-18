@@ -27,8 +27,9 @@ const BATCH: usize = 256;
 /// so a wider pass buys little and costs memory.
 const FORWARD: usize = 32;
 pub(crate) const DIMENSIONS: usize = 384;
-/// MiniLM puts unrelated English prose around 0.3, so anything lower is noise, not a result.
-const SEMANTIC_FLOOR: f32 = 0.5;
+/// MiniLM puts unrelated English prose around 0.3. On labeled history queries 0.5 dropped
+/// right answers and 0.35 let in wrong ones; 0.4 returned nothing for absent topics.
+const SEMANTIC_FLOOR: f32 = 0.4;
 const MODEL_REVISION: &str = "1110a243fdf4706b3f48f1d95db1a4f5529b4d41";
 const MODEL_FILES: &[(&str, &str)] = &[
     (
@@ -272,15 +273,29 @@ impl Index {
             }
         }
         let terms = terms(query);
-        // Quote each token. User input is always data, never an FTS expression.
-        let expression = terms
-            .iter()
-            .map(|s| format!("\"{}\"*", s.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        if mode == Mode::Words && !expression.is_empty() {
+        if mode == Mode::Words && !terms.is_empty() {
+            // Any term may match, but a passage needs two of them, so one common word in a
+            // long query cannot pull in the whole history. BM25 still ranks fuller matches first.
+            let mut distinct: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+            distinct.sort();
+            distinct.dedup();
+            let need = distinct.len().min(2);
+            let mut matching = Vec::new();
+            for term in &distinct {
+                let rows: HashSet<i64> = self
+                    .db
+                    .prepare("SELECT rowid FROM passages WHERE passages MATCH ?1")?
+                    .query_map([quote(term)], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                matching.push(rows);
+            }
+            let expression = distinct
+                .iter()
+                .map(|t| quote(t))
+                .collect::<Vec<_>>()
+                .join(" OR ");
             let mut statement = self.db.prepare(
-                "SELECT session, text, anchor, rank FROM passages
+                "SELECT session, text, anchor, rowid FROM passages
                  WHERE passages MATCH ?1 ORDER BY rank, rowid",
             )?;
             let mut rows = statement.query([expression])?;
@@ -288,6 +303,10 @@ impl Index {
             while let Some(row) = rows.next()? {
                 let id: String = row.get(0)?;
                 if !eligible.contains(&id) {
+                    continue;
+                }
+                let rowid: i64 = row.get(3)?;
+                if matching.iter().filter(|m| m.contains(&rowid)).count() < need {
                     continue;
                 }
                 let text: String = row.get(1)?;
@@ -312,9 +331,9 @@ impl Index {
                     .or_insert(hit);
             }
         }
-        // The embedded query drops filler as well: "something about X" otherwise sits halfway
-        // between X and every other conversational sentence in the history.
-        let cleaned = terms.join(" ");
+        // The model reads the query as typed. Dropping filler changes its meaning: "semantic
+        // search floor" embedded as "semantic floor" missed every right answer.
+        let cleaned = query.trim().to_owned();
         if mode == Mode::Meaning
             && let Some((_, vector)) = self.query_vector.as_ref().filter(|(q, _)| *q == cleaned)
         {
@@ -557,12 +576,7 @@ impl Corpus {
         if terms.is_empty() {
             return Ok(found);
         }
-        // Quote each token. User input is always data, never an FTS expression.
-        let expression = terms
-            .iter()
-            .map(|s| format!("\"{}\"*", s.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let expression = terms.iter().map(|t| quote(t)).collect::<Vec<_>>().join(" ");
         let db = Connection::open_in_memory()?;
         db.execute_batch(
             "CREATE VIRTUAL TABLE lines USING fts5(text, tokenize = 'porter unicode61');",
@@ -606,7 +620,7 @@ impl Topics {
 
     pub(crate) fn search(&mut self, corpus: &Corpus, query: &str) -> Meaning {
         let mut meaning = Meaning::default();
-        let cleaned = terms(query).join(" ");
+        let cleaned = query.trim().to_owned();
         if cleaned.is_empty() {
             return meaning;
         }
@@ -814,6 +828,11 @@ const FILLER: &[&str] = &[
     "you",
     "your",
 ];
+
+/// Quote a term as a prefix. User input is always data, never an FTS expression.
+fn quote(term: &str) -> String {
+    format!("\"{}\"*", term.replace('"', "\"\""))
+}
 
 /// Keep the filler when a query is nothing else, so a search for "how" still searches.
 pub(crate) fn terms(query: &str) -> Vec<&str> {
@@ -1279,14 +1298,12 @@ mod tests {
                 .snippet
                 .contains("copilot studio connector")
         );
-        // Dropping filler must not loosen the rest into an any-of match.
-        assert!(
-            index
-                .search(&entries, "copilot studio release", Mode::Words, false)
-                .unwrap()
-                .hits
-                .is_empty()
-        );
+        // Two of three words is a match; the one release note sharing a word is not.
+        let partial = index
+            .search(&entries, "copilot studio release", Mode::Words, false)
+            .unwrap();
+        assert_eq!(partial.hits.len(), 1);
+        assert!(partial.hits.contains_key(&identity(&entries[0])));
         assert!(
             index
                 .search(&entries, "copilot zebra", Mode::Words, false)

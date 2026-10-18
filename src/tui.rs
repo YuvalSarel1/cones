@@ -10981,6 +10981,7 @@ impl App {
             hydrate,
             hydrate_keys: hydrate.then_some(hydrate_keys),
             include_archived: true,
+            prefer: None,
         };
         let operation = self.log.as_ref().map(|_| DiagnosticOperation::new());
         match self.history.reader.as_mut().unwrap().request(query) {
@@ -19471,7 +19472,7 @@ states:
         app.history_tick();
         assert!(app.history.fetch.is_some());
         app.key(KeyCode::Char('f'), KeyModifiers::CONTROL).unwrap();
-        for c in "old session 005".chars() {
+        for c in "session 005".chars() {
             app.key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap();

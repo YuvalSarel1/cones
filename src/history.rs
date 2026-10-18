@@ -134,6 +134,8 @@ pub struct Query {
     pub hydrate: bool,
     /// When set, hydrate only these entries within the requested page.
     pub hydrate_keys: Option<HashSet<Key>>,
+    /// Search hits last active in this window move up the ranking. Nothing is removed.
+    pub prefer: Option<std::ops::Range<DateTime<Utc>>>,
 }
 
 impl Default for Query {
@@ -149,6 +151,7 @@ impl Default for Query {
             index: false,
             hydrate: false,
             hydrate_keys: None,
+            prefer: None,
         }
     }
 }
@@ -502,6 +505,22 @@ impl Cache {
                     .total_cmp(&a.hit.as_ref().unwrap().score)
                     .then_with(|| order(a.last_activity, &a.key, b.last_activity, &b.key))
             });
+            if let Some(window) = &query.prefer {
+                ensure!(query.after.is_none(), "a time hint pages by offset");
+                // A nudge, not a tier: a hit in the window ranks as if a third as deep, so a
+                // strong older match still beats weak ones from a misremembered window.
+                let depth = |i: usize, e: &Entry| {
+                    let inside = e.last_activity.is_some_and(|a| window.contains(&a));
+                    if inside { i as f32 / 3.0 } else { i as f32 }
+                };
+                let mut ranked: Vec<_> = matched
+                    .drain(..)
+                    .enumerate()
+                    .map(|(i, e)| (depth(i, &e), e))
+                    .collect();
+                ranked.sort_by(|a, b| a.0.total_cmp(&b.0));
+                matched = ranked.into_iter().map(|(_, e)| e).collect();
+            }
         } else if query.index && !query.hydrate {
             // Nothing to match, so the page is the whole list; the work is the index itself.
             if self.search.is_none() {

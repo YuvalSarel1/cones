@@ -311,6 +311,12 @@ enum Action {
         /// The whole conversation the harness recorded, however long it is.
         #[arg(long)]
         all: bool,
+        /// A search hit's `anchor.offset`: the messages around it instead of the tail.
+        #[arg(long, conflicts_with_all = ["tail", "all"])]
+        at: Option<u64>,
+        /// Messages on each side of `--at`, default 5.
+        #[arg(long, requires = "at")]
+        context: Option<usize>,
         /// Machine-readable identity, messages and omission counts.
         #[arg(long)]
         json: bool,
@@ -337,6 +343,9 @@ enum Action {
         /// Earliest recorded last activity, as an RFC 3339 timestamp.
         #[arg(long)]
         since: Option<chrono::DateTime<chrono::Utc>>,
+        /// When you remember it happening. Hits in that window rank first; the rest follow.
+        #[arg(long, value_enum, default_value = "any")]
+        when: cones::history_api::When,
         #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long, default_value_t = 0)]
@@ -1214,6 +1223,8 @@ fn execute(cli: Cli) -> Result<i32> {
             id,
             tail,
             all,
+            at,
+            context,
             json,
             harness,
             home,
@@ -1236,6 +1247,7 @@ fn execute(cli: Cli) -> Result<i32> {
                         )? {
                             Some(cones::show::Live::Conversation(located)) => located,
                             Some(cones::show::Live::Screen(screen)) => {
+                                ensure!(at.is_none(), "{id} has a screen, not a conversation");
                                 if json {
                                     println!("{}", screen.json(tail, all));
                                 } else {
@@ -1247,8 +1259,18 @@ fn execute(cli: Cli) -> Result<i32> {
                         }
                     }
                 };
-            let tail = (!all).then(|| tail.unwrap_or(cones::show::DEFAULT_TAIL));
-            let export = cones::transcript::export(&located.source, &located.key.harness, tail)?;
+            let export = match at {
+                Some(at) => cones::transcript::export_around(
+                    &located.source,
+                    &located.key.harness,
+                    at,
+                    context.unwrap_or(cones::show::DEFAULT_CONTEXT),
+                )?,
+                None => {
+                    let tail = (!all).then(|| tail.unwrap_or(cones::show::DEFAULT_TAIL));
+                    cones::transcript::export(&located.source, &located.key.harness, tail)?
+                }
+            };
             if json {
                 println!("{}", cones::show::json(&located, &export));
             } else {
@@ -1270,6 +1292,7 @@ fn execute(cli: Cli) -> Result<i32> {
             harness,
             home,
             since,
+            when,
             limit,
             offset,
             wait_seconds,
@@ -1283,6 +1306,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 harness,
                 home,
                 since,
+                when,
                 limit,
                 offset,
                 wait_seconds,

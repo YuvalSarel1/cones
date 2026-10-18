@@ -262,11 +262,13 @@ Ctrl+F field, Enter keeps the filter. Escape clears the query, then hides histor
 
 `shift+tab` switches search modes:
 
-- **Words:** every query word must appear in one passage. Common English filler is dropped,
-  except when the whole query is filler. Titles and other metadata are also searched.
-- **Meaning:** local MiniLM matches passages and marks results `≈`. The first use downloads
-  about 90 MB. Conversation text and queries stay on the machine. English works best;
-  similarity below 0.5 is discarded. Model failures are reported; Ctrl+R retries.
+- **Words:** a passage must contain at least two of the query's words, or its only word, and
+  passages holding more of them rank higher. Common English filler is dropped, except when
+  the whole query is filler. Titles and other metadata are also searched.
+- **Meaning:** local MiniLM compares the whole query, as typed, with passages and marks
+  results `≈`. The first use downloads about 90 MB. Conversation text and queries stay on
+  the machine. English works best; similarity below 0.4 is discarded. Model failures are
+  reported; Ctrl+R retries.
 
 Ctrl+R refreshes history; reopening it also refreshes. During meaning search it can fill the
 embedding index for every conversation and reports progress; a second Ctrl+R cancels that

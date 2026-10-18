@@ -19,6 +19,9 @@ use std::{
 /// enough that reading four workers is not a context budget decision.
 pub const DEFAULT_TAIL: usize = 40;
 
+/// Messages on each side of a search hit that `--at` returns.
+pub const DEFAULT_CONTEXT: usize = 5;
+
 /// The shortest prefix allowed to stand in for a session id. Shorter matches too much.
 pub(crate) const MIN_PREFIX: usize = 4;
 
@@ -131,6 +134,8 @@ pub fn json(located: &Located, export: &transcript::Export) -> serde_json::Value
         "session": located.key,
         "cwd": located.cwd,
         "omitted": export.omitted,
+        "omitted_after": export.omitted_after,
+        "matched": export.matched,
         "incomplete": export.incomplete,
         "messages": export.messages.iter().map(|m| serde_json::json!({
             "role": match m.role {
@@ -160,7 +165,10 @@ pub fn render(export: &transcript::Export) -> String {
             if export.omitted == 1 { "" } else { "s" }
         );
     }
-    for message in &export.messages {
+    for (i, message) in export.messages.iter().enumerate() {
+        if export.matched == Some(i) {
+            out.push_str("[the search hit]\n");
+        }
         let role = match message.role {
             transcript::Role::User => "user",
             transcript::Role::Assistant => "assistant",
@@ -185,6 +193,14 @@ pub fn render(export: &transcript::Export) -> String {
             };
         }
         out.push('\n');
+    }
+    if export.omitted_after > 0 {
+        let _ = writeln!(
+            out,
+            "[{} later message{} omitted; --all exports the whole conversation]",
+            export.omitted_after,
+            if export.omitted_after == 1 { "" } else { "s" }
+        );
     }
     out
 }

@@ -605,6 +605,10 @@ pub struct Export {
     pub omitted: usize,
     /// The file ended mid-record, so a writer is still appending and this read is behind.
     pub incomplete: bool,
+    /// Messages after the window `export_around` returned.
+    pub omitted_after: usize,
+    /// The message holding the requested hit, as an index into `messages`.
+    pub matched: Option<usize>,
 }
 
 /// Export a conversation. `tail` keeps that many of the most recent messages; `None` keeps
@@ -625,6 +629,7 @@ pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Exp
             let mut reader = BufReader::new(output::open_read(path)?);
             let mut seen = HashSet::new();
             let mut bytes = Vec::new();
+            let mut offset = 0;
             loop {
                 bytes.clear();
                 let count = reader
@@ -633,6 +638,8 @@ pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Exp
                 if count == 0 {
                     break;
                 }
+                let start = offset;
+                offset += count as u64;
                 // A record without its newline is still being written; it is not text yet.
                 if !bytes.ends_with(b"\n") {
                     out.incomplete = true;
@@ -646,7 +653,7 @@ pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Exp
                 {
                     continue;
                 }
-                keep(&mut kept, harness, &v, tail, &mut out.omitted);
+                keep(&mut kept, harness, &v, start, tail, &mut out.omitted);
             }
         }
         Source::Opencode {
@@ -658,8 +665,9 @@ pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Exp
                 let events =
                     crate::opencode::conversation_page(database, session_id, at, EXPORT_PAGE)?;
                 let count = events.len();
-                for v in &events {
-                    keep(&mut kept, harness, v, tail, &mut out.omitted);
+                for (i, v) in events.iter().enumerate() {
+                    let ordinal = (at + i) as u64;
+                    keep(&mut kept, harness, v, ordinal, tail, &mut out.omitted);
                 }
                 at += count;
                 if count < EXPORT_PAGE {
@@ -674,11 +682,32 @@ pub fn export(source: &Source, harness: &str, tail: Option<usize>) -> Result<Exp
     Ok(out)
 }
 
+/// Export the messages around a search hit: the one whose record holds `at`, a hit's
+/// `anchor.offset`, and `context` messages on each side.
+pub fn export_around(source: &Source, harness: &str, at: u64, context: usize) -> Result<Export> {
+    let mut out = export(source, harness, None)?;
+    // A JSONL anchor is a record's first byte and an OpenCode one its ordinal. A merged
+    // assistant turn keeps the offset of its first record, so the hit is the last at or before.
+    let hit = out
+        .messages
+        .iter()
+        .rposition(|m| m.offset <= at)
+        .context("no message at that offset; search again")?;
+    let from = hit.saturating_sub(context);
+    let to = (hit + context + 1).min(out.messages.len());
+    out.omitted = from;
+    out.omitted_after = out.messages.len() - to;
+    out.messages = out.messages.drain(from..to).collect();
+    out.matched = Some(hit - from);
+    Ok(out)
+}
+
 /// Add one native record's message to the export, dropping the oldest once the tail is full.
 fn keep(
     kept: &mut VecDeque<Message>,
     harness: &str,
     v: &Value,
+    offset: u64,
     tail: Option<usize>,
     omitted: &mut usize,
 ) {
@@ -686,6 +715,7 @@ fn keep(
         return;
     };
     message.text = plain(&message.text);
+    message.offset = offset;
     if message.text.trim().is_empty() && message.tools.is_empty() {
         return;
     }

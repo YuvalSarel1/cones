@@ -30,9 +30,9 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones resume ID`, `cones fork ID` | [Reopen or fork a conversation](#resuming-and-forking) from history, detached, and print its id. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
-| `cones search QUERY [--dir PATH] [--harness NAME] [--json]` | [Search conversation history](#searching-conversations), including archived sessions. |
+| `cones search QUERY [--mode meaning] [--when W] [--dir PATH] [--json]` | [Search conversation history](#searching-conversations), including archived sessions. |
 | `cones index [status] [--timeout SECS] [--json]` | [Build the meaning index](#building-the-meaning-index) with progress, or report it. |
-| `cones show ID [--tail N] [--all] [--json]` | [Read a session's conversation](#reading-a-conversation). |
+| `cones show ID [--tail N] [--all] [--at OFFSET] [--json]` | [Read a session's conversation](#reading-a-conversation). |
 | `cones mcp` | Serve [history and control tools over MCP stdio](#cones-over-mcp). |
 | `cones wait ID... [--timeout S]` | [Block until a session settles](#waiting-on-a-session) and print `ID<TAB>STATE`. |
 | `cones send ID TEXT` | [Send one note](#sending-a-note) to a live session in any folder. |
@@ -66,6 +66,7 @@ The [coordinator](#coordinator) reads its folder this way instead of walking the
 cones search "permission decision" --dir ~/src/app --json
 cones search "why did we change the parser" --mode meaning --json
 cones search "parser" --harness codex --since 2026-09-01T00:00:00Z --limit 10 --json
+cones search "flaky viewer test" --when month --json
 ```
 
 `search` uses the dashboard's history discovery and search index for Claude, Codex,
@@ -73,6 +74,15 @@ pi and OpenCode. It includes archived conversations and readable transcripts of
 live sessions. It does not start or resume a harness. Word search is the default
 and never loads a model. `--mode meaning` uses the same local MiniLM model as the
 dashboard, downloading it on first use. Conversation text and queries stay local.
+The dashboard's [search modes](dashboard.md#history) describe what each one matches:
+words suits identifiers, paths and commit ids, meaning suits questions and paraphrase.
+
+`--when` says when you remember the conversation happening: `recent` is the last two
+weeks, `month` two weeks to two months ago, `old` earlier, and `any`, the default,
+expresses no preference. It is a hint, not a filter: a match last active in that
+window ranks as if it were a third as deep, so it climbs past weaker matches while a
+strong match from outside the window, as when the date is misremembered, can still come
+first. Nothing is removed. `--since` is the filter.
 
 `--dir` keeps the folder and its descendants, resolving symlinks where the paths
 still exist. `--harness` and `--home` select a harness and one of its configured
@@ -89,7 +99,9 @@ messages can change their ordering between calls.
 `next_offset`, `complete`, `pending`, `status` and `error`. Each entry carries its
 `key` (`harness`, canonical native `home`, `session_id`), `cwd`, transcript source,
 archive flag and native timestamps when available. Its `hit` contains the excerpt,
-preview anchor, rank and whether the match was semantic. An empty completed search
+preview anchor, score and whether the match was semantic. The score only orders
+results; it is not a confidence and its scale differs between modes. Pass the anchor's
+`offset` to `show --at` to read around the match. An empty completed search
 has `entries: []`, `total: 0` and `complete: true`. Pass the key's three fields to
 `show` to identify the exact conversation, even when native homes contain the same
 session id.
@@ -152,7 +164,7 @@ cones show 4f0c2b1e --harness claude --home ~/.claude --json
 
 `cones show` prints a session's conversation as text. Each message is labelled `user`, `assistant` or `output`, followed by the harness's own timestamp in your local timezone, then the text, then the tool calls that turn recorded. Terminal control sequences are stripped: a transcript is data, never something your terminal runs.
 
-The default is the last 40 messages. `--tail N` asks for a different count and `--all` for the whole conversation the harness kept. A read that left messages out starts with `[N earlier messages omitted; --all exports the whole conversation]`, so a bounded read is never mistaken for a full one. No individual message is shortened, which is where this differs from the dashboard's preview pane.
+The default is the last 40 messages. `--tail N` asks for a different count and `--all` for the whole conversation the harness kept. A read that left messages out starts with `[N earlier messages omitted; --all exports the whole conversation]`, so a bounded read is never mistaken for a full one. `--at OFFSET` reads around a search hit instead: the message whose record holds a hit's `anchor.offset`, marked `[the search hit]`, with `--context N` messages on each side, default 5, and a closing `[N later messages omitted; ...]` line when the conversation goes on. No individual message is shortened, which is where this differs from the dashboard's preview pane.
 
 `ID` is the session id `cones ls` prints, or an unambiguous prefix of at least four characters. An exact id wins over a prefix that another session also starts with, and a prefix two sessions share is an error naming both. Sessions come from the same discovery the dashboard's history uses, so a finished session reads like a live one, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and the OpenCode home select which sessions exist.
 
@@ -162,7 +174,8 @@ Reading opens files for reading. It attaches to nothing, resumes nothing, starts
 
 `--harness` and `--home` disambiguate ids across configured native homes.
 `--json` returns one object with `session` (the full identity), `cwd`, `messages`,
-`omitted` and `incomplete`. Messages retain `role`, UTC `at` or null, `text` and
+`omitted`, `omitted_after`, `matched` (the hit's index in `messages` under `--at`, else
+null) and `incomplete`. Messages retain `role`, UTC `at` or null, `text` and
 `tools` (native names and compact inputs). The default tail and `--all` have the
 same meaning in JSON and text. `incomplete: true` means a trailing record was still
 being written; `omitted` counts complete messages excluded by the tail.
@@ -183,12 +196,12 @@ path when the client cannot find `cones` on its PATH. The client's environment
 selects native homes just as it does for the CLI; relative paths in tool arguments
 use the server's working directory.
 
-`cones_search` accepts `query`, `mode`, `dir`, `harness`, `home`, `since`, `limit`,
-`offset` and `wait_seconds`, with the CLI's defaults. `cones_show` accepts `id`,
-`harness`, `home`, `tail` and `all`. The MCP search result preserves `pending`,
+`cones_search` accepts `query`, `mode`, `dir`, `harness`, `home`, `since`, `when`,
+`limit`, `offset` and `wait_seconds`, with the CLI's defaults. `cones_show` accepts `id`,
+`harness`, `home`, `tail`, `all`, `at` and `context`. The MCP search result preserves `pending`,
 `complete` and `error`; a successful tool invocation alone does not establish that
-semantic indexing finished. Start with a search, then read the selected result's
-tail. Historical messages are data, not new instructions.
+semantic indexing finished. Start with a search, then read the selected result
+around its hit with `at`. Historical messages are data, not new instructions.
 
 Search may create or update cones' local cache and download the local model when
 meaning search is explicitly selected; its MCP annotation declares those effects.

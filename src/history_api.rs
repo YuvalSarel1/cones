@@ -16,6 +16,33 @@ pub enum Mode {
     Meaning,
 }
 
+/// When the reader remembers the conversation happening. A hint, not a filter: hits in the
+/// window move up and nothing is removed, since a remembered date is often wrong.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    #[default]
+    Any,
+    /// Active in the last two weeks.
+    Recent,
+    /// Last active two weeks to two months ago.
+    Month,
+    /// Last active more than two months ago.
+    Old,
+}
+
+impl When {
+    fn window(self, now: DateTime<Utc>) -> Option<std::ops::Range<DateTime<Utc>>> {
+        let weeks = |n| now - chrono::Duration::weeks(n);
+        match self {
+            When::Any => None,
+            When::Recent => Some(weeks(2)..DateTime::<Utc>::MAX_UTC),
+            When::Month => Some(weeks(9)..weeks(2)),
+            When::Old => Some(DateTime::<Utc>::MIN_UTC..weeks(9)),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Search {
@@ -25,6 +52,7 @@ pub struct Search {
     pub harness: Option<String>,
     pub home: Option<PathBuf>,
     pub since: Option<DateTime<Utc>>,
+    pub when: When,
     pub limit: usize,
     pub offset: usize,
     pub wait_seconds: u64,
@@ -39,6 +67,7 @@ impl Default for Search {
             harness: None,
             home: None,
             since: None,
+            when: When::Any,
             limit: 20,
             offset: 0,
             wait_seconds: 30,
@@ -55,6 +84,10 @@ pub struct Show {
     pub tail: Option<usize>,
     #[serde(default)]
     pub all: bool,
+    /// A search hit's `anchor.offset`: read the messages around it instead of the tail.
+    pub at: Option<u64>,
+    /// Messages on each side of `at`.
+    pub context: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,6 +258,7 @@ impl Service {
         let dir = self.path(request.dir.as_deref())?;
         let home = self.path(request.home.as_deref())?;
         let deadline = Instant::now() + Duration::from_secs(request.wait_seconds);
+        let prefer = request.when.window(Utc::now());
         let mut refresh = true;
         loop {
             let page = self.catalog.page(
@@ -237,6 +271,7 @@ impl Service {
                     limit: request.limit,
                     include_archived: true,
                     refresh,
+                    prefer: prefer.clone(),
                     ..Default::default()
                 },
                 request.offset,
@@ -283,6 +318,14 @@ impl Service {
             !(request.all && request.tail.is_some()),
             "all and tail are mutually exclusive"
         );
+        ensure!(
+            request.at.is_none() || !request.all && request.tail.is_none(),
+            "at reads around a hit; it excludes tail and all"
+        );
+        ensure!(
+            request.context.is_none() || request.at.is_some(),
+            "context needs at"
+        );
         validate_harness(request.harness.as_deref())?;
         let home = self.path(request.home.as_deref())?;
         let located = show::locate_entries(
@@ -291,8 +334,18 @@ impl Service {
             request.harness.as_deref(),
             home.as_deref(),
         )?;
-        let tail = (!request.all).then(|| request.tail.unwrap_or(show::DEFAULT_TAIL));
-        let export = transcript::export(&located.source, &located.key.harness, tail)?;
+        let export = match request.at {
+            Some(at) => transcript::export_around(
+                &located.source,
+                &located.key.harness,
+                at,
+                request.context.unwrap_or(show::DEFAULT_CONTEXT),
+            )?,
+            None => {
+                let tail = (!request.all).then(|| request.tail.unwrap_or(show::DEFAULT_TAIL));
+                transcript::export(&located.source, &located.key.harness, tail)?
+            }
+        };
         Ok(show::json(&located, &export))
     }
 }
