@@ -248,6 +248,13 @@ impl Dashboard {
             .collect()
     }
 
+    /// What the dashboard wrote after leaving the alternate screen, for the shell's screen.
+    pub fn handed_back(&self) -> Vec<u8> {
+        let output = self.output.lock().unwrap();
+        let at = output.windows(8).rposition(|w| w == b"\x1b[?1049l");
+        at.map_or_else(Vec::new, |at| output[at + 8..].to_vec())
+    }
+
     /// The first cell of the first `text` on the screen.
     pub fn cell_of(&self, text: &str) -> Option<vt100::Cell> {
         let parser = self.screen.lock().unwrap();
@@ -455,4 +462,11 @@ fn smoke_the_dashboard_draws_the_open_folder() {
     assert!(screen.contains("no sessions here"), "{screen}");
     assert!(screen.contains("terminal (zsh)"), "{screen}");
     d.quit();
+    // Only escape sequences reach the shell's screen: a printed byte moves its prompt off column 0.
+    let handed = d.handed_back();
+    assert!(handed.starts_with(b"\x1b"), "{handed:?}");
+    assert!(
+        !handed.contains(&0x18),
+        "Ghostty prints CAN as a cell: {handed:?}"
+    );
 }

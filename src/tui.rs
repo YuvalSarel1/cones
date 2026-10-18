@@ -190,11 +190,13 @@ fn quit_on_signals() -> Result<Arc<AtomicBool>> {
     Ok(signalled)
 }
 
+/// A bare ST closes any string sequence left open. No CAN before it: Ghostty 1.3 prints CAN as a
+/// cell, which leaves the shell's prompt one column in and zsh marks the line with `%`.
 fn reset_terminal_protocols() {
     use std::io::Write;
     let mut out = std::io::stdout();
     let _ = out.write_all(
-        b"\x18\x1b\\\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
+        b"\x1b\\\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
     );
     let _ = out.flush();
 }
