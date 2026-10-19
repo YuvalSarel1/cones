@@ -897,19 +897,20 @@ fn daemon_clients(homes: &[PathBuf], procs: &[Process]) -> BTreeSet<u32> {
     if daemons.is_empty() {
         return BTreeSet::new();
     }
-    let pids: Vec<_> = procs
-        .iter()
-        .filter(|p| p.thread.is_none())
-        .map(|p| p.pid)
-        .collect();
-    let writers: BTreeSet<_> = homes
-        .iter()
-        .flat_map(|home| locks(home, &pids).into_values())
-        .collect();
-    let clients = socket_clients(
+    // Sockets first: only a connected client is worth reading writer locks for.
+    let mut clients = socket_clients(
         &daemons,
-        pids.into_iter().filter(|pid| !writers.contains(pid)),
+        procs.iter().filter(|p| p.thread.is_none()).map(|p| p.pid),
     );
+    if clients.is_empty() {
+        return clients;
+    }
+    let pids: Vec<_> = clients.iter().copied().collect();
+    for home in homes {
+        for writer in locks(home, &pids).into_values() {
+            clients.remove(&writer);
+        }
+    }
     if clients.is_empty() {
         return clients;
     }
@@ -917,7 +918,8 @@ fn daemon_clients(homes: &[PathBuf], procs: &[Process]) -> BTreeSet<u32> {
     // Before the first turn that thread has no rollout and so no row: the client keeps its own
     // until a thread in its folder, started no earlier than it, can stand in for it.
     // ponytail: an idle client that started before another client's thread in the same folder
-    // is hidden with it; showing lock-held threads before their rollout would close that gap.
+    // is hidden with it. Pairing each thread with one client would close that gap; a thread's
+    // lock alone cannot, since it says nothing of the folder until the rollout exists.
     let threads: Vec<Meta> = homes.iter().flat_map(|home| daemon_threads(home)).collect();
     clients
         .into_iter()
