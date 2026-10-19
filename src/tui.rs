@@ -505,6 +505,7 @@ impl Data {
         };
         let config_started = Instant::now();
         crate::harness::spec::configure_homes(&config::homes(jobs_path));
+        fleet::configure_titles(config::original_titles(jobs_path));
         let jobs = match config::read_jobs(jobs_path) {
             Ok(jobs) => jobs,
             Err(error) => {
@@ -4842,7 +4843,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 73] = [
+const FIELDS: [Field; 74] = [
     Field {
         group: "cones",
         sub: "",
@@ -5020,6 +5021,16 @@ const FIELDS: [Field; 73] = [
         long: "fleet: busiest bucket on screen. row: each row's busiest bucket. log: fleet on a log scale. A number in jobs.yaml sets the count for a full bar.",
         builtin: "fleet",
         input: Answer::Pick(&["-", "fleet", "row", "log"]),
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "original_titles",
+        short: "original Claude titles",
+        hint: "Keep a Claude job's first title over its job name.",
+        long: "Claude titles a session from its first message, then names a background job a second time, after its first status check, and writes that shorter lowercase label over the title. true keeps showing the title. false shows the job name, as `claude agents` does. A name given with /rename or a cones rename shows either way.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
     },
     Field {
         group: "harnesses",
@@ -5987,7 +5998,9 @@ impl ConfigForm {
                 "kimi_in_picker" => flag(d.kimi_in_picker),
                 "kimi_skip_permissions" => flag(d.kimi_skip_permissions),
 
-                "check" | "folders" | "highlight" | "worktrees" => String::new(),
+                "check" | "folders" | "highlight" | "worktrees" | "original_titles" => {
+                    String::new()
+                }
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -7544,7 +7557,13 @@ fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm
         .join(", ");
     form.values[field_at("highlight")] = config::file_highlight(jobs_path).unwrap_or_default();
     form.values[field_at("worktrees")] = worktrees_value(jobs_path);
+    form.values[field_at("original_titles")] = original_titles_value(jobs_path);
     form
+}
+
+/// The original-titles toggle as the file states it, empty when it does not.
+fn original_titles_value(jobs_path: &Path) -> String {
+    config::file_original_titles(jobs_path).map_or_else(String::new, |on| on.to_string())
 }
 
 /// The worktree layout as the file states it, empty when it does not.
@@ -12722,6 +12741,22 @@ impl App {
                             return;
                         }
                         self.data.nest = config::nest_worktrees(&self.jobs_path);
+                    }
+                }
+                // And the title choice, which fleet discovery reads rather than the list.
+                if let Mode::Config(form) = &self.mode {
+                    let typed = form.values[field_at("original_titles")].clone();
+                    if typed != original_titles_value(&self.jobs_path) {
+                        let value = (!typed.is_empty()).then_some(typed.as_str());
+                        if let Err(e) =
+                            config::write_setting(&self.jobs_path, "original_titles", value)
+                        {
+                            if let Mode::Config(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                            return;
+                        }
+                        fleet::configure_titles(config::original_titles(&self.jobs_path));
                     }
                 }
                 // The pin list is written on its own, the way the column sets are: it is the

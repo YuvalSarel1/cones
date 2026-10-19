@@ -7,7 +7,8 @@
 //! launch to its native id), a refused launch that keeps the instruction, an instruction
 //! shorter than `start.min_prompt` that starts nothing until it is long enough, pre-existing
 //! sessions in every state grouped by folder and by state, arrows, the filter, pins and
-//! highlights, `ctrl+x` twice removing a session through `claude rm`, and a wrapped draft
+//! highlights, a job's generated title shown over the name Claude's job namer writes after
+//! it unless `original_titles` is off, `ctrl+x` twice removing a session through `claude rm`, and a wrapped draft
 //! whose cursor follows a click and the arrows, which reach the list only from its edge rows,
 //! and a trackpad's flood of wheel reports reaching a focused pane whole and in order within a
 //! few frames, while idle viewers cost no wait.
@@ -662,6 +663,80 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
 }
 
 /// The 2026-10-14 report: one Esc on a session row, with nothing to clear, closed the dashboard.
+#[test]
+fn a_background_job_keeps_its_generated_title_over_the_job_name_unless_turned_off() {
+    let mut d = Dashboard::new("claude-original-titles", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    let title = "Main page runs vs pinned folders order";
+    let mut job = seed(&d, &project, 1, title, "idle", Some("idle"));
+    // Claude's job namer writes its label as an `ai-title` and an `agent-name`, and into
+    // the job record, after the title it generated from the first message.
+    let key: String = project
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let transcript = d
+        .home()
+        .join(".claude/projects")
+        .join(key)
+        .join(format!("{}.jsonl", job.id));
+    let named = [
+        json!({"type": "ai-title", "sessionId": job.id, "aiTitle": "main-page-folder-order"}),
+        json!({"type": "agent-name", "sessionId": job.id, "agentName": "main-page-folder-order"}),
+    ];
+    let mut text = fs::read_to_string(&transcript).unwrap();
+    text.extend(named.iter().map(|l| format!("{l}\n")));
+    fs::write(&transcript, &text).unwrap();
+    let record = d
+        .home()
+        .join(".claude/jobs")
+        .join(&job.short)
+        .join("state.json");
+    fs::write(
+        &record,
+        json!({"state": "idle", "tempo": "idle", "sessionId": job.id,
+               "name": "main-page-folder-order", "nameSource": "auto"})
+        .to_string(),
+    )
+    .unwrap();
+
+    d.start();
+    let screen = d.wait_text(title);
+    d.capture("original-title");
+    assert!(!screen.contains("main-page-folder-order"), "{screen}");
+    d.quit();
+
+    let jobs = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{jobs}original_titles: false\n"),
+    )
+    .unwrap();
+    d.start();
+    let screen = d.wait_text("main-page-folder-order");
+    d.capture("job-name");
+    assert!(!screen.contains(title), "{screen}");
+    d.quit();
+
+    // A rename outranks both, whichever the setting picks.
+    let renamed =
+        json!({"type": "custom-title", "sessionId": job.id, "customTitle": "Pinned order"});
+    fs::write(&transcript, format!("{text}{renamed}\n")).unwrap();
+    fs::write(d.path("jobs.yaml"), &jobs).unwrap();
+    d.start();
+    let screen = d.wait_text("Pinned order");
+    d.capture("renamed");
+    assert!(
+        !screen.contains(title) && !screen.contains("main-page-folder-order"),
+        "{screen}"
+    );
+    d.quit();
+    job.daemon.kill().unwrap();
+    job.daemon.wait().unwrap();
+}
+
 #[test]
 fn esc_on_a_session_row_quits_only_when_pressed_twice() {
     let mut d = Dashboard::new("claude-esc-quit", &["claude"]);

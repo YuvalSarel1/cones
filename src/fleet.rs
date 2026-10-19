@@ -922,18 +922,22 @@ fn build(
         usage: None,
         tasks: tasks(job),
         plan: d.report.plan,
-        title: d
-            .title
-            .or_else(|| {
-                // Claude names a job after its short id until it has a title; that is not a name.
-                let named = |n: &&str| !n.is_empty() && Some(*n) != v["jobId"].as_str() && *n != id;
-                job["name"]
-                    .as_str()
-                    .filter(named)
-                    .or_else(|| v["name"].as_str().filter(named))
-                    .map(Into::into)
-            })
-            .or(d.report.first_prompt),
+        title: claude_title(
+            d.report.custom_title.clone(),
+            d.report.title.clone(),
+            d.report.ai_titles.clone(),
+        )
+        .or(d.title)
+        .or_else(|| {
+            // Claude names a job after its short id until it has a title; that is not a name.
+            let named = |n: &&str| !n.is_empty() && Some(*n) != v["jobId"].as_str() && *n != id;
+            job["name"]
+                .as_str()
+                .filter(named)
+                .or_else(|| v["name"].as_str().filter(named))
+                .map(Into::into)
+        })
+        .or(d.report.first_prompt),
         last: job["detail"]
             .as_str()
             .filter(|s| !s.trim().is_empty())
@@ -1264,13 +1268,13 @@ pub fn headline(text: &str) -> Option<String> {
 /// title written for it while it runs.
 fn scan(lines: &str) -> (Option<String>, Vec<String>) {
     let mut out = (None, Vec::new());
-    let (mut custom, mut agent, mut ai) = (None, None, None);
+    let (mut custom, mut agent, mut ai) = (None, None, Vec::new());
     for line in lines.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
         match v["type"].as_str() {
-            Some("ai-title") => ai = v["aiTitle"].as_str().map(Into::into),
+            Some("ai-title") => ai.extend(v["aiTitle"].as_str().map(String::from)),
             Some("agent-name") => agent = v["agentName"].as_str().map(Into::into),
             Some("custom-title") => custom = v["customTitle"].as_str().map(Into::into),
             Some("assistant") => out.1.extend(
@@ -1286,8 +1290,33 @@ fn scan(lines: &str) -> (Option<String>, Vec<String>) {
             _ => {}
         }
     }
-    out.0 = custom.or(agent).or(ai);
+    out.0 = claude_title(custom, agent, ai);
     out
+}
+
+static ORIGINAL_TITLES: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(crate::config::ORIGINAL_TITLES);
+
+/// Apply the `original_titles` setting to every Claude title read after this call.
+pub fn configure_titles(original: bool) {
+    ORIGINAL_TITLES.store(original, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A Claude session's title from its last `custom-title`, its last `agent-name` and every
+/// `ai-title` in order. A background job's name is written as an `ai-title` too, over the
+/// one generated from the first message, so with `original_titles` on the latest title that
+/// is not the job name outranks it. A custom title outranks both either way.
+pub(crate) fn claude_title(
+    custom: Option<String>,
+    agent: Option<String>,
+    mut ai: Vec<String>,
+) -> Option<String> {
+    let generated = ORIGINAL_TITLES
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| ai.iter().rposition(|t| Some(t) != agent.as_ref()))
+        .flatten()
+        .map(|i| ai.swap_remove(i));
+    custom.or(generated).or(agent).or_else(|| ai.pop())
 }
 
 /// Whether a Claude transcript has recorded a `compact_boundary` since this call, the record
@@ -1345,7 +1374,8 @@ struct Report {
     first_prompt: Option<String>,
     custom_title: Option<String>,
     title: Option<String>,
-    ai_title: Option<String>,
+    /// Every `ai-title` in order, for [`claude_title`].
+    ai_titles: Vec<String>,
     last: Option<String>,
     tokens_in: Option<u64>,
     tokens_out: Option<u64>,
@@ -1469,10 +1499,7 @@ pub(crate) fn history_columns_priced(
     let report = report_with_activity(transcript, false, catalog)?;
     let (cost_usd, cost_info) = report.costs.report(None);
     Ok(crate::history::Columns {
-        title: report
-            .custom_title
-            .or(report.title)
-            .or(report.ai_title)
+        title: claude_title(report.custom_title, report.title, report.ai_titles)
             .or(report.first_prompt),
         model: report.model,
         tokens_in: report.tokens_in,
@@ -1571,32 +1598,31 @@ fn report_with_activity(
         if event["type"] == "system" && event["subtype"] == "init" {
             r.model = event["model"].as_str().map(Into::into).or(r.model);
         }
-        // Live discovery already has its tail scan; only history needs these
-        // strings from the full pass, so it can find titles outside the tail window.
-        if !activity {
-            match event["type"].as_str() {
-                // As in `scan`, a custom title outranks the agent name written after it.
-                Some("custom-title") => {
-                    r.custom_title = event["customTitle"].as_str().and_then(headline);
-                }
-                Some("agent-name") => {
-                    r.title = event["agentName"].as_str().and_then(headline);
-                }
-                Some("ai-title") => {
-                    r.ai_title = event["aiTitle"].as_str().and_then(headline);
-                }
-                _ => {}
+        // The full pass keeps every title record: the tail window can miss the generated
+        // title, written near the top before a background job's name replaces it.
+        match event["type"].as_str() {
+            Some("custom-title") => {
+                r.custom_title = event["customTitle"].as_str().and_then(headline);
             }
-            if event["type"] == "assistant"
-                && let Some(last) = message["content"].as_array().and_then(|blocks| {
-                    blocks
-                        .iter()
-                        .filter_map(|b| b["text"].as_str().and_then(headline))
-                        .next_back()
-                })
-            {
-                r.last = Some(last);
+            Some("agent-name") => {
+                r.title = event["agentName"].as_str().and_then(headline);
             }
+            Some("ai-title") => r
+                .ai_titles
+                .extend(event["aiTitle"].as_str().and_then(headline)),
+            _ => {}
+        }
+        // Live discovery already has its tail scan; only history needs the last reply here.
+        if !activity
+            && event["type"] == "assistant"
+            && let Some(last) = message["content"].as_array().and_then(|blocks| {
+                blocks
+                    .iter()
+                    .filter_map(|b| b["text"].as_str().and_then(headline))
+                    .next_back()
+            })
+        {
+            r.last = Some(last);
         }
         // Tool calls are content blocks on assistant lines; streaming repeats a message's
         // usage per block but writes each block once.

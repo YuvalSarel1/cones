@@ -373,6 +373,9 @@ pub struct JobsFile {
     /// How the session list shows sessions in a linked worktree.
     #[serde(default)]
     pub worktrees: Option<Worktrees>,
+    /// Title a Claude session by its generated title rather than its background job name.
+    #[serde(default)]
+    pub original_titles: Option<bool>,
 }
 
 /// `nested` heads each linked worktree inside its repository's folder; `flat` lists its
@@ -385,6 +388,10 @@ pub enum Worktrees {
 }
 
 pub const WHOLE_COLUMNS: bool = true;
+
+/// Claude names a background job a second time, after its first status check, and writes
+/// that label over the title it generated from the first message. On, rows keep the title.
+pub const ORIGINAL_TITLES: bool = true;
 
 /// Colour of a highlighted session row. The built-in is distinct from the states' green, yellow
 /// and red and from the coordinator's orange, so an unconfigured mark is never read as a
@@ -932,6 +939,16 @@ pub fn nest_worktrees(path: &Path) -> bool {
 /// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_worktrees(path: &Path) -> Option<Worktrees> {
     parse(path).ok().and_then(|d| d.worktrees)
+}
+
+/// Whether Claude rows show the generated title over the job name, the built-in when unset.
+pub fn original_titles(path: &Path) -> bool {
+    file_original_titles(path).unwrap_or(ORIGINAL_TITLES)
+}
+
+/// Read without applying defaults; missing or invalid files return `None`.
+pub fn file_original_titles(path: &Path) -> Option<bool> {
+    parse(path).ok().and_then(|d| d.original_titles)
 }
 
 /// Read the pinned folders as written; missing or invalid files return `None`.

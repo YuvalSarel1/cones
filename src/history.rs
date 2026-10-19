@@ -998,11 +998,7 @@ fn metadata(
     let definition = harness::spec(source.harness);
     let user = &definition.transcript.messages.user;
     let title = match definition.transcript.handler {
-        Native::Claude => claude_title(&tail, true)
-            .or_else(|| claude_title(&head, true))
-            .or_else(|| claude_title(&tail, false))
-            .or_else(|| claude_title(&head, false))
-            .or_else(|| user_title(user, &head)),
+        Native::Claude => claude_title(&head, &tail).or_else(|| user_title(user, &head)),
         Native::Codex => head.iter().find_map(|v| codex::prompt(&v.to_string())),
         Native::Pi => tail
             .iter()
@@ -1070,20 +1066,29 @@ fn user_title(user: &harness::spec::MessageText, events: &[Value]) -> Option<Str
         .find_map(|event| user.headline_with_attachments(event, true))
 }
 
-/// A custom title outranks an agent name written after it, as in live discovery.
-fn claude_title(events: &[Value], named: bool) -> Option<String> {
+/// The title live discovery would give, from the head and tail windows: the tail holds the
+/// latest records, the head a generated title a background job's name later replaced.
+fn claude_title(head: &[Value], tail: &[Value]) -> Option<String> {
     let last = |kind: &str, field: &str| {
-        events
-            .iter()
-            .rev()
-            .filter(|v| v["type"] == kind)
-            .find_map(|v| v[field].as_str().and_then(fleet::headline))
+        [tail, head].into_iter().find_map(|events| {
+            events
+                .iter()
+                .rev()
+                .filter(|v| v["type"] == kind)
+                .find_map(|v| v[field].as_str().and_then(fleet::headline))
+        })
     };
-    if named {
-        last("custom-title", "customTitle").or_else(|| last("agent-name", "agentName"))
-    } else {
-        last("ai-title", "aiTitle")
-    }
+    let ai = head
+        .iter()
+        .chain(tail)
+        .filter(|v| v["type"] == "ai-title")
+        .filter_map(|v| v["aiTitle"].as_str().and_then(fleet::headline))
+        .collect();
+    fleet::claude_title(
+        last("custom-title", "customTitle"),
+        last("agent-name", "agentName"),
+        ai,
+    )
 }
 
 fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Columns> {
