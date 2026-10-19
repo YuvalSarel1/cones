@@ -548,7 +548,12 @@ while True:
 }
 
 /// A process keeps the environment it started with, so the dashboard reads a client's once:
-/// three refreshes that each show the same client a newer rollout add no environment read.
+/// refreshes that each show the same client a newer rollout add no environment read.
+///
+/// The dashboard sees the whole machine, so a Codex stand-in another test starts meanwhile
+/// costs one read of its own, which this test cannot tell apart from a read of its client.
+/// It asserts that reads stay at most half the refreshes instead of exactly one; reading every
+/// refresh, the regression, makes them equal.
 #[cfg(target_os = "macos")]
 #[test]
 fn a_codex_client_environment_is_read_once_across_refreshes() {
@@ -593,6 +598,9 @@ fn a_codex_client_environment_is_read_once_across_refreshes() {
         "first pass marker",
         "second pass marker",
         "third pass marker",
+        "fourth pass marker",
+        "fifth pass marker",
+        "sixth pass marker",
     ];
     for (i, title) in titles.iter().enumerate() {
         let id = format!("01a14435-4399-7903-96fb-35d94a9f620{i}");
@@ -620,15 +628,21 @@ fn a_codex_client_environment_is_read_once_across_refreshes() {
             .filter_map(|r| r["data"]["observation"][op]["spawns"].as_u64())
             .sum()
     };
+    let (tables, environments) = (spawns("process_table"), spawns("process_env"));
     let result = json!({
-        "table_reads_at_least_three": spawns("process_table") >= 3,
-        "environment_reads": spawns("process_env"),
+        "table_reads_at_least_six": tables >= 6,
+        "environment_read": environments >= 1,
+        "environment_reads_at_most_half_the_tables": environments * 2 <= tables,
     });
     let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-environment-once.json");
     fs::write(&artifact, serde_json::to_string_pretty(&result).unwrap()).unwrap();
     assert_eq!(
         result,
-        json!({"table_reads_at_least_three": true, "environment_reads": 1}),
+        json!({
+            "table_reads_at_least_six": true,
+            "environment_read": true,
+            "environment_reads_at_most_half_the_tables": true,
+        }),
         "{log}"
     );
 }
