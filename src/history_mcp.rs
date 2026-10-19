@@ -346,7 +346,7 @@ fn control_tools() -> Vec<Value> {
         ),
         tool(
             "cones_rm",
-            "Stop a session, then take it off its harness's list, as `cones rm` does. A run is stopped and hidden; a job is deleted; a folder is closed.",
+            "Stop a session, then take it off its harness's list, as `cones rm` does. A run's session is removed and the run hidden; a job is deleted; a folder is closed.",
             json!({"target": {"type": "string", "minLength": 1}}),
             &["target"],
             true,

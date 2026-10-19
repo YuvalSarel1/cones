@@ -296,6 +296,8 @@ impl Kind {
 enum Entry<'a> {
     Job(&'a ResolvedJob),
     Session(&'a Session),
+    /// A run listed among the sessions, as `Data::run_as_session` draws it.
+    Run(&'a Session),
     Folder(&'a Path),
 }
 
@@ -395,6 +397,9 @@ pub struct Data {
     pub nest: bool,
     /// Sessions and runs whose completion nobody has reviewed; the dashboard fills it.
     pub unread: HashSet<String>,
+    /// The row under the cursor, filled by the dashboard: a run there stays among the sessions
+    /// once it is read, so it never leaves from under its reader.
+    pub selected: Option<String>,
     diagnostics: Option<LoadDiagnostics>,
 }
 
@@ -590,6 +595,7 @@ impl Data {
             trees,
             nest: config::nest_worktrees(jobs_path),
             unread: HashSet::new(),
+            selected: None,
             diagnostics,
         })
     }
@@ -687,6 +693,35 @@ impl Data {
                 .and_then(|s| s.last.clone())
                 .or_else(|| report.last.clone()),
         }
+    }
+
+    /// A run as a row among the sessions, under the run's id and titled with its job: its agent
+    /// while one is listed, else what the ledger and transcript say.
+    fn run_as_session(&self, run: &Run, view: &RunView) -> Session {
+        let mut s = self.agent_in(run).cloned().unwrap_or_else(|| {
+            let mut s = placeholder(
+                run.started.harness.unwrap_or(HarnessKind::Claude),
+                "",
+                run.started.cwd.as_deref().unwrap_or(Path::new("")),
+                "",
+            );
+            s.started = run.started.fired_at;
+            s
+        });
+        // The view already prefers what the agent reports.
+        s.model = view.model.clone();
+        s.cost_usd = view.cost_usd;
+        s.cost_info = view.cost_info.clone();
+        s.context_tokens = view.context_tokens;
+        s.context_window = view.context_window;
+        s.tokens_in = view.tokens_in;
+        s.tokens_out = view.tokens_out;
+        s.last = view.last.clone();
+        s.session_id = run.started.run_id.clone();
+        s.state = view.agent.clone().unwrap_or_else(|| view.status.clone());
+        s.title = Some(format!("◆ {}", run.started.job.as_deref().unwrap_or("run")));
+        s.forked_from = None;
+        s
     }
 
     /// The agent in a run. Discovery collapses a session the ledger owns out of the live list;
@@ -834,11 +869,29 @@ impl Data {
             let open = opened.contains(&real(top));
             (self.nest || open).then(|| (top.clone(), open))
         };
+        // A run still worth a look sits among the sessions, in its folder: one whose agent is
+        // listed, one still supervised, one nobody has read since it finished. Every run is in
+        // the jobs view.
+        let runs: Vec<Session> = self
+            .runs
+            .iter()
+            .filter(|r| !jobs_view && !deleting.contains(r.started.run_id.as_str()))
+            .filter_map(|r| {
+                let view = self.resolve_run(r);
+                (view.agent.is_some()
+                    || view.status == "started"
+                    || self.unread.contains(&r.started.run_id)
+                    || self.selected.as_ref() == Some(&r.started.run_id))
+                .then(|| self.run_as_session(r, &view))
+            })
+            .collect();
+        let run_ids: HashSet<&str> = runs.iter().map(|s| s.session_id.as_str()).collect();
         let mut placed: Vec<(&Session, (String, String, String), bool)> = Vec::new();
         for s in self
             .sessions
             .iter()
             .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
+            .chain(&runs)
         {
             // An empty sort key puts pins above every state rank and folder path.
             let (key, open) = if pinned.contains(&s.session_id) {
@@ -886,7 +939,14 @@ impl Data {
             if lone.contains(&key) {
                 key.2.clear();
             }
-            groups.entry(key).or_default().push(Entry::Session(s));
+            groups
+                .entry(key)
+                .or_default()
+                .push(if run_ids.contains(s.session_id.as_str()) {
+                    Entry::Run(s)
+                } else {
+                    Entry::Session(s)
+                });
         }
         for dir in self.open.iter().filter(|_| !jobs_view) {
             let key = if by_state {
@@ -930,9 +990,18 @@ impl Data {
                     .iter()
                     .map(|(s, depth)| ((s.harness.as_str(), s.session_id.as_str()), *depth)),
             );
+            // Runs follow the group's sessions.
+            let runs: Vec<_> = group
+                .iter()
+                .filter_map(|e| match e {
+                    Entry::Run(s) => Some(Entry::Run(s)),
+                    _ => None,
+                })
+                .collect();
             *group = ordered
                 .into_iter()
                 .map(|(s, _)| Entry::Session(s))
+                .chain(runs)
                 .collect();
         }
         // One table across all groups, so columns line up between directories.
@@ -987,6 +1056,15 @@ impl Data {
                                         .unwrap_or(0)
                                 }),
                         ),
+                    ),
+                ),
+                Entry::Run(s) => indent(
+                    !key.2.is_empty(),
+                    title,
+                    unread(
+                        self.unread.contains(&s.session_id),
+                        title,
+                        session_cells(s, set, by_state, None, None, false, None),
                     ),
                 ),
                 Entry::Job(j) => {
@@ -1061,6 +1139,15 @@ impl Data {
                     kind: Kind::Job(j.name.clone()),
                     cells: cells.next().unwrap_or_default(),
                 },
+                Entry::Run(s) => Row {
+                    kind: Kind::Run(
+                        s.session_id.clone(),
+                        self.view(&s.session_id)
+                            .map(|v| v.status)
+                            .unwrap_or_default(),
+                    ),
+                    cells: cells.next().unwrap_or_default(),
+                },
                 // A row with no text at all is an invisible line the cursor can still land on.
                 // Under a worktree heading it is named as `+ add folder` names it.
                 Entry::Folder(dir) if !key.2.is_empty() => Row {
@@ -1105,7 +1192,7 @@ impl Data {
                 ],
             });
         }
-        if !jobs_view && !self.runs.is_empty() {
+        if jobs_view && !self.runs.is_empty() {
             header(&mut out, "runs");
             // Limit the run list to the newest 200 entries.
             let runs: Vec<&Run> = self.runs.iter().rev().take(200).collect();
@@ -1257,7 +1344,16 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
         }
         out.push('\n');
     }
-    for row in data.rows(false) {
+    // The session list, then the jobs view, which holds every run.
+    let jobs = data.rows_excluding(
+        false,
+        true,
+        false,
+        &HashSet::new(),
+        &HashSet::new(),
+        &mut Widths::new(),
+    );
+    for row in data.rows(false).into_iter().chain(jobs) {
         let (key, aux) = match &row.kind {
             Kind::Header | Kind::Columns | Kind::Blank | Kind::HistoryStatus | Kind::Detail => {
                 ("hdr".to_owned(), "-".to_owned())
@@ -10139,7 +10235,25 @@ impl App {
                 keys.insert(entry.key.clone());
             }
         }
-        for run in &self.data.runs {
+        // A run the session list no longer shows is a past conversation like any other.
+        let main = if self.jobs_view {
+            &self.other
+        } else {
+            &self.rows
+        };
+        let listed: HashSet<&str> = main
+            .iter()
+            .filter_map(|r| match &r.kind {
+                Kind::Run(id, _) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        for run in self
+            .data
+            .runs
+            .iter()
+            .filter(|r| listed.contains(r.started.run_id.as_str()))
+        {
             if let (Some(HarnessKind::Claude), Some(id)) =
                 (run.started.harness, &run.started.session_id)
             {
@@ -11772,6 +11886,7 @@ impl App {
                     .map(|r| r.started.run_id.clone()),
             )
             .collect();
+        self.data.selected = keep.clone();
         let in_pane = self.jobs_view && self.split_active();
         self.rows = if in_pane { vec![] } else { menu_rows() };
         self.rows.extend(self.data.rows_excluding(
@@ -15181,23 +15296,6 @@ impl App {
         }
     }
 
-    /// Hide the row without removing its ledger record or resumable session.
-    fn hide_run(&mut self, id: String) {
-        match self.armed.take() {
-            Some(armed) if armed == id => {
-                self.status = match Ledger::new(&self.state).and_then(|l| l.hide(&id)) {
-                    Ok(()) => "run hidden · the ledger still has it".into(),
-                    Err(e) => warning(format!("hide failed: {e:#}")),
-                };
-                self.invalidate();
-            }
-            _ => {
-                self.status = "ctrl+x again to hide this run · any other key keeps it".into();
-                self.arm(id);
-            }
-        }
-    }
-
     /// Keep open the folder of every session that arrived since the last read.
     fn open_folders_of(&mut self, data: &mut Data) {
         // The file is the shared copy: `cones rm DIR` and other dashboards change it too.
@@ -15473,8 +15571,7 @@ impl App {
         match &self.selected()?.kind {
             Kind::Job(name) if live(name) => Some("stop"),
             Kind::Job(_) => Some("delete"),
-            Kind::Run(_, s) if s == "started" => Some("stop"),
-            Kind::Run(..) => Some("hide"),
+            Kind::Run(..) => Some("delete"),
             Kind::Session(id, _)
                 if self.pending.iter().any(|p| p.session.session_id == *id)
                     && self.viewer_index(id).is_none() =>
@@ -15823,7 +15920,6 @@ impl App {
 
     fn stop(&mut self) {
         let id = match self.selected().map(|r| r.kind.clone()) {
-            Some(Kind::Run(id, s)) if s != "started" => return self.hide_run(id),
             Some(Kind::Folder(dir)) => return self.remove_folder(dir),
             Some(Kind::Session(id, _))
                 if self.pending.iter().any(|p| p.session.session_id == id)
@@ -15849,7 +15945,12 @@ impl App {
             }
         };
         // Forgetting a thread or removing a background job preserves its resumable conversation.
-        let verb = self.session_verb(&id);
+        let run = self.data.runs.iter().any(|r| r.started.run_id == id);
+        let verb = match self.selected().map(|r| &r.kind) {
+            Some(Kind::Job(_)) => "stop",
+            _ if run => "delete",
+            _ => self.session_verb(&id),
+        };
         if let Some(action) = self.stopping.iter().find(|a| a.id == id) {
             self.status = action.message();
             self.armed = None;
@@ -15898,7 +15999,6 @@ impl App {
                     }
                 }
                 let (state, claude, target) = (self.state.clone(), self.claude.clone(), id.clone());
-                let run = self.data.runs.iter().any(|r| r.started.run_id == id);
                 // A session row is removed the way `cones rm` removes it: stopped, then taken off
                 // the harness's own list. The pid is the one captured before the viewer closed.
                 let session = self
@@ -15913,13 +16013,10 @@ impl App {
                     });
                 self.queue_stop(id, verb, move || {
                     if run {
-                        let ledger = Ledger::new(&state)?;
-                        let stopped = runner::stop(&ledger, &claude, &target)?;
-                        // Stopping a run closes its row too; the ledger keeps the record.
-                        if stopped {
-                            ledger.hide(&target)?;
-                        }
-                        Ok(stopped)
+                        // A run goes the way a session row goes, off the harness's own list
+                        // too; the ledger keeps its record.
+                        runner::remove(&Ledger::new(&state)?, &claude, &target)?;
+                        Ok(true)
                     } else if ended_with_viewer && verb != "forget" {
                         Ok(true)
                     } else {
@@ -20344,16 +20441,18 @@ states:
         started.cwd = Some(cwd);
         let mut ended = crate::ledger::Record::new(A.into(), crate::ledger::Status::Timeout);
         ended.reason = Some("timeout".into());
+        // Selected while it runs, the row stays under the cursor once it has finished.
         app.data.runs.push(Run {
             started,
-            terminal: Some(ended),
+            terminal: None,
         });
         app.rebuild();
-        app.cursor = app
-            .visible
-            .iter()
-            .position(|&i| matches!(app.rows[i].kind, Kind::Run(..)))
-            .unwrap();
+        app.select_row(A);
+        app.data.runs[0].terminal = Some(ended);
+        app.rebuild();
+        assert!(
+            matches!(&app.selected().unwrap().kind, Kind::Run(id, s) if id == A && s == "timeout")
+        );
         transcript_until(&mut app, &mut terminal, |a| a.transcript.document.is_some());
         let text = pane_text(&app, &terminal);
         assert!(text.contains("scheduled question"), "{text}");
@@ -21552,8 +21651,82 @@ states:
         assert!(!c(&mut app), "a stale arm is a first press again");
     }
 
+    /// Runs below `+ add folder` meant scrolling past its pinned folders to reach them. A run
+    /// still going sits among the sessions of its folder, titled with its job and drawn with the
+    /// session columns; a finished run nobody is looking at leaves for the jobs view, which
+    /// lists every run, and `+ add folder` ends the session list.
     #[test]
-    fn ctrl_x_on_a_finished_run_arms_then_hides_it_and_the_ledger_keeps_it() {
+    fn a_live_run_sits_in_its_folder_and_the_jobs_view_lists_every_run() {
+        let d = dir();
+        let work = d.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        let ledger = Ledger::new(d.path()).unwrap();
+        let mut done = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
+        done.fired_at = Some(chrono::Utc::now());
+        done.job = Some("nightly".into());
+        done.cwd = Some(work.clone());
+        ledger.append(&done).unwrap();
+        ledger
+            .append(&crate::ledger::Record::new(
+                A.into(),
+                crate::ledger::Status::Ok,
+            ))
+            .unwrap();
+        let mut live = crate::ledger::Record::new(C.into(), crate::ledger::Status::Started);
+        live.fired_at = Some(chrono::Utc::now());
+        live.job = Some("hourly".into());
+        live.cwd = Some(work.clone());
+        // A live supervisor, or the dashboard reaps the run as an orphan.
+        live.pid = Some(std::process::id());
+        ledger.append(&live).unwrap();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+        let mut s = session(B, "active", "by hand", 0);
+        s.cwd = work.clone();
+        data.sessions.push(s);
+        app.apply(data);
+
+        let texts: Vec<String> = app.rows.iter().map(|r| r.text()).collect();
+        let at = |kind: &dyn Fn(&Kind) -> bool| app.rows.iter().position(|r| kind(&r.kind));
+        let folder = texts
+            .iter()
+            .position(|t| t.trim() == fleet::tilde(&work))
+            .unwrap_or_else(|| panic!("{texts:#?}"));
+        let by_hand = at(&|k| matches!(k, Kind::Session(id, _) if id == B)).unwrap();
+        let run = at(&|k| matches!(k, Kind::Run(id, _) if id == C)).unwrap();
+        let add = at(&|k| *k == Kind::NewFolder).unwrap();
+        assert!(
+            folder < by_hand && by_hand + 1 == run && run < add,
+            "the run follows the folder's session, above `+ add folder`: {texts:#?}"
+        );
+        assert!(texts[run].contains("◆ hourly"), "{}", texts[run]);
+        assert!(
+            !app.rows
+                .iter()
+                .any(|r| matches!(&r.kind, Kind::Run(id, _) if id == A)),
+            "a read finished run leaves the session list: {texts:#?}"
+        );
+        assert!(
+            !app.rows[add + 1..].iter().any(|r| r.kind.selectable()),
+            "`+ add folder` ends the list: {texts:#?}"
+        );
+
+        app.show_jobs();
+        let texts: Vec<String> = app.rows.iter().map(|r| r.text()).collect();
+        for id in [A, C] {
+            assert!(
+                app.rows
+                    .iter()
+                    .any(|r| matches!(&r.kind, Kind::Run(run, _) if run == id)),
+                "the jobs view lists every run: {texts:#?}"
+            );
+        }
+        assert!(texts.iter().any(|t| t.trim() == "runs"), "{texts:#?}");
+    }
+
+    #[test]
+    fn ctrl_x_on_a_finished_run_arms_then_deletes_it_and_the_ledger_keeps_it() {
         let d = dir();
         let ledger = Ledger::new(d.path()).unwrap();
         let mut start = crate::ledger::Record::new(A.into(), crate::ledger::Status::Started);
@@ -21567,11 +21740,13 @@ states:
             .unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
+        app.show_jobs();
+        app.select_row(A);
         assert!(matches!(&app.selected().unwrap().kind, Kind::Run(id, s) if id == A && s == "ok"));
-        assert_eq!(app.stop_verb(), Some("hide"));
+        assert_eq!(app.stop_verb(), Some("delete"));
         app.stop();
         assert!(
-            app.status.contains("again to hide this run"),
+            app.status.contains("ctrl+x again to delete"),
             "{}",
             app.status
         );
@@ -21597,7 +21772,8 @@ states:
         app.expire();
         assert_eq!(app.armed.as_deref(), Some(A), "no clock at 0");
         app.stop();
-        assert!(app.status.starts_with("run hidden"), "{}", app.status);
+        poll_until(&mut app, |a| a.stopping.is_empty());
+        assert_eq!(app.status, "", "the row leaving says it");
         app.refresh().unwrap();
         assert!(
             !app.rows.iter().any(|r| matches!(r.kind, Kind::Run(..))),
@@ -22751,10 +22927,17 @@ states:
         let ledger = Ledger::new(d.path()).unwrap();
         ledger.append(&record).unwrap();
         let row = |data: &Data| {
-            data.rows(false)
-                .into_iter()
-                .find(|r| matches!(r.kind, Kind::Run(..)))
-                .unwrap()
+            data.rows_excluding(
+                false,
+                true,
+                false,
+                &HashSet::new(),
+                &HashSet::new(),
+                &mut Widths::new(),
+            )
+            .into_iter()
+            .find(|r| matches!(r.kind, Kind::Run(..)))
+            .unwrap()
         };
         let load = || Data::load(&jobs, d.path(), d.path()).unwrap();
         let mut data = load();
@@ -24104,6 +24287,8 @@ while True:
         ledger.append(&end).unwrap();
         let mut app = app(dir);
         app.refresh().unwrap();
+        // The run table, with its status and reason columns, is the jobs view's.
+        app.show_jobs();
         app
     }
 
@@ -24225,6 +24410,7 @@ while True:
         ledger.append(&start).unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
+        app.show_jobs();
         for (state, shown, pulsing) in [
             ("active", "working", true),
             ("blocked", "input", false),
@@ -24307,6 +24493,8 @@ while True:
             .unwrap();
         let mut app = app(d.path());
         app.refresh().unwrap();
+        app.show_jobs();
+        app.select_row(A);
         assert!(matches!(&app.selected().unwrap().kind, Kind::Run(id, _) if id == A));
         app.track_rest();
         assert_eq!(

@@ -441,9 +441,8 @@ nothing is removed and the command exits 1. Runs and jobs belong to the
 
 | Target | Operation |
 | --- | --- |
-| Running run | Stopped, recorded `stopped`, and hidden. |
-| Finished run | Hidden; output and ledger record remain. |
-| Running job | Its run stopped and hidden; the job stays. |
+| Run | Its session removed as a session is, so `claude agents` drops it too; a run still supervised stopped and recorded `stopped`; then hidden. Output and ledger record remain. A refused removal hides nothing. |
+| Running job | Its run removed as above; the job stays. |
 | Idle job | Deleted from `jobs.yaml`, the rest of the file as written, then schedules reinstalled. |
 | Cones terminal | Host and client stopped. |
 | Claude background | [`cones stop`](#stopping-a-session), then native `claude rm`, which takes it off `claude agents`, as the [dashboard](harness.md#native-actions) runs it; the transcript remains. |
@@ -591,7 +590,7 @@ These implementation commands are hidden from help and may change with their cal
 | `__logs ID [--follow] [--raw]` | Captured output; this renderer does not handle pi message entries. |
 | `__attach ID [--print-command]` | Attach or resume a finished run. |
 | `__install [--dry-run]` | Install schedules; dry run prints plist XML including imported credentials. |
-| `__list` | Render rows for subprocess callers. |
+| `__list` | Render the session list, then the jobs view, for subprocess callers. |
 | `__worker --run-id ID` | Run the supervised worker. |
 | `__terminal-host` | Own an interactive PTY through a private local socket. Arguments/environment arrive through an anonymous pipe. |
 

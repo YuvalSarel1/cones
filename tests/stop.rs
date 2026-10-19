@@ -1179,6 +1179,54 @@ fn rm_signals_an_interactive_client_and_hides_a_finished_run() {
     assert_eq!(f.calls(), "");
 }
 
+/// A finished run whose background session Claude still lists is removed from Claude's list
+/// too, with the native `claude rm`, so `claude agents` and the dashboard agree. A removal
+/// Claude refuses hides nothing.
+#[test]
+fn rm_on_a_finished_run_removes_the_session_it_left_behind() {
+    use cones::ledger::{Ledger, Record, Status};
+    let f = Fixture::new();
+    let id = "ffffffff-6666-4666-8666-666666666666";
+    let job = f.home().join("jobs/ffffffff");
+    fs::create_dir_all(&job).unwrap();
+    fs::write(
+        job.join("state.json"),
+        json!({"sessionId": id, "state": "done", "cwd": f.root.path()}).to_string(),
+    )
+    .unwrap();
+    let ledger = Ledger::new(&f.state()).unwrap();
+    let run = "run-finished-0003";
+    let mut started = Record::new(run.into(), Status::Started);
+    started.job = Some("nightly".into());
+    started.session_id = Some(id.into());
+    ledger.append(&started).unwrap();
+    ledger
+        .append(&Record::new(run.into(), Status::Input))
+        .unwrap();
+    let home = f.home().display().to_string();
+
+    let out = f.cones(&["rm", run]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stdout));
+    assert!(
+        ledger.hidden().unwrap().is_empty(),
+        "a refused removal hides nothing"
+    );
+
+    fs::write(f.home().join("allow-rm"), "").unwrap();
+    let out = f.cones(&["rm", run]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("hid run {run} and removed its session; its output and ledger record are kept\n")
+    );
+    assert!(
+        f.calls().trim().ends_with(&format!("rm ffffffff {home}")),
+        "{}",
+        f.calls()
+    );
+    assert!(ledger.hidden().unwrap().contains(run));
+}
+
 /// `cones rm NAME` on an idle job deletes that block and leaves the rest of the file as written,
 /// then reinstalls the schedules. A file at `$HOME/Library` stops the install before any
 /// `launchctl` call reaches the machine's real domain, so the failure is reported after the

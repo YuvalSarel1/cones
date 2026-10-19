@@ -55,7 +55,7 @@ visible in narrow layouts. Column pickers open from Config.
 
 ### Jobs
 
-Jobs appear in file order, followed by `new job`. Enter runs the selected job; `ctrl+e` edits
+Jobs appear in file order, followed by `new job` and the newest 200 visible runs. Enter runs the selected job; `ctrl+e` edits
 it with an empty composer. Removal stops a live run or deletes an idle job. The optional next
 run column follows the configured schedule; it does not confirm that launchd loaded it.
 
@@ -144,7 +144,9 @@ indented `⑂` heading of its own inside it; a lone session stays among the repo
 marked `⑂`. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
 way. A folder opened inside a worktree heads the sessions that run in it, under either
 setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last. Forks
-follow visible parents. Runs show the newest 200 visible records.
+follow visible parents. A job's run sits among the sessions in its folder, titled `◆ JOB` and
+drawn with the session columns, while its agent is listed, while it is supervised and until its
+finish is read. The [Jobs](#jobs) screen keeps the full run list.
 
 [Column settings](jobs.md#list-settings) control each table independently. Identity and row
 icons stay visible. The default last reply column hides with the pane open; an explicit
@@ -191,8 +193,8 @@ The row disappears while the action runs and returns if it fails.
 | --- | --- |
 | Live session | Its [native stop or removal](harness.md#native-actions). |
 | Settled Claude background | Remove the job record; retain the transcript. |
-| Running run or job | Stop the run and hide its row; the ledger records `stopped`. |
-| Finished run | Hide the run and its owned session; retain output and ledger. Restore through the [hidden file](jobs.md#stored-files). |
+| Run | Remove its session as a session row is removed, stop a run still supervised, and hide the run; retain output and ledger. A refused removal hides nothing. Restore through the [hidden file](jobs.md#stored-files). |
+| Running job | The same for its run; the job stays. |
 | Idle job | Delete it and reinstall schedules. |
 | Empty folder | Close it; retain the directory and any pin. |
 
@@ -252,7 +254,8 @@ are reported before launch.
 ### History
 
 `ctrl+h` shows conversations below the live list, newest activity first, and hides them again
-with any search cleared. Live sessions and identified Claude run conversations are excluded.
+with any search cleared. Live sessions and the Claude conversations of runs in the session list
+are excluded.
 Pages contain 50 rows; moving beyond a page loads more. [Historical sources](harness.md#historical-sessions) define inclusion.
 
 Typing or pasting with history selected searches titles, folders, harnesses, IDs and visible

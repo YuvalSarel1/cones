@@ -1102,8 +1102,8 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         .collect();
     assert_eq!(
         headers,
-        ["idle", "runs"],
-        "grouping by state names the state"
+        ["working", "idle"],
+        "grouping by state names the state, and a run sits under its agent's"
     );
     let pane = data.details(&cones::tui::Kind::Session(live.into(), "idle".into()), 1);
     let local = "2026-09-12T10:56:35Z"

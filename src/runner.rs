@@ -687,20 +687,36 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     Ok(terminal.status)
 }
 
-/// `cones rm RUN`: stop the run if it is still going, then hide its row. `None` when `id` names
-/// no run, so the caller treats it as a session.
+/// `cones rm RUN` and the dashboard's ctrl+x on a run: end its session the way a session is
+/// removed, so the harness's own list drops it too, stop a worker still supervising it, then
+/// hide its row. `None` when `id` names no run, so the caller treats it as a session.
 pub fn remove(ledger: &Ledger, claude: &Path, id: &str) -> Result<Option<String>> {
     let Ok(run) = ledger.resolve(id) else {
         return Ok(None);
     };
-    let run_id = run.started.run_id;
-    let stopped = run.terminal.is_none()
-        && run.started.status != crate::ledger::Status::Skipped
-        && stop(ledger, claude, &run_id)?;
+    let run_id = run.started.run_id.clone();
+    // A refused removal, such as a worktree with unpushed work, leaves the row where it was.
+    let ended = match run.started.session_id.as_deref() {
+        Some(session) => end_session(ledger, claude, run_harness(&run.started), session)?,
+        None => false,
+    };
+    let supervised = run.terminal.is_none() && run.started.status != crate::ledger::Status::Skipped;
+    // A worker whose session just ended writes its record and exits, so a signal that finds it
+    // gone is no failure.
+    let stopped = supervised
+        && match signal_run(&run.started, SIGTERM) {
+            Ok(()) => true,
+            Err(_) if ledger.resolve(&run_id)?.terminal.is_some() => true,
+            Err(e) => return Err(e),
+        };
     ledger.hide(&run_id)?;
-    let verb = if stopped { "stopped and hid" } else { "hid" };
+    let done = match (stopped, ended) {
+        (true, _) => format!("stopped and hid run {run_id}"),
+        (false, true) => format!("hid run {run_id} and removed its session"),
+        (false, false) => format!("hid run {run_id}"),
+    };
     Ok(Some(format!(
-        "{verb} run {run_id}; its output and ledger record are kept\n"
+        "{done}; its output and ledger record are kept\n"
     )))
 }
 
