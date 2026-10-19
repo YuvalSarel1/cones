@@ -1,6 +1,6 @@
 ---
 name: cones
-description: "What cones can do for an agent: see every coding-agent session on this Mac and read its conversation, message it, start a new one in any folder, hand a folder to a coordinator, and change cones' own settings. Use when a task mentions other agents or sessions, past conversations, starting work in another folder, coordinating parallel work, or cones configuration."
+description: "What cones can do for an agent: see every coding-agent session on this Mac and read its conversation, message it, start a new one in any folder, hand a folder to a coordinator, and change cones' own settings. Use when a task mentions other agents or sessions, a fork of this conversation or what another agent did, past conversations, starting work in another folder, coordinating parallel work, or cones configuration."
 ---
 
 # cones
@@ -15,6 +15,8 @@ built on the same commands, so you can reach as far as the owner does.
 1. **Know what is running and what ran.** Every live session and supervised run, its folder,
    state and model, and the conversation of any of them, finished or archived ones included.
    Start with `cones ls --dir PATH --json`, then `cones show ID` or `cones search QUERY`.
+   Native agent lists such as ListAgents show only Claude peers, so a fork on another harness,
+   or one that finished, is not there; see [Finding a fork](#finding-a-fork-of-your-conversation).
 2. **Talk to it.** Send a note to a live session in a folder, read the replies, and wait until a
    worker needs input, fails, leaves or answers. `cones comms --dir PATH send ID TEXT`, or your
    native SendMessage when you and the recipient are both Claude, which `send` refuses. The
@@ -57,6 +59,22 @@ work and keeps its conversation; `cones rm ID` does what the dashboard's `ctrl+x
 to a row. `cones btw ID QUESTION` asks a session a side question and prints the answer, from a
 read-only fork that adds nothing to the session's context; `cones compact ID` compacts a
 session's context through its harness's own `/compact`.
+
+## Finding a fork of your conversation
+
+When the owner says "your forked agent", the fork may run on another harness or be finished,
+so look in history, not in `cones ls`. A fork on another harness opens with a message naming
+your session id; a fork on the same harness copies your history, so search a phrase from your
+own first prompt instead. YOUR_ID is your `$CLAUDE_CODE_SESSION_ID` or `$CODEX_THREAD_ID`.
+
+```sh
+cones search YOUR_ID --dir PATH --json    # other hits are forks, or sessions quoting your id
+cones show FORK_ID --all --json | jq -r '.messages[] | select(.role=="user") | "\(.at) \(.text[0:300])"'
+cones show FORK_ID                        # its latest work and its own summary
+```
+
+After the opening message, prompts dated after the fork's `started` are what the owner asked
+it; earlier ones are your shared history. Read those before its summary, then review its changes as you would a worker's.
 
 ## Running your own workers
 
