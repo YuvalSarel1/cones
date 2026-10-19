@@ -103,7 +103,10 @@ A process without an explicit thread may match a rollout started after it in the
 only when exactly one live process could own it and no known writer does. Ambiguity leaves
 identity absent. Mtimes prune scans but never supply activity. Remote clients are excluded
 from this matching; while the daemon runs, their threads appear through locks or saved
-records rather than separate unidentified client rows.
+records rather than separate unidentified client rows. On macOS a client connected to a
+daemon's socket without naming a thread, including a plain `codex`, counts as remote once
+that daemon holds a thread with a rollout in its folder, started no earlier than the client.
+Before its first turn the client keeps its own row.
 
 ### pi
 
@@ -434,8 +437,8 @@ coordinator claims use the reported conversation. Discovery never lists a `--ver
 for the moment it takes.
 
 Codex daemon startup returns `socketPath` and is idempotent. The remote client reports no
-initial thread id, so ambiguous launches keep their viewer rows and attribution retries on
-later refreshes. Closing an unidentified client may leave no saved row.
+initial thread id, so a launch keeps its client row until a thread in its folder has a
+rollout, and attribution retries on later refreshes. Closing an unidentified client may leave no saved row.
 
 ### Detached launch
 

@@ -809,8 +809,10 @@ fn an_npm_wrapper_and_the_client_it_runs_are_one_row() {
             json!({"pid":std::process::id()}).to_string(),
         )
         .unwrap();
+        // The daemon has no thread for the client yet, so the client keeps its one row.
         let listed = f.ok(&["ls", "--json"]);
-        assert!(!listed.contains("review the wrapper"), "{listed}");
+        assert_eq!(listed.matches("review the wrapper").count(), 1, "{listed}");
+        assert!(!listed.contains(&format!("\"pid\":{wrapper}")), "{listed}");
         let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-daemon-wrapper.json");
         fs::write(artifact, listed).unwrap();
     }
@@ -856,7 +858,7 @@ fn external_codex_daemon_clients_have_no_duplicate_row() {
             format!(
                 "{}\n",
                 json!({"type":"session_meta","payload":{"id":RUN,"session_id":RUN,
-                "timestamp":"2026-10-11T10:00:05Z","cwd":f.path()}})
+                "timestamp":chrono::Utc::now().to_rfc3339(),"cwd":f.path().canonicalize().unwrap()}})
             ),
         )
         .unwrap();
@@ -913,4 +915,49 @@ fn a_socket_connected_codex_writer_keeps_its_row() {
     let result = json!({"writer_rows":rows.iter().filter(|row| row["pid"] == pid).count()});
     fs::write(artifact, serde_json::to_string_pretty(&result).unwrap()).unwrap();
     assert_eq!(result, json!({"writer_rows":1}));
+}
+
+/// A plain `codex` is a daemon client, and the daemon holds its thread's lock from launch, before
+/// any rollout exists. Until that first turn the client's own row is the only one it has.
+#[cfg(target_os = "macos")]
+#[test]
+fn an_idle_codex_daemon_client_keeps_its_row_until_its_thread_has_a_rollout() {
+    let mut f = Fixture::new();
+    let home = f.path().join(".codex");
+    fs::create_dir_all(home.join("thread-writer-locks")).unwrap();
+    fs::create_dir_all(home.join("app-server-daemon")).unwrap();
+    fs::write(
+        home.join("app-server-daemon/app-server.pid"),
+        json!({"pid":std::process::id()}).to_string(),
+    )
+    .unwrap();
+    let (pid, _connection) = f.connected_codex(&home, &[], "");
+    // The test process is the daemon, so this open lock is the daemon's.
+    let _lock = fs::File::create(home.join(format!("thread-writer-locks/{RUN}.lock"))).unwrap();
+    let idle = f.rows_when("codex", |row| row["pid"] == pid);
+    let day = home.join("sessions/2026/10/19");
+    fs::create_dir_all(&day).unwrap();
+    fs::write(
+        day.join(format!("rollout-{RUN}.jsonl")),
+        format!(
+            "{}\n",
+            json!({"type":"session_meta","payload":{"id":RUN,"session_id":RUN,
+            "timestamp":chrono::Utc::now().to_rfc3339(),"cwd":f.path().canonicalize().unwrap()}})
+        ),
+    )
+    .unwrap();
+    let turned = f.rows_when("codex", |row| row["session_id"] == RUN);
+    let count =
+        |rows: &[Value], pick: &dyn Fn(&Value) -> bool| rows.iter().filter(|r| pick(r)).count();
+    let result = json!({
+        "idle_client_rows": count(&idle, &|r| r["pid"] == pid),
+        "client_rows_after_turn": count(&turned, &|r| r["pid"] == pid),
+        "thread_rows_after_turn": count(&turned, &|r| r["session_id"] == RUN),
+    });
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-idle-daemon-client.json");
+    fs::write(&artifact, serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    assert_eq!(
+        result,
+        json!({"idle_client_rows":1, "client_rows_after_turn":0, "thread_rows_after_turn":1})
+    );
 }

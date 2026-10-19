@@ -267,6 +267,9 @@ pub(crate) fn sessions_in(
         return Ok(Vec::new());
     }
     let mut procs = prepared_processes(ps, homes)?;
+    if procs.is_empty() {
+        return Ok(Vec::new());
+    }
     let own = crate::fleet::own_home_processes(
         ps,
         crate::config::HarnessKind::Codex,
@@ -886,8 +889,8 @@ fn socket_clients(_: &BTreeSet<u32>, _: impl Iterator<Item = u32>) -> BTreeSet<u
     BTreeSet::new()
 }
 
-/// Unidentified clients of any daemon in this scan have no process row. Threads are
-/// discovered separately. Check all homes before attributing clients to rollouts so a
+/// Unidentified clients of any daemon in this scan have no process row once the daemon's
+/// thread for them has a row. Check all homes before attributing clients to rollouts so a
 /// different home's pass cannot restore a viewer or mistake it for a standalone writer.
 fn daemon_clients(homes: &[PathBuf], procs: &[Process]) -> BTreeSet<u32> {
     let daemons: BTreeSet<_> = homes.iter().filter_map(|home| daemon_pid(home)).collect();
@@ -903,10 +906,54 @@ fn daemon_clients(homes: &[PathBuf], procs: &[Process]) -> BTreeSet<u32> {
         .iter()
         .flat_map(|home| locks(home, &pids).into_values())
         .collect();
-    socket_clients(
+    let clients = socket_clients(
         &daemons,
         pids.into_iter().filter(|pid| !writers.contains(pid)),
-    )
+    );
+    if clients.is_empty() {
+        return clients;
+    }
+    // A plain `codex` is a daemon client too, and the daemon holds its thread's lock from launch.
+    // Before the first turn that thread has no rollout and so no row: the client keeps its own
+    // until a thread in its folder, started no earlier than it, can stand in for it.
+    // ponytail: an idle client that started before another client's thread in the same folder
+    // is hidden with it; showing lock-held threads before their rollout would close that gap.
+    let threads: Vec<Meta> = homes.iter().flat_map(|home| daemon_threads(home)).collect();
+    clients
+        .into_iter()
+        .filter(|pid| {
+            let Some(p) = procs.iter().find(|p| p.pid == *pid) else {
+                return false;
+            };
+            let cwd = client_cwd(*pid);
+            threads
+                .iter()
+                .any(|m| Some(m.cwd.as_path()) == cwd.as_deref() && m.started >= p.started)
+        })
+        .collect()
+}
+
+/// Threads a home's daemon holds that have a rollout, which says where each one works.
+fn daemon_threads(codex: &Path) -> Vec<Meta> {
+    let Some(daemon) = daemon_pid(codex) else {
+        return Vec::new();
+    };
+    let index = shared_index(codex);
+    locks(codex, &[daemon])
+        .into_iter()
+        .filter(|(_, pid)| *pid == daemon)
+        .filter_map(|(id, _)| meta_of(&rollout_for(codex, &index, &id)?))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn client_cwd(pid: u32) -> Option<PathBuf> {
+    crate::process_info::cwd(pid)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn client_cwd(_: u32) -> Option<PathBuf> {
+    None
 }
 
 /// Prefer the database rollout path; fall back to `sessions/**/*-<id>.jsonl`.
