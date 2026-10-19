@@ -445,8 +445,8 @@ const HIDDEN_ENVIRONMENT_WAIT: chrono::TimeDelta = chrono::TimeDelta::seconds(10
 /// retitled itself, is in every home's pass: the home holding its records attributes it, and
 /// `all_observed` keeps that row over the bare ones.
 ///
-/// Two `ps` reads cover the listed pids alone, because the whole table with environments is
-/// several times larger and every refresh would read it. macOS prints no environment for a
+/// The environment is read only for listed pids this process has not read before, because the
+/// whole table with environments is several times larger and every refresh would read it. macOS prints no environment for a
 /// platform binary or another user's process: a hidden environment keeps the pid once it has
 /// run for [`HIDDEN_ENVIRONMENT_WAIT`], because it must never empty the fleet, and so does an
 /// environment read that failed outright. A pid that went between the reads, whose command line
@@ -472,33 +472,57 @@ pub fn own_home_processes(
     let of = &real(of);
     // A home outside the set, which only a caller naming its own root passes, is read alone.
     let alone = !read.contains(of);
+    // argv comes from the table this pass already read; only the environment needs its own.
+    let argv = pass_argv(ps);
+    // A process keeps the environment it started with, so the home it names is read once per
+    // process and command line. A re-exec keeps the pid and start but changes the command line.
+    type Known =
+        HashMap<(crate::config::HarnessKind, u32, DateTime<Utc>), (String, Option<PathBuf>)>;
+    static KNOWN: Mutex<Option<Known>> = Mutex::new(None);
+    let mut known = KNOWN.lock().unwrap_or_else(|e| e.into_inner());
+    let known = known.get_or_insert_with(HashMap::new);
+    known.retain(|(_, pid, started), (line, _)| {
+        argv.get(pid)
+            .is_some_and(|(now, at)| now == line && at == started)
+    });
     let list = pids
         .iter()
+        .filter(|pid| {
+            argv.get(pid)
+                .is_some_and(|(_, started)| !known.contains_key(&(kind, **pid, *started)))
+        })
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    // argv comes from the table this pass already read; only the environment needs its own.
-    let argv = pass_argv(ps);
     let with_environment = process_column(ps, &list, "-wwEp");
+    let uses = |used: &Option<PathBuf>| match used {
+        None => true,
+        Some(used) => {
+            let used = real(used);
+            read.contains(&used) && (alone || used == *of)
+        }
+    };
     pids.iter()
         .copied()
         .filter(|pid| {
             let Some((argv, started)) = argv.get(pid) else {
                 return true;
             };
+            if let Some((_, used)) = known.get(&(kind, *pid, *started)) {
+                return uses(used);
+            }
             match with_environment.as_ref().map(|read| read.get(pid)) {
                 None => true,
                 Some(None) => false,
                 Some(Some(full)) if !full.starts_with(argv.as_str()) => false,
                 Some(Some(full)) => match environment(full, argv) {
                     None => Utc::now() - *started >= HIDDEN_ENVIRONMENT_WAIT,
-                    Some(env) => match home.of_process(env) {
-                        None => true,
-                        Some(used) => {
-                            let used = real(&used);
-                            read.contains(&used) && (alone || used == *of)
-                        }
-                    },
+                    Some(env) => {
+                        let used = home.of_process(env);
+                        let own = uses(&used);
+                        known.insert((kind, *pid, *started), (argv.clone(), used));
+                        own
+                    }
                 },
             }
         })

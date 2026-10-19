@@ -546,3 +546,89 @@ while True:
     );
     d.quit();
 }
+
+/// A process keeps the environment it started with, so the dashboard reads a client's once:
+/// three refreshes that each show the same client a newer rollout add no environment read.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_codex_client_environment_is_read_once_across_refreshes() {
+    use crate::dashboard::Dashboard;
+    use serde_json::{Value, json};
+    use std::{
+        io::Write,
+        os::unix::process::CommandExt,
+        process::{Command, Stdio},
+    };
+
+    let mut d = Dashboard::new("codex-environment-once", &["codex"]);
+    let home = d.home().join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    let cwd = d.project().canonicalize().unwrap();
+    let mut child = Command::new("node")
+        .arg0("codex")
+        .arg("-")
+        .current_dir(&cwd)
+        .env("HOME", d.home())
+        .env("CODEX_HOME", &home)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"setTimeout(() => {}, 600000)")
+        .unwrap();
+    struct Client(std::process::Child);
+    impl Drop for Client {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let _client = Client(child);
+    d.start();
+    // Each newer rollout in the client's folder is its thread, so each title needs a new pass.
+    let titles = [
+        "first pass marker",
+        "second pass marker",
+        "third pass marker",
+    ];
+    for (i, title) in titles.iter().enumerate() {
+        let id = format!("01a14435-4399-7903-96fb-35d94a9f620{i}");
+        let day = home.join("sessions/2026/10/19");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(
+            day.join(format!("rollout-{id}.jsonl")),
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta", "payload":{"id":id,"session_id":id,
+                "timestamp":chrono::Utc::now().to_rfc3339(),"cwd":cwd}}),
+                json!({"type":"event_msg","payload":{"item":{"type":"UserMessage",
+                "content":[{"type":"text","text":title}]}}}),
+            ),
+        )
+        .unwrap();
+        d.wait_text(title);
+    }
+    d.quit();
+    let log = fs::read_to_string(d.path("state/tui-debug.log")).unwrap();
+    let spawns = |op: &str| -> u64 {
+        log.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|r| r["event"] == "timing.summary")
+            .filter_map(|r| r["data"]["observation"][op]["spawns"].as_u64())
+            .sum()
+    };
+    let result = json!({
+        "table_reads_at_least_three": spawns("process_table") >= 3,
+        "environment_reads": spawns("process_env"),
+    });
+    let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-environment-once.json");
+    fs::write(&artifact, serde_json::to_string_pretty(&result).unwrap()).unwrap();
+    assert_eq!(
+        result,
+        json!({"table_reads_at_least_three": true, "environment_reads": 1}),
+        "{log}"
+    );
+}
