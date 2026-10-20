@@ -16716,6 +16716,18 @@ impl App {
                             self.enter()?;
                         }
                     }
+                    // A backslash before the caret turns enter into a line break, as in Claude Code.
+                    KeyAction::Enter
+                        if {
+                            let (text, caret) = self.composer_input_mut();
+                            text[..snap(text, *caret)].ends_with('\\')
+                        } =>
+                    {
+                        let (text, caret) = self.composer_input_mut();
+                        let at = snap(text, *caret) - 1;
+                        text.replace_range(at..at + 1, "\n");
+                        *caret = at + 1;
+                    }
                     // With a draft, shift+enter adds a line for either launch type.
                     KeyAction::Enter
                         if mods.intersects(KeyModifiers::SHIFT | KeyModifiers::ALT)
@@ -22518,6 +22530,11 @@ states:
             assert!(!app.key(KeyCode::Enter, mods).unwrap());
         }
         assert_eq!(app.text, "a\n\nb");
+        // A backslash before the caret makes plain enter a break too, as in Claude Code.
+        assert!(!app.key(KeyCode::Char('\\'), KeyModifiers::NONE).unwrap());
+        assert!(!app.key(KeyCode::Enter, KeyModifiers::NONE).unwrap());
+        assert_eq!(app.text, "a\n\n\nb");
+        assert!(!app.key(KeyCode::Backspace, KeyModifiers::NONE).unwrap());
         assert!(app.pending.is_empty(), "nothing was started");
         // A paste brings CR breaks; they join the typed ones.
         app.paste("c\r\nd\re");
