@@ -418,7 +418,8 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
 }
 
 /// A session an agent starts with `cones launch` is listed beneath that agent, though it works
-/// in another folder, and names that folder after its title since the heading no longer does.
+/// in another folder, badged ⚙, and names that folder after its title since the heading no
+/// longer does.
 /// `launched_under_parent: false` lists it in its own folder again.
 #[test]
 fn a_launch_from_an_agent_is_listed_beneath_it() {
@@ -478,11 +479,16 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     assert_eq!(launched["cwd"], other.to_str().unwrap());
 
     d.start();
-    let elsewhere = "  ↳ write the docs · in other  ";
+    let elsewhere = "  ↳ ⚙ write the docs · in other  ";
     let screen = d.wait_for("the launch beneath its launcher", |s| {
         s.contains(elsewhere) && row(s, "lead the work").is_some()
     });
     d.capture("beneath-launcher");
+    // The badge says another agent started it, in the dashboard's orange; the folder is a
+    // dim aside to the title.
+    assert_eq!(d.colour_of("⚙"), Some(vt100::Color::Idx(208)));
+    assert!(!d.cell_of("write the docs").unwrap().dim());
+    assert!(d.cell_of("· in other").unwrap().dim());
     let lines: Vec<&str> = screen.lines().collect();
     let at = |text: &str| lines.iter().position(|l| l.contains(text));
     assert_eq!(

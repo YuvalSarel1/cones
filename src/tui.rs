@@ -1092,17 +1092,20 @@ impl Data {
                         self.worktrees.contains(s.dir()) && key.2.is_empty(),
                         launched.or(fork),
                     );
-                    // Listed under its launcher, so the heading above no longer names its
-                    // folder. The last part keeps the title column narrow; the folder column
-                    // and the detail rows carry the whole path.
-                    if moved.contains(s.session_id.as_str())
+                    if launched.is_some()
                         && let Some((text, _)) = row.get_mut(title)
                     {
-                        let dir = s.dir();
-                        let name = dir
-                            .file_name()
-                            .map_or_else(|| fleet::tilde(dir), |n| n.to_string_lossy().into());
-                        text.push_str(&format!(" · in {name}"));
+                        *text = text.replacen("↳ ", &format!("↳ {LAUNCHED} "), 1);
+                        // Listed under its launcher, so the heading above no longer names its
+                        // folder. The last part keeps the title column narrow; the folder
+                        // column and the detail rows carry the whole path.
+                        if moved.contains(s.session_id.as_str()) {
+                            let dir = s.dir();
+                            let name = dir
+                                .file_name()
+                                .map_or_else(|| fleet::tilde(dir), |n| n.to_string_lossy().into());
+                            text.push_str(&format!("{ELSEWHERE}{name}"));
+                        }
                     }
                     indent(
                         !key.2.is_empty(),
@@ -3318,6 +3321,10 @@ fn logo_cell(harness: &str) -> String {
 const COORDINATOR: &str = "★";
 /// Prefix on an unread title, drawn in green whatever the title's own colour.
 const UNREAD: &str = "✉";
+/// Marks a session another agent started with `cones launch`, drawn in orange.
+const LAUNCHED: &str = "⚙";
+/// Leads the folder a launch works in when it is listed under a launcher elsewhere, drawn dim.
+const ELSEWHERE: &str = " · in ";
 
 fn brand(harness: &str) -> Style {
     harness::by_name(harness)
@@ -5089,7 +5096,7 @@ const FIELDS: [Field; 75] = [
         name: "launched_under_parent",
         short: "launches under launcher",
         hint: "List an agent's launches beneath it.",
-        long: "A session an agent starts with `cones launch` is listed beneath that agent, marked ↳, wherever it works; one working in another folder names that folder after its title. false lists every launch in its own folder. The list takes a change on its next update.",
+        long: "A session an agent starts with `cones launch` is listed beneath that agent, marked ↳ ⚙, wherever it works; one working in another folder names that folder, dimmed, after its title. false lists every launch in its own folder. The list takes a change on its next update.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -17701,6 +17708,35 @@ impl App {
                             rest
                         }
                         _ => text.as_str(),
+                    };
+                    // A launch's badge and the folder it works in are parts of its title.
+                    let text = match text.find(&format!("↳ {LAUNCHED} ")) {
+                        Some(at) if c == title && !armed => {
+                            let badge = at + "↳ ".len();
+                            drawn.push(Span::styled(text[..badge].to_owned(), *style));
+                            drawn.push(Span::styled(LAUNCHED, style.fg(ORANGE)));
+                            keep = keep.saturating_add(2);
+                            let rest = &text[badge + LAUNCHED.len()..];
+                            match rest.find(ELSEWHERE) {
+                                Some(folder) => {
+                                    drawn.push(Span::styled(
+                                        rest[..folder].to_owned(),
+                                        match () {
+                                            () if marked => style.fg(self.data.highlight),
+                                            () => *style,
+                                        },
+                                    ));
+                                    keep = keep.saturating_add(1);
+                                    drawn.push(Span::styled(
+                                        rest[folder..].to_owned(),
+                                        style.add_modifier(Modifier::DIM),
+                                    ));
+                                    continue;
+                                }
+                                None => rest,
+                            }
+                        }
+                        _ => text,
                     };
                     let (text, style) = if c == 0 && row.working() {
                         (
