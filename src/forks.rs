@@ -23,17 +23,7 @@ pub struct Link {
 }
 
 pub fn read(state: &Path) -> Result<Vec<Link>> {
-    let path = state.join("forks.json");
-    let mut bytes = Vec::new();
-    match fs::File::open(path) {
-        Ok(file) => {
-            file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-            ensure!(bytes.len() <= 4 * 1024 * 1024, "fork record is too large");
-            serde_json::from_slice(&bytes).context("reading fork relationships")
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(e) => Err(e.into()),
-    }
+    load(&state.join("forks.json")).context("reading fork relationships")
 }
 
 pub fn record(state: &Path, link: Link) -> Result<()> {
@@ -41,20 +31,91 @@ pub fn record(state: &Path, link: Link) -> Result<()> {
         !link.parent.is_empty() && !link.child.is_empty() && link.parent != link.child,
         "a fork must have a distinct native session id"
     );
+    update(state, "forks.json", |links: &mut Vec<Link>| {
+        links.retain(|old| {
+            !(old.harness == link.harness && old.home == link.home && old.child == link.child)
+        });
+        links.push(link);
+    })
+}
+
+/// A session that `cones launch` started from inside another listed session.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Launch {
+    pub harness: String,
+    /// The id the launch printed, which a client listed by its process may later replace.
+    pub child: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// The launcher, by the id the roster listed it under.
+    pub parent: String,
+}
+
+/// The launches a list can still show. Older ones name sessions long gone.
+const LAUNCHES: usize = 500;
+
+pub fn read_launches(state: &Path) -> Result<Vec<Launch>> {
+    load(&state.join("launches.json")).context("reading launch relationships")
+}
+
+pub fn record_launch(state: &Path, launch: Launch) -> Result<()> {
+    ensure!(
+        launch.parent != launch.child,
+        "a session cannot launch itself"
+    );
+    update(state, "launches.json", |launches: &mut Vec<Launch>| {
+        launches.push(launch);
+        let excess = launches.len().saturating_sub(LAUNCHES);
+        launches.drain(..excess);
+    })
+}
+
+/// Mark each session a recorded launch started with the session that launched it.
+pub fn apply_launches(launches: &[Launch], sessions: &mut [Session]) {
+    for session in sessions {
+        if let Some(launch) = launches.iter().rev().find(|l| {
+            l.harness == session.harness
+                && (l.child == session.session_id || l.pid.is_some_and(|p| session.pid == Some(p)))
+        }) {
+            session.launched_by = Some(launch.parent.clone());
+        }
+    }
+}
+
+fn load<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    let mut bytes = Vec::new();
+    match fs::File::open(path) {
+        Ok(file) => {
+            file.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() <= 4 * 1024 * 1024,
+                "{} is too large",
+                path.display()
+            );
+            Ok(serde_json::from_slice(&bytes)?)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn update<T: Serialize + serde::de::DeserializeOwned>(
+    state: &Path,
+    name: &str,
+    change: impl FnOnce(&mut Vec<T>),
+) -> Result<()> {
     crate::private_dir(state)?;
-    let lock = crate::private_file(&state.join("forks.lock"))?;
+    let lock = crate::private_file(&state.join(name.replace(".json", ".lock")))?;
     lock.lock_exclusive()?;
-    let mut links = read(state)?;
-    links.retain(|old| {
-        !(old.harness == link.harness && old.home == link.home && old.child == link.child)
-    });
-    links.push(link);
-    let bytes = serde_json::to_vec(&links)?;
-    ensure!(bytes.len() <= 4 * 1024 * 1024, "fork record is too large");
+    let path = state.join(name);
+    let mut records = load(&path)?;
+    change(&mut records);
+    let bytes = serde_json::to_vec(&records)?;
+    ensure!(bytes.len() <= 4 * 1024 * 1024, "{name} is too large");
     let mut file = tempfile::NamedTempFile::new_in(state)?;
     file.write_all(&bytes)?;
     file.as_file().sync_all()?;
-    file.persist(state.join("forks.json"))?;
+    file.persist(path)?;
     Ok(())
 }
 
@@ -93,6 +154,16 @@ pub fn order<'a>(sessions: &[&'a Session]) -> Vec<(&'a Session, usize)> {
     let mut children = vec![Vec::new(); sessions.len()];
     let mut has_parent = vec![false; sessions.len()];
     for (i, s) in sessions.iter().enumerate() {
+        // A launch hangs from its launcher by the id the launcher is listed under.
+        if let Some(p) = s.launched_by.as_deref().and_then(|launcher| {
+            sessions
+                .iter()
+                .position(|p| p.session_id == launcher && p.session_id != s.session_id)
+        }) {
+            children[p].push(i);
+            has_parent[i] = true;
+            continue;
+        }
         let Some(parent) = s.forked_from.as_deref() else {
             continue;
         };

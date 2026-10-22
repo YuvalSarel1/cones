@@ -23,7 +23,7 @@ jobs:
 | `version` | Schema version, currently `4`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `worktrees`, `original_titles`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `worktrees`, `original_titles`, `launched_under_parent`, `confirm_secs` | [List settings](#list-settings). |
 | `folders` | [Pinned folders](dashboard.md#add-a-folder). |
 | `homes` | [Extra native homes](#homes) to read, by harness. |
 | `pane` | [Viewer position and size](#pane). |
@@ -115,6 +115,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `highlight` | `magenta`: colour of a session title highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`, `orange`, `pink`, `purple`, `teal`, `white`, or a hex colour as `#rrggbb`, such as `#ff8800`, on a terminal that renders true colour. The config screen draws each choice in the colour it names. |
 | `worktrees` | `nested`: a linked worktree with two or more sessions gets an indented heading inside its repository's folder. `flat` lists worktree sessions among the repository's own, marked `⑂`. A folder opened inside a worktree heads its own sessions either way. |
 | `original_titles` | `true`: a Claude row shows the title Claude generated from the first message. Claude later names a background job a second time, a short lowercase label it writes over that title; `false` shows the label, as `claude agents` does. A name given with `/rename` or a cones rename shows either way. Live rows take a change on their next update; history and runs after cones restarts. |
+| `launched_under_parent` | `true`: a session an agent started with [`cones launch`](cli.md#starting-a-session) is listed beneath that agent, marked `↳`, in the agent's group. One working in another folder names the folder's last part after its title, `· in reports`. `false` lists every launch in its own folder. Takes effect on the next list update. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
 | `folders` | `[]`: pinned folders, each absolute or under `~`, which `+ add folder` in the session list offers whenever they are not open. A pin is never a row by itself. The config screen holds them one folder per row behind the folders setting, where `enter` edits the selected folder or adds one and `ctrl+x` removes it. A path carrying a comma, a quote or a bracket is refused. |
 
@@ -335,6 +336,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it is installed for a Homebrew install and shown in the footer and Help. [`start.update_check`](#start) turns it off. |
 | `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
+| `launches.json`, `launches.lock` | The last 500 sessions `cones launch` started from inside a listed session, each with its launcher's id. See [starting a session](cli.md#starting-a-session). |
 | `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
 | `skill/cones/SKILL.md` | The [cones skill](cli.md#bundled-skills) as last installed, so an untouched copy can follow upgrades. |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |

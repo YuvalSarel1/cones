@@ -463,6 +463,9 @@ impl Data {
             .collect();
         merge_hosts(&mut sessions, &hosts);
         crate::forks::apply(&crate::forks::read(state)?, claude, &mut sessions);
+        if config::launched_under_parent(jobs_path) {
+            crate::forks::apply_launches(&crate::forks::read_launches(state)?, &mut sessions);
+        }
         let reports_started = Instant::now();
         let run_reports = runs
             .iter()
@@ -918,6 +921,40 @@ impl Data {
             };
             placed.push((s, key, open));
         }
+        // A launch sits in its launcher's group wherever it works, following the chain up to
+        // the first launcher that was not itself launched. A pin keeps its own place.
+        let mut moved: HashSet<&str> = HashSet::new();
+        if !by_state {
+            let keys: HashMap<&str, ((String, String, String), bool)> = placed
+                .iter()
+                .map(|(s, key, open)| (s.session_id.as_str(), (key.clone(), *open)))
+                .collect();
+            let parents: HashMap<&str, &str> = placed
+                .iter()
+                .filter_map(|(s, _, _)| Some((s.session_id.as_str(), s.launched_by.as_deref()?)))
+                .collect();
+            for (s, key, open) in &mut placed {
+                let s: &Session = s;
+                if pinned.contains(&s.session_id) {
+                    continue;
+                }
+                let mut at = s.session_id.as_str();
+                for _ in 0..8 {
+                    match parents.get(at).filter(|p| keys.contains_key(*p)) {
+                        Some(parent) if *parent != s.session_id => at = parent,
+                        _ => break,
+                    }
+                }
+                if let Some((parent_key, parent_open)) = keys.get(at).filter(|_| at != s.session_id)
+                {
+                    if key != parent_key {
+                        moved.insert(s.session_id.as_str());
+                    }
+                    *key = parent_key.clone();
+                    *open = *parent_open;
+                }
+            }
+        }
         // A worktree heading over one session nobody opened is noise, which agent worktrees
         // made one per session would be: that session stays among its repository's own.
         let mut sizes: HashMap<&(String, String, String), usize> = HashMap::new();
@@ -1031,34 +1068,46 @@ impl Data {
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
             .map(|(key, e)| match e {
                 Entry::Folder(_) => vec![],
-                Entry::Session(s) => indent(
-                    !key.2.is_empty(),
-                    title,
-                    unread(
-                        self.unread.contains(&s.session_id),
+                Entry::Session(s) => {
+                    let depth = depths
+                        .get(&(s.harness.as_str(), s.session_id.as_str()))
+                        .copied();
+                    let launched = s.launched_by.as_ref().and(depth).filter(|d| *d > 0);
+                    let fork = s
+                        .forked_from
+                        .as_deref()
+                        .filter(|parent| {
+                            present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
+                        })
+                        .map(|_| depth.unwrap_or(0));
+                    let mut row = session_cells(
+                        s,
+                        set,
+                        by_state,
+                        sparks.get(&s.session_id).map(String::as_str),
+                        self.branches.get(s.dir()).map(String::as_str),
+                        // A worktree heading already marks the sessions under it.
+                        self.worktrees.contains(s.dir()) && key.2.is_empty(),
+                        launched.or(fork),
+                    );
+                    // Listed under its launcher, so the heading above no longer names its
+                    // folder. The last part keeps the title column narrow; the folder column
+                    // and the detail rows carry the whole path.
+                    if moved.contains(s.session_id.as_str())
+                        && let Some((text, _)) = row.get_mut(title)
+                    {
+                        let dir = s.dir();
+                        let name = dir
+                            .file_name()
+                            .map_or_else(|| fleet::tilde(dir), |n| n.to_string_lossy().into());
+                        text.push_str(&format!(" · in {name}"));
+                    }
+                    indent(
+                        !key.2.is_empty(),
                         title,
-                        session_cells(
-                            s,
-                            set,
-                            by_state,
-                            sparks.get(&s.session_id).map(String::as_str),
-                            self.branches.get(s.dir()).map(String::as_str),
-                            // A worktree heading already marks the sessions under it.
-                            self.worktrees.contains(s.dir()) && key.2.is_empty(),
-                            s.forked_from
-                                .as_deref()
-                                .filter(|parent| {
-                                    present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
-                                })
-                                .map(|_| {
-                                    depths
-                                        .get(&(s.harness.as_str(), s.session_id.as_str()))
-                                        .copied()
-                                        .unwrap_or(0)
-                                }),
-                        ),
-                    ),
-                ),
+                        unread(self.unread.contains(&s.session_id), title, row),
+                    )
+                }
                 Entry::Run(s) => indent(
                     !key.2.is_empty(),
                     title,
@@ -4843,7 +4892,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 74] = [
+const FIELDS: [Field; 75] = [
     Field {
         group: "cones",
         sub: "",
@@ -5029,6 +5078,16 @@ const FIELDS: [Field; 74] = [
         short: "original Claude titles",
         hint: "Keep a Claude job's first title over its job name.",
         long: "Claude titles a session from its first message, then names a background job a second time, after its first status check, and writes that shorter lowercase label over the title. true keeps showing the title. false shows the job name, as `claude agents` does. A name given with /rename or a cones rename shows either way.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "cones",
+        sub: "",
+        name: "launched_under_parent",
+        short: "launches under launcher",
+        hint: "List an agent's launches beneath it.",
+        long: "A session an agent starts with `cones launch` is listed beneath that agent, marked ↳, wherever it works; one working in another folder names that folder after its title. false lists every launch in its own folder. The list takes a change on its next update.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -5998,9 +6057,12 @@ impl ConfigForm {
                 "kimi_in_picker" => flag(d.kimi_in_picker),
                 "kimi_skip_permissions" => flag(d.kimi_skip_permissions),
 
-                "check" | "folders" | "highlight" | "worktrees" | "original_titles" => {
-                    String::new()
-                }
+                "check"
+                | "folders"
+                | "highlight"
+                | "worktrees"
+                | "original_titles"
+                | "launched_under_parent" => String::new(),
                 "codex_full_access" => flag(d.codex_full_access),
                 "notify" => flag(d.notify),
                 "archive_transcript" => flag(d.archive_transcript),
@@ -7558,7 +7620,13 @@ fn config_form_from(jobs_path: &Path, policy: &config::Policy) -> Box<ConfigForm
     form.values[field_at("highlight")] = config::file_highlight(jobs_path).unwrap_or_default();
     form.values[field_at("worktrees")] = worktrees_value(jobs_path);
     form.values[field_at("original_titles")] = original_titles_value(jobs_path);
+    form.values[field_at("launched_under_parent")] = launched_under_parent_value(jobs_path);
     form
+}
+
+/// The launch placement toggle as the file states it, empty when it does not.
+fn launched_under_parent_value(jobs_path: &Path) -> String {
+    config::file_launched_under_parent(jobs_path).map_or_else(String::new, |on| on.to_string())
 }
 
 /// The original-titles toggle as the file states it, empty when it does not.
@@ -9009,6 +9077,7 @@ pub(crate) fn history_session(entry: &history::Entry) -> Session {
         coordinator: false,
         forked_from: None,
         forked_from_harness: None,
+        launched_by: None,
         activity: Vec::new(),
         moved_to: entry.moved_to.clone(),
         native_id: None,
@@ -9528,6 +9597,7 @@ pub(crate) fn placeholder(kind: HarnessKind, id: &str, dir: &Path, prompt: &str)
         coordinator: false,
         forked_from: None,
         forked_from_harness: None,
+        launched_by: None,
         activity: Vec::new(),
         moved_to: None,
         native_id: None,
@@ -12759,6 +12829,21 @@ impl App {
                         fleet::configure_titles(config::original_titles(&self.jobs_path));
                     }
                 }
+                // And where launches are listed, which the next discovery reads.
+                if let Mode::Config(form) = &self.mode {
+                    let typed = form.values[field_at("launched_under_parent")].clone();
+                    if typed != launched_under_parent_value(&self.jobs_path) {
+                        let value = (!typed.is_empty()).then_some(typed.as_str());
+                        if let Err(e) =
+                            config::write_setting(&self.jobs_path, "launched_under_parent", value)
+                        {
+                            if let Mode::Config(form) = &mut self.mode {
+                                form.error = Some(format!("{e:#}"));
+                            }
+                            return;
+                        }
+                    }
+                }
                 // The pin list is written on its own, the way the column sets are: it is the
                 // one setting the session list also edits, and the folder rows follow it.
                 if let Mode::Config(form) = &self.mode {
@@ -15195,6 +15280,7 @@ impl App {
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
+            launched_by: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,
@@ -22423,6 +22509,7 @@ states:
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
+            launched_by: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,
@@ -24216,6 +24303,7 @@ while True:
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
+            launched_by: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,

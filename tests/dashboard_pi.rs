@@ -416,3 +416,88 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
     d.keep("state/launches.jsonl");
     d.quit();
 }
+
+/// A session an agent starts with `cones launch` is listed beneath that agent, though it works
+/// in another folder, and names that folder after its title since the heading no longer does.
+/// `launched_under_parent: false` lists it in its own folder again.
+#[test]
+fn a_launch_from_an_agent_is_listed_beneath_it() {
+    let mut d = pi_dashboard("pi_launch_under_parent");
+    let project = d.project().canonicalize().unwrap();
+    let other = d.path("other");
+    fs::create_dir_all(&other).unwrap();
+    let other = other.canonicalize().unwrap();
+    d.open_folders(&[project.clone(), other.clone()]);
+    let launch = |dir: &Path, prompt: &str, env: &[(&str, &str)]| {
+        let out = d.cli(
+            &[
+                "launch",
+                "--dir",
+                dir.to_str().unwrap(),
+                "--harness",
+                "pi",
+                prompt,
+            ],
+            env,
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let parent = launch(&project, "lead the work", &[]);
+    // The launcher is found by the session id its harness exports, as a Codex thread's is.
+    let child = launch(&other, "write the docs", &[("CODEX_THREAD_ID", &parent)]);
+    let recorded: Value =
+        serde_json::from_str(&fs::read_to_string(d.path("state/launches.json")).unwrap()).unwrap();
+    assert_eq!(recorded.as_array().unwrap().len(), 1, "{recorded}");
+    assert_eq!(recorded[0]["parent"], parent.as_str());
+    assert_eq!(recorded[0]["child"], child.as_str());
+    assert_eq!(recorded[0]["harness"], "pi");
+
+    d.start();
+    let elsewhere = "  ↳ write the docs · in other  ";
+    let screen = d.wait_for("the launch beneath its launcher", |s| {
+        s.contains(elsewhere) && row(s, "lead the work").is_some()
+    });
+    d.capture("beneath-launcher");
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = |text: &str| lines.iter().position(|l| l.contains(text));
+    assert_eq!(
+        at(elsewhere),
+        at("lead the work").map(|i| i + 1),
+        "{screen}"
+    );
+    assert_eq!(
+        at(&project.display().to_string()),
+        at("lead the work").map(|i| i - 1),
+        "{screen}"
+    );
+    // The folder it works in heads no row of its own, empty or not.
+    assert_eq!(at(&other.display().to_string()), None, "{screen}");
+    assert!(!screen.contains("no sessions here"), "{screen}");
+    d.quit();
+
+    let jobs = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{jobs}launched_under_parent: false\n"),
+    )
+    .unwrap();
+    d.start();
+    let screen = d.wait_for("the launch in its own folder", |s| {
+        row(s, "write the docs").is_some() && row(s, "lead the work").is_some()
+    });
+    d.capture("own-folder");
+    assert!(!screen.contains("↳"), "{screen}");
+    assert!(!screen.contains("· in "), "{screen}");
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap();
+    assert_eq!(
+        at(&other.display().to_string()),
+        at("write the docs") - 1,
+        "{screen}"
+    );
+}

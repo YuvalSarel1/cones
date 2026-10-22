@@ -376,6 +376,9 @@ pub struct JobsFile {
     /// Title a Claude session by its generated title rather than its background job name.
     #[serde(default)]
     pub original_titles: Option<bool>,
+    /// List a session started with `cones launch` beneath the session that launched it.
+    #[serde(default)]
+    pub launched_under_parent: Option<bool>,
 }
 
 /// `nested` heads each linked worktree inside its repository's folder; `flat` lists its
@@ -392,6 +395,9 @@ pub const WHOLE_COLUMNS: bool = true;
 /// Claude names a background job a second time, after its first status check, and writes
 /// that label over the title it generated from the first message. On, rows keep the title.
 pub const ORIGINAL_TITLES: bool = true;
+
+/// An agent's launches sit beneath it, so the work it handed out reads as its own.
+pub const LAUNCHED_UNDER_PARENT: bool = true;
 
 /// Colour of a highlighted session row. The built-in is distinct from the states' green, yellow
 /// and red and from the coordinator's orange, so an unconfigured mark is never read as a
@@ -949,6 +955,16 @@ pub fn original_titles(path: &Path) -> bool {
 /// Read without applying defaults; missing or invalid files return `None`.
 pub fn file_original_titles(path: &Path) -> Option<bool> {
     parse(path).ok().and_then(|d| d.original_titles)
+}
+
+/// Whether a launched session is listed beneath its launcher, the built-in when unset.
+pub fn launched_under_parent(path: &Path) -> bool {
+    file_launched_under_parent(path).unwrap_or(LAUNCHED_UNDER_PARENT)
+}
+
+/// Read without applying defaults; missing or invalid files return `None`.
+pub fn file_launched_under_parent(path: &Path) -> Option<bool> {
+    parse(path).ok().and_then(|d| d.launched_under_parent)
 }
 
 /// Read the pinned folders as written; missing or invalid files return `None`.

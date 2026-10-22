@@ -97,6 +97,10 @@ pub struct Session {
     /// The parent's harness when it differs: a cross-harness fork seeded from another transcript.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from_harness: Option<String>,
+    /// The listed session that started this one with `cones launch`, by the id it is listed
+    /// under, while `launched_under_parent` puts the launch beneath it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_by: Option<String>,
     /// Timestamped activity for sparklines; excluded from JSON output.
     #[serde(skip)]
     pub activity: Vec<Activity>,
@@ -946,6 +950,7 @@ fn build(
         coordinator: false,
         forked_from: parent,
         forked_from_harness: None,
+        launched_by: None,
         activity: d.report.activity,
     }
 }
@@ -2952,6 +2957,7 @@ mod tests {
             coordinator: false,
             forked_from: None,
             forked_from_harness: None,
+            launched_by: None,
             activity: Vec::new(),
             moved_to: None,
             native_id: None,

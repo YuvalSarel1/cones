@@ -161,7 +161,7 @@ pub fn claims(state: &Path) -> HashSet<(String, PathBuf)> {
 /// where reading one harness's registry would only ever find that harness's sessions. A Codex
 /// thread runs its commands under the shared app-server daemon, whose chain reaches no client,
 /// so a chain that finds no row falls back on the session id the harness exports to its shells.
-fn own_session(rows: &[Session]) -> Option<&Session> {
+pub fn own_session(rows: &[Session]) -> Option<&Session> {
     let mut pid = Some(std::process::id());
     let mut seen = HashSet::new();
     while let Some(current) = pid.filter(|p| *p > 1 && seen.insert(*p)) {

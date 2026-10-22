@@ -142,6 +142,22 @@ impl Dashboard {
         ]
     }
 
+    /// Run one `cones` command against this fixture, as an agent's shell would.
+    pub fn cli(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+        let mut command = Command::new(&self.exe);
+        command
+            .args(["--jobs".as_ref(), self.path("jobs.yaml").as_os_str()])
+            .args(["--state-dir".as_ref(), self.path("state").as_os_str()])
+            .args(args)
+            .current_dir(self.project())
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .envs(self.env())
+            .envs(env.iter().copied())
+            .stdin(Stdio::null());
+        command.output().unwrap()
+    }
+
     /// Start the dashboard and wait for its first frame.
     pub fn start(&mut self) {
         let (mut master, mut slave) = (0, 0);

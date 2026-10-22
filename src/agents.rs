@@ -181,6 +181,7 @@ pub fn sessions(kind: HarnessKind, home: &Path) -> Result<Vec<Session>> {
                 coordinator: false,
                 forked_from: None,
                 forked_from_harness: None,
+                launched_by: None,
                 activity: Vec::new(),
                 moved_to: None,
                 native_id: reported.remove(&p.pid),

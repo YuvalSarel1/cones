@@ -722,6 +722,28 @@ fn execute(cli: Cli) -> Result<i32> {
                 started.identity.describe()
             );
             println!("{}", started.id);
+            // A launch from inside a listed session is listed beneath it. The session runs
+            // either way, so a launcher cones cannot place only loses the placement.
+            if let Some(parent) =
+                cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))
+                    .ok()
+                    .and_then(|rows| {
+                        cones::coordinator::own_session(&rows).map(|me| me.session_id.clone())
+                    })
+            {
+                cones::forks::record_launch(
+                    &state,
+                    cones::forks::Launch {
+                        harness: started.harness.clone(),
+                        child: started.id.clone(),
+                        pid: started.pid,
+                        parent,
+                    },
+                )
+                .with_context(|| {
+                    format!("{} started but its launcher was not recorded", started.id)
+                })?;
+            }
             if let Some(name) = name.filter(|_| !flag) {
                 // The session is running whatever happens here, so its id is out first.
                 let session = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?
