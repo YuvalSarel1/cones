@@ -519,5 +519,5 @@ fn ctrl_y_asks_for_a_harness_and_seeds_a_cross_harness_fork() {
     assert!(!prompt.contains("--all"), "{prompt}");
     assert!(!prompt.contains("user "), "{prompt}");
     // A link waits for the child's native id, which a failed launch never reports.
-    assert!(!d.path("state/forks.json").exists());
+    assert!(!d.path("state/relations.json").exists());
 }

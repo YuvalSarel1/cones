@@ -447,15 +447,35 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
         );
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     };
+    // A fork recorded before launches joined forks in one file is kept beside them.
+    let old_fork = serde_json::json!([{"harness": "pi", "home": "/old", "cwd": "/old",
+        "parent": "old-parent", "child": "old-child"}]);
+    fs::write(d.path("state/forks.json"), old_fork.to_string()).unwrap();
     let parent = launch(&project, "lead the work", &[]);
     // The launcher is found by the session id its harness exports, as a Codex thread's is.
     let child = launch(&other, "write the docs", &[("CODEX_THREAD_ID", &parent)]);
-    let recorded: Value =
-        serde_json::from_str(&fs::read_to_string(d.path("state/launches.json")).unwrap()).unwrap();
-    assert_eq!(recorded.as_array().unwrap().len(), 1, "{recorded}");
-    assert_eq!(recorded[0]["parent"], parent.as_str());
-    assert_eq!(recorded[0]["child"], child.as_str());
-    assert_eq!(recorded[0]["harness"], "pi");
+    let relations_path = d.path("state/relations.json");
+    let relations = || -> Value {
+        serde_json::from_str(&fs::read_to_string(&relations_path).unwrap()).unwrap()
+    };
+    let recorded = relations();
+    assert_eq!(recorded.as_array().unwrap().len(), 2, "{recorded}");
+    assert_eq!(recorded[0]["kind"], "fork");
+    assert_eq!(recorded[0]["child"], "old-child");
+    let pid = |id: &str| id.strip_prefix("pi-").unwrap().parse::<u32>().unwrap();
+    let launched = &recorded[1];
+    assert_eq!(launched["kind"], "launch");
+    assert_eq!(launched["harness"], "pi");
+    // Each end is named by the conversation id pi reported, not the process id it is listed
+    // under while it has no session file.
+    for end in ["parent", "child"] {
+        let id = launched[end].as_str().unwrap();
+        assert!(uuid::Uuid::parse_str(id).is_ok(), "{launched}");
+    }
+    assert_ne!(launched["parent"], launched["child"]);
+    assert_eq!(launched["parent_pid"], pid(&parent));
+    assert_eq!(launched["child_pid"], pid(&child));
+    assert_eq!(launched["cwd"], other.to_str().unwrap());
 
     d.start();
     let elsewhere = "  ↳ write the docs · in other  ";
@@ -478,6 +498,20 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     // The folder it works in heads no row of its own, empty or not.
     assert_eq!(at(&other.display().to_string()), None, "{screen}");
     assert!(!screen.contains("no sessions here"), "{screen}");
+    d.quit();
+
+    // pi is listed by its process until it writes a session file, and then by its own id.
+    // A record naming either session by an id it is no longer listed under still finds both
+    // by their pids.
+    let mut stale = relations();
+    stale[1]["parent"] = "named-later".into();
+    stale[1]["child"] = "also-named-later".into();
+    fs::write(&relations_path, stale.to_string()).unwrap();
+    d.start();
+    d.wait_for("the launch beneath its renamed launcher", |s| {
+        s.contains(elsewhere) && row(s, "lead the work").is_some()
+    });
+    d.capture("renamed-launcher");
     d.quit();
 
     let jobs = fs::read_to_string(d.path("jobs.yaml")).unwrap();

@@ -462,10 +462,12 @@ impl Data {
             })
             .collect();
         merge_hosts(&mut sessions, &hosts);
-        crate::forks::apply(&crate::forks::read(state)?, claude, &mut sessions);
-        if config::launched_under_parent(jobs_path) {
-            crate::forks::apply_launches(&crate::forks::read_launches(state)?, &mut sessions);
-        }
+        crate::relations::apply(
+            &crate::relations::read(state)?,
+            claude,
+            &mut sessions,
+            config::launched_under_parent(jobs_path),
+        );
         let reports_started = Instant::now();
         let run_reports = runs
             .iter()
@@ -1022,7 +1024,7 @@ impl Data {
             if sessions.is_empty() {
                 continue;
             }
-            let ordered = crate::forks::order(&sessions);
+            let ordered = crate::relations::order(&sessions);
             depths.extend(
                 ordered
                     .iter()
@@ -11852,15 +11854,16 @@ impl App {
                             s.forked_from = Some(fork.parent.clone());
                         }
                         if native && !fork.saved && fork.reported.as_deref() == Some(id.as_str()) {
-                            match crate::forks::record(
+                            match crate::relations::record(
                                 &self.state,
-                                crate::forks::Link {
+                                crate::relations::Link {
                                     harness: s.harness.clone(),
                                     home: fork.home.clone(),
                                     cwd: s.cwd.clone(),
                                     parent: fork.parent.clone(),
                                     child: id,
                                     parent_harness: None,
+                                    ..Default::default()
                                 },
                             ) {
                                 Ok(()) => fork.saved = true,
@@ -15104,15 +15107,16 @@ impl App {
             let Some(spec) = harness::by_name(&row.harness) else {
                 return false;
             };
-            if let Err(e) = crate::forks::record(
+            if let Err(e) = crate::relations::record(
                 &self.state,
-                crate::forks::Link {
+                crate::relations::Link {
                     harness: row.harness.clone(),
                     home: spec.session_home(&self.claude, row),
                     cwd: row.cwd.clone(),
                     parent: seed.parent.clone(),
                     child: id.to_owned(),
                     parent_harness: Some(seed.parent_harness.clone()),
+                    ..Default::default()
                 },
             ) {
                 failed = Some(e);
@@ -24989,11 +24993,11 @@ while True:
             Some(A)
         );
         assert!(
-            crate::forks::read(d.path()).unwrap().is_empty(),
+            crate::relations::read(d.path()).unwrap().is_empty(),
             "process ids are not persisted as conversations"
         );
         app.apply(snapshot(vec![make(A, None), make(B, Some(pid))]));
-        let links = crate::forks::read(d.path()).unwrap();
+        let links = crate::relations::read(d.path()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!((links[0].parent.as_str(), links[0].child.as_str()), (A, B));
         assert_eq!(app.viewers[0].key, B);
@@ -25008,7 +25012,7 @@ while True:
                 .is_none(),
             "switching conversations must not manufacture another fork"
         );
-        assert_eq!(crate::forks::read(d.path()).unwrap().len(), 1);
+        assert_eq!(crate::relations::read(d.path()).unwrap().len(), 1);
     }
     /// A fork into another harness is a fresh launch the parent's harness never reports as a
     /// fork, so cones carries the parentage itself. It fails if the arrow is lost while the
@@ -25076,13 +25080,13 @@ while True:
             make("codex-4242", "codex", "seeded", Some(4242)),
         ]));
         under_parent(&app);
-        assert!(crate::forks::read(d.path()).unwrap().is_empty());
+        assert!(crate::relations::read(d.path()).unwrap().is_empty());
 
         let mut child = make(B, "codex", "seeded", Some(4242));
         app.apply(snapshot(vec![parent.clone(), later.clone(), child.clone()]));
         under_parent(&app);
         assert!(app.seeded.is_empty());
-        let links = crate::forks::read(d.path()).unwrap();
+        let links = crate::relations::read(d.path()).unwrap();
         assert_eq!(links.len(), 1);
         assert_eq!(
             (
@@ -25095,14 +25099,14 @@ while True:
         );
 
         let mut sessions = vec![parent, later, child.clone()];
-        crate::forks::apply(&links, d.path(), &mut sessions);
+        crate::relations::apply(&links, d.path(), &mut sessions, true);
         assert_eq!(sessions[2].forked_from.as_deref(), Some(A));
         assert_eq!(sessions[2].forked_from_harness.as_deref(), Some("claude"));
         app.apply(snapshot(sessions));
         under_parent(&app);
         child.harness = "pi".into();
         let mut other = vec![child];
-        crate::forks::apply(&links, d.path(), &mut other);
+        crate::relations::apply(&links, d.path(), &mut other, true);
         assert!(
             other[0].forked_from.is_none(),
             "the link names its child's harness"
@@ -25173,7 +25177,7 @@ while True:
             Some(A),
             "the fork keeps its parent"
         );
-        let links = crate::forks::read(d.path()).unwrap();
+        let links = crate::relations::read(d.path()).unwrap();
         assert_eq!(links.len(), 1, "the fork is recorded for later refreshes");
         assert_eq!((links[0].parent.as_str(), links[0].child.as_str()), (A, B));
     }

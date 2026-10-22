@@ -254,15 +254,16 @@ pub fn fork(
         _ => expected,
     };
     match child {
-        Some(child) => crate::forks::record(
+        Some(child) => crate::relations::record(
             state,
-            crate::forks::Link {
+            crate::relations::Link {
                 harness: kind.to_string(),
                 home: entry.key.home.clone(),
                 cwd: entry.cwd.clone(),
                 parent: entry.key.session_id.clone(),
                 child,
                 parent_harness: None,
+                ..Default::default()
             },
         )
         .context("the fork is running, but its parent was not recorded")?,
@@ -293,15 +294,16 @@ fn codex_fork(state: &Path, policy: &Policy, entry: &crate::history::Entry) -> R
         }),
     );
     let child = harness::codex_fork(entry, policy)?;
-    crate::forks::record(
+    crate::relations::record(
         state,
-        crate::forks::Link {
+        crate::relations::Link {
             harness: "codex".into(),
             home: entry.key.home.clone(),
             cwd: entry.cwd.clone(),
             parent: entry.key.session_id.clone(),
             child: child.clone(),
             parent_harness: None,
+            ..Default::default()
         },
     )
     .context("the fork is running, but its parent was not recorded")?;

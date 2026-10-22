@@ -257,7 +257,7 @@ overlapping an unrecorded launch in the same folder is reported unnamed rather t
 
 A launch from inside a listed session, found by the process chain or the `$CODEX_THREAD_ID`
 or `$CLAUDE_CODE_SESSION_ID` the agent's harness exports, is recorded in
-`STATE_DIR/launches.json`, and the dashboard lists it beneath that session, marked `↳`. One
+`STATE_DIR/relations.json`, and the dashboard lists it beneath that session, marked `↳`. One
 working in another folder names that folder after its title, `↳ write the docs · in reports`,
 since the heading above it no longer does.
 [`launched_under_parent: false`](jobs.md#list-settings) lists every launch in its own folder.

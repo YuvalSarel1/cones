@@ -335,8 +335,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `runs.jsonl` | One start and one terminal record per admitted run. Appends hold an exclusive lock; the next append repairs a partial trailing line left by a killed writer. |
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it is installed for a Homebrew install and shown in the footer and Help. [`start.update_check`](#start) turns it off. |
-| `forks.json`, `forks.lock` | Confirmed conversation parent links, scoped by harness, native home and directory, with a lock for concurrent writers. See [fork controls](dashboard.md#fork-a-conversation). |
-| `launches.json`, `launches.lock` | The last 500 sessions `cones launch` started from inside a listed session, each with its launcher's id. See [starting a session](cli.md#starting-a-session). |
+| `relations.json`, `relations.lock` | Which agent came from which: confirmed forks and the last 500 sessions `cones launch` started from inside a listed session. Each end is named by harness, native home and the harness's own id, with its pid while the harness has not named it, and the lock serializes writers. A `forks.json` from an earlier cones is read until the first write. See [fork controls](dashboard.md#fork-a-conversation) and [starting a session](cli.md#starting-a-session). |
 | `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
 | `skill/cones/SKILL.md` | The [cones skill](cli.md#bundled-skills) as last installed, so an untouched copy can follow upgrades. |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |

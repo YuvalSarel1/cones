@@ -1214,7 +1214,7 @@ fn resume_and_fork_reopen_a_conversation_detached_and_record_the_fork_s_parent()
     assert!(uuid::Uuid::parse_str(&child).is_ok(), "{args}");
     assert_ne!(child, id);
     let links: Value =
-        serde_json::from_slice(&fs::read(f.state().join("forks.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.state().join("relations.json")).unwrap()).unwrap();
     assert_eq!(links.as_array().unwrap().len(), 1, "{links}");
     assert_eq!(links[0]["parent"], id);
     assert_eq!(links[0]["child"], child.as_str());

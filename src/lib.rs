@@ -7,7 +7,6 @@ pub mod coordinator;
 pub mod copy;
 pub mod cost;
 pub mod fleet;
-pub mod forks;
 pub mod harness;
 pub mod history;
 pub mod history_api;
@@ -21,6 +20,7 @@ pub mod output;
 pub mod pi;
 #[cfg(target_os = "macos")]
 pub(crate) mod process_info;
+pub mod relations;
 pub mod runner;
 pub mod search;
 pub mod show;

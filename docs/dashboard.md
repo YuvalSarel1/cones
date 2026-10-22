@@ -247,7 +247,7 @@ tool results beyond their names and inputs, files read, system prompt, hidden re
 earlier messages. A harness whose transcript cones cannot read offers only its native fork.
 
 The new row appears beneath its visible parent, with indentation confined to the title.
-`STATE_DIR/forks.json` records confirmed links. Hidden parents leave a branch marker; absent
+`STATE_DIR/relations.json` records confirmed links. Hidden parents leave a branch marker; absent
 parents leave an ordinary row. Missing transcripts, archived sources and unsupported CLIs
 are reported before launch.
 

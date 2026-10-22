@@ -1540,11 +1540,12 @@ fn fork_asks_the_codex_daemon_for_a_thread_and_records_its_parent() {
         ]
     );
     let links: serde_json::Value =
-        serde_json::from_slice(&fs::read(f.state().join("forks.json")).unwrap()).unwrap();
+        serde_json::from_slice(&fs::read(f.state().join("relations.json")).unwrap()).unwrap();
     assert_eq!(links.as_array().unwrap().len(), 1, "{links}");
     assert_eq!(links[0]["parent"], id);
     assert_eq!(links[0]["child"], FORK);
     assert_eq!(links[0]["harness"], "codex");
+    assert_eq!(links[0]["kind"], "fork");
     let saved: serde_json::Value =
         serde_json::from_slice(&fs::read(f.state().join("codex-threads.json")).unwrap()).unwrap();
     assert!(
