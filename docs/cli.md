@@ -335,7 +335,8 @@ cones send 5bf8392e "rebase onto main when the tests pass"
 Delivers one note to the live session the id names, wherever it works, through its harness's
 native [message operation](harness.md#message-delivery); a harness without one is refused. The
 id is one `cones ls` prints, or a prefix of four or more characters. The note names its
-sender: a session cones can place is named with a line telling the recipient to answer with
+sender: a session cones can place, by its process chain or else by the `$CODEX_THREAD_ID` or
+`$CLAUDE_CODE_SESSION_ID` its harness exports, is named with a line telling the recipient to answer with
 `cones send` to it, and anything else is "another agent, not the owner". There is no folder,
 roster, greeting or inbox; [`cones comms`](#comms) adds those for agents sharing a folder.
 

@@ -158,7 +158,9 @@ pub fn claims(state: &Path) -> HashSet<(String, PathBuf)> {
 
 /// Which roster row is running this command, found by walking the process chain until one of
 /// the pids is a session cones can see. That works whatever harness the caller runs in,
-/// where reading one harness's registry would only ever find that harness's sessions.
+/// where reading one harness's registry would only ever find that harness's sessions. A Codex
+/// thread runs its commands under the shared app-server daemon, whose chain reaches no client,
+/// so a chain that finds no row falls back on the session id the harness exports to its shells.
 fn own_session(rows: &[Session]) -> Option<&Session> {
     let mut pid = Some(std::process::id());
     let mut seen = HashSet::new();
@@ -168,7 +170,10 @@ fn own_session(rows: &[Session]) -> Option<&Session> {
         }
         pid = crate::process_info::parent(current);
     }
-    None
+    ["CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .find_map(|id| rows.iter().find(|s| s.session_id == id))
 }
 
 pub fn claim(folder: &Folder, release: bool) -> Result<String> {

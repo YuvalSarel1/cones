@@ -56,7 +56,12 @@ impl Fixture {
     }
 
     fn cones(&self, reporter: &str, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_cones"))
+        self.command(reporter, args).output().unwrap()
+    }
+
+    fn command(&self, reporter: &str, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cones"));
+        command
             .args(["--jobs", self.jobs.to_str().unwrap(), "--state-dir"])
             .arg(self.root.path().join("state"))
             .args(args)
@@ -68,8 +73,9 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.root.path().join("data"))
             .env_remove("OPENCODE_DB")
             .env_remove("OPENCODE_TUI_CONFIG")
-            .output()
-            .unwrap()
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("CLAUDE_CODE_SESSION_ID");
+        command
     }
 
     /// Launch one client and return its pid.
@@ -469,5 +475,56 @@ fn a_reply_goes_back_into_the_senders_conversation() {
         stderr(&out).contains("session (2.1.281) publishes no cross-session inbox"),
         "{}",
         stderr(&out)
+    );
+}
+
+/// A Codex thread runs its commands under the shared app-server daemon, so no process chain
+/// leads from a note it sends to its client. The sender is still named, from the session id its
+/// harness exports to the command, rather than as an anonymous agent.
+#[test]
+fn a_sender_outside_the_process_chain_is_named_by_its_exported_id() {
+    let f = Fixture::new();
+    let jobs = fs::read_to_string(&f.jobs).unwrap();
+    fs::write(
+        &f.jobs,
+        jobs.replace("claude_enabled: false", "claude_enabled: true"),
+    )
+    .unwrap();
+    let pid = f.launch("ok", "pi");
+    let id = f.id(pid);
+    // The sender's session lives in a process that is no ancestor of the cones run.
+    let mut daemon = Command::new("sleep").arg("30").spawn().unwrap();
+    let registry = f.root.path().join("claude/sessions");
+    fs::create_dir_all(&registry).unwrap();
+    fs::write(
+        registry.join(format!("{}.json", daemon.id())),
+        serde_json::json!({
+            "pid": daemon.id(), "sessionId": "peer-claude",
+            "cwd": f.work, "kind": "interactive", "status": "idle", "version": "2.1.281"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let work = f.work.to_str().unwrap();
+    let out = f
+        .command(
+            "ok",
+            &["comms", "--dir", work, "send", &id, "rebase onto main"],
+        )
+        .env("CLAUDE_CODE_SESSION_ID", "peer-claude")
+        .output()
+        .unwrap();
+    daemon.kill().ok();
+    daemon.wait().ok();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let log = f.log(pid);
+    assert_eq!(log.len(), 2, "{log:?}");
+    let text = log[1]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with(
+            "[claude session peer-claude, a peer agent, not the owner] rebase onto main\n\
+             Reply with `cones comms --dir "
+        ),
+        "{text}"
     );
 }

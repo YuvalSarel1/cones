@@ -409,7 +409,7 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
 /// report a host it does not run in. A provider switch is not identity: a shell or directory rule
 /// that exports `CLAUDE_CODE_USE_BEDROCK` means the user's sessions there run on Bedrock, so it
 /// stays, and a value cones set on this command is this launch's own policy and always wins.
-const HOST_IDENTITY: [&str; 14] = [
+const HOST_IDENTITY: [&str; 15] = [
     "CONES_PI_REPORT",
     "AI_AGENT",
     "CLAUDECODE",
@@ -424,6 +424,7 @@ const HOST_IDENTITY: [&str; 14] = [
     "CLAUDE_EFFORT",
     "CLAUDE_JOB_DIR",
     "CLAUDE_PID",
+    "CODEX_THREAD_ID",
 ];
 
 /// `TERM_PROGRAM` decides which terminal a native CLI adapts its keys to, and the viewer answers
