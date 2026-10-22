@@ -2399,9 +2399,13 @@ fn indent(under: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(Stri
 }
 
 /// Mark cell `title` of an unread row. The mark goes in before the table pads its columns.
+/// An indented title takes the mark in its indentation, so it keeps its place under its parent.
 fn unread(unread: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
     if unread && let Some((text, _)) = row.get_mut(title) {
-        *text = format!("{UNREAD} {text}");
+        *text = match text.strip_prefix("  ") {
+            Some(rest) => format!("{UNREAD} {rest}"),
+            None => format!("{UNREAD} {text}"),
+        };
     }
     row
 }

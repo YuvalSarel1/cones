@@ -478,8 +478,15 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     assert_eq!(launched["child_pid"], pid(&child));
     assert_eq!(launched["cwd"], other.to_str().unwrap());
 
+    // The launch finished a turn nobody has read yet.
+    let unread = serde_json::json!({format!("pi:{child}:"): {
+        "observation": {"key": format!("pi:{child}:"), "state": "idle", "revision": ""},
+        "unread": true, "touched": 0,
+    }});
+    fs::write(d.path("state/attention.json"), unread.to_string()).unwrap();
     d.start();
-    let elsewhere = "  ↳ ⚙ write the docs · in other  ";
+    // Its mark takes the indentation, so the row keeps its place beneath its launcher.
+    let elsewhere = "  ✉ ↳ ⚙ write the docs · in other  ";
     let screen = d.wait_for("the launch beneath its launcher", |s| {
         s.contains(elsewhere) && row(s, "lead the work").is_some()
     });
@@ -528,7 +535,7 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     .unwrap();
     d.start();
     let screen = d.wait_for("the launch in its own folder", |s| {
-        row(s, "write the docs").is_some() && row(s, "lead the work").is_some()
+        s.contains("   ✉ write the docs  ") && row(s, "lead the work").is_some()
     });
     d.capture("own-folder");
     assert!(!screen.contains("↳"), "{screen}");
