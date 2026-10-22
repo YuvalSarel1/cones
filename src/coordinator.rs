@@ -670,7 +670,7 @@ pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String
     };
     let note = format!("[{}] {text}\n{reply}", sender(folder, &fleet_rows, greet));
     let home = crate::harness::home_of(row, &folder.claude);
-    crate::harness::message(row, &home, &folder.state, &note)?;
+    crate::harness::message(row, &home, &folder.state, &note, me)?;
     if greet {
         greeted.push(id.to_owned());
         write_atomically(&greeted_path, &serde_json::to_string(&greeted)?)?;
@@ -701,7 +701,7 @@ pub fn send_direct(
         ),
         None => format!("[another agent, not the owner] {text}"),
     };
-    crate::harness::message(row, &crate::harness::home_of(row, claude), state, &note)?;
+    crate::harness::message(row, &crate::harness::home_of(row, claude), state, &note, me)?;
     Ok(format!("sent to {id} ({})\n", row.harness))
 }
 

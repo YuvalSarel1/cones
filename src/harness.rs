@@ -816,11 +816,13 @@ pub fn home_of(session: &crate::fleet::Session, claude: &Path) -> PathBuf {
 /// A harness with no `message` operation cannot be written to from here and says so. Faking it
 /// by typing into the session's terminal would put words in the owner's input line, which is
 /// not a message from a peer and is not cones' to do.
+/// `sender` is the listed session the note comes from, when cones could place it.
 pub fn message(
     session: &crate::fleet::Session,
     home: &Path,
     state: &Path,
     text: &str,
+    sender: Option<&crate::fleet::Session>,
 ) -> Result<()> {
     let spec = by_name(&session.harness).context("unknown session harness")?;
     let operation = spec.operations.message.as_ref().with_context(|| {
@@ -831,7 +833,12 @@ pub fn message(
     })?;
     let template = match operation {
         spec::Message::PeerInbox { peer_inbox } => {
-            return peer_inbox_send(session, home, text, &peer_inbox.protocols);
+            return peer_inbox_send(
+                session,
+                home,
+                &envelope(text, sender),
+                &peer_inbox.protocols,
+            );
         }
         spec::Message::Reporter { .. } => {
             return reporter_send(
@@ -1269,6 +1276,38 @@ fn reporter_send(
         bail!("{name} refused the note: {error}");
     }
     Ok(())
+}
+
+/// Claude Code heads everything its inbox receives "Another Claude session sent a message",
+/// whoever sent it. Its own envelope names the sender instead, and the session shows that
+/// name: `@codex-01a1621a`, or `@cones` for a sender cones could not place. A body that would
+/// close the envelope early goes unwrapped.
+fn envelope(text: &str, sender: Option<&crate::fleet::Session>) -> String {
+    const TAG: &str = "cross-session-message";
+    if text.contains(&format!("</{TAG}")) {
+        return text.to_owned();
+    }
+    let (from, name) = match sender {
+        Some(s) => (
+            format!("cones:{}/{}", s.harness, s.session_id),
+            format!(
+                "{} {}",
+                s.harness,
+                s.session_id.chars().take(8).collect::<String>()
+            ),
+        ),
+        None => ("cones".to_owned(), "cones".to_owned()),
+    };
+    // Claude reads the attributes back only from these characters.
+    let from: String = from
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '%' | ':' | '_' | '/' | '.' | '-' => c,
+            _ => '-',
+        })
+        .collect();
+    let name = name.replace(['"', '<', '>', '\n', '\r'], "");
+    format!("<{TAG} from=\"{from}\" from-name=\"{name}\">\n{text}\n</{TAG}>")
 }
 
 /// Write one note to a Claude Code session's cross-session inbox, framed as its own

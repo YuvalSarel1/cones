@@ -192,6 +192,13 @@ line and `user` message SendMessage sends. Claude Code 2.1.278, 2.1.280 and 2.1.
 `peerProtocol` 1 and accept these messages. A session with no inbox, or with a protocol the
 definition does not list, is refused with its version.
 
+Claude Code heads every inbox message "Another Claude session sent a message", whichever
+harness sent it, and nothing in the frame changes that line. cones therefore wraps the note in
+Claude's own `<cross-session-message from="cones:codex/ID" from-name="codex 01a1621a">`
+envelope, and the session shows it as "Message from @codex-01a1621a". A sender cones cannot
+place is `@cones`. The model still reads Claude's heading, with the envelope and the note's
+first line naming the real sender beneath it. Checked against Claude Code 2.1.308.
+
 The recipient applies its own inbound policy. cones is not a Claude session and does not
 claim a permission mode. A session that bypasses permission prompts therefore holds the note,
 shows it to its user as "Held message from another session" and delivers it only after the

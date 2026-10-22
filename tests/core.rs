@@ -2120,11 +2120,17 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
         uuid::Uuid::parse_str(note["msg_id"].as_str().unwrap()).is_ok(),
         "{note}"
     );
+    // Claude heads whatever its inbox takes as from another Claude session; its envelope lets
+    // the session show who sent it, and a sender cones cannot place is cones itself.
     let content = note["message"]["content"].as_str().unwrap();
     assert!(
-        content.starts_with("[coordinator, not the owner] hello\nReply by appending"),
+        content.starts_with(
+            "<cross-session-message from=\"cones\" from-name=\"cones\">\n\
+             [coordinator, not the owner] hello\nReply by appending"
+        ),
         "{content}"
     );
+    assert!(content.ends_with("\n</cross-session-message>"), "{content}");
     assert!(
         content.contains(r#""from":"claude:worker-one""#),
         "{content}"
@@ -2257,8 +2263,10 @@ fn send_reaches_a_session_in_any_folder_and_names_its_sender() {
         serde_json::from_str(received.lines().nth(1).expect("a note after the auth line")).unwrap();
     assert_eq!(
         note["message"]["content"],
-        "[claude session peer-one, a peer agent, not the owner] hello\n\
-         Reply with `cones send peer-one '<reply>'`."
+        "<cross-session-message from=\"cones:claude/peer-one\" from-name=\"claude peer-one\">\n\
+         [claude session peer-one, a peer agent, not the owner] hello\n\
+         Reply with `cones send peer-one '<reply>'`.\n\
+         </cross-session-message>"
     );
 }
 
