@@ -48,6 +48,9 @@ and `f1`, or a single character. Prefix modifiers with `ctrl+`, `alt+` or
 Shifted printable characters retain their character, such as `?`.
 The `ctrl+\` binding also lists `ctrl+4`, because terminals can report the
 same input that way. Unlisted modifier combinations do not match a binding.
+Under a Hebrew layout, a `ctrl+` letter is read as the Latin key it sits on, so
+`ctrl+ה` is `ctrl+v`; this reaches a focused native viewer too. Other non-Latin
+layouts warn that shortcuts need an English layout.
 
 Loading rejects unknown fields, states, actions and key names, unsupported
 versions, repeated modifiers, duplicate states or keys within a state, missing

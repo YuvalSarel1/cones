@@ -24,6 +24,7 @@ const CTRL_Z: &[u8] = b"\x1a";
 const CTRL_X: &[u8] = b"\x18";
 /// ctrl+x on a Hebrew layout under the kitty keyboard protocol: ctrl with the key's letter, ס.
 const CTRL_X_HEBREW: &[u8] = b"\x1b[1505;5u";
+const CTRL_X_RUSSIAN: &[u8] = b"\x1b[1095;5u";
 const UP: &[u8] = b"\x1b[A";
 const DOWN: &[u8] = b"\x1b[B";
 const SHIFT_TAB: &[u8] = b"\x1b[Z";
@@ -335,22 +336,24 @@ fn a_second_terminal_opens_beside_the_first_and_ctrl_x_twice_stops_only_one() {
     assert_eq!(written.trim(), kept.to_string());
     d.press("ctrl+z", CTRL_Z);
     wait_list(&d);
-    d.press("ctrl+x on a Hebrew layout", CTRL_X_HEBREW);
-    let screen = d.wait_text("⚠ ctrl+ס: shortcuts need an English keyboard layout");
+    d.press("ctrl+x on a Russian layout", CTRL_X_RUSSIAN);
+    let screen = d.wait_text("⚠ ctrl+ч: shortcuts need an English keyboard layout");
     assert!(
         screen
             .lines()
-            .any(|l| l.starts_with(" ⚠ ctrl+ס") && l.contains('─')),
+            .any(|l| l.starts_with(" ⚠ ctrl+ч") && l.contains('─')),
         "the layout warning sits on the composer rule: {screen}"
     );
-    let mark = d.cell_of("⚠ ctrl+ס").unwrap();
+    let mark = d.cell_of("⚠ ctrl+ч").unwrap();
     assert_eq!(
         (mark.bgcolor(), mark.bold(), mark.dim()),
         (vt100::Color::Idx(3), true, false),
         "the layout warning is drawn bold on yellow, not dimmed with the rule"
     );
-    d.capture("hebrew-layout-warning");
-    d.press("ctrl+x", CTRL_X);
+    d.capture("layout-warning");
+    // A Hebrew layout's keys map back to the Latin keys under them.
+    d.press("ctrl+x on a Hebrew layout", CTRL_X_HEBREW);
+    d.wait_text("ctrl+x again to stop · any other key keeps it");
     d.press("ctrl+x", CTRL_X);
     let screen = d.wait_for("no shell rows", |s| {
         shell_rows(s) == 0 && s.contains("no sessions here")

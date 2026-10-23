@@ -3200,6 +3200,16 @@ impl Input {
     }
 }
 
+/// The Latin key under a letter of the standard Hebrew layout.
+fn hebrew_key(c: char) -> Option<char> {
+    const HEBREW: &str = "קראטוןםפשדגכעיחלךזסבהנמצ";
+    const LATIN: &str = "ertyuiopasdfghjklzxcvbnm";
+    HEBREW
+        .chars()
+        .position(|h| h == c)
+        .and_then(|i| LATIN.chars().nth(i))
+}
+
 /// Save a clipboard image as a temporary PNG for the harness to read by path.
 fn paste_image() -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("cones");
@@ -18027,6 +18037,15 @@ pub fn run(
                 {
                     k.modifiers = KeyModifiers::SHIFT;
                 }
+                // Under the kitty protocol a Hebrew layout reports ctrl+v as ctrl+ה, and
+                // crossterm drops the base-layout key, so read it back from the layout.
+                if let Event::Key(k) = &mut e
+                    && k.modifiers.contains(KeyModifiers::CONTROL)
+                    && let KeyCode::Char(c) = k.code
+                    && let Some(latin) = hebrew_key(c)
+                {
+                    k.code = KeyCode::Char(latin);
+                }
                 app.log_input(&e);
                 if is_pointer(&e) {
                     pointer_run.get_or_insert_with(Instant::now);
@@ -18039,8 +18058,7 @@ pub fn run(
                         if app.key(k.code, k.modifiers)? {
                             return Ok(());
                         }
-                        // Under the kitty protocol a non-Latin layout reports ctrl+x as ctrl+ס,
-                        // and crossterm drops the base-layout key that would map it back.
+                        // Any other non-Latin layout has no table to map it back.
                         if k.modifiers.contains(KeyModifiers::CONTROL)
                             && let KeyCode::Char(c) = k.code
                             && !c.is_ascii()
