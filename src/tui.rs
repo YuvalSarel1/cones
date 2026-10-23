@@ -2308,10 +2308,17 @@ fn uncolored(text: &str) -> String {
 }
 
 /// Column widths only grow during a dashboard session, preventing shifts as values change.
+/// The naming column is the exception: it fits the rows listed now, so a long title that
+/// left does not hold the other columns away from the short ones that stayed.
 pub type Widths = HashMap<Vec<String>, Vec<usize>>;
 
-/// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames.
-fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(String, Style)>> {
+/// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames
+/// except for the `fitted` column.
+fn table(
+    rows: Vec<Vec<(String, Style)>>,
+    widths: &mut Vec<usize>,
+    fitted: Option<usize>,
+) -> Vec<Vec<(String, Style)>> {
     let cols = rows.iter().map(Vec::len).max().unwrap_or(0);
     widths.resize(widths.len().max(cols), 0);
     for (c, w) in widths.iter_mut().enumerate() {
@@ -2321,7 +2328,11 @@ fn table(rows: Vec<Vec<(String, Style)>>, widths: &mut Vec<usize>) -> Vec<Vec<(S
             .map(|(t, _)| Span::raw(t.as_str()).width())
             .max()
             .unwrap_or(0);
-        *w = (*w).max(now);
+        *w = if fitted == Some(c) {
+            now
+        } else {
+            (*w).max(now)
+        };
     }
     rows.into_iter()
         .map(|r| {
@@ -2755,7 +2766,8 @@ fn columns(
     let key: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
     let mut all = vec![names.iter().map(|n| ((*n).to_owned(), dim())).collect()];
     all.extend(rows);
-    let mut all = table(all, widths.entry(key).or_default());
+    let named = names.iter().position(|n| matches!(*n, "title" | "job"));
+    let mut all = table(all, widths.entry(key).or_default(), named);
     let mut cells = all.remove(0);
     cells[0].0.insert_str(0, "  ");
     (
@@ -22558,6 +22570,42 @@ states:
             moved_to: None,
             native_id: None,
         }
+    }
+
+    #[test]
+    fn the_title_column_narrows_when_its_longest_title_leaves() {
+        let d = dir();
+        let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
+        data.sessions = vec![
+            session(A, "idle", "short", 1),
+            session(B, "idle", "a title well over the short one", 1),
+        ];
+        let mut widths = Widths::new();
+        let title_of = |data: &Data, widths: &mut Widths| {
+            let rows = data.rows_excluding(
+                false,
+                false,
+                false,
+                &HashSet::new(),
+                &HashSet::new(),
+                widths,
+            );
+            let row = rows
+                .into_iter()
+                .find(|r| matches!(&r.kind, Kind::Session(id, _) if id == A))
+                .unwrap();
+            let named = row
+                .cells
+                .iter()
+                .position(|(t, _)| t.trim() == "short")
+                .unwrap();
+            row.cells[named].0.clone()
+        };
+        let wide = title_of(&data, &mut widths);
+        assert_eq!(wide.len(), "a title well over the short one".len() + 2);
+        data.sessions.truncate(1);
+        let narrow = title_of(&data, &mut widths);
+        assert_eq!(narrow, "short  ");
     }
 
     #[test]
