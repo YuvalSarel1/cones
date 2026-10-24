@@ -189,7 +189,9 @@ and `cones show`, and nothing live beyond a reported `native_id`.
 
 `discovery.aliases` must resolve to the canonical executable. `entrypoints` matches immediate
 Node/Bun script operands by relative suffix, excluding names in prompt arguments.
-`process_title` matches the complete replaced title, as for Kimi.
+`process_title` matches the complete replaced title, as for Kimi. `unsaved` lists options
+that make a run keep no conversation, such as the fork `cones btw` starts; a process launched
+with one before `--` is not listed.
 
 A launch that omits `prompt`, `prompt_flag` and `stdin_prompt` has no interactive
 instruction, and starting it with one is refused.

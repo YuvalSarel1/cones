@@ -387,6 +387,36 @@ fn a_live_client_of_this_user_names_a_home_that_is_then_read() {
     assert_eq!(ids(&f.sessions()), [TASK]);
 }
 
+/// A run that keeps no conversation is a side question, as `cones btw` asks one, and not a
+/// session: it has nothing to open, and each question would add a row while it runs.
+#[test]
+fn a_run_that_keeps_no_conversation_is_not_a_row() {
+    let mut f = Fixture::new();
+    let own = f.path().join(".claude");
+    let kept = f.stand_in("claude", &["-p", "--", "tidy"], &[]);
+    let asked = f.stand_in(
+        "claude",
+        &["-p", "--no-session-persistence", "--", "why"],
+        &[],
+    );
+    f.session(&own, OWN, "interactive", kept, "tidy the changelog");
+    f.session(&own, TASK, "interactive", asked, "why");
+    let user = f.path().to_owned();
+    fs::create_dir_all(user.join(".codex")).unwrap();
+    let run = f.stand_in("codex", &["exec", "fix the widget"], &[("HOME", &user)]);
+    let fork = f.stand_in(
+        "codex",
+        &["exec", "fork", "--ephemeral", "--", RUN, "why"],
+        &[("HOME", &user)],
+    );
+
+    let codex = f.rows_when("codex", |row| row["pid"] == run);
+    let pids: Vec<&Value> = codex.iter().map(|row| &row["pid"]).collect();
+    assert!(pids.contains(&&json!(run)), "{codex:?}");
+    assert!(!pids.contains(&&json!(fork)), "{codex:?}");
+    assert_eq!(ids(&f.sessions()), [OWN]);
+}
+
 /// pi keeps a conversation in a file under its home, named after the folder it runs in. A
 /// client pointed at another home is attributed to the file in that home, so its row has the
 /// conversation's title and `cones show` reads it.

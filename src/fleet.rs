@@ -1824,6 +1824,20 @@ pub(crate) fn all_observed(
             .as_ref()
             .map_or(&[][..], |l| &l.skip_permissions[..]);
         for mut s in found {
+            if !spec.discovery.unsaved.is_empty()
+                && let Some(pid) = s.pid
+            {
+                let argv = argv.get_or_insert_with(|| pass_argv("/bin/ps"));
+                let unsaved = argv.get(&pid).is_some_and(|(command, _)| {
+                    spec.discovery
+                        .unsaved
+                        .iter()
+                        .any(|flag| launched_with(command, std::slice::from_ref(flag)))
+                });
+                if unsaved {
+                    continue;
+                }
+            }
             identify(&mut s);
             // A harness that reports no mode still shows the skip flag it was launched with.
             // Without the flag the mode is unknown, not prompting: its own config may skip them.

@@ -8,6 +8,7 @@ home:
 discovery:
   daemon: {pid: app-server-daemon/app-server.pid, locks: thread-writer-locks}
   process: codex
+  unsaved: [--ephemeral]
   exclude_subcommands:
     - --help
     - -h

@@ -249,6 +249,10 @@ pub struct Discovery {
     pub daemon: Option<Daemon>,
     #[serde(default)]
     pub exclude_subcommands: Vec<String>,
+    /// Options that make a run keep no conversation, as a side question's fork does. Such a
+    /// process has nothing to open or resume, so it is no row.
+    #[serde(default)]
+    pub unsaved: Vec<String>,
     pub process: Option<String>,
     #[serde(default)]
     pub aliases: Vec<String>,
