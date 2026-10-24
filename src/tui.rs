@@ -192,11 +192,12 @@ fn quit_on_signals() -> Result<Arc<AtomicBool>> {
 
 /// A bare ST closes any string sequence left open. No CAN before it: Ghostty 1.3 prints CAN as a
 /// cell, which leaves the shell's prompt one column in and zsh marks the line with `%`.
+/// `?7h` turns back on the autowrap the dashboard turned off.
 fn reset_terminal_protocols() {
     use std::io::Write;
     let mut out = std::io::stdout();
     let _ = out.write_all(
-        b"\x1b\\\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
+        b"\x1b\\\x1b[?7h\x1b[?2026l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l\x1b[<u\x1b[>4m\x1b(B\x1b[0m\x1b[?25h",
     );
     let _ = out.flush();
 }
@@ -17880,9 +17881,13 @@ pub fn run(
     }));
     let initialized = (|| {
         ratatui::crossterm::terminal::enable_raw_mode()?;
+        // A cell the terminal draws wider than ratatui measured would push the row past the
+        // right edge. With autowrap on, that wraps, and on the last row it scrolls the whole
+        // screen under a renderer that only redraws changed cells. Off, it clips at the edge.
         execute!(
             std::io::stdout(),
-            ratatui::crossterm::terminal::EnterAlternateScreen
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            ratatui::crossterm::terminal::DisableLineWrap
         )?;
         let output: Box<dyn std::io::Write> = Box::new(std::io::stdout());
         ratatui::Terminal::new(CrosstermBackend::new(output))

@@ -477,9 +477,21 @@ fn smoke_the_dashboard_draws_the_open_folder() {
     let screen = d.capture("first-frame");
     assert!(screen.contains("no sessions here"), "{screen}");
     assert!(screen.contains("terminal (zsh)"), "{screen}");
+    // A row drawn wider than measured clips at the edge instead of wrapping and scrolling the frame.
+    let drawn = d.output.lock().unwrap().clone();
+    let entered = drawn.windows(8).position(|w| w == b"\x1b[?1049h");
+    let unwrapped = drawn.windows(5).position(|w| w == b"\x1b[?7l");
+    assert!(
+        entered.zip(unwrapped).is_some_and(|(e, u)| u > e),
+        "autowrap stays on in the frame"
+    );
     d.quit();
     // Only escape sequences reach the shell's screen: a printed byte moves its prompt off column 0.
     let handed = d.handed_back();
+    assert!(
+        handed.windows(5).any(|w| w == b"\x1b[?7h"),
+        "the shell gets autowrap back: {handed:?}"
+    );
     assert!(handed.starts_with(b"\x1b"), "{handed:?}");
     assert!(
         !handed.contains(&0x18),
