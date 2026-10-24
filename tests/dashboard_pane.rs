@@ -163,7 +163,9 @@ fn a_split_wheel_report_never_reaches_the_pane() {
     d.typed("cat -v > split.txt\r");
     // The Esc read alone, as crossterm reports a lone byte, and the rest a moment later.
     d.burst("wheel report, Esc", b"\x1b");
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Long enough for a loaded dashboard to read the Esc on its own, well inside the window.
+    // At 2ms a CI runner read both writes at once, as one whole mouse event.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     d.press("wheel report, text", b"[<65;80;5M");
     // A typed Esc waits out the window and still reaches the shell.
     d.press("esc", b"\x1b");
@@ -189,7 +191,9 @@ fn a_split_wheel_report_never_reaches_the_list_input() {
     d.start();
     d.wait_text("Type a command");
     d.burst("wheel report, Esc", b"\x1b");
-    std::thread::sleep(std::time::Duration::from_millis(2));
+    // Long enough for a loaded dashboard to read the Esc on its own, well inside the window.
+    // At 2ms a CI runner read both writes at once, as one whole mouse event.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     d.press("wheel report, text", b"[<65;80;5M");
     d.typed("ok");
     let screen = d.wait_text("› ok");
@@ -341,5 +345,39 @@ fn a_plain_path_in_the_pane_links_to_its_file() {
     assert_eq!(d.link_of("gone/nope.rs"), None, "{screen}");
     d.press("ctrl+z", CTRL_Z);
     d.wait_for("the list", |s| s.contains("tab pane"));
+    d.quit();
+}
+
+#[test]
+fn a_drag_over_the_list_copies_the_rows_it_covers() {
+    let mut d = Dashboard::new("list-drag-copy", &[]);
+    let dirs: Vec<_> = ["alpha", "bravo"]
+        .iter()
+        .map(|rel| {
+            fs::create_dir_all(d.path(rel)).unwrap();
+            d.path(rel).canonicalize().unwrap()
+        })
+        .collect();
+    d.open_folders(&dirs);
+    // A pbcopy on the front of PATH keeps the machine's clipboard out of the test.
+    let bin = d.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let clip = d.path("clipboard");
+    let stub = bin.join("pbcopy");
+    fs::write(&stub, format!("#!/bin/sh\ncat > '{}'\n", clip.display())).unwrap();
+    fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    d.env.push(("PATH", Box::leak(path.into_boxed_str())));
+    d.start();
+    let screen = d.wait_for("both folders", |s| s.contains("alpha") && s.contains("bravo"));
+    let row = |name: &str| screen.lines().position(|l| l.contains(name)).unwrap() as u16;
+    let (top, bottom) = (row("alpha"), row("bravo"));
+    d.press("press", &mouse(0, 0, top, false));
+    d.press("drag", &mouse(32, 20, bottom, false));
+    d.press("release", &mouse(0, 20, bottom, true));
+    let screen = d.wait_text("copied ");
+    d.capture("copied");
+    let text = d.wait_file("clipboard", |t| !t.is_empty());
+    assert!(text.contains("alpha") && text.contains("bravo"), "{text:?}\n{screen}");
     d.quit();
 }
