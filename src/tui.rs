@@ -246,7 +246,7 @@ pub enum Kind {
     /// The key is not the path, so an offer never collides with a folder row.
     Suggestion(String, String),
     NewJob,
-    /// One line of the details ← unfolds under a session row.
+    /// One line of the details ctrl+e unfolds under a session row.
     Detail,
 }
 
@@ -8292,7 +8292,7 @@ enum KeyAction {
     DeleteWordLeft,
     DeleteWordRight,
     Down,
-    EditJob,
+    Expand,
     End,
     Enter,
     Filter,
@@ -9467,7 +9467,7 @@ struct App {
     highlighted: HashSet<String>,
     /// Session ids pinned with ctrl+t, listed above every group; kept in `state/pins.json`.
     pinned: HashSet<String>,
-    /// The session whose details ← unfolded under its row.
+    /// The session whose details ctrl+e unfolded under its row.
     unfolded: Option<String>,
     /// Every folder a session has been listed in, kept in `state/open-folders.json` until
     /// `ctrl+x` closes it or the directory is gone.
@@ -16627,6 +16627,7 @@ impl App {
                         action,
                         KeyAction::Up
                             | KeyAction::Down
+                            | KeyAction::Left
                             | KeyAction::Right
                             | KeyAction::PageUp
                             | KeyAction::PageDown
@@ -16680,16 +16681,6 @@ impl App {
                 {
                     self.leave_jobs();
                     self.needs_clear = true;
-                    return Ok(false);
-                }
-                // ← unfolds every detail of a session under its row, and folds it again.
-                if action == KeyAction::Left
-                    && mods.is_empty()
-                    && self.composer_text().is_empty()
-                    && let Some(Kind::Session(id, _)) = self.selected().map(|r| r.kind.clone())
-                {
-                    self.unfolded = (self.unfolded.as_ref() != Some(&id)).then_some(id);
-                    self.rebuild();
                     return Ok(false);
                 }
                 if searching_history {
@@ -16911,7 +16902,14 @@ impl App {
                         self.rebuild();
                     }
                     KeyAction::Split => self.toggle_split(),
-                    KeyAction::EditJob => self.edit_job(),
+                    // Every detail of a session unfolds under its row, and folds again.
+                    KeyAction::Expand => match self.selected().map(|r| r.kind.clone()) {
+                        Some(Kind::Session(id, _)) => {
+                            self.unfolded = (self.unfolded.as_ref() != Some(&id)).then_some(id);
+                            self.rebuild();
+                        }
+                        _ => self.edit_job(),
+                    },
                     KeyAction::Filter => self.mode = Mode::Filter,
                     KeyAction::Guide => {
                         self.mode = Mode::Guide(Guide::new(self.guide_origin()));

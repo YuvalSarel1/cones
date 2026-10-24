@@ -32,7 +32,7 @@ a separate setting.
 | `shift+enter` | Open the selection fullscreen once; insert a line break with text. Alt+Enter is also accepted. |
 | `tab` | Complete a directory path in the composer; otherwise enter the pane. Native viewer behavior is below. |
 | `→` | With an empty composer, enter the pane or open the session fullscreen if the pane is off. |
-| `←` | With an empty composer on a session, unfold every [column value](jobs.md#list-settings) and its id, pid, start time, transcript and fork parent under the row, grouped as agent, usage, time, process, source and reply; again folds them. The details stay while you move to other rows. |
+| `ctrl+e` | With an empty composer on a session, unfold every [column value](jobs.md#list-settings) and its id, pid, start time, transcript and fork parent under the row, grouped as agent, usage, time, process, source and reply; again, or moving, folds them. On a job, edit it. |
 | `ctrl+z` | Return from a viewer or screen to the list. |
 | `ctrl+\` | Toggle the pane; in a focused screen, switch split/fullscreen. Also `ctrl+4`. |
 | `esc` | Cancel the current action or draft, then back out; with nothing left, a second press within 1.5 seconds quits. Native viewers receive Escape. |

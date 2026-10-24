@@ -77,8 +77,8 @@ The `when` text documents these conditions; it is not an expression language.
    Folder completion and history search use their own input. Text editing gets
    first refusal before the remaining list shortcuts.
 
-For example, `ctrl+e` moves to the end of nonempty composer text and edits a job
-when the composer is empty. `shift+enter` inserts a line break in a draft and
+For example, `ctrl+e` moves to the end of nonempty composer text, and with an empty
+composer unfolds a session's details or edits a job. `shift+enter` inserts a line break in a draft and
 opens a viewer fullscreen without a draft. The same action can have different
 descriptions in different states.
 

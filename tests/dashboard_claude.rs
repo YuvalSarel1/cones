@@ -25,6 +25,7 @@ const DOWN: &[u8] = b"\x1b[B";
 const ESC: &[u8] = b"\x1b";
 const UP: &[u8] = b"\x1b[A";
 const SHIFT_TAB: &[u8] = b"\x1b[Z";
+const CTRL_E: &[u8] = b"\x05";
 const CTRL_F: &[u8] = b"\x06";
 const CTRL_P: &[u8] = b"\x10";
 const CTRL_S: &[u8] = b"\x13";
@@ -1882,8 +1883,9 @@ fn a_wheel_flood_reaches_the_pane_whole_in_a_few_frames() {
     }
 }
 
+/// ctrl+e unfolds a session's details. Left did, and was pressed by mistake too often.
 #[test]
-fn left_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
+fn ctrl_e_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
     let mut d = Dashboard::new("claude-details", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
     let project = real_project(&d);
@@ -1900,7 +1902,14 @@ fn left_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
         "folded rows show no id:\n{screen}"
     );
 
+    // Left leaves the row folded. A typed letter after it shows the key was handled.
     d.press("left", b"\x1b[D");
+    d.typed("x");
+    let screen = d.wait_text("› x");
+    assert!(!screen.contains(&fix.id), "left unfolded:\n{screen}");
+    d.press("backspace", b"\x7f");
+    d.wait_for("the empty composer", |s| !s.contains("› x"));
+    d.press("ctrl+e", CTRL_E);
     let screen = d.wait_text(&fix.id);
     d.capture("unfolded");
     let lines: Vec<&str> = screen.lines().collect();
@@ -2012,13 +2021,13 @@ fn left_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
         "{screen}"
     );
 
-    // Left again folds them in place.
+    // ctrl+e again folds them in place.
     d.press("up", UP);
     d.wait_text(&format!("fixture attached to {}", fix.short));
-    d.press("left", b"\x1b[D");
+    d.press("ctrl+e", CTRL_E);
     d.wait_text(&fix.id);
-    d.press("left", b"\x1b[D");
-    let screen = d.wait_for("left folded the details", |s| !s.contains(&fix.id));
+    d.press("ctrl+e", CTRL_E);
+    let screen = d.wait_for("ctrl+e folded the details", |s| !s.contains(&fix.id));
     assert!(selected(&screen).contains("Fix the parser"), "{screen}");
     d.quit();
     for s in [&mut fix, &mut rest] {
