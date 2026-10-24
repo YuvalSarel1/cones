@@ -202,6 +202,19 @@ pub fn remove(
     if let (Some(record), _) = host(state, claude, id)? {
         crate::terminal_host::stop(&record)
             .with_context(|| format!("stopping the cones terminal for {id}"))?;
+        // A Codex daemon keeps the thread after its terminal goes; forget it as a client row is.
+        if let Some(session) = rows.iter().find(|s| {
+            s.session_id == id
+                && harness::by_name(&s.harness).is_some_and(|spec| {
+                    spec.session(s.kind.as_deref()).remove == harness::spec::Remove::ForgetClient
+                })
+        }) {
+            let session = crate::fleet::Session {
+                pid: None,
+                ..session.clone()
+            };
+            return remove_session(state, claude, &session);
+        }
         return Ok(format!(
             "stopped the cones terminal running {} for {id}\n",
             record.session.harness

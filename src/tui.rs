@@ -8609,10 +8609,11 @@ const OPEN_FOLDERS: &str = "open-folders.json";
 /// Returns whether the set changed.
 fn open_folders(open: &mut BTreeSet<PathBuf>, data: &mut Data, known: &HashSet<String>) -> bool {
     let before = open.clone();
+    // A launch listed under its launcher has no row in its own folder, so it opens none.
     for s in data
         .sessions
         .iter()
-        .filter(|s| !known.contains(&s.session_id))
+        .filter(|s| !known.contains(&s.session_id) && s.launched_by.is_none())
     {
         let dir = data.roots.get(&s.cwd).unwrap_or(&s.cwd);
         if !dir.as_os_str().is_empty() {
@@ -16120,8 +16121,25 @@ impl App {
                     if let Some(i) = self.viewer_index(&id) {
                         self.close(i);
                     }
+                    // `cones rm` also forgets a Codex thread, which its daemon keeps after the
+                    // terminal goes. Stopping the host alone hid the row only until a restart,
+                    // and kept it hidden in this dashboard after the thread was resumed.
+                    let forget = self
+                        .data
+                        .sessions
+                        .iter()
+                        .find(|s| s.session_id == id)
+                        .filter(|_| verb == "forget")
+                        .map(|s| fleet::Session {
+                            pid: None,
+                            ..s.clone()
+                        });
+                    let (state, claude) = (self.state.clone(), self.claude.clone());
                     self.queue_stop(id, "stop", move || {
                         terminal_host::stop(&host)?;
+                        if let Some(session) = forget {
+                            crate::stop::remove_session(&state, &claude, &session)?;
+                        }
                         Ok(true)
                     });
                     return;

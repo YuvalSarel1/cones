@@ -419,7 +419,7 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
 
 /// A session an agent starts with `cones launch` is listed beneath that agent, though it works
 /// in another folder, badged ⚙, and names that folder after its title since the heading no
-/// longer does.
+/// longer does. Its folder does not open, so it leaves no empty folder behind when it ends.
 /// `launched_under_parent: false` lists it in its own folder again.
 #[test]
 fn a_launch_from_an_agent_is_listed_beneath_it() {
@@ -428,7 +428,7 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     let other = d.path("other");
     fs::create_dir_all(&other).unwrap();
     let other = other.canonicalize().unwrap();
-    d.open_folders(&[project.clone(), other.clone()]);
+    d.open_folders(std::slice::from_ref(&project));
     let launch = |dir: &Path, prompt: &str, env: &[(&str, &str)]| {
         let out = d.cli(
             &[
@@ -512,6 +512,8 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     assert_eq!(at(&other.display().to_string()), None, "{screen}");
     assert!(!screen.contains("no sessions here"), "{screen}");
     d.quit();
+    let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap();
+    assert!(!open.contains(other.to_str().unwrap()), "{open}");
 
     // pi is listed by its process until it writes a session file, and then by its own id.
     // A record naming either session by an id it is no longer listed under still finds both

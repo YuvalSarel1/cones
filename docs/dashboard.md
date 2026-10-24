@@ -226,7 +226,8 @@ deduplicated; a deleted directory asks to be created again when chosen.
 
 An open folder stays in the list: when its last session leaves, it remains as an empty row
 until `ctrl+x` closes it or the directory is deleted. Every folder a session is listed in
-opens this way. Open folders are kept in the state directory, not the configuration, so they
+opens this way; a launch listed beneath its launcher is not listed in its folder, so that
+folder stays closed. Open folders are kept in the state directory, not the configuration, so they
 survive a restart without becoming pins. Closing a pinned folder offers it again.
 
 ### Fork a conversation

@@ -1316,6 +1316,33 @@ fn rm_forgets_a_codex_thread_and_keeps_its_rollout() {
     );
 }
 
+/// A Codex thread opened in a cones terminal outlives the terminal in its daemon. Removing it
+/// stops the terminal and forgets the thread, so the row stays gone after the next start and a
+/// resume clears the hidden id the way any forgotten thread's does.
+#[test]
+fn rm_forgets_a_hosted_codex_thread_as_well_as_stopping_its_terminal() {
+    let f = Fixture::new();
+    let id = "019a12fc-17d9-7af2-bc5a-92de2ec06071";
+    let rollout = codex_thread(&f, id);
+    let host = Host::start(&f, "codex", id, Path::new("/bin/cat"));
+
+    let out = f.cones(&["rm", id]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("stopped and forgot codex thread {id}; it stays resumable from history\n")
+    );
+    assert!(!host.alive(), "the terminal's client must have exited");
+    assert!(!host.path(&f).exists());
+    let saved = fs::read_to_string(f.state().join("codex-threads.json")).unwrap();
+    assert!(!saved.contains(id), "{saved}");
+    assert_eq!(
+        fs::read_to_string(f.state().join("hidden")).unwrap(),
+        format!("{id}\n")
+    );
+    assert!(rollout.exists());
+}
+
 /// A Claude background session takes `/rename` in a client opened only for it, the way the
 /// dashboard's ctrl+n hands it over, so the running session holds the name itself. The
 /// command returns once the session reports the name, and a later turn's own `agent-name`

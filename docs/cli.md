@@ -452,7 +452,7 @@ nothing is removed and the command exits 1. Runs and jobs belong to the
 | Run | Its session removed as a session is, so `claude agents` drops it too; a run still supervised stopped and recorded `stopped`; then hidden. Output and ledger record remain. A refused removal hides nothing. |
 | Running job | Its run removed as above; the job stays. |
 | Idle job | Deleted from `jobs.yaml`, the rest of the file as written, then schedules reinstalled. |
-| Cones terminal | Host and client stopped. |
+| Cones terminal | Host and client stopped; a Codex thread in one is then forgotten as below. |
 | Claude background | [`cones stop`](#stopping-a-session), then native `claude rm`, which takes it off `claude agents`, as the [dashboard](harness.md#native-actions) runs it; the transcript remains. |
 | Codex daemon thread | Stopped through its daemon when one runs, then forgotten and hidden, its client closed; the thread stays resumable from history. |
 | Other session | SIGTERM to the process, once it is verified to be that harness's. The harness keeps no list to remove it from, and the output says so. |
