@@ -1358,6 +1358,21 @@ pub(crate) fn prompt_of(path: &Path) -> Option<String> {
     Some(p)
 }
 
+/// The rollout's first user message in full, which tells apart launches whose prompts share
+/// their first line.
+pub(crate) fn message_of(path: &Path) -> Option<String> {
+    let user = &crate::harness::spec(crate::config::HarnessKind::Codex)
+        .transcript
+        .messages
+        .user;
+    std::io::BufReader::new(fs::File::open(path).ok()?)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
+        .find(|v| user.headline(v).is_some())
+        .map(|v| user.parts(&v, false).join("\n").trim().to_owned())
+}
+
 pub fn prompt(line: &str) -> Option<String> {
     let v = serde_json::from_str::<Value>(line).ok()?;
     crate::harness::spec(crate::config::HarnessKind::Codex)

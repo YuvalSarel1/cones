@@ -582,7 +582,7 @@ fn host(
 /// Name the thread a hosted Codex client just opened, then let the client go. The client's
 /// pid names nothing that lasts: the roster replaces its row with the daemon's thread as soon
 /// as there is one. The thread is the one in this folder, started after this launch and
-/// opened with this prompt, which is the dashboard's rule. Two that fit are refused rather
+/// opened with this whole prompt, not only its first line. Two that fit are refused rather
 /// than chosen between, and so is one that fits while another launch waits on the same rule.
 #[allow(clippy::too_many_arguments)]
 fn thread(
@@ -597,7 +597,7 @@ fn thread(
     record: &terminal_host::Record,
 ) -> Result<Launched> {
     let name = kind.to_string();
-    let typed = crate::fleet::headline(prompt);
+    let typed = prompt.trim();
     let pid = record.session.pid;
     let fits = |s: &Session| {
         s.harness == name
@@ -607,8 +607,9 @@ fn thread(
             && s.started.is_some_and(|at| at >= since)
             && s.transcript_path
                 .as_deref()
-                .and_then(crate::codex::prompt_of)
-                == typed
+                .and_then(crate::codex::message_of)
+                .as_deref()
+                == Some(typed)
     };
     let mut found = settle(SETTLE, claude, state, policy, fits)?;
     if found.len() == 1 {
@@ -637,7 +638,7 @@ fn thread(
         )
     })?;
     // Read after the thread is seen: a launch submitted later than this cannot have made it.
-    let rivals = rivals(state, owned, &name, dir, &typed, since);
+    let rivals = rivals(state, owned, &name, dir, typed, since);
     ensure!(
         rivals == 0,
         "this prompt was launched into {} {rivals} more time(s) that were still unnamed when \
@@ -684,7 +685,7 @@ fn rivals(
     owned: &str,
     harness: &str,
     dir: &Path,
-    typed: &Option<String>,
+    typed: &str,
     since: chrono::DateTime<chrono::Utc>,
 ) -> usize {
     let lines: Vec<Value> = std::fs::read_to_string(state.join("launches.jsonl"))
@@ -723,7 +724,7 @@ fn rivals(
                 // A launch that kept its prompt to itself could be waiting on these words.
                 && data["prompt"]
                     .as_str()
-                    .is_none_or(|prompt| crate::fleet::headline(prompt) == *typed)
+                    .is_none_or(|prompt| prompt.trim() == typed)
                 && at(line).is_some_and(|at| at > since - SETTLE)
                 && !settled(&data["operation_id"])
         })

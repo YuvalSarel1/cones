@@ -112,7 +112,12 @@ impl Fixture {
     }
 
     fn cones(&self, mode: &str, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_cones"))
+        self.command(mode, args).output().unwrap()
+    }
+
+    fn command(&self, mode: &str, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_cones"));
+        command
             .args([
                 "--jobs",
                 self.jobs.to_str().unwrap(),
@@ -127,9 +132,8 @@ impl Fixture {
             .env("PI_CODING_AGENT_DIR", self.path().join("pi"))
             .env("CODEX_HOME", self.codex_home())
             .env_remove("OPENCODE_DB")
-            .env_remove("OPENCODE_TUI_CONFIG")
-            .output()
-            .unwrap()
+            .env_remove("OPENCODE_TUI_CONFIG");
+        command
     }
 
     fn launch(&self, mode: &str, harness: &str, prompt: &str) -> Output {
@@ -587,7 +591,7 @@ fn a_codex_launch_overlapping_another_of_the_same_prompt_is_refused_and_a_later_
             "dashboard_id": null, "event": event, "level": "recovery",
             "data": {
                 "operation_id": "codex:start:rival", "harness": "codex",
-                "cwd": f.work, "prompt": "same words\nwith its own second line",
+                "cwd": f.work, "prompt": "same words",
             },
         })
         .to_string()
@@ -606,8 +610,9 @@ fn a_codex_launch_overlapping_another_of_the_same_prompt_is_refused_and_a_later_
     assert!(alive(hosted[0]), "an unnamed launch must be left running");
     assert_eq!(f.recovery().last().unwrap()["event"], "launch.unnamed");
 
-    // Another prompt was never in question, whatever else is waiting.
-    let out = f.launch("ok", "codex", "other words");
+    // Another prompt was never in question, whatever else is waiting, even one that only
+    // shares the first line.
+    let out = f.launch("ok", "codex", "same words\nwith its own second line");
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(f.codex_threads()[1], stdout(&out));
 
@@ -626,6 +631,68 @@ fn a_codex_launch_overlapping_another_of_the_same_prompt_is_refused_and_a_later_
         f.recovery().last().unwrap()["data"]["session_id"],
         threads[2].as_str()
     );
+}
+
+/// A lead agent starting several workers at once gives them one shared preamble and its own
+/// task each. Every launch is named by its own thread, and none leaves a client behind.
+#[test]
+fn simultaneous_codex_launches_that_share_a_first_line_are_each_named() {
+    let f = Fixture::codex();
+    let prompts: Vec<String> = (1..=3)
+        .map(|n| format!("You are a worker for the lead.\n\nYOUR TASK:\nTask {n}"))
+        .collect();
+    // Output goes to files and each launch has a deadline: a refused launch leaves its
+    // client hosted, and that must fail the test rather than hang it.
+    let launches: Vec<(std::process::Child, PathBuf)> = prompts
+        .iter()
+        .enumerate()
+        .map(|(n, prompt)| {
+            let out = f.path().join(format!("launch-{n}.out"));
+            let work = f.work.to_str().unwrap();
+            let child = f
+                .command(
+                    "ok",
+                    &["launch", "--dir", work, "--harness", "codex", prompt],
+                )
+                .stdout(fs::File::create(&out).unwrap())
+                .stderr(fs::File::create(out.with_extension("err")).unwrap())
+                .spawn()
+                .unwrap();
+            (child, out)
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut named: Vec<String> = launches
+        .into_iter()
+        .map(|(mut child, out)| {
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                if Instant::now() > deadline {
+                    child.kill().unwrap();
+                    panic!("a launch did not finish within 60s");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let err = fs::read_to_string(out.with_extension("err")).unwrap();
+            assert!(status.success(), "{err}");
+            fs::read_to_string(&out).unwrap().trim().to_owned()
+        })
+        .collect();
+    named.sort();
+    let mut threads = f.codex_threads();
+    threads.sort();
+    assert_eq!(named, threads, "each launch names its own thread");
+    assert_eq!(f.hosted_pids(), [] as [u32; 0], "a client was left hosted");
+    let mut listed: Vec<String> = f
+        .rows()
+        .iter()
+        .filter(|r| r["session"]["harness"] == "codex")
+        .map(|r| r["session"]["session_id"].as_str().unwrap().to_owned())
+        .collect();
+    listed.sort();
+    assert_eq!(listed, threads);
 }
 
 /// A detached client has no screen to answer Codex's trust question on, so cones saves the
