@@ -204,8 +204,9 @@ pub(crate) fn records(state: &Path) -> Vec<Record> {
             if uuid::Uuid::parse_str(&record.id).is_err() {
                 return None;
             }
+            // A shared probe, so dashboards probing at once never read each other as the host.
             let file = File::open(lock_path(state, &record.id)).ok()?;
-            match file.try_lock_exclusive() {
+            match FileExt::try_lock_shared(&file) {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => Some(record),
                 _ => None,
             }

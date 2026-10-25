@@ -1621,3 +1621,33 @@ fn compact_compacts_a_codex_thread_through_its_daemon() {
         ]
     );
 }
+
+#[test]
+fn a_terminal_is_listed_by_its_hosts_lock_not_a_peer_dashboards_probe() {
+    let f = Fixture::new();
+    let terminals = f.state().join("terminals");
+    fs::create_dir_all(&terminals).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    fs::write(
+        terminals.join(format!("{id}.json")),
+        json!({
+            "id": id, "socket": format!("/tmp/cones-stop-test-{id}"), "what": "zsh",
+            "session": {"session_id": format!("terminal:{id}"), "harness": "terminal",
+                        "cwd": f.root.path(), "state": "-"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let lock = fs::File::create(terminals.join(format!("{id}.lock"))).unwrap();
+    let listed = || {
+        f.rows()
+            .iter()
+            .any(|r| r["session"]["session_id"] == format!("terminal:{id}"))
+    };
+    // Held the way a live host holds it, the record is listed.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) }, 0);
+    assert!(listed(), "a held host lock lists its terminal");
+    // Held the way a peer dashboard's probe holds it for an instant, it is not.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_SH) }, 0);
+    assert!(!listed(), "a peer's probe is not a host");
+}
