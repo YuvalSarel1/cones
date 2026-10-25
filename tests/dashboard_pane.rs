@@ -12,8 +12,8 @@
 //! input, while a typed Esc still reaches the shell. An OSC 8 link printed in the pane
 //! reaches the outer terminal on the linked text only, through an SGR reset inside it and
 //! with a separator in its target, while a target holding a space is dropped. One wheel report
-//! over the list moves its selection one row, as far as one down arrow. No harness or
-//! model is started.
+//! over the list moves its selection one row, as far as one down arrow. A left drag down the
+//! list copies the rows it covers, stopping at the divider. No harness or model is started.
 use crate::dashboard::*;
 use std::fs;
 
@@ -345,5 +345,45 @@ fn a_plain_path_in_the_pane_links_to_its_file() {
     assert_eq!(d.link_of("gone/nope.rs"), None, "{screen}");
     d.press("ctrl+z", CTRL_Z);
     d.wait_for("the list", |s| s.contains("tab pane"));
+    d.quit();
+}
+
+#[test]
+fn a_drag_over_the_list_copies_the_rows_it_covers() {
+    let mut d = Dashboard::new("list-drag-copy", &[]);
+    let dirs: Vec<_> = ["alpha", "bravo"]
+        .iter()
+        .map(|rel| {
+            fs::create_dir_all(d.path(rel)).unwrap();
+            d.path(rel).canonicalize().unwrap()
+        })
+        .collect();
+    d.open_folders(&dirs);
+    // A pbcopy on the front of PATH keeps the machine's clipboard out of the test.
+    let bin = d.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let clip = d.path("clipboard");
+    let stub = bin.join("pbcopy");
+    fs::write(&stub, format!("#!/bin/sh\ncat > '{}'\n", clip.display())).unwrap();
+    fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    d.env.push(("PATH", Box::leak(path.into_boxed_str())));
+    d.start();
+    let screen = d.wait_for("both folders", |s| {
+        s.contains("alpha") && s.contains("bravo")
+    });
+    let row = |name: &str| screen.lines().position(|l| l.contains(name)).unwrap() as u16;
+    let (top, bottom) = (row("alpha"), row("bravo"));
+    d.press("press", &mouse(0, 0, top, false));
+    // Past the list's right edge: the selection stops at the divider and keeps the whole row.
+    d.press("drag", &mouse(32, COLS - 1, bottom, false));
+    d.press("release", &mouse(0, COLS - 1, bottom, true));
+    let screen = d.wait_text("copied ");
+    d.capture("copied");
+    let text = d.wait_file("clipboard", |t| !t.is_empty());
+    assert!(
+        text.contains("alpha") && text.contains("bravo"),
+        "{text:?}\n{screen}"
+    );
     d.quit();
 }
