@@ -8607,20 +8607,45 @@ const OPEN_FOLDERS: &str = "open-folders.json";
 /// Keep open the folder of every session not in `known`, so the folder outlasts its sessions,
 /// and hand the open set to `data`. A session already listed adds nothing: its folder was
 /// recorded when it arrived, and one still stopping must not reopen a folder just closed.
-/// Returns whether the set changed.
-fn open_folders(open: &mut BTreeSet<PathBuf>, data: &mut Data, known: &HashSet<String>) -> bool {
+/// `opened` remembers which session opened which folder, so a launch placed under its launcher
+/// only after it was first listed closes the folder again. Returns whether the set changed.
+fn open_folders(
+    open: &mut BTreeSet<PathBuf>,
+    data: &mut Data,
+    known: &HashSet<String>,
+    opened: &mut HashMap<String, PathBuf>,
+) -> bool {
     let before = open.clone();
+    let dir_of = |s: &Session| data.roots.get(&s.cwd).unwrap_or(&s.cwd).clone();
     // A launch listed under its launcher has no row in its own folder, so it opens none.
     for s in data
         .sessions
         .iter()
         .filter(|s| !known.contains(&s.session_id) && s.launched_by.is_none())
     {
-        let dir = data.roots.get(&s.cwd).unwrap_or(&s.cwd);
-        if !dir.as_os_str().is_empty() {
-            open.insert(dir.clone());
+        let dir = dir_of(s);
+        if !dir.as_os_str().is_empty() && open.insert(dir.clone()) {
+            opened.insert(s.session_id.clone(), dir);
         }
     }
+    // `cones launch` records the launcher just after the session starts, so a refresh in
+    // between lists the launch in its own folder first.
+    opened.retain(
+        |id, dir| match data.sessions.iter().find(|s| &s.session_id == id) {
+            Some(s) if s.launched_by.is_some() => {
+                let others = data
+                    .sessions
+                    .iter()
+                    .any(|o| o.launched_by.is_none() && dir_of(o) == *dir);
+                if !others {
+                    open.remove(dir);
+                }
+                false
+            }
+            Some(_) => true,
+            None => false,
+        },
+    );
     open.retain(|dir| dir.is_dir());
     data.open = open.iter().cloned().collect();
     *open != before
@@ -9473,6 +9498,8 @@ struct App {
     /// Every folder a session has been listed in, kept in `state/open-folders.json` until
     /// `ctrl+x` closes it or the directory is gone.
     open_folders: BTreeSet<PathBuf>,
+    /// The folder each listed session opened in `open_folders`, by session id.
+    opened: HashMap<String, PathBuf>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     /// A missing folder typed on `+ add folder` that a second Enter creates.
@@ -9825,7 +9852,8 @@ impl App {
             Data::load_observed(jobs_path, state, claude, log.as_ref(), operation.as_ref())?;
         let start = data.start;
         let mut open = read_open_folders(state).unwrap_or_default();
-        if open_folders(&mut open, &mut data, &HashSet::new()) {
+        let mut opened = HashMap::new();
+        if open_folders(&mut open, &mut data, &HashSet::new(), &mut opened) {
             // ponytail: a failed write only loses the change on restart; the next one retries.
             let _ = write_open_folders(state, &open);
         }
@@ -9889,6 +9917,7 @@ impl App {
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or_default(),
             open_folders: open,
+            opened,
             unfolded: None,
             armed: None,
             create_folder: None,
@@ -15468,7 +15497,7 @@ impl App {
             .iter()
             .map(|s| s.session_id.clone())
             .collect();
-        if open_folders(&mut self.open_folders, data, &known) {
+        if open_folders(&mut self.open_folders, data, &known, &mut self.opened) {
             self.save_open_folders();
         }
     }

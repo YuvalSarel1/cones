@@ -515,6 +515,23 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap();
     assert!(!open.contains(other.to_str().unwrap()), "{open}");
 
+    // `cones launch` records the launcher just after the launch starts, so a dashboard can
+    // list the launch in its own folder first. Moved beneath its launcher, it closes that
+    // folder again.
+    let recorded = fs::read_to_string(&relations_path).unwrap();
+    fs::remove_file(&relations_path).unwrap();
+    d.start();
+    d.wait_for("the launch in its own folder", |s| {
+        s.contains(&other.display().to_string()) && s.contains("write the docs")
+    });
+    fs::write(&relations_path, recorded).unwrap();
+    d.wait_for("the launch moved beneath its launcher", |s| {
+        s.contains(elsewhere) && !s.contains(&other.display().to_string())
+    });
+    d.quit();
+    let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap();
+    assert!(!open.contains(other.to_str().unwrap()), "{open}");
+
     // pi is listed by its process until it writes a session file, and then by its own id.
     // A record naming either session by an id it is no longer listed under still finds both
     // by their pids.
