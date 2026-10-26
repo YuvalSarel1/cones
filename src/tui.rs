@@ -3509,6 +3509,12 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
             // A hosted Codex client is a remote viewer, and discovery already gave the
             // daemon thread it opened its row. A launch that gave up naming that thread, as
             // one left on a trust screen does, leaves only this record of the client.
+        } else if rows
+            .iter()
+            .any(|s| s.harness == host.session.harness && host.matches_session(&s.session_id, None))
+        {
+            // A hosted `claude attach` is a client of a background session discovery already
+            // listed, so it is that session's terminal and not a second row.
         } else {
             let mut row = host.session.clone();
             // The host records process ownership, not agent activity. Only the
@@ -16154,14 +16160,20 @@ impl App {
                     // `cones rm` also forgets a Codex thread, which its daemon keeps after the
                     // terminal goes. Stopping the host alone hid the row only until a restart,
                     // and kept it hidden in this dashboard after the thread was resumed.
+                    // A host attached to a background session it does not own, such as a
+                    // `claude attach`, leaves that session running when it stops; the row's
+                    // own removal ends it, or the row hid a live session.
                     let forget = self
                         .data
                         .sessions
                         .iter()
                         .find(|s| s.session_id == id)
-                        .filter(|_| verb == "forget")
+                        .filter(|s| {
+                            verb == "forget"
+                                || s.pid.is_some_and(|pid| host.session.pid != Some(pid))
+                        })
                         .map(|s| fleet::Session {
-                            pid: None,
+                            pid: if verb == "forget" { None } else { s.pid },
                             ..s.clone()
                         });
                     let (state, claude) = (self.state.clone(), self.claude.clone());
@@ -20857,6 +20869,33 @@ states:
         merge_hosts(&mut rows, &[host]);
         assert!(rows[0].forked_from.is_none());
         assert_eq!(rows[0].session_id, B);
+    }
+
+    #[test]
+    fn a_hosted_attach_to_a_listed_background_session_adds_no_second_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut row = placeholder(HarnessKind::Claude, A, dir.path(), "open-loops");
+        row.pid = Some(72639);
+        row.kind = Some("bg".into());
+        row.state = "done".into();
+        let mut attach = row.clone();
+        attach.pid = Some(91956);
+        attach.kind = None;
+        let host = terminal_host::Record {
+            id: uuid::Uuid::new_v4().to_string(),
+            socket: dir.path().join("unused"),
+            session: attach,
+            what: "claude".into(),
+            notes: None,
+        };
+        let mut rows = vec![row];
+        merge_hosts(&mut rows, &[host]);
+        assert_eq!(
+            rows.iter()
+                .map(|s| (&*s.session_id, s.pid, &*s.state))
+                .collect::<Vec<_>>(),
+            [(A, Some(72639), "done")]
+        );
     }
 
     #[test]
