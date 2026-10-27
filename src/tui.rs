@@ -12259,12 +12259,21 @@ impl App {
                 .iter()
                 .find(|j| &j.name == name)
                 .map(|j| j.cwd.clone()),
-            Kind::Session(id, _) => self
-                .data
-                .sessions
-                .iter()
-                .find(|s| &s.session_id == id)
-                .map(|s| s.cwd.clone()),
+            Kind::Session(id, _) => {
+                let find = |id: &str| self.data.sessions.iter().find(|s| s.session_id == id);
+                let mut s = find(id)?;
+                // A launch listed under its launcher starts work in the folder it is listed in,
+                // following the chain `rows_excluding` follows.
+                if !self.by_state && !self.pinned.contains(id) {
+                    for _ in 0..8 {
+                        match s.launched_by.as_deref().and_then(find) {
+                            Some(parent) if parent.session_id != *id => s = parent,
+                            _ => break,
+                        }
+                    }
+                }
+                Some(s.cwd.clone())
+            }
             Kind::History(key) => self.history.row(key).map(|e| e.cwd.clone()),
             Kind::Run(id, _) => self
                 .data

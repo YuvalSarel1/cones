@@ -69,6 +69,15 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+/// The selected row in the list: the one carrying the `▌` mark.
+fn selected(screen: &str) -> String {
+    screen
+        .lines()
+        .find(|l| l.contains("▌ "))
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// The list line for the session titled `title`.
 fn row<'a>(screen: &'a str, title: &str) -> Option<&'a str> {
     screen.lines().find(|l| {
@@ -419,7 +428,8 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
 
 /// A session an agent starts with `cones launch` is listed beneath that agent, though it works
 /// in another folder, badged ⚙, and names that folder after its title since the heading no
-/// longer does. Its folder does not open, so it leaves no empty folder behind when it ends.
+/// longer does. Its folder does not open, so it leaves no empty folder behind when it ends, and
+/// an agent started from its row starts in the launcher's folder.
 /// `launched_under_parent: false` lists it in its own folder again.
 #[test]
 fn a_launch_from_an_agent_is_listed_beneath_it() {
@@ -511,6 +521,31 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     // The folder it works in heads no row of its own, empty or not.
     assert_eq!(at(&other.display().to_string()), None, "{screen}");
     assert!(!screen.contains("no sessions here"), "{screen}");
+    // An agent started from the launch's row starts in the folder it is listed under.
+    for _ in 0..4 {
+        if selected(&d.screen()).contains("write the docs") {
+            break;
+        }
+        d.press("down", b"\x1b[B");
+    }
+    assert!(
+        selected(&d.screen()).contains("write the docs"),
+        "{}",
+        d.screen()
+    );
+    let prompt = "start beside the launcher";
+    d.typed(prompt);
+    d.wait_text(&format!("π pi › {prompt}"));
+    d.press("enter", b"\r");
+    d.wait_text(&format!("│ pi fixture ready: {prompt}"));
+    let started = || {
+        clients(&d)
+            .into_iter()
+            .find(|c| c["argv"].as_array().unwrap().last() == Some(&prompt.into()))
+    };
+    wait_until("the new client's record", || started().is_some());
+    assert_eq!(started().unwrap()["cwd"], project.to_str().unwrap());
+    d.press("ctrl+z", b"\x1a");
     d.quit();
     let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap();
     assert!(!open.contains(other.to_str().unwrap()), "{open}");
