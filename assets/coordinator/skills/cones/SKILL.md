@@ -30,7 +30,9 @@ built on the same commands, so you can reach as far as the owner does.
 3. **Start new work.** Launch a session in any folder on any enabled harness, the way the
    owner's dashboard does, and get its id back. `cones launch --dir PATH --harness NAME PROMPT`
    runs detached, needs no terminal and prints the id on stdout; give it the whole task as
-   the prompt. `cones resume ID` reopens a past conversation and `cones fork ID` branches
+   the prompt. Add `--parent self` when the session is yours, a worker or subagent you
+   launch for your task, so the owner sees it beneath you; leave it out for independent work.
+   `cones resume ID` reopens a past conversation and `cones fork ID` branches
    one, detached the same way. Never start a harness's own CLI instead, such as `codex exec` or `claude -p`:
    the owner cannot open that session from the dashboard. If launch fails, report the error.
    A launched session never tells you it finished on its own; see

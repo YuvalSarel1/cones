@@ -439,18 +439,11 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     fs::create_dir_all(&other).unwrap();
     let other = other.canonicalize().unwrap();
     d.open_folders(std::slice::from_ref(&project));
-    let launch = |dir: &Path, prompt: &str, env: &[(&str, &str)]| {
-        let out = d.cli(
-            &[
-                "launch",
-                "--dir",
-                dir.to_str().unwrap(),
-                "--harness",
-                "pi",
-                prompt,
-            ],
-            env,
-        );
+    let launch = |dir: &Path, prompt: &str, parent: &[&str], env: &[(&str, &str)]| {
+        let mut args = vec!["launch", "--dir", dir.to_str().unwrap(), "--harness", "pi"];
+        args.extend(parent);
+        args.push(prompt);
+        let out = d.cli(&args, env);
         assert!(
             out.status.success(),
             "{}",
@@ -462,9 +455,15 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     let old_fork = serde_json::json!([{"harness": "pi", "home": "/old", "cwd": "/old",
         "parent": "old-parent", "child": "old-child"}]);
     fs::write(d.path("state/forks.json"), old_fork.to_string()).unwrap();
-    let parent = launch(&project, "lead the work", &[]);
-    // The launcher is found by the session id its harness exports, as a Codex thread's is.
-    let child = launch(&other, "write the docs", &[("CODEX_THREAD_ID", &parent)]);
+    let parent = launch(&project, "lead the work", &[], &[]);
+    // `--parent self` finds the launcher by the session id its harness exports, as a Codex
+    // thread's is.
+    let child = launch(
+        &other,
+        "write the docs",
+        &["--parent", "self"],
+        &[("CODEX_THREAD_ID", &parent)],
+    );
     let relations_path = d.path("state/relations.json");
     let relations = || -> Value {
         serde_json::from_str(&fs::read_to_string(&relations_path).unwrap()).unwrap()

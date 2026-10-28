@@ -136,6 +136,10 @@ enum Action {
         /// The session's name, through the harness's own launch flag or its rename.
         #[arg(long)]
         name: Option<String>,
+        /// List the session beneath this live session, by id or unambiguous prefix, or beneath
+        /// the session running this command with `self`. Without it the session stands alone.
+        #[arg(long)]
+        parent: Option<String>,
         /// Print the shell command instead of starting anything.
         #[arg(long)]
         print_command: bool,
@@ -616,6 +620,7 @@ fn execute(cli: Cli) -> Result<i32> {
             model,
             effort,
             name,
+            parent,
             print_command,
             no_prompt_record,
             wait,
@@ -679,6 +684,33 @@ fn execute(cli: Cli) -> Result<i32> {
                      run the command, then `cones rename`"
                 );
             }
+            // The launcher says which session the launch belongs to, checked before anything
+            // starts: an id that names no live session is refused rather than recorded.
+            let parent = match parent {
+                None => None,
+                Some(parent) => {
+                    let rows =
+                        cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
+                    Some(if parent == "self" {
+                        cones::coordinator::own_session(&rows)
+                            .context("--parent self: no listed session runs this command")?
+                            .session_id
+                            .clone()
+                    } else {
+                        let ids = rows.iter().map(|s| s.session_id.clone());
+                        let id = if parent.len() >= 4 {
+                            by_prefix(ids, &parent)?
+                        } else {
+                            parent.clone()
+                        };
+                        ensure!(
+                            rows.iter().any(|s| s.session_id == id),
+                            "--parent {parent}: no live session; `cones ls` lists them"
+                        );
+                        id
+                    })
+                }
+            };
             let prompt = prompt.unwrap_or_default();
             // Codex's command names its daemon's address, which only a running daemon reports.
             ensure!(
@@ -722,11 +754,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 started.identity.describe()
             );
             println!("{}", started.id);
-            // A launch from inside a listed session is listed beneath it. The session runs
-            // either way, so a launcher cones cannot place only loses the placement.
-            let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))
-                .unwrap_or_default();
-            if let Some(parent) = cones::coordinator::own_session(&rows) {
+            if let Some(parent) = parent {
+                let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
+                let parent = rows
+                    .iter()
+                    .find(|s| s.session_id == parent)
+                    .with_context(|| {
+                        format!("{} started, but its parent {parent} ended", started.id)
+                    })?;
                 let link = cones::relations::launch(
                     &claude,
                     &rows,

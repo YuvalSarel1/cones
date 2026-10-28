@@ -1207,6 +1207,94 @@ fn a_waited_launch_returns_when_the_worker_s_turn_ends_and_not_before() {
     assert!(stdout(&out).ends_with("\ntimeout"), "{}", stdout(&out));
 }
 
+/// A launch is listed beneath another session only when its launcher says so with `--parent`.
+/// A helper that outlives its agent's process chain, or names an agent that has ended, must
+/// not be placed beneath a session silently: the exported session id alone records nothing,
+/// an explicit id is recorded whatever the chain, and an id naming no live session is refused
+/// before anything starts.
+#[test]
+fn a_launch_is_listed_beneath_only_the_parent_it_names() {
+    let f = Fixture::new();
+    let parent = stdout(&f.launch("ok", "claude", "lead the work"));
+    let relations = f.state().join("relations.json");
+    let launch = |args: &[&str], env: &[(&str, &str)]| {
+        let mut all = vec![
+            "launch",
+            "--dir",
+            f.work.to_str().unwrap(),
+            "--harness",
+            "claude",
+        ];
+        all.extend(args);
+        let mut command = f.command("ok", &all);
+        command
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("CLAUDE_CODE_SESSION_ID");
+        command.envs(env.iter().copied());
+        command.output().unwrap()
+    };
+
+    // An agent's environment names its session, but the launch stands alone unless asked.
+    let out = launch(&["alone"], &[("CLAUDE_CODE_SESSION_ID", &parent)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!relations.exists(), "an unasked parent was recorded");
+
+    // `self` takes the session the environment names.
+    let out = launch(
+        &["--parent", "self", "beside me"],
+        &[("CLAUDE_CODE_SESSION_ID", &parent)],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let mine = stdout(&out);
+    // A detached helper, with no agent in its chain or environment, names the parent itself.
+    let out = launch(&["--parent", &parent[..8], "from a helper"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let helpers = stdout(&out);
+    let links: Value = serde_json::from_slice(&fs::read(&relations).unwrap()).unwrap();
+    let children: Vec<_> = links
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            assert_eq!(l["kind"], "launch", "{links}");
+            assert_eq!(l["parent"], parent.as_str(), "{links}");
+            l["child"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(children, [mine, helpers], "{links}");
+
+    // `self` with no session to find, and a parent that has ended, start nothing.
+    let started = f.background_pids().len();
+    let out = launch(&["--parent", "self", "orphan"], &[]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("no listed session runs this command"),
+        "{}",
+        stderr(&out)
+    );
+    let daemon = fs::read_dir(f.path().join("claude/sessions"))
+        .unwrap()
+        .find_map(|e| {
+            let record: Value =
+                serde_json::from_slice(&fs::read(e.unwrap().path()).unwrap()).unwrap();
+            (record["sessionId"] == parent.as_str()).then(|| record["pid"].as_u64().unwrap() as u32)
+        })
+        .expect("the parent's registry record");
+    unsafe { libc::kill(daemon as i32, libc::SIGKILL) };
+    wait_until("the parent's daemon to exit", || !alive(daemon));
+    let out = launch(&["--parent", &parent, "after it ended"], &[]);
+    assert!(!out.status.success(), "{}", stdout(&out));
+    assert!(stdout(&out).is_empty(), "no id may be printed");
+    assert!(stderr(&out).contains("no live session"), "{}", stderr(&out));
+    assert_eq!(
+        f.background_pids().len(),
+        started,
+        "a refused launch started a session"
+    );
+    let after: Value = serde_json::from_slice(&fs::read(&relations).unwrap()).unwrap();
+    assert_eq!(after, links);
+}
+
 /// A pi conversation in the fixture's history, as pi writes it.
 fn pi_history(f: &Fixture, id: &str) -> PathBuf {
     let dir = f.path().join("pi/sessions/--work--");
@@ -1682,6 +1770,15 @@ fn mcp_control_tools_launch_list_wait_and_stop_a_session_as_the_commands_do() {
     );
     assert_eq!(waited["isError"], false, "{waited}");
     assert_eq!(waited["structuredContent"]["timed_out"], true, "{waited}");
+
+    // A parent that names no live session is refused, as `cones launch --parent` refuses it.
+    let orphan = tool(
+        &mut call,
+        "cones_launch",
+        serde_json::json!({"dir": f.work, "harness": "pi", "parent": "no-such-session"}),
+    );
+    assert_eq!(orphan["isError"], true, "{orphan}");
+    assert!(orphan.to_string().contains("no live session"), "{orphan}");
 
     // An argument the command does not take is refused before anything runs.
     let refused = tool(

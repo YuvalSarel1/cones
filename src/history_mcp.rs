@@ -275,7 +275,8 @@ fn control_tools() -> Vec<Value> {
                 "harness": {"type": "string"},
                 "model": {"type": "string"},
                 "effort": {"type": "string"},
-                "name": {"type": "string"}
+                "name": {"type": "string"},
+                "parent": {"type": "string", "description": "List it beneath this live session's id, or `self` for yours. Omit for a session of its own."}
             }),
             &["dir"],
             false,
@@ -361,7 +362,9 @@ fn control_argv(name: &str, arguments: &Value) -> Result<Vec<String>> {
         .context("arguments must be an object")?;
     let allowed: &[&str] = match name {
         "cones_ls" => &["dir"],
-        "cones_launch" => &["dir", "prompt", "harness", "model", "effort", "name"],
+        "cones_launch" => &[
+            "dir", "prompt", "harness", "model", "effort", "name", "parent",
+        ],
         "cones_resume" | "cones_fork" | "cones_stop" | "cones_compact" => &["id"],
         "cones_btw" => &["id", "question", "model", "timeout_seconds"],
         "cones_send" => &["id", "text"],
@@ -396,7 +399,7 @@ fn control_argv(name: &str, arguments: &Value) -> Result<Vec<String>> {
         }
         "cones_launch" => {
             argv.extend(["--dir".into(), need("dir")?]);
-            for key in ["harness", "model", "effort", "name"] {
+            for key in ["harness", "model", "effort", "name", "parent"] {
                 if let Some(value) = text(key)? {
                     argv.extend([format!("--{key}"), value]);
                 }

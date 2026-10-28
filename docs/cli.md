@@ -26,7 +26,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
-| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--name NAME] [--print-command] [--no-prompt-record] [--wait [--timeout S]]` | [Start a session](#starting-a-session) the way the dashboard's composer does. The session runs detached, needs no terminal, and its identifier is printed. |
+| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--name NAME] [--parent ID|self] [--print-command] [--no-prompt-record] [--wait [--timeout S]]` | [Start a session](#starting-a-session) the way the dashboard's composer does. The session runs detached, needs no terminal, and its identifier is printed. |
 | `cones resume ID`, `cones fork ID` | [Reopen or fork a conversation](#resuming-and-forking) from history, detached, and print its id. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
@@ -255,9 +255,12 @@ keeps the prompt out of [`launches.jsonl`](#diagnostics): the launch is recorded
 prompt. Use it for a prompt carrying a secret. A Codex launch is named by its prompt, so one
 overlapping an unrecorded launch in the same folder is reported unnamed rather than guessed.
 
-A launch from inside a listed session, found by the process chain or the `$CODEX_THREAD_ID`
-or `$CLAUDE_CODE_SESSION_ID` the agent's harness exports, is recorded in
-`STATE_DIR/relations.json`, and the dashboard lists it beneath that session, marked `↳ ⚙` with the gear in
+A launch stands alone unless the launcher names its parent. `--parent ID` takes a live
+session's id or unambiguous prefix, and `--parent self` takes the session running the command,
+found by the process chain or else the `$CODEX_THREAD_ID` or `$CLAUDE_CODE_SESSION_ID` its
+harness exports. A parent that names no live session, such as the agent that started a helper
+which has since ended, is an error and nothing starts. The link is recorded in
+`STATE_DIR/relations.json`, and the dashboard lists the launch beneath its parent, marked `↳ ⚙` with the gear in
 orange. One working in another folder names that folder, dimmed, after its title,
 `↳ ⚙ write the docs · in reports`, since the heading above it no longer does.
 [`launched_under_parent: false`](jobs.md#list-settings) lists every launch in its own folder.
