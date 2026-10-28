@@ -1,6 +1,9 @@
 //! Read-only runtime state from the already-running local Codex app-server.
 //! No thread resume, event subscription, approval response, or daemon launch.
-use crate::{fleet::Session, observe};
+use crate::{
+    fleet::{Session, Usage},
+    observe,
+};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -14,28 +17,32 @@ use tungstenite::{Message, WebSocket, protocol::WebSocketConfig};
 const DEADLINE: Duration = Duration::from_millis(500);
 const MAX_MESSAGE: usize = 2 * 1024 * 1024;
 
-pub(super) fn apply(home: &Path, rows: &mut [Session]) {
+/// Applies each daemon thread's native state, and returns the usage Codex reports for the
+/// commands a thread runs, for the threads where it reports any.
+pub(super) fn apply(home: &Path, rows: &mut [Session]) -> HashMap<String, Usage> {
     let ids: Vec<_> = rows
         .iter()
         .filter(|r| r.harness == "codex" && r.kind.as_deref() == Some("daemon"))
         .map(|r| r.session_id.as_str())
         .collect();
     if ids.is_empty() {
-        return;
+        return HashMap::new();
     }
     let result = observe::read("native_status", || read(home, &ids), Result::is_ok);
     // Keep the current rollout-derived state when the runtime cannot answer. Never
     // cache a previous input wait across refreshes or across native homes.
-    if let Ok(states) = result {
-        for row in rows {
-            if row.harness == "codex"
-                && row.kind.as_deref() == Some("daemon")
-                && let Some(state) = states.get(&row.session_id)
-            {
-                row.state = (*state).into();
-            }
+    let Ok((states, usage)) = result else {
+        return HashMap::new();
+    };
+    for row in rows {
+        if row.harness == "codex"
+            && row.kind.as_deref() == Some("daemon")
+            && let Some(state) = states.get(&row.session_id)
+        {
+            row.state = (*state).into();
         }
     }
+    usage
 }
 
 /// A websocket on the daemon's control socket, with nothing sent yet. It starts no daemon.
@@ -51,7 +58,9 @@ pub(super) fn connect(home: &Path, timeout: Duration) -> io::Result<WebSocket<Un
         .map_err(io::Error::other)
 }
 
-fn read(home: &Path, ids: &[&str]) -> io::Result<HashMap<String, &'static str>> {
+type Native = (HashMap<String, &'static str>, HashMap<String, Usage>);
+
+fn read(home: &Path, ids: &[&str]) -> io::Result<Native> {
     let deadline = Instant::now() + DEADLINE;
     let mut socket = connect(home, DEADLINE)?;
     send(
@@ -63,9 +72,10 @@ fn read(home: &Path, ids: &[&str]) -> io::Result<HashMap<String, &'static str>> 
     }
     send(&mut socket, &json!({"method": "initialized"}))?;
     let mut states = HashMap::new();
+    let mut usage = HashMap::new();
     for (index, id) in ids.iter().enumerate() {
         remaining(&socket, deadline)?;
-        let request = index as u64 + 1;
+        let request = 2 * index as u64 + 1;
         send(
             &mut socket,
             &json!({"id": request, "method": "thread/read", "params": {"threadId": id, "includeTurns": false}}),
@@ -77,8 +87,34 @@ fn read(home: &Path, ids: &[&str]) -> io::Result<HashMap<String, &'static str>> 
         {
             states.insert((*id).to_owned(), state);
         }
+        // Codex lists a thread's running commands with their processor share and resident
+        // size. 0.165 sends both as null, and older daemons lack the method; either reports
+        // nothing.
+        remaining(&socket, deadline)?;
+        send(
+            &mut socket,
+            &json!({"id": request + 1, "method": "thread/backgroundTerminals/list", "params": {"threadId": id}}),
+        )?;
+        let terminals = response(&mut socket, request + 1, deadline)?;
+        if let Some(u) = terminals_usage(&terminals["data"]) {
+            usage.insert((*id).to_owned(), u);
+        }
     }
-    Ok(states)
+    Ok((states, usage))
+}
+
+fn terminals_usage(data: &Value) -> Option<Usage> {
+    let terminals = data.as_array()?;
+    let reported: Vec<_> = terminals
+        .iter()
+        .filter_map(|t| Some((t["cpuPercent"].as_f64()?, t["rssKb"].as_u64()?)))
+        .collect();
+    // A share for some commands and not others would understate the thread.
+    (!reported.is_empty() && reported.len() == terminals.len()).then(|| Usage {
+        cpu: reported.iter().map(|(cpu, _)| *cpu as f32).sum(),
+        rss: reported.iter().map(|(_, kb)| kb * 1024).sum(),
+        children: reported.len() as u32,
+    })
 }
 
 pub(super) fn remaining(socket: &WebSocket<UnixStream>, deadline: Instant) -> io::Result<()> {
@@ -161,6 +197,18 @@ mod tests {
         states: Vec<Value>,
         inject_request: bool,
     ) -> thread::JoinHandle<Vec<Value>> {
+        let terminals = states.iter().map(|_| json!({"data": []})).collect();
+        server_with(home, states, terminals, inject_request)
+    }
+
+    /// `terminals` answers each `thread/backgroundTerminals/list` in turn: a result, or an
+    /// error where it holds `{"error": ...}`.
+    fn server_with(
+        home: &Path,
+        states: Vec<Value>,
+        terminals: Vec<Value>,
+        inject_request: bool,
+    ) -> thread::JoinHandle<Vec<Value>> {
         let dir = home.join("app-server-control");
         fs::create_dir_all(&dir).unwrap();
         let listener = UnixListener::bind(dir.join("app-server-control.sock")).unwrap();
@@ -172,6 +220,7 @@ mod tests {
             let mut socket = tungstenite::accept(stream).unwrap();
             let mut seen = Vec::new();
             let mut statuses = states.into_iter();
+            let mut terminals = terminals.into_iter();
             while let Ok(Message::Text(text)) = socket.read() {
                 let request: Value = serde_json::from_str(&text).unwrap();
                 seen.push(request.clone());
@@ -187,6 +236,14 @@ mod tests {
                         }
                         let status = statuses.next().unwrap();
                         send(&mut socket, &json!({"id": request["id"], "result": {"thread": {"id": request["params"]["threadId"], "status": status}}})).unwrap();
+                    }
+                    Some("thread/backgroundTerminals/list") => {
+                        let answer = terminals.next().unwrap();
+                        let reply = match answer.get("error") {
+                            Some(error) => json!({"id": request["id"], "error": error}),
+                            None => json!({"id": request["id"], "result": answer}),
+                        };
+                        send(&mut socket, &reply).unwrap()
                     }
                     method => panic!("observer sent an unexpected method: {method:?}"),
                 }
@@ -239,6 +296,48 @@ mod tests {
         assert_eq!(
             fresh_rows[0].state, "active",
             "a previous wait must not survive a failed read"
+        );
+    }
+
+    #[test]
+    fn a_thread_reports_its_commands_usage_only_when_codex_reports_every_command() {
+        let root = tempfile::Builder::new()
+            .prefix("cones-usage-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let terminal = |cpu: Value, rss: Value| {
+            json!({"itemId": "c1", "processId": "1", "command": "make", "cwd": "/fixture",
+                   "osPid": null, "cpuPercent": cpu, "rssKb": rss})
+        };
+        let native = server_with(
+            root.path(),
+            vec![json!({"type":"idle"}); 4],
+            vec![
+                json!({"data": [terminal(json!(30.5), json!(1000)), terminal(json!(20), json!(2000))]}),
+                json!({"data": [terminal(Value::Null, Value::Null)]}),
+                json!({"data": [terminal(json!(10), json!(1000)), terminal(Value::Null, Value::Null)]}),
+                json!({"error": {"code": -32601, "message": "unknown method"}}),
+            ],
+            false,
+        );
+        let mut rows = vec![row("reported"), row("null"), row("partial"), row("older")];
+        let usage = apply(root.path(), &mut rows);
+        native.join().unwrap();
+        assert_eq!(
+            usage,
+            HashMap::from([(
+                "reported".to_owned(),
+                Usage {
+                    cpu: 50.5,
+                    rss: 3000 * 1024,
+                    children: 2
+                }
+            )]),
+            "Codex 0.165's nulls, a partial report and a daemon without the method report nothing"
+        );
+        assert!(
+            rows.iter().all(|r| r.state == "idle"),
+            "a missing terminal list keeps the thread's state"
         );
     }
 

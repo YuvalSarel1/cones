@@ -1218,7 +1218,7 @@ pub(crate) fn thread_rows_observed(
     }
     ids.sort_by(|a, b| a.0.cmp(&b.0));
     // A daemon-held thread has no process of its own: the daemon runs it, so the kernel charges
-    // its work there. Threads the same daemon holds all report that one process.
+    // its work there.
     let held = daemon
         .filter(|_| ids.iter().any(|(_, record)| record.is_none()))
         .and_then(|pid| crate::fleet::usage(std::iter::once(pid)).remove(&pid));
@@ -1291,7 +1291,24 @@ pub(crate) fn thread_rows_observed(
             })
         })
         .collect();
-    runtime::apply(codex, &mut rows);
+    let native = runtime::apply(codex, &mut rows);
+    // The kernel charges the daemon, not a thread, so of several held threads only the one
+    // working, when it is the only one, reports the daemon; an idle thread costs nothing.
+    // What Codex reports for a thread's own commands replaces that.
+    let held = || rows.iter().filter(|s| s.usage.is_some());
+    if held().count() > 1 {
+        let one_working = held().filter(|s| s.state == "active").count() == 1;
+        for s in &mut rows {
+            if !(one_working && s.state == "active") {
+                s.usage = None;
+            }
+        }
+    }
+    for s in &mut rows {
+        if let Some(u) = native.get(&s.session_id) {
+            s.usage = Some(*u);
+        }
+    }
     rows
 }
 
@@ -1805,6 +1822,7 @@ mod tests {
     #[test]
     fn remote_viewers_and_their_daemon_threads_each_produce_one_session() {
         use fs2::FileExt;
+        use std::io::Write;
 
         const A: &str = "01a0a430-b8d1-7682-a7ed-51904a118c65";
         const B: &str = "01a0a431-2ee0-76d2-88ae-71ce9826d86c";
@@ -1863,9 +1881,24 @@ mod tests {
             "two launches in the same folder stay two sessions, without codex-PID rows"
         );
         assert!(live.iter().all(|s| s.kind.as_deref() == Some("daemon")));
+        assert_eq!(
+            (live[0].usage, live[1].usage),
+            (None, None),
+            "idle threads one daemon holds do not each report the daemon's process"
+        );
+        let mut started = fs::OpenOptions::new()
+            .append(true)
+            .open(home.join(format!("sessions/2026/09/13/rollout-{A}.jsonl")))
+            .unwrap();
+        writeln!(
+            started,
+            r#"{{"timestamp":"2026-09-13T10:02:00Z","type":"event_msg","payload":{{"type":"task_started"}}}}"#
+        )
+        .unwrap();
+        let working = fleet(&procs);
         assert!(
-            live[0].usage.is_some_and(|u| u.rss > 0) && live[0].usage == live[1].usage,
-            "threads one daemon holds report that daemon's process, the one the kernel charges"
+            working[0].usage.is_some_and(|u| u.rss > 0) && working[1].usage.is_none(),
+            "the one working thread reports the daemon's process, the one the kernel charges"
         );
         assert_eq!(
             live.iter().map(|s| s.started).collect::<Vec<_>>(),

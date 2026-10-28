@@ -493,11 +493,19 @@ pub(crate) fn codex_daemon_in(home: &Path, loaded: &[&str]) -> Calls {
             let Ok(mut socket) = tungstenite::accept(stream.unwrap()) else {
                 continue;
             };
+            // The status read every listing makes reports a thread's commands too; its asks
+            // are recorded as its own and leave the stop's terminal untouched.
+            let mut status = false;
             while let Ok(Message::Text(text)) = socket.read() {
-                let request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let mut request: serde_json::Value = serde_json::from_str(&text).unwrap();
+                status |= request["params"]["clientInfo"]["name"] == "cones_status";
+                if status {
+                    request["status_read"] = json!(true);
+                }
                 calls.lock().unwrap().push(request.clone());
                 let result = match request["method"].as_str().unwrap() {
                     "initialized" => continue,
+                    "thread/backgroundTerminals/list" if status => json!({"data": []}),
                     "initialize" => json!({}),
                     "thread/read" => {
                         // A test settles a thread by naming it in `idle` beside the socket.
@@ -675,6 +683,7 @@ pub(crate) fn methods(calls: &Calls) -> Vec<String> {
         .lock()
         .unwrap()
         .iter()
+        .filter(|call| call.get("status_read").is_none())
         .map(|call| call["method"].as_str().unwrap().to_owned())
         .filter(|method| {
             !matches!(

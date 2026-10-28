@@ -92,14 +92,16 @@ if name == "codex":
     locks = home / "thread-writer-locks"
     if args == ["app-server", "daemon", "start"]:
         # The daemon is what holds a thread, and cones reads that from the lock files its
-        # pid keeps open. This stand-in opens every lock that appears and holds it.
+        # pid keeps open. This stand-in opens every lock that appears and holds it, and ends
+        # with its fixture's home: two racing starts both spawn one, and only the recorded
+        # pid is killed by the test.
         pid_file = home / "app-server-daemon" / "app-server.pid"
         if not pid_file.exists():
             locks.mkdir(parents=True, exist_ok=True)
             pid_file.parent.mkdir(parents=True, exist_ok=True)
             daemon = subprocess.Popen(
                 [sys.executable, "-c",
-                 "import glob, sys, time\nheld = {}\nwhile True:\n"
+                 "import glob, os, sys, time\nheld = {}\nwhile os.path.isdir(sys.argv[1]):\n"
                  "    for p in glob.glob(sys.argv[1] + '/*.lock'):\n"
                  "        held.setdefault(p, open(p))\n    time.sleep(0.02)", str(locks)],
                 start_new_session=True, stdin=subprocess.DEVNULL,
