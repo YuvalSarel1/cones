@@ -557,6 +557,26 @@ pub(crate) fn codex_daemon_in(home: &Path, loaded: &[&str]) -> Calls {
                         terminal = Some(1);
                         json!({})
                     }
+                    // A test queues notes by writing them, one per line, to `queued` beside
+                    // the socket; `noqueue` there stands for a daemon without the queue methods.
+                    "thread/queue/list" if dir.join("noqueue").exists() => {
+                        let reply = json!({"id": request["id"],
+                            "error": {"code": -32601, "message": "unknown method"}});
+                        socket
+                            .send(Message::Text(reply.to_string().into()))
+                            .unwrap();
+                        continue;
+                    }
+                    "thread/queue/list" => {
+                        let queued = fs::read_to_string(dir.join("queued")).unwrap_or_default();
+                        json!({"data": queued.lines().map(|text| json!({"id": text,
+                            "input": [{"type": "text", "text": text}]})).collect::<Vec<_>>(),
+                            "nextCursor": null})
+                    }
+                    "thread/queue/start" => {
+                        let _ = fs::remove_file(dir.join("queued"));
+                        json!({"turn": {"id": "turn-2", "status": "inProgress"}})
+                    }
                     "thread/name/set" => json!({}),
                     // A fork is written before the reply, as Codex 0.163.0 writes it.
                     "thread/fork" => {
@@ -727,6 +747,7 @@ fn a_codex_thread_with_no_client_has_its_turn_interrupted_and_its_terminals_clos
             "thread/backgroundTerminals/clean",
             "thread/backgroundTerminals/list",
             "thread/backgroundTerminals/list",
+            "thread/queue/list",
         ],
         "the stop must wait for the daemon to report the turn and the terminal gone"
     );
@@ -765,6 +786,67 @@ fn a_codex_thread_with_no_client_has_its_turn_interrupted_and_its_terminals_clos
             "thread/backgroundTerminals/list"
         ]
     );
+}
+
+/// A peer that sends a Codex worker a note and then stops it means the note to follow the
+/// interrupt. The daemon starts queued notes when a turn completes, not when one is interrupted,
+/// so the stop starts the queue itself; otherwise the note would answer after the owner's next
+/// prompt. A daemon without the queue methods is stopped as before.
+#[test]
+fn a_note_queued_behind_an_interrupted_codex_turn_runs_after_the_stop() {
+    let f = Fixture::new();
+    let id = "019a12fc-17d9-7af2-bc5a-92de2ec06070";
+    codex_thread(&f, id);
+    let calls = codex_daemon(&f, &[id]);
+    let control = f.root.path().join(".codex/app-server-control");
+    fs::write(
+        control.join("queued"),
+        "[peer] thanks, no further review needed\n",
+    )
+    .unwrap();
+
+    let out = f.stop(id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let message = text(&out.stdout);
+    assert!(
+        message.contains("interrupted its running turn")
+            && message.contains("the note queued behind the turn now runs"),
+        "{message}"
+    );
+    let sent = methods(&calls);
+    assert_eq!(
+        sent[sent.len() - 2..],
+        ["thread/queue/list", "thread/queue/start"],
+        "the queue starts after the interrupted turn ends: {sent:?}"
+    );
+    let start = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|call| call["method"] == "thread/queue/start")
+        .cloned()
+        .unwrap();
+    assert_eq!(start["params"], json!({"threadId": id}));
+    assert!(
+        !control.join("queued").exists(),
+        "the queued note must have started"
+    );
+
+    // An older daemon refuses the queue methods; the stop still succeeds and starts nothing.
+    let other = "019a12fc-17d9-7af2-bc5a-92de2ec06071";
+    let f = Fixture::new();
+    codex_thread(&f, other);
+    let calls = codex_daemon(&f, &[other]);
+    let control = f.root.path().join(".codex/app-server-control");
+    fs::write(control.join("noqueue"), "").unwrap();
+    let out = f.stop(other);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        !text(&out.stdout).contains("queued"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert!(!methods(&calls).iter().any(|m| m == "thread/queue/start"));
 }
 
 /// A saved thread the daemon has let go runs nothing, and one whose daemon is gone cannot be

@@ -361,7 +361,7 @@ Use the id from `cones ls --json`. Four targets are supported:
 | Target | Operation |
 | --- | --- |
 | Claude background | Native `claude stop <short id>` in its recorded home. Repeated stop succeeds; job record and transcript remain. |
-| Codex daemon thread | The daemon interrupts its running turn and closes its background terminals, with or without a client attached. A quiet thread succeeds with nothing to stop. |
+| Codex daemon thread | The daemon interrupts its running turn and closes its background terminals, with or without a client attached. A note queued behind the interrupted turn, such as one `cones comms send` delivered just before, then starts, because the daemon starts its queue only when a turn completes. A quiet thread succeeds with nothing to stop. |
 | Owned persistent terminal | Host stop, acknowledged after the client exits. Saved host ids and current discovered ids resolve by harness and live client PID. |
 | Headless run | A client with no terminal, such as `codex exec` or `claude -p` under a dispatcher: its process is checked to be that harness's, sent `SIGTERM` and seen to exit. Its conversation remains. |
 

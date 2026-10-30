@@ -24,10 +24,12 @@ const DEADLINE: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(100);
 
 /// What a stop found running and ended. Both false is a thread that was already quiet.
+/// `queued` is a note waiting behind the interrupted turn that the stop then started.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Stopped {
     pub turn: bool,
     pub terminals: bool,
+    pub queued: bool,
 }
 
 struct Client {
@@ -219,6 +221,18 @@ pub fn stop(home: &Path, thread: &str) -> io::Result<Stopped> {
             std::thread::sleep(POLL);
         }
         stopped.terminals = true;
+    }
+    // The daemon starts a queued note when a turn completes but not when one is interrupted, so
+    // a note sent just before the stop would wait for the owner's next prompt and answer after
+    // it. Starting the queue delivers the note right after the interrupt, as it was meant to
+    // follow it. A daemon without the queue methods has nothing queued.
+    if stopped.turn
+        && client
+            .call("thread/queue/list", json!({"threadId": thread, "limit": 1}))
+            .is_ok_and(|queue| queue["data"].as_array().is_some_and(|q| !q.is_empty()))
+    {
+        client.call("thread/queue/start", json!({"threadId": thread}))?;
+        stopped.queued = true;
     }
     Ok(stopped)
 }

@@ -40,7 +40,7 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
                 home.display()
             ),
             (turn, terminals) => format!(
-                "stopped codex thread {id} in {}: {}; its conversation is kept\n",
+                "stopped codex thread {id} in {}: {}; its conversation is kept{}\n",
                 home.display(),
                 [
                     turn.then_some("interrupted its running turn"),
@@ -49,7 +49,12 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
-                .join(" and ")
+                .join(" and "),
+                if stopped.queued {
+                    "; the note queued behind the turn now runs"
+                } else {
+                    ""
+                }
             ),
         });
     }
