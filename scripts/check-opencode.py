@@ -326,9 +326,11 @@ def main():
         keys("C-h")
         wait("saved transcript preview", lambda: REPLY in screen() and "history · read only" in screen())
         db = root / "data/opencode/opencode.db"
+        native_2 = version.lstrip("v").split(".")[0] != "1"
+        sessions = "session_v2" if native_2 else "session"
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
-            ids = [row[0] for row in connection.execute("SELECT id FROM session WHERE parent_id IS NULL")]
-            directories = [row[0] for row in connection.execute("SELECT directory FROM session WHERE parent_id IS NULL")]
+            ids = [row[0] for row in connection.execute(f"SELECT id FROM {sessions} WHERE parent_id IS NULL")]
+            directories = [row[0] for row in connection.execute(f"SELECT directory FROM {sessions} WHERE parent_id IS NULL")]
         assert len(ids) == 1, ids
         assert directories == [str(root)], directories
         keys("Enter")
@@ -339,6 +341,30 @@ def main():
             ["/bin/ps", "-ww", "-p", str(resumed), "-o", "command="], text=True)
         assert f"--session {ids[0]}" in command, command
         checks.append("resume uses the original native session id")
+        cli = [str(binary), "--jobs", str(jobs), "--state-dir", str(state)]
+        before = len(requests)
+        sent = subprocess.run([*cli, "send", f"opencode-{resumed}", "a note from the check"], env=env, capture_output=True, text=True)
+        assert sent.returncode == 0, sent.stderr
+        wait("a note reached the provider through the reporter", lambda: len(requests) > before)
+        wait("the note's turn settled", lambda: "0 working" in screen())
+        asked = subprocess.run([*cli, "btw", ids[0], "a side question"], env=env, capture_output=True, text=True, timeout=60)
+        assert asked.returncode == 0 and REPLY in asked.stdout, (asked.stdout, asked.stderr)
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
+            left = connection.execute(f"SELECT count(*) FROM {sessions}").fetchone()[0]
+        assert left == 1, f"the side question left {left} sessions"
+        checks.append("a side question answered and left no fork behind")
+        if native_2:
+            keys("C-z")
+            wait("resumed conversation selected for fork", lambda: "enter" in footer())
+            keys("C-y")
+            wait("OpenCode 2 refuses a fork plainly", lambda: "fork needs" in screen() or "does not support native forks" in screen())
+            keys("C-x", "C-x")
+            wait("stopping the resumed viewer", lambda: not pids())
+            result = {"opencode_version": version, "checks": checks, "provider": "loopback fixture",
+                      "requests": requests, "session_id": ids[0], "fork_id": None}
+            (root / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+            print(json.dumps({k: v for k, v in result.items() if k != "requests"}, indent=2), flush=True)
+            return
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as connection:
             source_messages = connection.execute("SELECT id FROM message WHERE session_id=? ORDER BY id", (ids[0],)).fetchall()
         keys("C-z")

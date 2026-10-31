@@ -757,6 +757,8 @@ pub enum ProbeOutput {
     #[default]
     Stdout,
     Stderr,
+    /// Either stream: OpenCode moved its help from stderr to stdout between 1.x and 2.x.
+    Any,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

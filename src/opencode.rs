@@ -104,12 +104,66 @@ fn query(db: &Path, sql: &str) -> Result<Vec<Value>> {
     } else {
         db.as_os_str().to_owned()
     };
-    let rows = crate::sqlite::query(&path, sql).context("reading the OpenCode database")?;
+    let sql = format!("{}{sql}", compatibility(&path)?);
+    let rows = crate::sqlite::query(&path, &sql).context("reading the OpenCode database")?;
     ensure!(
         fingerprint(&db)? == before,
         "OpenCode database changed while reading; retry"
     );
     Ok(rows)
+}
+
+/// OpenCode 2 writes `session_v2` and `session_message` and leaves conversations from 1.x in
+/// the old tables. Every reader below speaks the 1.x shape, so a database with the new tables
+/// shows both through it. Each message's parts live inside its `data`.
+fn compatibility(path: &std::ffi::OsStr) -> Result<String> {
+    let tables = crate::sqlite::query(path, "SELECT name FROM sqlite_master WHERE type = 'table'")
+        .context("reading the OpenCode database")?;
+    let has = |name: &str| tables.iter().any(|t| t["name"] == name);
+    if !has("session_v2") {
+        return Ok(String::new());
+    }
+    const SESSION: &str =
+        "SELECT id, directory, title, parent_id, time_created, time_updated, time_archived, cost";
+    const MESSAGE: &str = "SELECT id, session_id, time_created, data";
+    let old = |sql: String, table: &str| if has(table) { sql } else { String::new() };
+    let old_session = old(
+        format!(
+            " UNION ALL {SESSION} FROM main.session WHERE id NOT IN (SELECT id FROM main.session_v2)"
+        ),
+        "session",
+    );
+    let old_message = old(
+        format!(
+            " UNION ALL {MESSAGE} FROM main.message WHERE id NOT IN (SELECT id FROM main.session_message)"
+        ),
+        "message",
+    );
+    let old_part = old(
+        " UNION ALL SELECT id, message_id, session_id, data FROM main.part \
+          WHERE message_id NOT IN (SELECT id FROM main.session_message)"
+            .into(),
+        "part",
+    );
+    Ok(format!(
+        "WITH session AS ({SESSION} FROM main.session_v2{old_session}),
+         message AS (SELECT id, session_id, time_created,
+                json_object('role', type,
+                    'modelID', json_extract(data, '$.model.id'),
+                    'providerID', json_extract(data, '$.model.providerID'),
+                    'tokens', json_extract(data, '$.tokens'),
+                    'cost', json_extract(data, '$.cost')) AS data
+             FROM main.session_message WHERE type IN ('user', 'assistant') AND json_valid(data)
+             {old_message}),
+         part AS (SELECT id, id AS message_id, session_id,
+                json_object('type', 'text', 'text', json_extract(data, '$.text')) AS data
+             FROM main.session_message WHERE type = 'user' AND json_valid(data)
+             UNION ALL
+             SELECT m.id || printf(':%05d', c.key), m.id, m.session_id, c.value
+             FROM main.session_message m, json_each(m.data, '$.content') c
+             WHERE m.type = 'assistant' AND json_valid(m.data)
+             {old_part}) "
+    ))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -179,8 +233,12 @@ pub fn delete_fork(entry: &Entry, events: &str) -> Result<()> {
     for fork in forks {
         let path = crate::harness::executable("opencode", &crate::harness::launch_path())
             .context("opencode not found on the launch PATH")?;
-        let out = Command::new(path)
-            .args(["session", "delete", &fork])
+        let mut command = Command::new(&path);
+        command.args(["session", "delete", &fork]);
+        if crate::harness::opencode_standalone(&path) {
+            command.arg(crate::harness::OPENCODE_STANDALONE);
+        }
+        let out = command
             .env("OPENCODE_DB", &entry.transcript)
             .current_dir(&entry.cwd)
             .output()
@@ -386,7 +444,11 @@ pub(crate) fn columns_priced(
         columns.tokens_out = Some(output);
     }
     // Current OpenCode reports a session total. Older schemas expose message costs only.
-    let fields = query(db, "PRAGMA table_info(session)")?;
+    let fields = query(
+        db,
+        "SELECT name FROM pragma_table_info('session') \
+         UNION SELECT name FROM pragma_table_info('session_v2')",
+    )?;
     let native_total = if fields.iter().any(|v| v["name"] == "cost") {
         query(db, &format!("SELECT cost FROM session WHERE id = {id}"))?
             .first()

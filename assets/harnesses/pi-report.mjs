@@ -8,6 +8,9 @@ export default function report(pi) {
   const path = process.env.CONES_PI_REPORT;
   if (!path) return;
   const notes = join(dirname(path), "notes");
+  // A prompt too long for the command line, sent once Pi can take it.
+  let first = process.env.CONES_PI_PROMPT;
+  delete process.env.CONES_PI_PROMPT;
   let context, waiting = 0, timer;
   const invalidate = () => { try { rmSync(path, { force: true }); } catch {} };
   const publish = () => {
@@ -65,6 +68,11 @@ export default function report(pi) {
   pi.on("session_start", (_event, ctx) => {
     context = ctx;
     clearInterval(timer); timer = setInterval(publish, 1000); timer.unref?.(); publish();
+    if (first) {
+      const text = first;
+      first = undefined;
+      setTimeout(() => pi.sendUserMessage(text), 0);
+    }
   });
   pi.on("ui_prompt_start", (_event, ctx) => { context = ctx; waiting++; publish(); });
   pi.on("ui_prompt_end", (_event, ctx) => { context = ctx; waiting = Math.max(0, waiting - 1); publish(); });

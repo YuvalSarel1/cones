@@ -36,6 +36,8 @@ impl Reporter {
             &plugin,
             include_str!("../../assets/harnesses/opencode-report.mjs"),
         )?;
+        // OpenCode 2 loads a plugin from a directory's `tui` entry.
+        fs::copy(&plugin, directory.path().join("tui.mjs"))?;
         let report = directory.path().join("session.json");
         fs::create_dir(directory.path().join("notes"))?;
         let original = command
@@ -83,6 +85,21 @@ impl Reporter {
         serde_json::to_writer(&mut config, &settings).map_err(io::Error::other)?;
         config.flush()?;
         command.env("OPENCODE_TUI_CONFIG", config.path());
+        // OpenCode 2 replaced the TUI config with a CLI config, whose inline form overrides the
+        // file's plugin list as a whole, so the owner's plugins are carried over.
+        let mut cli = inline_cli_config(command)?;
+        let plugins = cli
+            .as_object_mut()
+            .ok_or_else(|| io::Error::other("OpenCode's CLI configuration must be an object"))?
+            .entry("plugins")
+            .or_insert_with(|| json!([]));
+        plugins
+            .as_array_mut()
+            .ok_or_else(|| io::Error::other("OpenCode's CLI plugin list must be an array"))?
+            .push(json!(directory.path()));
+        command
+            .env("OPENCODE_CLI_CONFIG_CONTENT", cli.to_string())
+            .env("CONES_OPENCODE_REPORT", &report);
         Ok(Some(Self {
             _directory: directory,
             _config: config,
@@ -104,6 +121,35 @@ impl Reporter {
         }
         Report::parse(&bytes, pid)
     }
+}
+
+/// The owner's CLI config: the file's plugins under whatever they already set inline.
+fn inline_cli_config(command: &Command) -> io::Result<Value> {
+    let env = |name: &str| {
+        command
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.map(std::ffi::OsStr::to_owned))
+            .unwrap_or_else(|| std::env::var_os(name))
+            .filter(|value| !value.is_empty())
+    };
+    let directory = env("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .unwrap_or_default();
+    let file = match fs::read_to_string(directory.join("opencode/cli.json")) {
+        Ok(text) => jsonc(&text)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error),
+    };
+    let mut config = match env("OPENCODE_CLI_CONFIG_CONTENT") {
+        Some(inline) => jsonc(&inline.to_string_lossy())?,
+        None => json!({}),
+    };
+    if let (Some(config), Some(plugins)) = (config.as_object_mut(), file.get("plugins")) {
+        config.entry("plugins").or_insert_with(|| plugins.clone());
+    }
+    Ok(config)
 }
 
 #[derive(Clone)]

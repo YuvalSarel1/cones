@@ -223,6 +223,35 @@ pub fn apply(links: &[Link], claude: &Path, sessions: &mut [Session], launches: 
     for (i, launcher) in launchers {
         sessions[i].launched_by = Some(launcher);
     }
+    if launches {
+        place_running_helpers(sessions);
+    }
+}
+
+/// A session running under another listed one, such as `opencode run` from an agent's shell,
+/// is its helper for as long as it runs. Nothing is recorded: the process chain says so now,
+/// and a launch that outlives its launcher is reparented and stands alone.
+fn place_running_helpers(sessions: &mut [Session]) {
+    let listed: HashMap<u32, String> = sessions
+        .iter()
+        .filter_map(|s| Some((s.pid?, s.session_id.clone())))
+        .collect();
+    for s in sessions
+        .iter_mut()
+        .filter(|s| s.launched_by.is_none() && s.forked_from.is_none())
+    {
+        let mut pid = s.pid.and_then(crate::process_info::parent);
+        for _ in 0..16 {
+            let Some(current) = pid.filter(|p| *p > 1) else {
+                break;
+            };
+            if let Some(parent) = listed.get(&current) {
+                s.launched_by = Some(parent.clone());
+                break;
+            }
+            pid = crate::process_info::parent(current);
+        }
+    }
 }
 
 /// Stable preorder. A missing parent or a cycle never makes a session disappear.

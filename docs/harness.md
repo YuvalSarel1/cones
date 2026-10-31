@@ -122,6 +122,11 @@ This accommodates `--continue` appending to an older session. The row is `pi-<pi
 conversation is the file's first-line `id`. Files appear after the first turn; process exit
 removes the row.
 
+An instruction over 512 bytes reaches pi through its reporter, in `CONES_PI_PROMPT`, not its
+command line. A node process given a roughly 1,000-byte argument was SIGKILLed before running
+any script on the machine this was verified on (node 26.12.1), with a security agent installed; what sends the
+signal is unidentified. `pi -p` and other direct runs still die there.
+
 ### OpenCode
 
 The [definition](../assets/harnesses/opencode.yaml) excludes management commands. Rows are
@@ -129,15 +134,24 @@ The [definition](../assets/harnesses/opencode.yaml) excludes management commands
 `--session=` or `-s` names a local one matching the process cwd. Multiple clients keep separate process rows. `run`,
 remote attachments, forks and prompt text do not identify a local conversation.
 
+OpenCode 2 is verified at 2.2.0, and cones detects it by `--standalone` in the native help. Each
+cones client runs with that flag, keeping its own server rather than joining OpenCode's shared
+background service, which would ignore the client's database and config. Its interactive
+client has no `--model`, so a launch's model goes through `OPENCODE_CONFIG_CONTENT`. Native
+forks are unsupported on 2: the flag is gone and cones refuses the fork. A row started by another client
+through that service, without cones, is listed by its process like any external client.
+
 Owned viewers load the [TUI reporter](../assets/harnesses/opencode-report.mjs), verified against
-1.18.31. It reports current conversation, state, model, timestamps, tokens and cost, including
+1.18.31 and 2.2.0. It reports current conversation, state, model, timestamps, tokens and cost, including
 session switches and pending questions/permissions. Private reports match the owned child PID
-and remain available while detached. A temporary TUI config preserves existing plugins and
+and remain available while detached. On 1.x a temporary TUI config preserves existing plugins and
 settings; explicit `OPENCODE_TUI_CONFIG` copies stay beside their source to preserve relative
-paths. The reporter changes no tools, input handlers or permissions. Existing clients must be
+paths. On 2 the plugin is added through `OPENCODE_CLI_CONFIG_CONTENT`, which replaces the plugin
+list of `cli.json`, so that list is carried over. The reporter changes no tools, input handlers or permissions. Existing clients must be
 reopened to load it.
 
-SQLite history reads `session`, `message` and `part` in `opencode.db` and `opencode-*.db`.
+SQLite history reads `session`, `message` and `part` in `opencode.db` and `opencode-*.db`,
+and `session_v2` and `session_message`, where OpenCode 2 writes, beside them.
 `OPENCODE_DB` chooses one database; relative paths use the native home and `:memory:` has no
 disk history. Legacy JSON is unsupported. Reads use bundled SQLite, read-only, with database
 and WAL fingerprints invalidating caches; immutable snapshots reject concurrent changes.

@@ -10,6 +10,7 @@ discovery:
   exclude_subcommands:
     - acp
     - agent
+    - api
     - auth
     - completion
     - db
@@ -19,10 +20,13 @@ discovery:
     - import
     - mcp
     - models
+    - pair
     - plugin
     - plug
     - providers
+    - reload
     - serve
+    - service
     - session
     - stats
     - uninstall
@@ -65,15 +69,15 @@ operations:
     prompt: [--prompt, "{prompt}"]
     probe:
       args: [--help]
-      output: stderr
-      contains: [--prompt, --session, --model]
+      output: any
+      contains: [--prompt, --session]
       error: "this OpenCode does not support native prompt and session flags"
       description: "OpenCode runs in a persistent cones terminal; saved conversations resume by session id"
   fork:
     args: [--session, "{id}", --fork]
     probe:
       args: [--help]
-      output: stderr
+      output: any
       require_success: false
       contains: [fork]
       error: "this opencode does not support native forks"
@@ -84,7 +88,7 @@ operations:
     args: [run, --session, "{id}", --fork, --agent, plan, --format, json, --, "{text}"]
     probe:
       args: [run, --help]
-      output: stderr
+      output: any
       require_success: false
       contains: [--fork, --agent, --format]
       error: "this opencode cannot run a fork headless, so a side question cannot be asked"

@@ -1811,3 +1811,133 @@ fn mcp_control_tools_launch_list_wait_and_stop_a_session_as_the_commands_do() {
     drop(input);
     child.wait().unwrap();
 }
+
+/// OpenCode 2 prints help to stdout, runs each client through a shared service unless told
+/// otherwise, and has no interactive `--model`. A launch still starts, in its own server, on
+/// the model it was asked for. Help on stderr without `--standalone` is 1.x, and keeps the flag.
+#[test]
+fn an_opencode_launch_fits_the_version_installed() {
+    let f = Fixture::new();
+    fs::write(
+        &f.jobs,
+        fs::read_to_string(&f.jobs)
+            .unwrap()
+            .replace("opencode_enabled: false", "opencode_enabled: true"),
+    )
+    .unwrap();
+    let native = f.path().join(".local/bin/opencode");
+    let command = |help: &str, stream: &str| {
+        fs::write(
+            &native,
+            format!("#!/bin/sh\nprintf '%s\\n' '{help}' >&{stream}\n"),
+        )
+        .unwrap();
+        fs::set_permissions(&native, fs::Permissions::from_mode(0o700)).unwrap();
+        let out = f.cones(
+            "ok",
+            &[
+                "launch",
+                "--dir",
+                f.work.to_str().unwrap(),
+                "--harness",
+                "opencode",
+                "--model",
+                "provider/model",
+                "--print-command",
+                "go",
+            ],
+        );
+        assert!(out.status.success(), "{}", stderr(&out));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let two = command("--standalone --prompt --session", "1");
+    assert!(two.contains("'--standalone'"), "{two}");
+    assert!(!two.contains("'--model'"), "{two}");
+    assert!(
+        two.contains(r#"OPENCODE_CONFIG_CONTENT='{"model":"provider/model"}'"#),
+        "{two}"
+    );
+    let one = command("--prompt --session --model", "2");
+    assert!(!one.contains("--standalone"), "{one}");
+    assert!(one.contains("'--model' 'provider/model'"), "{one}");
+    assert!(!one.contains("OPENCODE_CONFIG_CONTENT"), "{one}");
+}
+
+/// A node process given a long argument was SIGKILLed on a real Mac before it ran a line, so a
+/// long instruction reaches pi through its reporter instead of its command line.
+#[test]
+fn a_long_instruction_reaches_pi_off_its_command_line() {
+    let f = Fixture::new();
+    let print = |prompt: &str| {
+        let out = f.cones(
+            "ok",
+            &[
+                "launch",
+                "--dir",
+                f.work.to_str().unwrap(),
+                "--harness",
+                "pi",
+                "--print-command",
+                prompt,
+            ],
+        );
+        assert!(out.status.success(), "{}", stderr(&out));
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let short = print("short instruction");
+    assert!(
+        short.trim_end().ends_with("'--' 'short instruction'"),
+        "{short}"
+    );
+    assert!(!short.contains("CONES_PI_PROMPT"), "{short}");
+    let prompt = "word ".repeat(400);
+    let long = print(&prompt);
+    assert!(long.contains("CONES_PI_PROMPT="), "{long}");
+    assert!(long.contains(prompt.trim_end()), "{long}");
+    assert!(!long.contains("'--'"), "{long}");
+}
+
+/// A session running under another listed one is its helper while it runs, with no record of
+/// it: `opencode run` from an agent's shell has no `--parent` to name.
+#[test]
+fn a_session_running_under_another_is_listed_beneath_it() {
+    let f = Fixture::new();
+    let mut parent = Command::new("/bin/sh")
+        .args(["-c", "sleep 30 & echo $!; wait"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(parent.stdout.take().unwrap()),
+        &mut line,
+    )
+    .unwrap();
+    let helper: u32 = line.trim().parse().unwrap();
+    let mut unrelated = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let row = |id: &str, pid: u32| -> cones::fleet::Session {
+        serde_json::from_value(serde_json::json!({
+            "session_id": id, "harness": "opencode", "cwd": "/work", "state": "-", "pid": pid,
+        }))
+        .unwrap()
+    };
+    let mut rows = vec![
+        row("agent", parent.id()),
+        row("helper", helper),
+        row("alone", unrelated.id()),
+    ];
+    cones::relations::apply(&[], &f.path().join("claude"), &mut rows, true);
+    let launcher: Vec<_> = rows.iter().map(|s| s.launched_by.as_deref()).collect();
+    assert_eq!(launcher, [None, Some("agent"), None]);
+    // `cones ls` asks for forks alone, and places nothing.
+    rows[1].launched_by = None;
+    cones::relations::apply(&[], &f.path().join("claude"), &mut rows, false);
+    assert_eq!(rows[1].launched_by, None);
+    let _ = std::process::Command::new("/bin/kill")
+        .arg(helper.to_string())
+        .status();
+    parent.kill().unwrap();
+    parent.wait().unwrap();
+    unrelated.kill().unwrap();
+    unrelated.wait().unwrap();
+}

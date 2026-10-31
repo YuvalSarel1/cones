@@ -136,10 +136,24 @@ pub fn start(
             Start::Foreground(c)
         }
         spec::LaunchHandler::Terminal => {
-            let mut c = std::process::Command::new(path);
-            c.args(&named)
-                .args(session_args(kind, None, prompt, policy)?)
-                .current_dir(dir);
+            let mut c = std::process::Command::new(&path);
+            // ponytail: 512 bytes is below the roughly 1,000 at which a node process was
+            // SIGKILLed on the owner's Mac, cause outside cones and unidentified.
+            let on_command_line = kind != HarnessKind::Pi || prompt.len() <= 512;
+            let native_args = if on_command_line {
+                session_args(kind, None, prompt, policy)?
+            } else {
+                c.env("CONES_PI_PROMPT", prompt);
+                let mut args = session_args(kind, None, "", policy)?;
+                args.truncate(args.len() - launch.prompt.len());
+                args
+            };
+            let native_args = if kind == HarnessKind::Opencode {
+                opencode_session(&mut c, &path, native_args)?
+            } else {
+                native_args
+            };
+            c.args(&named).args(native_args).current_dir(dir);
             if kind == HarnessKind::Opencode {
                 c.env(crate::opencode::reporting::ENABLE, "1");
             } else if kind == HarnessKind::Pi {
@@ -650,6 +664,53 @@ pub fn skip_permissions(kind: HarnessKind, policy: &Policy) -> &'static [String]
     }
 }
 
+pub(crate) const OPENCODE_STANDALONE: &str = "--standalone";
+
+/// OpenCode 2 clients share a background service by default, which holds its own database and
+/// config and ignores the client's. Each cones client keeps its own server, so the native home,
+/// `OPENCODE_DB` and the reporter work as on 1.x, which has no such flag.
+pub(crate) fn opencode_standalone(path: &Path) -> bool {
+    crate::fleet::probe(std::process::Command::new(path).arg("--help")).is_ok_and(|output| {
+        [output.stdout, output.stderr]
+            .concat()
+            .windows(OPENCODE_STANDALONE.len())
+            .any(|word| word == OPENCODE_STANDALONE.as_bytes())
+    })
+}
+
+/// The interactive client lost `--model` in OpenCode 2, so on that version the model goes
+/// through inline config, merged over any the owner already exports.
+fn opencode_session(
+    command: &mut std::process::Command,
+    path: &Path,
+    args: Vec<OsString>,
+) -> Result<Vec<OsString>> {
+    if !opencode_standalone(path) {
+        return Ok(args);
+    }
+    let mut out = vec![OsString::from(OPENCODE_STANDALONE)];
+    let mut words = args.into_iter();
+    while let Some(word) = words.next() {
+        if word != "--model" {
+            out.push(word);
+            continue;
+        }
+        let model = words.next().context("--model has no value")?;
+        let inherited = std::env::var("OPENCODE_CONFIG_CONTENT").unwrap_or_default();
+        let mut config: Value = if inherited.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(&inherited).context("OPENCODE_CONFIG_CONTENT is not JSON")?
+        };
+        config
+            .as_object_mut()
+            .context("OPENCODE_CONFIG_CONTENT is not a JSON object")?
+            .insert("model".into(), model.to_string_lossy().into());
+        command.env("OPENCODE_CONFIG_CONTENT", config.to_string());
+    }
+    Ok(out)
+}
+
 /// `template` with `flags` before its `--`, after which the words are positional.
 fn with_flags(template: &[String], flags: &[String]) -> Vec<String> {
     let at = template
@@ -730,13 +791,12 @@ fn probe_harness(kind: HarnessKind, probe: &spec::Probe) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("{name} not found on the launch PATH"))?;
     let output = crate::fleet::probe(std::process::Command::new(&path).args(&probe.args))
         .with_context(|| format!("{name} {}", probe.args.join(" ")))?;
-    probe.report(
-        output.status.success(),
-        &String::from_utf8_lossy(match probe.output {
-            spec::ProbeOutput::Stdout => &output.stdout,
-            spec::ProbeOutput::Stderr => &output.stderr,
-        }),
-    )
+    let shown = match probe.output {
+        spec::ProbeOutput::Stdout => output.stdout,
+        spec::ProbeOutput::Stderr => output.stderr,
+        spec::ProbeOutput::Any => [output.stdout, output.stderr].concat(),
+    };
+    probe.report(output.status.success(), &String::from_utf8_lossy(&shown))
 }
 
 /// Resume a thread against the daemon of the home that holds it, not the ambient one:
@@ -1076,6 +1136,9 @@ pub fn btw(
     }
     let path = executable(&spec.name, &launch_path())
         .with_context(|| format!("{} not found", spec.name))?;
+    if kind == HarnessKind::Opencode && opencode_standalone(&path) {
+        flags.push(OPENCODE_STANDALONE.to_owned());
+    }
     let mut command = std::process::Command::new(path);
     command
         .args(spec::args(
@@ -1474,7 +1537,10 @@ pub fn resume_history(
             check_operation(spec, &spec.operations.resume, "resume")?;
             let path = executable(&spec.name, &launch_path())
                 .with_context(|| format!("{} not found", spec.name))?;
-            let mut c = std::process::Command::new(path);
+            let mut c = std::process::Command::new(&path);
+            if spec.kind == HarnessKind::Opencode && opencode_standalone(&path) {
+                c.arg(OPENCODE_STANDALONE);
+            }
             c.args(spec::args(
                 &with_flags(&spec.commands.resume, flags),
                 &[("id", entry.key.session_id.as_ref())],

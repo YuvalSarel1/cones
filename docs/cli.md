@@ -255,7 +255,9 @@ keeps the prompt out of [`launches.jsonl`](#diagnostics): the launch is recorded
 prompt. Use it for a prompt carrying a secret. A Codex launch is named by its prompt, so one
 overlapping an unrecorded launch in the same folder is reported unnamed rather than guessed.
 
-A launch stands alone unless the launcher names its parent. `--parent ID` takes a live
+A launch stands alone unless the launcher names its parent. A session still running under
+another listed one, such as `opencode run` from an agent's shell, is listed beneath that session
+in the dashboard for as long as it runs, with nothing recorded. `--parent ID` takes a live
 session's id or unambiguous prefix, and `--parent self` takes the session running the command,
 found by the process chain or else the `$CODEX_THREAD_ID` or `$CLAUDE_CODE_SESSION_ID` its
 harness exports. A parent that names no live session, such as the agent that started a helper

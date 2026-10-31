@@ -6,6 +6,85 @@ import { dirname, join } from "node:path";
 // leaves beside the report are submitted through OpenCode's own prompt endpoint.
 export default {
   id: "cones-session-report",
+  // OpenCode 2's plugin shape. It takes no options from config, so the report path comes
+  // through the environment. The report keeps 1.x's shape for src/opencode/reporting.rs.
+  async setup(context) {
+    const path = process.env.CONES_OPENCODE_REPORT;
+    if (!path) return;
+    const data = context.data, api = context.client;
+    const shown = () => {
+      const route = context.ui.router.current();
+      return route.type === "session" ? route.sessionID : undefined;
+    };
+    let synced;
+    const sync = (id) => {
+      if (!id || id === synced) return;
+      synced = id;
+      for (const collection of [data.session, data.session.message, data.session.permission, data.session.form])
+        collection.sync(id).catch(() => {});
+    };
+    const invalidate = () => { try { rmSync(path, { force: true }); } catch {} };
+    const publish = () => {
+      try {
+        const id = shown();
+        sync(id);
+        const session = id ? data.session.get(id) : undefined;
+        const last = id ? data.session.message.list(id).findLast((message) =>
+          message.type === "assistant" && message.tokens?.output > 0) : undefined;
+        const reply = last?.content.find((part) => part.type === "text" && part.text?.trim());
+        const report = JSON.stringify({
+          version: 1,
+          pid: process.pid,
+          session: session ? {
+            id: session.id,
+            directory: session.location.directory,
+            title: session.title,
+            time: session.time,
+            model: session.model ?? last?.model,
+            cost: data.session.cost(id),
+            tokens: session.tokens,
+          } : null,
+          status: id ? { type: data.session.status(id) === "running" ? "busy" : "idle" } : undefined,
+          waiting: !id ? undefined
+            : data.session.permission.list(id)?.length ? "permission"
+            : data.session.form.list(id)?.length ? "question"
+            : undefined,
+          context: last?.tokens,
+          last: reply?.text.trim().split("\n", 1)[0].slice(0, 512),
+        });
+        writeFileSync(`${path}.tmp`, report, { mode: 0o600 });
+        renameSync(`${path}.tmp`, path);
+      } catch {
+        // Reporting must not interrupt OpenCode's editor or execution.
+        invalidate();
+      }
+    };
+    const notes = join(dirname(path), "notes");
+    const deliver = async () => {
+      let names;
+      try { names = readdirSync(notes); } catch { return; }
+      for (const name of names) {
+        if (!name.endsWith(".json")) continue;
+        const file = join(notes, name), done = `${file.slice(0, -5)}.done`;
+        let text, answer = {};
+        try { text = readFileSync(file, "utf8"); rmSync(file); } catch { continue; }
+        try {
+          const note = JSON.parse(text), id = shown();
+          if (!id) answer = { error: "this OpenCode shows no session" };
+          else if (note.compact) await api.session.compact({ sessionID: id });
+          else if (note.name !== undefined) await api.session.update({ sessionID: id, title: note.name });
+          else await api.session.prompt({ sessionID: id, text: note.text });
+        } catch (error) { answer = { error: String(error?.message ?? error) }; }
+        try {
+          writeFileSync(`${done}.tmp`, JSON.stringify(answer), { mode: 0o600 });
+          renameSync(`${done}.tmp`, done);
+        } catch {}
+      }
+    };
+    const timer = setInterval(() => { deliver(); publish(); }, 250);
+    publish();
+    return () => { clearInterval(timer); invalidate(); };
+  },
   async tui(api, options) {
     let previous;
     let published = 0;

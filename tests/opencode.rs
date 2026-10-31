@@ -613,3 +613,47 @@ fn a_reported_fork_source_requires_an_exact_database_and_directory() {
             .is_err()
     );
 }
+
+/// OpenCode 2 writes `session_v2` and `session_message` and leaves 1.x conversations in the old
+/// tables. A database from either version, or one upgraded in place, reads the same.
+#[test]
+fn a_database_written_by_opencode_2_lists_previews_and_prices_its_conversations() {
+    const V2: &str = "
+        CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT, title TEXT, parent_id TEXT,
+            time_created INTEGER, time_updated INTEGER, time_archived INTEGER, cost REAL);
+        CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+            seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+        INSERT INTO session_v2 VALUES
+            ('ses_two', '/work', 'Two', NULL, 1000, 2000, NULL, 0.25),
+            ('ses_child', '/work', 'Subagent', 'ses_two', 1000, 2000, NULL, 0);
+        INSERT INTO session_message VALUES
+            ('m1', 'ses_two', 'user', 1, 1000, 1000, '{\"text\":\"Question\",\"files\":[]}'),
+            ('m2', 'ses_two', 'assistant', 2, 1500, 1500, '{\"model\":{\"id\":\"m\",\"providerID\":\"p\"},
+                \"content\":[{\"type\":\"reasoning\",\"text\":\"hidden\"},{\"type\":\"text\",\"text\":\"Answer\"}],
+                \"cost\":0.25,\"tokens\":{\"input\":10,\"output\":5,\"reasoning\":0,\"cache\":{\"read\":1,\"write\":0}}}'),
+            ('m3', 'ses_two', 'idle', 3, 1600, 1600, '{\"outcome\":\"succeeded\"}');";
+    // Only the new tables, as a fresh install leaves them.
+    let dir = tempfile::tempdir().unwrap();
+    let fresh = dir.path().join("opencode.db");
+    sql(&fresh, V2);
+    // The new tables beside a 1.x conversation, as an upgrade leaves them.
+    let (_upgraded_dir, upgraded) = fixture();
+    sql(&upgraded, V2);
+
+    let mut reader = transcript::Reader::new().unwrap();
+    for db in [&fresh, &upgraded] {
+        let home = db.parent().unwrap();
+        opencode::require_session(db, "ses_two").unwrap();
+        let listed = opencode::session_database(home, "ses_two", Path::new("/work"), Some(db));
+        assert_eq!(&listed.unwrap(), db);
+        let shown = preview(&mut reader, db, "ses_two").result.unwrap();
+        let texts: Vec<_> = shown.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, ["Question", "Answer"]);
+    }
+    opencode::require_session(&upgraded, "ses_fixture").unwrap();
+    let old = preview(&mut reader, &upgraded, "ses_fixture")
+        .result
+        .unwrap();
+    assert_eq!(old.messages[2].text, "Done\nAdditional detail");
+    assert!(opencode::require_session(&fresh, "ses_fixture").is_err());
+}
