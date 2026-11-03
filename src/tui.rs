@@ -16352,6 +16352,7 @@ impl App {
                 Ok(true) if matches!(action.verb, "delete" | "forget") => {
                     self.removed_sessions.insert(action.id.clone());
                     self.data.sessions.retain(|s| s.session_id != action.id);
+                    self.data.runs.retain(|r| r.started.run_id != action.id);
                     String::new()
                 }
                 Ok(true) => "stop requested".into(),
@@ -22079,6 +22080,12 @@ states:
         app.stop();
         poll_until(&mut app, |a| a.stopping.is_empty());
         assert_eq!(app.status, "", "the row leaving says it");
+        // Between the delete finishing and the next refresh the row stays gone, or rapid
+        // ctrl+x presses land on it again or on the row the cursor jumped to.
+        assert!(
+            !app.rows.iter().any(|r| matches!(r.kind, Kind::Run(..))),
+            "gone before the refresh"
+        );
         app.refresh().unwrap();
         assert!(
             !app.rows.iter().any(|r| matches!(r.kind, Kind::Run(..))),
