@@ -377,7 +377,7 @@ pub fn process_table(ps: &str) -> Result<String> {
             // lstart is locale text: under a non-English LANG ps prints its own month names,
             // which never match the start a harness recorded, so every live session is dropped.
             .env("LC_ALL", PS_LOCALE)
-            .args(["-axww", "-o", "pid=,lstart=,command="])
+            .args(["-axww", "-o", "pid=,ppid=,%cpu=,rss=,lstart=,command="])
             .stdin(Stdio::null()),
     )
     .with_context(|| format!("reading the process table with {ps}"))?;
@@ -652,10 +652,15 @@ fn process_column(ps: &str, list: &str, flags: &str) -> Option<HashMap<u32, Stri
     )
 }
 
-/// Shared parser for the OS command above: pid, UTC lstart, then the complete argv.
-/// Column order and timestamp syntax belong to this OS adapter, not harness definitions.
+/// Shared parser for the OS command above: pid, parent pid, %cpu, resident KiB, UTC lstart,
+/// then the complete argv. Column order and timestamp syntax belong to this OS adapter, not
+/// harness definitions.
 pub struct ProcessLine<'a> {
     pub pid: u32,
+    pub ppid: u32,
+    pub cpu: f32,
+    /// Resident size in bytes.
+    pub rss: u64,
     pub started: DateTime<Utc>,
     pub command: &'a str,
 }
@@ -699,11 +704,22 @@ fn probing(pid: u32) -> bool {
 pub fn process_lines(ps: &str) -> Vec<ProcessLine<'_>> {
     ps.lines()
         .filter_map(|line| {
-            let (pid, rest) = line.trim_start().split_once(' ')?;
+            let mut rest = line;
+            let mut field = || {
+                let (field, after) = rest.trim_start().split_once(' ')?;
+                rest = after;
+                Some(field)
+            };
+            let pid = field()?.parse().ok().filter(|pid| !probing(*pid))?;
+            let (ppid, cpu, rss) = (field()?.parse().ok()?, field()?.parse().ok()?, field()?);
+            // ps prints resident size in kibibytes.
+            let rss = rss.parse::<u64>().ok()? * 1024;
             let (start, command) = rest.trim_start().split_at_checked(24)?;
-            let pid = pid.parse().ok().filter(|pid| !probing(*pid))?;
             Some(ProcessLine {
                 pid,
+                ppid,
+                cpu,
+                rss,
                 started: chrono::NaiveDateTime::parse_from_str(start, "%a %b %e %H:%M:%S %Y")
                     .ok()?
                     .and_utc(),
@@ -1705,65 +1721,34 @@ pub struct Usage {
     pub children: u32,
 }
 
-/// Usage for the listed pids in one `ps` read, so a fleet costs one process, not one per row.
+/// Usage for the listed pids from a fresh read of the process table.
 pub fn usage(pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
-    usage_from("/bin/ps", pids)
+    let pids: Vec<u32> = pids.collect();
+    if pids.is_empty() {
+        return HashMap::new();
+    }
+    usage_in(
+        &process_table("/bin/ps").unwrap_or_default(),
+        pids.into_iter(),
+    )
 }
 
-/// `usage` against a named `ps`, so a test can point it at one that cannot run.
-fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
+/// Usage for the listed pids from the table this observation pass already read for discovery,
+/// so the cpu column costs no second listing of every process.
+pub fn pass_usage(pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
+    pass_table("/bin/ps").map_or_else(|_| HashMap::new(), |table| usage_in(&table, pids))
+}
+
+fn usage_in(table: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> {
     let wanted: std::collections::HashSet<u32> = pids.collect();
     if wanted.is_empty() {
         return HashMap::new();
     }
-    // ps' %cpu is already a decaying average, so a table a few seconds old shows the same
-    // columns. Reusing it while it still lists every wanted pid saves a `ps` over every
-    // process on most refreshes; a new session reads a fresh one.
-    // ponytail: one cached table per process, keyed by the `ps` path only.
-    const FRESH: std::time::Duration = std::time::Duration::from_secs(5);
-    static HELD: std::sync::Mutex<Option<(std::time::Instant, String, String)>> =
-        std::sync::Mutex::new(None);
-    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
-    let reusable = held.as_ref().filter(|(at, for_ps, out)| {
-        at.elapsed() < FRESH && for_ps == ps && {
-            let listed: HashSet<u32> = out
-                .lines()
-                .filter_map(|l| l.split_whitespace().next()?.parse().ok())
-                .collect();
-            wanted.is_subset(&listed)
-        }
-    });
-    let out = match reusable {
-        Some((_, _, out)) => out.clone(),
-        None => {
-            let out = crate::observe::spawn(
-                crate::observe::op::PROCESS_USAGE,
-                Command::new(ps)
-                    .args(["-Ao", "pid=,ppid=,%cpu=,rss="])
-                    .stdin(Stdio::null()),
-            )
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-            *held = Some((std::time::Instant::now(), ps.to_owned(), out.clone()));
-            out
-        }
-    };
-    drop(held);
     let mut own = HashMap::new();
     let mut below: HashMap<u32, Vec<u32>> = HashMap::new();
-    for line in out.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(pid), Some(ppid), Some(cpu), Some(rss)) = (
-            fields.next().and_then(|f| f.parse::<u32>().ok()),
-            fields.next().and_then(|f| f.parse::<u32>().ok()),
-            fields.next().and_then(|f| f.parse::<f32>().ok()),
-            fields.next().and_then(|f| f.parse::<u64>().ok()),
-        ) else {
-            continue;
-        };
-        // ps prints resident size in kibibytes.
-        own.insert(pid, (cpu, rss * 1024));
-        below.entry(ppid).or_default().push(pid);
+    for line in process_lines(table) {
+        own.insert(line.pid, (line.cpu, line.rss));
+        below.entry(line.ppid).or_default().push(line.pid);
     }
     wanted
         .iter()
@@ -3083,10 +3068,10 @@ mod tests {
             format!(
                 "#!/bin/sh\ncase \"$1\" in\n\
                  -axww) printf '%s\\n' \
-                 '4201 Wed Sep 23 16:00:00 2026    python3 /x/pi -- words' \
-                 '4202 Wed Sep 23 16:00:00 2026    pi' \
-                 '4203 Wed Sep 23 16:00:00 2026    pi' \
-                 '4204 {now}    pi' ;;\n\
+                 '4201 1 0.0 0 Wed Sep 23 16:00:00 2026    python3 /x/pi -- words' \
+                 '4202 1 0.0 0 Wed Sep 23 16:00:00 2026    pi' \
+                 '4203 1 0.0 0 Wed Sep 23 16:00:00 2026    pi' \
+                 '4204 1 0.0 0 {now}    pi' ;;\n\
                  *) printf '%s\\n' '4201 Python /x/pi -- words' '4203 pi' '4204 pi' ;;\nesac\n"
             ),
         )

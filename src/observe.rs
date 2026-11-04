@@ -22,8 +22,6 @@ pub mod op {
     pub const PROCESS_ENV: &str = "process_env";
     /// A batched start-time read for named pids, which rejects a reused pid.
     pub const PROCESS_START: &str = "process_start";
-    /// A batched cpu and resident-size read for named pids.
-    pub const PROCESS_USAGE: &str = "process_usage";
     /// Working directories and held locks read from the kernel, or from `lsof` when it refuses.
     pub const OPEN_FILES: &str = "open_files";
     /// Whether one pid exists.

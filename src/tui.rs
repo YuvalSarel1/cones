@@ -3630,7 +3630,7 @@ fn fleet_rows_observed(
         }
         out.extend(rows);
     }
-    let usage = fleet::usage(out.iter().filter_map(|s| s.pid));
+    let usage = fleet::pass_usage(out.iter().filter_map(|s| s.pid));
     for s in &mut out {
         // A row that already named the process running it, as a daemon-held Codex thread does,
         // keeps that read.

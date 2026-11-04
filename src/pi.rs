@@ -543,10 +543,10 @@ pub(crate) mod tests {
     #[test]
     fn a_process_line_is_pi_only_when_the_program_is() {
         let ps = "\
-  101 Sun Sep 13 15:19:19 2026 pi
-  102 Sun Sep 13 15:19:20 2026 pi-rpc
-  103 Sun Sep 13 15:19:21 2026 /opt/homebrew/bin/pi
-  104 Sun Sep 13 15:19:22 2026 vim notes-about-pi.md
+  101 1 0.0 0 Sun Sep 13 15:19:19 2026 pi
+  102 1 0.0 0 Sun Sep 13 15:19:20 2026 pi-rpc
+  103 1 0.0 0 Sun Sep 13 15:19:21 2026 /opt/homebrew/bin/pi
+  104 1 0.0 0 Sun Sep 13 15:19:22 2026 vim notes-about-pi.md
 ";
         let procs = processes(ps);
         assert_eq!(

@@ -351,7 +351,7 @@ fn prepared_processes(ps: &str, homes: &[PathBuf]) -> anyhow::Result<Vec<Process
     })
 }
 
-/// Parse `TZ=UTC ps -axww -o pid=,lstart=,command=`; `cwd` is filled from lsof.
+/// Parse the process table `fleet::process_table` reads; `cwd` is filled from lsof.
 pub fn processes(ps: &str) -> Vec<Process> {
     let discovery = &crate::harness::spec(crate::config::HarnessKind::Codex).discovery;
     discovery
@@ -1221,7 +1221,7 @@ pub(crate) fn thread_rows_observed(
     // its work there.
     let held = daemon
         .filter(|_| ids.iter().any(|(_, record)| record.is_none()))
-        .and_then(|pid| crate::fleet::usage(std::iter::once(pid)).remove(&pid));
+        .and_then(|pid| crate::fleet::pass_usage(std::iter::once(pid)).remove(&pid));
     let mut rows: Vec<_> = ids
         .into_iter()
         .filter(|(id, _)| !live.iter().any(|s| s.session_id == *id))
@@ -1560,21 +1560,21 @@ mod tests {
     #[test]
     fn a_version_or_help_probe_is_not_a_session() {
         // `codex app-server daemon start` runs `codex --version` on the binary it is about to use.
-        let ps = "  1 Wed Sep 23 05:31:47 2026 /Users/u/.codex/packages/standalone/current/bin/codex --version\n  2 Wed Sep 23 05:31:47 2026 codex -V\n  3 Wed Sep 23 05:31:47 2026 codex --help\n  4 Wed Sep 23 05:31:47 2026 codex -h\n  5 Wed Sep 23 05:31:47 2026 codex help\n  6 Wed Sep 23 05:31:47 2026 codex fix the parser\n";
+        let ps = "  1 1 0.0 0 Wed Sep 23 05:31:47 2026 /Users/u/.codex/packages/standalone/current/bin/codex --version\n  2 1 0.0 0 Wed Sep 23 05:31:47 2026 codex -V\n  3 1 0.0 0 Wed Sep 23 05:31:47 2026 codex --help\n  4 1 0.0 0 Wed Sep 23 05:31:47 2026 codex -h\n  5 1 0.0 0 Wed Sep 23 05:31:47 2026 codex help\n  6 1 0.0 0 Wed Sep 23 05:31:47 2026 codex fix the parser\n";
         let pids: Vec<u32> = processes(ps).iter().map(|p| p.pid).collect();
         assert_eq!(pids, [6]);
     }
 
     #[test]
     fn a_subcommand_after_global_options_is_not_a_session() {
-        let ps = "  1 Wed Sep 23 05:31:47 2026 /x/bin/codex -c features.x=true app-server --analytics-default-enabled\n  2 Wed Sep 23 05:31:47 2026 codex --enable foo mcp-server\n  3 Wed Sep 23 05:31:47 2026 codex -m o3 fix the parser\n";
+        let ps = "  1 1 0.0 0 Wed Sep 23 05:31:47 2026 /x/bin/codex -c features.x=true app-server --analytics-default-enabled\n  2 1 0.0 0 Wed Sep 23 05:31:47 2026 codex --enable foo mcp-server\n  3 1 0.0 0 Wed Sep 23 05:31:47 2026 codex -m o3 fix the parser\n";
         let pids: Vec<u32> = processes(ps).iter().map(|p| p.pid).collect();
         assert_eq!(pids, [3]);
     }
 
     #[test]
     fn a_process_states_its_thread_by_lock_or_resume_argument() {
-        let ps = "  7 Sun Sep 13 15:19:19 2026 /usr/local/bin/codex --remote unix:///s.sock resume 01a09fed-867a-7a42-b7b9-22fbcbd280d7\n  8 Sun Sep 13 15:19:19 2026 codex resume\n  9 Sun Sep 13 15:19:19 2026 codex app-server --listen unix://\n";
+        let ps = "  7 1 0.0 0 Sun Sep 13 15:19:19 2026 /usr/local/bin/codex --remote unix:///s.sock resume 01a09fed-867a-7a42-b7b9-22fbcbd280d7\n  8 1 0.0 0 Sun Sep 13 15:19:19 2026 codex resume\n  9 1 0.0 0 Sun Sep 13 15:19:19 2026 codex app-server --listen unix://\n";
         let procs = processes(ps);
         assert_eq!(procs.len(), 2, "app-server runs no session");
         assert_eq!(
@@ -1838,8 +1838,8 @@ mod tests {
         )
         .unwrap();
         let mut procs = processes(
-            "7 Sun Sep 13 10:00:00 2026 codex --remote unix:///s.sock -C /repo first prompt\n\
-             8 Sun Sep 13 10:01:00 2026 codex --remote unix:///s.sock -C /repo second prompt\n",
+            "7 1 0.0 0 Sun Sep 13 10:00:00 2026 codex --remote unix:///s.sock -C /repo first prompt\n\
+             8 1 0.0 0 Sun Sep 13 10:01:00 2026 codex --remote unix:///s.sock -C /repo second prompt\n",
         );
         for p in &mut procs {
             p.cwd = Some(work.clone());
@@ -1906,8 +1906,8 @@ mod tests {
             "closing the viewer leaves the thread's row and start time unchanged"
         );
         let mut viewers = processes(&format!(
-            "11 Sun Sep 13 10:05:00 2026 codex --remote unix:///s.sock resume -- {A}\n\
-             12 Sun Sep 13 10:05:01 2026 codex --remote unix:///s.sock resume -- {B}\n"
+            "11 1 0.0 0 Sun Sep 13 10:05:00 2026 codex --remote unix:///s.sock resume -- {A}\n\
+             12 1 0.0 0 Sun Sep 13 10:05:01 2026 codex --remote unix:///s.sock resume -- {B}\n"
         ));
         assert_eq!(
             viewers

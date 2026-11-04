@@ -371,7 +371,7 @@ fn native_event_guards_and_unknown_state_policy_are_declarative() {
 
 #[test]
 fn process_filters_change_without_reconfiguring_the_os_parser() {
-    let ps = " 1 Sun Sep 13 15:19:19 2026 codex login\n 2 Sun Sep 13 15:19:19 2026 codex --remote unix:///s resume -- abc\n 3 Sun Sep 13 15:19:19 2026 pi\n 4 Sun Sep 13 15:19:19 2026 /bin/echo codex\n";
+    let ps = " 1 1 0.0 0 Sun Sep 13 15:19:19 2026 codex login\n 2 1 0.0 0 Sun Sep 13 15:19:19 2026 codex --remote unix:///s resume -- abc\n 3 1 0.0 0 Sun Sep 13 15:19:19 2026 pi\n 4 1 0.0 0 Sun Sep 13 15:19:19 2026 /bin/echo codex\n";
     assert_eq!(
         spec(HarnessKind::Codex)
             .discovery
@@ -427,7 +427,7 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
     let table = commands
         .iter()
         .enumerate()
-        .map(|(i, c)| format!("{} Sun Sep 13 15:19:19 2026 {c}\n", i + 1))
+        .map(|(i, c)| format!("{} 1 0.0 0 Sun Sep 13 15:19:19 2026 {c}\n", i + 1))
         .collect::<String>();
     for (kind, expected) in [
         (HarnessKind::Gemini, vec![1]),
@@ -448,7 +448,7 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
 
 #[test]
 fn kimi_process_titles_are_exact_and_cannot_be_claimed_by_an_argument() {
-    let table = " 1 Sun Sep 13 15:19:19 2026 Kimi Code\n 2 Sun Sep 13 15:19:19 2026 /bin/echo Kimi Code\n 3 Sun Sep 13 15:19:19 2026 Kimi Code other\n";
+    let table = " 1 1 0.0 0 Sun Sep 13 15:19:19 2026 Kimi Code\n 2 1 0.0 0 Sun Sep 13 15:19:19 2026 /bin/echo Kimi Code\n 3 1 0.0 0 Sun Sep 13 15:19:19 2026 Kimi Code other\n";
     assert_eq!(
         spec(HarnessKind::Kimi)
             .discovery

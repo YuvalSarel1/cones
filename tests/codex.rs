@@ -25,12 +25,12 @@ fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
 #[test]
 fn processes_come_from_the_program_name_not_the_command_text() {
     let ps = "\
-53203 Sun Sep 13 15:19:19 2026     /bin/zsh -c eval 'codex app-server' && echo codex
-53210 Sun Sep 13 15:19:19 2026     codex
-53211 Thu Sep  3 09:05:07 2026     /Users/me/.codex/packages/standalone/current/bin/codex exec --json \"fix the widget\"
-53212 Sun Sep 13 15:20:00 2026     codex app-server
-53213 Sun Sep 13 15:20:01 2026     codex \"fix the bug\"
-  999 Sun Sep 13 15:20:02 2026     node /opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js
+53203 1 0.0 0 Sun Sep 13 15:19:19 2026     /bin/zsh -c eval 'codex app-server' && echo codex
+53210 1 0.0 0 Sun Sep 13 15:19:19 2026     codex
+53211 1 0.0 0 Thu Sep  3 09:05:07 2026     /Users/me/.codex/packages/standalone/current/bin/codex exec --json \"fix the widget\"
+53212 1 0.0 0 Sun Sep 13 15:20:00 2026     codex app-server
+53213 1 0.0 0 Sun Sep 13 15:20:01 2026     codex \"fix the bug\"
+  999 1 0.0 0 Sun Sep 13 15:20:02 2026     node /opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js
 garbage
 ";
     let procs = processes(ps);

@@ -295,13 +295,13 @@ fn wal_only_updates_invalidate_history_columns_and_previews() {
 fn live_rows_require_native_identity_and_do_not_guess_state_from_finished_messages() {
     let (dir, _) = fixture();
     let ps = "\
-11 Thu Sep 17 10:00:00 2026 /tmp/opencode --session ses_fixture
-12 Thu Sep 17 10:00:00 2026 opencode
-13 Thu Sep 17 10:00:00 2026 opencode serve --port 4096
-14 Thu Sep 17 10:00:00 2026 opencode db path
-15 Thu Sep 17 10:00:00 2026 vim opencode
-16 Thu Sep 17 10:00:00 2026 opencode --prompt=explain --session ses_fixture
-17 Thu Sep 17 10:00:00 2026 opencode attach http://localhost:4096 --session ses_fixture
+11 1 0.0 0 Thu Sep 17 10:00:00 2026 /tmp/opencode --session ses_fixture
+12 1 0.0 0 Thu Sep 17 10:00:00 2026 opencode
+13 1 0.0 0 Thu Sep 17 10:00:00 2026 opencode serve --port 4096
+14 1 0.0 0 Thu Sep 17 10:00:00 2026 opencode db path
+15 1 0.0 0 Thu Sep 17 10:00:00 2026 vim opencode
+16 1 0.0 0 Thu Sep 17 10:00:00 2026 opencode --prompt=explain --session ses_fixture
+17 1 0.0 0 Thu Sep 17 10:00:00 2026 opencode attach http://localhost:4096 --session ses_fixture
 ";
     let mut procs = opencode::processes(ps);
     assert_eq!(
