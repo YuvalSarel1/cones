@@ -1716,14 +1716,39 @@ fn usage_from(ps: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage> 
     if wanted.is_empty() {
         return HashMap::new();
     }
-    let out = crate::observe::spawn(
-        crate::observe::op::PROCESS_USAGE,
-        Command::new(ps)
-            .args(["-Ao", "pid=,ppid=,%cpu=,rss="])
-            .stdin(Stdio::null()),
-    )
-    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-    .unwrap_or_default();
+    // ps' %cpu is already a decaying average, so a table a few seconds old shows the same
+    // columns. Reusing it while it still lists every wanted pid saves a `ps` over every
+    // process on most refreshes; a new session reads a fresh one.
+    // ponytail: one cached table per process, keyed by the `ps` path only.
+    const FRESH: std::time::Duration = std::time::Duration::from_secs(5);
+    static HELD: std::sync::Mutex<Option<(std::time::Instant, String, String)>> =
+        std::sync::Mutex::new(None);
+    let mut held = HELD.lock().unwrap_or_else(|e| e.into_inner());
+    let reusable = held.as_ref().filter(|(at, for_ps, out)| {
+        at.elapsed() < FRESH && for_ps == ps && {
+            let listed: HashSet<u32> = out
+                .lines()
+                .filter_map(|l| l.split_whitespace().next()?.parse().ok())
+                .collect();
+            wanted.is_subset(&listed)
+        }
+    });
+    let out = match reusable {
+        Some((_, _, out)) => out.clone(),
+        None => {
+            let out = crate::observe::spawn(
+                crate::observe::op::PROCESS_USAGE,
+                Command::new(ps)
+                    .args(["-Ao", "pid=,ppid=,%cpu=,rss="])
+                    .stdin(Stdio::null()),
+            )
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+            *held = Some((std::time::Instant::now(), ps.to_owned(), out.clone()));
+            out
+        }
+    };
+    drop(held);
     let mut own = HashMap::new();
     let mut below: HashMap<u32, Vec<u32>> = HashMap::new();
     for line in out.lines() {

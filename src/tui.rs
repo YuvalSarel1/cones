@@ -17972,7 +17972,7 @@ pub fn run(
     let _ = execute!(std::io::stdout(), EnableBracketedPaste);
     let result = (|| -> Result<()> {
         let animation = Instant::now();
-        let mut drawn_tick = usize::MAX;
+        let mut drawn_frame = usize::MAX;
         let mut drawn_refresh = app.refreshed;
         let mut redraw = true;
         // Events read past a bare Esc that turned out not to start a mouse report.
@@ -18027,10 +18027,15 @@ pub fn run(
                     report_dir(&dir);
                     app.reported_dir = Some(dir);
                 }
+                // The clock only matters while a spinner is on screen, and only when its frame
+                // changes: a frame that repeats the last one still wakes the terminal's renderer.
+                let frame = spinner_frame(app.tick);
+                let animating = frame != drawn_frame
+                    && (app.data.count("active") > 0 || app.rows.iter().any(Row::working));
                 if redraw
                     || dirty
                     || app.feedback.is_some()
-                    || app.tick != drawn_tick
+                    || animating
                     || app.refreshed != drawn_refresh
                 {
                     let drawing = Instant::now();
@@ -18075,7 +18080,7 @@ pub fn run(
                             },
                         );
                     }
-                    drawn_tick = app.tick;
+                    drawn_frame = frame;
                     drawn_refresh = app.refreshed;
                     redraw = false;
                 }
@@ -18083,8 +18088,15 @@ pub fn run(
                     continue;
                 }
             }
-            // Poll between animation frames for responsive input and reloads without idle repaints.
-            let wait = Duration::from_millis(if app.focus.is_some() { 8 } else { 25 });
+            // Input wakes the poll at once; the wait bounds how late output from a pane, a
+            // finished refresh or the next spinner frame is seen. With none of those pending the
+            // loop wakes less often.
+            let busy = !app.viewers.is_empty() || app.loading.is_some() || app.opening.is_some();
+            let wait = Duration::from_millis(match (app.focus.is_some(), busy) {
+                (true, _) => 8,
+                (false, true) => 25,
+                (false, false) => 50,
+            });
             if !replay.is_empty() || held.is_some() || event::poll(wait)? {
                 let mut e = match replay.pop_front().or_else(|| held.take()) {
                     Some(e) => e,

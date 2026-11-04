@@ -498,3 +498,42 @@ fn smoke_the_dashboard_draws_the_open_folder() {
         "Ghostty prints CAN as a cell: {handed:?}"
     );
 }
+
+/// Every frame is a synchronized update, so its opening escape counts the frames drawn.
+fn frames_during(d: &Dashboard, window: Duration) -> usize {
+    let count = |d: &Dashboard| {
+        d.output
+            .lock()
+            .unwrap()
+            .windows(8)
+            .filter(|w| w == b"\x1b[?2026h")
+            .count()
+    };
+    let before = count(d);
+    std::thread::sleep(window);
+    count(d) - before
+}
+
+/// An idle dashboard draws once per refresh rather than on every animation tick. Each frame
+/// wakes the terminal's renderer, so a still screen that kept drawing cost the terminal CPU for
+/// nothing.
+#[test]
+fn idle_dashboard_draws_once_per_refresh() {
+    let mut d = Dashboard::new("idle_frames", &[]);
+    d.start();
+    let screen = d.capture("idle");
+    assert!(screen.contains("no sessions here"), "{screen}");
+    let frames = frames_during(&d, Duration::from_secs(4));
+    // A tick-driven dashboard drew 40 frames in 4 seconds; a refresh a second draws about 4.
+    let report = format!(
+        "idle, 4 s: 1 to 8 frames: {}\n",
+        if (1..=8).contains(&frames) {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    fs::write(d.artifact.join("frames.txt"), &report).unwrap();
+    assert!(!report.contains(": no"), "{report}counted {frames}");
+    d.quit();
+}

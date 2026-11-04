@@ -80,6 +80,9 @@ pub(crate) struct Tracker {
     entries: HashMap<String, Entry>,
     /// The first update took its snapshot as the baseline.
     baselined: bool,
+    /// Modification time and length of the file `entries` last matched, so an update that
+    /// finds the file as it was skips reading and parsing it again.
+    stamp: Option<(std::time::SystemTime, u64)>,
 }
 
 pub(crate) struct Notice {
@@ -100,7 +103,15 @@ impl Tracker {
         let lock = crate::private_file(&state.join("attention.lock")).map_err(io::Error::other)?;
         lock.lock_exclusive()?;
         let path = state.join("attention.json");
+        let stamp = |path: &Path| {
+            fs::metadata(path)
+                .ok()
+                .and_then(|m| Some((m.modified().ok()?, m.len())))
+        };
+        let current = stamp(&path);
+        let unchanged = current.is_some() && current == self.stamp;
         self.entries = match fs::File::open(&path) {
+            Ok(_) if unchanged => std::mem::take(&mut self.entries),
             Ok(file) => {
                 let mut bytes = Vec::new();
                 file.take(2 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -206,7 +217,10 @@ impl Tracker {
             let mut temporary = tempfile::NamedTempFile::new_in(state)?;
             serde_json::to_writer(&mut temporary, &self.entries).map_err(io::Error::other)?;
             temporary.flush()?;
-            temporary.persist(path).map_err(io::Error::other)?;
+            temporary.persist(&path).map_err(io::Error::other)?;
+            self.stamp = stamp(&path);
+        } else {
+            self.stamp = current;
         }
         Ok(notices)
     }
