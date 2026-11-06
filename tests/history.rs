@@ -1138,3 +1138,27 @@ fn viewport_hydration_reads_only_requested_keys_and_live_exclusions_accept_home_
     .unwrap();
     assert_eq!(ids(&excluded), [B]);
 }
+
+#[test]
+fn a_pasted_image_path_titles_as_an_image_label() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("claude");
+    let pasted = cones::fleet::pasted_images_dir().join("pasted-20261106-142821.png");
+    let prompt = format!(
+        "{} why is this untitled? see /repo/shot.png",
+        pasted.display()
+    );
+    write(
+        &home.join("projects/project").join(format!("{A}.jsonl")),
+        &[
+            json!({"type":"user","sessionId":A,"cwd":"/repo","timestamp":"2026-09-10T10:00:00Z","message":{"content":prompt}}),
+        ],
+    );
+    let mut reader = Reader::new(vec![source(&home, HarnessKind::Claude)]).unwrap();
+    let result = page(&mut reader, Query::default()).unwrap();
+    assert_eq!(
+        result.entries[0].title.as_deref(),
+        Some("[image] why is this untitled? see /repo/shot.png"),
+        "only the dashboard's own pasted image becomes a label"
+    );
+}

@@ -587,7 +587,14 @@ impl MessageText {
         let mut lines = self
             .parts(event, attachments)
             .into_iter()
-            .filter_map(crate::fleet::headline);
+            .filter_map(crate::fleet::headline)
+            .map(|line| {
+                if attachments {
+                    crate::fleet::label_pasted_images(&line)
+                } else {
+                    line
+                }
+            });
         match self.headline {
             Headline::First => lines.next(),
             Headline::Last => lines.next_back(),

@@ -1283,6 +1283,32 @@ pub fn headline(text: &str) -> Option<String> {
         .map(|l| l.replace("**", ""))
 }
 
+/// Where the dashboard saves a pasted clipboard image for the harness to read by path.
+pub fn pasted_images_dir() -> PathBuf {
+    std::env::temp_dir().join("cones")
+}
+
+/// A prompt line with each pasted image's path, which the harness sees as plain text,
+/// shown as the `[image]` label native image blocks get.
+pub fn label_pasted_images(line: &str) -> String {
+    let dir = pasted_images_dir();
+    line.split(' ')
+        .map(|word| {
+            let path = Path::new(word);
+            if path.parent() == Some(dir.as_path())
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("pasted-"))
+            {
+                "[image]"
+            } else {
+                word
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// User-set titles override generated titles regardless of their order in the transcript.
 /// A `custom-title` also outranks a later `agent-name`: a native `/rename` writes both, and a
 /// live session re-appends its own `agent-name` every turn, which would otherwise undo a

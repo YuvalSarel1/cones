@@ -3213,7 +3213,7 @@ fn hebrew_key(c: char) -> Option<char> {
 
 /// Save a clipboard image as a temporary PNG for the harness to read by path.
 fn paste_image() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("cones");
+    let dir = crate::fleet::pasted_images_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let path = dir.join(format!("pasted-{stamp}.png"));
