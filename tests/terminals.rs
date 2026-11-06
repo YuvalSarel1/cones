@@ -298,6 +298,27 @@ fn incompatible_clients_and_broken_streams_do_not_stop_work() {
     host.stop();
 }
 
+#[test]
+fn growing_the_pane_pulls_history_down_so_an_inline_prompt_stays_at_the_bottom() {
+    // Inline apps like Claude Code draw relative to the cursor and do not redraw
+    // history on SIGWINCH; python ignores SIGWINCH, standing in for that.
+    let code = "import sys,time\nfor i in range(30): print('LINE%02d' % i)\nsys.stdout.write('PROMPT>'); sys.stdout.flush(); time.sleep(30)";
+    let mut host = Host::start("/usr/bin/python3", &["-u", "-c", code], json!([]));
+    let mut client = host.attach();
+    client.until("PROMPT>");
+    send(&mut client.stream, &json!({"Resize":[20,80]}));
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while client.parser.screen().size().0 != 20 {
+        assert!(Instant::now() < deadline, "no 20-row frame");
+        client.until("PROMPT>");
+    }
+    let rows: Vec<String> = client.parser.screen().rows(0, 80).collect();
+    assert_eq!(rows[19], "PROMPT>", "{rows:#?}");
+    assert_eq!(rows[18], "LINE29");
+    assert_eq!(rows[0], "LINE11", "eight lines came back from scrollback");
+    host.stop();
+}
+
 /// One part of `scripts/check-terminals.py` against the real dashboard; returns its stdout.
 #[cfg(target_os = "macos")]
 fn real_dashboard(part: &str) -> String {

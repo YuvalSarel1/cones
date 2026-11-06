@@ -64,6 +64,23 @@ impl Grid {
     }
 
     pub fn set_size(&mut self, size: Size) {
+        // Growing taller pulls lines back from scrollback like a real terminal, so an
+        // inline app (Claude Code) stays at the bottom instead of over a blank gap.
+        // Alternate grids have no scrollback, so they keep the plain resize.
+        if size.rows > self.size.rows && !self.rows.is_empty() {
+            let pulled = usize::from(size.rows - self.size.rows)
+                .min(self.scrollback.len());
+            for _ in 0..pulled {
+                let row = self.scrollback.pop_back().unwrap();
+                self.rows.insert(0, row);
+            }
+            let pulled = pulled as u16;
+            self.pos.row += pulled;
+            self.saved_pos.row += pulled;
+            self.scrollback_offset =
+                self.scrollback_offset.min(self.scrollback.len());
+        }
+
         if size.cols != self.size.cols {
             for row in &mut self.rows {
                 row.wrap(false);
