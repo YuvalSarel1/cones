@@ -8614,21 +8614,30 @@ const OPEN_FOLDERS: &str = "open-folders.json";
 /// and hand the open set to `data`. A session already listed adds nothing: its folder was
 /// recorded when it arrived, and one still stopping must not reopen a folder just closed.
 /// `opened` remembers which session opened which folder, so a launch placed under its launcher
-/// only after it was first listed closes the folder again. Returns whether the set changed.
+/// only after it was first listed closes the folder again. `launched` remembers every session
+/// ever listed under a launcher, so a helper that stops, loses its launcher and is listed anew
+/// does not open its folder either. Returns whether the set changed.
 fn open_folders(
     open: &mut BTreeSet<PathBuf>,
     data: &mut Data,
     known: &HashSet<String>,
     opened: &mut HashMap<String, PathBuf>,
+    launched: &mut HashSet<String>,
 ) -> bool {
     let before = open.clone();
     let dir_of = |s: &Session| data.roots.get(&s.cwd).unwrap_or(&s.cwd).clone();
+    // ponytail: grows by one id per launch for the dashboard's lifetime; a restart forgets them.
+    for s in data.sessions.iter().filter(|s| s.launched_by.is_some()) {
+        launched.insert(s.session_id.clone());
+        launched.insert(s.native().to_owned());
+    }
     // A launch listed under its launcher has no row in its own folder, so it opens none.
-    for s in data
-        .sessions
-        .iter()
-        .filter(|s| !known.contains(&s.session_id) && s.launched_by.is_none())
-    {
+    for s in data.sessions.iter().filter(|s| {
+        !known.contains(&s.session_id)
+            && s.launched_by.is_none()
+            && !launched.contains(&s.session_id)
+            && !launched.contains(s.native())
+    }) {
         let dir = dir_of(s);
         if !dir.as_os_str().is_empty() && open.insert(dir.clone()) {
             opened.insert(s.session_id.clone(), dir);
@@ -9506,6 +9515,8 @@ struct App {
     open_folders: BTreeSet<PathBuf>,
     /// The folder each listed session opened in `open_folders`, by session id.
     opened: HashMap<String, PathBuf>,
+    /// Ids, listed and native, of every session `open_folders` saw under a launcher.
+    launched: HashSet<String>,
     /// Row key awaiting a second ctrl+x, until another key or `confirm_secs` expires.
     armed: Option<String>,
     /// A missing folder typed on `+ add folder` that a second Enter creates.
@@ -9859,7 +9870,14 @@ impl App {
         let start = data.start;
         let mut open = read_open_folders(state).unwrap_or_default();
         let mut opened = HashMap::new();
-        if open_folders(&mut open, &mut data, &HashSet::new(), &mut opened) {
+        let mut launched = HashSet::new();
+        if open_folders(
+            &mut open,
+            &mut data,
+            &HashSet::new(),
+            &mut opened,
+            &mut launched,
+        ) {
             // ponytail: a failed write only loses the change on restart; the next one retries.
             let _ = write_open_folders(state, &open);
         }
@@ -9924,6 +9942,7 @@ impl App {
                 .unwrap_or_default(),
             open_folders: open,
             opened,
+            launched,
             unfolded: None,
             armed: None,
             create_folder: None,
@@ -15512,7 +15531,13 @@ impl App {
             .iter()
             .map(|s| s.session_id.clone())
             .collect();
-        if open_folders(&mut self.open_folders, data, &known, &mut self.opened) {
+        if open_folders(
+            &mut self.open_folders,
+            data,
+            &known,
+            &mut self.opened,
+            &mut self.launched,
+        ) {
             self.save_open_folders();
         }
     }
@@ -22705,6 +22730,58 @@ states:
             moved_to: None,
             native_id: None,
         }
+    }
+
+    /// A subagent's folder must not outlive it. The E2E launch suite cannot make a helper stop,
+    /// lose its launcher and be listed anew, so this drives `open_folders` directly. Ways it
+    /// could fail: the helper opens its folder when listed anew without a launcher; it opens
+    /// it when listed anew under its native id instead of its listed one; a folder that was
+    /// already open is closed with it; another session's arrival in that folder no longer
+    /// opens it.
+    #[test]
+    fn a_closed_subagent_does_not_leave_its_folder_open() {
+        let d = dir();
+        let app = app(d.path());
+        let sub = d.path().join("sub");
+        let kept = d.path().join("kept");
+        fs::create_dir(&sub).unwrap();
+        fs::create_dir(&kept).unwrap();
+        let mut open = BTreeSet::from([kept.clone()]);
+        let mut opened = HashMap::new();
+        let mut launched = HashSet::new();
+        let mut pass = |sessions: Vec<Session>, open: &mut BTreeSet<PathBuf>| {
+            let mut data = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
+            data.sessions = sessions;
+            open_folders(open, &mut data, &HashSet::new(), &mut opened, &mut launched);
+        };
+        let at = |id: &str, cwd: &Path, by: Option<&str>| Session {
+            cwd: cwd.to_path_buf(),
+            launched_by: by.map(Into::into),
+            ..session(id, "working", id, 0)
+        };
+        pass(vec![at(A, &sub, Some(B)), at(C, &kept, Some(B))], &mut open);
+        assert_eq!(
+            open,
+            BTreeSet::from([kept.clone()]),
+            "listed beneath its launcher"
+        );
+        // Stopped, it has no launcher and is listed anew, here under a native id it now has.
+        let renamed = Session {
+            native_id: Some(A.into()),
+            ..at("pid-1", &sub, None)
+        };
+        pass(vec![renamed, at(C, &kept, None)], &mut open);
+        assert_eq!(
+            open,
+            BTreeSet::from([kept.clone()]),
+            "closed, it opens nothing"
+        );
+        pass(vec![at(B, &sub, None)], &mut open);
+        assert_eq!(
+            open,
+            BTreeSet::from([kept, sub]),
+            "another session still opens it"
+        );
     }
 
     #[test]
