@@ -2801,6 +2801,8 @@ fn warning(message: impl std::fmt::Display) -> String {
     )
 }
 const WARNING: &str = "⚠ ";
+/// The fork menu row that takes a session in its own terminal over instead of forking it.
+const TAKE_OVER: &str = "take-over";
 fn button() -> Style {
     Style::default().bg(Color::Indexed(237)).fg(Color::White)
 }
@@ -14557,7 +14559,13 @@ impl App {
                 .iter()
                 .any(|s| &s.session_id == id && s.own_terminal())
         {
-            return "own terminal";
+            return if self.selected_session().is_some_and(|s| {
+                harness::by_name(&s.harness).is_some_and(|spec| spec.transcript.available)
+            }) {
+                "watch"
+            } else {
+                "own terminal"
+            };
         }
         // A running job whose session cones can join says so; one it cannot still offers logs.
         if let Some(Kind::Run(id, state)) = row.map(|r| &r.kind)
@@ -14664,8 +14672,21 @@ impl App {
                     return Ok(());
                 };
                 let (harness, own_terminal) = (s.harness.clone(), s.own_terminal());
-                // Interactive clients in other terminals cannot be joined.
+                // An interactive client in another terminal cannot be joined, but a
+                // conversation cones reads can be watched as it is written. ctrl+y offers to
+                // take it over.
                 if own_terminal {
+                    if harness::by_name(&harness).is_some_and(|spec| spec.transcript.available) {
+                        let mut c = self.me();
+                        c.args(["show", s.native(), "--harness", &harness, "--follow"]);
+                        self.open(self.size, c, "transcript", format!("show:{id}"), None);
+                        self.status = if self.can_take_over() {
+                            "watching it live · ctrl+y takes it over".into()
+                        } else {
+                            "watching it live".into()
+                        };
+                        return Ok(());
+                    }
                     self.event("debug", "action.refused", || {
                         json!({
                             "row_id": id, "harness": harness, "reason": "own_terminal",
@@ -15117,15 +15138,90 @@ impl App {
                     }),
             );
         }
+        let take_over = self.can_take_over();
+        if take_over {
+            rows.insert(
+                0,
+                PickRow {
+                    label: "take over here · stops it in its own terminal, resumes it here".into(),
+                    text: TAKE_OVER.into(),
+                },
+            );
+        }
         if rows.is_empty() {
             self.status = warning("this harness has no verified native fork operation");
             return;
         }
         self.mode = Mode::Pick(Pick {
-            title: "fork to",
+            title: if take_over {
+                "take over or fork to"
+            } else {
+                "fork to"
+            },
             rows,
             at: 0,
             fork: Some(Box::new(entry)),
+        });
+    }
+
+    /// A session in its own terminal can be moved here when its harness resumes from history:
+    /// that client is stopped and the conversation resumed in a pane.
+    fn can_take_over(&self) -> bool {
+        self.selected_session().is_some_and(|s| {
+            s.own_terminal()
+                && s.pid.is_some()
+                && harness::by_name(&s.harness).is_some_and(|spec| {
+                    spec.transcript.available && spec.operations.resume.is_some()
+                })
+        }) && self.fork_source().is_some()
+    }
+
+    /// Stop the client in its own terminal, wait for it to go, and resume its conversation
+    /// here the way a history row resumes. Two clients writing one transcript would fork it,
+    /// so the resume waits for the process to exit.
+    fn take_over(&mut self, entry: history::Entry) {
+        let Some(s) = self
+            .data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == entry.key.session_id)
+        else {
+            self.status = warning("the session left the list");
+            return;
+        };
+        let (pid, harness) = (s.pid, s.harness.clone());
+        let Some(spec) = harness::by_name(&harness) else {
+            return;
+        };
+        let what = spec.commands.viewer.clone();
+        if let Some(i) = self.viewer_index(&format!("show:{}", entry.key.session_id)) {
+            self.close(i);
+        }
+        let record = (entry.key.harness == "codex")
+            .then_some(entry.started)
+            .flatten()
+            .map(|at| (entry.cwd.clone(), at));
+        self.record_recovery(
+            "resume.submitted",
+            &entry.key.session_id,
+            &entry.key.harness,
+            &entry.cwd,
+            entry.title.as_deref().unwrap_or_default(),
+        );
+        let key = history_key(&entry.key);
+        self.history.opened.insert(key.clone(), entry.clone());
+        let policy = self.session_policy();
+        self.prepare_viewer(what, key, record, None, move || {
+            if let Some(pid) = pid {
+                fleet::terminate(pid, &harness)?;
+                // ponytail: 10s for a client to exit on SIGTERM; one that ignores it is refused.
+                let gone = (0..100).any(|_| {
+                    std::thread::sleep(Duration::from_millis(100));
+                    (unsafe { libc::kill(pid as i32, 0) }) != 0
+                });
+                anyhow::ensure!(gone, "{harness} (pid {pid}) is still running after SIGTERM");
+            }
+            harness::resume_history(&entry, &policy)
         });
     }
 
@@ -16119,7 +16215,9 @@ impl App {
                 {
                     keys.push(("ctrl+n", "rename"));
                 }
-                if self.can_fork() {
+                if self.can_take_over() {
+                    keys.push(("ctrl+y", "take over/fork"));
+                } else if self.can_fork() {
                     keys.push(("ctrl+y", "fork"));
                 }
                 if let Some(s) = self.selected_session() {
@@ -16245,7 +16343,7 @@ impl App {
                 if let Some(i) = local {
                     self.close(i);
                 }
-                for key in [id.clone(), format!("run:{id}")] {
+                for key in [id.clone(), format!("run:{id}"), format!("show:{id}")] {
                     if let Some(i) = self.viewer_index(&key) {
                         self.close(i);
                     }
@@ -16511,6 +16609,10 @@ impl App {
                     let fork = pick.fork.take();
                     self.close_pick();
                     if let (Some(entry), Some(name)) = (fork, &text) {
+                        if name == TAKE_OVER {
+                            self.take_over(*entry);
+                            return Ok(false);
+                        }
                         match harness::by_name(name) {
                             Some(spec) => self.seed_fork(*entry, spec.kind),
                             None => self.fork_entry(*entry),
@@ -17499,8 +17601,15 @@ impl App {
                 dim()
             });
         let rules = if self.status.starts_with(WARNING) {
+            // The rule is one row: a warning wider than it ends in an ellipsis, not mid-word.
+            let room = (width as usize).saturating_sub(2);
+            let mut title = format!(" {} ", self.status);
+            if Span::raw(title.as_str()).width() > room {
+                while Span::raw(title.as_str()).width() + 2 > room && title.pop().is_some() {}
+                title = format!("{}… ", title.trim_end());
+            }
             rules.title(Span::styled(
-                format!(" {} ", self.status),
+                title,
                 // The title inherits the dim rule, which turned the warning a muddy grey.
                 Style::default()
                     .fg(Color::Black)
@@ -22395,9 +22504,67 @@ states:
         assert_eq!(app.enter_label(), "return");
         // A pid the kernel recycled into another harness is not this viewer's session.
         listed(&mut app, row("codex-99", "codex"));
-        assert_eq!(app.enter_label(), "own terminal");
+        assert_eq!(app.enter_label(), "watch");
         app.enter().unwrap();
-        assert!(app.status.contains("cannot be joined"), "{}", app.status);
+        assert!(app.status.contains("watching"), "{}", app.status);
+        assert!(app.viewer_index("show:codex-99").is_some());
+    }
+
+    /// A Claude client in its own terminal cannot be joined. Ways this could fail: Enter
+    /// refuses it instead of watching its conversation; ctrl+y does not offer to take it
+    /// over; the fork menu leads with a fork instead of the take-over; a refusal wider than
+    /// the composer's rule is cut mid-word with no sign it goes on.
+    #[test]
+    fn an_own_terminal_claude_is_watched_on_enter_and_taken_over_from_ctrl_y() {
+        let d = dir();
+        let mut app = app(d.path());
+        app.refresh().unwrap();
+        let transcript = d.path().join("t.jsonl");
+        fs::write(&transcript, "").unwrap();
+        let mut s = session(A, "idle", "elsewhere", 1);
+        s.kind = Some("interactive".into());
+        s.pid = Some(424_242);
+        s.transcript_path = Some(transcript);
+        assert!(
+            s.own_terminal(),
+            "the fixture is a client in its own terminal"
+        );
+        let mut data = Data::load(&d.path().join("jobs.yaml"), d.path(), d.path()).unwrap();
+        data.sessions.push(s);
+        app.apply(data);
+        app.settle();
+        app.cursor = app
+            .visible
+            .iter()
+            .position(|&i| app.rows[i].kind.key() == Some(A))
+            .unwrap();
+        assert_eq!(app.enter_label(), "watch");
+        assert!(app.can_take_over(), "ctrl+y offers the take-over");
+        app.open_fork_menu();
+        let Mode::Pick(pick) = &app.mode else {
+            panic!("ctrl+y opens the menu");
+        };
+        assert_eq!(pick.title, "take over or fork to");
+        assert_eq!(pick.rows[0].text, TAKE_OVER);
+        app.close_pick();
+        app.enter().unwrap();
+        assert!(
+            app.status.contains("ctrl+y takes it over"),
+            "{}",
+            app.status
+        );
+        assert!(app.viewer_index(&format!("show:{A}")).is_some());
+        app.status = warning("x ".repeat(60));
+        let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| app.draw(f)).unwrap();
+        let rows: Vec<String> = (0..12)
+            .map(|y| {
+                (0..40)
+                    .map(|x| t.backend().buffer()[(x, y)].symbol())
+                    .collect()
+            })
+            .collect();
+        assert!(rows.iter().any(|r| r.contains("x… ")), "{rows:#?}");
     }
 
     /// pi writes its session file only when the first reply lands, and a second pi in the same
@@ -23980,7 +24147,7 @@ states:
         let wide = row_keys(&app);
         assert!(
             wide.contains("ctrl+n rename")
-                && wide.contains("ctrl+y fork")
+                && wide.contains("ctrl+y take over/fork")
                 && wide.contains("ctrl+p highlight"),
             "a bar with the room shows every key the row has: {wide}"
         );
@@ -24339,7 +24506,7 @@ while True:
         assert!(app.viewers.is_empty());
         assert_eq!(
             app.enter_label(),
-            "own terminal",
+            "watch",
             "with the viewer gone the row's own verb is back"
         );
     }

@@ -324,6 +324,9 @@ enum Action {
         /// Machine-readable identity, messages and omission counts.
         #[arg(long)]
         json: bool,
+        /// Keep printing messages as the harness records them, until interrupted.
+        #[arg(long, conflicts_with_all = ["all", "at", "json"])]
+        follow: bool,
         /// Restrict identity resolution to this harness.
         #[arg(long)]
         harness: Option<String>,
@@ -1280,6 +1283,7 @@ fn execute(cli: Cli) -> Result<i32> {
             at,
             context,
             json,
+            follow,
             harness,
             home,
         } => {
@@ -1302,6 +1306,7 @@ fn execute(cli: Cli) -> Result<i32> {
                             Some(cones::show::Live::Conversation(located)) => located,
                             Some(cones::show::Live::Screen(screen)) => {
                                 ensure!(at.is_none(), "{id} has a screen, not a conversation");
+                                ensure!(!follow, "{id} has a screen, not a conversation to follow");
                                 if json {
                                     println!("{}", screen.json(tail, all));
                                 } else {
@@ -1313,6 +1318,10 @@ fn execute(cli: Cli) -> Result<i32> {
                         }
                     }
                 };
+            if follow {
+                cones::show::follow(&located, tail.unwrap_or(cones::show::DEFAULT_TAIL))?;
+                return Ok(0);
+            }
             let export = match at {
                 Some(at) => cones::transcript::export_around(
                     &located.source,

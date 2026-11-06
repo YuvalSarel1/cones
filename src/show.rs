@@ -169,29 +169,7 @@ pub fn render(export: &transcript::Export) -> String {
         if export.matched == Some(i) {
             out.push_str("[the search hit]\n");
         }
-        let role = match message.role {
-            transcript::Role::User => "user",
-            transcript::Role::Assistant => "assistant",
-            transcript::Role::Output => "output",
-        };
-        match message.at {
-            Some(at) => {
-                let _ = writeln!(out, "{role} {}", at.with_timezone(&Local).to_rfc3339());
-            }
-            None => {
-                let _ = writeln!(out, "{role}");
-            }
-        }
-        if !message.text.is_empty() {
-            out.push_str(message.text.trim_end());
-            out.push('\n');
-        }
-        for tool in &message.tools {
-            let _ = match tool.input.is_empty() {
-                true => writeln!(out, "  {}", tool.name),
-                false => writeln!(out, "  {}: {}", tool.name, tool.input),
-            };
-        }
+        out.push_str(&render_message(message));
         out.push('\n');
     }
     if export.omitted_after > 0 {
@@ -203,6 +181,111 @@ pub fn render(export: &transcript::Export) -> String {
         );
     }
     out
+}
+
+/// One message as `render` prints it: its role and time, its text, the tools it called.
+fn render_message(message: &transcript::Message) -> String {
+    let mut out = String::new();
+    let role = match message.role {
+        transcript::Role::User => "user",
+        transcript::Role::Assistant => "assistant",
+        transcript::Role::Output => "output",
+    };
+    match message.at {
+        Some(at) => {
+            let _ = writeln!(out, "{role} {}", at.with_timezone(&Local).to_rfc3339());
+        }
+        None => {
+            let _ = writeln!(out, "{role}");
+        }
+    }
+    if !message.text.is_empty() {
+        out.push_str(message.text.trim_end());
+        out.push('\n');
+    }
+    for tool in &message.tools {
+        let _ = match tool.input.is_empty() {
+            true => writeln!(out, "  {}", tool.name),
+            false => writeln!(out, "  {}: {}", tool.name, tool.input),
+        };
+    }
+    out
+}
+
+/// What `--follow` has printed: the absolute index of the last message and its text.
+#[derive(Default)]
+struct Followed {
+    last: Option<(usize, String)>,
+}
+
+impl Followed {
+    /// The text a fresh export adds. A message is printed once it appears; the last one is
+    /// still being written while its turn runs, so when it grows only the new part is
+    /// printed, and when a merged record rewrites it, it is printed again in full.
+    fn next(&mut self, export: &transcript::Export) -> String {
+        let mut out = String::new();
+        for (i, message) in export.messages.iter().enumerate() {
+            let at = export.omitted + i;
+            let text = render_message(message);
+            match &self.last {
+                Some((last, _)) if at < *last => continue,
+                Some((last, printed)) if at == *last => {
+                    if text == *printed {
+                        continue;
+                    }
+                    match text.strip_prefix(printed.as_str()) {
+                        Some(more) => out.push_str(more),
+                        // ponytail: a rewrite is printed again whole; diff it if that reads badly.
+                        None => {
+                            out.push_str("\n[updated]\n");
+                            out.push_str(&text);
+                        }
+                    }
+                }
+                Some(_) => {
+                    out.push('\n');
+                    out.push_str(&text);
+                }
+                None => out.push_str(&text),
+            }
+            self.last = Some((at, text));
+        }
+        out
+    }
+}
+
+/// `cones show --follow`: the tail, then each message as the harness records it, until
+/// interrupted. Reading starts nothing, so this is how a session in its own terminal is
+/// watched from the dashboard.
+pub fn follow(located: &Located, tail: usize) -> Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+    let sigint = signal_hook::flag::register(signal_hook::consts::SIGINT, cancelled.clone())?;
+    let mut followed = Followed::default();
+    let mut out = std::io::stdout();
+    let first = transcript::export(&located.source, &located.key.harness, Some(tail))?;
+    if first.omitted > 0 {
+        writeln!(
+            out,
+            "[{} earlier message{} omitted; `cones show {} --all` prints them]\n",
+            first.omitted,
+            if first.omitted == 1 { "" } else { "s" },
+            located.key.session_id
+        )?;
+    }
+    out.write_all(followed.next(&first).as_bytes())?;
+    out.flush()?;
+    while !cancelled.load(Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        // ponytail: rereads the whole transcript each second; seek from the last offset if a
+        // long conversation makes the pane lag.
+        let export = transcript::export(&located.source, &located.key.harness, Some(tail))?;
+        out.write_all(followed.next(&export).as_bytes())?;
+        out.flush()?;
+    }
+    signal_hook::low_level::unregister(sigint);
+    Ok(())
 }
 
 /// A hosted terminal's screen, read through its host without attaching to it.
@@ -328,5 +411,61 @@ impl Screen {
             out.push('\n');
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Ways `--follow` could fail: it prints a message twice, drops one that arrives, prints a
+    /// growing reply again instead of only its new text, or loses its place when the tail
+    /// window moves past what it printed.
+    #[test]
+    fn follow_prints_each_message_once_and_a_growing_reply_by_its_new_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        let write = |records: &[serde_json::Value]| {
+            let text: String = records.iter().map(|r| format!("{r}\n")).collect();
+            std::fs::write(&path, text).unwrap();
+        };
+        let user = |id: &str, text: &str| json!({"type":"user","uuid":id,"message":{"role":"user","content":text}});
+        let reply = |id: &str, msg: &str, text: &str| json!({"type":"assistant","uuid":id,"message":{"id":msg,"content":[{"type":"text","text":text}]}});
+        let source = transcript::Source::Conversation(path.clone());
+        let read = || transcript::export(&source, "claude", Some(2)).unwrap();
+        let mut followed = Followed::default();
+        write(&[
+            user("u1", "first question"),
+            reply("a1", "m1", "first answer"),
+        ]);
+        let out = followed.next(&read());
+        assert!(
+            out.contains("first question") && out.contains("first answer"),
+            "{out}"
+        );
+        assert_eq!(followed.next(&read()), "", "nothing new prints nothing");
+        write(&[
+            user("u1", "first question"),
+            reply("a1", "m1", "first answer"),
+            user("u2", "second question"),
+        ]);
+        let out = followed.next(&read());
+        assert!(out.contains("second question"), "{out}");
+        assert!(
+            !out.contains("first"),
+            "the tail moved; nothing printed again: {out}"
+        );
+        write(&[
+            user("u1", "first question"),
+            reply("a1", "m1", "first answer"),
+            user("u2", "second question"),
+            reply("a2", "m2", "second answer"),
+        ]);
+        let out = followed.next(&read());
+        assert!(
+            out.contains("second answer") && !out.contains("question"),
+            "{out}"
+        );
     }
 }

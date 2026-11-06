@@ -32,7 +32,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones ls [--dir PATH] [--job NAME] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
 | `cones search QUERY [--mode meaning] [--when W] [--dir PATH] [--json]` | [Search conversation history](#searching-conversations), including archived sessions. |
 | `cones index [status] [--timeout SECS] [--json]` | [Build the meaning index](#building-the-meaning-index) with progress, or report it. |
-| `cones show ID [--tail N] [--all] [--at OFFSET] [--json]` | [Read a session's conversation](#reading-a-conversation). |
+| `cones show ID [--tail N] [--all] [--at OFFSET] [--json] [--follow]` | [Read a session's conversation](#reading-a-conversation). |
 | `cones mcp` | Serve [history and control tools over MCP stdio](#cones-over-mcp). |
 | `cones wait ID... [--timeout S]` | [Block until a session settles](#waiting-on-a-session) and print `ID<TAB>STATE`. |
 | `cones send ID TEXT` | [Send one note](#sending-a-note) to a live session in any folder. |
@@ -159,6 +159,7 @@ and on stderr.
 cones show 4f0c2b1e-8d31-4a55-9f0c-6b2a17e4d900
 cones show 4f0c2b1e --tail 5
 cones show 4f0c2b1e --all
+cones show 4f0c2b1e --follow
 cones show 4f0c2b1e --harness claude --home ~/.claude --json
 ```
 
@@ -171,6 +172,8 @@ The default is the last 40 messages. `--tail N` asks for a different count and `
 Claude, Codex, pi and OpenCode keep conversations cones can read, and so do Copilot and Cursor Agent [once saved](harness.md#additional-terminal-harnesses). A live row listed by its process, such as `pi-PID`, reads the conversation `cones ls --json` names as its `native_id`. A session with none, in a terminal cones hosts, is read as that terminal's screen: the first line is `[terminal screen of HARNESS ID, COLSxROWS; a screen, not a conversation: ...]` and the lines under it are what the client last drew, with no roles, timestamps or tool calls. The default is the screen as it is now, `--tail N` is the last N lines and `--all` adds what scrolled off, up to the 1000 lines the host keeps; a client on its alternate screen has no scrollback. `--json` returns `session`, `cwd` and `terminal` (`rows`, `cols`, `alternate`, `omitted`, `lines`) and no `messages`. The host answers without attaching, so a dashboard showing the same terminal keeps it. A session with no conversation in a terminal cones does not own has nothing to show, and naming one is an error rather than an empty export.
 
 Reading opens files for reading. It attaches to nothing, resumes nothing, starts no viewer and writes no native state, so a worker cannot tell that its conversation was read. A record the harness has not finished writing is left out, and the note saying so goes to stderr, so the conversation on stdout stays pipeable.
+
+`--follow` prints the tail, then each message as the harness records it, until ctrl+c. A reply still being written grows in place; a message a later record rewrites is printed again under `[updated]`. It reads the same files the plain read does, so it is how the dashboard watches a session running in its own terminal. A session read as a screen cannot be followed.
 
 `--harness` and `--home` disambiguate ids across configured native homes.
 `--json` returns one object with `session` (the full identity), `cwd`, `messages`,
