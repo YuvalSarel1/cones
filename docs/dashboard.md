@@ -165,8 +165,8 @@ controls clipping in narrow lists. Times display in the local timezone.
 
 Harness marks stay still. The coordinator has an orange `★` title, identified by its claim.
 An external session without native attach support cannot be joined. Where cones reads the
-harness's conversations its Enter says `watch` and opens a read-only pane following the
-conversation as it is written (`cones show --follow`), and ctrl+y offers `take over here` first:
+harness's conversations its Enter says `watch` and focuses the read-only preview, the
+same view history rows use, which follows the conversation as it is written, and ctrl+y offers `take over here` first:
 it stops the client in its own terminal, waits for it to exit, and resumes the conversation in a
 pane here. A harness with no readable conversation says `own terminal`, and Enter names that
 terminal as the only way in. A warning wider than the composer's rule ends in `…`.

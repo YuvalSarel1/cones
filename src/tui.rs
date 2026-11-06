@@ -10642,7 +10642,10 @@ impl App {
                         .peek_blocked_states
                         .iter()
                         .any(|state| state.as_str() == s.state);
-                if !spec.never_peeks() && !settled {
+                // A client in its own terminal cannot be joined. Enter watches its
+                // conversation here; the passive split keeps no fallback for a live row.
+                let watched = s.own_terminal() && self.transcript.focused;
+                if !spec.never_peeks() && !settled && !watched {
                     return None;
                 }
                 let path = s.transcript_path.clone()?;
@@ -14560,7 +14563,8 @@ impl App {
                 .any(|s| &s.session_id == id && s.own_terminal())
         {
             return if self.selected_session().is_some_and(|s| {
-                harness::by_name(&s.harness).is_some_and(|spec| spec.transcript.available)
+                s.transcript_path.is_some()
+                    && harness::by_name(&s.harness).is_some_and(|spec| spec.transcript.available)
             }) {
                 "watch"
             } else {
@@ -14676,10 +14680,13 @@ impl App {
                 // conversation cones reads can be watched as it is written. ctrl+y offers to
                 // take it over.
                 if own_terminal {
-                    if harness::by_name(&harness).is_some_and(|spec| spec.transcript.available) {
-                        let mut c = self.me();
-                        c.args(["show", s.native(), "--harness", &harness, "--follow"]);
-                        self.open(self.size, c, "transcript", format!("show:{id}"), None);
+                    // ponytail: transcript_target reads `focused` to admit a watched row.
+                    self.transcript.focused = true;
+                    let watchable = self.transcript_target().is_some();
+                    self.transcript.focused = false;
+                    if watchable {
+                        self.transcript.focused = true;
+                        self.focus_transcript();
                         self.status = if self.can_take_over() {
                             "watching it live · ctrl+y takes it over".into()
                         } else {
@@ -15194,9 +15201,7 @@ impl App {
             return;
         };
         let what = spec.commands.viewer.clone();
-        if let Some(i) = self.viewer_index(&format!("show:{}", entry.key.session_id)) {
-            self.close(i);
-        }
+        self.leave_transcript();
         let record = (entry.key.harness == "codex")
             .then_some(entry.started)
             .flatten()
@@ -16343,7 +16348,7 @@ impl App {
                 if let Some(i) = local {
                     self.close(i);
                 }
-                for key in [id.clone(), format!("run:{id}"), format!("show:{id}")] {
+                for key in [id.clone(), format!("run:{id}")] {
                     if let Some(i) = self.viewer_index(&key) {
                         self.close(i);
                     }
@@ -22504,10 +22509,9 @@ states:
         assert_eq!(app.enter_label(), "return");
         // A pid the kernel recycled into another harness is not this viewer's session.
         listed(&mut app, row("codex-99", "codex"));
-        assert_eq!(app.enter_label(), "watch");
+        assert_eq!(app.enter_label(), "own terminal");
         app.enter().unwrap();
-        assert!(app.status.contains("watching"), "{}", app.status);
-        assert!(app.viewer_index("show:codex-99").is_some());
+        assert!(app.status.contains("cannot be joined"), "{}", app.status);
     }
 
     /// A Claude client in its own terminal cannot be joined. Ways this could fail: Enter
@@ -22553,7 +22557,7 @@ states:
             "{}",
             app.status
         );
-        assert!(app.viewer_index(&format!("show:{A}")).is_some());
+        assert!(app.transcript.focused, "Enter watches it in the preview");
         app.status = warning("x ".repeat(60));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -24506,7 +24510,7 @@ while True:
         assert!(app.viewers.is_empty());
         assert_eq!(
             app.enter_label(),
-            "watch",
+            "own terminal",
             "with the viewer gone the row's own verb is back"
         );
     }
