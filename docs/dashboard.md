@@ -251,8 +251,9 @@ tool results beyond their names and inputs, files read, system prompt, hidden re
 earlier messages. A harness whose transcript cones cannot read offers only its native fork.
 
 The new row appears beneath its visible parent, with indentation confined to the title.
-`STATE_DIR/relations.json` records confirmed links. Hidden parents leave a branch marker; absent
-parents leave an ordinary row. Missing transcripts, archived sources and unsupported CLIs
+`STATE_DIR/relations.json` records confirmed links. A fork whose parent ended or is listed in
+another group, such as beneath the agent that launched it, is an ordinary row; `ctrl+e` still
+names its parent. Missing transcripts, archived sources and unsupported CLIs
 are reported before launch.
 
 ### History

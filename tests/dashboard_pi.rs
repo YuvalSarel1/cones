@@ -600,4 +600,49 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
         at("write the docs") - 1,
         "{screen}"
     );
+
+    // A fork of the launch stays in the folder it works in, while its parent is listed beneath
+    // the launcher in another group. Not beneath its parent, it carries no branch mark.
+    d.quit();
+    fs::write(d.path("jobs.yaml"), &jobs).unwrap();
+    let out = d.cli(
+        &[
+            "launch",
+            "--dir",
+            other.to_str().unwrap(),
+            "--harness",
+            "pi",
+            "--parent",
+            &child,
+            "carry on",
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut links = relations();
+    let last = links.as_array_mut().unwrap().last_mut().unwrap();
+    assert_eq!(last["kind"], "launch", "{last}");
+    *last = serde_json::json!({
+        "kind": "fork", "harness": "pi", "home": last["home"].clone(), "cwd": last["cwd"].clone(),
+        "parent": launched["child"].clone(), "child": last["child"].clone(),
+    });
+    fs::write(&relations_path, links.to_string()).unwrap();
+    d.start();
+    let screen = d.wait_for("the fork in its own folder", |s| {
+        s.contains(elsewhere) && s.contains("carry on")
+    });
+    d.capture("fork-of-a-moved-launch");
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap();
+    assert!(!lines[at("carry on")].contains('↳'), "{screen}");
+    assert_eq!(
+        at(&other.display().to_string()),
+        at("carry on") - 1,
+        "{screen}"
+    );
+    d.quit();
 }

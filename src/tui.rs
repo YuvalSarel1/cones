@@ -1005,14 +1005,6 @@ impl Data {
                 group.push(Entry::Folder(dir));
             }
         }
-        // A fork keeps its branch mark only while its parent is still listed; killing the
-        // parent leaves an ordinary row, not a mark pointing at nothing.
-        let present: HashSet<(&str, &Path, &str)> = self
-            .sessions
-            .iter()
-            .filter(|s| !deleting.contains(s.session_id.as_str()))
-            .map(|s| (s.harness.as_str(), s.cwd.as_path(), s.native()))
-            .collect();
         let mut depths = HashMap::new();
         for group in groups.values_mut() {
             let sessions: Vec<_> = group
@@ -1076,13 +1068,10 @@ impl Data {
                         .get(&(s.harness.as_str(), s.session_id.as_str()))
                         .copied();
                     let launched = s.launched_by.as_ref().and(depth).filter(|d| *d > 0);
-                    let fork = s
-                        .forked_from
-                        .as_deref()
-                        .filter(|parent| {
-                            present.contains(&(s.parent_harness(), s.cwd.as_path(), parent))
-                        })
-                        .map(|_| depth.unwrap_or(0));
+                    // A fork is marked only where it sits beneath its parent. A parent that
+                    // ended or is listed in another group leaves an ordinary row, not a mark
+                    // pointing at a row that is not above it.
+                    let fork = s.forked_from.as_ref().and(depth).filter(|d| *d > 0);
                     let mut row = session_cells(
                         s,
                         set,
