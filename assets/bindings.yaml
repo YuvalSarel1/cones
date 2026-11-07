@@ -274,6 +274,9 @@ states:
       - keys: ["c"]
         action: copy
         description: "Copy the last response, a code block or row details."
+      - keys: ["ctrl+y"]
+        action: fork
+        description: "Take over a session in its own terminal, or fork the conversation."
       - keys: ["ctrl+r"]
         action: refresh
         description: "Reload the transcript and follow its bottom."

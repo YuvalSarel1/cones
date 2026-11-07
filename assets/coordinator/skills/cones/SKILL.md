@@ -1,6 +1,6 @@
 ---
 name: cones
-description: "What cones can do for an agent: see every coding-agent session on this Mac and read its conversation, message it, start a new one in any folder, hand a folder to a coordinator, and change cones' own settings. Use when a task mentions other agents or sessions, a fork of this conversation or what another agent did, past conversations, starting work in another folder, coordinating parallel work, or cones configuration."
+description: "What cones can do for an agent: see every coding-agent session on this Mac and read its conversation, message it, start a new one in any folder, hand a folder to a coordinator, and change cones' own settings. Use when a task mentions other agents or sessions, a fork of this conversation or what another agent did, past conversations, starting work in another folder, coordinating parallel work, or cones configuration. Also use it before running Codex, pi, OpenCode or another Claude: start them with `cones launch`, never `codex exec` or `claude -p`, which the owner cannot open from the dashboard."
 ---
 
 # cones

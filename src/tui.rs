@@ -10631,10 +10631,9 @@ impl App {
                         .peek_blocked_states
                         .iter()
                         .any(|state| state.as_str() == s.state);
-                // A client in its own terminal cannot be joined. Enter watches its
-                // conversation here; the passive split keeps no fallback for a live row.
-                let watched = s.own_terminal() && self.transcript.focused;
-                if !spec.never_peeks() && !settled && !watched {
+                // A client in its own terminal cannot be joined, so its conversation is the
+                // preview, on hover as when Enter watches it.
+                if !spec.never_peeks() && !settled && !s.own_terminal() {
                     return None;
                 }
                 let path = s.transcript_path.clone()?;
@@ -14669,12 +14668,7 @@ impl App {
                 // conversation cones reads can be watched as it is written. ctrl+y offers to
                 // take it over.
                 if own_terminal {
-                    // ponytail: transcript_target reads `focused` to admit a watched row.
-                    self.transcript.focused = true;
-                    let watchable = self.transcript_target().is_some();
-                    self.transcript.focused = false;
-                    if watchable {
-                        self.transcript.focused = true;
+                    if self.transcript_target().is_some() {
                         self.focus_transcript();
                         self.status = if self.can_take_over() {
                             "watching it live · ctrl+y takes it over".into()
@@ -15189,6 +15183,30 @@ impl App {
         let Some(spec) = harness::by_name(&harness) else {
             return;
         };
+        // A helper is listed beneath its launcher only while it runs under it. Record the
+        // link so the resumed conversation stays where it was listed.
+        let launcher = s
+            .launched_by
+            .as_deref()
+            .and_then(|id| self.data.sessions.iter().find(|p| p.session_id == id));
+        let link = launcher.map(|parent| crate::relations::Link {
+            // The client being stopped is not the one the link names from now on.
+            child_pid: None,
+            ..crate::relations::launch(
+                &self.claude,
+                &self.data.sessions,
+                parent,
+                &harness,
+                &s.session_id,
+                None,
+                true,
+            )
+        });
+        if let Some(link) = link
+            && let Err(e) = crate::relations::record(&self.state, link)
+        {
+            self.status = warning(format!("its launcher was not recorded: {e:#}"));
+        }
         let what = spec.commands.viewer.clone();
         self.leave_transcript();
         let record = (entry.key.harness == "codex")
@@ -16649,6 +16667,7 @@ impl App {
                     self.toggle_history();
                 }
                 KeyAction::Copy => self.open_copy_menu(),
+                KeyAction::Fork => self.open_fork_menu(),
                 KeyAction::Refresh => {
                     self.transcript.requested = false;
                     self.transcript.document = None;
@@ -17270,6 +17289,9 @@ impl App {
             keys.push(("→", "context"));
         }
         keys.extend([("tab", "list"), ("c", "copy"), ("ctrl+\\", "layout")]);
+        if self.can_take_over() {
+            keys.push(("ctrl+y", "take over"));
+        }
         hints(&keys)
     }
 
@@ -20690,8 +20712,9 @@ states:
         app.transcript_tick();
         assert!(app.transcript.document.is_none());
         app.viewers.clear();
+        // A background client can be joined, so its native pane is the view.
         let mut live = history_session(&entry);
-        live.kind = Some("interactive".into());
+        live.kind = Some("bg".into());
         live.state = "idle".into();
         app.data.sessions.push(live);
         app.rebuild();
@@ -20705,6 +20728,10 @@ states:
         assert!(app.transcript_target().is_none());
         assert!(!pane_text(&app, &terminal).contains("reply 0"));
         assert!(!pane_text(&app, &terminal).contains("read only"));
+        // One in its own terminal cannot be joined, so its conversation is the preview.
+        app.data.sessions.last_mut().unwrap().kind = Some("interactive".into());
+        app.rebuild();
+        assert!(app.transcript_target().is_some());
     }
 
     #[test]
@@ -22503,10 +22530,11 @@ states:
         assert!(app.status.contains("cannot be joined"), "{}", app.status);
     }
 
-    /// A Claude client in its own terminal cannot be joined. Ways this could fail: Enter
-    /// refuses it instead of watching its conversation; ctrl+y does not offer to take it
-    /// over; the fork menu leads with a fork instead of the take-over; a refusal wider than
-    /// the composer's rule is cut mid-word with no sign it goes on.
+    /// A Claude client in its own terminal cannot be joined. Ways this could fail: hovering
+    /// it previews nothing; Enter refuses it instead of watching its conversation; ctrl+y
+    /// does not offer to take it over, from the list or from the preview it is watched in;
+    /// the fork menu leads with a fork instead of the take-over; a refusal wider than the
+    /// composer's rule is cut mid-word with no sign it goes on.
     #[test]
     fn an_own_terminal_claude_is_watched_on_enter_and_taken_over_from_ctrl_y() {
         let d = dir();
@@ -22532,6 +22560,7 @@ states:
             .position(|&i| app.rows[i].kind.key() == Some(A))
             .unwrap();
         assert_eq!(app.enter_label(), "watch");
+        assert!(app.transcript_target().is_some(), "hovering previews it");
         assert!(app.can_take_over(), "ctrl+y offers the take-over");
         app.open_fork_menu();
         let Mode::Pick(pick) = &app.mode else {
@@ -22547,6 +22576,17 @@ states:
             app.status
         );
         assert!(app.transcript.focused, "Enter watches it in the preview");
+        assert!(
+            app.transcript_hints()
+                .to_string()
+                .contains("ctrl+y take over")
+        );
+        app.key(KeyCode::Char('y'), KeyModifiers::CONTROL).unwrap();
+        let Mode::Pick(pick) = &app.mode else {
+            panic!("ctrl+y opens the menu from the preview");
+        };
+        assert_eq!(pick.rows[0].text, TAKE_OVER);
+        app.close_pick();
         app.status = warning("x ".repeat(60));
         let mut t = Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
         t.draw(|f| app.draw(f)).unwrap();
@@ -24465,11 +24505,12 @@ while True:
         // One blank column on each side of the rule.
         assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
         assert!((0..30).all(|y| cells(&t, y, 99..100) == " "));
-        // B has a transcript, but no live viewer. The previous screen must clear.
+        // B has no live viewer. The previous screen must clear; B's own conversation is
+        // what the pane may show instead.
         app.step(1);
         assert_eq!(key(&app).as_deref(), Some(B));
         t.draw(|f| app.draw(f)).unwrap();
-        assert!((0..30).all(|y| cells(&t, y, 101..200).trim().is_empty()));
+        assert!((0..30).all(|y| !cells(&t, y, 101..200).contains("VIEW")));
         app.step(-1);
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
