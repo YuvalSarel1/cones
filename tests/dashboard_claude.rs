@@ -2085,3 +2085,165 @@ fn a_launch_into_an_untrusted_folder_trusts_that_folder_alone_and_starts_in_the_
     );
     d.quit();
 }
+
+/// A peer inbox in the fixture's Claude registry for the session listed under `pid`, the way
+/// Claude Code 2.1.281 publishes one, and a thread collecting the first note delivered to it.
+fn inbox(d: &Dashboard, name: &str, pid: Option<u32>) -> std::sync::mpsc::Receiver<String> {
+    use sha2::Digest;
+    use std::io::Read;
+    let socket = d.path(&format!("{name}.sock"));
+    if let Some(pid) = pid {
+        let registry = d.home().join(".claude/sessions");
+        let digest = sha2::Sha256::digest(socket.to_str().unwrap().as_bytes());
+        fs::write(
+            registry.join(format!("{pid}.{digest:x}.key")),
+            r#"{"peerToken":"0123456789abcdef0123456789abcdef"}"#,
+        )
+        .unwrap();
+    }
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let (sent, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        listener
+            .accept()
+            .unwrap()
+            .0
+            .read_to_string(&mut text)
+            .unwrap();
+        let _ = sent.send(text);
+    });
+    received
+}
+
+/// The 2026-11-07 report: an agent's headless client, taken over from the dashboard, moved to
+/// its own folder, sat idle, and the agent that started it lost the run it was waiting on.
+/// Taking over a working client in its own terminal keeps it beneath the agent that started
+/// it, asks the resumed session to carry on with the turn the stop interrupted, and tells
+/// that agent to wait on the session instead of starting the work again.
+#[test]
+fn taking_over_a_working_helper_keeps_it_working_beneath_its_launcher() {
+    let mut d = Dashboard::new("claude-take-over", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    fs::create_dir_all(d.path("other")).unwrap();
+    let other = d.path("other").canonicalize().unwrap();
+    // The launcher is a shell whose child, named `claude` as Claude's client is, is the helper
+    // it runs, as an agent's `claude -p` or `codex exec` would be.
+    let lead = seed(&d, &project, 1, "Lead the work", "busy", None);
+    let registry = d.home().join(".claude/sessions");
+    let mut launcher = Command::new("/bin/bash")
+        .args(["-c", "(exec -a claude /bin/sleep 600) & wait"])
+        .process_group(0)
+        .spawn()
+        .unwrap();
+    let me = launcher.id();
+    let helper_pid = loop {
+        let out = Command::new("/usr/bin/pgrep")
+            .args(["-P", &me.to_string()])
+            .output()
+            .unwrap();
+        if let Some(pid) = String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .next()
+        {
+            break pid.parse::<u32>().unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    fs::remove_file(registry.join(format!("{}.json", lead.daemon.id()))).unwrap();
+    fs::write(
+        registry.join(format!("{me}.json")),
+        json!({"pid": me, "sessionId": lead.id, "cwd": project, "kind": "interactive",
+               "status": "busy", "version": "2.1.281", "peerProtocol": 1,
+               "messagingSocketPath": d.path("lead.sock"),
+               "startedAt": 1_759_309_200_000u64})
+        .to_string(),
+    )
+    .unwrap();
+    let to_lead = inbox(&d, "lead", Some(me));
+    let helper = seed(&d, &other, 2, "Review the claims", "busy", None);
+    fs::remove_file(registry.join(format!("{}.json", helper.daemon.id()))).unwrap();
+    fs::write(
+        registry.join(format!("{helper_pid}.json")),
+        json!({"pid": helper_pid, "sessionId": helper.id, "cwd": other,
+               "kind": "interactive", "status": "busy",
+               "startedAt": 1_759_309_260_000u64})
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        d.home().join("fake-resume-in-place"),
+        d.path("resumed.sock").to_str().unwrap(),
+    )
+    .unwrap();
+    let to_resumed = inbox(&d, "resumed", None);
+    d.start();
+
+    let beneath = "↳ ⚙ Review the claims · in other";
+    d.wait_text(beneath);
+    for _ in 0..4 {
+        if selected(&d.screen()).contains("Review the claims") {
+            break;
+        }
+        d.press("down", DOWN);
+    }
+    // Hovering it previews its conversation; it has no pane to join.
+    let screen = d.wait_text("please Review the claims");
+    assert!(selected(&screen).contains("Review the claims"), "{screen}");
+    d.press("ctrl+y", b"\x19");
+    let screen = d.wait_text("take over here");
+    d.capture("take-over-menu");
+    assert!(screen.contains("› take over here"), "{screen}");
+    d.press("enter", b"\r");
+
+    // The launcher hears first, then the client stops and the conversation resumes here.
+    let wait = std::time::Duration::from_secs(30);
+    let note = to_lead.recv_timeout(wait).expect("a note to the launcher");
+    assert!(
+        note.contains(&format!("took over claude session {}", helper.id))
+            && note.contains(&format!("`cones wait {}`", helper.id)),
+        "{note}"
+    );
+    let deadline = std::time::Instant::now() + wait;
+    while unsafe { libc::kill(helper_pid as i32, 0) } == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the helper's client still runs"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let resumed = || -> Vec<Vec<String>> {
+        calls(&d)
+            .into_iter()
+            .filter(|c| c.contains(&"--resume".to_owned()))
+            .collect()
+    };
+    while resumed().is_empty() {
+        assert!(std::time::Instant::now() < deadline, "nothing resumed it");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let resumed = resumed();
+    assert_eq!(resumed.len(), 1, "{resumed:?}");
+    assert!(resumed[0].contains(&helper.id), "{resumed:?}");
+    let carry_on = to_resumed
+        .recv_timeout(wait)
+        .expect("a note to the resumed session");
+    assert!(
+        carry_on.contains("Carry on where you left off"),
+        "{carry_on}"
+    );
+    d.wait_text(&format!("fixture attached to {}", helper.short));
+    // The resumed session is listed on the next refresh, beneath its launcher again.
+    d.wait_for("the resumed session beneath its launcher", |s| {
+        let lines: Vec<&str> = s.lines().collect();
+        let at = |text: &str| lines.iter().position(|l| l.contains(text));
+        at(beneath).is_some()
+            && at(beneath) == at("Lead the work").map(|i| i + 1)
+            && at(&other.display().to_string()).is_none()
+    });
+    d.capture("taken-over");
+    d.quit();
+    let _ = launcher.kill();
+    let _ = launcher.wait();
+}

@@ -15183,6 +15183,7 @@ impl App {
         let Some(spec) = harness::by_name(&harness) else {
             return;
         };
+        let working = matches!(s.state.as_str(), "working" | "active" | "shell");
         // A helper is listed beneath its launcher only while it runs under it. Record the
         // link so the resumed conversation stays where it was listed.
         let launcher = s
@@ -15206,6 +15207,29 @@ impl App {
             && let Err(e) = crate::relations::record(&self.state, link)
         {
             self.status = warning(format!("its launcher was not recorded: {e:#}"));
+        }
+        let launcher = launcher.cloned();
+        let (claude, state, id) = (
+            self.claude.clone(),
+            self.state.clone(),
+            s.session_id.clone(),
+        );
+        // The launcher is told before its client stops, so it waits on the session instead
+        // of starting the work again when its run ends.
+        if let Some(launcher) = &launcher {
+            let note = format!(
+                "[cones dashboard, for the owner] The owner took over {harness} session {id}, \
+                 which you started, so the client you ran ends now and the session continues \
+                 in their dashboard. Do not start that work again: `cones wait {id}` returns \
+                 when it stops, and `cones show {id}` has its result."
+            );
+            let home = harness::home_of(launcher, &claude);
+            if let Err(e) = harness::message(launcher, &home, &state, &note, None) {
+                self.status = warning(format!(
+                    "{} was not told it was taken over: {e:#}",
+                    launcher.session_id
+                ));
+            }
         }
         let what = spec.commands.viewer.clone();
         self.leave_transcript();
@@ -15233,7 +15257,47 @@ impl App {
                 });
                 anyhow::ensure!(gone, "{harness} (pid {pid}) is still running after SIGTERM");
             }
-            harness::resume_history(&entry, &policy)
+            let command = harness::resume_history(&entry, &policy)?;
+            // Stopping the client interrupted the turn it was running. Once the resumed
+            // session takes notes, it is asked to carry on, so the take-over keeps it working.
+            if working {
+                std::thread::spawn(move || {
+                    let mut error = "the resumed session was not listed".to_owned();
+                    // ponytail: 30 one-second tries for the resumed client to appear.
+                    for _ in 0..30 {
+                        std::thread::sleep(Duration::from_secs(1));
+                        let Ok(rows) = sessions(&claude, &state, &policy) else {
+                            continue;
+                        };
+                        // A Codex thread its daemon holds has no client pid, and a note to
+                        // a session not yet taking notes fails and is tried again.
+                        let Some(row) =
+                            rows.iter().find(|r| r.session_id == id || r.native() == id)
+                        else {
+                            continue;
+                        };
+                        let note = "[cones dashboard, for the owner] The owner moved this \
+                                    session into their dashboard, which interrupted your turn. \
+                                    Carry on where you left off.";
+                        let home = harness::home_of(row, &claude);
+                        match harness::message(row, &home, &state, note, None) {
+                            Ok(()) => return,
+                            Err(e) => error = format!("{e:#}"),
+                        }
+                    }
+                    // The pane has moved on by now, so the failure goes to the launch ledger.
+                    let _ = debug_line(
+                        &state.join("launches.jsonl"),
+                        json!({
+                            "v": 1, "timestamp": chrono::Utc::now().to_rfc3339(),
+                            "pid": std::process::id(), "event": "take_over.continue_failed",
+                            "level": "recovery",
+                            "data": {"operation_id": id, "harness": harness, "error": error},
+                        }),
+                    );
+                });
+            }
+            Ok(command)
         });
     }
 

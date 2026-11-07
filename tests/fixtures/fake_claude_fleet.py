@@ -10,7 +10,9 @@ commands the dashboard ran, and its environment to `$HOME/claude-env.jsonl`. `$H
         `$CLAUDE_CONFIG_DIR/.claude.json` accepts the folder's trust dialog; a
         foreground start asks Claude's trust question on the pty, and enter trusts the folder,
         lists the session in the registry under the fixture's pid and holds the pty
-`$HOME/registry-delay` holds a `--bg` session's registry entry back that many seconds, the
+With `$HOME/fake-resume-in-place` naming a socket, `--bg --resume ID` lists session ID again
+under a new stand-in, keeps its transcript and publishes that socket as its cross-session
+inbox; otherwise a resume is a copy under a new id. `$HOME/registry-delay` holds a `--bg` session's registry entry back that many seconds, the
 way the daemon can take a while to report a session. `$HOME/print-delay` holds the printed
 background id back instead, the way the daemon can list a session before `--bg` returns.
 `attach` holds the pty as a viewer client until hung up. With `$HOME/fake-attach-fullscreen` it
@@ -143,7 +145,10 @@ if "--bg" not in args:
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     while True:
         time.sleep(0.05)
-session = str(uuid.uuid4())
+in_place = HOME / "fake-resume-in-place"
+resume = (args[args.index("--resume") + 1]
+          if "--resume" in args and in_place.exists() else None)
+session = resume or str(uuid.uuid4())
 short = session[:8]
 cwd = os.getcwd()
 daemon = subprocess.Popen(["/bin/sleep", "600"], start_new_session=True,
@@ -152,7 +157,8 @@ daemon = subprocess.Popen(["/bin/sleep", "600"], start_new_session=True,
 key = "".join(c if c.isascii() and c.isalnum() else "-" for c in cwd)
 transcript = CLAUDE / "projects" / key / f"{session}.jsonl"
 transcript.parent.mkdir(parents=True, exist_ok=True)
-transcript.write_text(
+if not resume:
+  transcript.write_text(
     json.dumps({"sessionId": session, "type": "user", "cwd": cwd,
                 "timestamp": "2026-10-01T09:00:00.000Z",
                 "message": {"role": "user", "content": prompt}}) + "\n"
@@ -161,10 +167,19 @@ transcript.write_text(
 )
 registry = CLAUDE / "sessions"
 registry.mkdir(parents=True, exist_ok=True)
-entry = json.dumps({
+entry = {
     "pid": daemon.pid, "sessionId": session, "cwd": cwd, "kind": "bg",
     "jobId": short, "status": "busy", "startedAt": int(time.time() * 1000),
-})
+}
+if resume:
+    import hashlib
+    socket = in_place.read_text()
+    entry.update({"messagingSocketPath": socket, "peerProtocol": 1, "version": "2.1.281"})
+    digest = hashlib.sha256(socket.encode()).hexdigest()
+    registry.mkdir(parents=True, exist_ok=True)
+    (registry / f"{daemon.pid}.{digest}.key").write_text(
+        json.dumps({"peerToken": "0123456789abcdef0123456789abcdef"}))
+entry = json.dumps(entry)
 delay_file = HOME / "registry-delay"
 if delay_file.exists() and os.fork() == 0:
     os.setsid()

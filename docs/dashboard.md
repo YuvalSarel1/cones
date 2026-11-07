@@ -169,8 +169,10 @@ harness's conversations the preview shows its conversation as it is written, the
 history rows use; Enter says `watch` and focuses it. ctrl+y, from the list or the preview,
 offers `take over here` first: it stops the client in its own terminal, waits for it to exit,
 and resumes the conversation in a pane here, in the session's own folder and beneath the
-agent that started it, if any. A turn the client was running is interrupted, so a headless
-client such as `codex exec` resumes idle and its launcher sees it fail. A harness with no readable conversation says `own terminal`, and Enter names that
+agent that started it, if any. That agent is first sent a note naming the session and telling
+it to `cones wait` on it rather than start the work again, since the run it holds, such as a
+`codex exec`, ends. A turn the stop interrupted continues: once the resumed session takes notes,
+it is asked to carry on where it left off. A harness with no readable conversation says `own terminal`, and Enter names that
 terminal as the only way in. A warning wider than the composer's rule ends in `…`.
 
 | Key | Action |
