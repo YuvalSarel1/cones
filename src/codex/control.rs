@@ -236,3 +236,41 @@ pub fn stop(home: &Path, thread: &str) -> io::Result<Stopped> {
     }
     Ok(stopped)
 }
+
+/// Make sure the note just queued on `thread` will run, and fail when nothing will run it.
+/// The daemon starts a queued note when a turn completes but not after an interrupt, so a
+/// thread `cones stop` interrupted would hold the note until the owner's next prompt while the
+/// sender believed it delivered. An idle thread's queue is started here; a running turn takes
+/// the note when it ends. A daemon without the queue methods is trusted as before.
+pub fn deliver(home: &Path, thread: &str) -> io::Result<()> {
+    let mut client = client(home, "cones_send")?;
+    let loaded = client.call("thread/loaded/list", json!({}))?;
+    if !loaded["data"]
+        .as_array()
+        .is_some_and(|ids| ids.iter().any(|id| id == thread))
+    {
+        return Err(io::Error::other(
+            "its daemon does not hold the thread, so no turn will read the note; \
+             `cones resume` reopens it",
+        ));
+    }
+    let waiting = |client: &mut Client| {
+        client
+            .call("thread/queue/list", json!({"threadId": thread, "limit": 1}))
+            .ok()
+            .is_some_and(|queue| queue["data"].as_array().is_some_and(|q| !q.is_empty()))
+    };
+    if client.running(thread)?.is_some() || !waiting(&mut client) {
+        return Ok(());
+    }
+    // A note the daemon started on its own between the two reads makes the start fail; the
+    // second look tells that apart from a note left waiting.
+    let started = client.call("thread/queue/start", json!({"threadId": thread}));
+    if started.is_ok() || client.running(thread)?.is_some() || !waiting(&mut client) {
+        return Ok(());
+    }
+    Err(io::Error::other(format!(
+        "the note is queued but the thread is idle and its queue would not start: {}",
+        started.err().map(|e| e.to_string()).unwrap_or_default()
+    )))
+}

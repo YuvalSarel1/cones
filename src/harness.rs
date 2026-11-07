@@ -949,6 +949,10 @@ pub fn message(
         session.harness,
         String::from_utf8_lossy(&out.stderr).trim()
     );
+    if spec.kind == HarnessKind::Codex {
+        crate::codex::control::deliver(home, &session.session_id)
+            .with_context(|| format!("{} did not take the note", session.session_id))?;
+    }
     Ok(())
 }
 

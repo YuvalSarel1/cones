@@ -169,12 +169,19 @@ pub fn resume(
         .context("unknown history harness")?
         .kind;
     let ledger = Ledger::new(state)?;
+    // A Codex thread `cones stop` interrupted is still held by its daemon: live and idle.
+    if let Some(row) = rows.iter().find(|s| s.native() == id) {
+        bail!(
+            "{id} is already running in {}, state {}; `cones send` gives it new work",
+            row.harness,
+            row.state
+        );
+    }
     ensure!(
-        !rows.iter().any(|s| s.native() == id)
-            // A client discovery still keys by its process is held by the host that opened it.
-            && !terminal_host::records(state)
-                .iter()
-                .any(|r| r.session.session_id == *id)
+        // A client discovery still keys by its process is held by the host that opened it.
+        !terminal_host::records(state)
+            .iter()
+            .any(|r| r.session.session_id == *id)
             && !ledger.runs()?.iter().any(|r| {
                 r.terminal.is_none() && r.started.session_id.as_deref() == Some(id.as_str())
             }),
@@ -816,7 +823,8 @@ fn recovery(state: &Path, event: &str, data: Value) {
 /// injected into any session. With `since`, the moment a session was launched, a state
 /// reported before its first turn is not an end: it has to have been seen working, or have
 /// written after `since`. Without it, a session already settled answers at once, and an id
-/// not live on the first look is an error. `None` is the timeout. A job's session is watched
+/// still unlisted on the look after the first is an error. An id is a session or native id, or an
+/// unambiguous prefix of one, as `cones show` takes it. `None` is the timeout. A job's session is watched
 /// like any other.
 // ponytail: matches the row's session or native id; a pi row keyed by its process until the
 // session file appears can read as gone, so watch the native id `cones ls` shows by then.
@@ -831,7 +839,7 @@ pub fn wait(
     let deadline = timeout.map(|t| Instant::now() + t);
     let mut seen = vec![false; ids.len()];
     let mut moved = vec![since.is_none(); ids.len()];
-    let (mut first, mut failures) = (true, 0);
+    let (started, mut failures) = (Instant::now(), 0);
     loop {
         match crate::tui::sessions(claude, state, &crate::config::defaults(jobs)) {
             Ok(rows) => {
@@ -839,11 +847,13 @@ pub fn wait(
                 for (i, id) in ids.iter().enumerate() {
                     let row = rows
                         .iter()
-                        .find(|s| s.session_id == *id || s.native_id.as_deref() == Some(id));
+                        .find(|s| s.session_id == *id || s.native_id.as_deref() == Some(id))
+                        .or_else(|| by_prefix(&rows, id));
                     match row {
                         None if seen[i] => return Ok(Some(format!("{id}\tgone\n"))),
+                        // A session launched a moment ago may not be listed yet.
                         None => ensure!(
-                            !first || since.is_some(),
+                            since.is_some() || started.elapsed() < crate::coordinator::beat(),
                             "no live session {id}; `cones ls` lists them"
                         ),
                         Some(row) => {
@@ -862,7 +872,6 @@ pub fn wait(
                         }
                     }
                 }
-                first = false;
             }
             // A registry can be mid-rewrite; an hour of failures is a broken install.
             Err(e) => {
@@ -881,6 +890,19 @@ pub fn wait(
             None => nap,
         });
     }
+}
+
+/// The one row whose session or native id starts with `id`, as `cones show` resolves a prefix.
+/// An ambiguous or too-short prefix names nothing.
+fn by_prefix<'a>(rows: &'a [Session], id: &str) -> Option<&'a Session> {
+    if id.len() < crate::show::MIN_PREFIX {
+        return None;
+    }
+    let mut found = rows.iter().filter(|s| {
+        s.session_id.starts_with(id) || s.native_id.as_deref().is_some_and(|n| n.starts_with(id))
+    });
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
 }
 
 #[cfg(test)]

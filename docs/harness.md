@@ -198,7 +198,10 @@ on every harness.
 A definition's `message` operation supplies native delivery: a command with `{id}`, `{text}`
 and optional `{remote}`, Claude's `peer_inbox`, or the `reporter` in a pi or OpenCode client.
 Codex uses `queue --thread`, verified
-against 0.154.0, on the daemon owning that home. Claude has no delivery command, so cones
+against 0.154.0, on the daemon owning that home. The daemon starts a queued note when a turn
+completes but not on an idle thread whose last turn was interrupted, so after queueing cones
+starts the queue of an idle thread itself, and fails the send when the daemon does not hold the
+thread or the note is still waiting. Claude has no delivery command, so cones
 writes to the cross-session inbox that Claude's own SendMessage uses. The socket comes from
 the session's registry record (`messagingSocketPath`), and the token comes from the key file
 Claude writes beside it (`<pid>.<sha256 of the socket path>.key`). cones sends the same auth

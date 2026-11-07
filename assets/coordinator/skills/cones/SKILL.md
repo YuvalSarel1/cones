@@ -124,6 +124,10 @@ the worker stopped, and its exit wakes you. For a worker already running, after 
 more work, `cones wait ID...` as a background task does the same. Then read the worker's
 report.
 
+New work for a worker you stopped goes to `cones send` if `cones ls` still lists it, as a
+stopped Codex thread stays; otherwise `cones resume ID` and check `cones ls` before sending, or
+launch a fresh worker. A hand-off is delivered when `cones show ID` has your message.
+
 **The report asks for:** the native session id, worktree and branch, the result or the blocker
 with what is missing, changed files, checks run and what they said, and the commit hash.
 Completion is that report plus your own review of it. Read `cones show ID` before you believe a

@@ -1501,9 +1501,10 @@ fn wait_returns_when_a_named_session_settles_including_a_job_s() {
     let out = f.cones("ok", &["wait", &id]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), format!("{id}\tidle"));
-    // One unknown id among several refuses the wait too.
-    let out = f.cones("ok", &["wait", "nobody-yet", &id]);
-    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    // A prefix names the session as `cones show` and `cones send` resolve one.
+    let out = f.cones("ok", &["wait", &id[..8]]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(stdout(&out), format!("{}\tidle", &id[..8]));
 
     let record = f.path().join("claude/sessions").join(format!("{id}.json"));
     let set = |status: &str| {
@@ -1512,6 +1513,10 @@ fn wait_returns_when_a_named_session_settles_including_a_job_s() {
         fs::write(&record, entry.to_string()).unwrap();
     };
     set("busy");
+    // One unknown id among several working ones refuses the wait once the look after the
+    // first still does not find it.
+    let out = f.cones("ok", &["wait", "nobody-yet", &id, "--timeout", "5"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     let out = f.cones("ok", &["wait", &id, "--timeout", "0.5"]);
     assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
     assert_eq!(stdout(&out), "timeout");

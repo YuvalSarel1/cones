@@ -333,9 +333,10 @@ cones wait 5bf8392e-17cb-405d-a400-22dfbda13472 0199f2a4-7c1e-7000-8000-00000000
 
 Blocks until one of the named live sessions is not working: its turn ended, it asks for input,
 it failed or stopped, or it left the roster. It then prints `ID<TAB>STATE` for that session.
-A session already settled answers at once. An id that is not live on the first look is
-refused. Ids are exact, as `cones ls` prints them; a job's session counts, though `ls` shows
-it as its run. A session whose harness reports no state reads as working and never settles.
+A session already settled answers at once. An id still not live on the second look, one beat
+after the first, is refused, so a session launched a moment ago is found. Ids are the ones
+`cones ls` prints, or unambiguous prefixes of four or more characters; a job's session counts,
+though `ls` shows it as its run. A session whose harness reports no state reads as working and never settles.
 `--timeout S` gives up after S seconds and exits 2 with `timeout`, leaving every session
 running. An agent runs it as a background task, so the exit wakes it; the state says where to
 look, not that the task is done. `launch --wait` uses the same watch, but ignores a state

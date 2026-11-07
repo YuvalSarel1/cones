@@ -86,6 +86,14 @@ if [ "$1" = "--help" ]; then
     echo "fork  fork a previous session"
     exit 0
 fi
+if [ "$1 $2" = "queue --help" ]; then
+    echo "--thread --message"
+    exit 0
+fi
+if [ "$3 $4 $6" = "queue --thread --message" ]; then
+    echo "$7" >> "$CODEX_HOME/app-server-control/queued"
+    exit 0
+fi
 if [ "$1 $2 $3" = "app-server daemon start" ]; then
     echo "{\"socketPath\":\"$CODEX_HOME/app-server-control/app-server-control.sock\"}"
     exit 0
@@ -845,6 +853,67 @@ fn a_note_queued_behind_an_interrupted_codex_turn_runs_after_the_stop() {
         !text(&out.stdout).contains("queued"),
         "{}",
         text(&out.stdout)
+    );
+    assert!(!methods(&calls).iter().any(|m| m == "thread/queue/start"));
+}
+
+/// A thread `cones stop` interrupted stays live in its daemon, so resume refuses it and points
+/// at send. The daemon starts no queued note on a thread whose last turn was interrupted, so
+/// the send starts the queue itself; a thread the daemon does not hold takes no note, and the
+/// send fails rather than reporting it delivered.
+#[test]
+fn a_note_sent_after_a_codex_stop_starts_a_turn_or_the_send_fails() {
+    let f = Fixture::new();
+    let bin = f.root.path().join(".local/bin/codex");
+    fs::write(&bin, CODEX).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+    let id = "019a12fc-17d9-7af2-bc5a-92de2ec06072";
+    codex_thread(&f, id);
+    let calls = codex_daemon(&f, &[id]);
+    let control = f.root.path().join(".codex/app-server-control");
+    let out = f.stop(id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+
+    let out = f.cones(&["resume", id]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("already running in codex"),
+        "{}",
+        text(&out.stderr)
+    );
+
+    let sent = methods(&calls).len();
+    let out = f.cones(&["send", &id[..8], "run the tests again"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), format!("sent to {id} (codex)\n"));
+    assert_eq!(
+        methods(&calls)[sent..],
+        [
+            "thread/loaded/list",
+            "thread/turns/list",
+            "thread/queue/list",
+            "thread/queue/start"
+        ],
+        "an idle thread's queue is started"
+    );
+    assert!(
+        !control.join("queued").exists(),
+        "the note must have started a turn"
+    );
+
+    let other = "019a12fc-17d9-7af2-bc5a-92de2ec06073";
+    let f = Fixture::new();
+    let bin = f.root.path().join(".local/bin/codex");
+    fs::write(&bin, CODEX).unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+    codex_thread(&f, other);
+    let calls = codex_daemon(&f, &[]);
+    let out = f.cones(&["send", other, "run the tests again"]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("does not hold the thread"),
+        "{}",
+        text(&out.stderr)
     );
     assert!(!methods(&calls).iter().any(|m| m == "thread/queue/start"));
 }
