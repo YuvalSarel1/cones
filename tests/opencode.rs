@@ -313,7 +313,7 @@ fn live_rows_require_native_identity_and_do_not_guess_state_from_finished_messag
     }
     let rows = opencode::rows(dir.path(), &procs).unwrap();
     assert_eq!(rows[0].session_id, "ses_fixture");
-    assert_eq!(rows[0].state, "-");
+    assert_eq!(rows[0].state.as_str(), "-");
     assert_eq!(rows[0].title.as_deref(), Some("Named OpenCode"));
     assert_eq!(rows[0].context_tokens, Some(36));
     assert!(rows.iter().all(|row| row.own_terminal()));

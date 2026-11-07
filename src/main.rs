@@ -870,8 +870,8 @@ fn execute(cli: Cli) -> Result<i32> {
                         let session = live
                             .iter()
                             .find(|s| s.session_id == id || s.native_id.as_deref() == Some(id));
-                        let state =
-                            session.map_or_else(|| run.status().to_string(), |s| s.state.clone());
+                        let state = session
+                            .map_or_else(|| run.status().to_string(), |s| s.state.to_string());
                         let session = session.map_or_else(
                             || {
                                 serde_json::json!({
@@ -924,7 +924,7 @@ fn execute(cli: Cli) -> Result<i32> {
             .into_iter()
             .filter(|s| {
                 job.is_none()
-                    && status.as_ref().is_none_or(|st| s.state == *st)
+                    && status.as_ref().is_none_or(|st| s.state.as_str() == st)
                     && inside(Some(&s.cwd))
             }) {
                 if json {

@@ -1,7 +1,7 @@
 use chrono::Utc;
 use cones::{
     config,
-    harness::Outcome,
+    harness::{Outcome, Verdict},
     launchd,
     ledger::{Ledger, Record, Status},
 };
@@ -411,7 +411,7 @@ fn parses_claude_fixture_and_detects_permissions_without_exit_code() {
             .observe(line, "13c73aaf-43d6-4b2c-af51-05763e0c6834")
             .unwrap();
     }
-    assert!(result.result_seen && !result.failed && !result.session_mismatch);
+    assert!(result.verdict == Some(Verdict::Ok) && !result.session_mismatch);
     assert_eq!(result.tokens_in, Some(61));
     assert_eq!(result.cost_usd, Some(0.012));
     let mut result = Outcome::default();
@@ -479,7 +479,7 @@ fn permission_words_in_read_output_are_data_not_denials() {
             .observe(line, "13c73aaf-43d6-4b2c-af51-05763e0c6834")
             .unwrap();
     }
-    assert!(result.result_seen && !result.failed && !result.permission_denied);
+    assert!(result.verdict == Some(Verdict::Ok) && !result.permission_denied);
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn a_run_answering_its_own_background_task_totals_every_result() {
     ] {
         result.observe(&line, id).unwrap();
     }
-    assert!(result.result_seen && !result.failed && !result.session_mismatch);
+    assert!(result.verdict == Some(Verdict::Ok) && !result.session_mismatch);
     assert_eq!(result.cost_usd, Some(2.17));
     assert_eq!(result.tokens_in, Some(300));
     assert_eq!(result.tokens_out, Some(30));
@@ -516,7 +516,7 @@ fn a_run_answering_its_own_background_task_totals_every_result() {
             id,
         )
         .unwrap();
-    assert!(result.failed);
+    assert_eq!(result.verdict, Some(Verdict::Failed));
     assert_eq!(result.reason.as_deref(), Some("error_max_turns"));
     assert_eq!(result.cost_usd, Some(0.88));
 }
@@ -724,7 +724,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         ("parked", "parked"),
     ] {
         registry(claude, id, entry(status));
-        assert_eq!(get().state, state, "{status}");
+        assert_eq!(get().state.as_str(), state, "{status}");
     }
     // Background jobs supply detail and a fallback transcript path, but timestamps still require a transcript.
     let other = "22222222-2222-4222-8222-222222222222";
@@ -782,7 +782,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     ] {
         fs::write(claude.join("jobs/aaaaaaaa/state.json"), state).unwrap();
         let b = cones::fleet::find(claude, other).unwrap().unwrap();
-        assert_eq!(b.state, "active", "{state}");
+        assert_eq!(b.state.as_str(), "active", "{state}");
     }
     let mut idle = bg("aaaaaaaa");
     idle["status"] = "idle".into();
@@ -794,7 +794,7 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     ] {
         fs::write(claude.join("jobs/aaaaaaaa/state.json"), state).unwrap();
         let b = cones::fleet::find(claude, other).unwrap().unwrap();
-        assert_eq!(b.state, expect, "{state}");
+        assert_eq!(b.state.as_str(), expect, "{state}");
     }
     fs::write(
         claude.join("jobs/aaaaaaaa/state.json"),
@@ -804,7 +804,8 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
     registry(claude, other, idle);
     let b = cones::fleet::find(claude, other).unwrap().unwrap();
     assert_eq!(
-        b.state, "blocked",
+        b.state.as_str(),
+        "blocked",
         "a blocked tempo on an idle status is input"
     );
     registry(claude, other, bg("../x"));
@@ -838,7 +839,11 @@ fn fleet_reads_claude_registry_and_counts_tokens_once_per_message() {
         serde_json::json!({"pid": me, "sessionId": raw, "cwd": "/x", "status": "compacting", "startedAt": 2i64}),
     );
     assert_eq!(
-        cones::fleet::find(claude, raw).unwrap().unwrap().state,
+        cones::fleet::find(claude, raw)
+            .unwrap()
+            .unwrap()
+            .state
+            .as_str(),
         "compacting",
         "an unknown registry status is shown as Claude's word, not as active"
     );

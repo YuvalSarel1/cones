@@ -1496,7 +1496,7 @@ impl HarnessSpec {
                 .viewer
                 .peek_blocked_states
                 .iter()
-                .any(|state| state.as_str() == session.state)
+                .any(|state| state.as_str() == session.state.as_str())
     }
 
     /// Resolve a row's original home before falling back to the launch default.

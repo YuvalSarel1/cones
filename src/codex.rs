@@ -1297,9 +1297,12 @@ pub(crate) fn thread_rows_observed(
     // What Codex reports for a thread's own commands replaces that.
     let held = || rows.iter().filter(|s| s.usage.is_some());
     if held().count() > 1 {
-        let one_working = held().filter(|s| s.state == "active").count() == 1;
+        let one_working = held()
+            .filter(|s| s.state == crate::fleet::State::Active)
+            .count()
+            == 1;
         for s in &mut rows {
-            if !(one_working && s.state == "active") {
+            if !(one_working && s.state == crate::fleet::State::Active) {
                 s.usage = None;
             }
         }

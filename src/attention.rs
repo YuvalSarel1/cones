@@ -23,7 +23,7 @@ pub(crate) struct Observation {
 
 impl Observation {
     pub(crate) fn session(session: &Session) -> Option<Self> {
-        if session.harness == "terminal" || session.state == "started" {
+        if session.harness == "terminal" || session.state == crate::fleet::State::Started {
             return None;
         }
         let source = session
@@ -33,7 +33,7 @@ impl Observation {
             .unwrap_or_default();
         Some(Self {
             key: format!("{}:{}:{source}", session.harness, session.session_id),
-            state: session.state.clone(),
+            state: session.state.to_string(),
             revision: session
                 .last
                 .as_ref()

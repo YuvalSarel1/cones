@@ -615,7 +615,7 @@ fn thread(
         s.harness == name
             && s.kind == record.session.kind
             && s.cwd == dir
-            && s.state != "-"
+            && s.state != crate::fleet::State::Unknown
             && s.started.is_some_and(|at| at >= since)
             && s.transcript_path
                 .as_deref()

@@ -2144,14 +2144,21 @@ pub fn compiled_policy(job: &ResolvedJob, invocation: &Invocation) -> Result<Val
     Ok(policy)
 }
 
+/// How the last result a run reported ended it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Ok,
+    Failed,
+    /// The session ended its turn asking for input; it stays up for the answer.
+    Input,
+    /// The session was stopped or removed by something other than this run.
+    Stopped,
+}
+
 #[derive(Debug, Default)]
 pub struct Outcome {
-    pub result_seen: bool,
-    pub failed: bool,
-    /// The session ended its turn asking for input; it stays up for the answer.
-    pub input: bool,
-    /// The session was stopped or removed by something other than this run.
-    pub stopped: bool,
+    /// None until the harness reports a result.
+    pub verdict: Option<Verdict>,
     pub permission_denied: bool,
     pub reason: Option<String>,
     pub session_mismatch: bool,
@@ -2179,12 +2186,15 @@ impl Outcome {
         // A background session prints no headless result. Its supervisor watches the state
         // the harness reports for the session and says how that session ended.
         if event["type"] == "cones_result" {
-            self.result_seen = true;
             let state = event["state"].as_str().unwrap_or("unreported");
-            self.input = state == "blocked";
-            self.stopped = state == "stopped";
-            self.failed = !matches!(state, "done" | "blocked");
-            self.reason = self.failed.then(|| format!("session_{state}"));
+            let verdict = match state {
+                "done" => Verdict::Ok,
+                "blocked" => Verdict::Input,
+                "stopped" => Verdict::Stopped,
+                _ => Verdict::Failed,
+            };
+            self.verdict = Some(verdict);
+            self.reason = (verdict == Verdict::Failed).then(|| format!("session_{state}"));
             // A daemon worker reads its session's reported totals on the way out.
             self.tokens_in = self.tokens_in.or(event["tokens_in"].as_u64());
             self.tokens_out = self.tokens_out.or(event["tokens_out"].as_u64());
@@ -2196,9 +2206,8 @@ impl Outcome {
             // Claude ends a headless turn with a result and then answers again when a
             // background task of its own completes, so one run can report several. The last
             // result is the run's verdict; the totals are what every result spent together.
-            self.result_seen = true;
             self.session_mismatch |= event["session_id"].as_str() != Some(session_id);
-            self.failed =
+            let failed =
                 event["is_error"].as_bool().unwrap_or(true) || event["subtype"] != "success";
             self.reason = event["subtype"]
                 .as_str()
@@ -2207,8 +2216,9 @@ impl Outcome {
             let cost = event["total_cost_usd"]
                 .as_f64()
                 .filter(|v| v.is_finite() && *v >= 0.0);
-            if !self.failed && cost.is_none() {
-                self.failed = true;
+            self.verdict = Some(if failed { Verdict::Failed } else { Verdict::Ok });
+            if !failed && cost.is_none() {
+                self.verdict = Some(Verdict::Failed);
                 self.reason = Some("missing_cost".into());
             }
             if let Some(cost) = cost {

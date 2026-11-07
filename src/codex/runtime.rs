@@ -336,7 +336,7 @@ mod tests {
             "Codex 0.165's nulls, a partial report and a daemon without the method report nothing"
         );
         assert!(
-            rows.iter().all(|r| r.state == "idle"),
+            rows.iter().all(|r| r.state == crate::fleet::State::Idle),
             "a missing terminal list keeps the thread's state"
         );
     }

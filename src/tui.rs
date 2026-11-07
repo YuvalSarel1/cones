@@ -623,11 +623,14 @@ impl Data {
     /// An agent a run holds is still an agent: its row is the run's, but the fleet it belongs
     /// to is the same one the header counts.
     fn count(&self, state: &str) -> usize {
-        self.sessions.iter().filter(|s| s.state == state).count()
+        self.sessions
+            .iter()
+            .filter(|s| s.state.as_str() == state)
+            .count()
             + self
                 .runs
                 .iter()
-                .filter(|r| self.agent_in(r).is_some_and(|s| s.state == state))
+                .filter(|r| self.agent_in(r).is_some_and(|s| s.state.as_str() == state))
                 .count()
     }
 
@@ -658,10 +661,10 @@ impl Data {
             },
         };
         RunView {
-            agent: live.map(|s| s.state.clone()),
+            agent: live.map(|s| s.state.to_string()),
             status: match (&live, ledger.as_str()) {
                 (_, "started") => ledger,
-                (Some(s), _) => s.state.clone(),
+                (Some(s), _) => s.state.to_string(),
                 (None, _) => ledger,
             },
             // A resumed run has no second fired_at, so its live figure is the agent's own age,
@@ -725,7 +728,7 @@ impl Data {
         s.tokens_out = view.tokens_out;
         s.last = view.last.clone();
         s.session_id = run.started.run_id.clone();
-        s.state = view.agent.clone().unwrap_or_else(|| view.status.clone());
+        s.state = view.agent.as_deref().unwrap_or(&view.status).into();
         s.title = Some(format!("◆ {}", run.started.job.as_deref().unwrap_or("run")));
         s.forked_from = None;
         s
@@ -904,14 +907,14 @@ impl Data {
             let (key, open) = if pinned.contains(&s.session_id) {
                 ((String::new(), "pinned".to_owned(), String::new()), true)
             } else if by_state {
-                let rank = match s.state.as_str() {
-                    "blocked" => 1,
-                    "active" => 2,
-                    "shell" => 3,
-                    "idle" => 4,
+                let rank = match s.state {
+                    fleet::State::Blocked => 1,
+                    fleet::State::Active => 2,
+                    fleet::State::Shell => 3,
+                    fleet::State::Idle => 4,
                     _ => 5,
                 };
-                (ranked(rank, label(&s.state)), true)
+                (ranked(rank, label(s.state.as_str())), true)
             } else if let Some(root) = self.roots.get(&s.cwd) {
                 let (sort, name) = folder(root);
                 match sub(&s.cwd) {
@@ -1177,7 +1180,7 @@ impl Data {
             current = Some(key);
             let row = match e {
                 Entry::Session(s) => Row {
-                    kind: Kind::Session(s.session_id.clone(), s.state.clone()),
+                    kind: Kind::Session(s.session_id.clone(), s.state.to_string()),
                     cells: cells.next().unwrap_or_default(),
                 },
                 Entry::Job(j) => Row {
@@ -1327,7 +1330,7 @@ impl Data {
                     format!(
                         "{} · {} {}{} · {} · started {} · last activity {} · {} context · {} tokens · pid {} · {}",
                         logo(&s.harness),
-                        label(&s.state),
+                        label(s.state.as_str()),
                         s.kind.as_deref().unwrap_or(""),
                         if s.coordinator { " coordinator" } else { "" },
                         fleet::row_model(s),
@@ -2429,7 +2432,7 @@ fn session_cells(
         mark(&s.harness).into()
     };
     let mut row = vec![
-        (icon(&s.state).into(), color(&s.state)),
+        (icon(s.state.as_str()).into(), color(s.state.as_str())),
         (harness, brand(&s.harness)),
     ];
     if set.iter().any(|c| c == "state") {
@@ -2638,7 +2641,7 @@ fn detail_rows(s: &Session, activity: &config::Activity, width: usize) -> Vec<Ro
 fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (String, Style) {
     let since = |t: Option<chrono::DateTime<chrono::Utc>>| t.map_or_else(|| "-".into(), fleet::age);
     match config::column_name(column) {
-        "state" => (label(&s.state).into(), color(&s.state)),
+        "state" => (label(s.state.as_str()).into(), color(s.state.as_str())),
         "activity" => {
             let bars = spark.unwrap_or_default().to_owned();
             let quiet = bars == "-" || bars.chars().all(|c| c == '▁');
@@ -3475,7 +3478,10 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
         }) {
             if row.harness == "opencode"
                 || (row.harness == "pi"
-                    && matches!(host.session.state.as_str(), "active" | "idle" | "blocked"))
+                    && matches!(
+                        host.session.state,
+                        fleet::State::Active | fleet::State::Idle | fleet::State::Blocked
+                    ))
             {
                 let usage = row.usage;
                 *row = host.session.clone();
@@ -3512,7 +3518,10 @@ fn merge_hosts(rows: &mut Vec<Session>, hosts: &[terminal_host::Record]) {
             // native reporters can supply state here without discovery.
             if row.harness != "opencode"
                 && !(row.harness == "pi"
-                    && matches!(row.state.as_str(), "active" | "idle" | "blocked"))
+                    && matches!(
+                        row.state,
+                        fleet::State::Active | fleet::State::Idle | fleet::State::Blocked
+                    ))
             {
                 row.state = "-".into();
             }
@@ -9483,12 +9492,10 @@ struct App {
     rename: Option<NativeRename>,
     tick: usize,
     refreshed: Instant,
-    loading: Option<mpsc::Receiver<Result<Data>>>,
-    loading_started: Option<Instant>,
+    /// The read in flight, if any.
+    loading: Option<Loading>,
     /// The last read failed, so every count and row on screen is the read before it.
     stale: bool,
-    /// A transition happened after the current read started. Discard that read and run again.
-    reload_pending: bool,
     /// Harness commands can take seconds. Keep input and drawing alive while they finish.
     stopping: Vec<PendingStop>,
     /// Successful delete/forget commands take effect here before the registry catches up.
@@ -9774,6 +9781,24 @@ impl Open {
     }
 }
 
+/// A dashboard read on its worker thread.
+struct Loading {
+    data: mpsc::Receiver<Result<Data>>,
+    started: Instant,
+    /// A transition happened after this read started. Discard it and read again.
+    invalidated: bool,
+}
+
+impl Loading {
+    fn new(data: mpsc::Receiver<Result<Data>>, started: Instant) -> Self {
+        Self {
+            data,
+            started,
+            invalidated: false,
+        }
+    }
+}
+
 struct PendingStop {
     id: String,
     label: String,
@@ -9920,9 +9945,7 @@ impl App {
             tick: 0,
             refreshed: Instant::now(),
             loading: None,
-            loading_started: None,
             stale: false,
-            reload_pending: false,
             stopping: Vec::new(),
             removed_sessions: HashSet::new(),
             feedback: None,
@@ -10333,8 +10356,7 @@ impl App {
                 );
             let _ = tx.send(data);
         });
-        self.loading = Some(rx);
-        self.loading_started = Some(started);
+        self.loading = Some(Loading::new(rx, started));
     }
 
     fn report_load(&mut self) {
@@ -10373,8 +10395,8 @@ impl App {
 
     /// Invalidate an in-flight read without starting a second reader.
     fn invalidate(&mut self) {
-        if self.loading.is_some() {
-            self.reload_pending = true;
+        if let Some(loading) = &mut self.loading {
+            loading.invalidated = true;
         } else {
             self.reload();
         }
@@ -10630,7 +10652,7 @@ impl App {
                         .viewer
                         .peek_blocked_states
                         .iter()
-                        .any(|state| state.as_str() == s.state);
+                        .any(|state| state.as_str() == s.state.as_str());
                 // A client in its own terminal cannot be joined, so its conversation is the
                 // preview, on hover as when Enter watches it.
                 if !spec.never_peeks() && !settled && !s.own_terminal() {
@@ -11392,29 +11414,32 @@ impl App {
             }
             self.invalidate();
         }
-        let Some(rx) = &self.loading else {
+        let Some(loading) = &self.loading else {
             return;
         };
-        let result = rx.try_recv();
+        let result = loading.data.try_recv();
         if matches!(result, Err(mpsc::TryRecvError::Empty)) {
             return;
         }
-        self.loading = None;
-        if std::mem::take(&mut self.reload_pending) {
+        let Some(Loading {
+            started,
+            invalidated,
+            ..
+        }) = self.loading.take()
+        else {
+            return;
+        };
+        if invalidated {
             self.event("debug", "refresh.discarded", || json!({
                 "operation_id": self.loading_operation.as_ref().map(|o| &o.id),
                 "reason": "invalidated_during_read",
                 "duration_ms": self.loading_operation.as_ref().map(DiagnosticOperation::elapsed_ms),
             }));
-            if let Some(started) = self.loading_started.take() {
-                self.timing("refresh_discard", started);
-            }
+            self.timing("refresh_discard", started);
             self.reload();
             return;
         }
-        if let Some(started) = self.loading_started.take() {
-            self.timing("refresh_received", started);
-        }
+        self.timing("refresh_received", started);
         match result {
             Err(mpsc::TryRecvError::Empty) => {}
             Ok(Ok(data)) => self.apply(data),
@@ -11961,7 +11986,7 @@ impl App {
                         && !open.recorded
                         && s.harness == "codex"
                         && s.kind.as_deref() == Some("daemon")
-                        && s.state != "-"
+                        && s.state != fleet::State::Unknown
                         && let (Some(started), Some(rollout)) = (s.started, &s.transcript_path)
                     {
                         open.recorded = codex::remember(
@@ -13856,7 +13881,7 @@ impl App {
             .iter()
             .filter(|s| {
                 has_id
-                    && s.state == "blocked"
+                    && s.state == fleet::State::Blocked
                     && s.session_id != open.key
                     && !self.history_matches(&open.key, s)
             })
@@ -14496,7 +14521,7 @@ impl App {
         let Some(s) = self.data.sessions.iter().find(|s| {
             (s.session_id == id || self.history_matches(id, s))
                 && s.harness == "codex"
-                && s.state != "-"
+                && s.state != fleet::State::Unknown
         }) else {
             return false;
         };
@@ -20568,7 +20593,7 @@ states:
                 let good = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
                 if live_stale {
                     let (tx, rx) = mpsc::channel();
-                    app.loading = Some(rx);
+                    app.loading = Some(Loading::new(rx, Instant::now()));
                     tx.send(Err(anyhow::anyhow!("live fixture read failed")))
                         .unwrap();
                     app.poll();
@@ -20603,7 +20628,7 @@ states:
                 );
                 if live_stale {
                     let (tx, rx) = mpsc::channel();
-                    app.loading = Some(rx);
+                    app.loading = Some(Loading::new(rx, Instant::now()));
                     tx.send(Ok(good)).unwrap();
                     app.poll();
                     assert!(!app.stale, "only a successful live read clears its marker");
@@ -21052,12 +21077,20 @@ states:
         merge_hosts(&mut rows, &hosts);
         assert_eq!(rows.len(), 2);
         assert_eq!(
-            (&*rows[0].session_id, rows[0].native(), &*rows[0].state),
+            (
+                &*rows[0].session_id,
+                rows[0].native(),
+                rows[0].state.as_str()
+            ),
             ("pi-11", A, "blocked"),
             "the row stays the process and names the reported conversation"
         );
         assert_eq!(
-            (&*rows[1].session_id, rows[1].native(), &*rows[1].state),
+            (
+                &*rows[1].session_id,
+                rows[1].native(),
+                rows[1].state.as_str()
+            ),
             ("pi-22", B, "idle")
         );
         app.data.sessions = rows;
@@ -21133,7 +21166,7 @@ states:
         merge_hosts(&mut rows, &[host]);
         assert_eq!(
             rows.iter()
-                .map(|s| (&*s.session_id, s.pid, &*s.state))
+                .map(|s| (&*s.session_id, s.pid, s.state.as_str()))
                 .collect::<Vec<_>>(),
             [(A, Some(72639), "done")]
         );
@@ -21962,7 +21995,7 @@ states:
         };
         assert!(!text(&app).contains("stale"), "a good read says nothing");
         let (tx, rx) = mpsc::channel();
-        app.loading = Some(rx);
+        app.loading = Some(Loading::new(rx, Instant::now()));
         tx.send(Err(anyhow::anyhow!(
             "reading the process table with /bin/ps: no such file"
         )))
@@ -21975,7 +22008,7 @@ states:
         app.status = "opening codex".into();
         assert!(text(&app).contains("! stale"));
         let (tx, rx) = mpsc::channel();
-        app.loading = Some(rx);
+        app.loading = Some(Loading::new(rx, Instant::now()));
         tx.send(Ok(good)).unwrap();
         app.poll();
         assert!(!app.stale, "a good read clears it");
@@ -21990,7 +22023,7 @@ states:
         app.refresh().unwrap();
         let stale = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
         let (tx, rx) = mpsc::channel();
-        app.loading = Some(rx);
+        app.loading = Some(Loading::new(rx, Instant::now()));
         registry(d.path(), A, "/src/one", "busy", 1);
         app.invalidate();
         app.invalidate(); // Multiple transitions still queue just one fresh read.
@@ -21998,8 +22031,10 @@ states:
         tx.send(Ok(stale)).ok().unwrap();
         app.poll();
         assert_eq!(app.refreshed, refreshed, "the old snapshot was not applied");
-        assert!(app.loading.is_some(), "the next read starts immediately");
-        assert!(!app.reload_pending);
+        assert!(
+            app.loading.as_ref().is_some_and(|l| !l.invalidated),
+            "the next read starts immediately, valid"
+        );
         poll_until(&mut app, |a| a.loading.is_none());
         assert_eq!(app.data.sessions[0].state, "active");
         assert_eq!(key(&app).as_deref(), Some(A));
@@ -22013,7 +22048,7 @@ states:
         app.refresh().unwrap();
         let stale = Data::load(&app.jobs_path, &app.state, &app.claude).unwrap();
         let (data_tx, data_rx) = mpsc::channel();
-        app.loading = Some(data_rx);
+        app.loading = Some(Loading::new(data_rx, Instant::now()));
         let (tx, rx) = mpsc::channel();
         app.stopping.push(PendingStop {
             operation: None,

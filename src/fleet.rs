@@ -16,6 +16,87 @@ use std::{
     sync::Mutex,
 };
 
+/// A session's normalized state; see docs/harness.md. Rows built from runs carry the ledger's
+/// status, and a word no harness rule maps passes through verbatim as `Other`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum State {
+    /// A launch cones placed before the harness reported it.
+    Started,
+    Active,
+    Idle,
+    /// Asking for input.
+    Blocked,
+    /// The turn ended with a background shell still running.
+    Shell,
+    Done,
+    Failed,
+    Stopped,
+    /// The harness reported nothing: `-`.
+    #[default]
+    Unknown,
+    Other(String),
+}
+
+impl State {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Started => "started",
+            Self::Active => "active",
+            Self::Idle => "idle",
+            Self::Blocked => "blocked",
+            Self::Shell => "shell",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+            Self::Unknown => "-",
+            Self::Other(word) => word,
+        }
+    }
+}
+
+impl From<&str> for State {
+    fn from(word: &str) -> Self {
+        match word {
+            "started" => Self::Started,
+            "active" => Self::Active,
+            "idle" => Self::Idle,
+            "blocked" => Self::Blocked,
+            "shell" => Self::Shell,
+            "done" => Self::Done,
+            "failed" => Self::Failed,
+            "stopped" => Self::Stopped,
+            "-" | "" => Self::Unknown,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+}
+
+impl From<String> for State {
+    fn from(word: String) -> Self {
+        word.as_str().into()
+    }
+}
+
+impl From<State> for String {
+    fn from(state: State) -> Self {
+        state.as_str().to_owned()
+    }
+}
+
+#[cfg(test)]
+impl PartialEq<&str> for State {
+    fn eq(&self, word: &&str) -> bool {
+        self.as_str() == *word
+    }
+}
+
+impl std::fmt::Display for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     /// The row's identity, which the harness definition's launch identity decides; see `identify`.
@@ -36,7 +117,7 @@ pub struct Session {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub moved_to: Option<PathBuf>,
     /// Normalized harness state; see `state` and docs/harness.md.
-    pub state: String,
+    pub state: State,
     /// First reported timestamp; rows sort by it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started: Option<DateTime<Utc>>,
@@ -1006,7 +1087,7 @@ fn transcript_parent(transcript: &Path, id: &str) -> Option<String> {
 /// Registry busy wins because job state can lag a new turn. Registry `shell` is a turn that
 /// ended with a background shell still running. A background job idles only
 /// when the registry, tempo and in-flight work all rest; a pending wake counts as resting.
-fn state(job: &Value, status: &str) -> String {
+fn state(job: &Value, status: &str) -> State {
     let job_state = job["state"].as_str();
     let tempo = job["tempo"].as_str();
     let waking = !job["routine"].is_null()
@@ -1037,15 +1118,14 @@ fn state(job: &Value, status: &str) -> String {
             kinds.iter().all(is_wake)
         };
     match job_state {
-        _ if status == "busy" => "active",
-        _ if status == "shell" => "shell",
-        Some(done) if finished => done,
-        _ if status == "waiting" || tempo == Some("blocked") => "blocked",
-        Some(_) if resting => "idle",
-        Some(_) => "active",
-        None => status,
+        _ if status == "busy" => State::Active,
+        _ if status == "shell" => State::Shell,
+        Some(done) if finished => done.into(),
+        _ if status == "waiting" || tempo == Some("blocked") => State::Blocked,
+        Some(_) if resting => State::Idle,
+        Some(_) => State::Active,
+        None => status.into(),
     }
-    .into()
 }
 
 /// In-flight kinds that only wait to start a turn: a scheduled wake or a monitor.

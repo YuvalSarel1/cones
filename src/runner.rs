@@ -1,6 +1,6 @@
 use crate::{
     config::{Overlap, ResolvedJob},
-    harness::{self, Invocation, Outcome},
+    harness::{self, Invocation, Outcome, Verdict},
     ledger::{Ledger, Record, Run, Status},
     output::RunOutput,
     private_dir, private_file,
@@ -595,22 +595,23 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
             }
             if done && let Some(exit) = exited {
                 terminal.exit = exit.code().or_else(|| exit.signal().map(|s| 128 + s));
-                if exit.success() && outcome.result_seen && outcome.stopped {
+                match outcome.verdict {
                     // Ended by someone else: a stop, not a failure of the run.
-                    terminal.status = Status::Stopped;
-                    terminal.reason = Some("session_stopped".into());
-                } else if exit.success() && outcome.result_seen && outcome.input {
-                    terminal.status = Status::Input;
-                } else if exit.success() && outcome.result_seen && !outcome.failed {
-                    terminal.status = Status::Ok;
-                } else {
-                    terminal.reason = Some(outcome.reason.clone().unwrap_or_else(|| {
-                        if !outcome.result_seen {
-                            "missing_result".into()
-                        } else {
-                            "exit".into()
-                        }
-                    }));
+                    Some(Verdict::Stopped) if exit.success() => {
+                        terminal.status = Status::Stopped;
+                        terminal.reason = Some("session_stopped".into());
+                    }
+                    Some(Verdict::Input) if exit.success() => terminal.status = Status::Input,
+                    Some(Verdict::Ok) if exit.success() => terminal.status = Status::Ok,
+                    verdict => {
+                        terminal.reason = Some(outcome.reason.clone().unwrap_or_else(|| {
+                            if verdict.is_none() {
+                                "missing_result".into()
+                            } else {
+                                "exit".into()
+                            }
+                        }));
+                    }
                 }
                 break;
             }
@@ -641,7 +642,9 @@ pub fn run(job: &ResolvedJob, ledger: &Ledger, executable: &Path, trigger: &str)
     // A run that ends without its supervisor's account removes the session here, and says
     // so rather than leaving an agent nothing is watching.
     let background = invocation.args.iter().any(|a| a == "--bg");
-    if (background || job.harness != crate::config::HarnessKind::Claude) && !outcome.result_seen {
+    if (background || job.harness != crate::config::HarnessKind::Claude)
+        && outcome.verdict.is_none()
+    {
         let remove = |home: std::path::PathBuf| {
             end_session(ledger, &home, job.harness, &session_id).map(|_| ())
         };

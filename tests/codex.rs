@@ -199,7 +199,7 @@ fn rows_read_the_rollout_and_the_session_index() {
         matched.title.as_deref(),
         Some("Polish shared filter controls")
     );
-    assert_eq!(matched.state, "done");
+    assert_eq!(matched.state.as_str(), "done");
     assert_eq!(
         matched.last.as_deref(),
         Some("For native Computer Use, the verified setup is the desktop app.")

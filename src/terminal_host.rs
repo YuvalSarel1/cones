@@ -386,12 +386,21 @@ pub(crate) fn launch(
     result
 }
 
+/// Where a dashboard's connection is: a new one gets two seconds to attach, and a closing one
+/// is dropped once its last reply is flushed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Waiting,
+    Attached,
+    Closing,
+}
+
 struct Peer {
     stream: UnixStream,
     input: Vec<u8>,
     output: Vec<u8>,
-    attached: bool,
-    closing: bool,
+    link: Link,
+    /// Owes a `Stopped` reply once the child exits.
     stop_pending: bool,
     since: Instant,
 }
@@ -558,15 +567,14 @@ fn host_loop(
                 stream,
                 input: Vec::new(),
                 output: Vec::new(),
-                attached: false,
-                closing: false,
+                link: Link::Waiting,
                 stop_pending: false,
                 since: Instant::now(),
             });
         }
         let mut dirty = viewer.pump()?;
         peers.retain_mut(|peer| peer.read().is_ok());
-        let mut attached = peers.iter().any(|peer| peer.attached);
+        let mut attached = peers.iter().any(|peer| peer.link == Link::Attached);
         for peer in &mut peers {
             let result = (|| {
                 while let Some(request) = decode::<Request>(&mut peer.input)? {
@@ -578,16 +586,16 @@ fn host_loop(
                         }
                         Request::Text { id } if id == record.id => {
                             peer.queue(&Reply::Text(Box::new(screen_text(viewer.screen()))))?;
-                            peer.closing = true;
+                            peer.link = Link::Closing;
                         }
                         Request::Attach { version, id }
-                            if !peer.attached
+                            if peer.link == Link::Waiting
                                 && !attached
                                 && !ending
                                 && version == VERSION
                                 && id == record.id =>
                         {
-                            peer.attached = true;
+                            peer.link = Link::Attached;
                             attached = true;
                             viewer.scroll(-i32::MAX);
                             previous = None;
@@ -596,19 +604,21 @@ fn host_loop(
                         }
                         Request::Attach { .. } => {
                             peer.queue(&Reply::Error("terminal is already open in another dashboard, or the host protocol differs".into()))?;
-                            peer.closing = true;
+                            peer.link = Link::Closing;
                         }
-                        Request::Input(bytes) if peer.attached => viewer.write(&bytes),
-                        Request::Resize(rows, cols) if peer.attached => {
+                        Request::Input(bytes) if peer.link == Link::Attached => {
+                            viewer.write(&bytes)
+                        }
+                        Request::Resize(rows, cols) if peer.link == Link::Attached => {
                             viewer.resize(rows.min(512), cols.min(1024));
                             previous = None;
                             dirty = true;
                         }
-                        Request::Scroll(lines) if peer.attached => {
+                        Request::Scroll(lines) if peer.link == Link::Attached => {
                             dirty |= viewer.scroll(lines);
                         }
                         Request::Update(session)
-                            if peer.attached
+                            if peer.link == Link::Attached
                                 && !ending
                                 && !retired
                                 && session.pid == record.session.pid =>
@@ -627,7 +637,7 @@ fn host_loop(
                 peer.flush()
             })();
             if result.is_err() {
-                peer.closing = true;
+                peer.link = Link::Closing;
                 peer.output.clear();
             }
         }
@@ -657,7 +667,7 @@ fn host_loop(
                 // Readers withdraw expired state until publication recovers.
                 let _ = save(state, record);
             } else if matches!(record.session.harness.as_str(), "pi" | "opencode")
-                && record.session.state != "-"
+                && record.session.state != crate::fleet::State::Unknown
             {
                 record.session.state = "-".into();
                 let _ = save(state, record);
@@ -666,11 +676,11 @@ fn host_loop(
             last_report = Instant::now();
         }
         if dirty || viewer.exited().is_some() {
-            if let Some(peer) = peers.iter_mut().find(|p| p.attached) {
+            if let Some(peer) = peers.iter_mut().find(|p| p.link == Link::Attached) {
                 let (snapshot, live) = viewer.snapshot(previous.as_ref());
                 previous = Some(live);
                 if peer.queue(&Reply::Screen(Box::new(snapshot))).is_err() {
-                    peer.closing = true;
+                    peer.link = Link::Closing;
                     peer.output.clear();
                 }
             }
@@ -680,8 +690,11 @@ fn host_loop(
         }
         peers.retain_mut(|peer| {
             peer.flush().is_ok()
-                && !(peer.closing && peer.output.is_empty())
-                && (peer.attached || peer.since.elapsed() < Duration::from_secs(2))
+                && match peer.link {
+                    Link::Waiting => peer.since.elapsed() < Duration::from_secs(2),
+                    Link::Attached => true,
+                    Link::Closing => !peer.output.is_empty(),
+                }
         });
         if stopped.is_some_and(|at| at.elapsed() >= Duration::from_millis(300)) {
             return Ok(0);

@@ -387,8 +387,8 @@ impl Recording {
             app.reload();
         }
         // Keep native discovery and launch reconciliation, filtering before App sees any rows.
-        if let Some(receiver) = app.loading.take() {
-            match receiver.try_recv() {
+        if let Some(mut loading) = app.loading.take() {
+            match loading.data.try_recv() {
                 Ok(mut result) => {
                     if let Ok(data) = &mut result {
                         data.folders
@@ -430,10 +430,11 @@ impl Recording {
                     }
                     let (sender, receiver) = mpsc::channel();
                     sender.send(result)?;
-                    app.loading = Some(receiver);
+                    loading.data = receiver;
+                    app.loading = Some(loading);
                     app.poll();
                 }
-                Err(mpsc::TryRecvError::Empty) => app.loading = Some(receiver),
+                Err(mpsc::TryRecvError::Empty) => app.loading = Some(loading),
                 Err(error) => anyhow::bail!("discovery failed: {error}"),
             }
         }
