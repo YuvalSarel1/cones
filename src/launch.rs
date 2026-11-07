@@ -169,8 +169,13 @@ pub fn resume(
         .context("unknown history harness")?
         .kind;
     let ledger = Ledger::new(state)?;
-    // A Codex thread `cones stop` interrupted is still held by its daemon: live and idle.
-    if let Some(row) = rows.iter().find(|s| s.native() == id) {
+    // A Codex thread `cones stop` interrupted is still held by its daemon: live and idle. A
+    // Claude row without a pid is a background job's settled record, which `cones stop` leaves
+    // and which no process serves, so it is reopened like any saved conversation.
+    if let Some(row) = rows
+        .iter()
+        .find(|s| s.native() == id && !(s.harness == "claude" && s.pid.is_none()))
+    {
         bail!(
             "{id} is already running in {}, state {}; `cones send` gives it new work",
             row.harness,

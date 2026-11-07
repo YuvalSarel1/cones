@@ -375,6 +375,63 @@ fn a_native_stop_failure_is_reported_with_the_command_that_produced_it() {
     assert!(idle.alive(), "a failed stop must not fall back to a signal");
 }
 
+/// A background session `cones stop` settled keeps its record, listed with no pid, but no process
+/// serves it: resume reopens it through the native CLI instead of calling it running, and a note
+/// is refused instead of being addressed to a process that is gone.
+#[test]
+fn a_settled_background_session_is_resumed_not_messaged() {
+    let f = Fixture::new();
+    let id = "dddddddd-4444-4444-8444-444444444444";
+    let job = f.home().join("jobs/dddddddd");
+    fs::create_dir_all(&job).unwrap();
+    fs::write(
+        job.join("state.json"),
+        json!({"sessionId": id, "state": "done", "cwd": f.root.path()}).to_string(),
+    )
+    .unwrap();
+    let transcript = f.transcript(id);
+    fs::write(
+        &transcript,
+        format!(
+            "{}\n",
+            json!({"type": "user", "sessionId": id, "cwd": f.root.path(),
+                "timestamp": "2026-11-07T09:00:00.000Z",
+                "message": {"role": "user", "content": "port the parser"}})
+        ),
+    )
+    .unwrap();
+    let rows = f.rows();
+    assert!(
+        rows.iter()
+            .any(|r| r["session"]["session_id"] == id && r["session"]["pid"].is_null()),
+        "{rows:?}"
+    );
+
+    let out = f.cones(&["send", id, "run the tests again"]);
+    assert!(!out.status.success(), "{}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("has no running process")
+            && text(&out.stderr).contains("cones resume"),
+        "{}",
+        text(&out.stderr)
+    );
+
+    // The fixture CLI refuses anything but a stop, so the resume fails, but only after the
+    // native command ran: the refusal is the CLI's, not cones calling the session running.
+    let out = f.cones(&["resume", id]);
+    assert!(
+        !text(&out.stderr).contains("already running"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        f.calls().contains(&format!("--resume {id}")),
+        "resume never reached the native CLI: {}\n{}",
+        f.calls(),
+        text(&out.stderr)
+    );
+}
+
 /// A background session the daemon has already settled is still the native CLI's to answer for,
 /// so the stop goes to it rather than cones deciding the work is over.
 #[test]

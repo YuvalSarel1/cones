@@ -317,7 +317,8 @@ command the dashboard runs for that row in a persistent cones terminal, so a das
 open it later. Neither takes a prompt; `cones comms send` gives the session work.
 
 - **Resume** prints the conversation's own id. A conversation that is already running, in
-  the roster, a cones terminal or a live run, is refused. A row hidden by `cones rm` comes
+  the roster, a cones terminal or a live run, is refused. A Claude background session that
+  `cones stop` ended stays listed with no process and is resumed, not refused. A row hidden by `cones rm` comes
   back. Resume fails if the client exits within its first seconds.
 - **Fork** runs the harness's native fork and prints the fork's id, a
   [kind](#starting-a-session) as `launch` reports it. Once the fork has a native id, its

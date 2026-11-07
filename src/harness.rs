@@ -1389,7 +1389,12 @@ fn peer_inbox_send(
 ) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::FileTypeExt;
-    let pid = session.pid.context("this Claude session reports no pid")?;
+    let pid = session.pid.with_context(|| {
+        format!(
+            "{} has no running process to read a note; `cones resume` reopens it",
+            session.session_id
+        )
+    })?;
     let registry = home.join("sessions");
     let record: Value = serde_json::from_slice(
         &std::fs::read(registry.join(format!("{pid}.json")))
