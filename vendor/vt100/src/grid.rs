@@ -80,6 +80,24 @@ impl Grid {
             self.scrollback_offset =
                 self.scrollback_offset.min(self.scrollback.len());
         }
+        // Shrinking keeps the cursor row on screen by pushing the top lines into
+        // scrollback, as a real terminal does; truncating the bottom instead put the
+        // inline app's frame somewhere other than where it redraws.
+        if size.rows < self.size.rows && self.pos.row >= size.rows {
+            let pushed = self.pos.row - (size.rows - 1);
+            for row in self.rows.drain(..usize::from(pushed)) {
+                if self.scrollback_len > 0 {
+                    self.scrollback.push_back(row);
+                }
+            }
+            while self.scrollback.len() > self.scrollback_len {
+                self.scrollback.pop_front();
+            }
+            self.pos.row -= pushed;
+            self.saved_pos.row = self.saved_pos.row.saturating_sub(pushed);
+            self.scrollback_offset =
+                self.scrollback_offset.min(self.scrollback.len());
+        }
 
         if size.cols != self.size.cols {
             for row in &mut self.rows {

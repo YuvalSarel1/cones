@@ -319,6 +319,43 @@ fn growing_the_pane_pulls_history_down_so_an_inline_prompt_stays_at_the_bottom()
     host.stop();
 }
 
+#[test]
+fn shrinking_then_regrowing_the_pane_keeps_an_inline_prompt_where_the_app_drew_it() {
+    // A real terminal keeps the cursor row on screen when it shrinks, pushing the top lines
+    // into scrollback; dropping the bottom instead left Claude Code redrawing over stale
+    // rows, which garbled the pane once it grew again.
+    let code = "import sys,time\nfor i in range(30): print('LINE%02d' % i)\nsys.stdout.write('PROMPT>'); sys.stdout.flush(); time.sleep(30)";
+    let mut host = Host::start("/usr/bin/python3", &["-u", "-c", code], json!([]));
+    let mut client = host.attach();
+    client.until("PROMPT>");
+    let resize = |client: &mut Client, rows: u16| {
+        send(&mut client.stream, &json!({"Resize":[rows,80]}));
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while client.parser.screen().size().0 != rows {
+            assert!(Instant::now() < deadline, "no {rows}-row frame");
+            client.until("PROMPT>");
+        }
+        client.parser.screen().rows(0, 80).collect::<Vec<String>>()
+    };
+    let lines = |first: usize| -> Vec<String> {
+        (first..30)
+            .map(|i| format!("LINE{i:02}"))
+            .chain(["PROMPT>".to_string()])
+            .collect()
+    };
+    assert_eq!(
+        resize(&mut client, 6),
+        lines(25),
+        "the prompt stays on the bottom row"
+    );
+    assert_eq!(
+        resize(&mut client, 12),
+        lines(19),
+        "regrowing restores the first screen"
+    );
+    host.stop();
+}
+
 /// One part of `scripts/check-terminals.py` against the real dashboard; returns its stdout.
 #[cfg(target_os = "macos")]
 fn real_dashboard(part: &str) -> String {
