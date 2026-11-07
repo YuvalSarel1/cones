@@ -580,31 +580,17 @@ pub fn mail(folder: &Folder, ack: Option<usize>) -> Result<String> {
     Ok(format!("acknowledged through line {through}\n"))
 }
 
-/// The one id in `known` that `id` names: itself, else an unambiguous prefix as `cones show`
-/// takes one.
+/// The one id in `known` that is `id`. A prefix is refused, naming the full ids it begins.
 fn resolve<'a>(folder: &Path, known: &[&'a str], id: &str) -> Result<&'a str> {
-    let mut found: Vec<&str> = known.iter().copied().filter(|k| *k == id).collect();
-    if found.is_empty() && id.len() >= crate::show::MIN_PREFIX {
-        found = known
-            .iter()
-            .copied()
-            .filter(|k| k.starts_with(id))
-            .collect();
+    if let Some(one) = known.iter().copied().find(|k| *k == id) {
+        return Ok(one);
     }
-    found.dedup();
-    match found[..] {
-        [one] => Ok(one),
-        [] => bail!(
-            "no live session {id} in {}. `cones ls --dir {}` prints the ids it can reach",
-            folder.display(),
-            folder.display()
-        ),
-        _ => bail!(
-            "{id} matches {} sessions in this folder:\n{}",
-            found.len(),
-            found.iter().map(|k| format!("  {k}\n")).collect::<String>()
-        ),
-    }
+    crate::show::refuse_prefix(id, known.iter().copied())?;
+    bail!(
+        "no live session {id} in {}. `cones ls --dir {}` prints the ids it can reach",
+        folder.display(),
+        folder.display()
+    )
 }
 
 /// One note to a live session, delivered by that session's own harness.
@@ -613,10 +599,9 @@ fn resolve<'a>(folder: &Path, known: &[&'a str], id: &str) -> Result<&'a str> {
 /// to answer. A sender cones can place is answered with `send` back into its own conversation,
 /// which wakes it like any prompt; the folder's inbox is only the way back when that is not
 /// possible, because a file is read only by an agent that remembers to look. The recipient may be
-/// a sender or a launcher working outside this folder, so an exact id is looked up across the
-/// whole fleet; a prefix only names a session on the folder's roster. A harness with no delivery
-/// of its own is refused rather than approximated: typing into somebody's terminal is not a
-/// message.
+/// a sender or a launcher working outside this folder, so its id is looked up across the whole
+/// fleet. A harness with no delivery of its own is refused rather than approximated: typing into
+/// somebody's terminal is not a message.
 pub fn send(folder: &Folder, id: &str, text: &str, greet: bool) -> Result<String> {
     let fleet_rows = folder.fleet()?;
     let roster: Vec<&Session> = fleet_rows

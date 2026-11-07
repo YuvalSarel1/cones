@@ -804,12 +804,18 @@ mod show {
         );
         assert!(!two.contains("message 47"), "{two}");
 
-        // A prefix is enough when it names one session, and an exact id beats a shared prefix.
-        assert!(ok(&["show", "1111"]).contains("message 49"));
+        // Only a full id names a session: a prefix is refused with every id it begins.
+        let one = failure(&["show", "1111"]);
+        assert!(
+            one.contains("1111 is not a full session id") && one.contains(ALPHA),
+            "{one}"
+        );
         assert!(ok(&["show", BETA, "--all"]).contains(&format!("{BETA} answered")));
         let ambiguous = failure(&["show", "2222"]);
         assert!(
-            ambiguous.contains("matches 2 sessions") && ambiguous.contains(GAMMA),
+            ambiguous.contains("2222 is not a full session id")
+                && ambiguous.contains(BETA)
+                && ambiguous.contains(GAMMA),
             "{ambiguous}"
         );
         for unknown in ["99999999-9999-4999-8999-999999999999", "ab"] {

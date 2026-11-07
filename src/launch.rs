@@ -828,8 +828,8 @@ fn recovery(state: &Path, event: &str, data: Value) {
 /// injected into any session. With `since`, the moment a session was launched, a state
 /// reported before its first turn is not an end: it has to have been seen working, or have
 /// written after `since`. Without it, a session already settled answers at once, and an id
-/// still unlisted on the look after the first is an error. An id is a session or native id, or an
-/// unambiguous prefix of one, as `cones show` takes it. `None` is the timeout. A job's session is watched
+/// still unlisted on the look after the first is an error. An id is a full session or native id;
+/// a prefix is an error naming the ids it begins. `None` is the timeout. A job's session is watched
 /// like any other.
 // ponytail: matches the row's session or native id; a pi row keyed by its process until the
 // session file appears can read as gone, so watch the native id `cones ls` shows by then.
@@ -852,8 +852,15 @@ pub fn wait(
                 for (i, id) in ids.iter().enumerate() {
                     let row = rows
                         .iter()
-                        .find(|s| s.session_id == *id || s.native_id.as_deref() == Some(id))
-                        .or_else(|| by_prefix(&rows, id));
+                        .find(|s| s.session_id == *id || s.native_id.as_deref() == Some(id));
+                    if row.is_none() {
+                        crate::show::refuse_prefix(
+                            id,
+                            rows.iter().flat_map(|s| {
+                                std::iter::once(s.session_id.as_str()).chain(s.native_id.as_deref())
+                            }),
+                        )?;
+                    }
                     match row {
                         None if seen[i] => return Ok(Some(format!("{id}\tgone\n"))),
                         // A session launched a moment ago may not be listed yet.
@@ -895,19 +902,6 @@ pub fn wait(
             None => nap,
         });
     }
-}
-
-/// The one row whose session or native id starts with `id`, as `cones show` resolves a prefix.
-/// An ambiguous or too-short prefix names nothing.
-fn by_prefix<'a>(rows: &'a [Session], id: &str) -> Option<&'a Session> {
-    if id.len() < crate::show::MIN_PREFIX {
-        return None;
-    }
-    let mut found = rows.iter().filter(|s| {
-        s.session_id.starts_with(id) || s.native_id.as_deref().is_some_and(|n| n.starts_with(id))
-    });
-    let one = found.next()?;
-    found.next().is_none().then_some(one)
 }
 
 #[cfg(test)]

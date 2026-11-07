@@ -320,7 +320,7 @@ fn a_configured_home_is_listed_read_and_stopped_in_its_own_home() {
     let shown = f.ok(&["show", TASK]);
     assert!(shown.contains("rotate the staging keys"), "{shown}");
 
-    f.ok(&["stop", &TASK[..8]]);
+    f.ok(&["stop", TASK]);
     f.ok(&["stop", OWN]);
     let log = |home: &Path| fs::read_to_string(home.join("calls.log")).unwrap_or_default();
     // `claude stop` takes the short id, the first block of the UUID.
@@ -691,7 +691,7 @@ fn a_headless_codex_run_in_a_configured_home_is_shown_and_stopped() {
     assert!(!out.status.success(), "a note was sent to a headless run");
 
     // Nothing but a signal ends a run with no terminal, so a stop sends one and sees it exit.
-    let said = f.ok(&["stop", &OTHER[..8]]);
+    let said = f.ok(&["stop", OTHER]);
     assert!(
         said.contains(&format!("stopped the headless codex run {OTHER}")),
         "{said}"

@@ -1247,7 +1247,15 @@ fn a_launch_is_listed_beneath_only_the_parent_it_names() {
     assert!(out.status.success(), "{}", stderr(&out));
     let mine = stdout(&out);
     // A detached helper, with no agent in its chain or environment, names the parent itself.
+    // A prefix is refused before anything starts, naming the full id.
     let out = launch(&["--parent", &parent[..8], "from a helper"], &[]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains(&format!("  {parent}")),
+        "{}",
+        stderr(&out)
+    );
+    let out = launch(&["--parent", &parent, "from a helper"], &[]);
     assert!(out.status.success(), "{}", stderr(&out));
     let helpers = stdout(&out);
     let links: Value = serde_json::from_slice(&fs::read(&relations).unwrap()).unwrap();
@@ -1328,7 +1336,7 @@ fn resume_and_fork_reopen_a_conversation_detached_and_record_the_fork_s_parent()
     let transcript = pi_history(&f, id);
 
     // Resume reopens the conversation in a cones terminal and prints its own id.
-    let out = f.cones("ok", &["resume", &id[..8]]);
+    let out = f.cones("ok", &["resume", id]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), id);
     let hosted = f.hosted_pids();
@@ -1427,7 +1435,7 @@ fn copilot_and_cursor_conversations_resume_by_their_native_id() {
         )
         .unwrap();
 
-        let out = f.cones("ok", &["resume", &id[..8]]);
+        let out = f.cones("ok", &["resume", id]);
         assert!(out.status.success(), "{harness}: {}", stderr(&out));
         assert_eq!(stdout(&out), id, "{harness}");
         let hosted = f.hosted_pids();
@@ -1501,10 +1509,16 @@ fn wait_returns_when_a_named_session_settles_including_a_job_s() {
     let out = f.cones("ok", &["wait", &id]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert_eq!(stdout(&out), format!("{id}\tidle"));
-    // A prefix names the session as `cones show` and `cones send` resolve one.
-    let out = f.cones("ok", &["wait", &id[..8]]);
-    assert!(out.status.success(), "{}", stderr(&out));
-    assert_eq!(stdout(&out), format!("{}\tidle", &id[..8]));
+    // A prefix is refused at once, naming the full id, and is never reported as settled.
+    let out = f.cones("ok", &["wait", &id[..8], "--timeout", "30"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(
+        stderr(&out).contains(&format!("{} is not a full session id", &id[..8]))
+            && stderr(&out).contains(&format!("  {id}")),
+        "{}",
+        stderr(&out)
+    );
 
     let record = f.path().join("claude/sessions").join(format!("{id}.json"));
     let set = |status: &str| {

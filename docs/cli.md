@@ -167,7 +167,7 @@ cones show 4f0c2b1e --harness claude --home ~/.claude --json
 
 The default is the last 40 messages. `--tail N` asks for a different count and `--all` for the whole conversation the harness kept. A read that left messages out starts with `[N earlier messages omitted; --all exports the whole conversation]`, so a bounded read is never mistaken for a full one. `--at OFFSET` reads around a search hit instead: the message whose record holds a hit's `anchor.offset`, marked `[the search hit]`, with `--context N` messages on each side, default 5, and a closing `[N later messages omitted; ...]` line when the conversation goes on. No individual message is shortened, which is where this differs from the dashboard's preview pane.
 
-`ID` is the session id `cones ls` prints, or an unambiguous prefix of at least four characters. An exact id wins over a prefix that another session also starts with, and a prefix two sessions share is an error naming both. Sessions come from the same discovery the dashboard's history uses, so a finished session reads like a live one, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and the OpenCode home select which sessions exist.
+`ID` is the full session id `cones ls` prints. Every command that takes a session id takes only a full one: a prefix is an error that names the full ids it begins, because time-based native ids such as Codex's share their first characters across sessions started together. Sessions come from the same discovery the dashboard's history uses, so a finished session reads like a live one, and `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR` and the OpenCode home select which sessions exist.
 
 Claude, Codex, pi and OpenCode keep conversations cones can read, and so do Copilot and Cursor Agent [once saved](harness.md#additional-terminal-harnesses). A live row listed by its process, such as `pi-PID`, reads the conversation `cones ls --json` names as its `native_id`. A session with none, in a terminal cones hosts, is read as that terminal's screen: the first line is `[terminal screen of HARNESS ID, COLSxROWS; a screen, not a conversation: ...]` and the lines under it are what the client last drew, with no roles, timestamps or tool calls. The default is the screen as it is now, `--tail N` is the last N lines and `--all` adds what scrolled off, up to the 1000 lines the host keeps; a client on its alternate screen has no scrollback. `--json` returns `session`, `cwd` and `terminal` (`rows`, `cols`, `alternate`, `omitted`, `lines`) and no `messages`. The host answers without attaching, so a dashboard showing the same terminal keeps it. A session with no conversation in a terminal cones does not own has nothing to show, and naming one is an error rather than an empty export.
 
@@ -261,7 +261,7 @@ overlapping an unrecorded launch in the same folder is reported unnamed rather t
 A launch stands alone unless the launcher names its parent. A session still running under
 another listed one, such as `opencode run` from an agent's shell, is listed beneath that session
 in the dashboard for as long as it runs, with nothing recorded. `--parent ID` takes a live
-session's id or unambiguous prefix, and `--parent self` takes the session running the command,
+session's full id, and `--parent self` takes the session running the command,
 found by the process chain or else the `$CODEX_THREAD_ID` or `$CLAUDE_CODE_SESSION_ID` its
 harness exports. A parent that names no live session, such as the agent that started a helper
 which has since ended, is an error and nothing starts. The link is recorded in
@@ -312,7 +312,7 @@ cones resume 5bf8392e
 cones fork 5bf8392e
 ```
 
-Both take an id from `cones search` or `cones ls`, or an unambiguous prefix, and run the
+Both take a full id from `cones search` or `cones ls` and run the
 command the dashboard runs for that row in a persistent cones terminal, so a dashboard can
 open it later. Neither takes a prompt; `cones comms send` gives the session work.
 
@@ -335,8 +335,8 @@ cones wait 5bf8392e-17cb-405d-a400-22dfbda13472 0199f2a4-7c1e-7000-8000-00000000
 Blocks until one of the named live sessions is not working: its turn ended, it asks for input,
 it failed or stopped, or it left the roster. It then prints `ID<TAB>STATE` for that session.
 A session already settled answers at once. An id still not live on the second look, one beat
-after the first, is refused, so a session launched a moment ago is found. Ids are the ones
-`cones ls` prints, or unambiguous prefixes of four or more characters; a job's session counts,
+after the first, is refused, so a session launched a moment ago is found. Ids are the full ones
+`cones ls` prints, session or native; a prefix exits 1 at once, naming the ids it begins, and is never reported as settled. A job's session counts,
 though `ls` shows it as its run. A session whose harness reports no state reads as working and never settles.
 `--timeout S` gives up after S seconds and exits 2 with `timeout`, leaving every session
 running. An agent runs it as a background task, so the exit wakes it; the state says where to
@@ -351,7 +351,7 @@ cones send 5bf8392e "rebase onto main when the tests pass"
 
 Delivers one note to the live session the id names, wherever it works, through its harness's
 native [message operation](harness.md#message-delivery); a harness without one is refused. The
-id is one `cones ls` prints, or a prefix of four or more characters. The note names its
+id is the full one `cones ls` prints. The note names its
 sender: a session cones can place, by its process chain or else by the `$CODEX_THREAD_ID` or
 `$CLAUDE_CODE_SESSION_ID` its harness exports, is named with a line telling the recipient to answer with
 `cones send` to it, and anything else is "another agent, not the owner". There is no folder,
@@ -382,7 +382,7 @@ The dashboard has separate [stop/removal controls](harness.md#native-actions).
 cones rename 5bf8392e "Fix the flaky test"
 ```
 
-`ID` is an id from `cones ls` or an unambiguous prefix of at least four characters. The name
+`ID` is a full id from `cones ls`. The name
 must be one line. Each harness is named the way its own rename does it:
 
 | Target | Operation |
@@ -405,7 +405,7 @@ Asks the conversation `ID` names one question and prints the answer. The questio
 fork of the conversation, run headless under the harness's own read-only setting, and the
 fork is not kept, so the conversation's context, transcript and history are untouched. It
 works on a live session and on one from history, and starts nothing that keeps running. `ID`
-is one `cones search` or `cones ls` prints, or a prefix of one.
+is the full one `cones search` or `cones ls` prints.
 
 | Harness | Fork | Read-only setting | What is left |
 | --- | --- | --- | --- |
@@ -450,8 +450,7 @@ permission dialog is unverified; Claude's shows no empty editor and the command 
 ### Removing a row
 
 `cones rm TARGET` is the dashboard's `ctrl+x` twice on the row TARGET names: a job's name, an
-open folder's path (anything with a `/` or starting with `~`), or a run or session id or
-unambiguous prefix from `cones ls`.
+open folder's path (anything with a `/` or starting with `~`), or a full run or session id from `cones ls`.
 
 A session is stopped first, then removed from the harness's own list. If the stop fails,
 nothing is removed and the command exits 1. Runs and jobs belong to the
@@ -505,7 +504,7 @@ These commands also serve dispatchers without a coordinator. `--dir` defaults to
 folder's roster is every live session working in the folder itself or under it in the same
 repository, which includes subfolders of the checkout and worktrees stored inside it, whoever
 launched it; the sender need not be on it. A subfolder that is not part of the folder's
-repository, such as a separate project under a hub folder, is not on it, unlike `cones ls --dir`. A session id may be an unambiguous prefix of four or more characters, as with `show`.
+repository, such as a separate project under a hub folder, is not on it, unlike `cones ls --dir`. Session ids are full ids, as with `show`.
 Commands make no model calls, though delivery can cause a recipient's native turn.
 
 ```sh
@@ -516,7 +515,7 @@ cones comms --dir ~/src/app wait [--id SESSION_ID]... [--timeout SECONDS]
 
 | Command | Behavior |
 | --- | --- |
-| `send` | Deliver through the roster recipient's native [message operation](harness.md#message-delivery). Missing operations fail; `--greet` sends at most once per session. Notes identify their sender. A note from a session cones can place tells the recipient to answer with `send` to that session, so the reply arrives as a prompt. An exact id reaches a live session outside the folder, such as that sender or the agent that launched a worker; a prefix names only a roster session. A note from anywhere else is answered through the folder's inbox. A Claude sender writing to another Claude session is refused: SendMessage is its native channel. |
+| `send` | Deliver through the roster recipient's native [message operation](harness.md#message-delivery). Missing operations fail; `--greet` sends at most once per session. Notes identify their sender. A note from a session cones can place tells the recipient to answer with `send` to that session, so the reply arrives as a prompt. A full id reaches a live session outside the folder, such as that sender or the agent that launched a worker. A note from anywhere else is answered through the folder's inbox. A Claude sender writing to another Claude session is refused: SendMessage is its native channel. |
 | `mail` | Read pending replies, from workers that could not answer with `send`. Only `--ack N` marks them handled. |
 | `wait` | Block for new roster sessions or mail. With repeated `--id`, watch named workers for native input, failure or departure, plus mail. Unknown worker ids fail. |
 

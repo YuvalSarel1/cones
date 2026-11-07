@@ -2101,9 +2101,12 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
         inbox.accept().unwrap().0.read_to_string(&mut text).unwrap();
         text
     });
-    // A prefix names the session as `cones show` takes one, and the note carries the full id.
+    // A prefix is refused before anything is delivered, naming the full id it begins.
+    let error = refusal(&["send", "work", "hello"]);
+    assert!(error.contains("work is not a full session id"), "{error}");
+    assert!(error.contains("  worker-one\n"), "{error}");
     assert_eq!(
-        f.run(&["send", "work", "hello"]),
+        f.run(&["send", "worker-one", "hello"]),
         "sent to worker-one (claude)\n"
     );
     let received = received.join().unwrap();
@@ -2145,15 +2148,16 @@ fn a_note_reaches_a_claude_inbox_or_is_refused_with_the_reason() {
     let error = refusal(&["send", "nobody", "hello"]);
     assert!(error.contains("no live session nobody in "), "{error}");
     assert!(error.contains("`cones ls --dir "), "{error}");
-    // A prefix two sessions share is refused with both ids, never a guess.
+    // A prefix two sessions share is refused with both ids, never a guess, at any length.
     f.worker("worker-two");
-    let error = refusal(&["send", "work", "hello"]);
-    assert!(error.contains("work matches 2 sessions"), "{error}");
-    assert!(error.contains("  worker-one\n"), "{error}");
-    assert!(error.contains("  worker-two\n"), "{error}");
-    // Shorter than four characters is never a prefix.
-    let error = refusal(&["send", "wor", "hello"]);
-    assert!(error.contains("no live session wor in "), "{error}");
+    for prefix in ["work", "w"] {
+        let error = refusal(&["send", prefix, "hello"]);
+        assert!(
+            error.contains(&format!("{prefix} is not a full session id")),
+            "{error}"
+        );
+        assert!(error.contains("  worker-one\n  worker-two\n"), "{error}");
+    }
 }
 
 /// A Claude session writing to another Claude session is told to use SendMessage, before any
@@ -2244,7 +2248,7 @@ fn send_reaches_a_session_in_any_folder_and_names_its_sender() {
             "--state-dir",
             f.dir.path().to_str().unwrap(),
             "send",
-            "work",
+            "worker-one",
             "hello",
         ])
         .env("HOME", f.dir.path())
@@ -2605,8 +2609,8 @@ fn a_watch_on_named_workers_reports_each_stall_once_and_is_not_completion() {
         "--id",
         "worker-one",
         "--id",
-        // A prefix, which still names the worker after it leaves the roster.
-        "worker-tw",
+        // A full id still names the worker after it leaves the roster.
+        "worker-two",
         "--timeout",
     ];
     let quiet = |why: &str| {

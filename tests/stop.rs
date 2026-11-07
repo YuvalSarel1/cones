@@ -314,15 +314,14 @@ fn background_stop_names_the_session_home_keeps_the_conversation_and_signals_not
     );
 
     // The installed `claude stop` is idempotent, so a second stop is a second native call whose
-    // success is the CLI's answer and not a cones-side shortcut. A prefix, as `cones show` takes
-    // one, names the same session.
-    let again = f.stop("aaaaaaaa");
+    // success is the CLI's answer and not a cones-side shortcut.
+    let again = f.stop(id);
     assert!(again.status.success(), "{}", text(&again.stderr));
     assert!(text(&again.stdout).contains(id), "{}", text(&again.stdout));
     assert_eq!(f.calls().lines().count(), 2, "{}", f.calls());
 }
 
-/// A prefix two sessions share names neither: the stop lists both and reaches no harness.
+/// A prefix two sessions share names neither: the stop lists both full ids and reaches no harness.
 #[test]
 fn a_prefix_two_sessions_share_stops_neither() {
     let f = Fixture::new();
@@ -338,13 +337,18 @@ fn a_prefix_two_sessions_share_stops_neither() {
     assert_eq!(out.status.code(), Some(1));
     let failure = text(&out.stderr);
     assert!(
-        failure.contains(&format!("abcdef12 matches 2 sessions: {one}, {two}")),
+        failure.contains(&format!(
+            "abcdef12 is not a full session id, and cones takes only full ids. It begins:\n  {one}\n  {two}\n"
+        )),
         "{failure}"
     );
     assert_eq!(f.calls(), "", "an ambiguous prefix must reach no harness");
 
-    // A longer prefix that tells them apart stops only its own session.
+    // A prefix that tells them apart is still refused; the full id stops only its own session.
     let out = f.stop("abcdef12-2");
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(f.calls(), "");
+    let out = f.stop(two);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(text(&out.stdout).contains(two), "{}", text(&out.stdout));
     assert_eq!(
@@ -789,9 +793,9 @@ fn a_codex_thread_with_no_client_has_its_turn_interrupted_and_its_terminals_clos
     let rollout = codex_thread(&f, id);
     let calls = codex_daemon(&f, &[id]);
 
-    // A thread with no client is a row only through its daemon, so the prefix `cones ls` users
-    // copy must resolve against those rows too.
-    let out = f.stop(&id[..8]);
+    // A thread with no client is a row only through its daemon, so the id `cones ls` users copy
+    // must resolve against those rows too.
+    let out = f.stop(id);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let message = text(&out.stdout);
     assert!(
@@ -940,7 +944,7 @@ fn a_note_sent_after_a_codex_stop_starts_a_turn_or_the_send_fails() {
     );
 
     let sent = methods(&calls).len();
-    let out = f.cones(&["send", &id[..8], "run the tests again"]);
+    let out = f.cones(&["send", id, "run the tests again"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), format!("sent to {id} (codex)\n"));
     assert_eq!(
@@ -1295,7 +1299,7 @@ fn ready(host: &mut Host) -> serde_json::Value {
 }
 
 /// `cones rm` on a background session is the dashboard's confirmed `ctrl+x`: the native
-/// `claude stop`, then the native `claude rm`, both in the session's home, by prefix, with the
+/// `claude stop`, then the native `claude rm`, both in the session's home, by full id, with the
 /// transcript left and nothing signalled. A stop the harness refuses fails the remove, and
 /// `claude rm` is never asked.
 #[test]
@@ -1309,7 +1313,7 @@ fn rm_stops_then_removes_a_background_session_and_keeps_its_transcript() {
     let home = f.home().display().to_string();
 
     fs::write(f.home().join("refuse"), "").unwrap();
-    let out = f.cones(&["rm", "dddddddd"]);
+    let out = f.cones(&["rm", id]);
     assert_eq!(out.status.code(), Some(1), "{}", text(&out.stdout));
     assert!(
         text(&out.stderr).contains(&format!("{id} was not stopped, so it was not removed")),
@@ -1320,7 +1324,7 @@ fn rm_stops_then_removes_a_background_session_and_keeps_its_transcript() {
     assert!(f.rows().iter().any(|r| r["session"]["session_id"] == id));
 
     fs::remove_file(f.home().join("refuse")).unwrap();
-    let out = f.cones(&["rm", "dddddddd"]);
+    let out = f.cones(&["rm", id]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         text(&out.stdout),
@@ -1572,7 +1576,7 @@ fn rename_hands_a_background_claude_session_the_native_command() {
     f.live(id, "bg", idle.0.id());
     let transcript = f.transcript(id);
 
-    let out = f.cones(&["rename", "aaaaaaaa", "Ship it"]);
+    let out = f.cones(&["rename", id, "Ship it"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         text(&out.stdout),
@@ -1611,7 +1615,7 @@ fn a_manual_title_on_a_running_interactive_claude_session_survives_its_next_turn
     f.live(id, "interactive", idle.0.id());
     let transcript = f.transcript(id);
 
-    let out = f.cones(&["rename", "aaaaaaaa", "Mine"]);
+    let out = f.cones(&["rename", id, "Mine"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let records: Vec<serde_json::Value> = fs::read_to_string(&transcript)
         .unwrap()
@@ -1655,11 +1659,11 @@ fn rename_names_a_codex_thread_through_its_daemon() {
     let calls = codex_daemon(&f, &[]);
 
     for refused in ["  ", "two\nlines"] {
-        let out = f.cones(&["rename", &id[..8], refused]);
+        let out = f.cones(&["rename", id, refused]);
         assert!(!out.status.success(), "{refused:?} was accepted");
     }
     assert!(methods(&calls).is_empty(), "{:?}", methods(&calls));
-    let out = f.cones(&["rename", &id[..8], "Fix the build"]);
+    let out = f.cones(&["rename", id, "Fix the build"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(
         text(&out.stdout),
@@ -1700,7 +1704,7 @@ fn compact_hands_a_background_claude_session_the_native_command() {
     f.live_as(id, "bg", idle.0.id(), "busy");
     let transcript = f.transcript(id);
 
-    let out = f.cones(&["compact", "aaaaaaaa"]);
+    let out = f.cones(&["compact", id]);
     assert!(!out.status.success());
     assert!(
         text(&out.stderr).contains(&format!("{id} is working")),
@@ -1710,7 +1714,7 @@ fn compact_hands_a_background_claude_session_the_native_command() {
     assert!(!f.home().join("typed.log").exists(), "nothing was typed");
 
     f.live_as(id, "bg", idle.0.id(), "idle");
-    let out = f.cones(&["compact", "aaaaaaaa"]);
+    let out = f.cones(&["compact", id]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), format!("compacted {id} (claude)\n"));
     assert_eq!(
@@ -1737,7 +1741,7 @@ fn compact_refuses_a_claude_session_in_its_own_terminal() {
     let transcript = f.transcript(id);
     let before = fs::read(&transcript).unwrap();
 
-    let out = f.cones(&["compact", "aaaaaaaa"]);
+    let out = f.cones(&["compact", id]);
     assert!(!out.status.success());
     assert!(
         text(&out.stderr).contains("only its own /compact can compact it"),
@@ -1766,7 +1770,7 @@ fn fork_asks_the_codex_daemon_for_a_thread_and_records_its_parent() {
     codex_thread(&f, id);
     let calls = codex_daemon(&f, &[]);
 
-    let out = f.cones(&["fork", &id[..8]]);
+    let out = f.cones(&["fork", id]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout).lines().last(), Some(FORK));
     let forks: Vec<_> = calls
@@ -1815,7 +1819,7 @@ fn compact_compacts_a_codex_thread_through_its_daemon() {
     let idle = f.root.path().join(".codex/app-server-control/idle");
     fs::write(&idle, format!("{id}\n")).unwrap();
 
-    let out = f.cones(&["compact", &id[..8]]);
+    let out = f.cones(&["compact", id]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(text(&out.stdout), format!("compacted {id} (codex)\n"));
     let sent: Vec<_> = calls

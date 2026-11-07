@@ -55,8 +55,8 @@ turn.
 `cones --help` lists every command, and `cones help COMMAND` gives its flags, such as
 `cones help launch` or `cones help comms`. Add `--json` where offered when you are going to parse
 the output; `cones ls --json` prints one object per line, with a live session's fields under
-`.session`, and a job's session also carries its run under `.run`. IDs come from `cones ls` or `cones launch`; a prefix of four or more characters
-works, and an ambiguous one is an error rather than a guess. `cones launch --name NAME` names
+`.session`, and a job's session also carries its run under `.run`. IDs come from `cones ls` or `cones launch`; pass the
+full id, since every command refuses a prefix. `cones launch --name NAME` names
 a session at start and `cones rename ID NAME` names one later, through the harness's own
 rename, so a worker's row says what it is doing. `cones stop ID` ends a session's
 work and keeps its conversation; `cones rm ID` does what the dashboard's `ctrl+x` twice does

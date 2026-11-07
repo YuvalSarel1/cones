@@ -407,7 +407,7 @@ fn rename_refuses_a_terminal_only_harness() {
 /// A note from a session cones can place says to answer with `send` back into that session's
 /// conversation, so the answer arrives as a prompt rather than as a file its sender has to
 /// remember to read. The sender, or a launcher a worker reports to, may work outside the folder:
-/// its exact id reaches it, while a prefix only names a session on the folder's roster.
+/// its full id reaches it, and a prefix reaches nothing.
 #[test]
 fn a_reply_goes_back_into_the_senders_conversation() {
     use sha2::Digest;

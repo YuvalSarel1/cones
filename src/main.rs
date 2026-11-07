@@ -52,7 +52,7 @@ enum ConfigTask {
 enum CommsTask {
     /// Block until something worth a model call happens; nothing else wakes it.
     Wait {
-        /// Watch only these workers, repeated once per id or unambiguous prefix. Then arrivals
+        /// Watch only these workers, repeated once per full id. Then arrivals
         /// are somebody else's business and the wake reasons are a native input request, a
         /// native failure and a worker leaving the roster, each reported once. None of them is
         /// a finished task.
@@ -70,7 +70,7 @@ enum CommsTask {
     },
     /// One note to a live worker, through its own harness's delivery command.
     Send {
-        /// The session id as the roster prints it, or an unambiguous prefix of one.
+        /// The full session id as the roster prints it.
         id: String,
         text: String,
         /// The once-per-session introduction. Repeating it is a no-op, not a second message.
@@ -136,7 +136,7 @@ enum Action {
         /// The session's name, through the harness's own launch flag or its rename.
         #[arg(long)]
         name: Option<String>,
-        /// List the session beneath this live session, by id or unambiguous prefix, or beneath
+        /// List the session beneath this live session, by its full id, or beneath
         /// the session running this command with `self`. Without it the session stands alone.
         #[arg(long)]
         parent: Option<String>,
@@ -184,24 +184,24 @@ enum Action {
     /// Reopen a conversation from history, detached, as the dashboard's Enter on a history row
     /// does. Prints its id; `cones send` gives it work.
     Resume {
-        /// The conversation's id as `cones search` or `cones ls` prints it, or a prefix of one.
+        /// The conversation's full id as `cones search` or `cones ls` prints it.
         id: String,
     },
     /// Fork a conversation through its harness's native fork, detached, as the dashboard's
     /// fork does. Prints the fork's id; `cones send` gives it work.
     Fork {
-        /// The conversation's id as `cones search` or `cones ls` prints it, or a prefix of one.
+        /// The conversation's full id as `cones search` or `cones ls` prints it.
         id: String,
     },
     /// End a session's work and keep its conversation; see docs/cli.md.
     Stop {
-        /// The session id as `cones ls` prints it, or an unambiguous prefix of one.
+        /// The full session id as `cones ls` prints it.
         id: String,
     },
     /// Block until one of the sessions stops moving on its own, and print `ID<TAB>STATE`. Run
     /// it as a background task, so its exit wakes you; see docs/cli.md.
     Wait {
-        /// Session ids as `cones ls` prints them, a job's session included.
+        /// Full session ids as `cones ls` prints them, a job's session included.
         #[arg(required = true)]
         ids: Vec<String>,
         /// Give up after this many seconds, fractions allowed, and exit 2. It does not limit or
@@ -211,21 +211,21 @@ enum Action {
     },
     /// One note to any live session, through its own harness's delivery; see docs/cli.md.
     Send {
-        /// The session id as `cones ls` prints it, or an unambiguous prefix of one.
+        /// The full session id as `cones ls` prints it.
         id: String,
         text: String,
     },
     /// Name a session through its harness's own rename, as the dashboard's ctrl+n does; see
     /// docs/cli.md.
     Rename {
-        /// The session id as `cones ls` prints it, or an unambiguous prefix of one.
+        /// The full session id as `cones ls` prints it.
         id: String,
         name: String,
     },
     /// Ask a conversation one question in a read-only fork its harness keeps nothing of, and
     /// print the answer. The conversation itself is not written to; see docs/cli.md.
     Btw {
-        /// The conversation's id as `cones search` or `cones ls` prints it, or a prefix of one.
+        /// The conversation's full id as `cones search` or `cones ls` prints it.
         id: String,
         question: String,
         /// The model the fork answers on, instead of the configured default.
@@ -238,13 +238,13 @@ enum Action {
     /// Compact a live session's context through its harness's own compaction, and return once
     /// it is done; see docs/cli.md.
     Compact {
-        /// The session id as `cones ls` prints it, or an unambiguous prefix of one.
+        /// The full session id as `cones ls` prints it.
         id: String,
     },
     /// What the dashboard's ctrl+x twice does to a row: stop it, remove it or close it; see
     /// docs/cli.md.
     Rm {
-        /// A run or session id as `cones ls` prints it or an unambiguous prefix of one, a job
+        /// A full run or session id as `cones ls` prints it, a job
         /// name, or an open folder's path.
         target: String,
     },
@@ -307,7 +307,7 @@ enum Action {
     },
     /// A session's conversation as text; see docs/cli.md. Reading starts nothing.
     Show {
-        /// The session id as the roster prints it, or an unambiguous prefix of one.
+        /// The full session id as the roster prints it.
         id: String,
         /// Export this many of the most recent messages instead of the default 40.
         #[arg(long, conflicts_with = "all")]
@@ -701,11 +701,7 @@ fn execute(cli: Cli) -> Result<i32> {
                             .clone()
                     } else {
                         let ids = rows.iter().map(|s| s.session_id.clone());
-                        let id = if parent.len() >= 4 {
-                            by_prefix(ids, &parent)?
-                        } else {
-                            parent.clone()
-                        };
+                        let id = full_id(ids, &parent)?;
                         ensure!(
                             rows.iter().any(|s| s.session_id == id),
                             "--parent {parent}: no live session; `cones ls` lists them"
@@ -971,13 +967,8 @@ fn execute(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Action::Stop { id } => {
-            let rows = if id.len() >= 4 {
-                cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?
-            } else {
-                Vec::new()
-            };
-            let ids = rows.into_iter().map(|s| s.session_id);
-            let id = by_prefix(ids, &id)?;
+            let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
+            let id = full_id(rows.into_iter().map(|s| s.session_id), &id)?;
             print!("{}", cones::stop::session(&state, &claude, &id)?);
             Ok(0)
         }
@@ -994,11 +985,7 @@ fn execute(cli: Cli) -> Result<i32> {
         Action::Send { id, text } => {
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
             let ids = rows.iter().map(|s| s.session_id.clone());
-            let id = if id.len() >= 4 {
-                by_prefix(ids, &id)?
-            } else {
-                id
-            };
+            let id = full_id(ids, &id)?;
             print!(
                 "{}",
                 cones::coordinator::send_direct(&state, &claude, &rows, &id, &text)?
@@ -1008,11 +995,7 @@ fn execute(cli: Cli) -> Result<i32> {
         Action::Rename { id, name } => {
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
             let ids = rows.iter().map(|s| s.session_id.clone());
-            let id = if id.len() >= 4 {
-                by_prefix(ids, &id)?
-            } else {
-                id
-            };
+            let id = full_id(ids, &id)?;
             let session = rows
                 .iter()
                 .find(|s| s.session_id == id)
@@ -1041,11 +1024,7 @@ fn execute(cli: Cli) -> Result<i32> {
         Action::Compact { id } => {
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
             let ids = rows.iter().map(|s| s.session_id.clone());
-            let id = if id.len() >= 4 {
-                by_prefix(ids, &id)?
-            } else {
-                id
-            };
+            let id = full_id(ids, &id)?;
             let session = rows
                 .iter()
                 .find(|s| s.session_id == id)
@@ -1100,11 +1079,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 .iter()
                 .map(|s| s.session_id.clone())
                 .chain(runs.iter().map(|r| r.started.run_id.clone()));
-            let id = if target.len() >= 4 {
-                by_prefix(ids, &target)?
-            } else {
-                target
-            };
+            let id = full_id(ids, &target)?;
             // A run is the jobs client's row; every other id is a session.
             match cones::runner::remove(&ledger, &claude, &id)? {
                 Some(removed) => print!("{removed}"),
@@ -1580,17 +1555,11 @@ fn quote(s: &std::ffi::OsStr) -> String {
     format!("'{}'", s.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// An unambiguous prefix of an id `cones ls` prints names that row, as it does for `cones show`.
-/// Anything else must match exactly. Rows sharing one id are the same name.
-fn by_prefix(ids: impl Iterator<Item = String>, id: &str) -> Result<String> {
-    let mut matches: Vec<_> = ids.filter(|s| s.starts_with(id)).collect();
-    matches.sort();
-    matches.dedup();
-    ensure!(
-        matches.len() < 2,
-        "{id} matches {} sessions: {}",
-        matches.len(),
-        matches.join(", ")
-    );
-    Ok(matches.pop().unwrap_or_else(|| id.to_owned()))
+/// `id` unchanged, unless it is a prefix of ids `cones ls` prints: that is refused, naming them.
+fn full_id(ids: impl Iterator<Item = String>, id: &str) -> Result<String> {
+    let ids: Vec<String> = ids.collect();
+    if !ids.iter().any(|s| s == id) {
+        cones::show::refuse_prefix(id, ids.iter().map(String::as_str))?;
+    }
+    Ok(id.to_owned())
 }

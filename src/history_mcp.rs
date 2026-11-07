@@ -220,7 +220,7 @@ pub fn tools() -> Value {
     }).as_object().unwrap().clone());
     let mut show = scope.as_object().unwrap().clone();
     show.extend(json!({
-        "id": {"type": "string", "minLength": 1, "description": "Native session id or unambiguous prefix of at least four characters."},
+        "id": {"type": "string", "minLength": 1, "description": "Full native session id; a prefix is refused."},
         "tail": {"type": "integer", "minimum": 1, "default": 40, "description": "Most recent messages. Mutually exclusive with all."},
         "all": {"type": "boolean", "default": false, "description": "Read the entire conversation. Prefer the default tail first."},
         "at": {"type": "integer", "minimum": 0, "description": "A search hit's anchor.offset: read the messages around the hit instead of the tail. Excludes tail and all."},
@@ -244,7 +244,7 @@ pub fn tools() -> Value {
 
 /// The control plane's verbs, each the `cones` command of the same name.
 fn control_tools() -> Vec<Value> {
-    let id = json!({"type": "string", "minLength": 1, "description": "Session id as cones_ls prints it, or an unambiguous prefix of at least four characters."});
+    let id = json!({"type": "string", "minLength": 1, "description": "Full session id as cones_ls prints it; a prefix is refused."});
     let tool = |name: &str,
                 description: &str,
                 properties: Value,

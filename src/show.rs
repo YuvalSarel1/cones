@@ -22,8 +22,23 @@ pub const DEFAULT_TAIL: usize = 40;
 /// Messages on each side of a search hit that `--at` returns.
 pub const DEFAULT_CONTEXT: usize = 5;
 
-/// The shortest prefix allowed to stand in for a session id. Shorter matches too much.
-pub(crate) const MIN_PREFIX: usize = 4;
+/// Refuse `id` when it is not one of `ids` but starts some of them. Native ids such as Codex's
+/// are time-based, so sessions started together share their first characters and a prefix
+/// that names one session today names two tomorrow. Callers check the exact match first.
+pub fn refuse_prefix<'a>(id: &str, ids: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut full: Vec<&str> = ids
+        .into_iter()
+        .filter(|s| !id.is_empty() && *s != id && s.starts_with(id))
+        .collect();
+    full.sort_unstable();
+    full.dedup();
+    ensure!(
+        full.is_empty(),
+        "{id} is not a full session id, and cones takes only full ids. It begins:\n{}",
+        full.iter().map(|s| format!("  {s}\n")).collect::<String>()
+    );
+    Ok(())
+}
 
 /// A resolved session: which harness recorded it, where, and what to read.
 pub struct Located {
@@ -32,7 +47,7 @@ pub struct Located {
     pub source: transcript::Source,
 }
 
-/// Find the one session `id` names, by exact id or by an unambiguous prefix of one.
+/// Find the one session `id` names by its full id.
 pub fn locate(claude: &Path, id: &str) -> Result<Located> {
     locate_scoped(claude, id, None, None)
 }
@@ -50,7 +65,7 @@ pub fn locate_scoped(
     locate_entries(&history::all(&history::sources(claude))?, id, harness, home)
 }
 
-/// The history entry `id` names, by exact id or by an unambiguous prefix of one, for the
+/// The history entry `id` names by its full id, for the
 /// commands that act on a conversation rather than print it.
 pub fn entry(claude: &Path, id: &str) -> Result<history::Entry> {
     crate::observe::reset();
@@ -93,17 +108,13 @@ fn find_entry<'a>(
         .filter(|e| harness.is_none_or(|h| e.key.harness == h))
         .filter(|e| home.as_ref().is_none_or(|h| &e.key.home == h))
         .collect();
-    let mut found: Vec<&history::Entry> = entries
+    let found: Vec<&history::Entry> = entries
         .iter()
         .copied()
         .filter(|e| e.key.session_id == id)
         .collect();
-    if found.is_empty() && id.len() >= MIN_PREFIX {
-        found = entries
-            .iter()
-            .copied()
-            .filter(|e| e.key.session_id.starts_with(id))
-            .collect();
+    if found.is_empty() {
+        refuse_prefix(id, entries.iter().map(|e| e.key.session_id.as_str()))?;
     }
     ensure!(
         !found.is_empty(),
