@@ -353,7 +353,8 @@ along the divider, the whole divider lights up while dragged, the pane keeps 30 
 and the release saves the share as [`pane.ratio`](jobs.md#pane). `alt+m` hands the
 mouse to the terminal, for a selection that crosses regions, and takes it back. A link a
 client prints with OSC 8 reaches the terminal around cones, which opens it on its own link
-click. A path a pane prints as plain text, such as `src/main.rs:12`, is drawn as a
+click; a pane's child gets `FORCE_HYPERLINK=1` unless set, since it cannot see the outer
+`TERM_PROGRAM` that Claude Code reads to decide whether to print links. A path a pane prints as plain text, such as `src/main.rs:12`, is drawn as a
 `file://` link when it names an existing file or folder, read from the session's folder or a
 shell's current one; the `:line` suffix is shown inside the link but not passed on. While
 cones reads the mouse, Ghostty takes a link click only with shift added, as cmd+shift+click,

@@ -228,6 +228,9 @@ fn an_osc8_link_in_the_pane_reaches_the_terminal() {
     assert_eq!(d.link_of("ed plain"), url, "after the SGR reset:\n{screen}");
     assert_eq!(d.link_of(" plain spaced"), None, "{screen}");
     assert_eq!(d.link_of("spaced"), None, "{screen}");
+    // A CLI in the pane learns links work, since a launch hides the outer TERM_PROGRAM.
+    d.typed("echo hyper=${FORCE_HYPERLINK}x\r");
+    d.wait_for("links forced on", |s| s.contains("hyper=1x"));
     d.press("ctrl+z", CTRL_Z);
     d.wait_for("the list", |s| s.contains("tab pane"));
     d.quit();

@@ -334,6 +334,13 @@ impl Viewer {
         let pi = crate::pi::reporting::Reporter::prepare(&mut command)?;
         let mut command = crate::harness::restore_stdin_prompt(command)?;
         let opencode = crate::opencode::reporting::Reporter::prepare(&mut command)?;
+        // A launch drops TERM_PROGRAM, which is how Claude Code and Codex decide a terminal
+        // takes OSC 8 links; the pane carries them, so say so unless someone already chose.
+        if std::env::var_os("FORCE_HYPERLINK").is_none()
+            && !command.get_envs().any(|(key, _)| key == "FORCE_HYPERLINK")
+        {
+            command.env("FORCE_HYPERLINK", "1");
+        }
         let (mut master, mut slave) = (-1, -1);
         let mut size = winsize(rows, cols);
         let mut normal = normal.copied();
