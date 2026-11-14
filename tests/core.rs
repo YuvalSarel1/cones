@@ -1381,6 +1381,7 @@ fn a_running_agent_reads_a_bundled_skill_without_starting_a_coordinator() {
             "send",
             "show",
             "stop",
+            "tag",
             "wait"
         ]
     );

@@ -17,8 +17,10 @@ states:
           description: Rename a session; submit empty for native naming.
         - action: fork
           description: Fork the selected conversation.
-        - action: pin
-          description: Pin a session above every group, or unpin it.
+        - action: place
+          description: Tag a session; ctrl+t pins it.
+        - action: reorder
+          description: Reorder a session in its group.
         - action: highlight
           description: Highlight a session, or remove its highlight.
         - action: coordinate
@@ -94,6 +96,12 @@ states:
       - keys: ["ctrl+t"]
         action: pin
         description: "Pin the selected session above every group, or unpin it. Pins survive restarts."
+      - keys: ["ctrl+l"]
+        action: place
+        description: "Choose the selected session's place: its folder, a tag, pinned, or a new tag."
+      - keys: ["ctrl+b"]
+        action: reorder
+        description: "Pick up the selected session; up and down move it inside its group, enter keeps the order, esc puts it back."
       - keys: ["ctrl+y"]
         action: fork
         description: "Fork the selected conversation natively, or into a new session of another harness."

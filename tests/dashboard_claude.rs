@@ -34,13 +34,13 @@ const CTRL_X: &[u8] = b"\x18";
 
 /// A background session that existed before the dashboard started: a live stand-in daemon,
 /// its registry entry, a transcript with an AI title, and a job record when `job` names one.
-struct Seeded {
-    id: String,
-    short: String,
+pub(crate) struct Seeded {
+    pub(crate) id: String,
+    pub(crate) short: String,
     daemon: Child,
 }
 
-fn seed(
+pub(crate) fn seed(
     d: &Dashboard,
     dir: &Path,
     minute: u32,
@@ -111,7 +111,7 @@ fn calls(d: &Dashboard) -> Vec<Vec<String>> {
 }
 
 /// The registry entries the fixture's Claude home lists.
-fn registry(d: &Dashboard) -> Vec<Value> {
+pub(crate) fn registry(d: &Dashboard) -> Vec<Value> {
     fs::read_dir(d.home().join(".claude/sessions"))
         .into_iter()
         .flatten()
@@ -121,7 +121,7 @@ fn registry(d: &Dashboard) -> Vec<Value> {
 }
 
 /// The screen line that holds `text`.
-fn line_of<'a>(screen: &'a str, text: &str) -> &'a str {
+pub(crate) fn line_of<'a>(screen: &'a str, text: &str) -> &'a str {
     screen
         .lines()
         .find(|l| l.contains(text))
@@ -129,12 +129,12 @@ fn line_of<'a>(screen: &'a str, text: &str) -> &'a str {
 }
 
 /// The selected row in the list: the one carrying the `▌` mark.
-fn selected(screen: &str) -> &str {
+pub(crate) fn selected(screen: &str) -> &str {
     line_of(screen, "▌ ")
 }
 
 /// The list's line index of `text`, so tests can assert which group heading a row sits under.
-fn row(screen: &str, text: &str) -> usize {
+pub(crate) fn row(screen: &str, text: &str) -> usize {
     screen
         .lines()
         .position(|l| l.contains(text))
@@ -143,21 +143,21 @@ fn row(screen: &str, text: &str) -> usize {
 
 /// Open the project folder by its real path. Claude records the resolved cwd, and `/tmp` is a
 /// symlink on macOS; the alias case is its own test below.
-fn real_project(d: &Dashboard) -> std::path::PathBuf {
+pub(crate) fn real_project(d: &Dashboard) -> std::path::PathBuf {
     let project = d.project().canonicalize().unwrap();
     d.open_folders(std::slice::from_ref(&project));
     project
 }
 
 /// Whether `screen` has a group heading `name`: the list side of a line, before the pane.
-fn heading(screen: &str, name: &str) -> Option<usize> {
+pub(crate) fn heading(screen: &str, name: &str) -> Option<usize> {
     screen
         .lines()
         .position(|l| l.split('│').next().unwrap().trim_end() == name)
 }
 
 /// The composer line, between the two rules above the footer.
-fn composer(screen: &str) -> &str {
+pub(crate) fn composer(screen: &str) -> &str {
     line_of(screen, " › ")
 }
 
@@ -635,10 +635,10 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
         pinned < row(&screen, &project.display().to_string()),
         "{screen}"
     );
-    let pins: Vec<String> =
-        serde_json::from_str(&d.wait_file("state/pins.json", |t| t.contains(&rest.id))).unwrap();
-    assert_eq!(pins, std::slice::from_ref(&rest.id));
-    d.keep("state/pins.json");
+    let tags: Value =
+        serde_json::from_str(&d.wait_file("state/tags.json", |t| t.contains(&rest.id))).unwrap();
+    assert_eq!(tags["tags"], json!({rest.id.as_str(): "pinned"}));
+    d.keep("state/tags.json");
 
     // ctrl+p highlights the selected title in the configured colour, and again clears it.
     let plain = d.colour_of("Rest a while");
@@ -659,7 +659,9 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     let screen = d.wait_for("the pin removed", |s| heading(s, "pinned").is_none());
     d.capture("unpinned");
     assert!(row(&screen, "Rest a while") > row(&screen, &project.display().to_string()));
-    assert_eq!(fs::read_to_string(d.path("state/pins.json")).unwrap(), "[]");
+    let tags: Value =
+        serde_json::from_str(&fs::read_to_string(d.path("state/tags.json")).unwrap()).unwrap();
+    assert_eq!(tags["tags"], json!({}));
     d.quit();
 }
 
@@ -1683,7 +1685,7 @@ fn plan_shows_the_cloud_or_the_signed_in_account_plan() {
 }
 
 /// A left press on the 0-based screen cell where `text` starts, as an SGR mouse report.
-fn click_on(d: &mut Dashboard, screen: &str, text: &str) {
+pub(crate) fn click_on(d: &mut Dashboard, screen: &str, text: &str) {
     let (row, column) = screen
         .lines()
         .enumerate()

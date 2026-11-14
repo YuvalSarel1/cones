@@ -26,6 +26,7 @@ pub mod search;
 pub mod show;
 pub mod sqlite;
 pub mod stop;
+pub mod tags;
 pub mod terminal;
 pub mod terminal_host;
 pub mod transcript;

@@ -16,6 +16,7 @@ mod dashboard_history;
 mod dashboard_jobs;
 mod dashboard_pane;
 mod dashboard_pi;
+mod dashboard_tags;
 mod dashboard_terminal;
 mod dashboard_update;
 mod history;

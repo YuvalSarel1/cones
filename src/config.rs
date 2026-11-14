@@ -373,6 +373,9 @@ pub struct JobsFile {
     /// How the session list shows sessions in a linked worktree.
     #[serde(default)]
     pub worktrees: Option<Worktrees>,
+    /// The order of sessions inside each group of the session list.
+    #[serde(default)]
+    pub sort: Option<Sort>,
     /// Title a Claude session by its generated title rather than its background job name.
     #[serde(default)]
     pub original_titles: Option<bool>,
@@ -388,6 +391,28 @@ pub struct JobsFile {
 pub enum Worktrees {
     Nested,
     Flat,
+}
+
+/// `started` lists each group's sessions oldest first; `last_active` puts the one the harness
+/// last reported activity for first, sessions it reports none for last; `manual` keeps the
+/// order set by hand, which a group reordered by hand keeps under any setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sort {
+    #[default]
+    Started,
+    LastActive,
+    Manual,
+}
+
+impl Sort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::LastActive => "last_active",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 pub const WHOLE_COLUMNS: bool = true;
@@ -940,6 +965,11 @@ pub fn file_highlight(path: &Path) -> Option<String> {
 /// Whether the session list nests linked worktrees, the built-in when the file does not say.
 pub fn nest_worktrees(path: &Path) -> bool {
     file_worktrees(path) != Some(Worktrees::Flat)
+}
+
+/// The session order inside groups, read without applying defaults.
+pub fn file_sort(path: &Path) -> Option<Sort> {
+    parse(path).ok().and_then(|d| d.sort)
 }
 
 /// Read without applying defaults; missing or invalid files return `None`.

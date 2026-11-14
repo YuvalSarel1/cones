@@ -222,6 +222,18 @@ enum Action {
         id: String,
         name: String,
     },
+    /// Put a session under a tag in the dashboard's list, or back under its folder with
+    /// `--clear`. With no id, print every tagged session; see docs/cli.md.
+    Tag {
+        /// The full session id as `cones ls` prints it.
+        id: Option<String>,
+        /// The tag; `pinned` pins the session as ctrl+t does.
+        #[arg(conflicts_with = "clear")]
+        name: Option<String>,
+        /// Return the session to its folder.
+        #[arg(long, requires = "id")]
+        clear: bool,
+    },
     /// Ask a conversation one question in a read-only fork its harness keeps nothing of, and
     /// print the answer. The conversation itself is not written to; see docs/cli.md.
     Btw {
@@ -1002,6 +1014,43 @@ fn execute(cli: Cli) -> Result<i32> {
                 .with_context(|| format!("no session {id}; `cones ls` lists them"))?;
             harness::rename(session, &harness::home_of(session, &claude), &state, &name)?;
             println!("renamed {id} ({}) to {}", session.harness, name.trim());
+            Ok(0)
+        }
+        Action::Tag { id, name, clear } => {
+            let mut store = cones::tags::Tags::load(&state);
+            let Some(id) = id else {
+                for (id, tag) in store.tags.iter().filter(|(_, t)| !t.is_empty()) {
+                    println!("{id}\t{tag}");
+                }
+                return Ok(0);
+            };
+            let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
+            let id = full_id(rows.iter().map(|s| s.session_id.clone()), &id)?;
+            let parent = |id: &str| {
+                rows.iter()
+                    .find(|s| s.session_id == id)
+                    .and_then(|s| s.forked_from.as_deref())
+            };
+            match (name, clear) {
+                (Some(name), _) => {
+                    let name = cones::tags::name(&name)?;
+                    store.set(&id, Some(&name), false);
+                    store.save(&state)?;
+                    println!("tagged {id} {name}");
+                }
+                (None, true) => {
+                    let mut without = store.clone();
+                    without.tags.remove(&id);
+                    let inherited = without.of(&id, parent).is_some();
+                    store.set(&id, None, inherited);
+                    store.save(&state)?;
+                    println!("{id} is back under its folder");
+                }
+                (None, false) => match store.of(&id, parent) {
+                    Some(tag) => println!("{tag}"),
+                    None => println!("-"),
+                },
+            }
             Ok(0)
         }
         Action::Btw {

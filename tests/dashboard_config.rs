@@ -137,6 +137,21 @@ fn config_saves_choice_and_text_settings_into_jobs_yaml() {
         "{screen}"
     );
 
+    // So does the session order.
+    d.press("down", DOWN);
+    d.press("right", RIGHT);
+    let yaml = d.wait_file("jobs.yaml", |t| t.contains("\nsort: "));
+    let screen = d.capture("sort-set");
+    let sort = yaml
+        .lines()
+        .find_map(|l| l.strip_prefix("sort: "))
+        .unwrap()
+        .to_owned();
+    assert!(
+        line(&screen, "session order").ends_with(&format!("‹ {sort} › *")),
+        "{screen}"
+    );
+
     // Space cycles and saves too.
     for _ in 0..3 {
         d.press("down", DOWN);
@@ -420,7 +435,7 @@ fn a_pinned_folder_is_offered_under_add_folder_until_it_is_open() {
     assert!(!screen.contains(&extra), "{screen}");
 
     open_config(&mut d);
-    for _ in 0..3 {
+    for _ in 0..4 {
         d.press("down", DOWN);
     }
     d.wait_text("› pinned folders");
