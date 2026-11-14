@@ -622,9 +622,11 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
 
     // ctrl+t pins the selected session above every group and saves the pin.
     while !selected(&d.screen()).contains("Rest a while") {
-        let before = d.screen();
+        let before = selected(&d.screen()).to_owned();
         d.press("down", DOWN);
-        assert_ne!(before, d.screen(), "the cursor stopped before Rest a while");
+        d.wait_for("the cursor to move toward Rest a while", |s| {
+            selected(s) != before
+        });
     }
     d.press("ctrl+t", CTRL_T);
     let screen = d.wait_for("the pinned group", |s| heading(s, "pinned").is_some());

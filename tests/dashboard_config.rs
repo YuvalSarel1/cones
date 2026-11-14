@@ -582,7 +582,7 @@ fn add_folder_completes_like_a_shell_and_creates_a_missing_folder_after_asking()
         "{screen}"
     );
     assert!(
-        line(&screen, "Add folder").contains("enter add folder"),
+        line(&screen, "enter add folder").starts_with("enter add folder"),
         "{screen}"
     );
     assert!(!made.exists());

@@ -149,10 +149,10 @@ fn assert_record(record: &Value, dir: &Path) {
     assert!(alive(pid(record)), "{record}");
 }
 
-/// The list is back in front: the composer hint offers a new terminal and Tab enters the pane.
+/// The list is back in front: the composer hint offers a new terminal and `?` opens Help.
 fn wait_list(d: &Dashboard) -> String {
     d.wait_for("the list", |s| {
-        s.contains("New terminal  enter start terminal") && s.contains("tab pane")
+        s.contains("enter start terminal") && s.contains("? shortcuts")
     })
 }
 

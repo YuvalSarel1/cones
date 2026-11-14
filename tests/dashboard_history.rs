@@ -372,7 +372,7 @@ fn a_focused_history_preview_starts_at_the_latest_message_and_scrolls() {
     );
 
     d.press("tab", b"\t");
-    let screen = d.wait_text("History     enter resume");
+    let screen = d.wait_text("enter resume");
     d.capture("back-to-list");
     assert!(history_rows(&screen)[3].starts_with("▌"), "{screen}");
     d.quit();

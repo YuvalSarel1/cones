@@ -16814,73 +16814,57 @@ impl App {
         line
     }
 
-    fn two_line_footer(&self) -> bool {
-        self.focus.is_none() && !self.transcript.focused && matches!(self.mode, Mode::Normal)
+    /// `?` opens Help, as in Claude Code, whenever it would otherwise type into an empty
+    /// composer. A draft, a search or a folder path keeps it as a character.
+    fn question_opens_help(&self) -> bool {
+        matches!(self.mode, Mode::Normal)
+            && self.focus.is_none()
+            && !self.transcript.focused
+            && !self.history.visible
+            && !self.on_new_folder()
+            && self.on_suggestion().is_none()
+            && self.composer_text().is_empty()
     }
 
+    /// One line: the selection's one or two most useful keys, then `?` for the rest.
     fn footer_lines(&self) -> Vec<Line<'static>> {
         let mut line = self.hint_line();
-        if !self.two_line_footer() {
+        // A status message owns the line until the next key.
+        let status = !self.status.is_empty() && !self.status.starts_with(WARNING);
+        if status
+            || !matches!(self.mode, Mode::Normal)
+            || self.focus.is_some()
+            || self.transcript.focused
+        {
             return vec![line];
         }
-        let context = if self.history_selected() {
-            "History"
-        } else if self.on_new_folder() || self.on_suggestion().is_some() {
-            "Add folder"
-        } else if self.terminal_selected() {
-            "New terminal"
-        } else if !self.text.is_empty() {
-            if self.menu_is("jobs") || self.on_new_job() {
-                "New job"
-            } else {
-                "New agent"
-            }
+        let help = if self.question_opens_help() {
+            ("?", "shortcuts")
         } else {
-            match self.selected().map(|r| &r.kind) {
-                Some(Kind::Session(..)) => "Session",
-                Some(Kind::Run(..)) => "Run",
-                Some(Kind::Job(_) | Kind::NewJob) => "Job",
-                Some(Kind::Folder(_)) => "Folder",
-                _ => "Menu",
-            }
+            ("ctrl+g", "help")
         };
-        // Both footer rows share a label column so the hints start at one place.
-        let label = context.chars().count().max("Navigation".len()) + 2;
-        line.spans
-            .insert(0, Span::styled(format!("{context:label$}"), bold()));
-        let mut keys = vec![];
-        if self.tab_does().is_none()
-            && (self.focusable_viewer().is_some()
-                || self.panel_shown()
-                || self.transcript_target().is_some())
-        {
-            keys.push(("tab", "pane"));
-        }
-        keys.push(("↑↓", "select"));
-        keys.push(("ctrl+g", "help"));
-        let room = (self.hint_width() as usize).saturating_sub(label);
-        // A newer release outranks every key but help, so it shows beside a pane too; a
+        let tail = hints(&[help]);
+        let room = (self.hint_width() as usize).saturating_sub(tail.width() + 3);
+        // A newer release outranks the selection's keys, so it shows beside a pane too; a
         // bar too narrow for the upgrade command still names the version.
         let notice = crate::update::notice().and_then(|full| {
             let short = full.split(" · ").next().unwrap_or_default().to_owned();
             [full, short]
                 .into_iter()
-                .find(|n| hints(&keys[keys.len() - 1..]).width() + n.chars().count() + 3 <= room)
+                .find(|n| n.chars().count() + 3 <= room)
         });
         let reserve = notice.as_ref().map_or(0, |n| n.chars().count() + 3);
-        while keys.len() > 1 && hints(&keys).width() + reserve > room {
-            keys.remove(keys.len() - 2);
+        if line.width() + reserve > room {
+            line = Line::default();
         }
-        let mut navigation = hints(&keys);
+        if !line.spans.is_empty() {
+            line.spans.push(Span::styled(" · ", dim()));
+        }
+        line.spans.extend(tail.spans);
         if let Some(notice) = notice {
-            navigation
-                .spans
-                .push(Span::styled(format!(" · {notice}"), dim()));
+            line.spans.push(Span::styled(format!(" · {notice}"), dim()));
         }
-        navigation
-            .spans
-            .insert(0, Span::styled(format!("{:label$}", "Navigation"), bold()));
-        vec![line, navigation]
+        vec![line]
     }
 
     /// Show only the current selection or draft's controls.
@@ -16894,6 +16878,8 @@ impl App {
             // As wide as the bar actually is: every key that fits is shown, and `compact`
             // drops from the tail only when they do not.
             let room = (self.hint_width() as usize).saturating_sub(taken + 14);
+            // ponytail: Help lists the rest; the footer teaches only the first two.
+            keys.truncate(2);
             let mut line = hints(&keys);
             while keys.len() > 1 && line.width() > room {
                 keys.pop();
@@ -17734,6 +17720,13 @@ impl App {
                     }
                     return Ok(false);
                 }
+                if code == KeyCode::Char('?')
+                    && !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && self.question_opens_help()
+                {
+                    self.mode = Mode::Guide(Guide::new(self.guide_origin()));
+                    return Ok(false);
+                }
                 // ← leaves the jobs screen the way tab and ctrl+z do, with nothing typed.
                 if self.jobs_view
                     && action == KeyAction::Left
@@ -18545,7 +18538,7 @@ impl App {
         let [body, foot, hint] = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(rows),
-            Constraint::Length(if self.two_line_footer() { 2 } else { 1 }),
+            Constraint::Length(1),
         ])
         .areas(pane);
         match (&mut self.mode, name) {
@@ -18629,12 +18622,9 @@ impl App {
         let (input, rows, scroll) = self.framed(text, area.width);
         let [head, list, prompt, foot] = Layout::vertical([
             Constraint::Length(3),
-            Constraint::Min(if self.two_line_footer() { 4 } else { 5 }),
+            Constraint::Min(5),
             Constraint::Length(rows),
-            Constraint::Length(
-                self.foot_rows()
-                    .max(if self.two_line_footer() { 2 } else { 1 }),
-            ),
+            Constraint::Length(self.foot_rows().max(1)),
         ])
         .areas(area);
         if in_pane || self.composing() {
@@ -23008,8 +22998,8 @@ states:
             .map(|s| s.content.to_string())
             .collect();
         assert!(
-            hint.starts_with("enter start job · ctrl+e edit · ctrl+x delete"),
-            "a job row offers its own keys first: {hint}"
+            hint == "enter start job · ctrl+e edit",
+            "a job row offers its own two keys and leaves the rest to Help: {hint}"
         );
         app.stop();
         assert!(
@@ -25108,20 +25098,11 @@ states:
         app.refresh().unwrap();
         assert_eq!(key(&app).as_deref(), Some(A));
         app.split = false;
-        let row_keys = |app: &App| app.footer_lines()[0].to_string();
         app.size = (24, 120);
-        let wide = row_keys(&app);
+        let row = app.footer_lines()[0].to_string();
         assert!(
-            wide.contains("ctrl+n rename")
-                && wide.contains("ctrl+y take over/fork")
-                && wide.contains("ctrl+p highlight"),
-            "a bar with the room shows every key the row has: {wide}"
-        );
-        app.size = (24, 80);
-        let narrow = row_keys(&app);
-        assert!(
-            narrow.contains("ctrl+n rename") && !narrow.contains("ctrl+p highlight"),
-            "a bar without the room drops from the tail, and only then: {narrow}"
+            row.starts_with("enter ") && row.ends_with("? shortcuts") && !row.contains("ctrl+n"),
+            "the footer teaches two keys and leaves the rest to Help: {row}"
         );
         app.key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
         assert!(

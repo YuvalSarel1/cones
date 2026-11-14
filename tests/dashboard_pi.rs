@@ -16,7 +16,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const LIST_FOOTER: &str = "Session     enter return · ctrl+x stop · ctrl+n rename · ctrl+t pin";
+const LIST_FOOTER: &str = "enter return · ctrl+x stop · ? shortcuts";
 const PANE_FOOTER: &str = "tab back · ctrl+\\ full screen";
 /// With a draft in pi's editor Tab and Left stay native, and the footer stops offering them.
 const DRAFT_FOOTER: &str = "ctrl+z back · ctrl+\\ full screen";
@@ -403,7 +403,7 @@ fn ctrl_x_twice_stops_the_pi_and_its_process_exits() {
     d.capture("armed");
     assert!(row(&screen, "stop me").is_some());
     d.press("esc", b"\x1b");
-    let screen = d.wait_text("Session     kept");
+    let screen = d.wait_for("kept", |s| s.lines().any(|l| l.starts_with("kept ")));
     d.capture("kept");
     assert!(row(&screen, "stop me").is_some());
     assert!(alive(pid));

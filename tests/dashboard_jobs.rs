@@ -77,7 +77,7 @@ fn fixture(test: &str, jobs: &str) -> Dashboard {
 /// From the first list row, up to the menu's `jobs` button and into the Jobs screen.
 fn open_jobs(d: &mut Dashboard) -> String {
     d.press("up", UP);
-    d.wait_text("Menu        enter jobs");
+    d.wait_text("enter jobs · ← → pick · ? shortcuts");
     d.press("enter", ENTER);
     d.wait_text("+ new job · a task once or on a schedule")
 }
@@ -348,9 +348,9 @@ fn enter_on_a_job_runs_it_with_its_own_policy_and_the_row_shows_the_outcome() {
     d.start();
     let screen = open_jobs(&mut d);
     assert!(screen.contains("▌ ◆  ✻  -       triage"), "{screen}");
-    // A job row offers its own keys first.
+    // A job row offers its own two keys; Help has the rest.
     assert!(
-        screen.contains("enter start job · ctrl+e edit · ctrl+x delete"),
+        screen.contains("enter start job · ctrl+e edit") && !screen.contains("ctrl+x delete"),
         "{screen}"
     );
     d.capture("jobs");

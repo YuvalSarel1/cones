@@ -74,7 +74,7 @@ fn pty_size(d: &mut Dashboard, file: &str) -> String {
     d.typed(&format!("stty size > {file}\r"));
     let size = d.wait_file(&format!("project/{file}"), |s| s.ends_with('\n'));
     d.press("ctrl+z", CTRL_Z);
-    d.wait_for("the list", |s| s.contains("tab pane"));
+    d.wait_for("the list", |s| s.contains("? shortcuts"));
     size.trim().to_owned()
 }
 
@@ -86,7 +86,7 @@ fn dragging_the_divider_resizes_list_and_pane_and_persists() {
     d.press("enter", ENTER);
     d.wait_for("a shell in the pane", |s| s.contains(PROMPT));
     d.press("ctrl+z", CTRL_Z);
-    let screen = d.wait_for("the list", |s| s.contains("tab pane"));
+    let screen = d.wait_for("the list", |s| s.contains("? shortcuts"));
     d.capture("default-split");
     // Built-in 50 percent: the list takes 70 columns and the divider the next one.
     assert_eq!(divider(&screen), [(70, vec![])], "{screen}");
@@ -180,7 +180,7 @@ fn a_split_wheel_report_never_reaches_the_pane() {
         s.contains("input.split_mouse_report")
     });
     d.press("ctrl+z", CTRL_Z);
-    d.wait_for("the list", |s| s.contains("tab pane"));
+    d.wait_for("the list", |s| s.contains("? shortcuts"));
     d.quit();
 }
 
@@ -232,7 +232,7 @@ fn an_osc8_link_in_the_pane_reaches_the_terminal() {
     d.typed("echo hyper=${FORCE_HYPERLINK}x\r");
     d.wait_for("links forced on", |s| s.contains("hyper=1x"));
     d.press("ctrl+z", CTRL_Z);
-    d.wait_for("the list", |s| s.contains("tab pane"));
+    d.wait_for("the list", |s| s.contains("? shortcuts"));
     d.quit();
 }
 
@@ -347,7 +347,7 @@ fn a_plain_path_in_the_pane_links_to_its_file() {
     );
     assert_eq!(d.link_of("gone/nope.rs"), None, "{screen}");
     d.press("ctrl+z", CTRL_Z);
-    d.wait_for("the list", |s| s.contains("tab pane"));
+    d.wait_for("the list", |s| s.contains("? shortcuts"));
     d.quit();
 }
 

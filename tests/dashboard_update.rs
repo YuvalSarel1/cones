@@ -2,8 +2,10 @@
 //! state dir. The fixture's formula is fresh, so no test reaches GitHub.
 //!
 //! Covered: Help's title names this binary's version; a formula at a newer release puts
-//! `cones <version> available` in the Navigation row and in Help's title, and the row
-//! drops keys other than help to keep it when a pane narrows the bar; a formula at
+//! `cones <version> available` in the footer after `? shortcuts` and in Help's title, and
+//! the footer drops the selection's keys to keep it when a pane narrows the bar; `?` on an
+//! empty composer opens Help and inside a draft is typed, with the footer offering
+//! `ctrl+g help` instead; a formula at
 //! this binary's own version shows no notice; turning "check for updates" off in the config
 //! screen saves `start.update_check: false` and takes the notice away at once, and a
 //! dashboard started with it off shows none. Homebrew's `brew upgrade cones` is offered
@@ -28,9 +30,9 @@ fn a_newer_tap_release_is_announced_in_the_footer_and_help() {
     fs::write(d.path("state/formula.rb"), formula("99.0.0")).unwrap();
     d.start();
     let list = d.wait_text("cones 99.0.0 available");
-    let navigation = list.lines().find(|l| l.starts_with("Navigation")).unwrap();
+    let navigation = list.lines().find(|l| l.contains("? shortcuts")).unwrap();
     assert!(
-        navigation.contains("ctrl+g help · cones 99.0.0 available"),
+        navigation.contains("? shortcuts · cones 99.0.0 available"),
         "{list}"
     );
     assert!(!list.contains("brew upgrade"), "{list}");
@@ -40,16 +42,18 @@ fn a_newer_tap_release_is_announced_in_the_footer_and_help() {
     d.capture("help");
     assert!(!help.contains("brew upgrade"), "{help}");
     d.press("esc", ESC);
-    d.wait_text("ctrl+g help");
+    d.wait_text("? shortcuts");
     // A shell beside the list halves the bar; the notice keeps its place over the keys.
     d.press("enter the shell", ENTER);
     d.wait_text("ctrl+z back");
     d.press("ctrl+z", CTRL_Z);
-    let paned = d.wait_text("tab pane");
+    let paned = d.wait_for("the list beside the shell", |s| {
+        !s.contains("ctrl+z back") && s.contains("? shortcuts")
+    });
     d.capture("beside-a-pane");
-    let navigation = paned.lines().find(|l| l.starts_with("Navigation")).unwrap();
+    let navigation = paned.lines().find(|l| l.contains("? shortcuts")).unwrap();
     assert!(
-        navigation.contains("ctrl+g help · cones 99.0.0 available"),
+        navigation.contains("? shortcuts · cones 99.0.0 available"),
         "{paned}"
     );
     d.quit();
@@ -59,16 +63,24 @@ fn a_newer_tap_release_is_announced_in_the_footer_and_help() {
 fn the_current_release_shows_only_the_version() {
     let mut d = Dashboard::new("update-current", &[]);
     d.start();
-    let list = d.wait_text("ctrl+g help");
+    let list = d.wait_text("? shortcuts");
     d.capture("list");
-    d.press("ctrl+g", CTRL_G);
+    d.press("?", b"?");
     let help = d.wait_text(&format!("help  cones {VERSION}"));
     d.capture("help");
     for screen in [&list, &help] {
         assert!(!screen.contains("available"), "{screen}");
     }
     d.press("esc", ESC);
-    d.wait_text("ctrl+g help");
+    d.wait_text("? shortcuts");
+    // In a draft `?` is text, so the footer names the key that still opens Help.
+    d.typed("why?");
+    let draft = d.wait_text("ctrl+g help");
+    d.capture("draft");
+    assert!(
+        draft.contains("why?") && !draft.contains("? shortcuts"),
+        "{draft}"
+    );
     d.quit();
 }
 
@@ -103,7 +115,7 @@ fn turning_the_check_off_hides_the_notice() {
     d.keep("jobs.yaml");
     d.capture("check-off");
     d.press("esc", ESC);
-    let list = d.wait_text("ctrl+g help");
+    let list = d.wait_text("? shortcuts");
     d.capture("list-after");
     assert!(!list.contains("available"), "{list}");
     d.quit();
@@ -117,14 +129,14 @@ fn turning_the_check_off_hides_the_notice() {
     )
     .unwrap();
     d.start();
-    let list = d.wait_text("ctrl+g help");
+    let list = d.wait_text("? shortcuts");
     d.capture("list");
     assert!(!list.contains("available"), "{list}");
     d.press("ctrl+g", CTRL_G);
     let help = d.wait_text(&format!("help  cones {VERSION}"));
     assert!(!help.contains("available"), "{help}");
     d.press("esc", ESC);
-    d.wait_text("ctrl+g help");
+    d.wait_text("? shortcuts");
     d.quit();
 }
 
@@ -161,9 +173,9 @@ fn a_homebrew_install_upgrades_itself_and_asks_to_reopen() {
     d.start();
     let list = d.wait_text("cones 99.0.0 installed · reopen cones");
     d.capture("list");
-    let navigation = list.lines().find(|l| l.starts_with("Navigation")).unwrap();
+    let navigation = list.lines().find(|l| l.contains("? shortcuts")).unwrap();
     assert!(
-        navigation.contains("ctrl+g help · cones 99.0.0 installed · reopen cones"),
+        navigation.contains("? shortcuts · cones 99.0.0 installed · reopen cones"),
         "{list}"
     );
     let log = d.wait_file("brew.log", |t| !t.is_empty());
@@ -175,7 +187,7 @@ fn a_homebrew_install_upgrades_itself_and_asks_to_reopen() {
     ));
     d.capture("help");
     d.press("esc", ESC);
-    d.wait_text("ctrl+g help");
+    d.wait_text("? shortcuts");
     d.quit();
 }
 
@@ -187,7 +199,7 @@ fn a_failed_homebrew_upgrade_offers_the_command() {
     d.wait_file("brew.log", |t| !t.is_empty());
     d.keep("brew.log");
     // Beside the pane the bar has room only for the version; Help's title has the command.
-    let list = d.wait_text("ctrl+g help · cones 99.0.0 available");
+    let list = d.wait_text("? shortcuts · cones 99.0.0 available");
     d.capture("list");
     assert!(!list.contains("installed"), "{list}");
     d.press("ctrl+g", CTRL_G);
@@ -196,6 +208,6 @@ fn a_failed_homebrew_upgrade_offers_the_command() {
     ));
     d.capture("help");
     d.press("esc", ESC);
-    d.wait_text("ctrl+g help");
+    d.wait_text("? shortcuts");
     d.quit();
 }

@@ -39,10 +39,12 @@ a separate setting.
 | `ctrl+c twice` | Quit within 1.5 seconds from the list or an agent viewer. Shell viewers keep Ctrl+C for interrupts. |
 | `ctrl+o` | Open the selected harness's [launch settings](#launch-settings). |
 | `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected folder; refuse an existing live coordinator. |
-| `ctrl+g` | Open Help. |
+| `?` | Open Help when the composer is empty. In a draft or search it is typed. |
+| `ctrl+g` | Open Help from anywhere in the list. |
 
 Click a row to select it; click its pane or press Enter/Tab to focus the viewer. The footer
-shows actions for the current selection or draft, followed by navigation. A problem, such as
+is one line: the selection's or draft's two most useful keys, then `? shortcuts`, or
+`ctrl+g help` while `?` would be typed. Help lists the rest. A problem, such as
 a failed action or a path that does not exist, is written in bold yellow on the rule over the
 composer and stays until the next key. Fullscreen viewers
 have a bottom strip with the session title, fleet counts, input requests and return keys.
