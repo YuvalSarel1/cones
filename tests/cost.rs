@@ -415,6 +415,57 @@ fn every_registered_harness_inherits_fallback_precedence_coverage_and_cache_refr
             cost::init(&missing, false);
             assert_cost(&fixture, &mut reader, false, Some(0.2), Partial);
         }
+        // Fast mode, regional inference and nonstandard Codex tiers bill multiples the catalog
+        // lacks, so they stay unpriced; the standard values current harnesses write still price.
+        // Codex 0.16x writes its tier in `thread_settings_applied`, not on each turn.
+        prices(&state, 1.0, false);
+        let variants = match kind {
+            HarnessKind::Claude => vec![
+                (
+                    r#""speed":"standard","inference_geo":"global","service_tier":"standard","#,
+                    None,
+                ),
+                (r#""inference_geo":"","#, None),
+                (r#""speed":"fast","#, Some("unsupported_speed")),
+                (
+                    r#""inference_geo":"us","#,
+                    Some("unsupported_inference_geo"),
+                ),
+            ],
+            HarnessKind::Codex => vec![
+                ("default", None),
+                ("fast", Some("unsupported_service_tier")),
+            ],
+            _ => Vec::new(),
+        };
+        for (variant, reason) in variants {
+            fixture.write(false, false);
+            let text = fs::read_to_string(&fixture.path).unwrap();
+            let text = if kind == HarnessKind::Claude {
+                assert!(text.contains(r#""usage":{"#));
+                text.replace(r#""usage":{"#, &format!(r#""usage":{{{variant}"#))
+            } else {
+                let (meta, turns) = text.split_once('\n').unwrap();
+                let settings = json!({"type":"event_msg","timestamp":AT,"payload":{
+                    "type":"thread_settings_applied",
+                    "thread_settings":{"model":"model","model_provider_id":"provider",
+                        "service_tier":variant}
+                }});
+                format!("{meta}\n{settings}\n{turns}")
+            };
+            fs::write(&fixture.path, text).unwrap();
+            let page = match reason {
+                None => assert_cost(&fixture, &mut reader, true, Some(0.00025), Complete),
+                Some(_) => assert_cost(&fixture, &mut reader, true, None, Unavailable),
+            };
+            let info = page.entries[0].columns.as_ref().unwrap().cost_info.clone();
+            let reasons = info.unwrap().unpriced_reasons;
+            assert_eq!(
+                reasons.keys().next().map(String::as_str),
+                reason,
+                "{kind}: {variant}"
+            );
+        }
         // Anthropic reports the hour-long part of a cache write, charged at twice the input
         // rate: 10 short writes at 3 and 20 hour-long ones at 4 per million.
         let split = match kind {

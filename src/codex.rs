@@ -132,6 +132,8 @@ pub(crate) struct CostAdapter {
     provider: Option<String>,
     model: Option<String>,
     unsupported_tier: bool,
+    /// The rollout writes `thread_settings_applied`, which owns the service tier.
+    thread_settings: bool,
     previous: Option<Counters>,
 }
 
@@ -174,19 +176,20 @@ impl Adapter for CostAdapter {
         if event["type"] == "session_meta" {
             self.provider = payload["model_provider"].as_str().map(str::to_owned);
         }
+        let tier = |tier: &Value| !matches!(tier.as_str(), None | Some("default" | "auto"));
         if event["type"] == "turn_context" {
             self.model = payload["model"].as_str().map(str::to_owned);
-            self.unsupported_tier = !matches!(
-                payload["service_tier"].as_str(),
-                None | Some("default" | "auto")
-            );
+            // Codex 0.16x moved the tier to thread settings; older turns carry their own.
+            if !self.thread_settings || payload.get("service_tier").is_some() {
+                self.unsupported_tier = tier(&payload["service_tier"]);
+            }
         }
         if event["type"] != "event_msg" {
             return Reading::Ignore;
         }
-        if payload["type"] == "model_rerouted" {
-            // A reroute must identify the actual model before it can be priced.
-            self.model = payload["to_model"].as_str().map(str::to_owned);
+        if payload["type"] == "thread_settings_applied" {
+            self.thread_settings = true;
+            self.unsupported_tier = tier(&payload["thread_settings"]["service_tier"]);
         }
         if payload["type"] != "token_count" || !payload["info"].is_object() {
             return Reading::Ignore;

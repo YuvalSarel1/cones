@@ -1558,6 +1558,13 @@ impl Adapter for CostAdapter {
                 if !matches!(usage["service_tier"].as_str(), None | Some("standard")) {
                     return Err("unsupported_service_tier");
                 }
+                // Fast mode and regional inference bill multiples the catalog does not carry.
+                if !matches!(usage["speed"].as_str(), None | Some("standard")) {
+                    return Err("unsupported_speed");
+                }
+                if !matches!(usage["inference_geo"].as_str(), None | Some("" | "global")) {
+                    return Err("unsupported_inference_geo");
+                }
                 Ok(crate::cost::Usage {
                     provider,
                     model,

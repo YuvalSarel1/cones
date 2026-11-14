@@ -286,8 +286,10 @@ model/input size, counts cumulative updates once and includes reasoning in outpu
 adds its separately stored reasoning to output and requires all five native counters for
 fallback pricing. Hour-long cache writes, which Claude and pi report for Anthropic replies,
 are priced at twice the model's input rate, Anthropic's published multiplier, because the
-catalog has no rate for them. Reported nonstandard Codex service tiers remain unpriced unless
-native dollar amounts exist.
+catalog has no rate for them. Replies the harness reports as billed at a multiple the catalog
+lacks remain unpriced unless native dollar amounts exist: a nonstandard Codex service tier, read
+from `thread_settings_applied` or, in older rollouts, from each turn, and a Claude reply in fast
+mode or with an `inference_geo` other than `global`.
 
 The models.dev catalog uses exact provider/model keys and USD-per-million-token rates, applying
 context tiers to whole requests. All-zero rates are unpriced. Estimates do not reconcile
