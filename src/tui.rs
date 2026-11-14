@@ -13195,7 +13195,9 @@ impl App {
             Place::Folder => "back in its folder".into(),
             p => format!(
                 "moved to {}",
-                p.tag().map_or(p.to_string(), |t| format!("# {t}"))
+                p.tag()
+                    .filter(|t| *t != crate::places::PINNED)
+                    .map_or_else(|| p.to_string(), |t| format!("# {t}"))
             ),
         };
     }
