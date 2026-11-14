@@ -23,7 +23,7 @@ jobs:
 | `version` | Schema version, currently `4`. |
 | `defaults` | Optional [policy defaults](#job-fields-and-defaults). |
 | `jobs` | Job list; `[]` is valid for a dashboard with no scheduled work. |
-| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `worktrees`, `original_titles`, `launched_under_parent`, `confirm_secs` | [List settings](#list-settings). |
+| `columns`, `run_columns`, `job_columns`, `history_columns`, `whole_columns`, `highlight`, `worktrees`, `sort`, `original_titles`, `launched_under_parent`, `confirm_secs` | [List settings](#list-settings). |
 | `folders` | [Pinned folders](dashboard.md#add-a-folder). |
 | `homes` | [Extra native homes](#homes) to read, by harness. |
 | `pane` | [Viewer position and size](#pane). |
@@ -114,6 +114,7 @@ Each category has an independent column picker. Visible columns can be reordered
 | `whole_columns` | `true`: omit a column crossing the list's right edge; `false` draws its visible portion. Icons, state/status and the title/job are retained either way. |
 | `highlight` | `magenta`: colour of a session title highlighted with `ctrl+p`. One of `magenta`, `cyan`, `blue`, `green`, `yellow`, `red`, `orange`, `pink`, `purple`, `teal`, `white`, or a hex colour as `#rrggbb`, such as `#ff8800`, on a terminal that renders true colour. The config screen draws each choice in the colour it names. |
 | `worktrees` | `nested`: a linked worktree with two or more sessions gets an indented heading inside its repository's folder. `flat` lists worktree sessions among the repository's own, marked `⑂`. A folder opened inside a worktree heads its own sessions either way. |
+| `sort` | `started`: each group lists its sessions oldest first. `last_active` puts the session whose harness last reported activity first and those with no report last. `manual` keeps the order set by hand with `ctrl+b` or a mouse drag; a group reordered by hand keeps its order under any setting. Forks and launches stay beneath their parents. See [tags](dashboard.md#tags). |
 | `original_titles` | `true`: a Claude row shows the title Claude generated from the first message. Claude later names a background job a second time, a short lowercase label it writes over that title; `false` shows the label, as `claude agents` does. A name given with `/rename` or a cones rename shows either way. Live rows take a change on their next update; history and runs after cones restarts. |
 | `launched_under_parent` | `true`: a session started with [`cones launch --parent`](cli.md#starting-a-session) is listed beneath that parent, marked `↳ ⚙`, in the agent's group. One working in another folder names the folder's last part, dimmed, after its title, `· in reports`. `false` lists every launch in its own folder. Takes effect on the next list update. |
 | `confirm_secs` | `2`: seconds an armed removal waits for confirmation; `0` waits until another key. Valid range: `0` to `600`. |
@@ -336,6 +337,7 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `prices.json` | Validated models.dev price snapshot with fetch time and SHA-256, refreshed in the background by the dashboard. Contains no session data. |
 | `formula.rb` | The Homebrew tap's formula, downloaded by the dashboard at most once a day. A newer release in it is installed for a Homebrew install and shown in the footer and Help. [`start.update_check`](#start) turns it off. |
 | `relations.json`, `relations.lock` | Which agent came from which: confirmed forks and the last 500 sessions `cones launch --parent` started. Each end is named by harness, native home and the harness's own id, with its pid while the harness has not named it, and the lock serializes writers. A `forks.json` from an earlier cones is read until the first write. See [fork controls](dashboard.md#fork-a-conversation) and [starting a session](cli.md#starting-a-session). |
+| `tags.json` | Each session's [tag](dashboard.md#tags), `pinned` included, by session id, and each group's order set by hand. An empty tag clears one the session would take from the conversation it continues. A `pins.json` from an earlier cones becomes the `pinned` tag the first time this file is missing, and is left in place. |
 | `open-folders.json` | Folders the session list keeps open after their last session leaves, including those opened with `+ add folder`. See [Add a folder](dashboard.md#add-a-folder). |
 | `skill/cones/SKILL.md` | The [cones skill](cli.md#bundled-skills) as last installed, so an untouched copy can follow upgrades. |
 | `hidden` | Hidden run ids, one per line. Remove a line to restore the row without changing the ledger. |

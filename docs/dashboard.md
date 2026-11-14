@@ -143,7 +143,8 @@ Git worktrees share their repository heading. A worktree with two or more sessio
 indented `⑂` heading of its own inside it; a lone session stays among the repository's own,
 marked `⑂`. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
 way. A folder opened inside a worktree heads the sessions that run in it, under either
-setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last. Forks
+setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
+[`sort`](jobs.md#list-settings) can order them by last activity or by hand instead. Forks
 follow visible parents. A job's run sits among the sessions in its folder, titled `◆ JOB` and
 drawn with the session columns, while its agent is listed, while it is supervised and until its
 finish is read. The [Jobs](#jobs) screen keeps the full run list.
@@ -184,7 +185,9 @@ terminal as the only way in. A warning wider than the composer's rule ends in `�
 | `ctrl+n` | Rename a Claude, Codex, pi or OpenCode session, as [`cones rename`](cli.md#renaming-a-session) does. |
 | `ctrl+p` | Toggle a temporary session highlight. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
+| `ctrl+l` | [Place a session](#tags) under a tag, `pinned` or a new tag, or back in its folder. |
 | `ctrl+t` | Pin a session above every group, or unpin it. |
+| `ctrl+b` | [Reorder a session](#tags) inside its group. |
 | `ctrl+r` | Refresh now. |
 
 Rename accepts a manual name or an empty submission for native automatic naming. Codex's
@@ -211,6 +214,40 @@ output refreshes once per second and follows new text until scrolled back. Enter
 available native session, follows a running run's output if unjoinable, or revives a settled
 run. A running run's state comes from its agent, so one waiting on input reads `input`. A
 resumed run retains its row and original ledger outcome while displaying live values.
+
+### Tags
+
+Each session sits in one place: under its tag if it has one, otherwise under its folder. A tag
+whose sessions all run in one folder is an indented `# NAME` heading inside that folder. Once
+its sessions span folders it heads a group of its own above the folders, and each of its rows
+names its folder's last part, dimmed, after the title, `· in research`. When it shrinks back
+to one folder it nests again. A tag exists while a session carries it; the last one leaving
+removes the heading. A folder heading shows while it holds untagged sessions or a nested tag,
+and an open folder keeps its row with `no sessions here`. `pinned` is a tag that always heads
+the list. A tag changes only the view: the folder still decides where the session runs, its
+coordinator and its comms.
+
+`ctrl+l` opens the place picker for the selected session: its own folder first, which clears
+the tag, then every tag a session carries, `pinned`, and `+ new tag…`, where the name is typed
+on the row itself. `ctrl+t` toggles `pinned` directly.
+
+With the mouse, press a session row, drag it and release. On a tag's heading the session takes
+that tag; on its own folder's heading it leaves its tag; on a row of its own group it moves
+there. Another folder's heading refuses the drop, since a session keeps its folder, and the
+footer names the headings that accept it. A row of another group counts as that group's heading.
+
+`ctrl+b` picks up the selected session; up and down move it inside its group, Enter keeps the
+order and Escape puts it back. A fork or launch listed beneath another session moves with it
+and cannot be picked up alone. A group reordered by hand keeps that order whatever
+[`sort`](jobs.md#list-settings) says, and the footer says so the first time. A session started
+from a tag's group, with `ctrl+o` or the composer, runs in the selected row's folder and joins
+the tag; one started from `pinned` is not pinned. Grouping by state ignores tags other than
+`pinned`.
+
+A conversation that continues under a new id, a fork or a Claude resume, takes the tag and
+the position of the one it came from until it is given its own. Tags and hand orders live in
+[`tags.json`](jobs.md#stored-files); [`cones tag`](cli.md#tagging-a-session) writes the same
+file.
 
 ### Add a folder
 
