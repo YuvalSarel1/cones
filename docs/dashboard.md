@@ -239,8 +239,8 @@ Grouping by state lists each session once and ignores places other than `pinned`
 
 `ctrl+l` opens a checklist of places for the selected session: its folder, every tag a
 session carries as `# NAME` and as `folder › # NAME`, `pinned`, and `+ new tag…` and
-`+ new tag in folder ›`, where a name typed on the row and Enter add it, checked. Space checks
-or unchecks a line, Enter keeps the checklist and Escape discards it. Unchecking everything
+`+ new tag in folder ›`, where a name typed on the row and Enter add it and keep the
+checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape discards it. Unchecking everything
 returns the session to its folder. `ctrl+t` toggles `pinned` directly.
 
 With the mouse, press a session row, drag it and release. A drop moves that row: the session

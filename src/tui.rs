@@ -17451,11 +17451,14 @@ impl App {
                 match action {
                     KeyAction::Up => pick.step(-1),
                     KeyAction::Down => pick.step(1),
-                    // Enter on a `+ new tag` row adds the typed tag, checked, and stays.
-                    KeyAction::Enter if new && !pick.input.text.trim().is_empty() => {
-                        if let Err(e) = Self::place_new(pick) {
-                            self.status = warning(e);
-                        }
+                    // Enter on a `+ new tag` row adds the typed tag, checked, then keeps the
+                    // checklist like Enter anywhere else.
+                    KeyAction::Enter
+                        if new
+                            && !pick.input.text.trim().is_empty()
+                            && let Err(e) = Self::place_new(pick) =>
+                    {
+                        self.status = warning(e);
                     }
                     KeyAction::Enter => {
                         let (rows, checked) =
