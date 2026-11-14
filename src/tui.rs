@@ -16,7 +16,9 @@ use crate::{
     harness::{self, Start},
     history, launchd,
     ledger::{Ledger, Run},
-    output, runner, search, terminal, terminal_host, transcript,
+    output,
+    places::{Place, Places},
+    runner, search, terminal, terminal_host, transcript,
     viewer::{self, Viewer},
 };
 use anyhow::{Context, Result};
@@ -848,7 +850,7 @@ impl Data {
             false,
             false,
             &HashSet::new(),
-            &crate::tags::Tags::default(),
+            &Places::default(),
             &mut Widths::new(),
         )
     }
@@ -860,7 +862,7 @@ impl Data {
         jobs_view: bool,
         hide_reply: bool,
         deleting: &HashSet<&str>,
-        tags: &crate::tags::Tags,
+        places: &crate::places::Places,
         widths: &mut Widths,
     ) -> Vec<Row> {
         let mut out = Vec::new();
@@ -915,24 +917,29 @@ impl Data {
             .collect();
         let parent = |id: &str| parents.get(id).copied();
         let mut placed: Vec<(&Session, (String, String, String), bool)> = Vec::new();
+        // Sessions listed only under tags above the folders, which leave their folder without
+        // a row.
         let mut lifted: HashSet<&str> = HashSet::new();
-        // The tag each tagged session carries and the folder it would otherwise sit in.
-        let mut tagged: HashMap<&str, (&str, (String, String), bool)> = HashMap::new();
+        // Sessions placed by hand; the rest follow their launcher.
+        let mut chosen: HashSet<&str> = HashSet::new();
+        let pin = Place::Tag(crate::places::PINNED.into());
+        let pinned_key = || {
+            (
+                String::new(),
+                crate::places::PINNED.to_owned(),
+                String::new(),
+            )
+        };
         for s in self
             .sessions
             .iter()
             .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
             .chain(&runs)
         {
-            let tag = tags.of(&s.session_id, parent);
-            // An empty sort key puts pins above every state rank and folder path.
-            let (key, open) = if tag == Some(crate::tags::PINNED) {
-                lifted.insert(s.session_id.as_str());
-                (
-                    (String::new(), crate::tags::PINNED.to_owned(), String::new()),
-                    true,
-                )
-            } else if by_state {
+            let set = places.of(&s.session_id, parent);
+            // State grouping lists each session once, a pinned one under `pinned`. An empty
+            // sort key puts pins above every state rank and folder path.
+            if by_state {
                 let rank = match s.state {
                     fleet::State::Blocked => 1,
                     fleet::State::Active => 2,
@@ -940,8 +947,15 @@ impl Data {
                     fleet::State::Idle => 4,
                     _ => 5,
                 };
-                (ranked(rank, label(s.state.as_str())), true)
-            } else if let Some(root) = self.roots.get(&s.cwd) {
+                if set.contains(&pin) {
+                    lifted.insert(s.session_id.as_str());
+                    placed.push((s, pinned_key(), true));
+                } else {
+                    placed.push((s, ranked(rank, label(s.state.as_str())), true));
+                }
+                continue;
+            }
+            let (folder_key, folder_open) = if let Some(root) = self.roots.get(&s.cwd) {
                 let (sort, name) = folder(root);
                 match sub(&s.cwd) {
                     Some((dir, open)) => ((sort, name, fleet::tilde(&dir)), open),
@@ -951,65 +965,81 @@ impl Data {
                 let (sort, name) = folder(&s.cwd);
                 ((sort, name, String::new()), true)
             };
-            if let Some(tag) = tag.filter(|_| !by_state) {
-                let inside = tags.inside_of(&s.session_id, parent);
-                tagged.insert(s.session_id.as_str(), (tag, self.home_folder(s), inside));
+            if set.len() != 1 || !set.contains(&Place::Folder) {
+                chosen.insert(s.session_id.as_str());
             }
-            placed.push((s, key, open));
-        }
-        // A tag placed inside its folder is a heading there, `folder > # tag`; otherwise it heads
-        // a group of its own above the folders. `pinned` heads the list.
-        for (s, key, open) in &mut placed {
-            let Some((tag, (sort, name), inside)) = tagged.get(s.session_id.as_str()) else {
-                continue;
-            };
-            *open = true;
-            if *tag == crate::tags::PINNED {
-                continue;
-            } else if *inside {
-                *key = (sort.clone(), name.clone(), format!("# {tag}"));
-            } else {
+            if !set
+                .iter()
+                .any(|p| matches!(p, Place::Folder | Place::FolderTag(_)))
+            {
                 lifted.insert(s.session_id.as_str());
-                *key = (
-                    format!("\u{1}{}", tag.to_lowercase()),
-                    format!("# {tag}"),
-                    String::new(),
-                );
+            }
+            // One row per place: a tag above the folders heads its own group, a tag inside the
+            // folder is a heading there, and `pinned` heads the list.
+            for place in &set {
+                placed.push(match place {
+                    Place::Folder => (s, folder_key.clone(), folder_open),
+                    Place::Tag(t) if t == crate::places::PINNED => (s, pinned_key(), true),
+                    Place::Tag(t) => (
+                        s,
+                        (
+                            format!("\u{1}{}", t.to_lowercase()),
+                            format!("# {t}"),
+                            String::new(),
+                        ),
+                        true,
+                    ),
+                    Place::FolderTag(t) => {
+                        let (sort, name) = self.home_folder(s);
+                        (s, (sort, name, format!("# {t}")), true)
+                    }
+                });
             }
         }
-        // A launch sits in its launcher's group wherever it works, following the chain up to
-        // the first launcher that was not itself launched. A tagged session keeps its own place.
+        // A launch sits in its launcher's groups wherever it works, following the chain up to
+        // the first launcher that was not itself launched. A session placed by hand keeps its
+        // own places.
         let mut moved: HashSet<&str> = HashSet::new();
         if !by_state {
-            let keys: HashMap<&str, ((String, String, String), bool)> = placed
-                .iter()
-                .map(|(s, key, open)| (s.session_id.as_str(), (key.clone(), *open)))
-                .collect();
-            let parents: HashMap<&str, &str> = placed
+            let mut keys: HashMap<&str, Vec<(GroupKey, bool)>> = HashMap::new();
+            for (s, key, open) in &placed {
+                keys.entry(s.session_id.as_str())
+                    .or_default()
+                    .push((key.clone(), *open));
+            }
+            let launchers: HashMap<&str, &str> = placed
                 .iter()
                 .filter_map(|(s, _, _)| Some((s.session_id.as_str(), s.launched_by.as_deref()?)))
                 .collect();
-            for (s, key, open) in &mut placed {
-                let s: &Session = s;
-                if tagged.contains_key(s.session_id.as_str()) {
+            let mut out = Vec::with_capacity(placed.len());
+            for (s, key, open) in placed {
+                if chosen.contains(s.session_id.as_str()) {
+                    out.push((s, key, open));
                     continue;
                 }
                 let mut at = s.session_id.as_str();
                 for _ in 0..8 {
-                    match parents.get(at).filter(|p| keys.contains_key(*p)) {
+                    match launchers.get(at).filter(|p| keys.contains_key(*p)) {
                         Some(parent) if *parent != s.session_id => at = parent,
                         _ => break,
                     }
                 }
-                if let Some((parent_key, parent_open)) = keys.get(at).filter(|_| at != s.session_id)
-                {
-                    if key != parent_key {
-                        moved.insert(s.session_id.as_str());
+                match keys.get(at).filter(|_| at != s.session_id) {
+                    Some(parent_keys) => {
+                        if !parent_keys.iter().any(|(k, _)| *k == key) {
+                            moved.insert(s.session_id.as_str());
+                        }
+                        out.extend(parent_keys.iter().map(|(k, o)| (s, k.clone(), *o)));
                     }
-                    *key = parent_key.clone();
-                    *open = *parent_open;
+                    None => out.push((s, key, open)),
                 }
             }
+            placed = out;
+        }
+        // How many rows each session has, so each copy can say how many others there are.
+        let mut copies: HashMap<&str, usize> = HashMap::new();
+        for (s, _, _) in &placed {
+            *copies.entry(s.session_id.as_str()).or_default() += 1;
         }
         // A worktree heading over one session nobody opened is noise, which agent worktrees
         // made one per session would be: that session stays among its repository's own.
@@ -1072,9 +1102,10 @@ impl Data {
             }
             // Roots keep this order; forks and launches stay beneath their parents.
             let id = group_id(&key.1, &key.2);
-            if tags.order.contains_key(&id) || self.sort == config::Sort::Manual {
+            if places.order.contains_key(&id) || self.sort == config::Sort::Manual {
                 sessions.sort_by_key(|s| {
-                    tags.position(&id, &s.session_id, parent)
+                    places
+                        .position(&id, &s.session_id, parent)
                         .unwrap_or(usize::MAX)
                 });
             } else if self.sort == config::Sort::LastActive {
@@ -1082,11 +1113,12 @@ impl Data {
                 sessions.sort_by_key(|s| std::cmp::Reverse(s.last_activity));
             }
             let ordered = crate::relations::order(&sessions);
-            depths.extend(
-                ordered
-                    .iter()
-                    .map(|(s, depth)| ((s.harness.as_str(), s.session_id.as_str()), *depth)),
-            );
+            depths.extend(ordered.iter().map(|(s, depth)| {
+                (
+                    (id.clone(), s.harness.as_str(), s.session_id.as_str()),
+                    *depth,
+                )
+            }));
             // Runs follow the group's sessions.
             let runs: Vec<_> = group
                 .iter()
@@ -1129,7 +1161,11 @@ impl Data {
                 Entry::Folder(_) => vec![],
                 Entry::Session(s) => {
                     let depth = depths
-                        .get(&(s.harness.as_str(), s.session_id.as_str()))
+                        .get(&(
+                            group_id(&key.1, &key.2),
+                            s.harness.as_str(),
+                            s.session_id.as_str(),
+                        ))
                         .copied();
                     let launched = s.launched_by.as_ref().and(depth).filter(|d| *d > 0);
                     // A fork is marked only where it sits beneath its parent. A parent that
@@ -1161,10 +1197,18 @@ impl Data {
                             text.push_str(&format!("{ELSEWHERE}{name}"));
                         }
                     }
-                    // Under a tag of its own, the folder it runs in and returns to is named dim,
-                    // by its last part as a launch's is, so the title column stays narrow.
+                    // A session listed in other places too says how many.
+                    let others = copies.get(s.session_id.as_str()).map_or(0, |n| n - 1);
+                    if others > 0
+                        && let Some((text, _)) = row.get_mut(title)
+                    {
+                        text.push_str(&format!(" +{others}"));
+                    }
+                    // Under a tag above the folders, the folder it runs in is named dim, by its
+                    // last part as a launch's is, so the title column stays narrow.
                     if launched.is_none()
-                        && lifted.contains(s.session_id.as_str())
+                        && key.2.is_empty()
+                        && (key.0.starts_with('\u{1}') || key.0.is_empty())
                         && let Some((text, _)) = row.get_mut(title)
                     {
                         let home = self.home_folder(s).1;
@@ -1469,7 +1513,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
         true,
         false,
         &HashSet::new(),
-        &crate::tags::Tags::default(),
+        &Places::default(),
         &mut Widths::new(),
     );
     for row in data.rows(false).into_iter().chain(jobs) {
@@ -2472,6 +2516,9 @@ fn indent(under: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(Stri
     }
     row
 }
+
+/// A group of the session list: sort key, heading and sub-heading.
+type GroupKey = (String, String, String);
 
 /// A sub-heading inside a folder: a tag's name, or a linked worktree's path.
 fn sub_heading(sub: &str) -> String {
@@ -8285,22 +8332,18 @@ struct RowDrag {
     over: Option<usize>,
 }
 
-/// Where a row sits: its group's hand-order name, the tag that group is, and the folder
+/// Where a row sits: its group's hand-order name, the place that group is, and the folder
 /// heading above it.
-struct Place {
+struct Spot {
     group: String,
-    tag: Option<String>,
+    place: Place,
     folder: String,
-    /// The tag's heading sits inside `folder`.
-    inside: bool,
 }
 
-/// The picker row that takes a typed tag name.
+/// The checklist row that takes a typed tag name.
 const NEW_TAG: &str = "\u{0}new";
-/// The picker row that takes a typed tag name placed inside the session's folder.
+/// The checklist row that takes a typed tag name placed inside the session's folder.
 const NEW_TAG_IN: &str = "\u{0}new-in";
-/// A picker row's text for an existing tag placed inside the session's folder.
-const IN: &str = "\u{0}in ";
 
 /// A short list picked with the arrows: the copy actions, or where ctrl+y forks to.
 struct Pick {
@@ -8309,10 +8352,12 @@ struct Pick {
     at: usize,
     /// The conversation being forked; each row's text names the harness, empty for native.
     fork: Option<Box<history::Entry>>,
-    /// The session being placed; each row's text names a tag, empty for its folder.
+    /// The session being placed; each row's text names a place as `cones place` spells it.
     place: Option<String>,
-    /// A new tag's name, typed on the last row of the place picker.
+    /// A new tag's name, typed on a `+ new tag` row of the checklist.
     input: Input,
+    /// Which checklist rows are checked; empty for a picker that is not a checklist.
+    checked: Vec<bool>,
 }
 
 struct PickRow {
@@ -8333,8 +8378,18 @@ impl Pick {
         let mut lines = vec![Line::from(Span::styled(self.title, lit()))];
         for (i, row) in self.rows.iter().enumerate() {
             let chosen = i == self.at;
+            let check = match self.checked.get(i) {
+                Some(_) if row.text.starts_with('\u{0}') => "    ",
+                Some(true) => "[x] ",
+                Some(false) => "[ ] ",
+                None => "",
+            };
             let mut spans = vec![Span::styled(
-                format!("{} {}", if chosen { "\u{203a}" } else { " " }, row.label),
+                format!(
+                    "{} {check}{}",
+                    if chosen { "\u{203a}" } else { " " },
+                    row.label
+                ),
                 if chosen { bold() } else { dim() },
             )];
             if (row.text == NEW_TAG || row.text == NEW_TAG_IN) && chosen {
@@ -9657,11 +9712,11 @@ struct App {
     highlighted: HashSet<String>,
     /// Each session's tag and each group's hand order, kept in `state/tags.json`. `pinned`,
     /// which ctrl+t toggles, is one of the tags.
-    tags: crate::tags::Tags,
+    places: Places,
     /// The tag a launch from a tag group gives its session, by the placeholder's id, until the
     /// harness names the session.
     /// A launch's tag and whether it sits inside its folder, until the harness names it.
-    launch_tags: HashMap<String, (String, bool)>,
+    launch_places: HashMap<String, Place>,
     /// A session row pressed with the mouse: where, and the row the pointer is over once it
     /// has left that one.
     row_drag: Option<RowDrag>,
@@ -10109,8 +10164,8 @@ impl App {
             removed_sessions: HashSet::new(),
             feedback: None,
             highlighted: HashSet::new(),
-            tags: crate::tags::Tags::load(state),
-            launch_tags: HashMap::new(),
+            places: Places::load(state),
+            launch_places: HashMap::new(),
             row_drag: None,
             open_folders: open,
             opened,
@@ -10975,6 +11030,7 @@ impl App {
             fork: None,
             place: None,
             input: Input::default(),
+            checked: Vec::new(),
         });
     }
 
@@ -11846,25 +11902,23 @@ impl App {
                 })
         });
         let mut replaced = self.reconcile_launches(&mut data);
-        // A launch from a tag group takes the tag once the harness names its session.
+        // A launch from a group takes that group's place once the harness names its session.
         for (placeholder, id) in &replaced {
-            if let Some((tag, inside)) = self.launch_tags.remove(placeholder) {
-                let mut store = crate::tags::Tags::load(&self.state);
-                store.set(id, Some(&tag), false, inside);
+            if let Some(place) = self.launch_places.remove(placeholder) {
+                let mut store = Places::load(&self.state);
+                store.set(id, crate::places::Set::from([place]), |_| None);
                 if let Err(e) = store.save(&self.state) {
-                    self.status = warning(format!("tag kept for this dashboard only: {e:#}"));
+                    self.status = warning(format!("places kept for this dashboard only: {e:#}"));
                 }
             }
         }
-        self.launch_tags
+        self.launch_places
             .retain(|id, _| self.pending.iter().any(|p| &p.session.session_id == id));
-        // `cones tag` writes the file too; a reorder in progress keeps its own order.
+        // `cones place` writes the file too; a reorder in progress keeps its own order.
         if !matches!(self.mode, Mode::Move(_)) {
-            self.tags = crate::tags::Tags::load(&self.state);
+            self.places = Places::load(&self.state);
         }
-        for (id, (tag, inside)) in &self.launch_tags {
-            self.tags.set(id, Some(tag), false, *inside);
-        }
+        self.add_launch_places();
         // The coordinator writes its claim seconds after the harness names its session, so the
         // mark the placeholder carried stays on that session until the claim takes over.
         for p in self.pending.iter().filter(|p| p.session.coordinator) {
@@ -12242,6 +12296,8 @@ impl App {
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
+        // A session listed in several places keeps the copy the cursor was on.
+        let keep_group = self.selected_spot().map(|s| s.group);
         let deleting = self
             .stopping
             .iter()
@@ -12273,7 +12329,7 @@ impl App {
             self.jobs_view,
             self.split_active() && self.data.columns_default,
             &deleting,
-            &self.tags,
+            &self.places,
             &mut self.widths,
         ));
         self.other = if self.jobs_view { menu_rows() } else { vec![] };
@@ -12282,7 +12338,7 @@ impl App {
             !self.jobs_view,
             self.split_active() && self.data.columns_default,
             &deleting,
-            &self.tags,
+            &self.places,
             &mut self.widths,
         ));
         if let Some(query) = self.suggested.clone() {
@@ -12298,10 +12354,7 @@ impl App {
         self.unfold();
         self.apply_filter();
         if let Some(k) = &keep
-            && let Some(i) = self
-                .visible
-                .iter()
-                .position(|&i| self.rows[i].kind.key() == Some(k.as_str()))
+            && let Some(i) = self.copy_position(k, keep_group.as_deref())
         {
             self.cursor = i;
         } else if keep.is_none() {
@@ -12481,7 +12534,8 @@ impl App {
                 let mut s = find(id)?;
                 // A launch listed under its launcher starts work in the folder it is listed in,
                 // following the chain `rows_excluding` follows.
-                if !self.by_state && self.tag_of(id).is_none() {
+                if !self.by_state && self.places_of(id) == crate::places::Set::from([Place::Folder])
+                {
                     for _ in 0..8 {
                         match s.launched_by.as_deref().and_then(find) {
                             Some(parent) if parent.session_id != *id => s = parent,
@@ -12755,68 +12809,75 @@ impl App {
         self.invalidate();
     }
 
-    /// The session's tag, its own or the one of the conversation it continues.
-    fn tag_of(&self, id: &str) -> Option<String> {
-        let parent = |id: &str| {
-            self.data
-                .sessions
-                .iter()
-                .find(|s| s.session_id == id)
-                .and_then(|s| s.forked_from.as_deref())
-        };
-        self.tags.of(id, parent).map(str::to_owned)
+    /// The session's places, its own or those of the conversation it continues.
+    fn places_of(&self, id: &str) -> crate::places::Set {
+        let parent = |id: &str| self.parent_of(id);
+        self.places.of(id, parent)
     }
 
-    /// Whether the session's tag sits inside its folder.
-    fn inside_of(&self, id: &str) -> bool {
-        let parent = |id: &str| {
-            self.data
-                .sessions
-                .iter()
-                .find(|s| s.session_id == id)
-                .and_then(|s| s.forked_from.as_deref())
-        };
-        self.tags.inside_of(id, parent)
+    /// The conversation a session continues, as its harness reports it.
+    fn parent_of(&self, id: &str) -> Option<&str> {
+        self.data
+            .sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .and_then(|s| s.forked_from.as_deref())
     }
 
-    /// Give a session a tag, or clear it back to its folder, and keep it in the state file.
-    fn set_tag(&mut self, id: &str, tag: Option<&str>, inside: bool) {
-        let mut store = crate::tags::Tags::load(&self.state);
-        let inherited = tag.is_none() && {
-            let mut without = store.clone();
-            without.tags.remove(id);
-            let parent = |id: &str| {
-                self.data
-                    .sessions
-                    .iter()
-                    .find(|s| s.session_id == id)
-                    .and_then(|s| s.forked_from.as_deref())
-            };
-            without.of(id, parent).is_some()
-        };
-        store.set(id, tag, inherited, inside);
+    /// Change a session's places through the state file: `set` gives it a whole set, else
+    /// `from` is removed and `to` added. The file is read first, so `cones place` writes made
+    /// meanwhile stay.
+    fn change_places(
+        &mut self,
+        id: &str,
+        set: Option<crate::places::Set>,
+        from: Option<&Place>,
+        to: Option<&Place>,
+    ) {
+        let mut store = Places::load(&self.state);
+        {
+            let parent = |id: &str| self.parent_of(id);
+            match set {
+                Some(set) => store.set(id, set, parent),
+                None => store.change(id, from, to, parent),
+            }
+        }
         if let Err(e) = store.save(&self.state) {
-            self.status = warning(format!("tag kept for this dashboard only: {e:#}"));
+            self.status = warning(format!("places kept for this dashboard only: {e:#}"));
         }
-        self.tags = store;
-        for (id, (tag, inside)) in &self.launch_tags {
-            self.tags.set(id, Some(tag), false, *inside);
-        }
+        self.places = store;
+        self.add_launch_places();
         self.rebuild();
     }
 
-    /// Pin or unpin the selected session: `pinned` is a tag that sorts above every group.
+    /// A launch from a group sits in that group alone from its first row, before the harness
+    /// names it.
+    fn add_launch_places(&mut self) {
+        for (id, place) in &self.launch_places {
+            self.places
+                .places
+                .insert(id.clone(), crate::places::Set::from([place.clone()]));
+        }
+    }
+
+    /// Pin or unpin the selected session: `pinned` is a place that sorts above every group.
     fn pin_selected(&mut self) {
         let Some(id) = self.selected_session().map(|s| s.session_id.clone()) else {
             self.status = "ctrl+t pins the selected session".into();
             return;
         };
-        let pinned = self.tag_of(&id).as_deref() == Some(crate::tags::PINNED);
-        self.set_tag(&id, (!pinned).then_some(crate::tags::PINNED), false);
+        let pin = Place::Tag(crate::places::PINNED.into());
+        let group = self.selected_spot().map(|s| s.group);
+        if self.places_of(&id).contains(&pin) {
+            self.change_places(&id, None, Some(&pin), None);
+        } else {
+            self.change_places(&id, None, None, Some(&pin));
+        }
+        self.select_copy(&id, group.as_deref());
     }
 
     /// The group the row at `i` of `rows` sits in, read off the headings above it.
-    fn place_at(&self, i: usize) -> Option<Place> {
+    fn place_at(&self, i: usize) -> Option<Spot> {
         if self.by_state || self.jobs_view {
             return None;
         }
@@ -12839,42 +12900,53 @@ impl App {
             }
             at = at.checked_sub(1)?;
         };
-        let tag = |text: &str| {
-            text.strip_prefix("# ")
-                .map(str::to_owned)
-                .or_else(|| (text == crate::tags::PINNED).then(|| text.to_owned()))
-        };
         Some(match sub {
-            Some(sub) if sub.starts_with("# ") => Place {
-                tag: tag(&sub),
+            Some(sub) if sub.starts_with("# ") => Spot {
+                place: Place::FolderTag(sub[2..].to_owned()),
                 group: format!("{top} {sub}"),
                 folder: top,
-                inside: true,
             },
-            Some(sub) => Place {
+            Some(sub) => Spot {
                 group: format!("{top} {sub}"),
-                tag: None,
+                place: Place::Folder,
                 folder: top,
-                inside: false,
             },
-            None => Place {
-                tag: tag(&top),
+            None => Spot {
+                place: match top.strip_prefix("# ") {
+                    Some(t) => Place::Tag(t.to_owned()),
+                    None if top == crate::places::PINNED => Place::Tag(top.clone()),
+                    None => Place::Folder,
+                },
                 group: top.clone(),
                 folder: top,
-                inside: false,
             },
         })
     }
 
-    fn selected_place(&self) -> Option<Place> {
+    fn selected_spot(&self) -> Option<Spot> {
         self.place_at(*self.visible.get(self.cursor)?)
     }
 
-    /// The row index of a session's row.
-    fn session_row(&self, id: &str) -> Option<usize> {
-        self.rows
-            .iter()
-            .position(|r| matches!(&r.kind, Kind::Session(s, _) if s == id))
+    /// The visible row of the session `id` in `group`, else its first row.
+    fn copy_position(&self, id: &str, group: Option<&str>) -> Option<usize> {
+        let rows: Vec<usize> = (0..self.visible.len())
+            .filter(|&n| self.rows[self.visible[n]].kind.key() == Some(id))
+            .collect();
+        rows.iter()
+            .copied()
+            .find(|&n| {
+                group.is_some()
+                    && self.place_at(self.visible[n]).map(|s| s.group).as_deref() == group
+            })
+            .or_else(|| rows.first().copied())
+    }
+
+    /// Select the session's row in `group`, else its first row.
+    fn select_copy(&mut self, id: &str, group: Option<&str>) {
+        if let Some(n) = self.copy_position(id, group) {
+            self.cursor = n;
+            self.settle();
+        }
     }
 
     /// The sessions of the group that holds row `i` that are not listed beneath another one,
@@ -12912,49 +12984,44 @@ impl App {
             })
     }
 
-    /// ctrl+l: the picker of places for the selected session. Its own folder comes first,
-    /// then every tag a session carries, `pinned`, and a new tag typed in place.
+    /// ctrl+l: the checklist of places for the selected session. Its folder comes first, then
+    /// every tag any session carries, above the folders and inside this session's folder,
+    /// `pinned`, and a new tag of either kind typed in place.
     fn place_selected(&mut self) {
-        let (Some(s), Some(_)) = (self.selected_session(), self.selected_place()) else {
-            self.status = "ctrl+l tags the selected session".into();
+        let (Some(s), Some(_)) = (self.selected_session(), self.selected_spot()) else {
+            self.status = "ctrl+l places the selected session".into();
             return;
         };
         let id = s.session_id.clone();
         let folder = self.data.home_folder(s).1;
-        let current = self.tag_of(&id);
-        let inside = self.inside_of(&id);
-        let mut tags: Vec<String> = self
+        let current = self.places_of(&id);
+        let mut names: Vec<String> = self
             .data
             .sessions
             .iter()
-            .filter_map(|s| self.tag_of(&s.session_id))
-            .filter(|t| t != crate::tags::PINNED)
+            .flat_map(|s| self.places_of(&s.session_id))
+            .filter_map(|p| p.tag().map(str::to_owned))
+            .filter(|t| t != crate::places::PINNED)
             .collect();
-        tags.sort_by_key(|t| t.to_lowercase());
-        tags.dedup();
-        let mark = |on: bool| if on { "●" } else { "○" };
+        names.sort_by_key(|t| t.to_lowercase());
+        names.dedup();
         let mut rows = vec![PickRow {
-            label: format!("{} {folder}", mark(current.is_none())),
-            text: String::new(),
+            label: folder.clone(),
+            text: Place::Folder.to_string(),
         }];
-        // Each tag twice: on its own above the folders, and inside this session's folder.
-        for t in tags {
-            let on = current.as_deref() == Some(&t);
+        for t in names {
             rows.push(PickRow {
-                label: format!("{} # {t}", mark(on && !inside)),
-                text: t.clone(),
+                label: format!("# {t}"),
+                text: Place::Tag(t.clone()).to_string(),
             });
             rows.push(PickRow {
-                label: format!("{} {folder} › # {t}", mark(on && inside)),
-                text: format!("{IN}{t}"),
+                label: format!("{folder} › # {t}"),
+                text: Place::FolderTag(t).to_string(),
             });
         }
         rows.push(PickRow {
-            label: format!(
-                "{} pinned · ctrl+t",
-                mark(current.as_deref() == Some(crate::tags::PINNED))
-            ),
-            text: crate::tags::PINNED.into(),
+            label: "pinned · ctrl+t".into(),
+            text: crate::places::PINNED.into(),
         });
         rows.push(PickRow {
             label: "+ new tag…".into(),
@@ -12964,44 +13031,71 @@ impl App {
             label: format!("+ new tag in {folder} ›"),
             text: NEW_TAG_IN.into(),
         });
-        let now = match (&current, inside) {
-            (Some(t), true) => format!("{IN}{t}"),
-            (t, _) => t.clone().unwrap_or_default(),
-        };
-        let at = rows.iter().position(|r| r.text == now).unwrap_or(0);
+        let checked = rows
+            .iter()
+            .map(|r| Place::parse(&r.text).is_ok_and(|p| current.contains(&p)))
+            .collect();
         self.mode = Mode::Pick(Pick {
-            title: "place this session",
+            title: "places · space checks · enter keeps · esc discards",
             rows,
-            at,
+            at: 0,
             fork: None,
             place: Some(id),
             input: Input::default(),
+            checked,
         });
     }
 
-    /// The picker's choice: a tag, a new one, or the session's folder.
-    fn place_chosen(&mut self, id: &str, text: &str, typed: &str) {
-        let inside = text == NEW_TAG_IN || text.starts_with(IN);
-        let tag = match text {
-            "" => None,
-            NEW_TAG | NEW_TAG_IN => match crate::tags::name(typed) {
-                Ok(name) => Some(name),
-                Err(e) => {
-                    self.status = warning(format!("{e:#}"));
-                    return;
+    /// A new tag typed on its row joins the checklist, checked.
+    fn place_new(pick: &mut Pick) -> Result<(), String> {
+        let name = crate::places::name(&pick.input.text).map_err(|e| format!("{e:#}"))?;
+        let place = if pick.rows[pick.at].text == NEW_TAG_IN {
+            Place::FolderTag(name)
+        } else {
+            Place::Tag(name)
+        };
+        let text = place.to_string();
+        let at = match pick.rows.iter().position(|r| r.text == text) {
+            Some(at) => at,
+            None => {
+                let at = pick.rows.len() - 3;
+                let folder = pick.rows[0].label.clone();
+                pick.rows.insert(
+                    at,
+                    PickRow {
+                        label: match &place {
+                            Place::FolderTag(t) => format!("{folder} › # {t}"),
+                            _ => text.clone(),
+                        },
+                        text,
+                    },
+                );
+                pick.checked.insert(at, false);
+                if at <= pick.at {
+                    pick.at += 1;
                 }
-            },
-            tag => Some(tag.strip_prefix(IN).unwrap_or(tag).to_owned()),
+                at
+            }
         };
-        self.set_tag(id, tag.as_deref(), inside);
-        self.select_row(id);
-        if self.status.starts_with("tag kept") {
-            return;
+        pick.checked[at] = true;
+        pick.input = Input::default();
+        Ok(())
+    }
+
+    /// The checklist kept: every checked place, the folder when none is.
+    fn places_chosen(&mut self, id: &str, rows: &[PickRow], checked: &[bool], group: Option<&str>) {
+        let set: crate::places::Set = rows
+            .iter()
+            .zip(checked)
+            .filter(|(_, on)| **on)
+            .filter_map(|(r, _)| Place::parse(&r.text).ok())
+            .collect();
+        let n = set.len().max(1);
+        self.change_places(id, Some(set), None, None);
+        self.select_copy(id, group);
+        if !self.status.starts_with("places kept") {
+            self.status = format!("in {n} place{}", if n == 1 { "" } else { "s" });
         }
-        self.status = match &tag {
-            Some(tag) => format!("tagged {tag}"),
-            None => "back in its folder".into(),
-        };
     }
 
     /// A press on a session row picks it up; dragging it to another row and releasing drops
@@ -13054,7 +13148,7 @@ impl App {
                 }
                 self.status.clear();
                 if let Some(i) = at {
-                    self.drop_row(&drag.id, i);
+                    self.drop_row(&drag.id, drag.from, i);
                 }
                 self.invalidate();
                 true
@@ -13063,14 +13157,12 @@ impl App {
         }
     }
 
-    /// A session dropped on row `i`: a tag's heading tags it, its own folder's heading clears
-    /// its tag, a row of its own group puts it there. Another folder's heading is refused,
-    /// since a session runs where it runs; a row of another group counts as its heading.
-    fn drop_row(&mut self, id: &str, i: usize) {
-        let (Some(from), Some(to)) = (
-            self.session_row(id).and_then(|r| self.place_at(r)),
-            self.place_at(i),
-        ) else {
+    /// The copy of a session at row `from` dropped on row `i` moves there: the place it was
+    /// dragged from is removed and the one dropped on added. Inside its own group it is
+    /// reordered. Another folder, or a tag inside another folder, refuses it, since a session
+    /// runs where it runs; a row of another group counts as its heading.
+    fn drop_row(&mut self, id: &str, from: usize, i: usize) {
+        let (Some(from), Some(to)) = (self.place_at(from), self.place_at(i)) else {
             return;
         };
         if from.group == to.group {
@@ -13082,34 +13174,30 @@ impl App {
             }
             return;
         }
-        let home = self
+        let Some(home) = self
             .data
             .sessions
             .iter()
             .find(|s| s.session_id == id)
-            .map(|s| self.data.home_folder(s).1);
-        // A tag inside another folder is that folder's: refused like its heading.
-        if let Some(tag) = to
-            .tag
-            .as_ref()
-            .filter(|_| !to.inside || home.as_ref() == Some(&to.folder))
-        {
-            self.set_tag(id, Some(tag), to.inside);
-            self.status = format!("tagged {tag}");
+            .map(|s| self.data.home_folder(s).1)
+        else {
+            return;
+        };
+        if matches!(to.place, Place::Folder | Place::FolderTag(_)) && to.folder != home {
+            self.status = warning(format!(
+                "A session keeps its folder. Drop it on a tag or on {home}."
+            ));
             return;
         }
-        match home {
-            Some(home) if home == to.folder => {
-                self.set_tag(id, None, false);
-                self.status = "back in its folder".into();
-            }
-            Some(home) => {
-                self.status = warning(format!(
-                    "A session keeps its folder. Drop it on a tag or on {home}."
-                ));
-            }
-            None => {}
-        }
+        self.change_places(id, None, Some(&from.place), Some(&to.place));
+        self.select_copy(id, Some(&to.group));
+        self.status = match &to.place {
+            Place::Folder => "back in its folder".into(),
+            p => format!(
+                "moved to {}",
+                p.tag().map_or(p.to_string(), |t| format!("# {t}"))
+            ),
+        };
     }
 
     /// Put `id` where `other`, row `i`, is in their group's hand order, and keep the order.
@@ -13124,20 +13212,22 @@ impl App {
         };
         let moved = roots.remove(from);
         roots.insert(to, moved);
-        let Some(place) = self.place_at(i) else {
+        let Some(spot) = self.place_at(i) else {
             return;
         };
-        self.keep_order(&place.group, roots);
+        self.keep_order(&spot.group, roots);
+        self.select_copy(id, Some(&spot.group));
     }
 
     /// Store a group's hand order. The first time a group is ordered by hand, the footer says
     /// it no longer follows `sort`.
     fn keep_order(&mut self, group: &str, roots: Vec<String>) {
-        let mut store = crate::tags::Tags::load(&self.state);
+        let mut store = Places::load(&self.state);
         let first = !store.order.contains_key(group) && self.data.sort != config::Sort::Manual;
         store.order.insert(group.to_owned(), roots);
         let saved = store.save(&self.state);
-        self.tags = store;
+        self.places = store;
+        self.add_launch_places();
         self.rebuild();
         self.status = match saved {
             Err(e) => warning(format!("order kept for this dashboard only: {e:#}")),
@@ -13154,7 +13244,7 @@ impl App {
         let Some(i) = self.visible.get(self.cursor).copied() else {
             return;
         };
-        let (Kind::Session(id, _), Some(place)) = (&self.rows[i].kind, self.place_at(i)) else {
+        let (Kind::Session(id, _), Some(spot)) = (&self.rows[i].kind, self.place_at(i)) else {
             self.status = "ctrl+b moves the selected session inside its group".into();
             return;
         };
@@ -13164,10 +13254,10 @@ impl App {
             self.status = warning("a fork stays beneath the session it came from");
             return;
         }
-        self.status = format!("moving inside {}", place.group);
+        self.status = format!("moving inside {}", spot.group);
         self.mode = Mode::Move(Move {
             id,
-            group: place.group,
+            group: spot.group,
             roots,
         });
     }
@@ -13183,10 +13273,10 @@ impl App {
         let to = (at as isize + delta).clamp(0, m.roots.len() as isize - 1) as usize;
         let moved = m.roots.remove(at);
         m.roots.insert(to, moved);
-        self.tags.order.insert(m.group.clone(), m.roots.clone());
-        let id = m.id.clone();
+        self.places.order.insert(m.group.clone(), m.roots.clone());
+        let (id, group) = (m.id.clone(), m.group.clone());
         self.rebuild();
-        self.select_row(&id);
+        self.select_copy(&id, Some(&group));
     }
 
     fn rename_selected(&mut self) {
@@ -15791,6 +15881,7 @@ impl App {
             fork: Some(Box::new(entry)),
             place: None,
             input: Input::default(),
+            checked: Vec::new(),
         });
     }
 
@@ -16269,14 +16360,15 @@ impl App {
                 json!({"reader": "pending_launch", "operation_id": id}),
             );
         }
-        // Started from a tag's group, the session joins the tag. Pinning stays a choice.
-        if let Some((tag, inside)) = self
-            .selected_place()
-            .and_then(|p| Some((p.tag?, p.inside)))
-            .filter(|(t, _)| t != crate::tags::PINNED)
+        // Started from a group, the session sits in that group alone, as if moved there.
+        // Pinning stays a choice, and a launch from a folder needs no entry.
+        if let Some(place) = self
+            .selected_spot()
+            .map(|s| s.place)
+            .filter(|p| *p != Place::Tag(crate::places::PINNED.into()) && *p != Place::Folder)
         {
-            self.tags.set(&id, Some(&tag), false, inside);
-            self.launch_tags.insert(id.clone(), (tag, inside));
+            self.launch_places.insert(id.clone(), place);
+            self.add_launch_places();
         }
         self.data.sessions.push(session.clone());
         self.pending.push(Pending {
@@ -16947,7 +17039,9 @@ impl App {
                     keys.push(("ctrl+y", "fork"));
                 }
                 if let Some(s) = self.selected_session() {
-                    let pin = if self.tag_of(&s.session_id).as_deref() == Some(crate::tags::PINNED)
+                    let pin = if self
+                        .places_of(&s.session_id)
+                        .contains(&Place::Tag(crate::places::PINNED.into()))
                     {
                         "unpin"
                     } else {
@@ -17338,7 +17432,8 @@ impl App {
                 }
                 _ => {
                     self.mode = Mode::Normal;
-                    self.tags = crate::tags::Tags::load(&self.state);
+                    self.places = Places::load(&self.state);
+                    self.add_launch_places();
                     self.status = "kept its place".into();
                     self.rebuild();
                 }
@@ -17346,27 +17441,41 @@ impl App {
             return Ok(false);
         }
         if let Mode::Pick(pick) = &mut self.mode {
-            // The last row of the place picker takes the new tag's name as it is typed.
-            if pick.place.is_some()
-                && pick
+            if let Some(id) = pick.place.clone() {
+                let new = pick
                     .rows
                     .get(pick.at)
-                    .is_some_and(|r| r.text == NEW_TAG || r.text == NEW_TAG_IN)
-                && !matches!(action, KeyAction::Up | KeyAction::Down | KeyAction::Enter)
-                && code != KeyCode::Esc
-                && pick.input.key(code, mods)
-            {
-                return Ok(false);
-            }
-            if let (KeyAction::Enter, Some(id)) = (action, pick.place.clone()) {
-                let text = pick
-                    .rows
-                    .get(pick.at)
-                    .map(|r| r.text.clone())
-                    .unwrap_or_default();
-                let typed = pick.input.text.clone();
-                self.close_pick();
-                self.place_chosen(&id, &text, &typed);
+                    .is_some_and(|r| r.text == NEW_TAG || r.text == NEW_TAG_IN);
+                match action {
+                    KeyAction::Up => pick.step(-1),
+                    KeyAction::Down => pick.step(1),
+                    // Enter on a `+ new tag` row adds the typed tag, checked, and stays.
+                    KeyAction::Enter if new && !pick.input.text.trim().is_empty() => {
+                        if let Err(e) = Self::place_new(pick) {
+                            self.status = warning(e);
+                        }
+                    }
+                    KeyAction::Enter => {
+                        let (rows, checked) =
+                            (std::mem::take(&mut pick.rows), pick.checked.clone());
+                        let group = self.selected_spot().map(|s| s.group);
+                        self.close_pick();
+                        self.places_chosen(&id, &rows, &checked, group.as_deref());
+                    }
+                    _ if code == KeyCode::Esc => {
+                        self.close_pick();
+                        self.status = "places unchanged".into();
+                    }
+                    _ if new => {
+                        pick.input.key(code, mods);
+                    }
+                    _ if code == KeyCode::Char(' ') => {
+                        if let Some(on) = pick.checked.get_mut(pick.at) {
+                            *on = !*on;
+                        }
+                    }
+                    _ => {}
+                }
                 return Ok(false);
             }
             match action {
@@ -18663,6 +18772,12 @@ impl App {
         height: usize,
         width: u16,
     ) -> Vec<Line<'static>> {
+        let chosen = cursor
+            .and_then(|c| visible.get(c))
+            .and_then(|&i| match &rows[i].kind {
+                Kind::Session(id, _) => Some(id.as_str()),
+                _ => None,
+            });
         visible
             .iter()
             .enumerate()
@@ -18682,10 +18797,23 @@ impl App {
                     && row.kind.key().is_some_and(|k| self.highlighted.contains(k));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 let mut mark = 0;
+                // The selected session's rows in its other places carry a faint mark.
+                let copy = !selected
+                    && matches!(row.kind, Kind::Session(..))
+                    && row.kind.key().is_some()
+                    && row.kind.key() == chosen;
                 if row.kind.selectable() {
                     spans.push(Span::styled(
-                        if selected { "▌ " } else { "  " },
-                        Style::default().fg(if armed { Color::Red } else { ORANGE }),
+                        match () {
+                            () if selected => "▌ ",
+                            () if copy => "┆ ",
+                            () => "  ",
+                        },
+                        Style::default().fg(match () {
+                            () if armed => Color::Red,
+                            () if copy => Color::DarkGray,
+                            () => ORANGE,
+                        }),
                     ));
                     mark = 2;
                 }
@@ -23797,7 +23925,7 @@ states:
                 false,
                 false,
                 &HashSet::new(),
-                &crate::tags::Tags::default(),
+                &Places::default(),
                 widths,
             );
             let row = rows
@@ -23955,8 +24083,8 @@ states:
         assert!(!app.pending.is_empty(), "plain enter still starts it");
     }
 
-    /// Pinning a folder's only session moved it under "pinned" and left the folder with no
-    /// row, so `+ add folder` kept offering a folder that adding could not show.
+    /// A folder's only session placed under "pinned" alone left the folder with no row, so
+    /// `+ add folder` kept offering a folder that adding could not show.
     #[test]
     fn a_folder_whose_only_session_is_pinned_keeps_its_row() {
         let d = dir();
@@ -23979,6 +24107,8 @@ states:
             .unwrap();
         app.cursor = at;
         app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
+        // Pinning adds a place; taking the folder out leaves the session only under `pinned`.
+        app.change_places(A, None, Some(&Place::Folder), None);
         poll_until(&mut app, |a| a.loading.is_none());
         let name = fleet::tilde(&work);
         let row = app
@@ -24373,7 +24503,7 @@ states:
                 true,
                 false,
                 &HashSet::new(),
-                &crate::tags::Tags::default(),
+                &Places::default(),
                 &mut Widths::new(),
             )
             .into_iter()
@@ -24805,7 +24935,7 @@ states:
             false,
             false,
             &hidden,
-            &crate::tags::Tags::default(),
+            &Places::default(),
             &mut Widths::new(),
         );
         assert_eq!(

@@ -35,6 +35,15 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Action>,
 }
+/// A change to the places a session is listed in.
+#[derive(Subcommand)]
+enum PlaceChange {
+    /// List the session in PLACE too: `folder`, `# NAME`, `folder › # NAME` or `pinned`.
+    Add { place: String },
+    /// Take the session out of PLACE; out of its last place it returns to its folder.
+    Remove { place: String },
+}
+
 #[derive(Subcommand)]
 enum ConfigTask {
     /// Set one setting by its dotted path, such as `columns`, `highlight` or `defaults.model`.
@@ -222,20 +231,13 @@ enum Action {
         id: String,
         name: String,
     },
-    /// Put a session under a tag in the dashboard's list, or back under its folder with
-    /// `--clear`. With no id, print every tagged session; see docs/cli.md.
-    Tag {
+    /// The places a session is listed in on the dashboard: `cones place ID` lists them,
+    /// `add` and `remove` change one, and no id lists every placed session; see docs/cli.md.
+    Place {
         /// The full session id as `cones ls` prints it.
         id: Option<String>,
-        /// The tag; `pinned` pins the session as ctrl+t does.
-        #[arg(conflicts_with = "clear")]
-        name: Option<String>,
-        /// Return the session to its folder.
-        #[arg(long, requires = "id")]
-        clear: bool,
-        /// Show the tag inside the session's folder, `folder > # tag`, instead of on its own.
-        #[arg(long, requires = "name")]
-        inside: bool,
+        #[command(subcommand)]
+        change: Option<PlaceChange>,
     },
     /// Ask a conversation one question in a read-only fork its harness keeps nothing of, and
     /// print the answer. The conversation itself is not written to; see docs/cli.md.
@@ -1019,16 +1021,13 @@ fn execute(cli: Cli) -> Result<i32> {
             println!("renamed {id} ({}) to {}", session.harness, name.trim());
             Ok(0)
         }
-        Action::Tag {
-            id,
-            name,
-            clear,
-            inside,
-        } => {
-            let mut store = cones::tags::Tags::load(&state);
+        Action::Place { id, change } => {
+            let mut store = cones::places::Places::load(&state);
             let Some(id) = id else {
-                for (id, tag) in store.tags.iter().filter(|(_, t)| !t.is_empty()) {
-                    println!("{id}\t{tag}");
+                for (id, set) in &store.places {
+                    for place in set {
+                        println!("{id}\t{place}");
+                    }
                 }
                 return Ok(0);
             };
@@ -1039,25 +1038,27 @@ fn execute(cli: Cli) -> Result<i32> {
                     .find(|s| s.session_id == id)
                     .and_then(|s| s.forked_from.as_deref())
             };
-            match (name, clear) {
-                (Some(name), _) => {
-                    let name = cones::tags::name(&name)?;
-                    store.set(&id, Some(&name), false, inside);
-                    store.save(&state)?;
-                    println!("tagged {id} {name}");
-                }
-                (None, true) => {
-                    let mut without = store.clone();
-                    without.tags.remove(&id);
-                    let inherited = without.of(&id, parent).is_some();
-                    store.set(&id, None, inherited, false);
-                    store.save(&state)?;
-                    println!("{id} is back under its folder");
-                }
-                (None, false) => match store.of(&id, parent) {
-                    Some(tag) => println!("{tag}"),
-                    None => println!("-"),
-                },
+            let changed = change.is_some();
+            match change {
+                Some(PlaceChange::Add { place }) => store.change(
+                    &id,
+                    None,
+                    Some(&cones::places::Place::parse(&place)?),
+                    parent,
+                ),
+                Some(PlaceChange::Remove { place }) => store.change(
+                    &id,
+                    Some(&cones::places::Place::parse(&place)?),
+                    None,
+                    parent,
+                ),
+                None => {}
+            }
+            if changed {
+                store.save(&state)?;
+            }
+            for place in store.of(&id, parent) {
+                println!("{place}");
             }
             Ok(0)
         }

@@ -66,12 +66,14 @@ session's context through its harness's own `/compact`.
 
 ## Arranging the owner's sessions
 
-Asked to "arrange my sessions", list them with `cones ls --json` and `cones tag`, which prints
-the tags they already carry. For a session whose title does not say what it is about, ask it
-with `cones btw ID "what are you working on, and for whom?"`. Propose tags that group the work,
-such as one per person or question, and clearer names, and wait for the owner to agree. Then
-apply them with `cones tag ID NAME` and `cones rename ID NAME`. A tag changes only where the
-dashboard lists a session; its folder and where it runs stay the same.
+Asked to "arrange my sessions", list them with `cones ls --json` and `cones place`, which
+prints the places they already sit in. For a session whose title does not say what it is about,
+ask it with `cones btw ID "what are you working on, and for whom?"`. Propose tags that group
+the work, such as one per person or question, and clearer names, and wait for the owner to
+agree. Then apply them with `cones place ID add "# NAME"` (or `"folder › # NAME"` for a heading
+inside its folder), `cones place ID remove folder` when it should leave its folder's list, and
+`cones rename ID NAME`. A session can sit in several places; a place changes only where the
+dashboard lists it, never its folder or where it runs.
 
 ## Finding a fork of your conversation
 

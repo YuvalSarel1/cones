@@ -18,7 +18,7 @@ states:
         - action: fork
           description: Fork the selected conversation.
         - action: place
-          description: Tag a session; ctrl+t pins it.
+          description: Place a session; ctrl+t pins it.
         - action: reorder
           description: Reorder a session in its group.
         - action: highlight
@@ -98,7 +98,7 @@ states:
         description: "Pin the selected session above every group, or unpin it. Pins survive restarts."
       - keys: ["ctrl+l"]
         action: place
-        description: "Choose the selected session's place: its folder, a tag, pinned, or a new tag."
+        description: "Check the places the selected session sits in: its folder, tags, pinned, or a new tag."
       - keys: ["ctrl+b"]
         action: reorder
         description: "Pick up the selected session; up and down move it inside its group, enter keeps the order, esc puts it back."

@@ -37,7 +37,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones wait ID... [--timeout S]` | [Block until a session settles](#waiting-on-a-session) and print `ID<TAB>STATE`. |
 | `cones send ID TEXT` | [Send one note](#sending-a-note) to a live session in any folder. |
 | `cones rename ID NAME` | [Name a session](#renaming-a-session) through its harness's own rename, as the dashboard's `ctrl+n` does. |
-| `cones tag [ID [NAME [--inside] \| --clear]]` | [Put a session under a tag](#tagging-a-session) in the dashboard, or back under its folder. |
+| `cones place [ID [add\|remove PLACE]]` | [List a session in a place](#placing-a-session) in the dashboard, or take it out of one. |
 | `cones btw ID QUESTION [--model ID] [--timeout S]` | [Ask a side question](#asking-a-side-question) in a read-only fork the harness keeps nothing of, and print the answer. |
 | `cones compact ID` | [Compact a session's context](#compacting-a-session) through its harness's own compaction. |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
@@ -396,21 +396,23 @@ must be one line. Each harness is named the way its own rename does it:
 A client cones does not own, a harness with no session name of its own (Gemini, Cursor Agent,
 Copilot, Amp, Droid, Kimi) and an ambiguous or unknown id fail without changing anything.
 
-### Tagging a session
+### Placing a session
 
 ```sh
-cones tag 5bf8392e sales-questions
-cones tag 5bf8392e sales-questions --inside
-cones tag 5bf8392e --clear
-cones tag
+cones place 5bf8392e add "# sales-questions"
+cones place 5bf8392e add "folder › # legal"
+cones place 5bf8392e remove folder
+cones place 5bf8392e
+cones place
 ```
 
-Puts the session under the [tag](dashboard.md#tags) NAME in the dashboard's list, as `ctrl+l`
-does; `pinned` pins it. `--inside` shows the tag inside the session's folder,
-`folder › # NAME`, instead of on its own above the folders. A leading `#` is dropped and the name must be one line. `--clear`
-returns it to its folder, and an id alone prints its tag or `-`. With no id it prints every
-tagged session, one `ID<TAB>TAG` line each. A running dashboard shows the change on its next
-refresh. Order within a group is set in the dashboard only.
+Lists the session in, or takes it out of, one of its [places](dashboard.md#places) in the
+dashboard's list, as `ctrl+l` does, and prints the places it then sits in, one per line. A place
+is spelled `folder`, `# NAME`, `folder › # NAME` (`folder > # NAME` also works) or `pinned`; the
+name must be one line. Both are idempotent, and removing the last place returns the session to
+its folder. An id alone prints its places. With no id it prints every placed session, one
+`ID<TAB>PLACE` line per place. A running dashboard shows the change on its next refresh. Order
+within a group is set in the dashboard only.
 
 ### Asking a side question
 

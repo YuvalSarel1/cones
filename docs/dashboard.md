@@ -185,9 +185,9 @@ terminal as the only way in. A warning wider than the composer's rule ends in `�
 | `ctrl+n` | Rename a Claude, Codex, pi or OpenCode session, as [`cones rename`](cli.md#renaming-a-session) does. |
 | `ctrl+p` | Toggle a temporary session highlight. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
-| `ctrl+l` | [Place a session](#tags) under a tag, `pinned` or a new tag, or back in its folder. |
+| `ctrl+l` | Check the [places](#places) a session sits in. |
 | `ctrl+t` | Pin a session above every group, or unpin it. |
-| `ctrl+b` | [Reorder a session](#tags) inside its group. |
+| `ctrl+b` | [Reorder a row](#places) inside its group. |
 | `ctrl+r` | Refresh now. |
 
 Rename accepts a manual name or an empty submission for native automatic naming. Codex's
@@ -215,42 +215,50 @@ available native session, follows a running run's output if unjoinable, or reviv
 run. A running run's state comes from its agent, so one waiting on input reads `input`. A
 resumed run retains its row and original ledger outcome while displaying live values.
 
-### Tags
+### Places
 
-Each session sits in one place: under its tag if it has one, otherwise under its folder. A
-session's tag sits either on its own or inside its folder. On its own, the tag heads a group
-above the folders, which can hold sessions from any folder, and each of its rows names its
-folder's last part, dimmed, after the title, `· in research`. Inside its folder, the tag is an
-indented `# NAME` heading under that folder, `folder › # NAME`. One tag can have both: the
-sessions placed on their own share the group above, and those placed inside a folder share
-that folder's heading. A tag exists while a session carries it; the last one leaving removes
-the heading. A folder heading shows while it holds untagged sessions or a tag inside it,
-and an open folder keeps its row with `no sessions here`. `pinned` is a tag that always heads
-the list. A tag changes only the view: the folder still decides where the session runs, its
-coordinator and its comms.
+A session sits in any number of places, each one a row of its own:
 
-`ctrl+l` opens the place picker for the selected session: its own folder first, which clears
-the tag, then every tag a session carries twice, `# NAME` on its own and `folder › # NAME`
-inside the folder, then `pinned`, `+ new tag…` and `+ new tag in folder ›`, where the name is
-typed on the row itself. `ctrl+t` toggles `pinned` directly.
+| Place | Row |
+| --- | --- |
+| Its folder | Under the folder's heading. A session placed nowhere sits here. |
+| `# NAME` | In a group above the folders, which can hold sessions from any folder. Each row names its folder's last part, dimmed, after the title, `· in research`. |
+| `folder › # NAME` | Under an indented `# NAME` heading inside the session's own folder. |
+| `pinned` | In the group that heads the list, also naming the folder. |
 
-With the mouse, press a session row, drag it and release. On a tag's heading the session takes
-that tag, on its own or inside its folder as the heading is; a tag inside another folder refuses
-it like that folder's heading; on its own folder's heading it leaves its tag; on a row of its own group it moves
-there. Another folder's heading refuses the drop, since a session keeps its folder, and the
-footer names the headings that accept it. A row of another group counts as that group's heading.
+A group exists while a session sits in it; the last one leaving removes the heading, and an
+open folder keeps its row with `no sessions here`. Removing a session's last place returns it
+to its folder, so a session never leaves the list. A place changes only the view: the folder
+still decides where the session runs, its coordinator and its comms.
 
-`ctrl+b` picks up the selected session; up and down move it inside its group, Enter keeps the
-order and Escape puts it back. A fork or launch listed beneath another session moves with it
-and cannot be picked up alone. A group reordered by hand keeps that order whatever
+A session's rows are one session. Each shows `+N` after its title when the session sits in N
+other places, and while one is selected the others carry a faint `┆` mark. Opening, stopping,
+renaming, state, unread marks and removal act on the session, so every row agrees and the
+header counts each session once. The cursor, a drag and a reorder act on the row they are on.
+Grouping by state lists each session once and ignores places other than `pinned`.
+
+`ctrl+l` opens a checklist of places for the selected session: its folder, every tag a
+session carries as `# NAME` and as `folder › # NAME`, `pinned`, and `+ new tag…` and
+`+ new tag in folder ›`, where a name typed on the row and Enter add it, checked. Space checks
+or unchecks a line, Enter keeps the checklist and Escape discards it. Unchecking everything
+returns the session to its folder. `ctrl+t` toggles `pinned` directly.
+
+With the mouse, press a session row, drag it and release. A drop moves that row: the session
+leaves the place it was dragged from and takes the one dropped on, a tag of either kind or its
+own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
+session keeps its folder, and the footer names the folder that accepts it. A drop on a row of
+its own group reorders it there; a row of another group counts as that group's heading.
+
+`ctrl+b` picks up the selected row; up and down move it inside its group, Enter keeps the order
+and Escape puts it back. A fork or launch listed beneath another session moves with it and
+cannot be picked up alone. A group reordered by hand keeps that order whatever
 [`sort`](jobs.md#list-settings) says, and the footer says so the first time. A session started
-from a tag's group, with `ctrl+o` or the composer, runs in the selected row's folder and joins
-the tag; one started from `pinned` is not pinned. Grouping by state ignores tags other than
-`pinned`.
+from a group other than its folder's, with `ctrl+o` or the composer, runs in the selected row's
+folder and sits in that group alone; one started from `pinned` is not pinned.
 
-A conversation that continues under a new id, a fork or a Claude resume, takes the tag and
-the position of the one it came from until it is given its own. Tags and hand orders live in
-[`tags.json`](jobs.md#stored-files); [`cones tag`](cli.md#tagging-a-session) writes the same
+A conversation that continues under a new id, a fork or a Claude resume, takes the places and
+the position of the one it came from until it is given its own. Places and hand orders live in
+[`tags.json`](jobs.md#stored-files); [`cones place`](cli.md#placing-a-session) writes the same
 file.
 
 ### Add a folder

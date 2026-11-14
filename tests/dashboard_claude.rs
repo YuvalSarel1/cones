@@ -637,7 +637,11 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     );
     let tags: Value =
         serde_json::from_str(&d.wait_file("state/tags.json", |t| t.contains(&rest.id))).unwrap();
-    assert_eq!(tags["tags"], json!({rest.id.as_str(): "pinned"}));
+    // Pinning adds a place: the session sits in its folder and under `pinned`.
+    assert_eq!(
+        tags["places"],
+        json!({rest.id.as_str(): ["folder", "pinned"]})
+    );
     d.keep("state/tags.json");
 
     // ctrl+p highlights the selected title in the configured colour, and again clears it.
@@ -661,7 +665,7 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     assert!(row(&screen, "Rest a while") > row(&screen, &project.display().to_string()));
     let tags: Value =
         serde_json::from_str(&fs::read_to_string(d.path("state/tags.json")).unwrap()).unwrap();
-    assert_eq!(tags["tags"], json!({}));
+    assert_eq!(tags["places"], json!({}));
     d.quit();
 }
 
