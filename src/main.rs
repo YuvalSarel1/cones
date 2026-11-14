@@ -189,6 +189,10 @@ enum Action {
         dir: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+        /// Every run in the ledger, finished ones included; `--job` implies it. Without it a run
+        /// is listed only while the dashboard's session list shows it: supervised or its agent live.
+        #[arg(long)]
+        runs: bool,
     },
     /// Reopen a conversation from history, detached, as the dashboard's Enter on a history row
     /// does. Prints its id; `cones send` gives it work.
@@ -832,7 +836,9 @@ fn execute(cli: Cli) -> Result<i32> {
             status,
             dir,
             json,
+            runs,
         } => {
+            let history = runs || job.is_some();
             cones::cost::init(&state, false);
             let ledger = Ledger::new(&state)?;
             if let Err(e) = cones::runner::reap_orphans(&ledger) {
@@ -859,14 +865,31 @@ fn execute(cli: Cli) -> Result<i32> {
             }
             // A run the dashboard hid is out of its rows here too; the ledger keeps it.
             let hidden = ledger.hidden()?;
+            // Launches carry `launched_by` as the dashboard nests them, so a script sees its tree.
+            let related = |mut rows: Vec<cones::fleet::Session>| -> anyhow::Result<_> {
+                cones::relations::apply(
+                    &cones::relations::read(&state)?,
+                    &claude,
+                    &mut rows,
+                    config::launched_under_parent(&jobs_path),
+                );
+                Ok(rows)
+            };
             // A run that started a session is that session in JSON, carrying its run.
-            let live = if json {
-                cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?
-            } else {
-                Vec::new()
+            let live = related(cones::tui::sessions(
+                &claude,
+                &state,
+                &config::defaults(&jobs_path),
+            )?)?;
+            let agent = |run: &cones::ledger::Run| {
+                run.started.session_id.as_deref().and_then(|id| {
+                    live.iter()
+                        .find(|s| s.session_id == id || s.native_id.as_deref() == Some(id))
+                })
             };
             for run in ledger.runs()?.into_iter().rev().filter(|r| {
                 !hidden.contains(&r.started.run_id)
+                    && (history || r.status() == "started" || agent(r).is_some())
                     && job
                         .as_ref()
                         .is_none_or(|j| r.started.job.as_ref() == Some(j))
@@ -880,9 +903,7 @@ fn execute(cli: Cli) -> Result<i32> {
             }) {
                 if json {
                     let projected = run.started.session_id.as_deref().map(|id| {
-                        let session = live
-                            .iter()
-                            .find(|s| s.session_id == id || s.native_id.as_deref() == Some(id));
+                        let session = agent(&run);
                         let state = session
                             .map_or_else(|| run.status().to_string(), |s| s.state.to_string());
                         let session = session.map_or_else(
@@ -928,12 +949,12 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
             // Append unowned fleet sessions using the run table's columns.
-            for s in cones::tui::fleet_rows(
+            for s in related(cones::tui::fleet_rows(
                 &claude,
                 &state,
                 &ledger.runs()?,
                 &config::defaults(&jobs_path),
-            )?
+            )?)?
             .into_iter()
             .filter(|s| {
                 job.is_none()

@@ -1269,7 +1269,28 @@ fn a_launch_is_listed_beneath_only_the_parent_it_names() {
             l["child"].as_str().unwrap().to_owned()
         })
         .collect();
-    assert_eq!(children, [mine, helpers], "{links}");
+    assert_eq!(children, [mine.clone(), helpers.clone()], "{links}");
+    // `cones ls --json` names the launcher, so a script sees the nesting the dashboard draws.
+    let launchers: std::collections::BTreeMap<String, Value> = f
+        .rows()
+        .iter()
+        .map(|r| {
+            let s = &r["session"];
+            (
+                s["session_id"].as_str().unwrap().to_owned(),
+                s["launched_by"].clone(),
+            )
+        })
+        .collect();
+    for (id, launcher) in &launchers {
+        let expected = if *id == mine || *id == helpers {
+            Value::from(parent.as_str())
+        } else {
+            Value::Null
+        };
+        assert_eq!(*launcher, expected, "{id} in {launchers:?}");
+    }
+    assert_eq!(launchers.len(), 4, "{launchers:?}");
 
     // `self` with no session to find, and a parent that has ended, start nothing.
     let started = f.background_pids().len();
@@ -1605,7 +1626,7 @@ impl Fixture {
 
     /// The run rows `cones ls --json` prints for the fixture.
     fn runs(&self) -> Vec<Value> {
-        let out = self.cones("ok", &["ls", "--json"]);
+        let out = self.cones("ok", &["ls", "--runs", "--json"]);
         assert!(out.status.success(), "{}", stderr(&out));
         String::from_utf8(out.stdout)
             .unwrap()

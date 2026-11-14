@@ -69,10 +69,10 @@ fn run_times_display_in_the_local_timezone_and_keep_utc_in_json() {
         utc.contains("09-17 22:30:00") && utc.contains("01-17 22:30:00"),
         "{utc}"
     );
-    let ls = run("Asia/Jerusalem", &["ls"]);
+    let ls = run("Asia/Jerusalem", &["ls", "--runs"]);
     assert!(ls.contains("2026-09-18T01:30:00+03:00"), "{ls}");
     assert!(ls.contains("2026-01-18T00:30:00+02:00"), "{ls}");
-    let json = run("Asia/Jerusalem", &["ls", "--json"]);
+    let json = run("Asia/Jerusalem", &["ls", "--runs", "--json"]);
     assert!(
         json.contains("2026-09-17T22:30:00Z") && json.contains("2026-01-17T22:30:00Z"),
         "{json}"
@@ -80,7 +80,8 @@ fn run_times_display_in_the_local_timezone_and_keep_utc_in_json() {
 }
 
 /// `--dir` is a folder and everything under it, worktrees included. The coordinator's roster
-/// narrows this to the folder's repository.
+/// narrows this to the folder's repository. A finished run is history, out of the session list
+/// and so out of a plain read, until `--runs` or `--job` asks for it.
 #[test]
 fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
     use cones::config::HarnessKind;
@@ -152,11 +153,26 @@ fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
         assert!(!text.contains("reason or tokens"), "{text}");
         text
     };
-    let all = run(&["ls"]);
+    let listed = run(&["ls"]);
+    for row in ["in-worktree", "elsewhere"] {
+        assert!(
+            listed.contains(row),
+            "plain read is missing {row}: {listed}"
+        );
+    }
+    for row in ["mine", "theirs"] {
+        assert!(!listed.contains(row), "a finished run is listed: {listed}");
+    }
+    let all = run(&["ls", "--runs"]);
     for row in ["mine", "theirs", "in-worktree", "elsewhere"] {
         assert!(all.contains(row), "unscoped read is missing {row}: {all}");
     }
-    let scoped = run(&["ls", "--dir", project.to_str().unwrap()]);
+    let job = run(&["ls", "--job", "mine"]);
+    assert!(
+        job.contains("mine") && !job.contains("theirs") && !job.contains("in-worktree"),
+        "a job's history alone: {job}"
+    );
+    let scoped = run(&["ls", "--runs", "--dir", project.to_str().unwrap()]);
     assert!(scoped.contains("mine"), "the folder's own run: {scoped}");
     assert!(
         scoped.contains("in-worktree"),
@@ -170,7 +186,7 @@ fn ls_scopes_runs_and_sessions_to_a_folder_and_its_worktrees() {
         !scoped.contains("elsewhere"),
         "a sibling folder's session leaked: {scoped}"
     );
-    let json = run(&["ls", "--dir", project.to_str().unwrap(), "--json"]);
+    let json = run(&["ls", "--runs", "--dir", project.to_str().unwrap(), "--json"]);
     let kinds: Vec<String> = json
         .lines()
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["kind"].to_string())
