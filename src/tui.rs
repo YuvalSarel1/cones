@@ -917,7 +917,7 @@ impl Data {
         let mut placed: Vec<(&Session, (String, String, String), bool)> = Vec::new();
         let mut lifted: HashSet<&str> = HashSet::new();
         // The tag each tagged session carries and the folder it would otherwise sit in.
-        let mut tagged: HashMap<&str, (&str, (String, String))> = HashMap::new();
+        let mut tagged: HashMap<&str, (&str, (String, String), bool)> = HashMap::new();
         for s in self
             .sessions
             .iter()
@@ -952,25 +952,21 @@ impl Data {
                 ((sort, name, String::new()), true)
             };
             if let Some(tag) = tag.filter(|_| !by_state) {
-                tagged.insert(s.session_id.as_str(), (tag, self.home_folder(s)));
+                let inside = tags.inside_of(&s.session_id, parent);
+                tagged.insert(s.session_id.as_str(), (tag, self.home_folder(s), inside));
             }
             placed.push((s, key, open));
         }
-        // A tag whose sessions share one folder is a heading inside it; one that spans folders,
-        // and `pinned` always, heads a group of its own, above the folders.
-        let mut spans: HashMap<&str, BTreeSet<&(String, String)>> = HashMap::new();
-        for (tag, home) in tagged.values() {
-            spans.entry(tag).or_default().insert(home);
-        }
+        // A tag placed inside its folder is a heading there, `folder > # tag`; otherwise it heads
+        // a group of its own above the folders. `pinned` heads the list.
         for (s, key, open) in &mut placed {
-            let Some((tag, _)) = tagged.get(s.session_id.as_str()) else {
+            let Some((tag, (sort, name), inside)) = tagged.get(s.session_id.as_str()) else {
                 continue;
             };
-            let homes = &spans[tag];
             *open = true;
             if *tag == crate::tags::PINNED {
                 continue;
-            } else if let [(sort, name)] = homes.iter().copied().collect::<Vec<_>>()[..] {
+            } else if *inside {
                 *key = (sort.clone(), name.clone(), format!("# {tag}"));
             } else {
                 lifted.insert(s.session_id.as_str());
@@ -2491,7 +2487,7 @@ fn sub_heading(sub: &str) -> String {
 fn group_id(name: &str, sub: &str) -> String {
     match sub {
         "" => name.to_owned(),
-        _ if sub.starts_with("# ") => sub.to_owned(),
+        _ if sub.starts_with("# ") => format!("{name} {sub}"),
         _ => format!("{name} {}", sub_heading(sub)),
     }
 }
@@ -8295,10 +8291,16 @@ struct Place {
     group: String,
     tag: Option<String>,
     folder: String,
+    /// The tag's heading sits inside `folder`.
+    inside: bool,
 }
 
 /// The picker row that takes a typed tag name.
 const NEW_TAG: &str = "\u{0}new";
+/// The picker row that takes a typed tag name placed inside the session's folder.
+const NEW_TAG_IN: &str = "\u{0}new-in";
+/// A picker row's text for an existing tag placed inside the session's folder.
+const IN: &str = "\u{0}in ";
 
 /// A short list picked with the arrows: the copy actions, or where ctrl+y forks to.
 struct Pick {
@@ -8335,7 +8337,7 @@ impl Pick {
                 format!("{} {}", if chosen { "\u{203a}" } else { " " }, row.label),
                 if chosen { bold() } else { dim() },
             )];
-            if row.text == NEW_TAG && chosen {
+            if (row.text == NEW_TAG || row.text == NEW_TAG_IN) && chosen {
                 spans.push(Span::raw(" "));
                 spans.extend(self.input.spans("type a name"));
             }
@@ -9658,7 +9660,8 @@ struct App {
     tags: crate::tags::Tags,
     /// The tag a launch from a tag group gives its session, by the placeholder's id, until the
     /// harness names the session.
-    launch_tags: HashMap<String, String>,
+    /// A launch's tag and whether it sits inside its folder, until the harness names it.
+    launch_tags: HashMap<String, (String, bool)>,
     /// A session row pressed with the mouse: where, and the row the pointer is over once it
     /// has left that one.
     row_drag: Option<RowDrag>,
@@ -11845,9 +11848,9 @@ impl App {
         let mut replaced = self.reconcile_launches(&mut data);
         // A launch from a tag group takes the tag once the harness names its session.
         for (placeholder, id) in &replaced {
-            if let Some(tag) = self.launch_tags.remove(placeholder) {
+            if let Some((tag, inside)) = self.launch_tags.remove(placeholder) {
                 let mut store = crate::tags::Tags::load(&self.state);
-                store.set(id, Some(&tag), false);
+                store.set(id, Some(&tag), false, inside);
                 if let Err(e) = store.save(&self.state) {
                     self.status = warning(format!("tag kept for this dashboard only: {e:#}"));
                 }
@@ -11859,8 +11862,8 @@ impl App {
         if !matches!(self.mode, Mode::Move(_)) {
             self.tags = crate::tags::Tags::load(&self.state);
         }
-        for (id, tag) in &self.launch_tags {
-            self.tags.tags.insert(id.clone(), tag.clone());
+        for (id, (tag, inside)) in &self.launch_tags {
+            self.tags.set(id, Some(tag), false, *inside);
         }
         // The coordinator writes its claim seconds after the harness names its session, so the
         // mark the placeholder carried stays on that session until the claim takes over.
@@ -12764,8 +12767,20 @@ impl App {
         self.tags.of(id, parent).map(str::to_owned)
     }
 
+    /// Whether the session's tag sits inside its folder.
+    fn inside_of(&self, id: &str) -> bool {
+        let parent = |id: &str| {
+            self.data
+                .sessions
+                .iter()
+                .find(|s| s.session_id == id)
+                .and_then(|s| s.forked_from.as_deref())
+        };
+        self.tags.inside_of(id, parent)
+    }
+
     /// Give a session a tag, or clear it back to its folder, and keep it in the state file.
-    fn set_tag(&mut self, id: &str, tag: Option<&str>) {
+    fn set_tag(&mut self, id: &str, tag: Option<&str>, inside: bool) {
         let mut store = crate::tags::Tags::load(&self.state);
         let inherited = tag.is_none() && {
             let mut without = store.clone();
@@ -12779,13 +12794,13 @@ impl App {
             };
             without.of(id, parent).is_some()
         };
-        store.set(id, tag, inherited);
+        store.set(id, tag, inherited, inside);
         if let Err(e) = store.save(&self.state) {
             self.status = warning(format!("tag kept for this dashboard only: {e:#}"));
         }
         self.tags = store;
-        for (id, tag) in &self.launch_tags {
-            self.tags.tags.insert(id.clone(), tag.clone());
+        for (id, (tag, inside)) in &self.launch_tags {
+            self.tags.set(id, Some(tag), false, *inside);
         }
         self.rebuild();
     }
@@ -12797,7 +12812,7 @@ impl App {
             return;
         };
         let pinned = self.tag_of(&id).as_deref() == Some(crate::tags::PINNED);
-        self.set_tag(&id, (!pinned).then_some(crate::tags::PINNED));
+        self.set_tag(&id, (!pinned).then_some(crate::tags::PINNED), false);
     }
 
     /// The group the row at `i` of `rows` sits in, read off the headings above it.
@@ -12832,18 +12847,21 @@ impl App {
         Some(match sub {
             Some(sub) if sub.starts_with("# ") => Place {
                 tag: tag(&sub),
-                group: sub,
+                group: format!("{top} {sub}"),
                 folder: top,
+                inside: true,
             },
             Some(sub) => Place {
                 group: format!("{top} {sub}"),
                 tag: None,
                 folder: top,
+                inside: false,
             },
             None => Place {
                 tag: tag(&top),
                 group: top.clone(),
                 folder: top,
+                inside: false,
             },
         })
     }
@@ -12904,6 +12922,7 @@ impl App {
         let id = s.session_id.clone();
         let folder = self.data.home_folder(s).1;
         let current = self.tag_of(&id);
+        let inside = self.inside_of(&id);
         let mut tags: Vec<String> = self
             .data
             .sessions
@@ -12918,10 +12937,18 @@ impl App {
             label: format!("{} {folder}", mark(current.is_none())),
             text: String::new(),
         }];
-        rows.extend(tags.into_iter().map(|t| PickRow {
-            label: format!("{} # {t}", mark(current.as_deref() == Some(&t))),
-            text: t,
-        }));
+        // Each tag twice: on its own above the folders, and inside this session's folder.
+        for t in tags {
+            let on = current.as_deref() == Some(&t);
+            rows.push(PickRow {
+                label: format!("{} # {t}", mark(on && !inside)),
+                text: t.clone(),
+            });
+            rows.push(PickRow {
+                label: format!("{} {folder} › # {t}", mark(on && inside)),
+                text: format!("{IN}{t}"),
+            });
+        }
         rows.push(PickRow {
             label: format!(
                 "{} pinned · ctrl+t",
@@ -12933,10 +12960,15 @@ impl App {
             label: "+ new tag…".into(),
             text: NEW_TAG.into(),
         });
-        let at = rows
-            .iter()
-            .position(|r| r.text == current.as_deref().unwrap_or_default())
-            .unwrap_or(0);
+        rows.push(PickRow {
+            label: format!("+ new tag in {folder} ›"),
+            text: NEW_TAG_IN.into(),
+        });
+        let now = match (&current, inside) {
+            (Some(t), true) => format!("{IN}{t}"),
+            (t, _) => t.clone().unwrap_or_default(),
+        };
+        let at = rows.iter().position(|r| r.text == now).unwrap_or(0);
         self.mode = Mode::Pick(Pick {
             title: "place this session",
             rows,
@@ -12949,18 +12981,19 @@ impl App {
 
     /// The picker's choice: a tag, a new one, or the session's folder.
     fn place_chosen(&mut self, id: &str, text: &str, typed: &str) {
+        let inside = text == NEW_TAG_IN || text.starts_with(IN);
         let tag = match text {
             "" => None,
-            NEW_TAG => match crate::tags::name(typed) {
+            NEW_TAG | NEW_TAG_IN => match crate::tags::name(typed) {
                 Ok(name) => Some(name),
                 Err(e) => {
                     self.status = warning(format!("{e:#}"));
                     return;
                 }
             },
-            tag => Some(tag.to_owned()),
+            tag => Some(tag.strip_prefix(IN).unwrap_or(tag).to_owned()),
         };
-        self.set_tag(id, tag.as_deref());
+        self.set_tag(id, tag.as_deref(), inside);
         self.select_row(id);
         if self.status.starts_with("tag kept") {
             return;
@@ -13049,20 +13082,25 @@ impl App {
             }
             return;
         }
-        if let Some(tag) = &to.tag {
-            self.set_tag(id, Some(tag));
-            self.status = format!("tagged {tag}");
-            return;
-        }
         let home = self
             .data
             .sessions
             .iter()
             .find(|s| s.session_id == id)
             .map(|s| self.data.home_folder(s).1);
+        // A tag inside another folder is that folder's: refused like its heading.
+        if let Some(tag) = to
+            .tag
+            .as_ref()
+            .filter(|_| !to.inside || home.as_ref() == Some(&to.folder))
+        {
+            self.set_tag(id, Some(tag), to.inside);
+            self.status = format!("tagged {tag}");
+            return;
+        }
         match home {
             Some(home) if home == to.folder => {
-                self.set_tag(id, None);
+                self.set_tag(id, None, false);
                 self.status = "back in its folder".into();
             }
             Some(home) => {
@@ -16232,13 +16270,13 @@ impl App {
             );
         }
         // Started from a tag's group, the session joins the tag. Pinning stays a choice.
-        if let Some(tag) = self
+        if let Some((tag, inside)) = self
             .selected_place()
-            .and_then(|p| p.tag)
-            .filter(|t| t != crate::tags::PINNED)
+            .and_then(|p| Some((p.tag?, p.inside)))
+            .filter(|(t, _)| t != crate::tags::PINNED)
         {
-            self.tags.tags.insert(id.clone(), tag.clone());
-            self.launch_tags.insert(id.clone(), tag);
+            self.tags.set(&id, Some(&tag), false, inside);
+            self.launch_tags.insert(id.clone(), (tag, inside));
         }
         self.data.sessions.push(session.clone());
         self.pending.push(Pending {
@@ -17310,7 +17348,10 @@ impl App {
         if let Mode::Pick(pick) = &mut self.mode {
             // The last row of the place picker takes the new tag's name as it is typed.
             if pick.place.is_some()
-                && pick.rows.get(pick.at).is_some_and(|r| r.text == NEW_TAG)
+                && pick
+                    .rows
+                    .get(pick.at)
+                    .is_some_and(|r| r.text == NEW_TAG || r.text == NEW_TAG_IN)
                 && !matches!(action, KeyAction::Up | KeyAction::Down | KeyAction::Enter)
                 && code != KeyCode::Esc
                 && pick.input.key(code, mods)

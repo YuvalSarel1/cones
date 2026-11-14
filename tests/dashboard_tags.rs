@@ -2,8 +2,9 @@
 //!
 //! The `claude` on the launch path is `tests/fixtures/fake_claude_fleet.py`, as in
 //! `dashboard_claude.rs`, whose seeding helpers these flows share. A session sits under its tag
-//! when it has one and under its folder otherwise: a tag in one folder is a heading inside it,
-//! one across folders heads its own group and names each row's folder, and the last session
+//! when it has one and under its folder otherwise: a tag on its own heads a group above the
+//! folders and names each row's folder, a tag placed inside the folder is a heading there,
+//! `folder › # tag`, and the last session
 //! leaving a tag removes its heading. ctrl+l chooses the place, a mouse drag drops a row on a
 //! heading or among its group, a drop on another folder is refused, and ctrl+b reorders a
 //! group by hand, which keeps that group's order from then on. Pins kept before tags become the
@@ -74,22 +75,33 @@ fn drag(d: &mut Dashboard, from: &str, to: &str) {
     d.press("release", format!("\x1b[<0;{tx};{ty}m").as_bytes());
 }
 
-/// Choose the place picker's row `label` for the selected session.
+/// Whether the picker's chosen row ends with `label`: a folder's row and that folder's
+/// `folder › # tag` row both name the folder.
+fn picked(screen: &str, label: &str) -> bool {
+    line_of(screen, "› ")
+        .split('│')
+        .next()
+        .unwrap()
+        .trim_end()
+        .ends_with(label)
+}
+
+/// Choose the place picker's row ending with `label` for the selected session.
 fn place(d: &mut Dashboard, label: &str) {
     d.press("ctrl+l", CTRL_L);
     d.wait_text("place this session");
     for _ in 0..10 {
-        if line_of(&d.screen(), "› ").contains(label) {
+        if picked(&d.screen(), label) {
             break;
         }
         d.press("down", DOWN);
     }
-    assert!(line_of(&d.screen(), "› ").contains(label), "{}", d.screen());
+    assert!(picked(&d.screen(), label), "{}", d.screen());
     d.press("enter", b"\r");
 }
 
 #[test]
-fn a_tag_nests_in_its_folder_lifts_across_folders_and_leaves_with_its_last_session() {
+fn a_tag_sits_on_its_own_or_inside_its_folder_and_leaves_with_its_last_session() {
     let mut d = Dashboard::new("tags-place", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
     let project = real_project(&d);
@@ -119,39 +131,44 @@ fn a_tag_nests_in_its_folder_lifts_across_folders_and_leaves_with_its_last_sessi
         "the session's own folder comes first and is where it sits:\n{screen}"
     );
     assert!(screen.contains("○ pinned · ctrl+t"), "{screen}");
+    assert!(
+        screen.contains(&format!("+ new tag in {p} ›")),
+        "a new tag can sit on its own or inside the folder:\n{screen}"
+    );
+    d.press("up", UP);
     d.press("up", UP);
     d.typed("sales");
     d.wait_text("+ new tag… sales");
     d.press("enter", b"\r");
-    let screen = d.wait_for("the nested tag", |s| sub(s, "# sales").is_some());
-    d.capture("nested");
-    let (folder, tag) = (
-        heading(&screen, &p).unwrap(),
-        sub(&screen, "# sales").unwrap(),
-    );
-    assert!(folder < tag, "{screen}");
+    // On its own, the tag heads a group above the folders and its row names its folder.
+    let screen = d.wait_for("the tag on its own", |s| heading(s, "# sales").is_some());
+    d.capture("tag-only");
+    let tag = heading(&screen, "# sales").unwrap();
+    assert!(tag < heading(&screen, &p).unwrap(), "{screen}");
     assert_eq!(row(&screen, "Sales churn by region"), tag + 1, "{screen}");
     assert!(
-        !line_of(&screen, "Sales churn by region").contains(" · in "),
-        "inside its folder a row names no folder:\n{screen}"
+        line_of(&screen, "Sales churn by region").contains("Sales churn by region · in project "),
+        "{screen}"
     );
     assert_eq!(tags(&d)["tags"], json!({&sales.id: "sales"}));
+    assert_eq!(tags(&d).get("inside"), None);
 
     // Dragged onto the tag's heading, a session joins it.
     drag(&mut d, "Cohort cut for Q3", "# sales");
     let screen = d.wait_for("the dropped session", |s| {
-        sub(s, "# sales").is_some_and(|t| row(s, "Cohort cut for Q3") > t)
+        heading(s, "# sales").is_some_and(|t| row(s, "Cohort cut for Q3") > t)
     });
     d.capture("dropped-on-tag");
     assert_eq!(tags(&d)["tags"][&cohort.id], "sales", "{screen}");
 
-    // A session from another folder lifts the tag above the folders, each row naming its own.
+    // A session from another folder joins the same group, each row naming its own folder.
     select(&mut d, "Export the churn csv");
-    place(&mut d, "# sales");
-    let screen = d.wait_for("the lifted tag", |s| heading(s, "# sales").is_some());
-    d.capture("lifted");
+    place(&mut d, "○ # sales");
+    let screen = d.wait_for("the tag across folders", |s| {
+        heading(s, "# sales").is_some_and(|t| row(s, "Export the churn csv") > t)
+    });
+    d.capture("across-folders");
     let tag = heading(&screen, "# sales").unwrap();
-    assert!(tag < heading(&screen, &p).unwrap(), "{screen}");
     for (title, folder) in [
         ("Sales churn by region", "project"),
         ("Cohort cut for Q3", "project"),
@@ -168,12 +185,12 @@ fn a_tag_nests_in_its_folder_lifts_across_folders_and_leaves_with_its_last_sessi
         "the open folder keeps its row with its only session tagged:\n{screen}"
     );
 
-    // Dropped on its own folder's heading it leaves the tag, which nests again.
+    // Dropped on its own folder's heading it leaves the tag.
     drag(&mut d, "Export the churn csv", &o);
-    let screen = d.wait_for("the tag back in its folder", |s| {
-        sub(s, "# sales").is_some_and(|t| heading(s, "# sales").is_none() && t > 0)
+    let screen = d.wait_for("back in its folder", |s| {
+        heading(s, &o).is_some_and(|h| row(s, "Export the churn csv") > h)
     });
-    d.capture("nested-again");
+    d.capture("left-the-tag");
     assert!(row(&screen, "Export the churn csv") > heading(&screen, &o).unwrap());
     assert_eq!(tags(&d)["tags"].get(&export.id), None);
 
@@ -186,6 +203,35 @@ fn a_tag_nests_in_its_folder_lifts_across_folders_and_leaves_with_its_last_sessi
     assert!(screen.contains(shown), "{screen}");
     assert_eq!(tags(&d)["tags"][&cohort.id], "sales");
 
+    // The same tag inside the folder: `folder › # sales` is a heading within it, its row names
+    // no folder, and the session still on its own keeps the group above the folders.
+    select(&mut d, "Sales churn by region");
+    place(&mut d, "› # sales");
+    let screen = d.wait_for("the tag inside its folder", |s| {
+        heading(s, "# sales").is_some()
+            && heading(s, &p).is_some_and(|f| {
+                s.lines()
+                    .skip(f)
+                    .any(|l| l.split('│').next().unwrap().trim() == "# sales")
+            })
+    });
+    d.capture("folder-and-tag");
+    let folder = heading(&screen, &p).unwrap();
+    let inner = sub(
+        &screen.lines().skip(folder).collect::<Vec<_>>().join("\n"),
+        "# sales",
+    )
+    .unwrap()
+        + folder;
+    assert!(folder < inner, "{screen}");
+    assert_eq!(row(&screen, "Sales churn by region"), inner + 1, "{screen}");
+    assert!(
+        !line_of(&screen, "Sales churn by region").contains(" · in "),
+        "inside its folder a row names no folder:\n{screen}"
+    );
+    assert!(row(&screen, "Cohort cut for Q3") < folder, "{screen}");
+    assert_eq!(tags(&d)["inside"], json!([&sales.id]));
+
     // The picker's first row returns a session to its folder; the last one out removes the tag.
     select(&mut d, "Cohort cut for Q3");
     place(&mut d, &p);
@@ -195,6 +241,7 @@ fn a_tag_nests_in_its_folder_lifts_across_folders_and_leaves_with_its_last_sessi
     d.capture("untagged");
     assert!(row(&screen, "Sales churn by region") > heading(&screen, &p).unwrap());
     assert_eq!(tags(&d)["tags"], json!({}));
+    assert_eq!(tags(&d).get("inside"), None);
     d.keep("state/tags.json");
     d.quit();
 }

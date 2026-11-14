@@ -217,22 +217,26 @@ resumed run retains its row and original ledger outcome while displaying live va
 
 ### Tags
 
-Each session sits in one place: under its tag if it has one, otherwise under its folder. A tag
-whose sessions all run in one folder is an indented `# NAME` heading inside that folder. Once
-its sessions span folders it heads a group of its own above the folders, and each of its rows
-names its folder's last part, dimmed, after the title, `· in research`. When it shrinks back
-to one folder it nests again. A tag exists while a session carries it; the last one leaving
-removes the heading. A folder heading shows while it holds untagged sessions or a nested tag,
+Each session sits in one place: under its tag if it has one, otherwise under its folder. A
+session's tag sits either on its own or inside its folder. On its own, the tag heads a group
+above the folders, which can hold sessions from any folder, and each of its rows names its
+folder's last part, dimmed, after the title, `· in research`. Inside its folder, the tag is an
+indented `# NAME` heading under that folder, `folder › # NAME`. One tag can have both: the
+sessions placed on their own share the group above, and those placed inside a folder share
+that folder's heading. A tag exists while a session carries it; the last one leaving removes
+the heading. A folder heading shows while it holds untagged sessions or a tag inside it,
 and an open folder keeps its row with `no sessions here`. `pinned` is a tag that always heads
 the list. A tag changes only the view: the folder still decides where the session runs, its
 coordinator and its comms.
 
 `ctrl+l` opens the place picker for the selected session: its own folder first, which clears
-the tag, then every tag a session carries, `pinned`, and `+ new tag…`, where the name is typed
-on the row itself. `ctrl+t` toggles `pinned` directly.
+the tag, then every tag a session carries twice, `# NAME` on its own and `folder › # NAME`
+inside the folder, then `pinned`, `+ new tag…` and `+ new tag in folder ›`, where the name is
+typed on the row itself. `ctrl+t` toggles `pinned` directly.
 
 With the mouse, press a session row, drag it and release. On a tag's heading the session takes
-that tag; on its own folder's heading it leaves its tag; on a row of its own group it moves
+that tag, on its own or inside its folder as the heading is; a tag inside another folder refuses
+it like that folder's heading; on its own folder's heading it leaves its tag; on a row of its own group it moves
 there. Another folder's heading refuses the drop, since a session keeps its folder, and the
 footer names the headings that accept it. A row of another group counts as that group's heading.
 

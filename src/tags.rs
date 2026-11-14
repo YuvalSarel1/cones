@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     path::{Path, PathBuf},
 };
@@ -24,6 +24,10 @@ pub struct Tags {
     /// Session id to tag. An empty tag clears one the session would take from its parent.
     #[serde(default)]
     pub tags: BTreeMap<String, String>,
+    /// Sessions whose tag sits inside their folder, `folder > # tag`, rather than above
+    /// the folders on its own.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub inside: BTreeSet<String>,
     /// A group's sessions in the order set by hand, by the group's heading.
     #[serde(default)]
     pub order: BTreeMap<String, Vec<String>>,
@@ -47,6 +51,7 @@ impl Tags {
         let tags = Self {
             tags: pins.into_iter().map(|id| (id, PINNED.to_owned())).collect(),
             order: BTreeMap::new(),
+            inside: BTreeSet::new(),
         };
         if !tags.tags.is_empty() {
             let _ = tags.save(state);
@@ -78,9 +83,29 @@ impl Tags {
         None
     }
 
-    /// Give `id` the tag `tag`, or clear it. Clearing a tag the session only takes from its
-    /// parent leaves an empty entry, so the parent's tag stops reaching it.
-    pub fn set(&mut self, id: &str, tag: Option<&str>, inherited: bool) {
+    /// Whether the session's tag sits inside its folder: decided by whichever entry `of`
+    /// takes the tag from.
+    pub fn inside_of<'a>(&'a self, id: &'a str, parent: impl Fn(&str) -> Option<&'a str>) -> bool {
+        let mut at = id;
+        for _ in 0..8 {
+            if self.tags.contains_key(at) {
+                return self.inside.contains(at);
+            }
+            let Some(p) = parent(at) else { return false };
+            at = p;
+        }
+        false
+    }
+
+    /// Give `id` the tag `tag`, inside its folder or on its own, or clear it. Clearing a tag
+    /// the session only takes from its parent leaves an empty entry, so the parent's tag
+    /// stops reaching it.
+    pub fn set(&mut self, id: &str, tag: Option<&str>, inherited: bool, inside: bool) {
+        if inside && tag.is_some_and(|t| t != PINNED) {
+            self.inside.insert(id.to_owned());
+        } else {
+            self.inside.remove(id);
+        }
         match tag {
             Some(tag) => self.tags.insert(id.to_owned(), tag.to_owned()),
             None if inherited => self.tags.insert(id.to_owned(), String::new()),

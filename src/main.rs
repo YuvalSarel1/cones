@@ -233,6 +233,9 @@ enum Action {
         /// Return the session to its folder.
         #[arg(long, requires = "id")]
         clear: bool,
+        /// Show the tag inside the session's folder, `folder > # tag`, instead of on its own.
+        #[arg(long, requires = "name")]
+        inside: bool,
     },
     /// Ask a conversation one question in a read-only fork its harness keeps nothing of, and
     /// print the answer. The conversation itself is not written to; see docs/cli.md.
@@ -1016,7 +1019,12 @@ fn execute(cli: Cli) -> Result<i32> {
             println!("renamed {id} ({}) to {}", session.harness, name.trim());
             Ok(0)
         }
-        Action::Tag { id, name, clear } => {
+        Action::Tag {
+            id,
+            name,
+            clear,
+            inside,
+        } => {
             let mut store = cones::tags::Tags::load(&state);
             let Some(id) = id else {
                 for (id, tag) in store.tags.iter().filter(|(_, t)| !t.is_empty()) {
@@ -1034,7 +1042,7 @@ fn execute(cli: Cli) -> Result<i32> {
             match (name, clear) {
                 (Some(name), _) => {
                     let name = cones::tags::name(&name)?;
-                    store.set(&id, Some(&name), false);
+                    store.set(&id, Some(&name), false, inside);
                     store.save(&state)?;
                     println!("tagged {id} {name}");
                 }
@@ -1042,7 +1050,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     let mut without = store.clone();
                     without.tags.remove(&id);
                     let inherited = without.of(&id, parent).is_some();
-                    store.set(&id, None, inherited);
+                    store.set(&id, None, inherited, false);
                     store.save(&state)?;
                     println!("{id} is back under its folder");
                 }
