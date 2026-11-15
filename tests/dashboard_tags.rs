@@ -309,13 +309,14 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     d.capture("refused");
     assert_eq!(places(&d, &pin.id), json!(["pinned"]), "{screen}");
 
-    // A name typed on `+ new tag in` and one Enter add the tag and keep the checklist. The
-    // tag moves the session: its folder line is unchecked, so it is listed once.
+    // A name typed on `+ new tag…` and one Enter add the tag and keep the checklist. With the
+    // folder still checked, the tag sits inside the folder and the session is listed once.
     select(&mut d, "Draft notes");
     let screen = checklist(&mut d);
     d.capture("checklist");
     assert!(chosen(&screen).ends_with(&format!("[x] {p}")), "{screen}");
-    assert!(screen.contains(&format!("[ ] {p} › # legal")), "{screen}");
+    assert!(screen.contains("[ ] # legal"), "{screen}");
+    assert!(!screen.contains("› # legal"), "one line per tag:\n{screen}");
     assert!(screen.contains("[ ] # urgent"), "{screen}");
     d.press("up", UP);
     d.typed("follow up");

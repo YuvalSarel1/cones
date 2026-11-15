@@ -8424,8 +8424,6 @@ struct Spot {
 
 /// The checklist row that takes a typed tag name.
 const NEW_TAG: &str = "\u{0}new";
-/// The checklist row that takes a typed tag name placed inside the session's folder.
-const NEW_TAG_IN: &str = "\u{0}new-in";
 
 /// A short list picked with the arrows: the copy actions, or where ctrl+y forks to.
 struct Pick {
@@ -8474,7 +8472,7 @@ impl Pick {
                 ),
                 if chosen { bold() } else { dim() },
             )];
-            if (row.text == NEW_TAG || row.text == NEW_TAG_IN) && chosen {
+            if row.text == NEW_TAG && chosen {
                 spans.push(Span::raw(" "));
                 spans.extend(self.input.spans("type a name"));
             }
@@ -13100,16 +13098,15 @@ impl App {
             })
     }
 
-    /// ctrl+l: the checklist of places for the selected session. Its folder comes first, then
-    /// every tag any session carries, above the folders and inside this session's folder,
-    /// `pinned`, and a new tag of either kind typed in place.
+    /// ctrl+l: the checklist of places for the selected session: its folder, every tag any
+    /// session carries, `pinned`, and a new tag typed in place. A session is in its folder, in
+    /// tags, or in both, which nests the tags inside its folder.
     fn place_selected(&mut self) {
         let (Some(s), Some(_)) = (self.selected_session(), self.selected_spot()) else {
             self.status = "ctrl+l places the selected session".into();
             return;
         };
         let id = s.session_id.clone();
-        let folder = self.data.folder_label(s);
         let current = self.places_of(&id);
         let mut names: Vec<String> = self
             .data
@@ -13122,19 +13119,13 @@ impl App {
         names.sort_by_key(|t| t.to_lowercase());
         names.dedup();
         let mut rows = vec![PickRow {
-            label: folder.clone(),
+            label: self.data.folder_label(s),
             text: Place::Folder.to_string(),
         }];
-        for t in names {
-            rows.push(PickRow {
-                label: format!("# {t}"),
-                text: Place::Tag(t.clone()).to_string(),
-            });
-            rows.push(PickRow {
-                label: format!("{folder} › # {t}"),
-                text: Place::FolderTag(t).to_string(),
-            });
-        }
+        rows.extend(names.into_iter().map(|t| PickRow {
+            label: format!("# {t}"),
+            text: Place::Tag(t).to_string(),
+        }));
         rows.push(PickRow {
             label: "pinned · ctrl+t".into(),
             text: crate::places::PINNED.into(),
@@ -13143,16 +13134,21 @@ impl App {
             label: "+ new tag…".into(),
             text: NEW_TAG.into(),
         });
-        rows.push(PickRow {
-            label: format!("+ new tag in {folder} ›"),
-            text: NEW_TAG_IN.into(),
-        });
         let checked = rows
             .iter()
-            .map(|r| Place::parse(&r.text).is_ok_and(|p| current.contains(&p)))
+            .map(|r| match Place::parse(&r.text) {
+                Ok(Place::Folder) => current
+                    .iter()
+                    .any(|p| matches!(p, Place::Folder | Place::FolderTag(_))),
+                Ok(Place::Tag(t)) => {
+                    current.contains(&Place::FolderTag(t.clone()))
+                        || current.contains(&Place::Tag(t))
+                }
+                _ => false,
+            })
             .collect();
         self.mode = Mode::Pick(Pick {
-            title: "places · space checks · enter keeps · esc discards",
+            title: "places · space checks · folder and a tag nests it · enter keeps · esc discards",
             rows,
             at: 0,
             fork: None,
@@ -13165,24 +13161,15 @@ impl App {
     /// A new tag typed on its row joins the checklist, checked.
     fn place_new(pick: &mut Pick) -> Result<(), String> {
         let name = crate::places::name(&pick.input.text).map_err(|e| format!("{e:#}"))?;
-        let place = if pick.rows[pick.at].text == NEW_TAG_IN {
-            Place::FolderTag(name)
-        } else {
-            Place::Tag(name)
-        };
-        let text = place.to_string();
+        let text = Place::Tag(name).to_string();
         let at = match pick.rows.iter().position(|r| r.text == text) {
             Some(at) => at,
             None => {
-                let at = pick.rows.len() - 3;
-                let folder = pick.rows[0].label.clone();
+                let at = pick.rows.len() - 2;
                 pick.rows.insert(
                     at,
                     PickRow {
-                        label: match &place {
-                            Place::FolderTag(t) => format!("{folder} › # {t}"),
-                            _ => text.clone(),
-                        },
+                        label: text.clone(),
                         text,
                     },
                 );
@@ -13194,30 +13181,33 @@ impl App {
             }
         };
         pick.checked[at] = true;
-        Self::leave_folder(pick, at);
         pick.input = Input::default();
         Ok(())
     }
 
-    /// Checking a tag moves the session there: its folder line, the checklist's first, is
-    /// unchecked, so the session is not listed twice. Checking the folder again keeps both.
-    fn leave_folder(pick: &mut Pick, at: usize) {
-        let tag = pick.rows.get(at).is_some_and(|r| {
-            Place::parse(&r.text).is_ok_and(|p| p.tag().is_some_and(|t| t != crate::places::PINNED))
-        });
-        if tag && let Some(folder) = pick.checked.first_mut() {
-            *folder = false;
-        }
-    }
-
-    /// The checklist kept: every checked place, the folder when none is.
+    /// The checklist kept: its folder alone, its tags alone above the folders, or both, which
+    /// puts the tags inside its folder; `pinned` besides. Nothing checked is its folder.
     fn places_chosen(&mut self, id: &str, rows: &[PickRow], checked: &[bool], group: Option<&str>) {
-        let set: crate::places::Set = rows
+        let on: Vec<Place> = rows
             .iter()
             .zip(checked)
             .filter(|(_, on)| **on)
             .filter_map(|(r, _)| Place::parse(&r.text).ok())
             .collect();
+        let folder = on.contains(&Place::Folder);
+        let set: crate::places::Set = on
+            .into_iter()
+            .map(|p| match p {
+                Place::Tag(t) if folder && t != crate::places::PINNED => Place::FolderTag(t),
+                p => p,
+            })
+            .collect();
+        // A tag inside the folder already lists the session there.
+        let set: crate::places::Set = if set.iter().any(|p| matches!(p, Place::FolderTag(_))) {
+            set.into_iter().filter(|p| *p != Place::Folder).collect()
+        } else {
+            set
+        };
         let n = set.len().max(1);
         self.change_places(id, Some(set), None, None);
         self.select_copy(id, group);
@@ -17563,10 +17553,7 @@ impl App {
         }
         if let Mode::Pick(pick) = &mut self.mode {
             if let Some(id) = pick.place.clone() {
-                let new = pick
-                    .rows
-                    .get(pick.at)
-                    .is_some_and(|r| r.text == NEW_TAG || r.text == NEW_TAG_IN);
+                let new = pick.rows.get(pick.at).is_some_and(|r| r.text == NEW_TAG);
                 match action {
                     KeyAction::Up => pick.step(-1),
                     KeyAction::Down => pick.step(1),
@@ -17596,9 +17583,6 @@ impl App {
                     _ if code == KeyCode::Char(' ') => {
                         if let Some(on) = pick.checked.get_mut(pick.at) {
                             *on = !*on;
-                            if *on {
-                                Self::leave_folder(pick, pick.at);
-                            }
                         }
                     }
                     _ => {}

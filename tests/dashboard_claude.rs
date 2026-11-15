@@ -1248,9 +1248,8 @@ fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
 }
 
 /// Idan's ask: a session under a worktree heading is tagged without leaving that worktree.
-/// ctrl+l names the worktree as the session's folder, a tag made "in" it heads the session
-/// inside the worktree's heading in the tag colour, and the new tag moves the session there
-/// rather than listing it twice.
+/// ctrl+l names the worktree as the session's folder; a tag checked with it nests inside the
+/// worktree's heading in the tag colour, and the session is listed once.
 #[test]
 fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
     let Worktree { mut d, tree, .. } = worktree("claude-worktree-tag");
@@ -1272,16 +1271,12 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
         screen.contains(&format!("› [x] {start}")),
         "the folder line names the worktree heading:\n{screen}"
     );
-    assert!(
-        screen.contains(&format!("+ new tag in {start}")),
-        "{screen}"
-    );
-    for _ in 0..3 {
+    for _ in 0..2 {
         d.press("down", DOWN);
     }
-    d.wait_for("+ new tag in selected", |s| {
+    d.wait_for("+ new tag selected", |s| {
         s.lines()
-            .any(|l| l.starts_with("› ") && l.contains("+ new tag in"))
+            .any(|l| l.starts_with("› ") && l.contains("+ new tag"))
     });
     // One Enter adds the tag and keeps the checklist.
     d.typed("ideas");
