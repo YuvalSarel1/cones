@@ -268,6 +268,7 @@ fn config_save_keeps_every_harness_switch() {
         ("amp", false),
         ("droid", false),
         ("kimi", false),
+        ("grok", false),
     ] {
         let kept = format!("  {harness}_enabled: {on}\n");
         assert!(yaml.contains(&kept), "lost {kept:?}:\n{yaml}");

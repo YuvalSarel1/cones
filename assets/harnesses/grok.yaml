@@ -1,0 +1,35 @@
+version: 2
+kind: grok
+icon: "⊘"
+home:
+  env: ""
+  default: {base: provided_parent, path: .grok}
+discovery:
+  process: grok
+  exclude_subcommands: ["--help", "-h", "--version", "-V", "-p", "--single", "agent", "clone", "completions", "doctor", "du", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "worker", "worktree", "wrap"]
+transcript:
+  available: false
+  roots: []
+  messages:
+    user: {sources: []}
+    assistant: {sources: []}
+operations:
+  launch:
+    identity: client_pid
+    skip_permissions: [--always-approve]
+    prompt: [--, "{prompt}"]
+    model: --model
+    probe:
+      args: [--help]
+      contains: [--always-approve]
+      error: "grok does not support the required native command"
+      description: "grok: terminal launch; external sessions remain in their own terminals"
+  message:
+    unavailable: "it takes prompts at launch or headless with -p; nothing addresses a running interactive session"
+execution:
+  enforcement: unsupported
+  result: unsupported
+viewer:
+  input:
+    return_to_list:
+      - {key: ctrl+z, when: always}

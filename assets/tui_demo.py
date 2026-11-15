@@ -394,7 +394,7 @@ def prepare(root, claude, codex, api_url, cols, rows, foreground, background):
         "version: 4\ncolumns: [context, model, activity, cost]\n"
         "activity:\n  bars: 8\n  bucket: 4s\n  metric: tokens\n  bound: fleet\n"
         "defaults:\n  gemini_enabled: false\n  cursor_enabled: false\n"
-        "  copilot_enabled: false\n  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\n"
+        "  copilot_enabled: false\n  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\n  grok_enabled: false\n"
         "pane:\n  at: right\n  ratio: 47\njobs: []\n"
     )
     return env

@@ -111,7 +111,7 @@ def main(binary, claude, pi):
         jobs = root / "jobs.yaml"
         jobs.write_text("version: 4\ndefaults:\n  codex_enabled: false\n  opencode_enabled: false\n"
                         "  gemini_enabled: false\n  cursor_enabled: false\n  copilot_enabled: false\n"
-                        "  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\njobs: []\n")
+                        "  amp_enabled: false\n  droid_enabled: false\n  kimi_enabled: false\n  grok_enabled: false\njobs: []\n")
         owners = []
 
         def launch(kind, program, args):

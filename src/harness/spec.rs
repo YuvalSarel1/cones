@@ -51,6 +51,10 @@ const BUILTINS: &[(HarnessKind, &str)] = &[
         HarnessKind::Kimi,
         include_str!("../../assets/harnesses/kimi.yaml"),
     ),
+    (
+        HarnessKind::Grok,
+        include_str!("../../assets/harnesses/grok.yaml"),
+    ),
 ];
 
 static SPECS: LazyLock<Vec<HarnessSpec>> = LazyLock::new(|| {
@@ -471,7 +475,8 @@ fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {
         | kind @ HarnessKind::Copilot
         | kind @ HarnessKind::Amp
         | kind @ HarnessKind::Droid
-        | kind @ HarnessKind::Kimi => (
+        | kind @ HarnessKind::Kimi
+        | kind @ HarnessKind::Grok => (
             Native::External(kind),
             LaunchHandler::Terminal,
             Resume::SessionId,

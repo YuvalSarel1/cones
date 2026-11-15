@@ -5153,7 +5153,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 76] = [
+const FIELDS: [Field; 80] = [
     Field {
         group: "cones",
         sub: "",
@@ -5230,6 +5230,7 @@ const FIELDS: [Field; 76] = [
             "amp",
             "droid",
             "kimi",
+            "grok",
         ]),
     },
     Field {
@@ -5844,6 +5845,46 @@ const FIELDS: [Field; 76] = [
         input: Answer::Typed,
     },
     Field {
+        group: "harnesses",
+        sub: "",
+        name: "grok_enabled",
+        short: "grok",
+        hint: "Offer grok sessions.",
+        long: "Enable terminal launch and process discovery for grok. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "grok_in_picker",
+        short: "grok in picker",
+        hint: "Offer grok in the composer's launch picker.",
+        long: "true keeps grok in the shift+tab cycle; false hides it there while the harness stays on, so its sessions stay listed, discovery keeps reading its native home and a job that names it still runs it. Turning grok off above hides it whatever this says, and the terminal is reachable with every launcher hidden.",
+        builtin: "true",
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "",
+        name: "grok_skip_permissions",
+        short: "grok skips permissions",
+        hint: "Start new grok sessions without permission prompts.",
+        long: "true passes grok's own --always-approve to sessions the composer starts, so they run without asking before each action; false starts them with grok's configured permissions. Unset follows skip permissions above. Scheduled jobs always run without prompts.",
+        builtin: INHERIT,
+        input: Answer::Pick(BOOL),
+    },
+    Field {
+        group: "harnesses",
+        sub: "grok",
+        name: "grok_model",
+        short: "model",
+        hint: "Model for new grok sessions.",
+        long: "Passed through the native model flag. Empty keeps the harness configuration.",
+        builtin: SYSTEM,
+        input: Answer::Typed,
+    },
+    Field {
         group: "runs",
         sub: "",
         name: "harness",
@@ -6308,6 +6349,8 @@ impl ConfigForm {
                 "droid_enabled" => flag(d.droid_enabled),
                 "kimi_model" => d.kimi_model.clone().unwrap_or_default(),
                 "kimi_enabled" => flag(d.kimi_enabled),
+                "grok_model" => d.grok_model.clone().unwrap_or_default(),
+                "grok_enabled" => flag(d.grok_enabled),
                 "claude_in_picker" => flag(d.claude_in_picker),
                 "skip_permissions" => flag(d.skip_permissions),
                 "claude_skip_permissions" => flag(d.claude_skip_permissions),
@@ -6327,6 +6370,8 @@ impl ConfigForm {
                 "droid_skip_permissions" => flag(d.droid_skip_permissions),
                 "kimi_in_picker" => flag(d.kimi_in_picker),
                 "kimi_skip_permissions" => flag(d.kimi_skip_permissions),
+                "grok_in_picker" => flag(d.grok_in_picker),
+                "grok_skip_permissions" => flag(d.grok_skip_permissions),
 
                 "check"
                 | "folders"
@@ -6521,6 +6566,8 @@ impl ConfigForm {
             droid_enabled: flag("droid_enabled"),
             kimi_model: text("kimi_model"),
             kimi_enabled: flag("kimi_enabled"),
+            grok_model: text("grok_model"),
+            grok_enabled: flag("grok_enabled"),
 
             claude_enabled: flag("claude_enabled"),
             claude_in_picker: flag("claude_in_picker"),
@@ -6542,6 +6589,8 @@ impl ConfigForm {
             droid_skip_permissions: flag("droid_skip_permissions"),
             kimi_in_picker: flag("kimi_in_picker"),
             kimi_skip_permissions: flag("kimi_skip_permissions"),
+            grok_in_picker: flag("grok_in_picker"),
+            grok_skip_permissions: flag("grok_skip_permissions"),
             codex_enabled: flag("codex_enabled"),
             pi_enabled: flag("pi_enabled"),
             opencode_enabled: flag("opencode_enabled"),

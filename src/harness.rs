@@ -2371,13 +2371,14 @@ mod tests {
             copilot_skip_permissions: Some(false),
             droid_skip_permissions: Some(false),
             kimi_skip_permissions: Some(false),
+            grok_skip_permissions: Some(false),
             ..Policy::default()
         }
     }
 
     #[test]
     fn a_composer_launch_skips_permissions_with_each_harness_s_own_flag_unless_turned_off() {
-        let expected: [(HarnessKind, &[&str]); 10] = [
+        let expected: [(HarnessKind, &[&str]); 11] = [
             (HarnessKind::Claude, &["--dangerously-skip-permissions"]),
             (
                 HarnessKind::Codex,
@@ -2389,6 +2390,7 @@ mod tests {
             (HarnessKind::Copilot, &["--allow-all"]),
             (HarnessKind::Droid, &["--auto", "high"]),
             (HarnessKind::Kimi, &["--auto"]),
+            (HarnessKind::Grok, &["--always-approve"]),
             // pi has no permission prompts and amp no flag for them, so neither gets one.
             (HarnessKind::Pi, &[]),
             (HarnessKind::Amp, &[]),
@@ -2606,7 +2608,9 @@ mod tests {
                 HarnessKind::Gemini => assert_eq!(args, [format!("--prompt-interactive={prompt}")]),
                 HarnessKind::Copilot => assert_eq!(args, [format!("--interactive={prompt}")]),
                 HarnessKind::Amp | HarnessKind::Kimi => assert!(args.is_empty()),
-                HarnessKind::Cursor | HarnessKind::Droid => assert_eq!(args, ["--", prompt]),
+                HarnessKind::Cursor | HarnessKind::Droid | HarnessKind::Grok => {
+                    assert_eq!(args, ["--", prompt])
+                }
                 _ => unreachable!(),
             }
             assert!(adapter(kind).is_err());

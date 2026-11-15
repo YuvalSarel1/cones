@@ -176,7 +176,7 @@ def main():
     shim.parent.mkdir(parents=True)
     shim.symlink_to(native)
     jobs = root / "jobs.yaml"
-    other_harnesses = ("claude", "codex", "pi", "gemini", "cursor", "copilot", "amp", "droid", "kimi")
+    other_harnesses = ("claude", "codex", "pi", "gemini", "cursor", "copilot", "amp", "droid", "kimi", "grok")
     jobs.write_text("version: 4\ndefaults:\n"
                     + "".join(f"  {name}_enabled: false\n" for name in other_harnesses)
                     + "start:\n  harness: opencode\n"

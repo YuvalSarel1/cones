@@ -10,8 +10,8 @@ six more have [experimental terminal adapters](#additional-terminal-harnesses).
 ## Capabilities
 
 What each [control plane](architecture.md#the-control-plane) verb reaches. "Owned" means a
-client in a terminal cones hosts. "Others" are Gemini, Cursor Agent, Copilot, Amp, Droid and
-Kimi. The [command reference](cli.md#commands) has each verb's rules.
+client in a terminal cones hosts. "Others" are Gemini, Cursor Agent, Copilot, Amp, Droid,
+Kimi and Grok. The [command reference](cli.md#commands) has each verb's rules.
 
 | Verb | Claude Code | Codex | pi | OpenCode | Others |
 | --- | --- | --- | --- | --- | --- |
@@ -236,7 +236,7 @@ that, such as a provider error, appears in the client. Delivery to a client wait
 question or permission dialog is unverified.
 
 A definition with no channel states `unavailable` with the reason, and the refusal quotes it.
-Gemini, Cursor Agent, Copilot, Amp, Droid and Kimi take prompts at launch, in headless runs or
+Gemini, Cursor Agent, Copilot, Amp, Droid, Kimi and Grok take prompts at launch, in headless runs or
 through servers that serve their own clients. Their `--help` output names nothing that
 addresses a running interactive session; their extension APIs were not examined. cones never
 approximates delivery by typing into a terminal. See [comms](cli.md#comms).
@@ -559,10 +559,11 @@ read from `session-state/ID/events.jsonl`; a live row names its conversation as 
 from the `inuse.PID.lock` the client holds, ignoring a lock older than the process. Cursor
 is read from `projects/*/agent-transcripts/ID/ID.jsonl`, which stamps no message, and takes
 its folder and start from `chats/*/ID/meta.json`; a transcript without that record is not
-listed, and a live Cursor row names no conversation. Gemini, Droid, Amp and Kimi
+listed, and a live Cursor row names no conversation. Gemini, Droid, Amp, Kimi and Grok
 conversations are unsupported: Gemini's chat file is a log of `$set` updates and re-emitted
 message ids whose replay is unverified, no Droid file here holds an assistant reply, Amp
-keeps threads on its server and Kimi wrote no home.
+keeps threads on its server, Kimi wrote no home and Grok's `~/.grok/sessions` format is
+undocumented and unread.
 
 | Harness | Interactive instruction | Model flag | Checked CLI |
 | --- | --- | --- | --- |
@@ -572,6 +573,7 @@ keeps threads on its server and Kimi wrote no home.
 | Amp | Anonymous stdin file | Native config | 0.0.1789704050-g778045 |
 | Droid | Positional after `--` | Native config | 0.222.0 |
 | Kimi | None; an instruction is refused | `--model` | 2.1.1 |
+| Grok | Positional after `--` | `--model` | 1.0.77 |
 
 Native boot, process identity, return/reuse and stop were checked with disposable homes.
 Resume was checked against Copilot 1.0.95 and Cursor Agent 2026.09.18-9a7762b, each
@@ -587,4 +589,5 @@ Native references: [Gemini](https://geminicli.com/docs/cli/cli-reference/),
 [Cursor](https://cursor.com/docs/cli/reference/parameters),
 [Copilot](https://docs.github.com/en/copilot/reference/cli-command-reference),
 [Amp](https://ampcode.com/docs/cli), [Droid](https://docs.factory.ai/reference/cli-reference),
-[Kimi](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html).
+[Kimi](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html),
+[Grok](https://docs.x.ai/build/cli/headless-scripting).

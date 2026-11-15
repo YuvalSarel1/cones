@@ -394,7 +394,7 @@ must be one line. Each harness is named the way its own rename does it:
 | pi or OpenCode client cones owns | The reporter calls pi's `setSessionName` or OpenCode's `session.update`, which their own rename commands call. |
 
 A client cones does not own, a harness with no session name of its own (Gemini, Cursor Agent,
-Copilot, Amp, Droid, Kimi) and an ambiguous or unknown id fail without changing anything.
+Copilot, Amp, Droid, Kimi, Grok) and an ambiguous or unknown id fail without changing anything.
 
 ### Placing a session
 
@@ -461,7 +461,7 @@ is refused; [`cones wait`](#waiting-on-a-session) says when it ends.
 
 A Claude session in a terminal cones cannot join, a pi or OpenCode client cones does not own,
 and the harnesses with no compaction of their own (Gemini, Cursor Agent, Copilot, Amp, Droid,
-Kimi) are refused without changing anything. Verified against the same versions as side
+Kimi, Grok) are refused without changing anything. Verified against the same versions as side
 questions, Codex on a thread its daemon had dropped. A session waiting on a question or
 permission dialog is unverified; Claude's shows no empty editor and the command fails after
 20 seconds.

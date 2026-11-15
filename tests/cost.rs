@@ -56,7 +56,8 @@ impl Fixture {
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => unreachable!("terminal-only capabilities checked separately"),
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => unreachable!("terminal-only capabilities checked separately"),
         });
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         if kind == HarnessKind::Claude {
@@ -105,7 +106,8 @@ impl Fixture {
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => unreachable!("no native archive"),
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => unreachable!("no native archive"),
             HarnessKind::Opencode => {
                 sql(
                     &self.path,
@@ -124,7 +126,8 @@ impl Fixture {
                 | HarnessKind::Copilot
                 | HarnessKind::Amp
                 | HarnessKind::Droid
-                | HarnessKind::Kimi => unreachable!("no native archive"),
+                | HarnessKind::Kimi
+                | HarnessKind::Grok => unreachable!("no native archive"),
                 // Claude writes no provider: the `msg_` id says Anthropic served the reply.
                 HarnessKind::Claude => json!({
                     "type":"assistant","timestamp":AT,
@@ -190,7 +193,8 @@ impl Fixture {
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => unreachable!("native usage is unavailable"),
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => unreachable!("native usage is unavailable"),
             HarnessKind::Claude => fleet::sessions(&self.home).unwrap(),
             HarnessKind::Codex => codex::rows(
                 &self.home,
@@ -237,7 +241,8 @@ impl Fixture {
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => unreachable!("no native session total"),
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => unreachable!("no native session total"),
         }
     }
 }
@@ -382,7 +387,8 @@ fn every_registered_harness_inherits_fallback_precedence_coverage_and_cache_refr
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => unreachable!("no native archive"),
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => unreachable!("no native archive"),
             HarnessKind::Claude | HarnessKind::Opencode => {
                 fixture.native_total(0.9);
                 let native = assert_cost(&fixture, &mut reader, true, Some(0.9), Complete);

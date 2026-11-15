@@ -423,6 +423,9 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
         "/tools/bin/agent other-service",
         "/usr/bin/python-backup /tools/bin/kimi",
         "/Library/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python /tools/bin/kimi",
+        "/Users/me/.grok/bin/grok -- hello",
+        "/Users/me/.grok/bin/grok leader serve",
+        "/bin/echo grok -- hello",
     ];
     let table = commands
         .iter()
@@ -433,6 +436,7 @@ fn interpreter_entrypoints_and_aliases_do_not_match_agent_names_inside_prompts()
         (HarnessKind::Gemini, vec![1]),
         (HarnessKind::Kimi, vec![2, 9]),
         (HarnessKind::Cursor, vec![3]),
+        (HarnessKind::Grok, vec![10]),
     ] {
         assert_eq!(
             spec(kind)

@@ -37,8 +37,9 @@ pub fn formula(version: &str) -> String {
 
 pub const ROWS: u16 = 35;
 pub const COLS: u16 = 140;
-const HARNESSES: [&str; 10] = [
+const HARNESSES: [&str; 11] = [
     "claude", "codex", "pi", "opencode", "gemini", "cursor", "copilot", "amp", "droid", "kimi",
+    "grok",
 ];
 
 pub struct Dashboard {

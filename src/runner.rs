@@ -955,6 +955,7 @@ fn daemon_worker(invocation: &Invocation, cancelled: &AtomicBool, parent: i32) -
         amp_enabled: Some(false),
         droid_enabled: Some(false),
         kimi_enabled: Some(false),
+        grok_enabled: Some(false),
         ..crate::config::Policy::default()
     };
     let command = harness::codex_job_command(invocation)?;

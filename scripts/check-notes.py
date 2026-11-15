@@ -92,7 +92,7 @@ def main(binary, pi, opencode):
     jobs.write_text("version: 4\ndefaults:\n  pi_provider: fixture\n  pi_model: fixture\n"
                     "  opencode_model: fixture/fixture\n"
                     + "".join(f"  {name}_enabled: false\n" for name in
-                              ("claude", "codex", "gemini", "cursor", "copilot", "amp", "droid", "kimi"))
+                              ("claude", "codex", "gemini", "cursor", "copilot", "amp", "droid", "kimi", "grok"))
                     + "jobs: []\n")
     env = {
         "HOME": str(root), "LANG": "en_US.UTF-8", "TERM": "xterm-256color", "COLORTERM": "truecolor",

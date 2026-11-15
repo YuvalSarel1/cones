@@ -21,13 +21,20 @@ pub enum HarnessKind {
     Amp,
     Droid,
     Kimi,
+    Grok,
 }
 
 impl HarnessKind {
     pub fn terminal_only(self) -> bool {
         matches!(
             self,
-            Self::Gemini | Self::Cursor | Self::Copilot | Self::Amp | Self::Droid | Self::Kimi
+            Self::Gemini
+                | Self::Cursor
+                | Self::Copilot
+                | Self::Amp
+                | Self::Droid
+                | Self::Kimi
+                | Self::Grok
         )
     }
 }
@@ -45,6 +52,7 @@ impl std::fmt::Display for HarnessKind {
             Self::Amp => "amp",
             Self::Droid => "droid",
             Self::Kimi => "kimi",
+            Self::Grok => "grok",
         })
     }
 }
@@ -90,6 +98,7 @@ pub struct Policy {
     pub cursor_model: Option<String>,
     pub copilot_model: Option<String>,
     pub kimi_model: Option<String>,
+    pub grok_model: Option<String>,
 
     /// Per-harness reasoning effort, named after the flag each harness takes.
     /// Codex and OpenCode have no such flag, so neither has a key here.
@@ -107,6 +116,7 @@ pub struct Policy {
     pub amp_enabled: Option<bool>,
     pub droid_enabled: Option<bool>,
     pub kimi_enabled: Option<bool>,
+    pub grok_enabled: Option<bool>,
 
     /// Harnesses the launch picker offers. Unset is offered; `false` takes the harness out of
     /// the composer's cycle while discovery, history and native controls carry on. A harness
@@ -121,6 +131,7 @@ pub struct Policy {
     pub amp_in_picker: Option<bool>,
     pub droid_in_picker: Option<bool>,
     pub kimi_in_picker: Option<bool>,
+    pub grok_in_picker: Option<bool>,
 
     /// Start composer sessions with each harness's own no-prompt flag. Unset is on. A
     /// harness's own key below overrides it. pi has no permission prompts and amp no flag for
@@ -135,6 +146,7 @@ pub struct Policy {
     pub copilot_skip_permissions: Option<bool>,
     pub droid_skip_permissions: Option<bool>,
     pub kimi_skip_permissions: Option<bool>,
+    pub grok_skip_permissions: Option<bool>,
 
     /// `true` selects Bedrock, `false` the native provider, `None` the harness configuration.
     pub bedrock: Option<bool>,
@@ -159,6 +171,7 @@ impl Policy {
             HarnessKind::Amp => None,
             HarnessKind::Droid => None,
             HarnessKind::Kimi => self.kimi_model.as_deref(),
+            HarnessKind::Grok => self.grok_model.as_deref(),
         }
     }
 
@@ -174,7 +187,8 @@ impl Policy {
             | HarnessKind::Copilot
             | HarnessKind::Amp
             | HarnessKind::Droid
-            | HarnessKind::Kimi => None,
+            | HarnessKind::Kimi
+            | HarnessKind::Grok => None,
         }
     }
 
@@ -190,6 +204,7 @@ impl Policy {
             HarnessKind::Cursor => &mut self.cursor_model,
             HarnessKind::Copilot => &mut self.copilot_model,
             HarnessKind::Kimi => &mut self.kimi_model,
+            HarnessKind::Grok => &mut self.grok_model,
             HarnessKind::Amp | HarnessKind::Droid => return false,
         };
         *field = Some(model);
@@ -219,6 +234,7 @@ impl Policy {
             HarnessKind::Amp => self.amp_enabled,
             HarnessKind::Droid => self.droid_enabled,
             HarnessKind::Kimi => self.kimi_enabled,
+            HarnessKind::Grok => self.grok_enabled,
         }
         .unwrap_or(true)
     }
@@ -233,6 +249,7 @@ impl Policy {
             HarnessKind::Copilot => self.copilot_skip_permissions,
             HarnessKind::Droid => self.droid_skip_permissions,
             HarnessKind::Kimi => self.kimi_skip_permissions,
+            HarnessKind::Grok => self.grok_skip_permissions,
             HarnessKind::Pi | HarnessKind::Amp => return false,
         }
         .or(self.skip_permissions)
@@ -254,6 +271,7 @@ impl Policy {
                 HarnessKind::Amp => self.amp_in_picker,
                 HarnessKind::Droid => self.droid_in_picker,
                 HarnessKind::Kimi => self.kimi_in_picker,
+                HarnessKind::Grok => self.grok_in_picker,
             }
             .unwrap_or(true)
     }
@@ -1234,6 +1252,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("amp_enabled", d.amp_enabled),
         ("droid_enabled", d.droid_enabled),
         ("kimi_enabled", d.kimi_enabled),
+        ("grok_enabled", d.grok_enabled),
         ("claude_in_picker", d.claude_in_picker),
         ("codex_in_picker", d.codex_in_picker),
         ("pi_in_picker", d.pi_in_picker),
@@ -1244,6 +1263,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("amp_in_picker", d.amp_in_picker),
         ("droid_in_picker", d.droid_in_picker),
         ("kimi_in_picker", d.kimi_in_picker),
+        ("grok_in_picker", d.grok_in_picker),
         ("skip_permissions", d.skip_permissions),
         ("claude_skip_permissions", d.claude_skip_permissions),
         ("codex_skip_permissions", d.codex_skip_permissions),
@@ -1253,6 +1273,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
         ("copilot_skip_permissions", d.copilot_skip_permissions),
         ("droid_skip_permissions", d.droid_skip_permissions),
         ("kimi_skip_permissions", d.kimi_skip_permissions),
+        ("grok_skip_permissions", d.grok_skip_permissions),
     ] {
         put(key, value.map(|v| v.to_string()));
     }

@@ -32,7 +32,7 @@ def main(binary, parts):
         (state / "folders").write_text(str(project) + "\n")
         config = root / "jobs.yaml"
         harnesses = ["claude", "codex", "pi", "opencode", "gemini", "cursor",
-                     "copilot", "amp", "droid", "kimi"]
+                     "copilot", "amp", "droid", "kimi", "grok"]
         config.write_text("version: 4\ndefaults:\n" +
                           "".join(f"  {h}_enabled: false\n" for h in harnesses) +
                           "jobs: []\n")
