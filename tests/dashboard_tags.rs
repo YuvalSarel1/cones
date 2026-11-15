@@ -309,7 +309,8 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     d.capture("refused");
     assert_eq!(places(&d, &pin.id), json!(["pinned"]), "{screen}");
 
-    // A name typed on `+ new tag in` and one Enter add the tag and keep the checklist.
+    // A name typed on `+ new tag in` and one Enter add the tag and keep the checklist. The
+    // tag moves the session: its folder line is unchecked, so it is listed once.
     select(&mut d, "Draft notes");
     let screen = checklist(&mut d);
     d.capture("checklist");
@@ -319,12 +320,15 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     d.press("up", UP);
     d.typed("follow up");
     d.press("enter", b"\r");
-    let screen = d.wait_for("two places", |s| rows_of(s, "Draft notes").len() == 2);
-    assert!(subs(&screen, "# follow up").len() == 1, "{screen}");
+    let screen = d.wait_for("the moved row", |s| {
+        subs(s, "# follow up").len() == 1 && rows_of(s, "Draft notes").len() == 1
+    });
     assert_eq!(
-        places(&d, &one.id),
-        json!(["folder", "folder › # follow up"])
+        under(&screen, row(&screen, "Draft notes")),
+        "# follow up",
+        "{screen}"
     );
+    assert_eq!(places(&d, &one.id), json!(["folder › # follow up"]));
 
     // Unchecking every place restores the folder.
     select_in(&mut d, "Answer sales", "# sales");

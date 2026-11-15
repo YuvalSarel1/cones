@@ -153,6 +153,12 @@ pub fn notice() -> Option<String> {
     })
 }
 
+/// The newer release Homebrew has installed, which this dashboard runs only once reopened.
+pub fn installed() -> Option<String> {
+    let v = NEWER.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
+    (INSTALLED.lock().unwrap_or_else(|e| e.into_inner()).as_ref() == Some(&v)).then_some(v)
+}
+
 fn remember(path: &Path) {
     let latest = fs::read(path).ok().and_then(|f| version(&f));
     let newer = latest.filter(|v| parts(v) > parts(env!("CARGO_PKG_VERSION")));

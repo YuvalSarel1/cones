@@ -242,8 +242,13 @@ Grouping by state lists each session once and ignores places other than `pinned`
 `ctrl+l` opens a checklist of places for the selected session: its folder, every tag a
 session carries as `# NAME` and as `folder › # NAME`, `pinned`, and `+ new tag…` and
 `+ new tag in folder ›`, where a name typed on the row and Enter add it and keep the
-checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape discards it. Unchecking everything
-returns the session to its folder. `ctrl+t` toggles `pinned` directly.
+checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape discards it.
+Checking a tag moves the session there, unchecking its folder; check the folder again to list
+it in both. Unchecking everything returns the session to its folder. `ctrl+t` toggles `pinned`
+directly. For a session under a worktree heading, the folder line names that heading, `⑂ PATH`,
+and a tag made in it sits under the worktree's heading.
+
+Tag headings are drawn in cyan, so a group of tagged sessions does not read as a folder.
 
 With the mouse, press a session row, drag it and release. A drop moves that row: the session
 leaves the place it was dragged from and takes the one dropped on, a tag of either kind or its

@@ -844,6 +844,38 @@ impl Data {
         Line::from(spans)
     }
 
+    /// The opened folders, resolved, as `sub_of` compares them.
+    fn opened(&self) -> HashSet<PathBuf> {
+        self.open.iter().map(|f| real(f)).collect()
+    }
+
+    /// The heading a linked worktree's session sits under inside its repository's folder:
+    /// the folder itself when it was opened, else the worktree's checkout when worktrees
+    /// nest or that checkout was opened. `None` lists it among the repository's own.
+    fn sub_of(&self, opened: &HashSet<PathBuf>, cwd: &Path) -> Option<(PathBuf, bool)> {
+        if opened.contains(&real(cwd)) {
+            return Some((cwd.to_owned(), true));
+        }
+        let top = self.trees.get(cwd)?;
+        let open = opened.contains(&real(top));
+        (self.nest || open).then(|| (top.clone(), open))
+    }
+
+    /// Where the session's own folder lists it: the repository's folder, or the worktree
+    /// heading inside it, `⑂ ~/repo-wt`, as the list names it.
+    fn folder_label(&self, s: &Session) -> String {
+        match self.worktree_heading(s) {
+            Some(dir) => format!("⑂ {}", fleet::tilde(&dir)),
+            None => self.home_folder(s).1,
+        }
+    }
+
+    /// The worktree heading the session's folder lists it under, if any.
+    fn worktree_heading(&self, s: &Session) -> Option<PathBuf> {
+        self.roots.get(&s.cwd)?;
+        self.sub_of(&self.opened(), &s.cwd).map(|(dir, _)| dir)
+    }
+
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
         self.rows_excluding(
             by_state,
@@ -873,25 +905,14 @@ impl Data {
             });
             out.push(Row {
                 kind: Kind::Header,
-                cells: vec![(title.to_owned(), bold())],
+                cells: vec![(title.to_owned(), heading_style(title))],
             });
         };
         let folder = |dir: &Path| self.folder_name(dir);
         let ranked =
             |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned(), String::new());
-        let real = |dir: &Path| dir.canonicalize().unwrap_or_else(|_| dir.to_owned());
-        let opened: HashSet<PathBuf> = self.open.iter().map(|f| real(f)).collect();
-        // The heading a linked worktree's session sits under inside its repository's folder:
-        // the folder itself when it was opened, else the worktree's checkout when worktrees
-        // nest or that checkout was opened. `None` lists it among the repository's own.
-        let sub = |cwd: &Path| -> Option<(PathBuf, bool)> {
-            if opened.contains(&real(cwd)) {
-                return Some((cwd.to_owned(), true));
-            }
-            let top = self.trees.get(cwd)?;
-            let open = opened.contains(&real(top));
-            (self.nest || open).then(|| (top.clone(), open))
-        };
+        let opened = self.opened();
+        let sub = |cwd: &Path| self.sub_of(&opened, cwd);
         // A run still worth a look sits among the sessions, in its folder: one whose agent is
         // listed, one still supervised, one nobody has read since it finished. Every run is in
         // the jobs view.
@@ -989,9 +1010,14 @@ impl Data {
                         ),
                         true,
                     ),
+                    // A worktree's session keeps its folder tags under the worktree's heading.
                     Place::FolderTag(t) => {
                         let (sort, name) = self.home_folder(s);
-                        (s, (sort, name, format!("# {t}")), true)
+                        let at = match self.roots.get(&s.cwd).and_then(|_| sub(&s.cwd)) {
+                            Some((dir, _)) => format!("{} # {t}", fleet::tilde(&dir)),
+                            None => format!("# {t}"),
+                        };
+                        (s, (sort, name, at), true)
                     }
                 });
             }
@@ -1216,13 +1242,13 @@ impl Data {
                         text.push_str(&format!("{ELSEWHERE}{last}"));
                     }
                     indent(
-                        !key.2.is_empty(),
+                        &key.2,
                         title,
                         unread(self.unread.contains(&s.session_id), title, row),
                     )
                 }
                 Entry::Run(s) => indent(
-                    !key.2.is_empty(),
+                    &key.2,
                     title,
                     unread(
                         self.unread.contains(&s.session_id),
@@ -1280,17 +1306,43 @@ impl Data {
                 if current.is_none() && table {
                     out.push(Row {
                         kind: Kind::Header,
-                        cells: vec![(key.1.clone(), bold())],
+                        cells: vec![(key.1.clone(), heading_style(&key.1))],
                     });
                 } else {
                     header(&mut out, &key.1);
                 }
             }
             if current != Some(key) && !key.2.is_empty() {
-                out.push(Row {
-                    kind: Kind::Header,
-                    cells: vec![(format!("  {}", sub_heading(&key.2)), bold())],
-                });
+                match nested(&key.2) {
+                    Some((tree, tag)) => {
+                        // The worktree's heading, unless its group came just before.
+                        let same = current.is_some_and(|c| {
+                            (&c.0, &c.1) == (&key.0, &key.1)
+                                && (c.2 == tree || nested(&c.2).is_some_and(|(w, _)| w == tree))
+                        });
+                        if !same {
+                            out.push(Row {
+                                kind: Kind::Header,
+                                cells: vec![(format!("  {}", sub_heading(tree)), bold())],
+                            });
+                        }
+                        out.push(Row {
+                            kind: Kind::Header,
+                            cells: vec![(format!("    # {tag}"), tag_style())],
+                        });
+                    }
+                    None => out.push(Row {
+                        kind: Kind::Header,
+                        cells: vec![(
+                            format!("  {}", sub_heading(&key.2)),
+                            if key.2.starts_with("# ") {
+                                tag_style()
+                            } else {
+                                bold()
+                            },
+                        )],
+                    }),
+                }
             }
             current = Some(key);
             let row = match e {
@@ -2510,11 +2562,28 @@ fn job_cell(
 }
 
 /// Indent cell `title` of a row listed under a worktree heading.
-fn indent(under: bool, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
-    if under && let Some((text, _)) = row.get_mut(title) {
-        *text = format!("  {text}");
+fn indent(sub: &str, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
+    let levels = match sub {
+        "" => 0,
+        _ if nested(sub).is_some() => 2,
+        _ => 1,
+    };
+    if let Some((text, _)) = row.get_mut(title) {
+        *text = format!("{}{text}", "  ".repeat(levels));
     }
     row
+}
+
+/// A tag inside a worktree's heading, `~/repo-wt # NAME`, as the worktree and the tag.
+fn nested(sub: &str) -> Option<(&str, &str)> {
+    if sub.starts_with("# ") {
+        return None;
+    }
+    sub.split_once(" # ")
+}
+
+fn real(dir: &Path) -> PathBuf {
+    dir.canonicalize().unwrap_or_else(|_| dir.to_owned())
 }
 
 /// A group of the session list: sort key, heading and sub-heading.
@@ -2914,6 +2983,19 @@ fn plain() -> Style {
 }
 fn bold() -> Style {
     Style::default().add_modifier(Modifier::BOLD)
+}
+/// A tag's heading, coloured so a group of tagged sessions does not read as a folder.
+fn tag_style() -> Style {
+    Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD)
+}
+fn heading_style(title: &str) -> Style {
+    if title.starts_with("# ") {
+        tag_style()
+    } else {
+        bold()
+    }
 }
 fn dim() -> Style {
     Style::default().add_modifier(Modifier::DIM)
@@ -11700,16 +11782,30 @@ impl App {
                 ),
             );
         }
-        if !self.stale {
+        // First, not last: a narrow header clips its tail, and these outrank the counts.
+        let mut spans = vec![];
+        if let Some(v) = crate::update::installed() {
+            // An installed update runs only after a restart, so it cannot be missed.
+            spans.push(Span::styled(
+                format!(" cones {v} installed · quit and reopen cones "),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(ORANGE)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw("  "));
+        }
+        if self.stale {
+            spans.push(Span::styled(
+                "! stale  ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if spans.is_empty() {
             return summary;
         }
-        // First, not last: a narrow header clips its tail, and the warning outranks the counts.
-        let mut spans = vec![Span::styled(
-            "! stale  ",
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )];
         spans.extend(summary.spans);
         Line::from(spans)
     }
@@ -12894,18 +12990,32 @@ impl App {
             } => cells.first().map(|(text, _)| text.as_str()),
             _ => None,
         };
-        let mut sub = None;
+        // The nearest heading decides: a tag inside a worktree, then that worktree's heading.
+        let (mut sub, mut tag) = (None, None);
         let mut at = i.min(self.rows.len().checked_sub(1)?);
         let top = loop {
             if let Some(text) = heading(at) {
-                match text.strip_prefix("  ") {
-                    Some(inner) if sub.is_none() => sub = Some(inner.to_owned()),
-                    Some(_) => {}
-                    None => break text.to_owned(),
+                if let Some(inner) = text.strip_prefix("    ") {
+                    if sub.is_none() && tag.is_none() {
+                        tag = Some(inner.to_owned());
+                    }
+                } else if let Some(inner) = text.strip_prefix("  ") {
+                    if sub.is_none() {
+                        sub = Some(inner.to_owned());
+                    }
+                } else {
+                    break text.to_owned();
                 }
             }
             at = at.checked_sub(1)?;
         };
+        if let (Some(tree), Some(tag)) = (&sub, &tag) {
+            return Some(Spot {
+                place: Place::FolderTag(tag.trim_start_matches("# ").to_owned()),
+                group: format!("{top} {tree} {tag}"),
+                folder: top,
+            });
+        }
         Some(match sub {
             Some(sub) if sub.starts_with("# ") => Spot {
                 place: Place::FolderTag(sub[2..].to_owned()),
@@ -12999,7 +13109,7 @@ impl App {
             return;
         };
         let id = s.session_id.clone();
-        let folder = self.data.home_folder(s).1;
+        let folder = self.data.folder_label(s);
         let current = self.places_of(&id);
         let mut names: Vec<String> = self
             .data
@@ -13084,8 +13194,20 @@ impl App {
             }
         };
         pick.checked[at] = true;
+        Self::leave_folder(pick, at);
         pick.input = Input::default();
         Ok(())
+    }
+
+    /// Checking a tag moves the session there: its folder line, the checklist's first, is
+    /// unchecked, so the session is not listed twice. Checking the folder again keeps both.
+    fn leave_folder(pick: &mut Pick, at: usize) {
+        let tag = pick.rows.get(at).is_some_and(|r| {
+            Place::parse(&r.text).is_ok_and(|p| p.tag().is_some_and(|t| t != crate::places::PINNED))
+        });
+        if tag && let Some(folder) = pick.checked.first_mut() {
+            *folder = false;
+        }
     }
 
     /// The checklist kept: every checked place, the folder when none is.
@@ -16868,7 +16990,12 @@ impl App {
         }
         line.spans.extend(tail.spans);
         if let Some(notice) = notice {
-            line.spans.push(Span::styled(format!(" · {notice}"), dim()));
+            let style = if crate::update::installed().is_some() {
+                lit()
+            } else {
+                dim()
+            };
+            line.spans.push(Span::styled(format!(" · {notice}"), style));
         }
         vec![line]
     }
@@ -17469,6 +17596,9 @@ impl App {
                     _ if code == KeyCode::Char(' ') => {
                         if let Some(on) = pick.checked.get_mut(pick.at) {
                             *on = !*on;
+                            if *on {
+                                Self::leave_folder(pick, pick.at);
+                            }
                         }
                     }
                     _ => {}

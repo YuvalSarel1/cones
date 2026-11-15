@@ -183,6 +183,13 @@ fn a_homebrew_install_upgrades_itself_and_asks_to_reopen() {
     d.start();
     let list = d.wait_text("cones 99.0.0 installed · reopen cones");
     d.capture("list");
+    // The header leads with it too, since the update runs only after a restart.
+    assert!(
+        list.lines()
+            .take(5)
+            .any(|l| l.contains("cones 99.0.0 installed · quit and reopen cones")),
+        "{list}"
+    );
     let navigation = list.lines().find(|l| l.contains("? shortcuts")).unwrap();
     assert!(
         navigation.contains("? shortcuts · cones 99.0.0 installed · reopen cones"),

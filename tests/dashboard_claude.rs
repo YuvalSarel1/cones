@@ -1247,6 +1247,74 @@ fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
     d.quit();
 }
 
+/// Idan's ask: a session under a worktree heading is tagged without leaving that worktree.
+/// ctrl+l names the worktree as the session's folder, a tag made "in" it heads the session
+/// inside the worktree's heading in the tag colour, and the new tag moves the session there
+/// rather than listing it twice.
+#[test]
+fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
+    let Worktree { mut d, tree, .. } = worktree("claude-worktree-tag");
+    d.start();
+    let tree_heading = format!("  ⑂ {}", tree.display());
+    d.wait_text("Autoscaling plan");
+    while !selected(&d.screen()).contains("Autoscaling plan") {
+        let before = selected(&d.screen()).to_owned();
+        d.press("down", DOWN);
+        d.wait_for("the cursor to move toward Autoscaling plan", |s| {
+            selected(s) != before
+        });
+    }
+    d.press("ctrl+l", b"\x0c");
+    let screen = d.wait_text("places · space checks");
+    // The checklist is narrower than the fixture's paths, so only their start shows.
+    let start: String = format!("⑂ {}", tree.display()).chars().take(30).collect();
+    assert!(
+        screen.contains(&format!("› [x] {start}")),
+        "the folder line names the worktree heading:\n{screen}"
+    );
+    assert!(
+        screen.contains(&format!("+ new tag in {start}")),
+        "{screen}"
+    );
+    for _ in 0..3 {
+        d.press("down", DOWN);
+    }
+    d.wait_for("+ new tag in selected", |s| {
+        s.lines()
+            .any(|l| l.starts_with("› ") && l.contains("+ new tag in"))
+    });
+    // One Enter adds the tag and keeps the checklist.
+    d.typed("ideas");
+    d.press("enter", b"\r");
+    let screen = d.wait_for("the tag inside the worktree", |s| s.contains("    # ideas"));
+    d.capture("worktree-tag");
+    let order = [
+        heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}")),
+        heading(&screen, "    # ideas").unwrap_or_else(|| panic!("{screen}")),
+        row(&screen, "Autoscaling plan"),
+    ];
+    assert!(order.is_sorted(), "{order:?}\n{screen}");
+    assert_eq!(
+        screen.matches("Autoscaling plan").count(),
+        1,
+        "listed once:\n{screen}"
+    );
+    assert_eq!(
+        column(&screen, "Autoscaling plan"),
+        column(&screen, "Rank tenants") + 4,
+        "{screen}"
+    );
+    assert_eq!(d.colour_of("# ideas"), Some(vt100::Color::Idx(6)));
+    let tags = d.wait_file("state/tags.json", |t| t.contains("ideas"));
+    let tags: Value = serde_json::from_str(&tags).unwrap();
+    assert_eq!(
+        tags["places"].as_object().unwrap().values().next().unwrap(),
+        &json!(["folder › # ideas"])
+    );
+    d.keep("state/tags.json");
+    d.quit();
+}
+
 /// Where `text` starts on its line, in characters.
 fn column(screen: &str, text: &str) -> usize {
     let line = line_of(screen, text);
