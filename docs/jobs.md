@@ -193,7 +193,7 @@ Codex run under any `HOME`, so the list is for [sessions detection cannot see](h
 | `start.pane` | `true` | Open the viewer pane at dashboard startup. |
 | `start.notify` | `false` | Desktop notifications for newly reported input requests and completions outside the focused session. Independent of a job's `notify`. |
 | `start.index` | `false` | Fill the [meaning index](dashboard.md#history) in the background from dashboard startup. |
-| `start.update_check` | `true` | Once a day, read the Homebrew tap's formula from GitHub. A newer release is installed with `brew upgrade cones` for a Homebrew install and announced in the footer and Help. Off, cones never contacts GitHub or runs Homebrew for it. |
+| `start.update_check` | `true` | Once a day, read the Homebrew tap's formula from GitHub. A newer release is installed with `brew update` and `brew upgrade cones` for a Homebrew install and announced in the footer and Help. Off, cones never contacts GitHub or runs Homebrew for it. |
 | `start.min_prompt` | `4` | Fewest characters, ignoring surrounding spaces, a [composer](dashboard.md#composer) instruction needs to start an agent; Enter on a shorter one keeps the draft and starts nothing. `claude agents` uses 4. `0` accepts any text. Terminal commands are not affected. |
 
 Harness and pane values apply at startup. Runtime harness and pane keys change the current dashboard; the config editor saves their initial settings for future dashboards. A divider drag changes the current dashboard and saves `pane.ratio` on release. Notification changes take effect on the next configuration refresh.

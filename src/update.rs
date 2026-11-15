@@ -68,19 +68,26 @@ fn pass(path: &Path) {
 }
 
 /// `brew upgrade cones` exits 0 when the tap is behind and nothing changed, so success is
-/// the new version's Cellar folder. Cleanup is off: the running dashboard and the terminal
-/// hosts it starts still execute the old version's binary.
+/// the new version's Cellar folder. Homebrew refreshes its taps before an upgrade at most once
+/// a day, or never under `HOMEBREW_NO_AUTO_UPDATE`, so its copy of the tap can lag the formula
+/// read from GitHub for a day; `brew update` first brings it level. Cleanup is off: the running
+/// dashboard and the terminal hosts it starts still execute the old version's binary.
 fn upgrade(prefix: &Path, v: &str) -> bool {
-    Command::new(prefix.join("bin/brew"))
-        .args(["upgrade", "cones"])
-        .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
-        .env("HOMEBREW_NO_ENV_HINTS", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-        && prefix.join("Cellar/cones").join(v).is_dir()
+    let brew = |args: &[&str]| {
+        Command::new(prefix.join("bin/brew"))
+            .args(args)
+            .env("HOMEBREW_NO_INSTALL_CLEANUP", "1")
+            .env("HOMEBREW_NO_ENV_HINTS", "1")
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    // A failed update can still leave a tap that has the release, so the upgrade runs anyway.
+    brew(&["update", "--quiet"]);
+    brew(&["upgrade", "cones"]) && prefix.join("Cellar/cones").join(v).is_dir()
 }
 
 /// The Homebrew prefix when Homebrew installed this binary, as `<prefix>/Cellar/cones/<v>/bin`.

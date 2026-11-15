@@ -5186,7 +5186,7 @@ const FIELDS: [Field; 76] = [
         name: "start.update_check",
         short: "check for updates",
         hint: "Install a newer cones release.",
-        long: "Once a day, read the Homebrew tap's formula from GitHub. When it names a newer release, a Homebrew install runs `brew upgrade cones` in the background and the footer and Help ask you to reopen cones; any other install only shows the release there. Off, cones never contacts GitHub or runs Homebrew for it.",
+        long: "Once a day, read the Homebrew tap's formula from GitHub. When it names a newer release, a Homebrew install runs `brew update` and `brew upgrade cones` in the background and the footer and Help ask you to reopen cones; any other install only shows the release there. Off, cones never contacts GitHub or runs Homebrew for it.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },

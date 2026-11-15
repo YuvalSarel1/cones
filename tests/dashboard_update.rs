@@ -10,8 +10,9 @@
 //! screen saves `start.update_check: false` and takes the notice away at once, and a
 //! dashboard started with it off shows none. Homebrew's `brew upgrade cones` is offered
 //! only to a binary under a Homebrew Cellar. A copy of the binary in a fixture Cellar runs
-//! the prefix's `brew upgrade cones` with cleanup off; once the new version's Cellar folder
-//! exists the notice asks to reopen cones, and when brew fails it offers the command.
+//! the prefix's `brew update`, then `brew upgrade cones` with cleanup off, so a tap Homebrew
+//! has not refreshed yet still upgrades; once the new version's Cellar folder exists the
+//! notice asks to reopen cones, and when brew fails it offers the command.
 use crate::dashboard::*;
 use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -169,7 +170,16 @@ fn from_homebrew(d: &mut Dashboard, script: &str) {
 fn a_homebrew_install_upgrades_itself_and_asks_to_reopen() {
     let mut d = Dashboard::new("update-homebrew", &[]);
     let cellar = d.path("brew/Cellar/cones/99.0.0");
-    from_homebrew(&mut d, &format!("mkdir -p {}", cellar.display()));
+    let tap = d.path("brew/tap-updated");
+    // Homebrew's own copy of the tap is a day behind: only `brew update` lets the upgrade work.
+    from_homebrew(
+        &mut d,
+        &format!(
+            "case $1 in update) touch {tap};; upgrade) [ -f {tap} ] && mkdir -p {cellar};; esac",
+            tap = tap.display(),
+            cellar = cellar.display()
+        ),
+    );
     d.start();
     let list = d.wait_text("cones 99.0.0 installed · reopen cones");
     d.capture("list");
@@ -178,9 +188,9 @@ fn a_homebrew_install_upgrades_itself_and_asks_to_reopen() {
         navigation.contains("? shortcuts · cones 99.0.0 installed · reopen cones"),
         "{list}"
     );
-    let log = d.wait_file("brew.log", |t| !t.is_empty());
+    let log = d.wait_file("brew.log", |t| t.contains("upgrade"));
     d.keep("brew.log");
-    assert_eq!(log, "upgrade cones cleanup=1\n");
+    assert_eq!(log, "update --quiet cleanup=1\nupgrade cones cleanup=1\n");
     d.press("ctrl+g", CTRL_G);
     d.wait_text(&format!(
         "help  cones {VERSION} · cones 99.0.0 installed · reopen cones"
