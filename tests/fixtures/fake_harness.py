@@ -125,7 +125,10 @@ if name == "codex":
     for _ in range(2 if mode == "twice" else 1 if prompt else 0):
         thread = str(uuid.uuid4())
         made.append(thread)
-        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".%03dZ" % (time.time() % 1 * 1000)
+        # One clock read: a second that turns between two reads dates the thread a second early,
+        # before the launch that made it, and the launch never names it.
+        t = time.time()
+        now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(t)) + ".%03dZ" % (t % 1 * 1000)
         lines = [
             {"timestamp": now, "ordinal": 0, "type": "session_meta", "payload": {
                 "session_id": thread, "id": thread, "timestamp": now, "cwd": cwd,
