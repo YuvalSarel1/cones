@@ -9707,11 +9707,8 @@ struct App {
     /// Successful delete/forget commands take effect here before the registry catches up.
     removed_sessions: HashSet<String>,
     feedback: Option<(&'static str, Instant)>,
-    /// Session ids marked with ctrl+p, whose titles are drawn in the highlight colour.
-    /// ponytail: kept for the dashboard's lifetime only; persist it if marks are missed.
-    highlighted: HashSet<String>,
-    /// Each session's tag and each group's hand order, kept in `state/tags.json`. `pinned`,
-    /// which ctrl+t toggles, is one of the tags.
+    /// Each session's tag, each group's hand order and the ctrl+p highlights, kept in
+    /// `state/tags.json`. `pinned`, which ctrl+t toggles, is one of the tags.
     places: Places,
     /// The tag a launch from a tag group gives its session, by the placeholder's id, until the
     /// harness names the session.
@@ -10163,7 +10160,6 @@ impl App {
             stopping: Vec::new(),
             removed_sessions: HashSet::new(),
             feedback: None,
-            highlighted: HashSet::new(),
             places: Places::load(state),
             launch_places: HashMap::new(),
             row_drag: None,
@@ -12797,15 +12793,21 @@ impl App {
     }
 
     /// Mark or unmark the selected session. The mark is the dashboard's own, so it follows
-    /// the session id rather than anything a harness reports.
+    /// the session id rather than anything a harness reports, and is saved with the places.
     fn highlight_selected(&mut self) {
         let Some(id) = self.selected_session().map(|s| s.session_id.clone()) else {
             self.status = "ctrl+p highlights the selected session".into();
             return;
         };
-        if !self.highlighted.remove(&id) {
-            self.highlighted.insert(id);
+        let mut store = Places::load(&self.state);
+        if !store.highlighted.remove(&id) {
+            store.highlighted.insert(id);
         }
+        if let Err(e) = store.save(&self.state) {
+            self.status = warning(format!("highlight kept for this dashboard only: {e:#}"));
+        }
+        self.places = store;
+        self.add_launch_places();
         self.invalidate();
     }
 
@@ -18789,7 +18791,10 @@ impl App {
                 // owns keep reporting in their own colours.
                 let title = named_cell(rows, i).saturating_sub(1);
                 let marked = matches!(row.kind, Kind::Session(..))
-                    && row.kind.key().is_some_and(|k| self.highlighted.contains(k));
+                    && row
+                        .kind
+                        .key()
+                        .is_some_and(|k| self.places.highlighted.contains(k));
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 let mut mark = 0;
                 // The selected session's rows in its other places carry a faint mark.

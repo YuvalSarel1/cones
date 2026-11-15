@@ -105,6 +105,9 @@ pub struct Places {
     /// A group's sessions in the order set by hand, by the group's heading.
     #[serde(default)]
     pub order: BTreeMap<String, Vec<String>>,
+    /// Session ids marked with ctrl+p, whose titles are drawn in the highlight colour.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub highlighted: BTreeSet<String>,
 }
 
 /// The file as an earlier cones wrote it: one tag per session, empty for none, and the sessions
@@ -119,6 +122,8 @@ struct Stored {
     inside: BTreeSet<String>,
     #[serde(default)]
     order: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    highlighted: BTreeSet<String>,
 }
 
 pub fn path(state: &Path) -> PathBuf {
@@ -134,8 +139,15 @@ impl Places {
                 Ok(Stored {
                     places: Some(places),
                     order,
+                    highlighted,
                     ..
-                }) => return Self { places, order },
+                }) => {
+                    return Self {
+                        places,
+                        order,
+                        highlighted,
+                    };
+                }
                 Ok(old) => (Self::from_tags(old), true),
                 Err(_) => return Self::default(),
             },
@@ -149,7 +161,7 @@ impl Places {
                         .into_iter()
                         .map(|id| (id, Set::from([Place::Tag(PINNED.into())])))
                         .collect(),
-                    order: BTreeMap::new(),
+                    ..Self::default()
                 };
                 let any = !places.places.is_empty();
                 (places, any)
@@ -178,6 +190,7 @@ impl Places {
         Self {
             places,
             order: old.order,
+            highlighted: old.highlighted,
         }
     }
 

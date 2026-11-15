@@ -646,7 +646,8 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     );
     d.keep("state/tags.json");
 
-    // ctrl+p highlights the selected title in the configured colour, and again clears it.
+    // ctrl+p highlights the selected title in the configured colour, keeps it across a
+    // restart, and again clears it.
     let plain = d.colour_of("Rest a while");
     assert_ne!(plain, Some(vt100::Color::Idx(5)), "{plain:?}");
     d.press("ctrl+p", CTRL_P);
@@ -655,6 +656,24 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     });
     d.capture("highlighted");
     assert_ne!(d.colour_of("Ship the release"), Some(vt100::Color::Idx(5)));
+    let tags: Value =
+        serde_json::from_str(&d.wait_file("state/tags.json", |t| t.contains("highlighted")))
+            .unwrap();
+    assert_eq!(tags["highlighted"], json!([rest.id.as_str()]));
+    d.quit();
+    d.start();
+    d.wait_for("the highlight after a restart", |_| {
+        d.colour_of("Rest a while") == Some(vt100::Color::Idx(5))
+    });
+    d.capture("highlighted-restarted");
+    assert_ne!(d.colour_of("Ship the release"), Some(vt100::Color::Idx(5)));
+    while !selected(&d.screen()).contains("Rest a while") {
+        let before = selected(&d.screen()).to_owned();
+        d.press("down", DOWN);
+        d.wait_for("the cursor to move toward Rest a while", |s| {
+            selected(s) != before
+        });
+    }
     d.press("ctrl+p", CTRL_P);
     d.wait_for("the highlight cleared", |_| {
         d.colour_of("Rest a while") == plain

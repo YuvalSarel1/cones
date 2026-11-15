@@ -185,7 +185,7 @@ terminal as the only way in. A warning wider than the composer's rule ends in `â
 | `ctrl+f` | Filter; Enter keeps it, Escape clears it. |
 | `ctrl+h` | Show or hide history. |
 | `ctrl+n` | Rename a Claude, Codex, pi or OpenCode session, as [`cones rename`](cli.md#renaming-a-session) does. |
-| `ctrl+p` | Toggle a temporary session highlight. |
+| `ctrl+p` | Toggle a session highlight, kept in `state/tags.json` across restarts. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
 | `ctrl+l` | Check the [places](#places) a session sits in. |
 | `ctrl+t` | Pin a session above every group, or unpin it. |
