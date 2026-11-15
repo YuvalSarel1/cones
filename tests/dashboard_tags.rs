@@ -515,10 +515,25 @@ fn tags_migrate_places_follow_a_continued_conversation_and_a_launch_sits_in_its_
         assert!(all.contains(&line), "{all}");
     }
 
+    // A ctrl+p mark on the conversation it came from marks the continued one too.
+    let mut tags = stored(&d);
+    tags["highlighted"] = json!([&gone]);
+    fs::write(d.path("state/tags.json"), tags.to_string()).unwrap();
+
     d.start();
     let screen = d.wait_for("every place", |s| {
         heading(s, "pinned").is_some() && sub(s, "# analysis").is_some()
     });
+    d.wait_for("the carried highlight", |_| {
+        d.colour_of("Continue the analysis") == Some(vt100::Color::Idx(5))
+    });
+    assert_ne!(d.colour_of("Plan the study"), Some(vt100::Color::Idx(5)));
+    select(&mut d, "Continue the analysis");
+    d.press("ctrl+p", b"\x10");
+    d.wait_for("the carried highlight cleared", |_| {
+        d.colour_of("Continue the analysis") != Some(vt100::Color::Idx(5))
+    });
+    assert_eq!(stored(&d).get("highlighted"), None);
     d.capture("migrated-and-carried");
     let top = heading(&screen, "pinned").unwrap();
     assert_eq!(row(&screen, "Keep me on top"), top + 1, "{screen}");

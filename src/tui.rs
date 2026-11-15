@@ -12800,9 +12800,13 @@ impl App {
             return;
         };
         let mut store = Places::load(&self.state);
-        if !store.highlighted.remove(&id) {
-            store.highlighted.insert(id);
-        }
+        let owner = store
+            .marked(&id, |id| self.parent_of(id))
+            .map(str::to_owned);
+        match owner {
+            Some(owner) => store.highlighted.remove(&owner),
+            None => store.highlighted.insert(id),
+        };
         if let Err(e) = store.save(&self.state) {
             self.status = warning(format!("highlight kept for this dashboard only: {e:#}"));
         }
@@ -18794,7 +18798,7 @@ impl App {
                     && row
                         .kind
                         .key()
-                        .is_some_and(|k| self.places.highlighted.contains(k));
+                        .is_some_and(|k| self.places.marked(k, |id| self.parent_of(id)).is_some());
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 let mut mark = 0;
                 // The selected session's rows in its other places carry a faint mark.

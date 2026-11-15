@@ -221,6 +221,23 @@ impl Places {
         folder_only()
     }
 
+    /// The id carrying the session's ctrl+p mark: its own, else that of the conversation it
+    /// continues, so a resumed or forked session keeps the mark it was given.
+    pub fn marked<'a>(
+        &'a self,
+        id: &'a str,
+        parent: impl Fn(&str) -> Option<&'a str>,
+    ) -> Option<&'a str> {
+        let mut at = id;
+        for _ in 0..8 {
+            if self.highlighted.contains(at) {
+                return Some(at);
+            }
+            at = parent(at)?;
+        }
+        None
+    }
+
     /// Give `id` the set `set`; an empty one means its folder. A set equal to what it would
     /// take anyway is not stored.
     pub fn set<'a>(&mut self, id: &'a str, set: Set, parent: impl Fn(&str) -> Option<&'a str>) {
