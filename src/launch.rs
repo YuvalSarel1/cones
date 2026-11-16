@@ -240,7 +240,7 @@ pub fn fork(
     if spec.launch.as_ref().map(|l| l.handler) == Some(LaunchHandler::CodexRemote) {
         return codex_fork(state, policy, entry);
     }
-    let expected = (kind == HarnessKind::Pi).then(|| uuid::Uuid::new_v4().to_string());
+    let expected = harness::fork_names_child(kind).then(|| uuid::Uuid::new_v4().to_string());
     let harness::Start::Foreground(command) = harness::fork(entry, expected.as_deref(), policy)?
     else {
         bail!("{kind} fork needs its own native client");
@@ -479,7 +479,7 @@ fn hosted(
     };
     // A live client may still be asking to sign in, to trust the folder or to update. cones
     // reads no harness's screens, so it shows the screen instead of calling the prompt taken.
-    if identity != Identity::Native && !watch.shown.is_empty() {
+    if identity != Identity::Native && row.native_id.is_none() && !watch.shown.is_empty() {
         eprintln!(
             "{kind} has reported no conversation of its own yet. Its screen shows:\n{}",
             watch.shown

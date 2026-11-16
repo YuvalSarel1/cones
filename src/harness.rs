@@ -290,6 +290,24 @@ fn stdin_prompt(mut command: std::process::Command, prompt: &str) -> Result<std:
     bind_stdin_prompt(command, prompt)
 }
 
+/// Whether a fork names its child: cones picks the new conversation's id and passes it.
+pub fn fork_names_child(kind: HarnessKind) -> bool {
+    spec(kind)
+        .operations
+        .fork
+        .as_ref()
+        .is_some_and(|fork| fork.args.iter().any(|a| a == "{new_id}"))
+}
+
+/// Whether the program a pane runs is a harness that draws its screen on stderr.
+pub(crate) fn screen_on_stderr(program: &std::ffi::OsStr) -> bool {
+    Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(by_name)
+        .is_some_and(|spec| spec.viewer.screen_on_stderr)
+}
+
 /// Restore the anonymous stdin binding when a command crosses the terminal-host
 /// boundary. Remove the transport marker before executing the native harness.
 #[doc(hidden)]
@@ -356,10 +374,11 @@ pub fn fork(entry: &crate::history::Entry, new_id: Option<&str>, policy: &Policy
     );
     let spec = by_name(&entry.key.harness).context("unknown fork harness")?;
     check_operation(spec, &spec.operations.fork, "fork")?;
-    if spec.kind == HarnessKind::Pi {
+    if fork_names_child(spec.kind) {
         ensure!(
             new_id.is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()),
-            "pi fork requires an exact new session UUID"
+            "{} fork requires an exact new session UUID",
+            spec.kind
         );
     }
     let template = with_flags(
@@ -752,7 +771,7 @@ pub fn session_args(
         }
     }
     args.extend(skip_permissions(kind, policy).iter().map(OsString::from));
-    if kind.terminal_only() && prompt.is_empty() {
+    if prompt.is_empty() && (kind.terminal_only() || kind == HarnessKind::Grok) {
         return Ok(args);
     }
     if launch.stdin_prompt {

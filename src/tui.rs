@@ -5850,7 +5850,7 @@ const FIELDS: [Field; 80] = [
         name: "grok_enabled",
         short: "grok",
         hint: "Offer grok sessions.",
-        long: "Enable terminal launch and process discovery for grok. Native history, live reports and supervised jobs are not integrated. Ctrl+Z returns from its terminal to the list.",
+        long: "true offers grok in the composer; false takes it out of the shift+tab cycle, so a harness this machine does not have stops being something to land on. Sessions it already has stay listed. Supervised jobs do not run on grok. Ctrl+Z returns from its terminal to the list.",
         builtin: "true",
         input: Answer::Pick(BOOL),
     },
@@ -16312,7 +16312,7 @@ impl App {
         let kind = spec.kind;
         let since = chrono::Utc::now();
         let title = entry.title.clone().unwrap_or_else(|| "fork".into());
-        let expected = (kind == HarnessKind::Pi).then(|| uuid::Uuid::new_v4().to_string());
+        let expected = harness::fork_names_child(kind).then(|| uuid::Uuid::new_v4().to_string());
         let id = self.launch_row(kind, &entry.cwd, &title);
         if let Some(p) = self.pending.iter_mut().find(|p| p.session.session_id == id) {
             p.session.forked_from = Some(entry.key.session_id.clone());
@@ -23842,6 +23842,12 @@ states:
             let d = dir();
             let mut app = app(d.path());
             let spec = harness::spec(kind);
+            // A harness whose only return key is ctrl+z keeps Tab and Left for its own editor.
+            let ctrl_z_only = spec
+                .input
+                .return_to_list
+                .iter()
+                .all(|b| b.key == harness::spec::ReturnKey::CtrlZ);
             let mut row = placeholder(kind, A, d.path(), "fixture");
             row.state = "idle".into();
             app.data.sessions.push(row);
@@ -23886,7 +23892,7 @@ states:
                 app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
                 assert_eq!(app.focus, Some(0));
             }
-            let back = if kind.terminal_only() {
+            let back = if ctrl_z_only {
                 "ctrl+z"
             } else if kind == HarnessKind::Opencode {
                 "←"
@@ -23918,7 +23924,7 @@ states:
                 );
             }
             assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
-            if kind.terminal_only() {
+            if ctrl_z_only {
                 assert_eq!(
                     app.focus,
                     Some(0),
@@ -23945,7 +23951,7 @@ states:
                 (KeyCode::Tab, KeyModifiers::NONE),
                 (KeyCode::Char('z'), KeyModifiers::CONTROL),
             ] {
-                if (kind == HarnessKind::Opencode || kind.terminal_only()) && key == KeyCode::Tab {
+                if (kind == HarnessKind::Opencode || ctrl_z_only) && key == KeyCode::Tab {
                     continue;
                 }
                 app.key(key, modifier).unwrap();

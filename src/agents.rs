@@ -200,7 +200,7 @@ impl Adapter for Unreported {
 }
 
 pub(crate) fn accounting(kind: HarnessKind) -> Box<dyn Reader> {
-    assert!(kind.terminal_only());
+    assert!(kind.terminal_only() || kind == HarnessKind::Grok);
     Box::new(Accounting::<Unreported>::default())
 }
 

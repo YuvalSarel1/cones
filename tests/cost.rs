@@ -325,8 +325,10 @@ fn every_registered_harness_inherits_fallback_precedence_coverage_and_cache_refr
     let state = dir.path().join("prices");
     let missing = dir.path().join("missing");
     for &kind in harness::known() {
-        // A harness with a readable archive and no usage adapter has nothing to price.
-        if kind.terminal_only() {
+        // A harness with a readable archive and no usage adapter has nothing to price. Grok
+        // reports each session's dollars and no usage a catalog could price; tests/grok.rs
+        // reads that total.
+        if kind.terminal_only() || kind == HarnessKind::Grok {
             continue;
         }
         let fixture = Fixture::new(dir.path(), kind);

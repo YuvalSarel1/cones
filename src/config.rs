@@ -28,13 +28,7 @@ impl HarnessKind {
     pub fn terminal_only(self) -> bool {
         matches!(
             self,
-            Self::Gemini
-                | Self::Cursor
-                | Self::Copilot
-                | Self::Amp
-                | Self::Droid
-                | Self::Kimi
-                | Self::Grok
+            Self::Gemini | Self::Cursor | Self::Copilot | Self::Amp | Self::Droid | Self::Kimi
         )
     }
 }

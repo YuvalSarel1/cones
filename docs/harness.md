@@ -4,30 +4,30 @@
 
 cones discovers native sessions, reads reports and invokes supported native operations.
 Missing state, context and usage stay absent. It installs no global session hooks; owned
-pi and OpenCode clients load native reporting extensions. Four harnesses have report readers;
+pi and OpenCode clients load native reporting extensions. Five harnesses have report readers;
 six more have [experimental terminal adapters](#additional-terminal-harnesses).
 
 ## Capabilities
 
 What each [control plane](architecture.md#the-control-plane) verb reaches. "Owned" means a
-client in a terminal cones hosts. "Others" are Gemini, Cursor Agent, Copilot, Amp, Droid,
-Kimi and Grok. The [command reference](cli.md#commands) has each verb's rules.
+client in a terminal cones hosts. "Others" are Gemini, Cursor Agent, Copilot, Amp, Droid
+and Kimi. The [command reference](cli.md#commands) has each verb's rules.
 
-| Verb | Claude Code | Codex | pi | OpenCode | Others |
-| --- | --- | --- | --- | --- | --- |
-| `ls` | ✓ | ✓ | ✓ | ✓ | Process only |
-| `show`, `search` | ✓ | ✓ | ✓ | ✓ | Copilot, Cursor; owned screens |
-| `launch` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `resume` | ✓ | ✓ | ✓ | ✓ | Copilot, Cursor |
-| `fork` | ✓ | ✓ | ✓ | ✓ | – |
-| `send` | ✓ | Daemon | Owned | Owned | – |
-| `wait` | ✓ | ✓ | ✓ | Owned | – |
-| `rename` | ✓ | ✓ | Owned | Owned | – |
-| `btw` | ✓ | ✓ | ✓ | ✓ | – |
-| `compact` | Background | ✓ | Owned | Owned | – |
-| `stop` | Background | Daemon | Owned | Owned | Owned |
-| `rm` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Join from the dashboard | Background | Daemon | Owned | Owned | Owned |
+| Verb | Claude Code | Codex | pi | OpenCode | Grok | Others |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ls` | ✓ | ✓ | ✓ | ✓ | ✓ | Process only |
+| `show`, `search` | ✓ | ✓ | ✓ | ✓ | ✓ | Copilot, Cursor; owned screens |
+| `launch` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `resume` | ✓ | ✓ | ✓ | ✓ | ✓ | Copilot, Cursor |
+| `fork` | ✓ | ✓ | ✓ | ✓ | ✓ | – |
+| `send` | ✓ | Daemon | Owned | Owned | – | – |
+| `wait` | ✓ | ✓ | ✓ | Owned | ✓ | – |
+| `rename` | ✓ | ✓ | Owned | Owned | – | – |
+| `btw` | ✓ | ✓ | ✓ | ✓ | – | – |
+| `compact` | Background | ✓ | Owned | Owned | – | – |
+| `stop` | Background | Daemon | Owned | Owned | Owned | Owned |
+| `rm` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Join from the dashboard | Background | Daemon | Owned | Owned | Owned | Owned |
 
 `wait` needs a reported state, so a session with none never settles. `rm` removes from the
 harness's own list where it keeps one and otherwise stops the verified process.
@@ -40,6 +40,7 @@ harness's own list where it keeps one and otherwise stops the verified process.
 | Codex | `$CODEX_HOME`, otherwise `.codex` beside the Claude home | Processes, writer locks and saved threads. Sibling `.codex-*` homes with `config.toml` also supply daemon/history records. |
 | pi | `$PI_CODING_AGENT_DIR`, otherwise `.pi/agent` beside the Claude home | Processes and session files. |
 | OpenCode | `$XDG_DATA_HOME/opencode`, otherwise `~/.local/share/opencode` | Processes, owned-client reports and SQLite. |
+| Grok | `$GROK_HOME`, otherwise `.grok` beside the Claude home | Processes and the session folder each one holds open. |
 
 A missing home or disabled harness skips its reader. Process discovery matches executables,
 not names inside arguments.
@@ -164,6 +165,29 @@ Native contracts: [CLI](https://opencode.ai/docs/cli/),
 [context](https://github.com/anomalyco/opencode/blob/v1.18.31/packages/tui/src/feature-plugins/sidebar/context.tsx).
 See [native checks](testing.md#resource-and-native-checks).
 
+### Grok
+
+The [definition](../assets/harnesses/grok.yaml) excludes `-p` and the other headless and
+management commands. Rows are `grok-<pid>`. Grok 1.0.77 keeps one folder per session,
+`sessions/<url-encoded cwd>/<id>/`, and a client holds that folder's `events.jsonl` open for
+writing while it has the session, from startup, before the first turn, and across `/new` and
+`/resume`. The open file, read from the kernel, names the row's conversation, so clients
+sharing a folder keep apart. A client holding no such file, or several, names none. A folder
+whose `summary.json` is unreadable, hidden or a subagent's is not a conversation.
+
+The client draws its whole screen on stderr, so its pane takes stderr as well as stdout
+(`viewer.screen_on_stderr`). A launch passes `--trust`, which answers the folder trust question
+the way the dialog's yes does, since a detached launch has no screen to answer it on; resume
+and fork do not. A fork passes `--resume ID --fork-session --session-id NEW`, so cones names
+the child before it starts, and Grok records `parent_session_id`.
+
+Leader and daemon routes (`--leader`, `[cli] use_leader`), where another process holds the
+session, are unverified: such a client may name no conversation. Grok has no launch flag for a
+session name, its `/rename` and `/compact` are reached only from its own editor, and nothing
+addresses a running client, so `--name`, rename, compact, btw and send are refused. Effort has
+no cones setting; Grok's `/model` chooses it. Supervised jobs are refused: Grok's headless `-p`
+was not adopted as a job runner.
+
 ### Historical sessions
 
 History reads native archives independently of live processes.
@@ -174,6 +198,7 @@ History reads native archives independently of live processes.
 | Codex | `sessions/` and `archived_sessions/` rollouts; exclude subagent sources. Database names precede legacy index and prompt titles. |
 | pi | `sessions/*/*.jsonl`, or `PI_CODING_AGENT_SESSION_DIR`. |
 | OpenCode | SQLite sessions with a directory and no `parent_id`; `time_archived` controls archive visibility. |
+| Grok | `sessions/*/*/updates.jsonl` whose folder has a `summary.json`; id, folder and start from it, activity from `timestamp` Unix seconds. |
 
 Identity is harness, canonical native home and session id. Home aliases collapse, separate
 homes stay distinct, and directory symlinks are not followed. Duplicate Claude transcripts
@@ -263,6 +288,15 @@ latest assistant with output: input, output, reasoning and both cache counters. 
 window is stored. A valid native session cost takes precedence over response accounting;
 last reply is the first visible line of the latest assistant text.
 
+Grok reads the session folder. Title, model, effort, start and activity come from
+`summary.json`'s `generated_title` (which `/rename` replaces), `current_model_id`,
+`reasoning_effort`, `created_at` and `last_active_at`, the later of that and the last
+`events.jsonl` time. Totals are `usage.json`'s session `inputTokens` and `outputTokens`, and
+its `costUsdTicks` divided by 10^10 is the session cost, a native total, so nothing is
+estimated. Context is `signals.json`'s `contextTokensUsed` of `contextWindowTokens`. The last
+reply is the last `agent_message_chunk` in `updates.jsonl`. A file missing or half written
+leaves its columns absent. No plan is reported.
+
 Model display names use the Bedrock provider catalog, normalized across regions/revisions.
 Known uncatalogued families derive spelling from their ids; unknown families and bare aliases
 stay verbatim. [Naming code](../src/fleet.rs) owns the mapping. Plans show provider ids
@@ -312,6 +346,7 @@ live session, the ledger precedes saved-output accounting.
 | Codex | Daemon threads: [native runtime state](#native-input-signals), including approvals and questions. Otherwise rollout `task_started`: working; `task_complete`: done; `turn_aborted`: stopped; no rollout means `-`. |
 | pi | User/tool-result: working. Assistant `stopReason`: `toolUse` working, `stop` idle, `aborted` stopped, `error` failed. Unknown/no turn: `-`. Owned clients report native idle/working and dialogs as [input](#native-input-signals). |
 | OpenCode | Owned reporter: busy/retry/idle and pending questions/permissions. External process rows: `-`; saved messages cannot establish live state. |
+| Grok | The last turn event in the held `events.jsonl`, owned or not: `turn_started`, a model, streaming or tool phase and `permission_resolved`: working; phase `permission_prompt`: input; phase `failed`: failed; `turn_ended` with `completed`: idle, `cancelled`: stopped, `failed`/`error`: failed, any other outcome idle. No turn yet: `-`. Questions the model asks outside a permission prompt are unverified. |
 
 Claude background uses the first matching rule:
 
@@ -377,7 +412,8 @@ Each timestamped transcript line contributes one `lines` count. Other [metrics](
 | `tools` | `tool_use` blocks. | Function/custom-tool/local-shell calls. | `toolCall` blocks. |
 | `tokens` | Assistant `output_tokens`. | `last_token_usage.output_tokens`. | Assistant `usage.output`. |
 
-OpenCode activity charts are not implemented.
+Grok's chart counts `events.jsonl` lines: `turn_ended` is a message and `tool_completed` a
+tool; it reports no output tokens per turn. OpenCode activity charts are not implemented.
 
 ## Native actions
 
@@ -559,11 +595,10 @@ read from `session-state/ID/events.jsonl`; a live row names its conversation as 
 from the `inuse.PID.lock` the client holds, ignoring a lock older than the process. Cursor
 is read from `projects/*/agent-transcripts/ID/ID.jsonl`, which stamps no message, and takes
 its folder and start from `chats/*/ID/meta.json`; a transcript without that record is not
-listed, and a live Cursor row names no conversation. Gemini, Droid, Amp, Kimi and Grok
+listed, and a live Cursor row names no conversation. Gemini, Droid, Amp and Kimi
 conversations are unsupported: Gemini's chat file is a log of `$set` updates and re-emitted
 message ids whose replay is unverified, no Droid file here holds an assistant reply, Amp
-keeps threads on its server, Kimi wrote no home and Grok's `~/.grok/sessions` format is
-undocumented and unread.
+keeps threads on its server and Kimi wrote no home.
 
 | Harness | Interactive instruction | Model flag | Checked CLI |
 | --- | --- | --- | --- |
@@ -573,7 +608,6 @@ undocumented and unread.
 | Amp | Anonymous stdin file | Native config | 0.0.1789704050-g778045 |
 | Droid | Positional after `--` | Native config | 0.222.0 |
 | Kimi | None; an instruction is refused | `--model` | 2.1.1 |
-| Grok | Positional after `--` | `--model` | 1.0.77 |
 
 Native boot, process identity, return/reuse and stop were checked with disposable homes.
 Resume was checked against Copilot 1.0.95 and Cursor Agent 2026.09.18-9a7762b, each
@@ -589,5 +623,4 @@ Native references: [Gemini](https://geminicli.com/docs/cli/cli-reference/),
 [Cursor](https://cursor.com/docs/cli/reference/parameters),
 [Copilot](https://docs.github.com/en/copilot/reference/cli-command-reference),
 [Amp](https://ampcode.com/docs/cli), [Droid](https://docs.factory.ai/reference/cli-reference),
-[Kimi](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html),
-[Grok](https://docs.x.ai/build/cli/headless-scripting).
+[Kimi](https://moonshotai.github.io/kimi-cli/en/reference/kimi-command.html).

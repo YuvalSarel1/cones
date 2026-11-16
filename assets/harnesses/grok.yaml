@@ -2,34 +2,77 @@ version: 2
 kind: grok
 icon: "⊘"
 home:
-  env: ""
+  env: GROK_HOME
   default: {base: provided_parent, path: .grok}
 discovery:
   process: grok
-  exclude_subcommands: ["--help", "-h", "--version", "-V", "-p", "--single", "agent", "clone", "completions", "doctor", "du", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "worker", "worktree", "wrap"]
+  exclude_subcommands: ["--help", "-h", "--version", "-v", "-p", "--single", "--prompt-file", "--prompt-json", "agent", "clone", "completions", "dashboard", "doctor", "du", "disk-usage", "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory", "models", "plugin", "sessions", "setup", "trace", "update", "usage", "version", "v", "worker", "worktree", "wrap"]
+# Read from the session's events.jsonl, which the client holds open while it runs.
+state:
+  rules:
+    - when: {/type: turn_started}
+      field: /type
+      values: {turn_started: active}
+    - when: {/type: phase_changed}
+      field: /phase
+      values:
+        waiting_for_model: active
+        streaming_text: active
+        streaming_reasoning: active
+        tool_execution: active
+        permission_prompt: blocked
+        failed: failed
+    - when: {/type: permission_resolved}
+      field: /type
+      values: {permission_resolved: active}
+    - when: {/type: turn_ended}
+      field: /outcome
+      values: {completed: idle, cancelled: stopped, failed: failed, error: failed}
+      otherwise: idle
+# The conversation is the session folder's updates.jsonl; its summary.json supplies the id,
+# folder and start, and the other files the live columns.
 transcript:
-  available: false
-  roots: []
+  roots:
+    - {path: sessions, depth: 2, archived: false}
   messages:
-    user: {sources: []}
-    assistant: {sources: []}
+    user:
+      id: /params/_meta/eventId
+      sources:
+        - when: {/params/update/sessionUpdate: user_message_chunk}
+          path: /params/update/content/text
+          shape: string
+    assistant:
+      id: /params/_meta/eventId
+      headline: last
+      sources:
+        - when: {/params/update/sessionUpdate: agent_message_chunk}
+          path: /params/update/content/text
+          shape: string
 operations:
   launch:
     identity: client_pid
+    # A detached launch has no screen to answer the folder trust question on, as for Claude
+    # and Codex; --trust answers it the way the dialog's yes does.
+    prefix: [--trust]
     skip_permissions: [--always-approve]
     prompt: [--, "{prompt}"]
     model: --model
     probe:
       args: [--help]
-      contains: [--always-approve]
+      contains: [--always-approve, --session-id, --fork-session]
       error: "grok does not support the required native command"
       description: "grok: terminal launch; external sessions remain in their own terminals"
+  resume:
+    args: [--resume, "{id}"]
+  fork:
+    args: [--resume, "{id}", --fork-session, --session-id, "{new_id}"]
   message:
-    unavailable: "it takes prompts at launch or headless with -p; nothing addresses a running interactive session"
+    unavailable: "grok takes prompts at launch or headless with -p; nothing addresses a running interactive session"
 execution:
   enforcement: unsupported
   result: unsupported
 viewer:
+  screen_on_stderr: true
   input:
     return_to_list:
       - {key: ctrl+z, when: always}

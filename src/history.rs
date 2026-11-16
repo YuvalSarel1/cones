@@ -776,6 +776,7 @@ impl Cache {
             Native::Codex => codex_columns_priced(&e.transcript, catalog.as_deref())?,
             Native::Pi => pi_columns(&e.transcript, catalog.as_deref())?,
             Native::Opencode => unreachable!("database hydration handled above"),
+            Native::Grok => grok_columns(&e.transcript),
             // The archive is read for its text; these harnesses have no usage adapter.
             Native::External(_) => Columns {
                 title: e.title.clone(),
@@ -908,7 +909,12 @@ fn discover(source: &Source) -> Result<Vec<(PathBuf, bool)>> {
             let p = e.path();
             if ty.is_dir() && max_depth.is_none_or(|max| depth < max) {
                 stack.push((p, depth + 1, max_depth, archived));
-            } else if ty.is_file() && p.extension().is_some_and(|e| e == "jsonl") {
+            } else if ty.is_file()
+                && p.extension().is_some_and(|e| e == "jsonl")
+                // A Grok session folder keeps several logs; its conversation is one of them.
+                && (source.harness != HarnessKind::Grok
+                    || p.file_name().is_some_and(|n| n == crate::grok::TRANSCRIPT))
+            {
                 out.push((p, archived));
             }
         }
@@ -916,11 +922,13 @@ fn discover(source: &Source) -> Result<Vec<(PathBuf, bool)>> {
     Ok(out)
 }
 
-fn timestamp(v: &Value) -> Option<DateTime<Utc>> {
-    v["timestamp"]
-        .as_str()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(Into::into)
+/// An RFC 3339 `timestamp`, or Unix seconds, which is how Grok stamps its updates.
+pub(crate) fn timestamp(v: &Value) -> Option<DateTime<Utc>> {
+    match &v["timestamp"] {
+        Value::String(s) => DateTime::parse_from_rfc3339(s).ok().map(Into::into),
+        Value::Number(n) => DateTime::from_timestamp(n.as_i64()?, 0),
+        _ => None,
+    }
 }
 
 /// Ignore fragments at window boundaries. A valid final line without a newline is accepted.
@@ -1008,6 +1016,10 @@ fn metadata(
             .and_then(fleet::headline)
             .or_else(|| user_title(user, &head)),
         Native::Opencode => unreachable!("SQLite metadata uses its native reader"),
+        Native::Grok => path
+            .parent()
+            .and_then(crate::grok::title)
+            .or_else(|| user_title(user, &head)),
         Native::External(_) => user_title(user, &head),
     };
     // Claude writes its working folder on every line, so the last one follows EnterWorktree.
@@ -1055,6 +1067,7 @@ fn identity(source: &Source, path: &Path, events: &[Value]) -> Option<Identity> 
             .iter()
             .find_map(|v| pi::meta(&v.to_string()))
             .map(|m| (m.session_id, m.cwd, Some(m.started))),
+        Native::Grok => crate::grok::meta(path),
         Native::External(kind) => crate::agents::meta(kind, &source.home, path, events),
         Native::Opencode => None,
     }
@@ -1116,6 +1129,25 @@ fn codex_columns_priced(path: &Path, catalog: Option<&crate::cost::Catalog>) -> 
         cost_info,
         last: tail.last,
     })
+}
+
+fn grok_columns(path: &Path) -> Columns {
+    let r = path
+        .parent()
+        .and_then(crate::grok::report)
+        .unwrap_or_default();
+    Columns {
+        title: r.title,
+        model: r.model,
+        plan: None,
+        tokens_in: r.tokens_in,
+        tokens_out: r.tokens_out,
+        context_tokens: r.context_tokens,
+        context_window: r.context_window,
+        cost_usd: r.cost_usd,
+        cost_info: r.cost_info,
+        last: r.last,
+    }
 }
 
 fn pi_columns(path: &Path, catalog: Option<&crate::cost::Catalog>) -> Result<Columns> {

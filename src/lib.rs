@@ -7,6 +7,7 @@ pub mod coordinator;
 pub mod copy;
 pub mod cost;
 pub mod fleet;
+pub mod grok;
 pub mod harness;
 pub mod history;
 pub mod history_api;

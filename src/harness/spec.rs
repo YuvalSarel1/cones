@@ -419,6 +419,7 @@ pub enum Native {
     Codex,
     Pi,
     Opencode,
+    Grok,
     External(HarnessKind),
 }
 
@@ -429,6 +430,7 @@ impl Native {
             Self::Codex => crate::codex::sessions(home),
             Self::Pi => crate::pi::sessions(home),
             Self::Opencode => crate::opencode::sessions(home),
+            Self::Grok => crate::grok::sessions(home),
             Self::External(kind) => crate::agents::sessions(kind, home),
         }
     }
@@ -451,6 +453,8 @@ impl Native {
             Self::Codex => Box::new(Accounting::<crate::codex::CostAdapter>::default()),
             Self::Pi => Box::new(Accounting::<crate::pi::CostAdapter>::default()),
             Self::Opencode => Box::new(Accounting::<crate::opencode::CostAdapter>::default()),
+            // Grok reports the session's dollars, not usage a catalog could price.
+            Self::Grok => crate::agents::accounting(HarnessKind::Grok),
             Self::External(kind) => crate::agents::accounting(kind),
         }
     }
@@ -470,13 +474,13 @@ fn handlers(kind: HarnessKind) -> (Native, LaunchHandler, Resume) {
         ),
         HarnessKind::Pi => (Native::Pi, LaunchHandler::Terminal, Resume::Transcript),
         HarnessKind::Opencode => (Native::Opencode, LaunchHandler::Terminal, Resume::SessionId),
+        HarnessKind::Grok => (Native::Grok, LaunchHandler::Terminal, Resume::SessionId),
         kind @ HarnessKind::Gemini
         | kind @ HarnessKind::Cursor
         | kind @ HarnessKind::Copilot
         | kind @ HarnessKind::Amp
         | kind @ HarnessKind::Droid
-        | kind @ HarnessKind::Kimi
-        | kind @ HarnessKind::Grok => (
+        | kind @ HarnessKind::Kimi => (
             Native::External(kind),
             LaunchHandler::Terminal,
             Resume::SessionId,
@@ -933,6 +937,8 @@ pub struct Viewer {
     pub peek_blocked_states: Vec<StateWord>,
     pub retention: Retention,
     pub input_alignment: InputAlignment,
+    /// The client draws its screen on stderr, so the pane is its stderr as well as its stdout.
+    pub screen_on_stderr: bool,
 }
 
 impl Default for Viewer {
@@ -944,6 +950,7 @@ impl Default for Viewer {
             peek_blocked_states: vec![StateWord::Failed, StateWord::Stopped],
             retention: Retention::Retain,
             input_alignment: InputAlignment::BottomRule,
+            screen_on_stderr: false,
         }
     }
 }

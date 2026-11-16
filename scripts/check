@@ -44,7 +44,7 @@ run_check() {
         # Native homes must come from fixtures, including on an agent's machine.
         # The build drops them too, so the test run reuses what it compiled.
         set -- env -u CODEX_HOME -u CLAUDE_CONFIG_DIR -u PI_CODING_AGENT_DIR \
-            -u OPENCODE_DB -u OPENCODE_TUI_CONFIG -u XDG_DATA_HOME "$@"
+            -u OPENCODE_DB -u OPENCODE_TUI_CONFIG -u XDG_DATA_HOME -u GROK_HOME "$@"
     fi
     if [[ $kind != none ]]; then
         set -- python3 "$queue" lease "$kind" "$name" "$@"

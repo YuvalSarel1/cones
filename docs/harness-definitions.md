@@ -139,6 +139,7 @@ Codex daemon provider selection remains native adapter behavior.
 | `viewer.retention` | `retain` by default; Claude uses `evict_live`. |
 | Input alignment | `bottom_rule` by default; Codex uses `fixed`. |
 | Viewer label | Harness name by default; Claude uses `attach`. |
+| `viewer.screen_on_stderr` | `false` by default; Grok, which draws on stderr, uses `true` and its pane takes stderr too. |
 
 Pool sizes and historical retention are dashboard invariants. Native return keys default to:
 

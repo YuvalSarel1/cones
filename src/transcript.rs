@@ -1013,10 +1013,7 @@ fn message(harness: &str, v: &Value) -> Option<Message> {
             },
             id: source.id(v).map(str::to_owned),
             offset: 0,
-            at: v["timestamp"]
-                .as_str()
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(Into::into),
+            at: crate::history::timestamp(v),
         });
     }
     (!tools.is_empty()).then(|| Message {
@@ -1025,10 +1022,7 @@ fn message(harness: &str, v: &Value) -> Option<Message> {
         tools,
         id: spec.transcript.messages.assistant.id(v).map(str::to_owned),
         offset: 0,
-        at: v["timestamp"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(Into::into),
+        at: crate::history::timestamp(v),
     })
 }
 
@@ -1093,6 +1087,12 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
             .filter(|part| part["type"] == "tool_use")
             .filter_map(|part| summary(&part["name"], &part["input"]))
             .collect(),
+        "grok" if v["params"]["update"]["sessionUpdate"] == "tool_call" => {
+            let call = &v["params"]["update"];
+            summary(&call["title"], &call["rawInput"])
+                .into_iter()
+                .collect()
+        }
         "copilot" if v["type"] == "assistant.message" => v["data"]["toolRequests"]
             .as_array()
             .into_iter()

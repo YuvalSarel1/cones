@@ -333,6 +333,8 @@ impl Viewer {
     ) -> io::Result<Viewer> {
         let pi = crate::pi::reporting::Reporter::prepare(&mut command)?;
         let mut command = crate::harness::restore_stdin_prompt(command)?;
+        // Grok draws its whole screen on stderr; a pipe there leaves the pane blank.
+        let terminal = terminal || crate::harness::screen_on_stderr(command.get_program());
         let opencode = crate::opencode::reporting::Reporter::prepare(&mut command)?;
         // A launch drops TERM_PROGRAM, which is how Claude Code and Codex decide a terminal
         // takes OSC 8 links; the pane carries them, so say so unless someone already chose.
