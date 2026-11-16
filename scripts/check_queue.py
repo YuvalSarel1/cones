@@ -130,7 +130,7 @@ def build_jobs():
 
 
 def lease(kind, stage, command):
-    """Take a build or test lease, then exec the command holding it."""
+    """Take a build or test lease, then run the command while holding it."""
     root = state_dir()
     requested = time.monotonic()
     waiter = Waiter()
@@ -181,13 +181,21 @@ def lease(kind, stage, command):
         with open(Path(log_dir) / "leases.jsonl", "a") as leases:
             leases.write(json.dumps({"stage": stage, "kind": kind, "wait_s": waited,
                                      "build_jobs": env.get("CARGO_BUILD_JOBS")}) + "\n")
-    # The command inherits the lease, so killing a supervisor cannot admit
-    # another check while Cargo or one of its descendants still runs.
-    for fd in held:
-        os.set_inheritable(fd, True)
-    if "CONES_CHECK_CONSOLE_FD" in env:
-        os.set_inheritable(int(env.pop("CONES_CHECK_CONSOLE_FD")), False)
-    os.execvpe(command[0], command, env)
+    # This process keeps the lease until the command exits, and the command never
+    # sees it: a fixture daemon that outlives its test cannot hold the slot. Killing
+    # the supervisor leaves this process waiting on Cargo; cancelling the gate
+    # signals the whole group, so the lease ends when Cargo does.
+    env.pop("CONES_CHECK_CONSOLE_FD", None)
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, lambda *_: None)
+    child = subprocess.Popen(command, env=env, close_fds=True)
+    while True:
+        try:
+            status = child.wait()
+            break
+        except InterruptedError:
+            continue
+    return status if status >= 0 else 128 - status
 
 
 def leases(log_dir):

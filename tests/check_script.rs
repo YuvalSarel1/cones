@@ -676,3 +676,61 @@ printf '%s|%s|%s|%s\n' "$PWD" "$(git rev-parse --short HEAD)" "${CARGO_TARGET_DI
         )
     );
 }
+
+/// A fixture daemon that outlives its test, as `/bin/sleep 600` stand-ins did, once kept the
+/// exclusive slot for ten minutes after its gate ended: the lease was an inherited descriptor,
+/// and Cargo's descendants inherit everything. The lease process now holds the slot itself and
+/// the command never sees it, so the slot is free the moment the gate answers.
+#[test]
+fn a_fixture_that_outlives_its_test_holds_no_slot() {
+    use fs2::FileExt;
+    let fixture = Fixture::new(
+        r#"
+stage=test
+if [ "$2" = --no-run ]; then stage=build; fi
+( exec /bin/sleep 30 ) </dev/null >/dev/null 2>&1 &
+echo $! > "$TMPDIR/$stage.orphan"
+"#,
+    );
+    let output = fixture.run(&["test"]);
+    assert!(output.status.success(), "{output:?}");
+    let orphans: Vec<i32> = ["build", "test"]
+        .iter()
+        .map(|stage| {
+            fs::read_to_string(fixture.dir.path().join(format!("{stage}.orphan")))
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    struct Reap(Vec<i32>);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            for &pid in &self.0 {
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+    let _reap = Reap(orphans.clone());
+    for &pid in &orphans {
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the orphan outlived its gate"
+        );
+    }
+    let queue = fixture.dir.path().join("queue");
+    let mut held = Vec::new();
+    for name in ["check.lock", "build.0.lock", "build.1.lock"] {
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(queue.join(name))
+            .unwrap();
+        if lock.try_lock_exclusive().is_err() {
+            held.push(name);
+        }
+    }
+    assert!(held.is_empty(), "orphans still hold {held:?}");
+}

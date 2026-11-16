@@ -3,7 +3,7 @@
 
 Every call appends its argv to `$HOME/claude-calls.jsonl`, so a test can assert which native
 commands the dashboard ran, and its environment to `$HOME/claude-env.jsonl`. `$HOME/fake-launch` selects how `--bg` behaves (default `ok`):
-  ok    hand the session to a stand-in daemon (`/bin/sleep`), list it in the registry with a
+  ok    hand the session to a stand-in daemon (a shell that ends with `$HOME`), list it in the registry with a
         transcript and an AI title, and print the background id the way Claude does
   fail  refuse to start, with a diagnostic on stderr
   untrusted  refuse `--bg` with Claude's own trust error until `$HOME/trusted` exists or
@@ -34,6 +34,20 @@ import time
 import uuid
 
 HOME = pathlib.Path(os.environ["HOME"])
+
+
+def stand_in(home):
+    """The process a background session lives in. It ends with the fixture's home, at most
+    ten minutes on, so a test that loses track of it cannot leave it running, and logs its
+    pid to `fixture-daemons` there."""
+    daemon = subprocess.Popen(
+        ["/bin/sh", "-c", 'i=0; while [ -d "$0" ] && [ $i -lt 600 ]; do sleep 1; i=$((i+1)); done',
+         str(home)], start_new_session=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(home / "fixture-daemons", "a") as daemons:
+        daemons.write(f"{daemon.pid}\n")
+    return daemon
+
 CLAUDE = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"])
 args = sys.argv[1:]
 
@@ -151,9 +165,7 @@ resume = (args[args.index("--resume") + 1]
 session = resume or str(uuid.uuid4())
 short = session[:8]
 cwd = os.getcwd()
-daemon = subprocess.Popen(["/bin/sleep", "600"], start_new_session=True,
-                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL)
+daemon = stand_in(HOME)
 key = "".join(c if c.isascii() and c.isalnum() else "-" for c in cwd)
 transcript = CLAUDE / "projects" / key / f"{session}.jsonl"
 transcript.parent.mkdir(parents=True, exist_ok=True)
@@ -186,7 +198,14 @@ if delay_file.exists() and os.fork() == 0:
     null = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(null, fd)
-    time.sleep(float(delay_file.read_text()))
+    with open(HOME / "fixture-daemons", "a") as daemons:
+        daemons.write(f"{os.getpid()}\n")
+    # Holds back for the delay, or until the test is gone.
+    ends = time.monotonic() + float(delay_file.read_text())
+    while time.monotonic() < ends:
+        if not HOME.is_dir():
+            os._exit(0)
+        time.sleep(0.05)
     (registry / f"{daemon.pid}.json").write_text(entry)
     os._exit(0)
 if not delay_file.exists():

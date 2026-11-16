@@ -40,10 +40,13 @@ if name == "claude":
     # A background launch hands the session to something that outlives the launcher, and a
     # registry entry whose pid is dead is not a session. This stand-in daemon is that process;
     # the test kills every pid it finds in this registry.
-    daemon = subprocess.Popen(["/bin/sleep", "600"], start_new_session=True,
-                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL)
     home = pathlib.Path(os.environ["CLAUDE_CONFIG_DIR"])
+    home.mkdir(parents=True, exist_ok=True)
+    # It ends with the fixture's Claude home, at most ten minutes on, if the test loses it.
+    daemon = subprocess.Popen(
+        ["/bin/sh", "-c", 'i=0; while [ -d "$0" ] && [ $i -lt 600 ]; do sleep 1; i=$((i+1)); done',
+         str(home)], start_new_session=True, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     registry = home / "sessions"
     registry.mkdir(parents=True, exist_ok=True)
     (registry / f"{session}.json").write_text(json.dumps({

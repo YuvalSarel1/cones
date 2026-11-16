@@ -96,6 +96,24 @@ pub(crate) fn seed(
     Seeded { id, short, daemon }
 }
 
+/// A process group the test started, killed and reaped however the test ends.
+struct Group(Child);
+
+impl Drop for Group {
+    fn drop(&mut self) {
+        unsafe { libc::killpg(self.0.id() as i32, libc::SIGKILL) };
+        let _ = self.0.wait();
+    }
+}
+
+/// A test may replace a seeded registry entry, so the registry cannot find this daemon.
+impl Drop for Seeded {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
 fn records(text: &str) -> Vec<Value> {
     text.lines()
         .filter_map(|l| serde_json::from_str(l).ok())
@@ -1252,7 +1270,12 @@ fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
 /// worktree's heading in the tag colour, and the session is listed once.
 #[test]
 fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
-    let Worktree { mut d, tree, .. } = worktree("claude-worktree-tag");
+    let Worktree {
+        mut d,
+        tree,
+        _sessions,
+        ..
+    } = worktree("claude-worktree-tag");
     d.start();
     let tree_heading = format!("  ⑂ {}", tree.display());
     d.wait_text("Autoscaling plan");
@@ -2222,12 +2245,14 @@ fn taking_over_a_working_helper_keeps_it_working_beneath_its_launcher() {
     // it runs, as an agent's `claude -p` or `codex exec` would be.
     let lead = seed(&d, &project, 1, "Lead the work", "busy", None);
     let registry = d.home().join(".claude/sessions");
-    let mut launcher = Command::new("/bin/bash")
-        .args(["-c", "(exec -a claude /bin/sleep 600) & wait"])
-        .process_group(0)
-        .spawn()
-        .unwrap();
-    let me = launcher.id();
+    let launcher = Group(
+        Command::new("/bin/bash")
+            .args(["-c", "(exec -a claude /bin/sleep 600) & wait"])
+            .process_group(0)
+            .spawn()
+            .unwrap(),
+    );
+    let me = launcher.0.id();
     let helper_pid = loop {
         let out = Command::new("/usr/bin/pgrep")
             .args(["-P", &me.to_string()])
@@ -2334,6 +2359,57 @@ fn taking_over_a_working_helper_keeps_it_working_beneath_its_launcher() {
     });
     d.capture("taken-over");
     d.quit();
-    let _ = launcher.kill();
-    let _ = launcher.wait();
+}
+
+/// Stand-ins that outlive their test kept `/bin/sleep 600` running, and before the gate's
+/// lease stopped reaching tests, kept every other check on the machine waiting for it. A
+/// seeded session whose registry entry the test replaced, and a background launch whose
+/// registry entry never arrived, both end with a test that fails.
+#[test]
+fn fixture_daemons_end_with_their_test_even_when_it_fails() {
+    let pids = std::sync::Mutex::new(Vec::new());
+    let failed = std::panic::catch_unwind(|| {
+        let d = Dashboard::new("fixture-daemons", &["claude"]);
+        d.install("claude", "fake_claude_fleet.py");
+        let project = real_project(&d);
+        let seeded = seed(&d, &project, 1, "Lose track of me", "busy", None);
+        fs::remove_dir_all(d.home().join(".claude/sessions")).unwrap();
+        pids.lock().unwrap().push(seeded.daemon.id());
+        fs::write(d.home().join("registry-delay"), "600").unwrap();
+        let out = Command::new(d.home().join(".local/bin/claude"))
+            .args(["--bg", "never registered"])
+            .current_dir(&project)
+            .env("HOME", d.home())
+            .env("CLAUDE_CONFIG_DIR", d.home().join(".claude"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let daemons = fs::read_to_string(d.home().join("fixture-daemons")).unwrap();
+        pids.lock()
+            .unwrap()
+            .extend(daemons.lines().map(|l| l.parse::<u32>().unwrap()));
+        panic!("the test fails with its stand-ins running");
+    });
+    assert!(failed.is_err());
+    let pids = pids.into_inner().unwrap();
+    assert_eq!(
+        pids.len(),
+        3,
+        "seeded, launched and the delayed registration: {pids:?}"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let alive = || -> Vec<u32> {
+        pids.iter()
+            .copied()
+            .filter(|&pid| unsafe { libc::kill(pid as i32, 0) } == 0)
+            .collect()
+    };
+    while !alive().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stand-ins outlived their test: {:?}",
+            alive()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
