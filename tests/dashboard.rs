@@ -85,6 +85,17 @@ impl Dashboard {
             formula(env!("CARGO_PKG_VERSION")),
         )
         .unwrap();
+        // A fresh price snapshot, so no dashboard downloads prices from models.dev.
+        let prices = cones::cost::Catalog::parse(
+            br#"{"fixture":{"models":{"fixture":{"cost":{"input":1,"output":1}}}}}"#,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("state/prices.json"),
+            serde_json::to_vec(&prices).unwrap(),
+        )
+        .unwrap();
         let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join("e2e")
             .join(test);
@@ -154,6 +165,7 @@ impl Dashboard {
             .env_remove("CODEX_THREAD_ID")
             .env_remove("CLAUDE_CODE_SESSION_ID")
             .envs(self.env())
+            .env("CONES_TEST_FAST", "1")
             .envs(env.iter().copied())
             .stdin(Stdio::null());
         command.output().unwrap()

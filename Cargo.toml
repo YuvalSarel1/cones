@@ -53,3 +53,8 @@ path = "tests/integration.rs"
 [[test]]
 name = "cost"
 path = "tests/cost.rs"
+
+# Each `--debug` dashboard hashes its own executable; unoptimized SHA-256 costs about 3
+# CPU-seconds per test dashboard.
+[profile.dev.package.sha2]
+opt-level = 3
