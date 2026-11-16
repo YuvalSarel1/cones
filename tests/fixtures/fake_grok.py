@@ -16,6 +16,7 @@ writes an unreadable usage.json and no signals.json, as a client killed mid-writ
 """
 import datetime
 import json
+import re
 import os
 import shutil
 import signal
@@ -36,7 +37,8 @@ def option(name):
 
 
 def say(text):
-    sys.stderr.write(text + "\r\n")
+    # Each answer redraws Grok's input row, `│ ❯ ` with the caret after it.
+    sys.stderr.write("\r\x1b[K" + text + "\r\n  \u2502 \u276f ")
     sys.stderr.flush()
 
 
@@ -142,7 +144,8 @@ say(f"grok fixture {sid}")
 say(f"argv: {' '.join(args)}")
 waiting = turn(args[args.index("--") + 1]) if "--" in args else None
 for line in sys.stdin:
-    line = line.strip()
+    # Keys the dashboard leaves to Grok, such as arrows, reach the line as escapes.
+    line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
     if waiting is not None:
         event(type="permission_resolved", tool_name="run_terminal_command", decision="allow")
         event(type="phase_changed", phase="tool_execution")

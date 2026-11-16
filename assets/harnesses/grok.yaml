@@ -73,6 +73,8 @@ execution:
   result: unsupported
 viewer:
   screen_on_stderr: true
+  # Tab is Grok's own (it focuses the scrollback); Left returns only from an empty line.
   input:
     return_to_list:
       - {key: ctrl+z, when: always}
+      - {key: left, when: empty_prompt}

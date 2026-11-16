@@ -3,8 +3,8 @@
 //! The client is `tests/fixtures/fake_grok.py` on the fixture HOME's launch path, never the
 //! machine's grok: it draws only on stderr, as Grok 1.0.77 does, and keeps its session folder
 //! the way the CLI does. The flow covers launching grok with an instruction from the composer,
-//! the pane showing what it drew, its row reading the session it holds, Tab staying native
-//! with an empty and a drafted line, ctrl+z returning either way, Enter re-entering the same
+//! the pane showing what it drew, its row reading the session it holds, Left returning from an
+//! empty line, Tab and Left staying native with a drafted one, ctrl+z returning either way, Enter re-entering the same
 //! process with its draft, and ctrl+x twice stopping it until the process is gone.
 use crate::dashboard::*;
 use serde_json::Value;
@@ -14,7 +14,8 @@ use std::{
 };
 
 const LIST_FOOTER: &str = "enter return · ctrl+x stop · ? shortcuts";
-const PANE_FOOTER: &str = "ctrl+z back · ctrl+\\ full screen";
+const PANE_FOOTER: &str = "← back · ctrl+\\ full screen";
+const DRAFT_FOOTER: &str = "ctrl+z back · ctrl+\\ full screen";
 
 fn alive(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
@@ -81,15 +82,23 @@ fn a_composer_grok_draws_in_its_viewer_returns_with_ctrl_z_and_stops_with_ctrl_x
 
     d.press("enter", b"\r");
     d.wait_text(PANE_FOOTER);
-    // Tab is Grok's own with an empty line and a drafted one; only ctrl+z leaves.
+    // With an empty line Tab stays Grok's and Left returns to the list.
     d.press("tab", b"\t");
     std::thread::sleep(Duration::from_millis(200));
     assert!(d.screen().contains(PANE_FOOTER), "{}", d.screen());
+    d.press("left", b"\x1b[D");
+    d.wait_text(LIST_FOOTER);
+    d.capture("left-from-empty");
+    d.press("enter", b"\r");
+    d.wait_text(PANE_FOOTER);
+    // With a drafted line Tab and Left stay Grok's; only ctrl+z leaves.
     d.typed("hello grok");
-    d.wait_text("hello grok");
-    d.press("tab", b"\t");
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(d.screen().contains(PANE_FOOTER), "{}", d.screen());
+    d.wait_text(DRAFT_FOOTER);
+    for (label, key) in [("tab", &b"\t"[..]), ("left", &b"\x1b[D"[..])] {
+        d.press(label, key);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(d.screen().contains(DRAFT_FOOTER), "{label}: {}", d.screen());
+    }
     d.capture("drafted");
     d.press("ctrl+z", b"\x1a");
     d.wait_text(LIST_FOOTER);
@@ -97,7 +106,7 @@ fn a_composer_grok_draws_in_its_viewer_returns_with_ctrl_z_and_stops_with_ctrl_x
 
     // Enter reaches the same process, which still holds the draft.
     d.press("enter", b"\r");
-    d.wait_text(PANE_FOOTER);
+    d.wait_text(DRAFT_FOOTER);
     d.press("enter", b"\r");
     let screen = d.wait_text(&format!("reply {pid}: hello grok"));
     d.capture("submitted");

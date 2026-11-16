@@ -23842,12 +23842,12 @@ states:
             let d = dir();
             let mut app = app(d.path());
             let spec = harness::spec(kind);
-            // A harness whose only return key is ctrl+z keeps Tab and Left for its own editor.
-            let ctrl_z_only = spec
-                .input
-                .return_to_list
-                .iter()
-                .all(|b| b.key == harness::spec::ReturnKey::CtrlZ);
+            // A harness returns on the keys its definition lists; the others stay native.
+            let returns = |key| spec.input.return_to_list.iter().any(|b| b.key == key);
+            let (tab, left) = (
+                returns(harness::spec::ReturnKey::Tab),
+                returns(harness::spec::ReturnKey::Left),
+            );
             let mut row = placeholder(kind, A, d.path(), "fixture");
             row.state = "idle".into();
             app.data.sessions.push(row);
@@ -23888,16 +23888,20 @@ states:
             app.viewers.push(open);
             wait_paint(&mut app, 0, "VIEW");
             app.focus = Some(0);
-            if kind == HarnessKind::Opencode {
+            if !tab {
                 app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-                assert_eq!(app.focus, Some(0));
+                assert_eq!(
+                    app.focus,
+                    Some(0),
+                    "{kind}: Tab belongs to the native editor"
+                );
             }
-            let back = if ctrl_z_only {
-                "ctrl+z"
-            } else if kind == HarnessKind::Opencode {
+            let back = if tab {
+                "tab"
+            } else if left {
                 "←"
             } else {
-                "tab"
+                "ctrl+z"
             };
             assert!(
                 app.hint_line()
@@ -23924,17 +23928,11 @@ states:
                 );
             }
             assert!(!app.key(KeyCode::Left, KeyModifiers::NONE).unwrap());
-            if ctrl_z_only {
+            if !left {
                 assert_eq!(
                     app.focus,
                     Some(0),
                     "{kind}: Left belongs to the native editor"
-                );
-                app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
-                assert_eq!(
-                    app.focus,
-                    Some(0),
-                    "{kind}: Tab belongs to the native editor"
                 );
                 app.key(KeyCode::Char('z'), KeyModifiers::CONTROL).unwrap();
             }
@@ -23951,7 +23949,7 @@ states:
                 (KeyCode::Tab, KeyModifiers::NONE),
                 (KeyCode::Char('z'), KeyModifiers::CONTROL),
             ] {
-                if (kind == HarnessKind::Opencode || ctrl_z_only) && key == KeyCode::Tab {
+                if !tab && key == KeyCode::Tab {
                     continue;
                 }
                 app.key(key, modifier).unwrap();

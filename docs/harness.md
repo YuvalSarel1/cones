@@ -180,6 +180,8 @@ The client draws its whole screen on stderr, so its pane takes stderr as well as
 the way the dialog's yes does, since a detached launch has no screen to answer it on; resume
 and fork do not. A fork passes `--resume ID --fork-session --session-id NEW`, so cones names
 the child before it starts, and Grok records `parent_session_id`.
+In its pane ctrl+z returns to the list, and Left does from an empty input line; Tab stays
+Grok's own, where it focuses the scrollback.
 
 Leader and daemon routes (`--leader`, `[cli] use_leader`), where another process holds the
 session, are unverified: such a client may name no conversation. Grok has no launch flag for a
