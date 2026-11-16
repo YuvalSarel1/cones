@@ -734,3 +734,91 @@ echo $! > "$TMPDIR/$stage.orphan"
     }
     assert!(held.is_empty(), "orphans still hold {held:?}");
 }
+
+/// `changed` runs the integration modules a diff reaches: the module's own file, modules that
+/// name it, modules that name a changed fixture, and `check_script` for the scripts. Anything
+/// else runs the full gate.
+#[test]
+fn changed_runs_the_modules_a_diff_reaches_and_the_full_gate_otherwise() {
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+    };
+    for (changed, expected) in [
+        ("tests/stop.rs", "--test integration -- core_cli:: stop::"),
+        (
+            "tests/fixtures/fake_stop.py",
+            "--test integration -- stop::",
+        ),
+        ("scripts/bottle", "--test integration -- check_script::"),
+        ("tests/fixtures/unnamed.py", "--all-targets"),
+        ("src/lib.rs", "--all-targets"),
+    ] {
+        let fixture = Fixture::new(r#"echo "$*" >> "$TMPDIR/cargo.calls""#);
+        let checkout = fixture.dir.path().join("checkout");
+        fs::create_dir_all(checkout.join("scripts")).unwrap();
+        fs::create_dir_all(checkout.join("tests/fixtures")).unwrap();
+        fs::create_dir_all(checkout.join("src")).unwrap();
+        for name in ["check", "check_queue.py"] {
+            fs::copy(
+                format!("{}/scripts/{name}", env!("CARGO_MANIFEST_DIR")),
+                checkout.join("scripts").join(name),
+            )
+            .unwrap();
+        }
+        for (file, text) in [
+            ("tests/stop.rs", "// runs fake_stop.py\n"),
+            ("tests/core.rs", "use crate::stop::helper;\n"),
+            ("tests/notes.rs", "// unrelated\n"),
+            ("tests/fixtures/fake_stop.py", "\n"),
+            ("tests/fixtures/unnamed.py", "\n"),
+            ("src/lib.rs", "\n"),
+            ("scripts/bottle", "\n"),
+        ] {
+            fs::write(checkout.join(file), text).unwrap();
+        }
+        git(&checkout, &["init", "-q"]);
+        git(&checkout, &["add", "."]);
+        git(&checkout, &["commit", "-qm", "base"]);
+        git(&checkout, &["checkout", "-qb", "work"]);
+        fs::write(checkout.join(changed), "// changed\n").unwrap();
+        let mut command = Command::new("/bin/bash");
+        command
+            .arg(checkout.join("scripts/check"))
+            .arg("changed")
+            .envs(
+                fixture
+                    .command()
+                    .get_envs()
+                    .filter_map(|(k, v)| v.map(|v| (k, v))),
+            )
+            .current_dir(&checkout);
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{changed}: {output:?}");
+        let calls = fs::read_to_string(fixture.dir.path().join("cargo.calls")).unwrap();
+        assert!(
+            calls.lines().any(|l| l == format!("test {expected}")),
+            "{changed} ran:\n{calls}"
+        );
+        assert_eq!(
+            calls
+                .lines()
+                .filter(|l| l.starts_with("test ") && !l.contains("--no-run"))
+                .count(),
+            1,
+            "{changed} ran one test command:\n{calls}"
+        );
+    }
+}

@@ -69,6 +69,24 @@ value, such as the owner's dashboard during a gate, never lists it.
 Integration assertions select every identity they create, including identities
 expected to be excluded, so unrelated live clients cannot change their counts.
 
+## Checks a diff reaches
+
+`scripts/check changed` runs formatting, the reporter contract and clippy, then the
+integration modules the branch's diff against `main` reaches, untracked files included: a
+changed `tests/<module>.rs`, the modules that name it as `crate::<module>::` or
+`super::<module>::`, the modules that name a changed fixture file, and `check_script::` for
+anything under `scripts/`. Any other change, a change to `tests/integration.rs`,
+`tests/dashboard.rs` or `tests/cost.rs`, or a fixture no module names runs the full suite.
+`CONES_CHECK_BASE` names another base branch. The edges are text matches, so a module reached
+some other way waits for the full gate before the merge.
+
+`scripts/check ci` takes the same arguments as `test`, so a timing-sensitive module can be
+checked under CI's load on its own:
+
+```sh
+for i in 1 2 3 4 5; do scripts/check ci --test integration -- runner:: || break; done
+```
+
 ## Focused checks
 
 ```sh

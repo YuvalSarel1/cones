@@ -2,9 +2,10 @@
 set -euo pipefail
 
 usage() {
-    echo 'Usage: scripts/check [all|ci|fmt|clippy|reporting|stress|install|test [cargo test arguments...]]'
+    echo 'Usage: scripts/check [all|changed|fmt|clippy|reporting|stress|install|ci|test [cargo test arguments...]]'
     echo 'Defaults to fmt, reporting, clippy, and all test targets. Full logs remain in TMPDIR.'
-    echo 'ci runs all test targets as slowly as a GitHub macOS runner, to catch timing flakes.'
+    echo 'changed runs fmt, clippy and the test modules a diff against main touches, or the full gate.'
+    echo 'ci runs test targets as slowly as a GitHub macOS runner, to catch timing flakes.'
     echo 'install builds HEAD in a detached worktree and installs it under ~/.local.'
 }
 
@@ -12,10 +13,10 @@ mode=${1:-all}
 if (( $# )); then shift; fi
 case "$mode" in
     -h|--help) usage; exit 0 ;;
-    all|ci|fmt|clippy|reporting|stress|install)
+    all|changed|fmt|clippy|reporting|stress|install)
         if (( $# )); then usage >&2; exit 2; fi
         ;;
-    test) ;;
+    test|ci) ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -90,10 +91,54 @@ case "$mode" in
         run_check clippy build cargo clippy --all-targets -- -D warnings
         run_tests --all-targets
         ;;
+    changed)
+        # Integration modules a diff reaches: a module's own file, the modules that name it,
+        # and those that name a changed fixture. Anything else, or a fixture nothing names,
+        # runs the full gate.
+        # ponytail: edges are text matches; a module reached another way waits for the full gate.
+        base=$(git merge-base HEAD "${CONES_CHECK_BASE:-main}")
+        full= filters=()
+        module() { local m=${1##*/}; m=${m%.rs}; [[ $m == core ]] && m=core_cli; echo "$m"; }
+        while IFS= read -r file; do
+            case $file in
+                tests/integration.rs|tests/dashboard.rs|tests/cost.rs|tests/fixtures/*/*) full=1 ;;
+                tests/reporting.mjs) ;;
+                tests/fixtures/*)
+                    users=$(grep -lF -- "${file##*/}" tests/*.rs || true)
+                    if [[ -z $users ]]; then full=1; fi
+                    for user in $users; do filters+=("$(module "$user")::"); done
+                    ;;
+                tests/*.rs)
+                    m=$(module "$file")
+                    filters+=("$m::")
+                    for user in $(grep -lE -- "(crate|super)::$m::" tests/*.rs || true); do
+                        filters+=("$(module "$user")::")
+                    done
+                    ;;
+                scripts/*) filters+=(check_script::) ;;
+                *) full=1 ;;
+            esac
+        done < <({ git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+        run_check fmt none cargo fmt --check
+        run_check reporting none node --test tests/reporting.mjs
+        run_check clippy build cargo clippy --all-targets -- -D warnings
+        if [[ -n $full ]]; then
+            printf 'changed: full gate\n'
+            run_tests --all-targets
+        elif (( ${#filters[@]} )); then
+            # shellcheck disable=SC2207 # module names have no spaces
+            filters=($(printf '%s\n' "${filters[@]}" | sort -u))
+            printf 'changed: %s\n' "${filters[*]}"
+            run_tests --test integration -- "${filters[@]}"
+        else
+            printf 'changed: no Cargo tests reached\n'
+        fi
+        ;;
     ci)
         # Three test threads on the efficiency cores, as on the runner's three vCPUs.
         export CONES_CHECK_CI=1 RUST_TEST_THREADS=3
-        run_tests --all-targets
+        if (( $# == 0 )); then set -- --all-targets; fi
+        run_tests "$@"
         ;;
     fmt) run_check fmt none cargo fmt --check ;;
     clippy) run_check clippy build cargo clippy --all-targets -- -D warnings ;;
