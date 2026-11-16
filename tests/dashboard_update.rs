@@ -4,7 +4,8 @@
 //! Covered: Help's title names this binary's version; a formula at a newer release puts
 //! `cones <version> available` in the footer after `? shortcuts` and in Help's title, and
 //! the footer drops the selection's keys to keep it when a pane narrows the bar; `?` on an
-//! empty composer opens Help and inside a draft is typed, with the footer offering
+//! empty composer lists the list's keys under it and closes on `?`, ctrl+g opens Help, and
+//! `?` inside a draft is typed, with the footer offering
 //! `ctrl+g help` instead; a formula at
 //! this binary's own version shows no notice; turning "check for updates" off in the config
 //! screen saves `start.update_check: false` and takes the notice away at once, and a
@@ -66,7 +67,17 @@ fn the_current_release_shows_only_the_version() {
     d.start();
     let list = d.wait_text("? shortcuts");
     d.capture("list");
+    // `?` lists the list's keys under the composer, as Claude Code does; `?` again closes it.
     d.press("?", b"?");
+    let keys = d.wait_text("ctrl+g all of Help · esc close");
+    d.capture("shortcuts");
+    assert!(
+        keys.contains("Fork the selected conversation.") && !keys.contains("? shortcuts"),
+        "{keys}"
+    );
+    d.press("?", b"?");
+    d.wait_text("? shortcuts");
+    d.press("ctrl+g", CTRL_G);
     let help = d.wait_text(&format!("help  cones {VERSION}"));
     d.capture("help");
     for screen in [&list, &help] {

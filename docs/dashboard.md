@@ -39,7 +39,7 @@ a separate setting.
 | `ctrl+c twice` | Quit within 1.5 seconds from the list or an agent viewer. Shell viewers keep Ctrl+C for interrupts. |
 | `ctrl+o` | Open the selected harness's [launch settings](#launch-settings). |
 | `ctrl+d` | Start the [coordinator](cli.md#coordinator) for the selected folder; refuse an existing live coordinator. |
-| `?` | Open Help when the composer is empty. In a draft or search it is typed. |
+| `?` | List the current keys under the composer when it is empty; the next key closes them. In a draft or search it is typed. |
 | `ctrl+g` | Open Help from anywhere in the list. |
 
 Click a row to select it; click its pane or press Enter/Tab to focus the viewer. The footer

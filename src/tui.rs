@@ -9750,6 +9750,9 @@ struct App {
     attention: attention::Tracker,
     mode: Mode,
     status: String,
+    /// `?` on an empty composer lists the list's keys under it, as Claude Code does; the
+    /// next key closes it.
+    shortcuts: bool,
     /// Composer text; `caret` is a byte offset.
     text: String,
     caret: usize,
@@ -10217,6 +10220,7 @@ impl App {
             attention: attention::Tracker::default(),
             mode: Mode::Normal,
             status: String::new(),
+            shortcuts: false,
             text: String::new(),
             caret: 0,
             images: Vec::new(),
@@ -16932,7 +16936,53 @@ impl App {
         line
     }
 
-    /// `?` opens Help, as in Claude Code, whenever it would otherwise type into an empty
+    /// The open shortcuts: the current heading's keys in two columns, then the way to Help.
+    fn shortcut_lines(&self) -> Vec<Line<'static>> {
+        if !self.shortcuts || !self.question_opens_help() {
+            return vec![];
+        }
+        let keys = guide_group(self.guide_origin())
+            .map(|g| guide_groups()[g].keys.clone())
+            .unwrap_or_default();
+        let pad = keys
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0);
+        let cell = |(key, what): &(String, String)| {
+            Line::from(vec![
+                Span::styled(format!("{key:pad$}"), bold()),
+                Span::styled(format!(" {what}"), dim()),
+            ])
+        };
+        let half = keys.len().div_ceil(2);
+        let width = keys[..half]
+            .iter()
+            .map(|k| cell(k).width())
+            .max()
+            .unwrap_or(0)
+            + 4;
+        // ponytail: one column when two do not fit; long descriptions wrap off the edge.
+        let two = width * 2 <= self.hint_width() as usize;
+        let mut lines: Vec<Line> = if two {
+            (0..half)
+                .map(|i| {
+                    let mut line = cell(&keys[i]);
+                    if let Some(right) = keys.get(i + half) {
+                        line.spans.push(Span::raw(" ".repeat(width - line.width())));
+                        line.spans.extend(cell(right).spans);
+                    }
+                    line
+                })
+                .collect()
+        } else {
+            keys.iter().map(cell).collect()
+        };
+        lines.push(hints(&[("ctrl+g", "all of Help"), ("esc", "close")]));
+        lines
+    }
+
+    /// `?` lists the shortcuts, as in Claude Code, whenever it would otherwise type into an empty
     /// composer. A draft, a search or a folder path keeps it as a character.
     fn question_opens_help(&self) -> bool {
         matches!(self.mode, Mode::Normal)
@@ -16946,6 +16996,10 @@ impl App {
 
     /// One line: the selection's one or two most useful keys, then `?` for the rest.
     fn footer_lines(&self) -> Vec<Line<'static>> {
+        let open = self.shortcut_lines();
+        if !open.is_empty() {
+            return open;
+        }
         let mut line = self.hint_line();
         // A status message owns the line until the next key.
         let status = !self.status.is_empty() && !self.status.starts_with(WARNING);
@@ -17461,6 +17515,11 @@ impl App {
 
     /// Route input to the active mode or viewer; return true to quit the dashboard.
     fn key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
+        // Any key closes the shortcuts; esc does nothing else, and `?` below only closes.
+        let shortcuts = std::mem::take(&mut self.shortcuts);
+        if shortcuts && code == KeyCode::Esc {
+            return Ok(false);
+        }
         // Typing moves the pane on; the copy already happened, so the highlight goes.
         self.selection = None;
         // A handoff runs behind the list, so only input aimed at the native editor,
@@ -17844,7 +17903,7 @@ impl App {
                     && !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     && self.question_opens_help()
                 {
-                    self.mode = Mode::Guide(Guide::new(self.guide_origin()));
+                    self.shortcuts = !shortcuts;
                     return Ok(false);
                 }
                 // ← leaves the jobs screen the way tab and ctrl+z do, with nothing typed.
@@ -18744,7 +18803,11 @@ impl App {
             Constraint::Length(3),
             Constraint::Min(5),
             Constraint::Length(rows),
-            Constraint::Length(self.foot_rows().max(1)),
+            Constraint::Length(
+                self.foot_rows()
+                    .max(self.shortcut_lines().len() as u16)
+                    .max(1),
+            ),
         ])
         .areas(area);
         if in_pane || self.composing() {
