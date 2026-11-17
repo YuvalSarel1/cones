@@ -235,6 +235,19 @@ enum Action {
         id: String,
         name: String,
     },
+    /// List a running session beneath another, as if that one had launched it with
+    /// `cones launch --parent`; see docs/cli.md.
+    Adopt {
+        /// The full session id as `cones ls` prints it.
+        id: String,
+        /// The session to list it beneath, by its full id, or `self` for the session
+        /// running this command.
+        #[arg(long, default_value = "self")]
+        parent: String,
+        /// Take it out from beneath whichever session it is listed under instead.
+        #[arg(long, conflicts_with = "parent")]
+        remove: bool,
+    },
     /// The places a session is listed in on the dashboard: `cones place ID` lists them,
     /// `add` and `remove` change one, and no id lists every placed session; see docs/cli.md.
     Place {
@@ -712,24 +725,10 @@ fn execute(cli: Cli) -> Result<i32> {
             // starts: an id that names no live session is refused rather than recorded.
             let parent = match parent {
                 None => None,
-                Some(parent) => {
-                    let rows =
-                        cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
-                    Some(if parent == "self" {
-                        cones::coordinator::own_session(&rows)
-                            .context("--parent self: no listed session runs this command")?
-                            .session_id
-                            .clone()
-                    } else {
-                        let ids = rows.iter().map(|s| s.session_id.clone());
-                        let id = full_id(ids, &parent)?;
-                        ensure!(
-                            rows.iter().any(|s| s.session_id == id),
-                            "--parent {parent}: no live session; `cones ls` lists them"
-                        );
-                        id
-                    })
-                }
+                Some(parent) => Some(live_parent(
+                    &cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?,
+                    &parent,
+                )?),
             };
             let prompt = prompt.unwrap_or_default();
             // Codex's command names its daemon's address, which only a running daemon reports.
@@ -1040,6 +1039,38 @@ fn execute(cli: Cli) -> Result<i32> {
                 .with_context(|| format!("no session {id}; `cones ls` lists them"))?;
             harness::rename(session, &harness::home_of(session, &claude), &state, &name)?;
             println!("renamed {id} ({}) to {}", session.harness, name.trim());
+            Ok(0)
+        }
+        Action::Adopt { id, parent, remove } => {
+            let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
+            let id = full_id(rows.iter().map(|s| s.session_id.clone()), &id)?;
+            let child = rows
+                .iter()
+                .find(|s| s.session_id == id)
+                .with_context(|| format!("no live session {id}; `cones ls` lists them"))?;
+            if remove {
+                ensure!(
+                    cones::relations::forget_launcher(&state, child)?,
+                    "{id} is not listed beneath another session by cones"
+                );
+                println!("{id} ({}) stands alone", child.harness);
+                return Ok(0);
+            }
+            let parent = live_parent(&rows, &parent)?;
+            ensure!(id != parent, "a session cannot be its own parent");
+            let launcher = rows.iter().find(|s| s.session_id == parent).unwrap();
+            // Recorded as a launch, so it nests exactly like one; adopting it again moves it.
+            let link = cones::relations::launch(
+                &claude,
+                &rows,
+                launcher,
+                &child.harness,
+                &id,
+                child.pid,
+                true,
+            );
+            cones::relations::record(&state, link)?;
+            println!("{id} ({}) is listed beneath {parent}", child.harness);
             Ok(0)
         }
         Action::Place { id, change } => {
@@ -1635,6 +1666,23 @@ fn quote(s: &std::ffi::OsStr) -> String {
 }
 
 /// `id` unchanged, unless it is a prefix of ids `cones ls` prints: that is refused, naming them.
+/// A live session's full id from `--parent`'s value: a full id, or `self` for the session
+/// running this command.
+fn live_parent(rows: &[cones::fleet::Session], parent: &str) -> Result<String> {
+    if parent == "self" {
+        return Ok(cones::coordinator::own_session(rows)
+            .context("--parent self: no listed session runs this command")?
+            .session_id
+            .clone());
+    }
+    let id = full_id(rows.iter().map(|s| s.session_id.clone()), parent)?;
+    ensure!(
+        rows.iter().any(|s| s.session_id == id),
+        "--parent {parent}: no live session; `cones ls` lists them"
+    );
+    Ok(id)
+}
+
 fn full_id(ids: impl Iterator<Item = String>, id: &str) -> Result<String> {
     let ids: Vec<String> = ids.collect();
     if !ids.iter().any(|s| s == id) {

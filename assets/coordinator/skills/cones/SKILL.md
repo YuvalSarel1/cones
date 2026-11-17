@@ -31,7 +31,8 @@ built on the same commands, so you can reach as far as the owner does.
    owner's dashboard does, and get its id back. `cones launch --dir PATH --harness NAME PROMPT`
    runs detached, needs no terminal and prints the id on stdout; give it the whole task as
    the prompt. Add `--parent self` only for a worker whose result you need to finish your own
-   current task, so the owner sees it beneath you. When the owner asks you to start an agent
+   current task, so the owner sees it beneath you; `cones adopt ID` does the same for a session
+   already running. When the owner asks you to start an agent
    for separate work, such as a fix in another project, leave it out: that session answers to
    the owner, not you. Don't ask it to report back, and don't stop, resume or fork it.
    `cones resume ID` reopens a past conversation and `cones fork ID` branches

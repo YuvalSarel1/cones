@@ -36,6 +36,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones mcp` | Serve [history and control tools over MCP stdio](#cones-over-mcp). |
 | `cones wait ID... [--timeout S]` | [Block until a session settles](#waiting-on-a-session) and print `ID<TAB>STATE`. |
 | `cones send ID TEXT` | [Send one note](#sending-a-note) to a live session in any folder. |
+| `cones adopt ID [--parent ID\|self\|--remove]` | List a running session beneath another, `self` by default, [as `--parent` would have](#starting-a-session), or take it out with `--remove`. |
 | `cones rename ID NAME` | [Name a session](#renaming-a-session) through its harness's own rename, as the dashboard's `ctrl+n` does. |
 | `cones place [ID [add\|remove PLACE]]` | [List a session in a place](#placing-a-session) in the dashboard, or take it out of one. |
 | `cones btw ID QUESTION [--model ID] [--timeout S]` | [Ask a side question](#asking-a-side-question) in a read-only fork the harness keeps nothing of, and print the answer. |
@@ -270,6 +271,11 @@ which has since ended, is an error and nothing starts. The link is recorded in
 orange. One working in another folder names that folder, dimmed, after its title,
 `↳ ⚙ write the docs · in reports`, since the heading above it no longer does.
 [`launched_under_parent: false`](jobs.md#list-settings) lists every launch in its own folder.
+
+`cones adopt ID` records the same link for a session already running, so it is listed beneath
+the session running the command, or beneath `--parent ID`. Adopting it again moves it, and
+`--remove` drops the recorded link so it stands alone. A helper nested by its process chain
+stays nested while it runs, since nothing is recorded for it.
 
 Claude and Codex launch into their daemons; OpenCode, pi and experimental launchers use
 persistent hosts. Each prints a discovered identifier on stdout, with its kind on stderr, and

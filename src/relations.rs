@@ -94,7 +94,31 @@ pub fn record(state: &Path, link: Link) -> Result<()> {
         excess -= usize::from(drop);
         !drop
     });
-    let bytes = serde_json::to_vec(&links)?;
+    write(state, &links)
+}
+
+/// Drop the launch links that list `child` beneath a launcher, so it stands alone again.
+/// Returns whether any did.
+pub fn forget_launcher(state: &Path, child: &Session) -> Result<bool> {
+    let lock = crate::private_file(&state.join("relations.lock"))?;
+    lock.lock_exclusive()?;
+    let mut links = load(state)?;
+    let before = links.len();
+    links.retain(|l| {
+        !(l.kind == Kind::Launch
+            && l.harness == child.harness
+            && ((!l.child.is_empty() && l.child == child.native())
+                || (l.child_pid.is_some() && l.child_pid == child.pid)))
+    });
+    if links.len() == before {
+        return Ok(false);
+    }
+    write(state, &links)?;
+    Ok(true)
+}
+
+fn write(state: &Path, links: &[Link]) -> Result<()> {
+    let bytes = serde_json::to_vec(links)?;
     ensure!(
         bytes.len() <= 4 * 1024 * 1024,
         "agent relationships are too large"

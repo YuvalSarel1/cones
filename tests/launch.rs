@@ -1238,6 +1238,7 @@ fn a_launch_is_listed_beneath_only_the_parent_it_names() {
     let out = launch(&["alone"], &[("CLAUDE_CODE_SESSION_ID", &parent)]);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!relations.exists(), "an unasked parent was recorded");
+    let alone = stdout(&out);
 
     // `self` takes the session the environment names.
     let out = launch(
@@ -1291,6 +1292,53 @@ fn a_launch_is_listed_beneath_only_the_parent_it_names() {
         assert_eq!(*launcher, expected, "{id} in {launchers:?}");
     }
     assert_eq!(launchers.len(), 4, "{launchers:?}");
+
+    // `cones adopt` lists a running session beneath another after its launch: `self` by
+    // default, and adopting it again moves it. Itself as its parent is refused.
+    let adopt = |args: &[&str], env: &[(&str, &str)]| {
+        let mut all = vec!["adopt"];
+        all.extend(args);
+        let mut command = f.command("ok", &all);
+        command
+            .env_remove("CODEX_THREAD_ID")
+            .env_remove("CLAUDE_CODE_SESSION_ID");
+        command.envs(env.iter().copied());
+        command.output().unwrap()
+    };
+    let launcher_of = |id: &str| {
+        f.rows()
+            .iter()
+            .find(|r| r["session"]["session_id"] == id)
+            .map(|r| r["session"]["launched_by"].clone())
+            .unwrap()
+    };
+    let out = adopt(&[&alone], &[("CLAUDE_CODE_SESSION_ID", &mine)]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(launcher_of(&alone), Value::from(mine.as_str()));
+    let out = adopt(&[&alone, "--parent", &parent], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(launcher_of(&alone), Value::from(parent.as_str()));
+    let out = adopt(&[&alone, "--parent", &alone], &[]);
+    assert!(stderr(&out).contains("its own parent"), "{}", stderr(&out));
+    let out = adopt(&[&alone], &[]);
+    assert!(
+        stderr(&out).contains("no listed session runs this command"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(launcher_of(&alone), Value::from(parent.as_str()));
+    // `--remove` lets it stand alone again; a second remove has nothing to take out.
+    let out = adopt(&[&alone, "--remove"], &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(launcher_of(&alone), Value::Null);
+    let out = adopt(&[&alone, "--remove"], &[]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("is not listed beneath"),
+        "{}",
+        stderr(&out)
+    );
+    let links: Value = serde_json::from_slice(&fs::read(&relations).unwrap()).unwrap();
 
     // `self` with no session to find, and a parent that has ended, start nothing.
     let started = f.background_pids().len();
