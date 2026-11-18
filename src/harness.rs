@@ -666,8 +666,9 @@ fn provider_env(
             Some(true) => {
                 c.env(switch, "1");
             }
+            // An explicit "0" outranks a folder shell's export; a removal would let it back in.
             Some(false) => {
-                c.env_remove(switch);
+                c.env(switch, "0");
             }
             None => {}
         }
@@ -2489,10 +2490,10 @@ mod tests {
                 (*kind == HarnessKind::Claude).then_some(Some("1".to_owned())),
                 "{kind} gets the switch only if its definition names one"
             );
-            // false removes the switch a native settings file may have set.
             assert_eq!(
                 switch(&env(Some(false))),
-                (*kind == HarnessKind::Claude).then_some(None),
+                (*kind == HarnessKind::Claude).then_some(Some("0".to_owned())),
+                "{kind}: false disables the switch rather than removing it"
             );
             assert_eq!(switch(&env(None)), None, "unset passes no switch at all");
         }
@@ -2547,6 +2548,22 @@ mod tests {
             assert!(!env.contains_key(name), "{name} leaked into {env:?}");
         }
         assert!(!launch(&plain).contains_key("CLAUDE_CODE_USE_BEDROCK"));
+        // Configured false holds against the folder's Bedrock; unset lets a folder's own 0 through.
+        let switch = |bedrock, folder: &str| {
+            let launch = spec(HarnessKind::Claude).launch.as_ref().unwrap();
+            let mut c = std::process::Command::new("true");
+            provider_env(&mut c, launch, bedrock, None, None);
+            let env = vec![("CLAUDE_CODE_USE_BEDROCK".into(), folder.into())];
+            apply_folder_env(&mut c, env);
+            // What the child sees: the command's own value, else the inherited one.
+            match c.get_envs().find(|(k, _)| *k == "CLAUDE_CODE_USE_BEDROCK") {
+                Some((_, v)) => v.map(|v| v.to_string_lossy().into_owned()),
+                None => std::env::var("CLAUDE_CODE_USE_BEDROCK").ok(),
+            }
+        };
+        assert_eq!(switch(Some(false), "1").as_deref(), Some("0"));
+        assert_eq!(switch(None, "0").as_deref(), Some("0"));
+        assert_eq!(switch(Some(true), "0").as_deref(), Some("1"));
         // A shell that fails or never finishes gives no folder environment.
         let missing = root.path().join("missing");
         assert!(shell_env(OsStr::new("/usr/bin/false"), &bedrock, None).is_empty());

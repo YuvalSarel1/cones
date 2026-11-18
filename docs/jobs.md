@@ -299,7 +299,7 @@ Each run starts with a cleared environment. Installed schedules capture values i
 | Fixed values | `LANG=en_US.UTF-8`, `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` |
 | Launch PATH | `~/.local/bin`, `~/.cargo/bin`, `~/.opencode/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`; also used to resolve `claude` |
 | `aws_profile` or `aws_region` | All shell `AWS_` variables for credentials, then the configured `AWS_PROFILE` and `AWS_REGION` over them; every harness resolves AWS the same way, so the pair is not Claude's alone |
-| `bedrock: true` | The switch the harness definition names, `CLAUDE_CODE_USE_BEDROCK=1` for Claude |
+| `bedrock: true` or `false` | The switch the harness definition names, `CLAUDE_CODE_USE_BEDROCK=1` or `=0` for Claude, over any folder shell value; Claude user settings `env` can still override it |
 
 `env` entries must be shell identifiers and cannot override execution policy: `HOME`, `PATH`, `SHELL`, `BASH_ENV`, `ENV`, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, and prefixes `DYLD_`, `LD_` and `CLAUDE_CODE_` are rejected. Use the Bedrock fields for provider selection. An SSO profile still needs an authenticated session, such as one opened by `aws sso login --profile <name>`.
 
