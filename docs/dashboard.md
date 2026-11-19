@@ -148,7 +148,7 @@ way. A folder opened inside a worktree heads the sessions that run in it, under 
 setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
 [`sort`](jobs.md#list-settings) can order them by last activity or by hand instead. Forks
 follow visible parents. A job's run sits among the sessions in its folder, titled `◆ JOB` and
-drawn with the session columns, while its agent is listed, while it is supervised and until its
+drawn as its agent's session row, cpu and activity chart included, while its agent is listed, while it is supervised and until its
 finish is read. The [Jobs](#jobs) screen keeps the full run list.
 
 [Column settings](jobs.md#list-settings) control each table independently. Identity and row

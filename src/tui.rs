@@ -1178,14 +1178,17 @@ impl Data {
             .iter()
             .filter(|c| *c != state_key && *c != "harness")
             .collect();
-        let sparks = fleet::sparklines(&self.sessions, &self.spark, chrono::Utc::now());
+        // Runs share the scale: a run's row is its agent's session under the run's id.
+        let charted: Vec<Session> = self.sessions.iter().chain(&runs).cloned().collect();
+        let sparks = fleet::sparklines(&charted, &self.spark, chrono::Utc::now());
         let title = if has_state { 3 } else { 2 };
         let cells = flat
             .iter()
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
             .map(|(key, e)| match e {
                 Entry::Folder(_) => vec![],
-                Entry::Session(s) => {
+                // A run's row is its agent's session: the same cells, chart and branch.
+                Entry::Session(s) | Entry::Run(s) => {
                     let depth = depths
                         .get(&(
                             group_id(&key.1, &key.2),
@@ -1247,15 +1250,6 @@ impl Data {
                         unread(self.unread.contains(&s.session_id), title, row),
                     )
                 }
-                Entry::Run(s) => indent(
-                    &key.2,
-                    title,
-                    unread(
-                        self.unread.contains(&s.session_id),
-                        title,
-                        session_cells(s, set, by_state, None, None, false, None),
-                    ),
-                ),
                 Entry::Job(j) => {
                     let last = self
                         .runs
@@ -3849,8 +3843,9 @@ fn fleet_rows_observed(
         }
         out.extend(rows);
     }
-    let usage = fleet::pass_usage(out.iter().filter_map(|s| s.pid));
-    for s in &mut out {
+    // A session a run owns is drawn as that run's row, so it is measured like any other.
+    let usage = fleet::pass_usage(out.iter().chain(&collapsed).filter_map(|s| s.pid));
+    for s in out.iter_mut().chain(&mut collapsed) {
         // A row that already named the process running it, as a daemon-held Codex thread does,
         // keeps that read.
         if let Some(u) = s.pid.and_then(|pid| usage.get(&pid)) {

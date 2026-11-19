@@ -7,7 +7,8 @@
 //! and an edit of the task, schedule and run settings replacing the block; `ctrl+x` arming and
 //! a second `ctrl+x` deleting it; `enter` on a job running it, recorded in the ledger; a run
 //! whose session asks for input ending as `input` with the session left up; and `ctrl+x`
-//! twice on a running job stopping its run as `stopped` and closing the run's row.
+//! twice on a running job stopping its run as `stopped` and closing the run's row; and a
+//! running job's row on the session list showing its session's cpu and activity chart.
 //!
 //! The harness is `fake_claude.py`, copied as a real executable into the fixture's
 //! `~/.local/bin`, and its `--model` picks the outcome. No model is called.
@@ -452,6 +453,46 @@ fn stopping_a_running_job_records_stopped_and_closes_the_runs_row() {
     assert_eq!(ended["reason"], "interrupted", "{ended}");
     let hidden = d.wait_file("state/hidden", |t| t.contains(&run_id));
     assert_eq!(hidden.lines().collect::<Vec<_>>(), [run_id.as_str()]);
+    d.keep("state/runs.jsonl");
+    d.quit();
+}
+
+/// A run's row on the session list is its agent's session: the processor share the kernel
+/// charges its process and the activity chart show there as on any session row, not `-` and
+/// a blank.
+#[test]
+fn a_running_jobs_row_shows_its_sessions_cpu_and_activity() {
+    let job = "  - name: long\n    schedule: '0 3 * * *'\n    cwd: project\n    prompt: keep going\n    model: working\n    timeout_min: 5\n";
+    let mut d = fixture("jobs-run-metrics", job);
+    let file = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{file}columns: [state, cpu, activity]\n"),
+    )
+    .unwrap();
+    d.start();
+    open_jobs(&mut d);
+    select_job(&mut d, "long");
+    d.press("enter", ENTER);
+    d.wait_text("▌ ◆  ✻  started  long");
+    d.press("esc", b"\x1b");
+    let is_cpu = |w: &&str| {
+        w.strip_suffix('%')
+            .is_some_and(|n| n.parse::<u32>().is_ok())
+    };
+    let is_chart = |w: &&str| w.chars().count() >= 8 && w.chars().all(|c| ('▁'..='▇').contains(&c));
+    let screen = d.wait_for("the run's row with its session's columns", |s| {
+        s.lines().any(|l| {
+            let words: Vec<_> = l.split_whitespace().collect();
+            words.contains(&"long") && words.iter().any(is_cpu) && words.iter().any(is_chart)
+        })
+    });
+    let row = screen.lines().find(|l| l.contains("long")).unwrap();
+    assert!(
+        !row.contains(" - "),
+        "a column fell back to `-`: {row}\n{screen}"
+    );
+    d.capture("run-row");
     d.keep("state/runs.jsonl");
     d.quit();
 }
