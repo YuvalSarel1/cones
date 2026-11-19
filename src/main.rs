@@ -210,6 +210,9 @@ enum Action {
     Stop {
         /// The full session id as `cones ls` prints it.
         id: String,
+        /// Stop it even while its harness reports a turn running.
+        #[arg(long)]
+        force: bool,
     },
     /// Block until one of the sessions stops moving on its own, and print `ID<TAB>STATE`. Run
     /// it as a background task, so its exit wakes you; see docs/cli.md.
@@ -1003,9 +1006,19 @@ fn execute(cli: Cli) -> Result<i32> {
             println!("{}", started.id);
             Ok(0)
         }
-        Action::Stop { id } => {
+        Action::Stop { id, force } => {
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
-            let id = full_id(rows.into_iter().map(|s| s.session_id), &id)?;
+            let id = full_id(rows.iter().map(|s| s.session_id.clone()), &id)?;
+            // An agent that read a worker's report may not know its own later note started a
+            // new turn; stopping would cut that turn off. Only a reported working state refuses.
+            ensure!(
+                force
+                    || !rows
+                        .iter()
+                        .any(|s| s.session_id == id && s.state == cones::fleet::State::Active),
+                "{id} is working on a turn; wait for it (`cones wait {id}`) or pass --force to \
+                 interrupt it"
+            );
             print!("{}", cones::stop::session(&state, &claude, &id)?);
             Ok(0)
         }

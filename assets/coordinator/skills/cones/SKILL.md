@@ -158,7 +158,9 @@ stage by path: commit from a diff trimmed to your own hunks.
 
 **Stopping.** When the task is done, `cones stop` the workers you launched. Stop keeps the
 conversation, so the work stays readable and resumable. A worker still waiting on a native
-prompt is not finished, and every other session in the folder is not yours to stop.
+prompt is not finished, and every other session in the folder is not yours to stop. A report is
+not the end of a worker that a later message of yours started again: `cones stop` refuses a
+working session, so wait for its next report; `--force` is for work the owner wants cut off.
 
 ## Ground rules
 

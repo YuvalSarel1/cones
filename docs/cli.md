@@ -370,7 +370,9 @@ roster, greeting or inbox; [`cones comms`](#comms) adds those for agents sharing
 cones stop 5bf8392e-17cb-405d-a400-22dfbda13472
 ```
 
-Use the id from `cones ls --json`. Four targets are supported:
+Use the id from `cones ls --json`. A session its harness reports `active` is refused, since an
+agent that read a worker's report may not know its own later note started a new turn: wait for
+it with `cones wait ID`, or pass `--force` to interrupt the turn. Four targets are supported:
 
 | Target | Operation |
 | --- | --- |

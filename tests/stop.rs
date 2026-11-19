@@ -163,7 +163,14 @@ impl Fixture {
             .env("HOME", self.root.path())
             .env_remove("CLAUDE_CONFIG_DIR")
             .env_remove("CODEX_HOME")
-            .args(["--state-dir", self.state().to_str().unwrap(), "stop", id])
+            // These tests exercise the stop itself; the working-turn guard has its own test.
+            .args([
+                "--state-dir",
+                self.state().to_str().unwrap(),
+                "stop",
+                "--force",
+                id,
+            ])
             .output()
             .unwrap()
     }
@@ -855,6 +862,37 @@ fn a_codex_thread_with_no_client_has_its_turn_interrupted_and_its_terminals_clos
             "thread/backgroundTerminals/list"
         ]
     );
+}
+
+/// An agent that read a worker's report and stops it may not know its own later note started a
+/// new turn. The stop refuses a session its harness reports working and interrupts nothing;
+/// `--force` stops it.
+#[test]
+fn a_codex_thread_working_on_a_turn_is_stopped_only_with_force() {
+    let f = Fixture::new();
+    let id = "019a12fc-17d9-7af2-bc5a-92de2ec06071";
+    codex_thread(&f, id);
+    let calls = codex_daemon(&f, &[id]);
+
+    let out = f.cones(&["stop", id]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        text(&out.stderr).contains(&format!(
+            "{id} is working on a turn; wait for it (`cones wait {id}`) or pass --force"
+        )),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(
+        !methods(&calls).contains(&"turn/interrupt".to_owned()),
+        "a refused stop must interrupt nothing: {:?}",
+        methods(&calls)
+    );
+
+    let out = f.stop(id);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(text(&out.stdout).contains("interrupted its running turn"));
+    assert!(methods(&calls).contains(&"turn/interrupt".to_owned()));
 }
 
 /// A peer that sends a Codex worker a note and then stops it means the note to follow the
