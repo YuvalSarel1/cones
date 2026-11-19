@@ -35,6 +35,89 @@ pub fn homes(claude: &Path) -> Vec<PathBuf> {
         .all(claude)
 }
 
+/// A provider becomes part of a home's name, so it is a plain id.
+pub fn check_provider(provider: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !provider.is_empty()
+            && provider != "."
+            && provider != ".."
+            && provider
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)),
+        "codex_provider {provider:?} must be a model_provider id: letters, digits, '-', '_' or '.'"
+    );
+    Ok(())
+}
+
+/// Files a provider home shares with the default home, so it keeps the same login,
+/// instructions and installed daemon. `auth.json` is written in place, so a link keeps one login.
+const SHARED: &[&str] = &[
+    "auth.json",
+    "auth.lock",
+    "auth.json.lock",
+    "AGENTS.md",
+    "skills",
+    "rules",
+    "packages",
+];
+
+/// The home whose daemon serves `provider`. A daemon keeps the provider it started with, and
+/// a thread on another provider cannot reach its credentials there, so another provider gets
+/// the sibling home `<home>-<provider>`, which discovery already reads and joins. It is made
+/// once from the default home's `config.toml`, with `model_provider` set and the model keys,
+/// which name the other provider's models, removed; after that it is the owner's to edit.
+pub fn provider_home(home: &Path, provider: Option<&str>) -> anyhow::Result<PathBuf> {
+    let Some(provider) = provider else {
+        return Ok(home.to_owned());
+    };
+    check_provider(provider)?;
+    let config = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = config
+        .parse()
+        .map_err(|e| anyhow::anyhow!("{}: {e}", home.join("config.toml").display()))?;
+    // Codex's own default provider is openai.
+    if doc
+        .get("model_provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("openai")
+        == provider
+    {
+        return Ok(home.to_owned());
+    }
+    let env = &crate::harness::spec(crate::config::HarnessKind::Codex)
+        .home
+        .env;
+    anyhow::ensure!(
+        std::env::var_os(env).is_none_or(|v| v.is_empty()),
+        "{env} pins one Codex home, so codex_provider {provider} has no home of its own to run \
+         in; unset {env} or set model_provider in that home's config.toml"
+    );
+    let mut name = home.file_name().unwrap_or_default().to_os_string();
+    name.push(format!("-{provider}"));
+    let sibling = home.with_file_name(name);
+    if sibling.join("config.toml").is_file() {
+        return Ok(sibling);
+    }
+    fs::create_dir_all(&sibling)?;
+    for entry in SHARED {
+        let target = home.join(entry);
+        if target.exists() && fs::symlink_metadata(sibling.join(entry)).is_err() {
+            std::os::unix::fs::symlink(&target, sibling.join(entry))?;
+        }
+    }
+    for key in [
+        "model",
+        "model_context_window",
+        "model_auto_compact_token_limit",
+    ] {
+        doc.remove(key);
+    }
+    doc["model_provider"] = toml_edit::value(provider);
+    // Written last: a config.toml is what makes the folder a home discovery reads.
+    fs::write(sibling.join("config.toml"), doc.to_string())?;
+    Ok(sibling)
+}
+
 /// The daemon's pid file and lock directory, as the definition names them.
 fn daemon_files() -> &'static crate::harness::spec::Daemon {
     crate::harness::spec(crate::config::HarnessKind::Codex)

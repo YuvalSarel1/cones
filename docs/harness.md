@@ -569,7 +569,8 @@ unverified.
 
 Model/provider settings follow [configuration](jobs.md#composer-harnesses). Claude and pi take
 effort flags; Codex and OpenCode receive none. Codex's daemon keeps its configured provider,
-so a different provider region requires another native home. Permissions remain native.
+so [`codex_provider`](jobs.md#codex-provider) runs another provider in a sibling home, and a different
+provider region requires another native home. Permissions remain native.
 
 ### Supervised execution
 

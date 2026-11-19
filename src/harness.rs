@@ -25,6 +25,9 @@ pub struct Invocation {
     /// The run's state directory, which a daemon worker names its session through.
     #[serde(default)]
     pub state: Option<PathBuf>,
+    /// The Codex provider whose daemon runs the job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 pub trait Harness {
@@ -124,7 +127,10 @@ pub fn start(
             Start::Background(c)
         }
         spec::LaunchHandler::CodexRemote => {
-            let home = crate::codex::home(&crate::fleet::claude_dir()?);
+            let home = crate::codex::provider_home(
+                &crate::codex::home(&crate::fleet::claude_dir()?),
+                policy.provider_for(kind),
+            )?;
             let (path, remote) = codex_remote(&path, &home)?;
             // A detached launch has no screen to answer Codex's trust question on. A daemon
             // that refuses the write leaves the question to the client, as before.
@@ -133,6 +139,7 @@ pub fn start(
             c.args(&named)
                 .args(session_args(kind, Some((&remote, dir)), prompt, policy)?)
                 .current_dir(dir);
+            spec(kind).home.set_command_home(&mut c, &home);
             Start::Foreground(c)
         }
         spec::LaunchHandler::Terminal => {
@@ -1916,6 +1923,7 @@ impl Harness for Claude {
             timeout_s: job.timeout_min * 60.0,
             harness: Some(HarnessKind::Claude),
             state: None,
+            provider: None,
         })
     }
     fn resume(
@@ -2007,6 +2015,7 @@ impl Harness for Codex {
             timeout_s: job.timeout_min * 60.0,
             harness: Some(HarnessKind::Codex),
             state: None,
+            provider: job.provider.clone(),
         })
     }
     fn resume(
@@ -2069,7 +2078,10 @@ pub fn codex_job_command(invocation: &Invocation) -> Result<std::process::Comman
         launch.prefix.is_empty(),
         "codex launch prefix is not supported"
     );
-    let home = crate::codex::home(&crate::fleet::claude_dir()?);
+    let home = crate::codex::provider_home(
+        &crate::codex::home(&crate::fleet::claude_dir()?),
+        invocation.provider.as_deref(),
+    )?;
     let (path, remote) = codex_remote(&invocation.program, &home)?;
     // A run has no screen to answer Codex's trust question on.
     let _ = crate::codex::control::trust(&home, &invocation.cwd);
@@ -2340,8 +2352,9 @@ mod tests {
             session_args(HarnessKind::Claude, None, "x", &Policy::default()).unwrap(),
             ["--bg", "--dangerously-skip-permissions", "--", "x"]
         );
-        // The app-server daemon keeps the provider it started with, so cones passes
-        // no provider of its own; config refuses `bedrock` on a Codex job for that reason.
+        // The app-server daemon keeps the provider it started with, so cones passes no
+        // provider flag: codex_provider picks the daemon's home instead, and config
+        // refuses `bedrock` on a Codex job.
         let direct = Policy {
             bedrock: Some(false),
             codex_model: Some("a-model".into()),

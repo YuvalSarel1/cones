@@ -26,7 +26,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones` | Open the dashboard; requires a terminal. |
 | `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
-| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--name NAME] [--parent ID|self] [--print-command] [--no-prompt-record] [--wait [--timeout S]]` | [Start a session](#starting-a-session) the way the dashboard's composer does. The session runs detached, needs no terminal, and its identifier is printed. |
+| `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--provider P] [--name NAME] [--parent ID|self] [--print-command] [--no-prompt-record] [--wait [--timeout S]]` | [Start a session](#starting-a-session) the way the dashboard's composer does. The session runs detached, needs no terminal, and its identifier is printed. |
 | `cones resume ID`, `cones fork ID` | [Reopen or fork a conversation](#resuming-and-forking) from history, detached, and print its id. |
 | `cones catchup [--dry-run]` | Recover [missed schedules](jobs.md#sleep-login-and-reboot). `--dry-run` prints `name missed <local time>` for each candidate and starts nothing. |
 | `cones ls [--dir PATH] [--job NAME] [--runs] [--status S] [--json]` | [Read runs and live sessions](#reading-runs-and-sessions). |
@@ -241,13 +241,14 @@ remains an explicit configuration action.
 cones launch --dir ~/src/app "fix the flaky test"
 cones launch --dir ~/src/app --harness codex "rebase onto main"
 cones launch --dir ~/src/app --harness claude --model opus --effort high
+cones launch --dir ~/src/app --harness codex --provider openai --model gpt-6.2-sol "fix the login flow"
 ```
 
 `--dir` is required. An explicit harness must be enabled. Otherwise cones uses enabled
 `defaults.harness`, then the first enabled launchable harness; none is an error. Dashboard
 `start.harness` and `_in_picker` settings do not affect CLI selection.
 
-`--model` and `--effort` override defaults for this session only; unsupported flags fail.
+`--model`, `--effort` and `--provider` override defaults for this session only; unsupported flags fail. `--provider` sets pi's `pi_provider` or Codex's [`codex_provider`](jobs.md#codex-provider).
 `--name` names the session through the harness's own launch flag (Claude and pi `--name`);
 Codex and OpenCode have none, so the launch [renames](#renaming-a-session) the session once
 its id is printed, and `--print-command` refuses a name for them. A harness with no session

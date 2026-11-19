@@ -5148,7 +5148,7 @@ const GROUPS: [(&str, &str); 4] = [
 ];
 
 /// `start.harness` controls the composer; `defaults.harness` supplies the default for jobs.
-const FIELDS: [Field; 80] = [
+const FIELDS: [Field; 81] = [
     Field {
         group: "cones",
         sub: "",
@@ -5384,7 +5384,7 @@ const FIELDS: [Field; 80] = [
         name: "bedrock",
         short: "use Bedrock",
         hint: "Use Amazon Bedrock for Claude.",
-        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness whose definition names a Bedrock switch, so a job on any other is refused rather than left to ignore it: the Codex daemon keeps the provider it started with, and pi and OpenCode choose Bedrock as a provider through their own model and provider settings, which ctrl+o sets beside the composer. The profile and region below reach every harness. true is refused without them, since the switch alone reaches Bedrock with nothing to authenticate it.",
+        long: "true sends Claude to Amazon Bedrock, false to its own endpoint; system default passes nothing and the harness's own configuration decides. Claude is the only harness whose definition names a Bedrock switch, so a job on any other is refused rather than left to ignore it: Codex chooses it through codex_provider, and pi and OpenCode choose Bedrock as a provider through their own model and provider settings, which ctrl+o sets beside the composer. The profile and region below reach every harness. true is refused without them, since the switch alone reaches Bedrock with nothing to authenticate it.",
         builtin: SYSTEM,
         input: Answer::Pick(BOOL),
     },
@@ -5526,6 +5526,16 @@ const FIELDS: [Field; 80] = [
             ],
             "a model id",
         ),
+    },
+    Field {
+        group: "harnesses",
+        sub: "codex",
+        name: "codex_provider",
+        short: "provider",
+        hint: "Provider for new Codex sessions and jobs.",
+        long: "The Codex model_provider, such as openai for the ChatGPT login or amazon-bedrock. A daemon keeps the provider it started with, so a provider other than the one in Codex's config.toml runs in a home of its own beside it, ~/.codex-<provider>, made on first use from that config.toml with the model removed. Resumed and forked threads keep the provider they started with. Empty follows Codex's own configuration.",
+        builtin: SYSTEM,
+        input: Answer::PickOrType(&["-", "openai", "amazon-bedrock"], "a model_provider id"),
     },
     Field {
         group: "harnesses",
@@ -6325,6 +6335,7 @@ impl ConfigForm {
                 "model" => d.model.clone().unwrap_or_default(),
                 "harness" => d.harness.map(|h| h.to_string()).unwrap_or_default(),
                 "codex_model" => d.codex_model.clone().unwrap_or_default(),
+                "codex_provider" => d.codex_provider.clone().unwrap_or_default(),
                 "pi_model" => d.pi_model.clone().unwrap_or_default(),
                 "pi_provider" => d.pi_provider.clone().unwrap_or_default(),
                 "effort" => d.effort.clone().unwrap_or_default(),
@@ -6545,6 +6556,7 @@ impl ConfigForm {
             env: Some(env).filter(|e: &Vec<String>| !e.is_empty()),
             model: text("model"),
             codex_model: text("codex_model"),
+            codex_provider: text("codex_provider"),
             pi_model: text("pi_model"),
             pi_provider: text("pi_provider"),
             effort: text("effort"),

@@ -1049,6 +1049,106 @@ fn print_command_for_codex_starts_no_daemon_and_prints_a_running_one() {
     assert_eq!(f.codex_threads().len(), 1, "the print made a thread");
 }
 
+/// `codex_provider` picks the daemon that serves a launch. The home's own provider stays in the
+/// home; another one gets a sibling home made from that config, sharing its login, and both
+/// threads list with the provider their rollouts name.
+#[test]
+fn a_codex_provider_launch_runs_in_a_home_whose_daemon_serves_it() {
+    let f = Fixture::codex();
+    let home = f.path().join(".codex");
+    let sibling = f.path().join(".codex-openai");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model = \"openai.bedrock-only\"\nmodel_provider = \"amazon-bedrock\"\n\
+         model_context_window = 5\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n",
+    )
+    .unwrap();
+    fs::write(home.join("auth.json"), "{\"login\":\"chatgpt\"}").unwrap();
+    // The sibling layout belongs to the default home, which CODEX_HOME would pin.
+    let cones = |args: &[&str]| {
+        let mut c = f.command("ok", args);
+        c.env_remove("CODEX_HOME");
+        c.output().unwrap()
+    };
+    let launch = |provider: &str, prompt: &str| {
+        let out = cones(&[
+            "launch",
+            "--dir",
+            f.work.to_str().unwrap(),
+            "--harness",
+            "codex",
+            "--provider",
+            provider,
+            prompt,
+        ]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        stdout(&out)
+    };
+    let openai = launch("openai", "fix the login flow");
+    let bedrock = launch("amazon-bedrock", "tidy the changelog");
+
+    let config = fs::read_to_string(sibling.join("config.toml")).unwrap();
+    assert!(config.contains("model_provider = \"openai\""), "{config}");
+    assert!(!config.contains("model ="), "{config}");
+    assert!(!config.contains("model_context_window"), "{config}");
+    assert!(config.contains("[projects.\"/x\"]"), "{config}");
+    assert_eq!(
+        fs::read_link(sibling.join("auth.json")).unwrap(),
+        home.join("auth.json")
+    );
+
+    let out = cones(&["ls", "--dir", f.work.to_str().unwrap(), "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let rows: Vec<Value> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let row = |id: &str| {
+        rows.iter()
+            .map(|r| &r["session"])
+            .find(|s| s["session_id"] == id)
+            .unwrap_or_else(|| panic!("no row for {id}: {rows:?}"))
+            .clone()
+    };
+    let served = |id: &str| {
+        let s = row(id);
+        let rollout = PathBuf::from(s["transcript_path"].as_str().unwrap());
+        (
+            s["plan"].as_str().unwrap().to_owned(),
+            rollout.starts_with(&sibling),
+        )
+    };
+    assert_eq!(served(&openai), ("openai".to_owned(), true));
+    assert_eq!(served(&bedrock), ("bedrock".to_owned(), false));
+
+    let refused = cones(&[
+        "launch",
+        "--dir",
+        f.work.to_str().unwrap(),
+        "--harness",
+        "codex",
+        "--provider",
+        "../elsewhere",
+        "x y z w",
+    ]);
+    assert!(!refused.status.success());
+    assert!(
+        stderr(&refused).contains("model_provider id"),
+        "{}",
+        stderr(&refused)
+    );
+
+    for daemon in [&home, &sibling] {
+        let pid = fs::read(daemon.join("app-server-daemon/app-server.pid")).unwrap();
+        let pid = serde_json::from_slice::<Value>(&pid).unwrap()["pid"]
+            .as_u64()
+            .unwrap();
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+}
+
 /// A prompt carrying a one-time secret must not be kept by cones. The launch is still recorded,
 /// so it can be found and a retry is visible, with the prompt absent from both records and
 /// from every other file under the state directory.
@@ -1729,6 +1829,59 @@ fn a_codex_job_runs_as_a_daemon_thread_and_ends_with_its_turn() {
     let saved = fs::read_to_string(f.state().join("codex-threads.json")).unwrap_or_default();
     assert!(!saved.contains(&thread), "{saved}");
     assert!(rollout.exists(), "the conversation stays resumable");
+}
+
+/// A Codex job follows `defaults.codex_provider` to the daemon that serves it, as a launch does.
+#[test]
+fn a_codex_job_runs_on_the_daemon_of_the_default_provider() {
+    let f = Fixture::codex();
+    let home = f.path().join(".codex");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "model_provider = \"amazon-bedrock\"\n",
+    )
+    .unwrap();
+    let jobs = fs::read_to_string(&f.jobs)
+        .unwrap()
+        .replace("defaults:\n", "defaults:\n  codex_provider: openai\n");
+    fs::write(&f.jobs, jobs).unwrap();
+    f.codex_job("triage", 2.0);
+    // run_job pins CODEX_HOME; this run needs the default home and its siblings.
+    let mut run = {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cones"));
+        c.args([
+            "--jobs",
+            f.jobs.to_str().unwrap(),
+            "--state-dir",
+            f.state().to_str().unwrap(),
+            "run",
+            "triage",
+        ])
+        .env("HOME", f.path())
+        .env("CONES_TEST_FAST", "1")
+        .env("CLAUDE_CONFIG_DIR", f.path().join("claude"))
+        .env("PI_CODING_AGENT_DIR", f.path().join("pi"))
+        .env_remove("CODEX_HOME")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+        c.spawn().unwrap()
+    };
+    let sibling = f.path().join(".codex-openai");
+    wait_until("the job's thread in the provider's home", || {
+        fs::read_to_string(sibling.join("fixture-threads")).is_ok_and(|t| !t.trim().is_empty())
+    });
+    assert!(!home.join("fixture-threads").exists());
+    run.kill().unwrap();
+    run.wait().unwrap();
+    for daemon in [&home, &sibling] {
+        if let Ok(pid) = fs::read(daemon.join("app-server-daemon/app-server.pid")) {
+            let pid = serde_json::from_slice::<Value>(&pid).unwrap()["pid"]
+                .as_u64()
+                .unwrap();
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+    }
 }
 
 /// A Codex run that outlives `timeout_min` ends as `timeout`, and its thread goes with it.

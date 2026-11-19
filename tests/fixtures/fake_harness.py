@@ -18,6 +18,7 @@ Installed under a fixture HOME as `.local/bin/claude`, `.local/bin/pi`, `.local/
 """
 import json
 import os
+import re
 import pathlib
 import signal
 import subprocess
@@ -91,7 +92,7 @@ if name in ("pi", "kimi", "copilot", "cursor-agent"):
     sys.exit(0)
 
 if name == "codex":
-    home = pathlib.Path(os.environ["CODEX_HOME"])
+    home = pathlib.Path(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
     locks = home / "thread-writer-locks"
     if args == ["app-server", "daemon", "start"]:
         # The daemon is what holds a thread, and cones reads that from the lock files its
@@ -124,6 +125,10 @@ if name == "codex":
             signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
             while True:
                 time.sleep(0.05)
+    # The daemon serves the provider its home's config names, and says so in the rollout.
+    config = home / "config.toml"
+    provider = re.search(r'^model_provider\s*=\s*"([^"]*)"', config.read_text(), re.M) \
+        if config.exists() else None
     made = []
     for _ in range(2 if mode == "twice" else 1 if prompt else 0):
         thread = str(uuid.uuid4())
@@ -135,7 +140,8 @@ if name == "codex":
         lines = [
             {"timestamp": now, "ordinal": 0, "type": "session_meta", "payload": {
                 "session_id": thread, "id": thread, "timestamp": now, "cwd": cwd,
-                "originator": "codex-tui", "cli_version": "0.162.1", "source": "vscode"}},
+                "originator": "codex-tui", "cli_version": "0.162.1", "source": "vscode",
+                "model_provider": provider.group(1) if provider else "openai"}},
             {"timestamp": now, "ordinal": 1, "type": "event_msg",
              "payload": {"type": "task_started", "turn_id": "t"}},
             {"timestamp": now, "ordinal": 2, "type": "event_msg", "payload": {

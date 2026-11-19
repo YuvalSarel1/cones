@@ -53,7 +53,7 @@ Claude and Codex are the harnesses cones can supervise, so they are the only one
 | `notify` | `false` | macOS notification through `osascript` when a run fails or times out. `CONES_NOTIFIER` can name a command receiving the title and message instead. |
 | `archive_transcript` | `false` | Copy the native transcript into the [run's state directory](#stored-files) when it ends. |
 | `env` | `[]` | Shell variable names to import. A job's nonempty list replaces the default list; an empty list inherits it, so opting out requires removing the name from `defaults.env`. See [environment](#environment). |
-| `bedrock` | unset | `true` selects Amazon Bedrock; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands); the Codex daemon keeps the provider it started with, and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
+| `bedrock` | unset | `true` selects Amazon Bedrock; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands); Codex selects it with [`codex_provider`](#codex-provider), and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
 | `aws_profile` | unset | Sets `AWS_PROFILE` over any imported shell value. Required with `bedrock: true`. |
 | `aws_region` | unset | Sets `AWS_REGION`; the chosen region must serve the model. Required with `bedrock: true`. |
 
@@ -97,7 +97,15 @@ Sessions the composer starts skip permission prompts by default, using each harn
 
 pi has no permission prompts and amp has no flag for skipping them, so neither harness has a key.
 
-Pi also accepts `pi_provider`, and Codex accepts `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
+Pi also accepts `pi_provider`, and Codex accepts `codex_provider` and `codex_full_access`. OpenCode's `opencode_model` uses `provider/model`, as listed by `opencode models`. Reasoning effort has two keys: `effort` for Claude and `pi_thinking` for pi. Other harnesses have no effort override in cones.
+
+### Codex provider
+
+`codex_provider` names the Codex `model_provider` that serves new sessions and Codex jobs, such as `openai` for the ChatGPT login or `amazon-bedrock`. Unset, Codex's own configuration decides, as before. `cones launch --provider` and the `ctrl+o` picker set it for one launch or as the default.
+
+A Codex app-server daemon keeps the provider it started with, and a thread on another provider cannot reach that provider's credentials through it. So a provider other than the one the Codex home's `config.toml` names runs in a home of its own beside it, `~/.codex-<provider>`, with its own daemon. The first launch makes it from the default home's `config.toml` with `model_provider` set and `model`, `model_context_window` and `model_auto_compact_token_limit` removed, since those name the other provider's models, and links `auth.json` and its locks, `AGENTS.md`, `skills`, `rules` and `packages` to the default home. After that it is yours to edit; cones never rewrites an existing one. The live daemon in the default home is never restarted. Set `codex_model` to a model the provider serves, or let the provider's default apply.
+
+Sessions there are listed, read, resumed and forked like any [sibling home](harness.md#discovery)'s, and a resumed or forked thread goes back to the daemon of the home its rollout is in, so it keeps its provider. `CODEX_HOME` pins one home, so with it set a provider other than that home's is refused.
 
 Two of these keys are also run policy, since a job has no field of its own for either: `defaults.model` supplies a Claude job's omitted `model`, and `defaults.effort` is the reasoning effort of every Claude run. Changing what the composer starts with therefore changes what tonight's job does.
 

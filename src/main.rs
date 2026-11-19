@@ -142,6 +142,10 @@ enum Action {
         /// Reasoning effort, for a harness that takes one; defaults to the one in `defaults`.
         #[arg(long)]
         effort: Option<String>,
+        /// Provider, for pi (`--provider`) and Codex (`model_provider`, served by a daemon of
+        /// its own); defaults to the one in `defaults`.
+        #[arg(long)]
+        provider: Option<String>,
         /// The session's name, through the harness's own launch flag or its rename.
         #[arg(long)]
         name: Option<String>,
@@ -659,6 +663,7 @@ fn execute(cli: Cli) -> Result<i32> {
             harness: named,
             model,
             effort,
+            provider,
             name,
             parent,
             print_command,
@@ -705,6 +710,13 @@ fn execute(cli: Cli) -> Result<i32> {
                     "{kind} takes no --effort"
                 );
             }
+            if let Some(provider) = provider {
+                ensure!(!provider.is_empty(), "--provider cannot be empty");
+                ensure!(
+                    policy.set_provider_for(kind, provider),
+                    "{kind} takes no --provider"
+                );
+            }
             let name = name.map(|n| n.trim().to_owned());
             let spec = harness::spec(kind);
             let flag = spec.launch.as_ref().is_some_and(|l| l.name.is_some());
@@ -739,7 +751,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 !print_command
                     || harness::spec(kind).launch.as_ref().map(|l| l.handler)
                         != Some(harness::spec::LaunchHandler::CodexRemote)
-                    || cones::codex::daemon_pid(&cones::codex::home(&claude)).is_some(),
+                    || cones::codex::daemon_pid(&cones::codex::provider_home(
+                        &cones::codex::home(&claude),
+                        policy.provider_for(kind),
+                    )?)
+                    .is_some(),
                 "{kind}'s command names its daemon's address and no daemon is running;                  --print-command starts nothing, so run `{kind} app-server daemon start` first"
             );
             let start = harness::start(

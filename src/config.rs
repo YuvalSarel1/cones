@@ -85,6 +85,8 @@ pub struct Policy {
     /// Per-harness model defaults; each job has a single `model` override.
     pub model: Option<String>,
     pub codex_model: Option<String>,
+    /// The Codex `model_provider` a launch is served by, through a daemon of its own.
+    pub codex_provider: Option<String>,
     pub pi_model: Option<String>,
     pub pi_provider: Option<String>,
     pub opencode_model: Option<String>,
@@ -271,9 +273,22 @@ impl Policy {
     }
 
     pub fn provider_for(&self, kind: HarnessKind) -> Option<&str> {
-        (kind == HarnessKind::Pi)
-            .then_some(self.pi_provider.as_deref())
-            .flatten()
+        match kind {
+            HarnessKind::Pi => self.pi_provider.as_deref(),
+            HarnessKind::Codex => self.codex_provider.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// Override the provider for one harness, as `cones launch --provider` does.
+    pub fn set_provider_for(&mut self, kind: HarnessKind, provider: String) -> bool {
+        let field = match kind {
+            HarnessKind::Pi => &mut self.pi_provider,
+            HarnessKind::Codex => &mut self.codex_provider,
+            _ => return false,
+        };
+        *field = Some(provider);
+        true
     }
 }
 
@@ -1230,6 +1245,7 @@ fn defaults_lines(d: &Policy) -> Vec<String> {
     put("timeout_min", d.timeout_min.map(|v| v.to_string()));
     put("model", d.model.clone());
     put("codex_model", d.codex_model.clone());
+    put("codex_provider", d.codex_provider.clone());
     put("pi_model", d.pi_model.clone());
     put("pi_provider", d.pi_provider.clone());
     put("opencode_model", d.opencode_model.clone());
@@ -1643,6 +1659,9 @@ pub struct ResolvedJob {
     pub prompt: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// `defaults.codex_provider` for a Codex job.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     pub enabled: bool,
     pub archive_transcript: bool,
     pub env: Vec<String>,
@@ -1683,6 +1702,7 @@ pub fn adhoc(template: Option<&ResolvedJob>, prompt: &str, cwd: &Path) -> Result
             prompt: prompt.to_owned(),
             model: None,
             effort: None,
+            provider: None,
             enabled: true,
             archive_transcript: false,
             env: vec![],
@@ -1849,6 +1869,12 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         "job {}: effort must be nonempty and contain no NUL",
         j.name
     );
+    let provider = d.provider_for(kind).map(str::to_owned);
+    if kind == HarnessKind::Codex
+        && let Some(provider) = &provider
+    {
+        crate::codex::check_provider(provider).with_context(|| format!("job {}", j.name))?;
+    }
     let cwd = expand_path(&j.cwd, base)?;
     ensure!(
         cwd.is_dir(),
@@ -1878,8 +1904,8 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         bedrock.is_none() || takes_the_switch(kind),
         "job {}: bedrock cannot be set on a {kind} job, here or in defaults. Only {} takes \
          a Bedrock switch from cones; on {kind}, choose the provider in its own \
-         configuration, in a native home of its own when the model needs a region it was \
-         not started with",
+         configuration or, for codex, with codex_provider, in a native home of its own when \
+         the model needs a region it was not started with",
         j.name,
         crate::harness::spec::known()
             .iter()
@@ -1902,6 +1928,7 @@ fn resolve(j: Job, d: &Policy, base: &Path) -> Result<ResolvedJob> {
         prompt: j.prompt,
         model,
         effort,
+        provider,
         enabled: j.enabled,
         archive_transcript: j
             .archive_transcript
@@ -2208,6 +2235,7 @@ mod tests {
             codex_full_access: None,
             model: None,
             codex_model: None,
+            codex_provider: None,
             pi_model: None,
             pi_provider: None,
             opencode_model: None,
