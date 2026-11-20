@@ -141,9 +141,12 @@ key source and how to change it. There is no runtime binding editor or override 
 ## Sessions and runs
 
 Sessions group by directory or state, with input requests first in state grouping. Linked
-Git worktrees share their repository heading. A worktree with two or more sessions gets an
-indented `⑂` heading of its own inside it; a lone session stays among the repository's own,
-marked `⑂`. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
+Git worktrees share their repository heading. A worktree with two or more sessions gets a
+`⑂` heading of its own inside it, named by the worktree's last part and lined up with the
+titles. Tree lines join a folder's worktree headings and the rows under them, `├ ⑂ NAME` and
+`└ ⑂ NAME` for the last. A lone worktree session stays among the repository's own, marked `⑂`.
+Every heading counts its sessions that are working, at a shell, waiting for input or done, in
+the header's marks and colours, after its name; idle sessions go uncounted. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
 way. A folder opened inside a worktree heads the sessions that run in it, under either
 setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
 [`sort`](jobs.md#list-settings) can order them by last activity or by hand instead. Forks

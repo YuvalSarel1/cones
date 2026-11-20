@@ -169,9 +169,20 @@ pub(crate) fn real_project(d: &Dashboard) -> std::path::PathBuf {
 
 /// Whether `screen` has a group heading `name`: the list side of a line, before the pane.
 pub(crate) fn heading(screen: &str, name: &str) -> Option<usize> {
-    screen
-        .lines()
-        .position(|l| l.split('│').next().unwrap().trim_end() == name)
+    screen.lines().position(|l| heading_name(l) == name)
+}
+
+/// A worktree heading names the worktree by its last part.
+pub(crate) fn leaf(path: &Path) -> String {
+    path.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+/// The name a list line gives its heading, without the tree lines before it or the state
+/// counts and pane after it.
+pub(crate) fn heading_name(line: &str) -> &str {
+    let line = line.trim_start_matches([' ', '│', '├', '└']);
+    let line = line.split('│').next().unwrap();
+    line.split("  ").next().unwrap().trim_end()
 }
 
 /// The composer line, between the two rules above the footer.
@@ -1215,13 +1226,22 @@ fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
     d.start();
 
     let main_name = main.display().to_string();
-    let tree_heading = format!("  ⑂ {}", tree.display());
+    let tree_heading = format!("⑂ {}", leaf(&tree));
     let folder_name = folder.display().to_string();
-    let folder_heading = format!("  ⑂ {folder_name}");
+    let folder_heading = format!("⑂ {}", leaf(&folder));
     let screen = d.wait_text("Autoscaling plan");
     d.capture("worktree-nested");
     let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
     let nested = heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}"));
+    assert!(
+        screen
+            .lines()
+            .nth(nested)
+            .unwrap()
+            .trim_start()
+            .starts_with(&format!("└ {tree_heading}")),
+        "the folder's only worktree closes its tree line:\n{screen}"
+    );
     let order = [
         at,
         row(&screen, "Rank tenants"),
@@ -1277,7 +1297,7 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
         ..
     } = worktree("claude-worktree-tag");
     d.start();
-    let tree_heading = format!("  ⑂ {}", tree.display());
+    let tree_heading = format!("⑂ {}", leaf(&tree));
     d.wait_text("Autoscaling plan");
     while !selected(&d.screen()).contains("Autoscaling plan") {
         let before = selected(&d.screen()).to_owned();
@@ -1308,7 +1328,7 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
     d.capture("worktree-tag");
     let order = [
         heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}")),
-        heading(&screen, "    # ideas").unwrap_or_else(|| panic!("{screen}")),
+        heading(&screen, "# ideas").unwrap_or_else(|| panic!("{screen}")),
         row(&screen, "Autoscaling plan"),
     ];
     assert!(order.is_sorted(), "{order:?}\n{screen}");
@@ -1357,11 +1377,11 @@ fn a_flat_list_heads_only_the_worktree_folder_you_open() {
 
     let main_name = main.display().to_string();
     let folder_name = folder.display().to_string();
-    let folder_heading = format!("  ⑂ {folder_name}");
+    let folder_heading = format!("⑂ {}", leaf(&folder));
     let screen = d.wait_text("Autoscaling plan");
     d.capture("flat");
     assert!(
-        !screen.contains("  ⑂ $ROOT") && !screen.contains("  ⑂ /"),
+        !screen.contains("└ ⑂") && !screen.contains("├ ⑂"),
         "{screen}"
     );
     let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
@@ -1455,7 +1475,7 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
         selected(s).contains("Old tree work")
     });
     d.press("enter", b"\r");
-    let old_heading = format!("  ⑂ {cwd}");
+    let old_heading = format!("⑂ {}", leaf(Path::new(&cwd)));
     let screen = d.wait_for("the resumed row in the live list", |s| {
         s.contains("fixture attached to")
             && (s.contains("⑂ Old tree work") || heading(s, &old_heading).is_some())

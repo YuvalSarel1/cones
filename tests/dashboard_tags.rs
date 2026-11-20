@@ -11,7 +11,9 @@
 //! places, a launch from a group sits in that group alone, and `cones place` writes the same
 //! file. Each flow keeps `state/tags.json`.
 use crate::dashboard::*;
-use crate::dashboard_claude::{Seeded, heading, line_of, real_project, row, seed, selected};
+use crate::dashboard_claude::{
+    Seeded, heading, heading_name, line_of, real_project, row, seed, selected,
+};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 
@@ -29,14 +31,15 @@ fn list(screen: &str) -> impl Iterator<Item = &str> {
 
 /// The heading line `name` names, indented or not.
 fn sub(screen: &str, name: &str) -> Option<usize> {
-    list(screen).position(|l| l.trim() == name)
+    screen.lines().position(|l| heading_name(l) == name)
 }
 
 /// Every heading `name` names, indented or not.
 fn subs(screen: &str, name: &str) -> Vec<usize> {
-    list(screen)
+    screen
+        .lines()
         .enumerate()
-        .filter(|(_, l)| l.trim() == name)
+        .filter(|(_, l)| heading_name(l) == name)
         .map(|(i, _)| i)
         .collect()
 }
@@ -57,13 +60,13 @@ fn under(screen: &str, line: usize) -> String {
         .iter()
         .rev()
         .find(|l| {
-            let t = l.trim();
+            let t = heading_name(l);
             !l.is_empty()
                 && (t.starts_with('#') || t == "pinned" || t.starts_with('/'))
                 && !l.starts_with("▌")
                 && !l.starts_with("┆")
         })
-        .map(|l| l.trim().to_owned())
+        .map(|l| heading_name(l).to_owned())
         .unwrap_or_default()
 }
 

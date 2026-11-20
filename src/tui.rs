@@ -862,7 +862,7 @@ impl Data {
     }
 
     /// Where the session's own folder lists it: the repository's folder, or the worktree
-    /// heading inside it, `⑂ ~/repo-wt`, as the list names it.
+    /// heading inside it, `⑂ ~/repo-wt`, as the list keys it. The heading shows `⑂ repo-wt`.
     fn folder_label(&self, s: &Session) -> String {
         match self.worktree_heading(s) {
             Some(dir) => format!("⑂ {}", fleet::tilde(&dir)),
@@ -1182,6 +1182,34 @@ impl Data {
         let charted: Vec<Session> = self.sessions.iter().chain(&runs).cloned().collect();
         let sparks = fleet::sparklines(&charted, &self.spark, chrono::Utc::now());
         let title = if has_state { 3 } else { 2 };
+        // A folder's last worktree closes the tree line its headings and rows hang from.
+        let last_tree: HashMap<(&str, &str), &str> = flat
+            .iter()
+            .filter_map(|(key, _)| tree_of(&key.2).map(|t| ((key.0.as_str(), key.1.as_str()), t)))
+            .collect();
+        let branch = |key: &(String, String, String), tree: &str| {
+            if last_tree.get(&(key.0.as_str(), key.1.as_str())) == Some(&tree) {
+                "  "
+            } else {
+                "│ "
+            }
+        };
+        let lead = |key: &(String, String, String)| match nested(&key.2) {
+            _ if key.2.is_empty() => String::new(),
+            _ if key.2.starts_with("# ") => "  ".to_owned(),
+            Some((tree, _)) => format!("{}  ", branch(key, tree)),
+            None => branch(key, &key.2).to_owned(),
+        };
+        // The states of the sessions under a heading, which it counts.
+        let states = |under: &dyn Fn(&(String, String, String)) -> bool| -> Vec<&str> {
+            flat.iter()
+                .filter(|(key, _)| under(key))
+                .filter_map(|(_, e)| match e {
+                    Entry::Session(s) => Some(s.state.as_str()),
+                    _ => None,
+                })
+                .collect()
+        };
         let cells = flat
             .iter()
             .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
@@ -1245,7 +1273,7 @@ impl Data {
                         text.push_str(&format!("{ELSEWHERE}{last}"));
                     }
                     indent(
-                        &key.2,
+                        &lead(key),
                         title,
                         unread(self.unread.contains(&s.session_id), title, row),
                     )
@@ -1286,6 +1314,21 @@ impl Data {
         names.push(if jobs_view { "job" } else { "title" });
         names.extend(cols.iter().map(|c| column_label(c)));
         let (names, cells) = columns(&names, cells, widths);
+        // Sub-headings start where titles do, and counts end where the title column does.
+        let width = |cells: &[(String, Style)]| -> usize {
+            cells
+                .iter()
+                .map(|(t, _)| Span::raw(t.as_str()).width())
+                .sum()
+        };
+        let pad = " ".repeat(width(&names.cells[..title.min(names.cells.len())]));
+        let end = width(&names.cells[..(title + 1).min(names.cells.len())])
+            - if title + 1 < names.cells.len() { 2 } else { 0 };
+        let count = |out: &mut Vec<Row>, under: &dyn Fn(&(String, String, String)) -> bool| {
+            if let Some(row) = out.last_mut().filter(|_| !by_state) {
+                counted(row, end, &states(under));
+            }
+        };
         if table {
             out.push(Row {
                 kind: Kind::Blank,
@@ -1305,37 +1348,40 @@ impl Data {
                 } else {
                     header(&mut out, &key.1);
                 }
+                count(&mut out, &|k| (&k.0, &k.1) == (&key.0, &key.1));
             }
             if current != Some(key) && !key.2.is_empty() {
-                match nested(&key.2) {
-                    Some((tree, tag)) => {
-                        // The worktree's heading, unless its group came just before.
-                        let same = current.is_some_and(|c| {
-                            (&c.0, &c.1) == (&key.0, &key.1)
-                                && (c.2 == tree || nested(&c.2).is_some_and(|(w, _)| w == tree))
-                        });
-                        if !same {
-                            out.push(Row {
-                                kind: Kind::Header,
-                                cells: vec![(format!("  {}", sub_heading(tree)), bold())],
-                            });
-                        }
-                        out.push(Row {
-                            kind: Kind::Header,
-                            cells: vec![(format!("    # {tag}"), tag_style())],
-                        });
-                    }
-                    None => out.push(Row {
+                let folder = |k: &(String, String, String)| (&k.0, &k.1) == (&key.0, &key.1);
+                let tree = tree_of(&key.2);
+                // The worktree's heading, unless its group came just before.
+                let same = current.is_some_and(|c| folder(c) && tree_of(&c.2) == tree);
+                if let Some(tree) = tree.filter(|_| !same) {
+                    let fork = if branch(key, tree) == "  " {
+                        "└"
+                    } else {
+                        "├"
+                    };
+                    // The folder heading above names the repository, so the worktree is named
+                    // by its last part; `place_at` reads the whole path off the rows beneath.
+                    let name = Path::new(tree)
+                        .file_name()
+                        .map_or_else(|| tree.to_owned(), |n| n.to_string_lossy().into_owned());
+                    out.push(Row {
                         kind: Kind::Header,
-                        cells: vec![(
-                            format!("  {}", sub_heading(&key.2)),
-                            if key.2.starts_with("# ") {
-                                tag_style()
-                            } else {
-                                bold()
-                            },
-                        )],
-                    }),
+                        cells: vec![(format!("{pad}{fork} {}", sub_heading(&name)), bold())],
+                    });
+                    count(&mut out, &|k| folder(k) && tree_of(&k.2) == Some(tree));
+                }
+                let tag = match nested(&key.2) {
+                    Some((tree, tag)) => Some(format!("{}# {tag}", branch(key, tree))),
+                    None => key.2.starts_with("# ").then(|| key.2.clone()),
+                };
+                if let Some(tag) = tag {
+                    out.push(Row {
+                        kind: Kind::Header,
+                        cells: vec![(format!("{pad}{tag}"), tag_style())],
+                    });
+                    count(&mut out, &|k| k == key);
                 }
             }
             current = Some(key);
@@ -2555,17 +2601,57 @@ fn job_cell(
     }
 }
 
-/// Indent cell `title` of a row listed under a worktree heading.
-fn indent(sub: &str, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
-    let levels = match sub {
-        "" => 0,
-        _ if nested(sub).is_some() => 2,
-        _ => 1,
-    };
+/// Lead cell `title` of a row listed under a sub-heading with `lead`: its indentation and the
+/// tree line of a worktree heading above it.
+fn indent(lead: &str, title: usize, mut row: Vec<(String, Style)>) -> Vec<(String, Style)> {
     if let Some((text, _)) = row.get_mut(title) {
-        *text = format!("{}{text}", "  ".repeat(levels));
+        text.insert_str(0, lead);
     }
     row
+}
+
+/// The worktree a sub-heading names, alone or with a tag inside it.
+fn tree_of(sub: &str) -> Option<&str> {
+    match nested(sub) {
+        _ if sub.is_empty() || sub.starts_with("# ") => None,
+        Some((tree, _)) => Some(tree),
+        None => Some(sub),
+    }
+}
+
+/// The indentation and tree lines a heading starts with, drawn plain.
+const TREE: [char; 4] = [' ', '│', '├', '└'];
+
+/// A heading's indentation, where its label starts, and its label without the tree lines.
+fn heading_label(text: &str) -> (usize, &str) {
+    let at = text.chars().take_while(|c| matches!(c, ' ' | '│')).count();
+    (at, text.trim_start_matches(TREE))
+}
+
+/// Count a heading's sessions by state after its name, in the summary's order, so the counts
+/// end at column `end` when the name leaves room. Idle sessions go uncounted: their mark is
+/// the working one's, dimmed, and a heading of idle rows needs nothing.
+fn counted(row: &mut Row, end: usize, states: &[&str]) {
+    let mut counts = vec![];
+    for state in ["active", "shell", "blocked", "done"] {
+        let n = states.iter().filter(|s| **s == state).count();
+        if n > 0 {
+            counts.push(("  ".to_owned(), plain()));
+            counts.push((format!("{} {n}", icon(state)), color(state)));
+        }
+    }
+    if counts.is_empty() {
+        return;
+    }
+    let width = |cells: &[(String, Style)]| -> usize {
+        cells
+            .iter()
+            .map(|(t, _)| Span::raw(t.as_str()).width())
+            .sum()
+    };
+    let gap = end.saturating_sub(width(&row.cells) + width(&counts));
+    row.cells.push((" ".repeat(gap), plain()));
+    row.cells.extend(counts);
 }
 
 /// A tag inside a worktree's heading, `~/repo-wt # NAME`, as the worktree and the tag.
@@ -13048,24 +13134,39 @@ impl App {
             } => cells.first().map(|(text, _)| text.as_str()),
             _ => None,
         };
-        // The nearest heading decides: a tag inside a worktree, then that worktree's heading.
-        let (mut sub, mut tag) = (None, None);
+        // The nearest heading decides: a tag inside a worktree, then that worktree's heading,
+        // which is the nearest one above it that starts further left.
+        let mut subs: Vec<(usize, &str, usize)> = vec![];
         let mut at = i.min(self.rows.len().checked_sub(1)?);
         let top = loop {
-            if let Some(text) = heading(at) {
-                if let Some(inner) = text.strip_prefix("    ") {
-                    if sub.is_none() && tag.is_none() {
-                        tag = Some(inner.to_owned());
-                    }
-                } else if let Some(inner) = text.strip_prefix("  ") {
-                    if sub.is_none() {
-                        sub = Some(inner.to_owned());
-                    }
-                } else {
-                    break text.to_owned();
+            if let Some((indent, label)) = heading(at).map(heading_label) {
+                if indent == 0 {
+                    break label.to_owned();
                 }
+                subs.push((indent, label, at));
             }
             at = at.checked_sub(1)?;
+        };
+        // A worktree heading shows its last part; the sessions beneath it know the whole path.
+        let tree = |label: &str, at: usize| {
+            self.rows[at..]
+                .iter()
+                .find_map(|r| match &r.kind {
+                    Kind::Session(id, _) => self.data.sessions.iter().find(|s| &s.session_id == id),
+                    _ => None,
+                })
+                .filter(|_| label.starts_with("⑂ "))
+                .map_or_else(|| label.to_owned(), |s| self.data.folder_label(s))
+        };
+        let (sub, tag) = match subs.first() {
+            Some(&(indent, tag, _)) if tag.starts_with("# ") => {
+                match subs.iter().find(|(above, ..)| *above < indent) {
+                    Some(&(_, label, at)) => (Some(tree(label, at)), Some(tag.to_owned())),
+                    None => (Some(tag.to_owned()), None),
+                }
+            }
+            Some(&(_, label, at)) => (Some(tree(label, at)), None),
+            None => (None, None),
         };
         if let (Some(tree), Some(tag)) = (&sub, &tag) {
             return Some(Spot {
@@ -19068,13 +19169,22 @@ impl App {
                 let mut drawn = Vec::with_capacity(cells.len() + 1);
                 let mut keep = named_cell(rows, i);
                 for (c, (text, style)) in cells.iter().enumerate() {
+                    // A heading's tree lines are drawn plain, apart from its name's colour.
+                    let text = match text.trim_start_matches(TREE) {
+                        label if c == 0 && row.kind == Kind::Header && label != text => {
+                            drawn.push(Span::raw(text[..text.len() - label.len()].to_owned()));
+                            keep = keep.saturating_add(1);
+                            label
+                        }
+                        _ => text.as_str(),
+                    };
                     let text = match text.strip_prefix(UNREAD) {
                         Some(rest) if c == title && !armed => {
                             drawn.push(Span::styled(UNREAD, style.fg(Color::Green)));
                             keep = keep.saturating_add(1);
                             rest
                         }
-                        _ => text.as_str(),
+                        _ => text,
                     };
                     // A launch's badge and the folder it works in are parts of its title.
                     let text = match text.find(&format!("↳ {LAUNCHED} ")) {
@@ -23327,8 +23437,12 @@ states:
         let at = |kind: &dyn Fn(&Kind) -> bool| app.rows.iter().position(|r| kind(&r.kind));
         let folder = texts
             .iter()
-            .position(|t| t.trim() == fleet::tilde(&work))
+            .position(|t| t.starts_with(&format!("{}  ", fleet::tilde(&work))))
             .unwrap_or_else(|| panic!("{texts:#?}"));
+        assert!(
+            texts[folder].ends_with("  ▁ 1"),
+            "the heading counts the working session and leaves the run to its own row: {texts:#?}"
+        );
         let by_hand = at(&|k| matches!(k, Kind::Session(id, _) if id == B)).unwrap();
         let run = at(&|k| matches!(k, Kind::Run(id, _) if id == C)).unwrap();
         let add = at(&|k| *k == Kind::NewFolder).unwrap();
@@ -25100,7 +25214,7 @@ states:
             app.rows
                 .iter()
                 .filter(|r| r.kind == Kind::Header)
-                .map(Row::text)
+                .map(|r| r.cells[0].0.trim_start().to_owned())
                 .collect::<Vec<_>>()
         };
         let repo_label = fleet::tilde(&repo.canonicalize().unwrap());
@@ -25108,7 +25222,7 @@ states:
             headers(&app),
             [
                 repo_label.clone(),
-                format!("  ⑂ {}", fleet::tilde(&nested)),
+                format!("└ ⑂ {}", nested.file_name().unwrap().to_string_lossy()),
                 fleet::tilde(&under_repo)
             ],
             "nested and external worktrees share the repository heading, where an opened one \
@@ -25156,8 +25270,36 @@ states:
         app.rebuild();
         assert_eq!(
             headers(&app),
-            [repo_label, format!("  ⑂ {}", fleet::tilde(&nested))]
+            [
+                repo_label,
+                format!("└ ⑂ {}", nested.file_name().unwrap().to_string_lossy())
+            ]
         );
+        // A second worktree heading carries the tree line on past the first, and each
+        // heading, named by its last part, still gives places its whole worktree.
+        app.data.open.push(worktree.canonicalize().unwrap());
+        app.rebuild();
+        assert_eq!(
+            headers(&app)[1..],
+            ["├ ⑂ worktree", "└ ⑂ agent"],
+            "{:#?}",
+            app.rows.iter().map(Row::text).collect::<Vec<_>>()
+        );
+        let canonical = worktree.canonicalize().unwrap();
+        for (id, tree, lead) in [(C, &canonical, "│ "), (B, &nested, "  ")] {
+            app.select_new(id);
+            assert!(
+                app.selected().unwrap().cells[3].0.starts_with(lead),
+                "{}",
+                app.selected().unwrap().text()
+            );
+            assert_eq!(
+                app.selected_spot().unwrap().group,
+                format!("{} ⑂ {}", headers(&app)[0], fleet::tilde(tree))
+            );
+        }
+        app.data.open.pop();
+        app.rebuild();
         app.by_state = true;
         app.rebuild();
         assert_eq!(headers(&app), ["idle"]);
