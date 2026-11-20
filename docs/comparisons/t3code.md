@@ -27,7 +27,7 @@ control of an arbitrary external terminal. [T3 import][t3-import],
 
 cones leaves isolation and review to your tools; conversation forks share files.
 Its hosted terminals survive dashboard closure, but reporting has gaps, including
-Codex approval waits remaining working. T3 offers remote interaction while its
+standalone Codex clients, whose approval waits read as working. T3 offers remote interaction while its
 host is available; mobile push requires T3 Connect and activity publishing.
 cones has no corresponding web/mobile client.
 [cones dashboard][cones-dashboard], [reporting][cones-harness],

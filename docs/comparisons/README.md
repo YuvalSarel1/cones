@@ -3,13 +3,29 @@
 Short comparisons of where each tool fits, what it asks you to adopt, and what
 cones leaves to other tools.
 
-**Workspaces:** [Agent Deck](agent-deck.md), [cmux](cmux.md),
-[Conductor](conductor.md), [herdr](herdr.md), [Superset](superset.md),
-[T3 Code](t3code.md), [Vibe Kanban](vibe-kanban.md).
+## Where each one fits
 
-**Harnesses:** [Hermes Agent](hermes.md), [OpenCode](opencode.md), [pi](pi.md).
-These supply the agent itself. Their comparisons explain whether adding cones
-is useful and supported.
+Workspaces:
+
+- [agent-manager](agent-manager.md): a tmux list that starts, answers and reviews its own agents.
+- [Agent Deck](agent-deck.md): tmux terminals with worktrees, sandboxes and SSH.
+- [cmux](cmux.md): a Mac app of terminals, browser and diff review.
+- [Conductor](conductor.md): a workspace, diff and pull request per task.
+- [herdr](herdr.md): persistent terminal layouts, across SSH machines.
+- [Superset](superset.md): agent terminals beside diffs, editor and previews.
+- [T3 Code](t3code.md): one conversation interface, reachable from a phone.
+- [Vibe Kanban](vibe-kanban.md): isolated workspaces with inline review.
+- cones: every supported session on the Mac, wherever it started, with history.
+
+Harnesses supply the agent itself; their comparisons explain whether adding
+cones is useful and supported:
+
+- [Hermes Agent](hermes.md): a continuing assistant with memory and messaging.
+- [OpenCode](opencode.md): one harness across model providers.
+- [pi](pi.md): a harness you customize with extensions.
+
+Not in cones yet: worktree creation, code review, Linux and remote machines.
+The comparisons above name who has each.
 
 ## Review basis
 

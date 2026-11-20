@@ -24,7 +24,7 @@ separately when isolation matters.
 
 cmux Feed can answer supported Claude permissions and questions through hooks;
 plain Codex hook approvals remain native. cones leaves replies in native viewers
-and lacks a Codex approval-wait signal. Its hosted terminals survive dashboard
+and sees Codex approval waits only on daemon threads. Its hosted terminals survive dashboard
 closure, with one attachment per host. cmux normally restores layouts and resumes
 captured conversations; its inspected opt-in local tmux mode preserves processes
 across app exit, but release availability was not established.

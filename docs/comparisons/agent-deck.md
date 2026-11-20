@@ -30,8 +30,8 @@ external terminal still does not guarantee attachment. [History][cones-history],
 Agent Deck offers MCP configuration; both retain hosted terminals after detaching.
 Agent Deck's Claude default skips permission prompts, configurably; cones
 preserves interactive harness permissions, while supervised Claude jobs also
-skip prompts. cones permits one dashboard attachment per owned host, and Codex
-approval waits remain reported as working.
+skip prompts. cones permits one dashboard attachment per owned host, and a standalone Codex
+client's approval wait reads as working; daemon threads report it as input.
 [permissions][deck-permissions], [jobs][cones-jobs], [limits][cones-harness]
 
 Reviewed 2026-09-23. Agent Deck: [3b41e36][deck-base]; latest release

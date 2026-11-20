@@ -24,8 +24,8 @@ operations. Both leave code review and merging to your chosen tools.
 
 Reporting has different gaps. herdr combines process recognition, screen rules
 and lifecycle integrations; unfamiliar prompts can fall back to idle. cones reads
-native reports, but Codex approval waits remain working and external OpenCode
-clients lack live state. Both preserve hosted processes after client closure.
+native reports, but a standalone Codex client's approval wait reads as working
+and external OpenCode clients lack live state. Both preserve hosted processes after client closure.
 herdr supports multiple clients; cones allows one dashboard attachment per owned
 terminal. After server restart, herdr can restore layouts and resume eligible
 conversations; cones offers native history after its hosted processes end.
