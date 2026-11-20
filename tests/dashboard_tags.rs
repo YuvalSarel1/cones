@@ -24,9 +24,17 @@ const CTRL_L: &[u8] = b"\x0c";
 const CTRL_T: &[u8] = b"\x14";
 const CTRL_X: &[u8] = b"\x18";
 
-/// The list side of every screen line.
+/// The list side of every screen line: up to the pane's border, which the rule above the
+/// composer meets. A tree line inside the list is drawn with the same `│`.
 fn list(screen: &str) -> impl Iterator<Item = &str> {
-    screen.lines().map(|l| l.split('│').next().unwrap())
+    let border = screen
+        .lines()
+        .find(|l| l.starts_with('─') && l.contains('│'))
+        .and_then(|l| l.chars().position(|c| c == '│'));
+    screen.lines().map(move |l| match border {
+        Some(at) => l.char_indices().nth(at).map_or(l, |(i, _)| &l[..i]),
+        None => l,
+    })
 }
 
 /// The heading line `name` names, indented or not.

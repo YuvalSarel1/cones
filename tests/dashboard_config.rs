@@ -130,10 +130,10 @@ fn config_saves_choice_and_text_settings_into_jobs_yaml() {
     // The worktree layout saves on its own, as the colour does.
     d.press("down", DOWN);
     d.press("right", RIGHT);
-    d.wait_file("jobs.yaml", |t| t.contains("\nworktrees: flat\n"));
-    let screen = d.capture("worktrees-flat");
+    d.wait_file("jobs.yaml", |t| t.contains("\nworktrees: folder\n"));
+    let screen = d.capture("worktrees-folder");
     assert!(
-        line(&screen, "worktree sessions").ends_with("‹ flat › *"),
+        line(&screen, "worktree sessions").ends_with("‹ folder › *"),
         "{screen}"
     );
 
@@ -300,7 +300,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         "{screen}"
     );
     assert!(
-        line(&screen, "config fixture").contains("idle   config fixture"),
+        line(&screen, "config fixture").contains("idle   └─ config fixture"),
         "{screen}"
     );
     d.capture("default-table");
@@ -346,7 +346,11 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
     let screen = d.capture("state-hidden");
     assert!(line(&screen, "› [ ]").contains("state"), "{screen}");
     assert!(
-        line(&screen, "context  activity").contains("title           context"),
+        line(&screen, "context  activity")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| w == ["title", "context"]),
         "{screen}"
     );
     assert!(
@@ -391,7 +395,7 @@ fn column_picker_changes_the_live_session_table_and_jobs_yaml() {
         "{screen}"
     );
     assert!(
-        line(&screen, "config fixture").contains("idle   config fixture"),
+        line(&screen, "config fixture").contains("idle   └─ config fixture"),
         "{screen}"
     );
     assert!(

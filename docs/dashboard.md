@@ -146,14 +146,20 @@ key source and how to change it. There is no runtime binding editor or override 
 ## Sessions and runs
 
 Sessions group by directory or state, with input requests first in state grouping. Linked
-Git worktrees share their repository heading. A worktree with two or more sessions gets a
-`⑂` heading of its own inside it, named by the worktree's last part and lined up with the
-titles. Tree lines join a folder's worktree headings and the rows under them, `├ ⑂ NAME` and
-`└ ⑂ NAME` for the last. A lone worktree session stays among the repository's own, marked `⑂`.
-Every heading counts its sessions that are working, at a shell, waiting for input, failed or done, in
-the header's marks and colours, after its name; idle sessions go uncounted. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
-way. A folder opened inside a worktree heads the sessions that run in it, under either
-setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
+Headings go two levels deep at most: a folder or a tag at the top, and tags inside a folder.
+Tree lines run from each heading to what it holds, after the state and harness marks so those
+stay in one column: a folder's own rows, then its tags, `├─` for each and `└─` for the last,
+with a tag's rows one level further in. A linked Git worktree's sessions sit in their
+repository's folder, each naming its worktree dim after its title, `fix pager · in ⑂ NAME`,
+however many share it. [`worktrees: folder`](jobs.md#list-settings) lists every worktree as a
+folder of its own instead. Every heading counts its sessions that are working, at a shell,
+waiting for input, failed or done, in the header's marks and colours, after its name; idle
+sessions go uncounted.
+
+With nothing typed, `←` on a session folds the heading it sits under, its tag or else its
+folder, and `←` on a folded tag folds its folder too. A folded heading keeps its counts, says
+how many sessions it hides, `· 3 folded`, and takes the cursor; `→` or Enter unfolds it. Folds
+are kept in `state/folded.json` across restarts. State grouping does not fold. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
 [`sort`](jobs.md#list-settings) can order them by last activity or by hand instead. Forks
 follow visible parents. A job's run sits among the sessions in its folder, titled `◆ JOB` and
 drawn as its agent's session row, cpu and activity chart included, while its agent is listed, while it is supervised and until its
@@ -252,9 +258,9 @@ session carries, `pinned`, and `+ new tag…`, where a name typed on the row and
 and keep the checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape
 discards it. The folder alone lists the session in its folder, tags alone list it in groups
 above the folders, and the folder with tags nests those tags inside the folder. Unchecking
-everything returns the session to its folder. `ctrl+t` toggles `pinned` directly. For a session
-under a worktree heading, the folder line names that heading, `⑂ PATH`, and its tags nest
-under the worktree's heading.
+everything returns the session to its folder. `ctrl+t` toggles `pinned` directly. A worktree
+session's folder line names the folder that lists it: its repository, or under `worktrees:
+folder` the worktree.
 
 Tag headings are drawn in cyan, so a group of tagged sessions does not read as a folder.
 

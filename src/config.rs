@@ -411,13 +411,14 @@ pub struct JobsFile {
     pub launched_under_parent: Option<bool>,
 }
 
-/// `nested` heads each linked worktree inside its repository's folder; `flat` lists its
-/// sessions among the repository's own.
+/// `repo` lists a linked worktree's sessions in its repository's folder; `folder` lists a
+/// worktree as a folder of its own. `nested` and `flat`, the earlier names, read as `repo`.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Worktrees {
-    Nested,
-    Flat,
+    #[serde(alias = "nested", alias = "flat")]
+    Repo,
+    Folder,
 }
 
 /// `started` lists each group's sessions oldest first; `last_active` puts the one the harness
@@ -989,9 +990,10 @@ pub fn file_highlight(path: &Path) -> Option<String> {
         .filter(|name| check_highlight(name).is_ok())
 }
 
-/// Whether the session list nests linked worktrees, the built-in when the file does not say.
-pub fn nest_worktrees(path: &Path) -> bool {
-    file_worktrees(path) != Some(Worktrees::Flat)
+/// Whether the session list heads each linked worktree as a folder of its own; the built-in
+/// lists its sessions in the repository's folder.
+pub fn worktree_folders(path: &Path) -> bool {
+    file_worktrees(path) == Some(Worktrees::Folder)
 }
 
 /// The session order inside groups, read without applying defaults.

@@ -59,10 +59,10 @@ states:
         description: "Complete a path being typed, otherwise focus the pane or leave the jobs screen."
       - keys: ["left"]
         action: left
-        description: "With an empty composer, leave jobs."
+        description: "With an empty composer, fold the selected row's heading, or leave jobs."
       - keys: ["right"]
         action: right
-        description: "With an empty composer, focus the pane or enter a session."
+        description: "With an empty composer, unfold a folded heading, focus the pane or enter a session."
       - keys: ["shift+tab"]
         action: cycle
         description: "Choose the next enabled harness or terminal."

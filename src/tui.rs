@@ -228,6 +228,8 @@ fn spinner_frame(tick: usize) -> usize {
 #[derive(Clone, PartialEq, Eq)]
 pub enum Kind {
     Header,
+    /// A folded heading, by the group it hides: the cursor can reach it to unfold it.
+    Folded(String),
     /// Column names under a section title, dim and unselectable.
     Columns,
     Blank,
@@ -257,6 +259,7 @@ impl Kind {
     fn diagnostic_name(&self) -> &'static str {
         match self {
             Self::Header => "header",
+            Self::Folded(_) => "folded",
             Self::Columns => "columns",
             Self::Blank => "blank",
             Self::Job(_) => "job",
@@ -287,7 +290,7 @@ impl Kind {
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
             Kind::History(key) => Some(key),
             Kind::Menu => Some("menu"),
-            Kind::Folder(dir) => Some(dir),
+            Kind::Folder(dir) | Kind::Folded(dir) => Some(dir),
             Kind::NewFolder => Some("new folder"),
             Kind::Suggestion(key, _) => Some(key),
             Kind::NewJob => Some("new job"),
@@ -396,8 +399,10 @@ pub struct Data {
     pub roots: BTreeMap<PathBuf, PathBuf>,
     /// Each worktree folder's checkout: the top of the linked worktree it lies in.
     trees: BTreeMap<PathBuf, PathBuf>,
-    /// Head each linked worktree inside its repository's folder, as `worktrees: nested` says.
-    pub nest: bool,
+    /// Head each linked worktree as a folder of its own, as `worktrees: folder` says.
+    pub tree_folders: bool,
+    /// Group ids folded with ←, as `state/folded.json` keeps them.
+    pub folded: BTreeSet<String>,
     /// The order of sessions inside each group, as `sort` says.
     pub sort: config::Sort,
     /// Sessions and runs whose completion nobody has reviewed; the dashboard fills it.
@@ -604,7 +609,8 @@ impl Data {
             worktrees,
             roots,
             trees,
-            nest: config::nest_worktrees(jobs_path),
+            tree_folders: config::worktree_folders(jobs_path),
+            folded: BTreeSet::new(),
             sort: config::file_sort(jobs_path).unwrap_or_default(),
             unread: HashSet::new(),
             selected: None,
@@ -652,7 +658,13 @@ impl Data {
     /// The folder heading a session sits under when it has no tag: its repository's for a
     /// linked worktree. A tag never changes it.
     fn home_folder(&self, s: &Session) -> (String, String) {
-        self.folder_name(self.roots.get(&s.cwd).unwrap_or(&s.cwd))
+        self.folder_name(self.repo_of(&s.cwd).unwrap_or(&s.cwd))
+    }
+
+    /// The repository whose folder lists a worktree folder's sessions, unless worktrees are
+    /// folders of their own.
+    fn repo_of(&self, cwd: &Path) -> Option<&PathBuf> {
+        self.roots.get(cwd).filter(|_| !self.tree_folders)
     }
 
     /// An agent a run holds is still an agent: its row is the run's, but the fleet it belongs
@@ -847,36 +859,10 @@ impl Data {
         Line::from(spans)
     }
 
-    /// The opened folders, resolved, as `sub_of` compares them.
-    fn opened(&self) -> HashSet<PathBuf> {
-        self.open.iter().map(|f| real(f)).collect()
-    }
-
-    /// The heading a linked worktree's session sits under inside its repository's folder:
-    /// the folder itself when it was opened, else the worktree's checkout when worktrees
-    /// nest or that checkout was opened. `None` lists it among the repository's own.
-    fn sub_of(&self, opened: &HashSet<PathBuf>, cwd: &Path) -> Option<(PathBuf, bool)> {
-        if opened.contains(&real(cwd)) {
-            return Some((cwd.to_owned(), true));
-        }
-        let top = self.trees.get(cwd)?;
-        let open = opened.contains(&real(top));
-        (self.nest || open).then(|| (top.clone(), open))
-    }
-
-    /// Where the session's own folder lists it: the repository's folder, or the worktree
-    /// heading inside it, `⑂ ~/repo-wt`, as the list keys it. The heading shows `⑂ repo-wt`.
+    /// Where the session's own folder lists it: the repository's folder for a worktree's
+    /// session, unless worktrees are folders of their own.
     fn folder_label(&self, s: &Session) -> String {
-        match self.worktree_heading(s) {
-            Some(dir) => format!("⑂ {}", fleet::tilde(&dir)),
-            None => self.home_folder(s).1,
-        }
-    }
-
-    /// The worktree heading the session's folder lists it under, if any.
-    fn worktree_heading(&self, s: &Session) -> Option<PathBuf> {
-        self.roots.get(&s.cwd)?;
-        self.sub_of(&self.opened(), &s.cwd).map(|(dir, _)| dir)
+        self.home_folder(s).1
     }
 
     pub fn rows(&self, by_state: bool) -> Vec<Row> {
@@ -914,8 +900,6 @@ impl Data {
         let folder = |dir: &Path| self.folder_name(dir);
         let ranked =
             |rank: u8, name: &str| (format!("{rank}{name}"), name.to_owned(), String::new());
-        let opened = self.opened();
-        let sub = |cwd: &Path| self.sub_of(&opened, cwd);
         // A run still worth a look sits among the sessions, in its folder: one whose agent is
         // listed, one still supervised, one nobody has read since it finished. Every run is in
         // the jobs view.
@@ -979,15 +963,9 @@ impl Data {
                 }
                 continue;
             }
-            let (folder_key, folder_open) = if let Some(root) = self.roots.get(&s.cwd) {
-                let (sort, name) = folder(root);
-                match sub(&s.cwd) {
-                    Some((dir, open)) => ((sort, name, fleet::tilde(&dir)), open),
-                    None => ((sort, name, String::new()), true),
-                }
-            } else {
-                let (sort, name) = folder(&s.cwd);
-                ((sort, name, String::new()), true)
+            let folder_key = {
+                let (sort, name) = self.home_folder(s);
+                (sort, name, String::new())
             };
             if set.len() != 1 || !set.contains(&Place::Folder) {
                 chosen.insert(s.session_id.as_str());
@@ -1002,7 +980,7 @@ impl Data {
             // folder is a heading there, and `pinned` heads the list.
             for place in &set {
                 placed.push(match place {
-                    Place::Folder => (s, folder_key.clone(), folder_open),
+                    Place::Folder => (s, folder_key.clone(), true),
                     Place::Tag(t) if t == crate::places::PINNED => (s, pinned_key(), true),
                     Place::Tag(t) => (
                         s,
@@ -1013,14 +991,9 @@ impl Data {
                         ),
                         true,
                     ),
-                    // A worktree's session keeps its folder tags under the worktree's heading.
                     Place::FolderTag(t) => {
                         let (sort, name) = self.home_folder(s);
-                        let at = match self.roots.get(&s.cwd).and_then(|_| sub(&s.cwd)) {
-                            Some((dir, _)) => format!("{} # {t}", fleet::tilde(&dir)),
-                            None => format!("# {t}"),
-                        };
-                        (s, (sort, name, at), true)
+                        (s, (sort, name, format!("# {t}")), true)
                     }
                 });
             }
@@ -1070,17 +1043,6 @@ impl Data {
         for (s, _, _) in &placed {
             *copies.entry(s.session_id.as_str()).or_default() += 1;
         }
-        // A worktree heading over one session nobody opened is noise, which agent worktrees
-        // made one per session would be: that session stays among its repository's own.
-        let mut sizes: HashMap<&(String, String, String), usize> = HashMap::new();
-        for (_, key, _) in &placed {
-            *sizes.entry(key).or_default() += 1;
-        }
-        let lone: HashSet<(String, String, String)> = placed
-            .iter()
-            .filter(|(_, key, open)| !open && sizes[key] == 1)
-            .map(|(_, key, _)| key.clone())
-            .collect();
         let mut groups: BTreeMap<(String, String, String), Vec<Entry>> = BTreeMap::new();
         for j in self.jobs.iter().filter(|_| jobs_view) {
             groups
@@ -1088,10 +1050,7 @@ impl Data {
                 .or_default()
                 .push(Entry::Job(j));
         }
-        for (s, mut key, _) in placed {
-            if lone.contains(&key) {
-                key.2.clear();
-            }
+        for (s, key, _) in placed {
             groups
                 .entry(key)
                 .or_default()
@@ -1105,11 +1064,8 @@ impl Data {
             let key = if by_state {
                 let (sort, name) = folder(dir);
                 (format!("6{sort}"), name, String::new())
-            } else if let Some(root) = worktree_root(dir) {
-                let (sort, name) = folder(&root);
-                (sort, name, fleet::tilde(dir))
             } else {
-                let (sort, name) = folder(dir);
+                let (sort, name) = folder(self.repo_of(dir).unwrap_or(dir));
                 (sort, name, String::new())
             };
             let group = groups.entry(key).or_default();
@@ -1185,23 +1141,45 @@ impl Data {
         let charted: Vec<Session> = self.sessions.iter().chain(&runs).cloned().collect();
         let sparks = fleet::sparklines(&charted, &self.spark, chrono::Utc::now());
         let title = if has_state { 3 } else { 2 };
-        // A folder's last worktree closes the tree line its headings and rows hang from.
-        let last_tree: HashMap<(&str, &str), &str> = flat
-            .iter()
-            .filter_map(|(key, _)| tree_of(&key.2).map(|t| ((key.0.as_str(), key.1.as_str()), t)))
-            .collect();
-        let branch = |key: &(String, String, String), tree: &str| {
-            if last_tree.get(&(key.0.as_str(), key.1.as_str())) == Some(&tree) {
-                "  "
-            } else {
-                "│ "
-            }
+        // A folded heading hides what it holds; a folded folder hides its tags as well.
+        let folds = !jobs_view && !by_state;
+        let folder_folded =
+            |key: &(String, String, String)| folds && self.folded.contains(&group_id(&key.1, ""));
+        let hidden = |key: &(String, String, String)| {
+            folder_folded(key)
+                || (folds && !key.2.is_empty() && self.folded.contains(&group_id(&key.1, &key.2)))
         };
-        let lead = |key: &(String, String, String)| match nested(&key.2) {
-            _ if key.2.is_empty() => String::new(),
-            _ if key.2.starts_with("# ") => "  ".to_owned(),
-            Some((tree, _)) => format!("{}  ", branch(key, tree)),
-            None => branch(key, &key.2).to_owned(),
+        // Tree lines run from each heading to what it holds: a folder's own rows, then its
+        // tags, whose rows hang one level further in.
+        let mut last_tag: HashMap<(&str, &str), &str> = HashMap::new();
+        let mut last_row: HashMap<&(String, String, String), usize> = HashMap::new();
+        for (i, (key, e)) in flat.iter().enumerate() {
+            if !key.2.is_empty() && !folder_folded(key) {
+                last_tag.insert((key.0.as_str(), key.1.as_str()), key.2.as_str());
+            }
+            if !hidden(key) && !matches!(e, Entry::Folder(_)) {
+                last_row.insert(*key, i);
+            }
+        }
+        let branch = |end: bool| if end { "└─ " } else { "├─ " };
+        let tag_last = |key: &(String, String, String)| {
+            last_tag.get(&(key.0.as_str(), key.1.as_str())) == Some(&key.2.as_str())
+        };
+        let lead = |i: usize, key: &(String, String, String)| -> String {
+            if jobs_view {
+                return String::new();
+            }
+            let end = last_row.get(key) == Some(&i);
+            if key.2.is_empty() {
+                let tags = last_tag.contains_key(&(key.0.as_str(), key.1.as_str()));
+                branch(end && !tags).to_owned()
+            } else {
+                format!(
+                    "{}{}",
+                    if tag_last(key) { "   " } else { "│  " },
+                    branch(end)
+                )
+            }
         };
         // The states of the sessions under a heading, which it counts.
         let states = |under: &dyn Fn(&(String, String, String)) -> bool| -> Vec<&str> {
@@ -1215,8 +1193,9 @@ impl Data {
         };
         let cells = flat
             .iter()
-            .filter(|(_, e)| !matches!(e, Entry::Folder(_)))
-            .map(|(key, e)| match e {
+            .enumerate()
+            .filter(|(_, (key, e))| !matches!(e, Entry::Folder(_)) && !hidden(key))
+            .map(|(i, (key, e))| match e {
                 Entry::Folder(_) => vec![],
                 // A run's row is its agent's session: the same cells, chart and branch.
                 Entry::Session(s) | Entry::Run(s) => {
@@ -1238,8 +1217,7 @@ impl Data {
                         by_state,
                         sparks.get(&s.session_id).map(String::as_str),
                         self.branches.get(s.dir()).map(String::as_str),
-                        // A worktree heading already marks the sessions under it.
-                        self.worktrees.contains(s.dir()) && key.2.is_empty(),
+                        self.worktrees.contains(s.dir()),
                         launched.or(fork),
                     );
                     if launched.is_some()
@@ -1275,8 +1253,23 @@ impl Data {
                         let last = home.rsplit('/').next().unwrap_or(&home);
                         text.push_str(&format!("{ELSEWHERE}{last}"));
                     }
+                    // Among the repository's own, a worktree's row names it, dim, by its last
+                    // part, whatever else runs in it.
+                    if !by_state
+                        && self.repo_of(s.dir()).is_some()
+                        && let Some(top) = self.trees.get(s.dir())
+                        && let Some(name) = top.file_name()
+                        && let Some((text, _)) = row.get_mut(title)
+                    {
+                        let name = name.to_string_lossy();
+                        if text.contains(ELSEWHERE) {
+                            text.push_str(&format!(" · ⑂ {name}"));
+                        } else {
+                            text.push_str(&format!("{ELSEWHERE}⑂ {name}"));
+                        }
+                    }
                     indent(
-                        &lead(key),
+                        &lead(i, key),
                         title,
                         unread(self.unread.contains(&s.session_id), title, row),
                     )
@@ -1339,6 +1332,27 @@ impl Data {
             });
             out.push(names);
         }
+        // A folded heading becomes a row the cursor can reach, saying how many sessions it
+        // hides; the counts it already carries stay.
+        let fold =
+            |out: &mut Vec<Row>, id: String, under: &dyn Fn(&(String, String, String)) -> bool| {
+                if !folds || !self.folded.contains(&id) {
+                    return;
+                }
+                let n = flat
+                    .iter()
+                    .filter(|(k, _)| under(k))
+                    .filter_map(|(_, e)| match e {
+                        Entry::Session(s) | Entry::Run(s) => Some(s.session_id.as_str()),
+                        _ => None,
+                    })
+                    .collect::<HashSet<_>>()
+                    .len();
+                if let Some(row) = out.last_mut() {
+                    row.kind = Kind::Folded(id);
+                    row.cells.insert(1, (format!(" · {n} folded"), dim()));
+                }
+            };
         let mut cells = cells.into_iter();
         let mut current: Option<&(String, String, String)> = None;
         for (key, e) in flat.iter().copied() {
@@ -1352,42 +1366,25 @@ impl Data {
                     header(&mut out, &key.1);
                 }
                 count(&mut out, &|k| (&k.0, &k.1) == (&key.0, &key.1));
+                fold(&mut out, group_id(&key.1, ""), &|k| {
+                    (&k.0, &k.1) == (&key.0, &key.1)
+                });
             }
-            if current != Some(key) && !key.2.is_empty() {
-                let folder = |k: &(String, String, String)| (&k.0, &k.1) == (&key.0, &key.1);
-                let tree = tree_of(&key.2);
-                // The worktree's heading, unless its group came just before.
-                let same = current.is_some_and(|c| folder(c) && tree_of(&c.2) == tree);
-                if let Some(tree) = tree.filter(|_| !same) {
-                    let fork = if branch(key, tree) == "  " {
-                        "└"
-                    } else {
-                        "├"
-                    };
-                    // The folder heading above names the repository, so the worktree is named
-                    // by its last part; `place_at` reads the whole path off the rows beneath.
-                    let name = Path::new(tree)
-                        .file_name()
-                        .map_or_else(|| tree.to_owned(), |n| n.to_string_lossy().into_owned());
-                    out.push(Row {
-                        kind: Kind::Header,
-                        cells: vec![(format!("{pad}{fork} {}", sub_heading(&name)), bold())],
-                    });
-                    count(&mut out, &|k| folder(k) && tree_of(&k.2) == Some(tree));
-                }
-                let tag = match nested(&key.2) {
-                    Some((tree, tag)) => Some(format!("{}# {tag}", branch(key, tree))),
-                    None => key.2.starts_with("# ").then(|| key.2.clone()),
-                };
-                if let Some(tag) = tag {
-                    out.push(Row {
-                        kind: Kind::Header,
-                        cells: vec![(format!("{pad}{tag}"), tag_style())],
-                    });
-                    count(&mut out, &|k| k == key);
-                }
+            if current != Some(key) && !key.2.is_empty() && !folder_folded(key) {
+                out.push(Row {
+                    kind: Kind::Header,
+                    cells: vec![(
+                        format!("{pad}{}{}", branch(tag_last(key)), key.2),
+                        tag_style(),
+                    )],
+                });
+                count(&mut out, &|k| k == key);
+                fold(&mut out, group_id(&key.1, &key.2), &|k| k == key);
             }
             current = Some(key);
+            if hidden(key) {
+                continue;
+            }
             let row = match e {
                 Entry::Session(s) => Row {
                     kind: Kind::Session(s.session_id.clone(), s.state.to_string()),
@@ -1405,12 +1402,6 @@ impl Data {
                             .unwrap_or_default(),
                     ),
                     cells: cells.next().unwrap_or_default(),
-                },
-                // A row with no text at all is an invisible line the cursor can still land on.
-                // Under a worktree heading it is named as `+ add folder` names it.
-                Entry::Folder(dir) if !key.2.is_empty() => Row {
-                    kind: Kind::Folder(fleet::tilde(dir)),
-                    cells: vec![("  no sessions here".to_owned(), dim())],
                 },
                 Entry::Folder(dir) => Row {
                     kind: Kind::Folder(folder_label(dir, self.worktrees.contains(*dir))),
@@ -1613,9 +1604,12 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
     );
     for row in data.rows(false).into_iter().chain(jobs) {
         let (key, aux) = match &row.kind {
-            Kind::Header | Kind::Columns | Kind::Blank | Kind::HistoryStatus | Kind::Detail => {
-                ("hdr".to_owned(), "-".to_owned())
-            }
+            Kind::Header
+            | Kind::Folded(_)
+            | Kind::Columns
+            | Kind::Blank
+            | Kind::HistoryStatus
+            | Kind::Detail => ("hdr".to_owned(), "-".to_owned()),
             Kind::Job(n) => ("job".to_owned(), n.clone()),
             Kind::Session(id, s) | Kind::Run(id, s) => (id.clone(), s.clone()),
             Kind::History(key) => (key.clone(), "-".into()),
@@ -2613,22 +2607,13 @@ fn indent(lead: &str, title: usize, mut row: Vec<(String, Style)>) -> Vec<(Strin
     row
 }
 
-/// The worktree a sub-heading names, alone or with a tag inside it.
-fn tree_of(sub: &str) -> Option<&str> {
-    match nested(sub) {
-        _ if sub.is_empty() || sub.starts_with("# ") => None,
-        Some((tree, _)) => Some(tree),
-        None => Some(sub),
-    }
-}
-
-/// The indentation and tree lines a heading starts with, drawn plain.
-const TREE: [char; 4] = [' ', '│', '├', '└'];
+/// The indentation and tree lines a heading or title starts with, drawn plain or dim.
+const TREE: [char; 5] = [' ', '│', '├', '└', '─'];
 
 /// A heading's indentation, where its label starts, and its label without the tree lines.
 fn heading_label(text: &str) -> (usize, &str) {
-    let at = text.chars().take_while(|c| matches!(c, ' ' | '│')).count();
-    (at, text.trim_start_matches(TREE))
+    let label = text.trim_start_matches(TREE);
+    (text.chars().count() - label.chars().count(), label)
 }
 
 /// Count a heading's sessions by state after its name, in the summary's order, so the counts
@@ -2657,37 +2642,15 @@ fn counted(row: &mut Row, end: usize, states: &[&str]) {
     row.cells.extend(counts);
 }
 
-/// A tag inside a worktree's heading, `~/repo-wt # NAME`, as the worktree and the tag.
-fn nested(sub: &str) -> Option<(&str, &str)> {
-    if sub.starts_with("# ") {
-        return None;
-    }
-    sub.split_once(" # ")
-}
-
-fn real(dir: &Path) -> PathBuf {
-    dir.canonicalize().unwrap_or_else(|_| dir.to_owned())
-}
-
 /// A group of the session list: sort key, heading and sub-heading.
 type GroupKey = (String, String, String);
 
-/// A sub-heading inside a folder: a tag's name, or a linked worktree's path.
-fn sub_heading(sub: &str) -> String {
-    if sub.starts_with("# ") {
-        sub.to_owned()
-    } else {
-        format!("⑂ {sub}")
-    }
-}
-
-/// The name a group's hand order is kept under: a tag's own wherever it sits, else the folder
-/// heading with its worktree. The dashboard reads the same name back off the headings.
+/// The name a group's hand order and fold are kept under: the folder or tag heading, then a
+/// tag inside a folder. The dashboard reads the same name back off the headings.
 fn group_id(name: &str, sub: &str) -> String {
     match sub {
         "" => name.to_owned(),
-        _ if sub.starts_with("# ") => format!("{name} {sub}"),
-        _ => format!("{name} {}", sub_heading(sub)),
+        _ => format!("{name} {sub}"),
     }
 }
 
@@ -2733,11 +2696,6 @@ fn session_cells(
             .unwrap_or_else(|| s.session_id.chars().take(8).collect()),
         40,
     );
-    let title = if worktree {
-        format!("⑂ {title}")
-    } else {
-        title
-    };
     let title = match fork {
         Some(depth) => format!("{}↳ {title}", "  ".repeat(depth.min(8))),
         None => title,
@@ -5295,10 +5253,10 @@ const FIELDS: [Field; 81] = [
         sub: "",
         name: "worktrees",
         short: "worktree sessions",
-        hint: "Head each linked worktree inside its repository.",
-        long: "nested lists a linked worktree's sessions under a heading of their own inside the repository's folder, indented, once the worktree has two sessions. flat lists them among the repository's own sessions, marked ⑂. Either way a folder opened with `+ add folder` heads the sessions that run in it.",
-        builtin: "nested",
-        input: Answer::Pick(&["-", "nested", "flat"]),
+        hint: "List worktree sessions in their repository's folder.",
+        long: "repo lists a linked worktree's sessions in its repository's folder, each naming its worktree dim after its title. folder lists every worktree as a folder of its own, with its own heading and tags.",
+        builtin: "repo",
+        input: Answer::Pick(&["-", "repo", "folder"]),
     },
     Field {
         group: "cones",
@@ -8086,8 +8044,8 @@ fn sort_value(jobs_path: &Path) -> String {
 /// The worktree layout as the file states it, empty when it does not.
 fn worktrees_value(jobs_path: &Path) -> String {
     match config::file_worktrees(jobs_path) {
-        Some(config::Worktrees::Nested) => "nested".into(),
-        Some(config::Worktrees::Flat) => "flat".into(),
+        Some(config::Worktrees::Repo) => "repo".into(),
+        Some(config::Worktrees::Folder) => "folder".into(),
         None => String::new(),
     }
 }
@@ -9082,7 +9040,7 @@ fn open_folders(
     launched: &mut HashSet<String>,
 ) -> bool {
     let before = open.clone();
-    let dir_of = |s: &Session| data.roots.get(&s.cwd).unwrap_or(&s.cwd).clone();
+    let dir_of = |s: &Session| data.repo_of(&s.cwd).unwrap_or(&s.cwd).clone();
     // ponytail: grows by one id per launch for the dashboard's lifetime; a restart forgets them.
     for s in data.sessions.iter().filter(|s| s.launched_by.is_some()) {
         launched.insert(s.session_id.clone());
@@ -9130,6 +9088,16 @@ fn write_open_folders(state: &Path, open: &BTreeSet<PathBuf>) -> std::io::Result
 
 fn read_open_folders(state: &Path) -> Option<BTreeSet<PathBuf>> {
     serde_json::from_slice(&std::fs::read(state.join(OPEN_FOLDERS)).ok()?).ok()
+}
+
+/// Headings folded in the session list, by group id, under the state directory.
+const FOLDED: &str = "folded.json";
+
+fn read_folded(state: &Path) -> BTreeSet<String> {
+    std::fs::read(state.join(FOLDED))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// `cones rm DIR`: close an open folder as the dashboard's `ctrl+x` does. The directory and any
@@ -9976,6 +9944,8 @@ struct App {
     /// Every folder a session has been listed in, kept in `state/open-folders.json` until
     /// `ctrl+x` closes it or the directory is gone.
     open_folders: BTreeSet<PathBuf>,
+    /// Folded headings, kept in `state/folded.json` across restarts.
+    folded: BTreeSet<String>,
     /// The folder each listed session opened in `open_folders`, by session id.
     opened: HashMap<String, PathBuf>,
     /// Ids, listed and native, of every session `open_folders` saw under a launcher.
@@ -10419,6 +10389,7 @@ impl App {
             launch_places: HashMap::new(),
             row_drag: None,
             open_folders: open,
+            folded: read_folded(state),
             opened,
             launched,
             unfolded: None,
@@ -12536,6 +12507,57 @@ impl App {
         self.select_row(id);
     }
 
+    /// Fold or unfold the selected row's heading for `action`; false leaves the key to others.
+    /// ← on a session folds its tag, or its folder outside a tag, and on a folded tag folds
+    /// the folder too. → or Enter on a folded heading unfolds it.
+    fn fold_key(&mut self, action: KeyAction) -> bool {
+        let Some(i) = self.visible.get(self.cursor).copied() else {
+            return false;
+        };
+        let folded = match &self.rows[i].kind {
+            Kind::Folded(id) => Some(id.clone()),
+            Kind::Session(..) | Kind::Run(..) => None,
+            _ => return false,
+        };
+        let Some(spot) = self.place_at(i) else {
+            return false;
+        };
+        let target = match (action, folded) {
+            (KeyAction::Right | KeyAction::Enter, Some(id)) => {
+                self.folded.remove(&id);
+                id
+            }
+            (KeyAction::Left, None) => {
+                self.folded.insert(spot.group.clone());
+                spot.group
+            }
+            (KeyAction::Left, Some(id)) if id != spot.folder => {
+                self.folded.insert(spot.folder.clone());
+                spot.folder
+            }
+            _ => return false,
+        };
+        if let Err(e) = std::fs::write(
+            self.state.join(FOLDED),
+            serde_json::to_vec(&self.folded).unwrap(),
+        ) {
+            self.status = warning(format!("folds kept for this dashboard only: {e}"));
+        }
+        self.rebuild();
+        if self.folded.contains(&target) {
+            self.select_row(&target);
+        } else if let Some(n) = self
+            .visible
+            .iter()
+            .position(|&at| at > i && self.rows[at].kind.selectable())
+        {
+            // Unfolded, the heading is the cursor's no more: its first row takes it.
+            self.cursor = n;
+            self.settle();
+        }
+        true
+    }
+
     fn select_row(&mut self, id: &str) {
         if let Some(i) = self
             .visible
@@ -12569,6 +12591,7 @@ impl App {
             .filter(|a| matches!(a.verb, "delete" | "forget"))
             .map(|a| a.id.as_str())
             .collect();
+        self.data.folded = self.folded.clone();
         self.data.unread = self
             .data
             .sessions
@@ -12696,7 +12719,7 @@ impl App {
                             (unread || (!unread_only && state == "blocked"))
                                 && rows[i].text().to_lowercase().contains(needle)
                         }
-                        Kind::Menu | Kind::Header | Kind::Columns => true,
+                        Kind::Menu | Kind::Header | Kind::Folded(_) | Kind::Columns => true,
                         _ => false,
                     };
                 }
@@ -13158,61 +13181,27 @@ impl App {
         }
         let heading = |i: usize| match &self.rows[i] {
             Row {
-                kind: Kind::Header,
+                kind: Kind::Header | Kind::Folded(_),
                 cells,
             } => cells.first().map(|(text, _)| text.as_str()),
             _ => None,
         };
-        // The nearest heading decides: a tag inside a worktree, then that worktree's heading,
-        // which is the nearest one above it that starts further left.
-        let mut subs: Vec<(usize, &str, usize)> = vec![];
+        // The nearest heading decides: a tag inside a folder, then the folder above it.
+        let mut tag: Option<String> = None;
         let mut at = i.min(self.rows.len().checked_sub(1)?);
         let top = loop {
             if let Some((indent, label)) = heading(at).map(heading_label) {
                 if indent == 0 {
                     break label.to_owned();
                 }
-                subs.push((indent, label, at));
+                tag.get_or_insert_with(|| label.to_owned());
             }
             at = at.checked_sub(1)?;
         };
-        // A worktree heading shows its last part; the sessions beneath it know the whole path.
-        let tree = |label: &str, at: usize| {
-            self.rows[at..]
-                .iter()
-                .find_map(|r| match &r.kind {
-                    Kind::Session(id, _) => self.data.sessions.iter().find(|s| &s.session_id == id),
-                    _ => None,
-                })
-                .filter(|_| label.starts_with("⑂ "))
-                .map_or_else(|| label.to_owned(), |s| self.data.folder_label(s))
-        };
-        let (sub, tag) = match subs.first() {
-            Some(&(indent, tag, _)) if tag.starts_with("# ") => {
-                match subs.iter().find(|(above, ..)| *above < indent) {
-                    Some(&(_, label, at)) => (Some(tree(label, at)), Some(tag.to_owned())),
-                    None => (Some(tag.to_owned()), None),
-                }
-            }
-            Some(&(_, label, at)) => (Some(tree(label, at)), None),
-            None => (None, None),
-        };
-        if let (Some(tree), Some(tag)) = (&sub, &tag) {
-            return Some(Spot {
+        Some(match tag {
+            Some(tag) => Spot {
                 place: Place::FolderTag(tag.trim_start_matches("# ").to_owned()),
-                group: format!("{top} {tree} {tag}"),
-                folder: top,
-            });
-        }
-        Some(match sub {
-            Some(sub) if sub.starts_with("# ") => Spot {
-                place: Place::FolderTag(sub[2..].to_owned()),
-                group: format!("{top} {sub}"),
-                folder: top,
-            },
-            Some(sub) => Spot {
-                group: format!("{top} {sub}"),
-                place: Place::Folder,
+                group: format!("{top} {tag}"),
                 folder: top,
             },
             None => Spot {
@@ -13258,11 +13247,16 @@ impl App {
     fn group_roots(&self, i: usize) -> Vec<String> {
         let start = (0..=i)
             .rev()
-            .find(|&at| self.rows[at].kind == Kind::Header)
+            .find(|&at| matches!(self.rows[at].kind, Kind::Header | Kind::Folded(_)))
             .unwrap_or(0);
         let ids: Vec<&str> = self.rows[start + 1..]
             .iter()
-            .take_while(|r| !matches!(r.kind, Kind::Header | Kind::Blank | Kind::NewFolder))
+            .take_while(|r| {
+                !matches!(
+                    r.kind,
+                    Kind::Header | Kind::Folded(_) | Kind::Blank | Kind::NewFolder
+                )
+            })
             .filter_map(|r| match &r.kind {
                 Kind::Session(id, _) => Some(id.as_str()),
                 _ => None,
@@ -13925,7 +13919,7 @@ impl App {
                             }
                             return;
                         }
-                        self.data.nest = config::nest_worktrees(&self.jobs_path);
+                        self.data.tree_folders = config::worktree_folders(&self.jobs_path);
                     }
                 }
                 // And the session order.
@@ -16923,9 +16917,9 @@ impl App {
         {
             self.select_row(&id);
         }
-        self.status = if !self.data.nest && worktree_root(&dir).is_some() {
+        self.status = if !self.data.tree_folders && worktree_root(&dir).is_some() {
             // The hint leads: a worktree folder's path is long enough to push it off the line.
-            format!("worktrees: nested heads every worktree · {name} added")
+            format!("worktrees: folder heads every worktree · {name} added")
         } else {
             format!("{name} added · type an instruction and enter starts a session there")
         };
@@ -18062,6 +18056,18 @@ impl App {
                     let n = MENU.len();
                     self.menu =
                         (self.menu + if action == KeyAction::Right { 1 } else { n - 1 }) % n;
+                    return Ok(false);
+                }
+                // ← folds the heading a row sits under, → and Enter unfold it, with nothing
+                // typed.
+                if !searching_history
+                    && !self.jobs_view
+                    && !self.by_state
+                    && mods.is_empty()
+                    && !self.on_button()
+                    && self.composer_text().is_empty()
+                    && self.fold_key(action)
+                {
                     return Ok(false);
                 }
                 // Right on a row with nothing typed goes to the agent: into the pane when it is
@@ -19205,10 +19211,27 @@ impl App {
                 let mut drawn = Vec::with_capacity(cells.len() + 1);
                 let mut keep = named_cell(rows, i);
                 for (c, (text, style)) in cells.iter().enumerate() {
-                    // A heading's tree lines are drawn plain, apart from its name's colour.
+                    // A heading's tree lines are drawn plain, apart from its name's colour, and
+                    // a title's dim, apart from the title's.
                     let text = match text.trim_start_matches(TREE) {
-                        label if c == 0 && row.kind == Kind::Header && label != text => {
+                        label
+                            if c == 0
+                                && matches!(row.kind, Kind::Header | Kind::Folded(_))
+                                && label != text =>
+                        {
                             drawn.push(Span::raw(text[..text.len() - label.len()].to_owned()));
+                            keep = keep.saturating_add(1);
+                            label
+                        }
+                        label
+                            if c == title
+                                && matches!(row.kind, Kind::Session(..) | Kind::Run(..))
+                                && label != text =>
+                        {
+                            drawn.push(Span::styled(
+                                text[..text.len() - label.len()].to_owned(),
+                                dim(),
+                            ));
                             keep = keep.saturating_add(1);
                             label
                         }
@@ -22484,6 +22507,7 @@ states:
                 .unwrap();
             app.rows[i].cells[named_cell(&app.rows, i) - 1]
                 .0
+                .trim_start_matches(TREE)
                 .trim()
                 .to_owned()
         };
@@ -24340,9 +24364,9 @@ states:
             let named = row
                 .cells
                 .iter()
-                .position(|(t, _)| t.trim() == "short")
+                .position(|(t, _)| t.trim_start_matches(TREE).trim() == "short")
                 .unwrap();
-            row.cells[named].0.clone()
+            row.cells[named].0.trim_start_matches(TREE).to_owned()
         };
         let wide = title_of(&data, &mut widths);
         assert_eq!(wide.len(), "a title well over the short one".len() + 2);
@@ -25270,106 +25294,74 @@ states:
         let repo_label = fleet::tilde(&repo.canonicalize().unwrap());
         assert_eq!(
             headers(&app),
-            [
-                repo_label.clone(),
-                format!("└ ⑂ {}", nested.file_name().unwrap().to_string_lossy()),
-                fleet::tilde(&under_repo)
-            ],
-            "nested and external worktrees share the repository heading, where an opened one \
-             heads its own sessions; ordinary subfolders keep theirs"
+            [repo_label.clone(), fleet::tilde(&under_repo)],
+            "every worktree, opened or not, lists its sessions in the repository's folder; \
+             ordinary subfolders keep their own heading"
         );
         assert!(
             app.rows.iter().all(|r| !matches!(r.kind, Kind::Folder(_))),
             "populated worktrees and their open repository have no empty placeholders"
         );
-        for (id, cwd, marked) in [
-            (A, &alias, false),
-            // Its heading marks the opened worktree's session.
-            (B, &nested, false),
-            (C, &under_worktree, true),
-            (sub_id, &under_repo, false),
+        for (id, cwd, tree) in [
+            (A, &alias, None),
+            (B, &nested, Some("agent")),
+            (C, &under_worktree, Some("worktree")),
+            (sub_id, &under_repo, None),
         ] {
             app.select_new(id);
             assert_eq!(app.target_dir(), *cwd, "actions retain the actual cwd");
             let row = app.selected().unwrap();
-            assert_eq!(row.cells[3].0.contains('⑂'), marked, "{}", row.text());
-        }
-        app.select_new(moved_id);
-        assert_eq!(
-            app.selected().unwrap().cells[3].0,
-            format!("⑂ session {}", &moved_id[..8]),
-            "a background job keeps its launch heading and marks the worktree it entered"
-        );
-        app.by_state = true;
-        app.rebuild();
-        app.select_new(moved_id);
-        assert_eq!(
-            app.selected().unwrap().cells[4].0.trim(),
-            folder_cell(&moved, true),
-            "its folder cell names the worktree"
-        );
-        app.by_state = false;
-        app.rebuild();
-
-        // The repository stays the heading even when all of its sessions are in worktrees.
-        // The subfolder would stay open once its session leaves; that has its own test.
-        app.data.open = vec![repo.clone(), nested.clone()];
-        app.data
-            .sessions
-            .retain(|s| [B, C].contains(&s.session_id.as_str()));
-        app.rebuild();
-        assert_eq!(
-            headers(&app),
-            [
-                repo_label,
-                format!("└ ⑂ {}", nested.file_name().unwrap().to_string_lossy())
-            ]
-        );
-        // A second worktree heading carries the tree line on past the first, and each
-        // heading, named by its last part, still gives places its whole worktree. Headings
-        // follow their paths, which macOS's /private prefix orders differently from Linux.
-        let canonical = worktree.canonicalize().unwrap();
-        app.data.open.push(canonical.clone());
-        app.rebuild();
-        let mut trees = [(C, &canonical), (B, &nested)];
-        trees.sort_by_key(|(_, tree)| fleet::tilde(tree));
-        let name = |tree: &Path| tree.file_name().unwrap().to_string_lossy().into_owned();
-        assert_eq!(
-            headers(&app)[1..],
-            [
-                format!("├ ⑂ {}", name(trees[0].1)),
-                format!("└ ⑂ {}", name(trees[1].1))
-            ],
-            "{:#?}",
-            app.rows.iter().map(Row::text).collect::<Vec<_>>()
-        );
-        for ((id, tree), lead) in trees.into_iter().zip(["│ ", "  "]) {
-            app.select_new(id);
-            assert!(
-                app.selected().unwrap().cells[3].0.starts_with(lead),
-                "{}",
-                app.selected().unwrap().text()
-            );
             assert_eq!(
-                app.selected_spot().unwrap().group,
-                format!("{} ⑂ {}", headers(&app)[0], fleet::tilde(tree))
+                row.cells[3]
+                    .0
+                    .trim_end()
+                    .ends_with(&format!("{ELSEWHERE}⑂ {}", tree.unwrap_or("-"))),
+                tree.is_some(),
+                "a worktree's row names its worktree: {}",
+                row.text()
             );
         }
-        app.data.open.pop();
-        app.rebuild();
+        app.select_new(moved_id);
+        assert_eq!(
+            app.selected().unwrap().cells[3]
+                .0
+                .trim_start_matches(TREE)
+                .trim_end(),
+            format!("session {}{ELSEWHERE}⑂ moved", &moved_id[..8]),
+            "a background job keeps its launch heading and names the worktree it entered"
+        );
         app.by_state = true;
         app.rebuild();
-        assert_eq!(headers(&app), ["idle"]);
         for (id, cwd) in [(B, &nested), (C, &under_worktree)] {
             app.select_new(id);
             let row = app.selected().unwrap();
-            assert!(row.cells[3].0.contains('⑂'), "{}", row.text());
+            assert!(
+                !row.cells[3].0.contains('⑂'),
+                "the folder column names it: {}",
+                row.text()
+            );
             assert_eq!(row.cells[4].0.trim(), folder_cell(cwd, true));
             assert_eq!(app.target_dir(), *cwd);
         }
+        app.by_state = false;
 
-        // Hiding the final sessions restores both open folders.
-        let hidden = HashSet::from([B, C]);
+        // `worktrees: folder` heads each worktree folder as any other folder, no name after
+        // the title.
+        app.data.tree_folders = true;
+        app.rebuild();
+        let shown = headers(&app);
+        for dir in [&nested, &under_worktree] {
+            assert!(shown.contains(&fleet::tilde(dir)), "{dir:?} in {shown:?}");
+        }
+        app.select_new(B);
+        assert!(!app.selected().unwrap().cells[3].0.contains('⑂'));
+        app.data.tree_folders = false;
+        app.rebuild();
+
+        // Hiding the final sessions restores the open repository, which the open worktree
+        // shares.
+        app.data.open = vec![repo.clone(), nested.clone()];
+        let hidden = HashSet::from([A, B, C, sub_id, moved_id]);
         let rows = app.data.rows_excluding(
             false,
             false,
@@ -25385,8 +25377,7 @@ states:
                     _ => None,
                 })
                 .collect::<BTreeSet<_>>(),
-            // Under its worktree heading the empty folder is named as `+ add folder` names it.
-            BTreeSet::from([folder_label(&repo, false), fleet::tilde(&nested)])
+            BTreeSet::from([folder_label(&repo, false)])
         );
     }
 

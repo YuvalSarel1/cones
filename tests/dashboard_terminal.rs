@@ -31,7 +31,8 @@ const SHIFT_TAB: &[u8] = b"\x1b[Z";
 const PROMPT: &str = "zsh-ready>";
 /// The width of the list; the pane starts after its border.
 const LIST: usize = 70;
-const SHELL_ROW: &str = "–  $  -      zsh";
+/// A shell row's marks and state, before the tree line and its `zsh` title.
+const SHELL_ROW: &str = "–  $  -      ";
 
 /// A fixture whose open folders are `folders` (relative to the root, created here), in
 /// canonical form so the dashboard's `/private/tmp` cwd and the open folders name the same folder.
@@ -74,7 +75,10 @@ fn pane(screen: &str) -> String {
 }
 
 fn shell_rows(screen: &str) -> usize {
-    list(screen).matches(SHELL_ROW).count()
+    list(screen)
+        .lines()
+        .filter(|l| l.contains(SHELL_ROW) && l.contains("─ zsh"))
+        .count()
 }
 
 /// The list lines from the heading for `dir` to the next blank line.
@@ -199,7 +203,10 @@ fn a_shell_from_the_folder_row_works_in_the_folder_and_returns_to_its_row() {
     assert_eq!(rows.len(), 1, "{screen}");
     assert!(rows[0].starts_with(&format!("▌ {SHELL_ROW}")), "{screen}");
     assert!(
-        list(&screen).contains("state  title  context  activity          model  age"),
+        list(&screen)
+            .lines()
+            .any(|l| l.split_whitespace().take(6).collect::<Vec<_>>()
+                == ["state", "title", "context", "activity", "model", "age"]),
         "{screen}"
     );
     assert!(!screen.contains("no sessions here"), "{screen}");

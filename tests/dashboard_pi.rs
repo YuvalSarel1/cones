@@ -82,7 +82,7 @@ fn selected(screen: &str) -> String {
 fn row<'a>(screen: &'a str, title: &str) -> Option<&'a str> {
     screen.lines().find(|l| {
         let words: Vec<&str> = l.split_whitespace().collect();
-        words.contains(&"π") && words.contains(&"idle") && l.contains(&format!("  {title}  "))
+        words.contains(&"π") && words.contains(&"idle") && l.contains(&format!("─ {title}  "))
     })
 }
 
@@ -496,7 +496,7 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     fs::write(d.path("state/attention.json"), unread.to_string()).unwrap();
     d.start();
     // Its mark takes the indentation, so the row keeps its place beneath its launcher.
-    let elsewhere = "  ✉ ↳ ⚙ write the docs · in other  ";
+    let elsewhere = "─ ✉ ↳ ⚙ write the docs · in other  ";
     let screen = d.wait_for("the launch beneath its launcher", |s| {
         s.contains(elsewhere) && row(s, "lead the work").is_some()
     });
@@ -589,7 +589,7 @@ fn a_launch_from_an_agent_is_listed_beneath_it() {
     .unwrap();
     d.start();
     let screen = d.wait_for("the launch in its own folder", |s| {
-        s.contains("   ✉ write the docs  ") && row(s, "lead the work").is_some()
+        s.contains("└─ ✉ write the docs  ") && row(s, "lead the work").is_some()
     });
     d.capture("own-folder");
     assert!(!screen.contains("↳"), "{screen}");

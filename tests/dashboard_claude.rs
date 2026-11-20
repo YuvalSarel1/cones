@@ -180,7 +180,7 @@ pub(crate) fn leaf(path: &Path) -> String {
 /// The name a list line gives its heading, without the tree lines before it or the state
 /// counts and pane after it.
 pub(crate) fn heading_name(line: &str) -> &str {
-    let line = line.trim_start_matches([' ', '│', '├', '└']);
+    let line = line.trim_start_matches([' ', '│', '├', '└', '─', '▌']);
     let line = line.split('│').next().unwrap();
     line.split("  ").next().unwrap().trim_end()
 }
@@ -1214,8 +1214,12 @@ fn add_folder(d: &mut Dashboard, path: &str) {
     d.press("enter", b"\r");
 }
 
+/// `worktrees: folder` lists a worktree as a folder like any other: its own heading by its
+/// path, the main checkout's sessions under the main checkout, and a folder inside the
+/// worktree under its own heading, as a folder inside any repository is. No row names a
+/// worktree after its title, since its heading does.
 #[test]
-fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
+fn worktrees_as_folders_head_each_worktree_like_any_folder() {
     let Worktree {
         mut d,
         main,
@@ -1223,81 +1227,44 @@ fn a_folder_opened_in_a_worktree_heads_its_own_sessions() {
         folder,
         _sessions,
     } = worktree("claude-worktree-folder");
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(d.path("jobs.yaml"), format!("{yaml}worktrees: folder\n")).unwrap();
     d.start();
 
-    let main_name = main.display().to_string();
-    let tree_heading = format!("⑂ {}", leaf(&tree));
-    let folder_name = folder.display().to_string();
-    let folder_heading = format!("⑂ {}", leaf(&folder));
     let screen = d.wait_text("Autoscaling plan");
-    d.capture("worktree-nested");
-    let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
-    let nested = heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}"));
-    assert!(
-        screen
-            .lines()
-            .nth(nested)
-            .unwrap()
-            .trim_start()
-            .starts_with(&format!("└ {tree_heading}")),
-        "the folder's only worktree closes its tree line:\n{screen}"
-    );
-    let order = [
-        at,
-        row(&screen, "Rank tenants"),
-        nested,
-        row(&screen, "Cost visibility dashboard"),
-        row(&screen, "Autoscaling plan"),
-    ];
-    assert!(order.is_sorted(), "{order:?}\n{screen}");
+    d.capture("worktree-folders");
+    // Folders sort by path, so each heading is checked against the row beneath it.
+    for (dir, title) in [
+        (&main, "Rank tenants"),
+        (&tree, "Autoscaling plan"),
+        (&folder, "Cost visibility dashboard"),
+    ] {
+        let at = heading(&screen, &dir.display().to_string()).unwrap_or_else(|| panic!("{screen}"));
+        assert_eq!(row(&screen, title), at + 1, "{title}:\n{screen}");
+    }
+    assert!(!screen.contains("· in ⑂"), "{screen}");
     assert_eq!(
         column(&screen, "Autoscaling plan"),
-        column(&screen, "Rank tenants") + 2,
-        "a session under a worktree heading is indented:\n{screen}"
+        column(&screen, "Rank tenants"),
+        "{screen}"
     );
-
-    add_folder(&mut d, &folder_name);
-    let screen = d.wait_for("the folder's heading", |s| {
-        heading(s, &folder_heading).is_some()
-    });
-    d.capture("opened");
-    let opened = heading(&screen, &folder_heading).unwrap();
-    let order = [
-        heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}")),
-        row(&screen, "Rank tenants"),
-        row(&screen, "Autoscaling plan"),
-        opened,
-        row(&screen, "Cost visibility dashboard"),
-    ];
-    assert!(order.is_sorted(), "{order:?}\n{screen}");
-    assert_eq!(order[4], opened + 1, "{screen}");
-    assert!(
-        heading(&screen, &tree_heading).is_none(),
-        "one session nobody opened needs no heading:\n{screen}"
-    );
-    assert!(
-        selected(&screen).contains("Cost visibility dashboard"),
-        "Enter selects the opened folder's session:\n{screen}"
-    );
-    assert!(!screen.contains("no sessions here"), "{screen}");
-    d.wait_file("state/open-folders.json", |t| t.contains(&folder_name));
-    d.keep("state/open-folders.json");
     d.quit();
 }
 
-/// Idan's ask: a session under a worktree heading is tagged without leaving that worktree.
-/// ctrl+l names the worktree as the session's folder; a tag checked with it nests inside the
-/// worktree's heading in the tag colour, and the session is listed once.
+/// Idan's ask: a worktree session is tagged without leaving its repository. ctrl+l names the
+/// repository as the session's folder; a tag checked with it nests inside the repository's
+/// heading in the tag colour, a branch of the folder's tree, and the session is listed once,
+/// still naming its worktree.
 #[test]
-fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
+fn a_tag_on_a_worktree_session_sits_in_the_repository_folder() {
     let Worktree {
         mut d,
+        main,
         tree,
         _sessions,
         ..
     } = worktree("claude-worktree-tag");
     d.start();
-    let tree_heading = format!("⑂ {}", leaf(&tree));
     d.wait_text("Autoscaling plan");
     while !selected(&d.screen()).contains("Autoscaling plan") {
         let before = selected(&d.screen()).to_owned();
@@ -1309,10 +1276,10 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
     d.press("ctrl+l", b"\x0c");
     let screen = d.wait_text("places · space checks");
     // The checklist is narrower than the fixture's paths, so only their start shows.
-    let start: String = format!("⑂ {}", tree.display()).chars().take(30).collect();
+    let start: String = main.display().to_string().chars().take(30).collect();
     assert!(
         screen.contains(&format!("› [x] {start}")),
-        "the folder line names the worktree heading:\n{screen}"
+        "the folder line names the repository:\n{screen}"
     );
     for _ in 0..2 {
         d.press("down", DOWN);
@@ -1324,10 +1291,11 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
     // One Enter adds the tag and keeps the checklist.
     d.typed("ideas");
     d.press("enter", b"\r");
-    let screen = d.wait_for("the tag inside the worktree", |s| s.contains("    # ideas"));
+    let screen = d.wait_for("the tag inside the folder", |s| s.contains("└─ # ideas"));
     d.capture("worktree-tag");
     let order = [
-        heading(&screen, &tree_heading).unwrap_or_else(|| panic!("{screen}")),
+        heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}")),
+        row(&screen, "Rank tenants"),
         heading(&screen, "# ideas").unwrap_or_else(|| panic!("{screen}")),
         row(&screen, "Autoscaling plan"),
     ];
@@ -1337,9 +1305,19 @@ fn a_tag_in_a_worktree_sits_under_the_worktree_and_moves_the_session() {
         1,
         "listed once:\n{screen}"
     );
+    assert!(
+        line_of(&screen, "Autoscaling plan")
+            .contains(&format!("└─ Autoscaling plan · in ⑂ {}", leaf(&tree))),
+        "the tag's only row closes its branch and names its worktree:\n{screen}"
+    );
+    assert_eq!(
+        column(&screen, "# ideas"),
+        column(&screen, "Rank tenants"),
+        "a tag heading starts where the folder's titles do:\n{screen}"
+    );
     assert_eq!(
         column(&screen, "Autoscaling plan"),
-        column(&screen, "Rank tenants") + 4,
+        column(&screen, "Rank tenants") + 3,
         "{screen}"
     );
     assert_eq!(d.colour_of("# ideas"), Some(vt100::Color::Idx(6)));
@@ -1359,66 +1337,77 @@ fn column(screen: &str, text: &str) -> usize {
     line[..line.find(text).unwrap()].chars().count()
 }
 
-/// With `worktrees: flat` the worktree's sessions sit among the main checkout's own, marked
-/// `⑂`. Opening a folder in it still heads that folder's session, and the status line names
-/// the setting that heads every worktree.
+/// By default a worktree's sessions sit in the main checkout's folder, each naming its
+/// worktree dim after its title, however many share it, and the rows hang from the folder
+/// on tree lines. Opening a folder in the worktree adds no heading; the status line names the
+/// setting that heads every worktree.
 #[test]
-fn a_flat_list_heads_only_the_worktree_folder_you_open() {
+fn worktree_sessions_sit_in_the_repository_and_name_their_worktree() {
     let Worktree {
         mut d,
         main,
+        tree,
         folder,
         _sessions,
-        ..
-    } = worktree("claude-worktree-flat");
-    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
-    fs::write(d.path("jobs.yaml"), format!("{yaml}worktrees: flat\n")).unwrap();
+    } = worktree("claude-worktree-repo");
     d.start();
 
     let main_name = main.display().to_string();
-    let folder_name = folder.display().to_string();
-    let folder_heading = format!("⑂ {}", leaf(&folder));
     let screen = d.wait_text("Autoscaling plan");
-    d.capture("flat");
-    assert!(
-        !screen.contains("└ ⑂") && !screen.contains("├ ⑂"),
+    d.capture("repo");
+    let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
+    assert_eq!(
+        heading(&screen, &tree.display().to_string()),
+        None,
         "{screen}"
     );
-    let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
+    let named = format!("· in ⑂ {}", leaf(&tree));
     for title in [
         "Rank tenants",
         "Cost visibility dashboard",
         "Autoscaling plan",
     ] {
         assert!(row(&screen, title) > at, "{title}:\n{screen}");
+        assert_eq!(
+            column(&screen, title),
+            column(&screen, "Rank tenants"),
+            "{screen}"
+        );
+        assert_eq!(
+            line_of(&screen, title).contains(&named),
+            title != "Rank tenants",
+            "{title}:\n{screen}"
+        );
     }
-    assert_eq!(
-        column(&screen, "⑂ Autoscaling plan"),
-        column(&screen, "Rank tenants"),
-        "{screen}"
+    let last = [
+        "Rank tenants",
+        "Cost visibility dashboard",
+        "Autoscaling plan",
+    ]
+    .into_iter()
+    .max_by_key(|t| row(&screen, t))
+    .unwrap();
+    assert!(
+        line_of(&screen, last).contains(&format!("└─ {last}")),
+        "the folder's last row closes its tree:\n{screen}"
     );
 
-    add_folder(&mut d, &folder_name);
-    let screen = d.wait_text("worktrees: nested heads every worktree");
+    add_folder(&mut d, &folder.display().to_string());
+    let screen = d.wait_text("worktrees: folder heads every worktree");
     d.capture("opened");
-    let opened = heading(&screen, &folder_heading).unwrap_or_else(|| panic!("{screen}"));
     assert_eq!(
-        row(&screen, "Cost visibility dashboard"),
-        opened + 1,
+        heading(&screen, &folder.display().to_string()),
+        None,
         "{screen}"
     );
-    assert!(row(&screen, "Autoscaling plan") < opened, "{screen}");
-    assert!(
-        selected(&screen).contains("Cost visibility dashboard"),
-        "{screen}"
-    );
+    assert!(row(&screen, "Cost visibility dashboard") > at, "{screen}");
     d.quit();
 }
 
 /// A past conversation resumed from history in a worktree that no live session uses. Its
 /// row stands in before Claude reports it, and the dashboard used to resolve worktrees
 /// before adding that row: the worktree went unrecognised, opened as a folder of its own and
-/// stayed open. Now the row sits among the repository's own, marked `⑂`, and no folder
+/// stayed open. Now the row sits among the repository's own, naming its worktree, and no folder
 /// opens.
 #[test]
 fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
@@ -1457,9 +1446,7 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     .unwrap();
     // Claude reports the resumed session late, so its row stands in meanwhile.
     fs::write(d.home().join("registry-delay"), "3").unwrap();
-    // Flat, so any heading of the worktree's own is a folder that opened.
-    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
-    fs::write(d.path("jobs.yaml"), format!("{yaml}worktrees: flat\n")).unwrap();
+    // Any heading of the worktree's own is a folder that opened.
     d.start();
     d.wait_text("Autoscaling plan");
 
@@ -1478,12 +1465,15 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     let old_heading = format!("⑂ {}", leaf(Path::new(&cwd)));
     let screen = d.wait_for("the resumed row in the live list", |s| {
         s.contains("fixture attached to")
-            && (s.contains("⑂ Old tree work") || heading(s, &old_heading).is_some())
+            && (s.contains("Old tree work · in ⑂ old-tree") || heading(s, &old_heading).is_some())
     });
     d.capture("resumed");
     assert!(heading(&screen, &old_heading).is_none(), "{screen}");
     let at = heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}"));
-    assert!(row(&screen, "⑂ Old tree work") > at, "{screen}");
+    assert!(
+        row(&screen, "Old tree work · in ⑂ old-tree") > at,
+        "{screen}"
+    );
     let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap_or_default();
     assert!(!open.contains(&cwd), "{open}");
     d.keep("state/open-folders.json");
@@ -1728,7 +1718,7 @@ fn a_turn_left_running_a_background_shell_shows_shell() {
     let cells: Vec<&str> = list
         .trim_start_matches('▌')
         .split("  ")
-        .map(str::trim)
+        .map(|c| c.trim().trim_start_matches(['├', '└', '─', ' ']))
         .filter(|c| !c.is_empty())
         .collect();
     assert_eq!(
@@ -2035,13 +2025,21 @@ fn ctrl_e_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
         "folded rows show no id:\n{screen}"
     );
 
-    // Left leaves the row folded. A typed letter after it shows the key was handled.
+    // Left folds the row's folder, not its details; right unfolds it onto its first row.
     d.press("left", b"\x1b[D");
-    d.typed("x");
-    let screen = d.wait_text("› x");
-    assert!(!screen.contains(&fix.id), "left unfolded:\n{screen}");
-    d.press("backspace", b"\x7f");
-    d.wait_for("the empty composer", |s| !s.contains("› x"));
+    let screen = d.wait_text("· 2 folded");
+    d.capture("folded");
+    assert!(!screen.contains("Fix the parser"), "{screen}");
+    assert!(selected(&screen).contains("· 2 folded"), "{screen}");
+    d.press("right", b"\x1b[C");
+    let screen = d.wait_for("the folder unfolded", |s| {
+        selected(s).contains("Fix the parser")
+    });
+    assert!(
+        !screen.contains(&fix.id),
+        "unfolding the folder unfolded details:\n{screen}"
+    );
+    assert_eq!(d.wait_file("state/folded.json", |t| t == "[]"), "[]");
     d.press("ctrl+e", CTRL_E);
     let screen = d.wait_text(&fix.id);
     d.capture("unfolded");
