@@ -19,6 +19,9 @@ pub(crate) struct Observation {
     revision: String,
     #[serde(skip)]
     title: String,
+    /// What a waiting session reports it is asking, quoted in its notification.
+    #[serde(skip)]
+    ask: Option<String>,
 }
 
 impl Observation {
@@ -43,6 +46,9 @@ impl Observation {
                 .title
                 .clone()
                 .unwrap_or_else(|| session.harness.clone()),
+            ask: (session.state == crate::fleet::State::Blocked)
+                .then(|| session.last.clone())
+                .flatten(),
         })
     }
 
@@ -57,6 +63,7 @@ impl Observation {
                 .map(|t| t.to_rfc3339())
                 .unwrap_or_default(),
             title: run.started.job.clone().unwrap_or_else(|| "run".into()),
+            ask: None,
         }
     }
 
@@ -88,6 +95,8 @@ pub(crate) struct Tracker {
 pub(crate) struct Notice {
     pub title: String,
     pub input: bool,
+    /// The question a waiting session reports, when it reports one.
+    pub ask: Option<String>,
 }
 
 impl Tracker {
@@ -161,6 +170,7 @@ impl Tracker {
                         notices.push(Notice {
                             title: observation.title.clone(),
                             input,
+                            ask: observation.ask.clone().filter(|_| input),
                         });
                     }
                     if changed {
@@ -184,6 +194,7 @@ impl Tracker {
                         notices.push(Notice {
                             title: observation.title.clone(),
                             input: false,
+                            ask: None,
                         });
                     }
                     self.entries.insert(
@@ -243,12 +254,26 @@ pub(crate) fn notify(notices: Vec<Notice>) {
                 .filter(|c| !c.is_control())
                 .take(100)
                 .collect();
+            // The question itself when the harness reports one, cut to one line.
+            let ask = notice.ask.as_deref().map(|ask| {
+                let line: String = ask
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect();
+                match line.char_indices().nth(120) {
+                    Some((at, _)) => format!("{}…", &line[..at]),
+                    None => line,
+                }
+            });
             let message = format!(
                 "{title}: {}",
-                if notice.input {
-                    "needs input"
-                } else {
-                    "ready to review"
+                match (&ask, notice.input) {
+                    (Some(ask), true) if !ask.is_empty() => ask.as_str(),
+                    (_, true) => "needs input",
+                    (_, false) => "ready to review",
                 }
             );
             let mut command = match std::env::var_os("CONES_NOTIFIER") {
@@ -298,6 +323,7 @@ mod tests {
             state: state.into(),
             revision: revision.into(),
             title: "work".into(),
+            ask: None,
         }
     }
 

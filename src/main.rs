@@ -531,6 +531,22 @@ fn execute(cli: Cli) -> Result<i32> {
     if let Some(Action::Worker { run_id }) = &cli.command {
         return runner::worker(run_id);
     }
+    // A reader piped into `head` should end quietly when the pipe closes, as other CLIs do,
+    // instead of panicking in `println!`. Only commands that print and change nothing: a
+    // supervisor or the dashboard must outlive a closed stdout.
+    if matches!(
+        cli.command,
+        Some(
+            Action::Ls { .. }
+                | Action::Show { .. }
+                | Action::Search { .. }
+                | Action::Skill { .. }
+                | Action::List
+        )
+    ) {
+        // SAFETY: restoring the default disposition before any thread starts.
+        unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    }
     let cwd = std::env::current_dir()?;
     let state = cones::expand_path(
         &cli.state_dir.unwrap_or_else(|| PathBuf::from("~/.cones")),

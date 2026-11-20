@@ -1039,9 +1039,12 @@ fn build(
                 .map(Into::into)
         })
         .or(d.report.first_prompt),
-        last: job["detail"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
+        // While a job waits on its owner, Claude names what it is asking for; older versions
+        // write no such field and keep the job's own detail line.
+        last: [&job["needsAsk"]["text"], &job["needs"], &job["detail"]]
+            .into_iter()
+            .filter_map(Value::as_str)
+            .find(|s| !s.trim().is_empty())
             .map(Into::into)
             .or(d.last),
         coordinator: false,

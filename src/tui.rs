@@ -818,12 +818,15 @@ impl Data {
             ("active", "working"),
             ("shell", "shell"),
             ("blocked", "input"),
+            ("failed", "failed"),
             ("idle", "idle"),
             ("done", "done"),
         ] {
             let n = self.count(state);
-            // Only Claude reports `shell`, so its count stays out of the way until it does.
-            if state == "shell" && n == 0 {
+            // Only Claude reports `shell`, and failures are rare, so these counts stay out of
+            // the way until there is one. A failure sits beside input, ahead of what a narrow
+            // header clips.
+            if matches!(state, "shell" | "failed") && n == 0 {
                 continue;
             }
             let style = if n == 0 { dim() } else { color(state) };
@@ -2633,7 +2636,7 @@ fn heading_label(text: &str) -> (usize, &str) {
 /// the working one's, dimmed, and a heading of idle rows needs nothing.
 fn counted(row: &mut Row, end: usize, states: &[&str]) {
     let mut counts = vec![];
-    for state in ["active", "shell", "blocked", "done"] {
+    for state in ["active", "shell", "blocked", "failed", "done"] {
         let n = states.iter().filter(|s| **s == state).count();
         if n > 0 {
             counts.push(("  ".to_owned(), plain()));
@@ -17032,8 +17035,15 @@ impl App {
         let label = |n: usize| format!("[Image #{}]", n + 1);
         let shown = expand(&self.text, label);
         let caret = expand(&self.text[..snap(&self.text, self.caret)], label).len();
+        let waiting = matches!(
+            self.selected().map(|r| &r.kind),
+            Some(Kind::Session(_, state)) if state == "blocked"
+        );
         let placeholder = if self.menu_is("jobs") || self.on_new_job() {
             "Type to create a new job…"
+        } else if waiting {
+            // Typed text starts a new agent; the answer belongs in the session's own input.
+            "Enter to answer it, or type to start a new agent…"
         } else {
             "Type to start a new agent…"
         };

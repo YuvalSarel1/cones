@@ -2838,3 +2838,48 @@ fn usage_charges_a_session_for_the_commands_it_spawns_but_not_for_a_listed_sessi
         "the busy loop is the one command running, and only under the agent"
     );
 }
+
+/// A reader piped into `head` ends quietly when the pipe closes, the way other CLIs do: no
+/// panic from `println!`, only the default end by SIGPIPE or a clean exit.
+#[test]
+fn ls_into_a_closed_pipe_ends_without_a_panic() {
+    use cones::config::HarnessKind;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    let d = tempfile::tempdir().unwrap();
+    let jobs = d.path().join("jobs.yaml");
+    fs::write(&jobs, "version: 4\njobs: []\n").unwrap();
+    let ledger = Ledger::new(d.path()).unwrap();
+    // Enough rows that the output outgrows any single write the pipe could absorb.
+    for n in 0..200 {
+        let mut record = Record::new(format!("run-{n}"), Status::Started);
+        record.job = Some(format!("job-{n}"));
+        record.fired_at = Some("2026-09-17T22:30:00Z".parse().unwrap());
+        record.harness = Some(HarnessKind::Claude);
+        ledger.append(&record).unwrap();
+        ledger
+            .append(&Record::new(format!("run-{n}"), Status::Ok))
+            .unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cones"))
+        .args(["--jobs", jobs.to_str().unwrap()])
+        .args(["--state-dir", d.path().to_str().unwrap()])
+        .args(["ls", "--runs", "--json"])
+        .env("HOME", d.path())
+        .env("CLAUDE_CONFIG_DIR", d.path().join("claude"))
+        .env("CODEX_HOME", d.path().join("missing-codex"))
+        .env("PI_CODING_AGENT_DIR", d.path().join("missing-pi"))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        out.status.success() || out.status.signal() == Some(libc::SIGPIPE),
+        "{:?}: {stderr}",
+        out.status
+    );
+}

@@ -2433,3 +2433,140 @@ fn fixture_daemons_end_with_their_test_even_when_it_fails() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
+
+/// A background job that stops to ask is announced by its own question: Claude writes it as
+/// `needsAsk.text` while the job waits, and the notification quotes it on one line. A job that
+/// waits without one, as older Claude versions write it, keeps `needs input`. A failed job is
+/// counted in the header and on its folder's heading, which leave the count out at zero. On
+/// the waiting row the composer points at Enter, since typed text starts a new agent.
+#[test]
+fn a_waiting_job_is_announced_by_its_question_and_a_failure_is_counted() {
+    let mut d = Dashboard::new("claude-input-notice", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    let notified = d.path("notified.txt");
+    let notifier = d.path("notify.sh");
+    fs::write(
+        &notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$2\" >> '{}'\n",
+            notified.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(
+        &notifier,
+        <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+    )
+    .unwrap();
+    d.env.push((
+        "CONES_NOTIFIER",
+        Box::leak(notifier.to_string_lossy().into_owned().into_boxed_str()),
+    ));
+    let yaml = fs::read_to_string(d.path("jobs.yaml")).unwrap();
+    fs::write(
+        d.path("jobs.yaml"),
+        format!("{yaml}start:\n  notify: true\n"),
+    )
+    .unwrap();
+    // The first row holds the cursor, so the jobs that change are never on screen in the pane.
+    let _first = seed(&d, &project, 1, "Fix the lint", "busy", Some("working"));
+    let asking = seed(&d, &project, 2, "Merge the parser", "busy", Some("working"));
+    let plain = seed(&d, &project, 3, "Tidy the notes", "busy", Some("working"));
+    let broken = seed(&d, &project, 4, "Port the build", "busy", Some("working"));
+    d.start();
+    let screen = d.wait_text("4 working");
+    assert!(!screen.contains("failed"), "{screen}");
+    let set = |s: &Seeded, job: Value, status: &str| {
+        let claude = d.home().join(".claude");
+        fs::write(
+            claude.join("jobs").join(&s.short).join("state.json"),
+            job.to_string(),
+        )
+        .unwrap();
+        let entry = claude
+            .join("sessions")
+            .join(format!("{}.json", s.daemon.id()));
+        let mut record: Value = serde_json::from_slice(&fs::read(&entry).unwrap()).unwrap();
+        record["status"] = status.into();
+        fs::write(&entry, record.to_string()).unwrap();
+    };
+    set(
+        &asking,
+        json!({"state": "blocked", "tempo": "blocked", "sessionId": asking.id,
+               "detail": "drafted the merge", "needs": "approve the merge",
+               "needsAsk": {"id": "a1", "text": "Merge the parser branch\ninto main now?"}}),
+        "waiting",
+    );
+    set(
+        &plain,
+        json!({"state": "blocked", "tempo": "blocked", "sessionId": plain.id}),
+        "waiting",
+    );
+    set(
+        &broken,
+        json!({"state": "failed", "tempo": "idle", "sessionId": broken.id}),
+        "idle",
+    );
+    let notices = d.wait_file("notified.txt", |t| t.lines().count() >= 3);
+    let mut lines: Vec<&str> = notices.lines().collect();
+    lines.sort();
+    assert_eq!(
+        lines,
+        [
+            "Merge the parser: Merge the parser branch into main now?",
+            "Port the build: ready to review",
+            "Tidy the notes: needs input",
+        ],
+        "{notices}"
+    );
+    let screen = d.wait_text("✗ 1 failed");
+    d.capture("failed");
+    assert!(
+        screen.contains("1 working  ▇ 2 input  ✗ 1 failed"),
+        "{screen}"
+    );
+    let heading = screen
+        .lines()
+        .find(|l| l.contains("▇ 2") && !l.contains("input"))
+        .unwrap_or_else(|| panic!("no counted heading:\n{screen}"))
+        .split('│')
+        .next()
+        .unwrap();
+    assert!(heading.trim_end().ends_with("▇ 2  ✗ 1"), "{screen}");
+    // The question is the session's reported last line, for the list and for agents alike.
+    let listed = d.cli(&["ls", "--json"], &[]);
+    let last = String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|row| row["session"]["session_id"] == asking.id.as_str())
+        .map(|row| row["session"]["last"].clone());
+    assert_eq!(
+        last,
+        Some(json!("Merge the parser branch\ninto main now?")),
+        "{}",
+        String::from_utf8_lossy(&listed.stdout)
+    );
+    // Rows that start together keep no fixed order, so walk down to each one from the top.
+    let mut select = |title: &str| {
+        for _ in 0..5 {
+            d.press("up", UP);
+        }
+        for _ in 0..8 {
+            let screen = d.screen();
+            if selected(&screen).contains(title) {
+                return d.wait_for(title, |s| selected(s).contains(title));
+            }
+            d.press("down", DOWN);
+        }
+        panic!("{title} was never selected:\n{}", d.screen());
+    };
+    let screen = select("Merge the parser");
+    assert!(
+        screen.contains("Enter to answer it, or type to start a new agent…"),
+        "{screen}"
+    );
+    let screen = select("Port the build");
+    assert!(screen.contains("Type to start a new agent…"), "{screen}");
+    d.quit();
+}

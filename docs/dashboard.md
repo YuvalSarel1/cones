@@ -8,7 +8,8 @@ defaults and accepted values.
 
 ## Navigation
 
-The summary counts working, input, idle and done sessions. A blue `❯ shell`
+The summary counts working, input, idle and done sessions, and failed ones, after input,
+while there are any. A blue `❯ shell`
 count joins them while a session's turn has ended with a background shell still running; only
 Claude Code reports that, see [state](harness.md#state). That ended turn is an unread completion
 like any other. `! stale` means a
@@ -22,7 +23,11 @@ between reads with identical final replies cannot be distinguished.
 
 Use `ctrl+f` with `:attention` for input requests and unread completions, or `:unread` for
 completions alone. Append text to narrow the results. Optional desktop notifications use
-`start.notify`, default off; the focused session stays quiet. Job failure notifications have
+`start.notify`, default off; the focused session stays quiet. A session waiting for input
+is quoted by what it reports asking, such as a Claude background job's question, cut to one
+line; one that reports nothing says `needs input`. On a waiting row the composer's
+placeholder points at Enter, which opens the session to answer it; typed text still starts
+a new agent. Job failure notifications have
 a separate setting.
 
 | Key | Action |
@@ -145,7 +150,7 @@ Git worktrees share their repository heading. A worktree with two or more sessio
 `⑂` heading of its own inside it, named by the worktree's last part and lined up with the
 titles. Tree lines join a folder's worktree headings and the rows under them, `├ ⑂ NAME` and
 `└ ⑂ NAME` for the last. A lone worktree session stays among the repository's own, marked `⑂`.
-Every heading counts its sessions that are working, at a shell, waiting for input or done, in
+Every heading counts its sessions that are working, at a shell, waiting for input, failed or done, in
 the header's marks and colours, after its name; idle sessions go uncounted. [`worktrees: flat`](jobs.md#list-settings) lists every worktree session that
 way. A folder opened inside a worktree heads the sessions that run in it, under either
 setting. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
