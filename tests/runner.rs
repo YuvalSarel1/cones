@@ -499,7 +499,13 @@ fn dry_run_warns_on_stderr_before_printing_injected_environment() {
         .unwrap();
     assert!(result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("may contain secrets"));
-    assert!(String::from_utf8_lossy(&result.stdout).starts_with("<?xml"));
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    if cfg!(target_os = "macos") {
+        assert!(stdout.starts_with("<?xml"), "{stdout}");
+    } else {
+        assert!(stdout.starts_with("# cones-"), "{stdout}");
+        assert!(stdout.contains("\n[Timer]\nOnCalendar="), "{stdout}");
+    }
 }
 #[test]
 fn successful_harness_cannot_leave_a_shell_running() {

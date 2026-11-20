@@ -8,7 +8,7 @@
 
 ## Install
 
-Requires macOS and a [configured harness](docs/harness.md).
+Requires macOS or Linux and a [configured harness](docs/harness.md).
 
 ```sh
 brew tap YuvalSarel1/cones https://github.com/YuvalSarel1/cones
@@ -17,6 +17,8 @@ brew install cones
 ```
 
 On Intel Macs Homebrew builds from source and needs a current Xcode. Or use Cargo: `cargo install --git https://github.com/YuvalSarel1/cones`.
+
+On Linux, install with Cargo; it needs `procps` (`ps`). Jobs run from systemd user timers, notifications use `notify-send`, and the clipboard uses `wl-copy`/`wl-paste` or `xclip`, falling back to the terminal's OSC 52 over ssh.
 
 ## Quick start
 

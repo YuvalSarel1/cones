@@ -262,7 +262,7 @@ pub fn foreground(background: &std::process::Command) -> std::process::Command {
 /// Copilot's npm shim waits on a native child. Spawn that same packaged binary so
 /// the viewer PID is the client PID; arbitrary user wrappers keep their behavior.
 fn native_executable(kind: HarnessKind, path: PathBuf) -> PathBuf {
-    if kind != HarnessKind::Copilot || !cfg!(target_os = "macos") {
+    if kind != HarnessKind::Copilot {
         return path;
     }
     let Some(loader) = path
@@ -282,7 +282,11 @@ fn native_executable(kind: HarnessKind, path: PathBuf) -> PathBuf {
     };
     // npm puts the platform package beside the loader's package or nests it inside,
     // depending on the Copilot release.
-    let platform = format!("copilot-darwin-{arch}");
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        os => os,
+    };
+    let platform = format!("copilot-{os}-{arch}");
     [
         package.with_file_name(&platform),
         package.join("node_modules/@github").join(&platform),
@@ -1723,6 +1727,7 @@ pub fn launch_path() -> String {
         home.join(".cargo/bin"),
         home.join(".opencode/bin"),
         PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
@@ -1914,7 +1919,7 @@ impl Harness for Claude {
         // Resolve from the same PATH that launchd will use. Never rely on a shell alias.
         let env = environment(job)?;
         let program = executable("claude", &env["PATH"])
-            .ok_or_else(|| anyhow::anyhow!("claude is missing from the launchd PATH"))?;
+            .ok_or_else(|| anyhow::anyhow!("claude is missing from the scheduler PATH"))?;
         Ok(Invocation {
             program,
             args,
@@ -2006,7 +2011,7 @@ impl Harness for Codex {
             .collect::<Result<Vec<_>>>()?;
         let env = environment(job)?;
         let program = executable("codex", &env["PATH"])
-            .ok_or_else(|| anyhow::anyhow!("codex is missing from the launchd PATH"))?;
+            .ok_or_else(|| anyhow::anyhow!("codex is missing from the scheduler PATH"))?;
         Ok(Invocation {
             program,
             args,

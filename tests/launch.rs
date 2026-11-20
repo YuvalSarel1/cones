@@ -78,8 +78,8 @@ impl Fixture {
             &loader,
             "#!/usr/bin/python3\nimport glob, os, subprocess, sys\n\
              here = os.path.dirname(os.path.realpath(__file__))\n\
-             native = glob.glob(here + '/../copilot-darwin-*/copilot') + \
-             glob.glob(here + '/node_modules/@github/copilot-darwin-*/copilot')\n\
+             native = glob.glob(here + '/../copilot-*-*/copilot') + \
+             glob.glob(here + '/node_modules/@github/copilot-*-*/copilot')\n\
              sys.exit(subprocess.call([native[0], *sys.argv[1:]]))\n",
         )
         .unwrap();
@@ -827,9 +827,11 @@ fn a_launch_with_no_prompt_detaches_and_is_named_like_any_other() {
 
 #[test]
 fn a_copilot_launch_is_one_row_for_its_native_client_wherever_npm_put_it() {
-    if !cfg!(target_os = "macos") {
-        return;
-    }
+    let os = if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    };
     let arch = if cfg!(target_arch = "aarch64") {
         "arm64"
     } else {
@@ -837,8 +839,8 @@ fn a_copilot_launch_is_one_row_for_its_native_client_wherever_npm_put_it() {
     };
     // Beside the loader's package, and nested inside it as Copilot 1.0.95 installs.
     for platform in [
-        format!("../copilot-darwin-{arch}"),
-        format!("node_modules/@github/copilot-darwin-{arch}"),
+        format!("../copilot-{os}-{arch}"),
+        format!("node_modules/@github/copilot-{os}-{arch}"),
     ] {
         let f = Fixture::copilot(&platform);
         let out = f.launch("ok", "copilot", "tidy the imports");

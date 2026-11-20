@@ -71,7 +71,7 @@ pub fn calendar_intervals(schedule: &str) -> Result<Vec<Interval>> {
         !(fields[2].is_some()
             && fields[4].is_some()
             && (parts[2].starts_with('*') || parts[4].starts_with('*'))),
-        "a wildcard day step combined with a restricted other day field cannot be represented by launchd; simplify the day/weekday constraint"
+        "a wildcard day step combined with a restricted other day field cannot be represented by launchd or systemd; simplify the day/weekday constraint"
     );
     let mut all = BTreeSet::new();
     for variant in [fields] {
@@ -83,7 +83,7 @@ pub fn calendar_intervals(schedule: &str) -> Result<Vec<Interval>> {
             if let Some(values) = values {
                 ensure!(
                     rows.len() * values.len() <= 4096,
-                    "cron expands beyond 4096 launchd intervals; simplify the schedule"
+                    "cron expands beyond 4096 calendar intervals; simplify the schedule"
                 );
                 rows = rows
                     .into_iter()
@@ -101,7 +101,7 @@ pub fn calendar_intervals(schedule: &str) -> Result<Vec<Interval>> {
     }
     ensure!(
         all.len() <= 4096,
-        "cron expands beyond 4096 launchd intervals"
+        "cron expands beyond 4096 calendar intervals"
     );
     Ok(all.into_iter().collect())
 }
@@ -162,6 +162,9 @@ pub fn first_missed(
 /// that goes disabled, renamed or deleted loses its plist, so this is the moment the schedule now
 /// on disk started firing rather than the first time the job ever existed.
 pub fn installed_at(name: &str) -> Result<Option<DateTime<Local>>> {
+    if cfg!(target_os = "linux") {
+        return crate::systemd::installed_at(name);
+    }
     match fs::metadata(exported_plist_path(name)?) {
         Ok(meta) => Ok(Some(meta.modified()?.into())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -417,6 +420,9 @@ pub fn install(
     state: &Path,
     dry_run: bool,
 ) -> Result<()> {
+    if cfg!(target_os = "linux") {
+        return crate::systemd::install(jobs, exe, jobs_path, state, dry_run);
+    }
     let prepared: Vec<_> = jobs
         .iter()
         .filter(|j| j.enabled)
@@ -447,7 +453,7 @@ pub fn install(
     }
     ensure!(
         cfg!(target_os = "macos"),
-        "install requires macOS launchd; --dry-run works on Unix"
+        "install requires macOS launchd or Linux systemd; --dry-run works on Unix"
     );
     crate::private_dir(state)?;
     crate::private_dir(&state.join("logs"))?;
@@ -556,6 +562,9 @@ pub fn relearn_signatures() -> Result<()> {
 /// Ask launchd to run a job's agent now, as a missed tick would have. The run comes from the
 /// job's own plist, so its environment is the one `install` captured rather than this process's.
 pub fn kickstart(job: &str) -> Result<()> {
+    if cfg!(target_os = "linux") {
+        return crate::systemd::kickstart(job);
+    }
     ensure!(
         loaded(&label(job))?,
         "job {job} has no LaunchAgent loaded; save it in the dashboard to install it"
@@ -622,9 +631,12 @@ fn uninstall_one(name: &str, dir: &Path) -> Result<()> {
 }
 
 pub fn uninstall_all() -> Result<()> {
+    if cfg!(target_os = "linux") {
+        return crate::systemd::uninstall_all();
+    }
     ensure!(
         cfg!(target_os = "macos"),
-        "uninstall requires macOS launchd"
+        "uninstall requires macOS launchd or Linux systemd"
     );
     let dir = agents_dir()?;
     for name in installed_agents(&dir)? {

@@ -357,7 +357,6 @@ fn shrinking_then_regrowing_the_pane_keeps_an_inline_prompt_where_the_app_drew_i
 }
 
 /// One part of `scripts/check-terminals.py` against the real dashboard; returns its stdout.
-#[cfg(target_os = "macos")]
 fn real_dashboard(part: &str) -> String {
     let output = Command::new("python3")
         .arg(concat!(
@@ -378,13 +377,11 @@ fn real_dashboard(part: &str) -> String {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
 fn real_dashboard_quit_and_crash_preserve_the_same_shell_and_draft() {
     assert!(real_dashboard("shell").contains("same PID"));
 }
 
 #[test]
-#[cfg(target_os = "macos")]
 fn real_dashboard_exits_on_hangup_during_incomplete_input() {
     assert!(real_dashboard("hangup").contains("terminal hangup exits"));
 }

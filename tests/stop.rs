@@ -30,7 +30,11 @@ fi
 if [ "$1" = attach ]; then
     exec /usr/bin/python3 -u "$(dirname "$0")/fake-attach.py" "$2"
 fi
-home=${CLAUDE_CONFIG_DIR:?a stop must name the native home of its session}
+if [ "$1" = stop ]; then
+    home=${CLAUDE_CONFIG_DIR:?a stop must name the native home of its session}
+else
+    home=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+fi
 printf '%s\n' "$* $home" >> "$home/calls.log"
 if [ "$1" != stop ]; then
     echo "cones asked for claude $1, which is not a stop" >&2
@@ -1487,13 +1491,15 @@ fn rm_on_a_finished_run_removes_the_session_it_left_behind() {
 }
 
 /// `cones rm NAME` on an idle job deletes that block and leaves the rest of the file as written,
-/// then reinstalls the schedules. A file at `$HOME/Library` stops the install before any
-/// `launchctl` call reaches the machine's real domain, so the failure is reported after the
-/// delete.
+/// then reinstalls the schedules. Files at `$HOME/Library` and `$HOME/.config/systemd` stop the
+/// install before any `launchctl` or `systemctl` call reaches the machine's real domain, so the
+/// failure is reported after the delete.
 #[test]
 fn rm_deletes_an_idle_job_and_leaves_the_rest_of_the_file() {
     let f = Fixture::new();
     fs::write(f.root.path().join("Library"), "no LaunchAgents here\n").unwrap();
+    fs::create_dir_all(f.root.path().join(".config")).unwrap();
+    fs::write(f.root.path().join(".config/systemd"), "no units here\n").unwrap();
     let jobs = f.root.path().join("jobs.yaml");
     let kept = "  # kept as written\n  - name: keep\n    schedule: '0 3 * * *'\n    cwd: /tmp\n    prompt: keep\n";
     let gone = "  - name: gone\n    schedule: '0 4 * * *'\n    cwd: /tmp\n    prompt: gone\n";

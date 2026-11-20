@@ -14,13 +14,13 @@
 //! `~/.local/bin`, and its `--model` picks the outcome. No model is called.
 //!
 //! Saving and deleting a job also installs schedules through `cones __install`, and that
-//! reaches the machine: the plists go under `$HOME/Library/LaunchAgents`, which the fixture
-//! HOME contains, but `launchctl print`, `bootstrap` and `bootout` address the real
-//! `gui/<uid>` domain, which no HOME redirection contains. So every fixture here makes
-//! `$HOME/Library` a plain file: the install fails creating the agents directory, before any
-//! `launchctl` call, and startup's signature relearn finds no agents to touch. The tests assert
-//! that the install was attempted and stopped there; whether launchd loads a job is not
-//! exercised.
+//! reaches the machine: the plists go under `$HOME/Library/LaunchAgents` and the systemd units
+//! under `$HOME/.config/systemd/user`, which the fixture HOME contains, but `launchctl` and
+//! `systemctl --user` address the real user domain, which no HOME redirection contains. So
+//! every fixture here makes `$HOME/Library` and `$HOME/.config/systemd` plain files: the install
+//! fails creating the agents directory, before any `launchctl` or `systemctl` call, and startup's
+//! signature relearn finds no agents to touch. The tests assert that the install was attempted
+//! and stopped there; whether the scheduler loads a job is not exercised.
 use crate::dashboard::*;
 use serde_json::Value;
 use std::{fs, os::unix::fs::PermissionsExt};
@@ -50,12 +50,18 @@ run_columns: [status, model, folder, reason]
 ";
 
 /// A fixture with the fake Claude on the launch path, `jobs` under `jobs:`, and no
-/// LaunchAgents directory for an install to reach.
+/// LaunchAgents or systemd units directory for an install to reach.
 fn fixture(test: &str, jobs: &str) -> Dashboard {
     let d = Dashboard::new(test, &["claude"]);
     fs::write(
         d.home().join("Library"),
         "a file, so no LaunchAgent can be installed\n",
+    )
+    .unwrap();
+    fs::create_dir_all(d.home().join(".config")).unwrap();
+    fs::write(
+        d.home().join(".config/systemd"),
+        "a file, so no systemd unit can be installed\n",
     )
     .unwrap();
     let claude = d.home().join(".local/bin/claude");
@@ -100,9 +106,11 @@ fn select_job(d: &mut Dashboard, name: &str) {
     panic!("no job row {name}:\n{}", d.screen());
 }
 
-/// `$HOME/Library` is still the fixture's file: nothing was installed.
+/// `$HOME/Library` and `$HOME/.config/systemd` are still the fixture's files: nothing was
+/// installed.
 fn assert_no_agents(d: &Dashboard) {
     assert!(d.home().join("Library").is_file());
+    assert!(d.home().join(".config/systemd").is_file());
 }
 
 fn records(d: &Dashboard) -> Vec<Value> {

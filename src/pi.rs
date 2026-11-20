@@ -83,7 +83,6 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
         &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
     );
     procs.retain(|p| own.contains(&p.pid));
-    #[cfg(target_os = "macos")]
     for p in &mut procs {
         p.cwd = crate::process_info::cwd(p.pid);
     }
@@ -99,7 +98,7 @@ pub fn sessions_from(ps: &str, pi: &Path) -> anyhow::Result<Vec<Session>> {
     } else {
         crate::observe::spawn(
             crate::observe::op::OPEN_FILES,
-            Command::new("/usr/sbin/lsof")
+            Command::new(crate::process_info::LSOF)
                 .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
                 .stdin(Stdio::null()),
         )

@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Dashboard controls](dashboard.md) · [Configuration and runs](jobs.md)
 
-Plain `cones` opens the dashboard. `launch` starts a session in a folder; `run` starts supervised work from the shell or launchd; `catchup` recovers missed schedules at login.
+Plain `cones` opens the dashboard. `launch` starts a session in a folder; `run` starts supervised work from the shell or the scheduler; `catchup` recovers missed schedules at login.
 
 ## Global flags
 
@@ -24,7 +24,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | Command | Effect |
 | --- | --- |
 | `cones` | Open the dashboard; requires a terminal. |
-| `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd passes `schedule`. |
+| `cones run JOB [--trigger manual\|schedule]` | Run a configured job. Trigger defaults to `manual`; launchd and systemd pass `schedule`. |
 | `cones run --prompt "..." [JOB]` | Run a [one-off task](#one-off-tasks). |
 | `cones launch --dir PATH [PROMPT] [--harness NAME] [--model ID] [--effort E] [--provider P] [--name NAME] [--parent ID|self] [--print-command] [--no-prompt-record] [--wait [--timeout S]]` | [Start a session](#starting-a-session) the way the dashboard's composer does. The session runs detached, needs no terminal, and its identifier is printed. |
 | `cones resume ID`, `cones fork ID` | [Reopen or fork a conversation](#resuming-and-forking) from history, detached, and print its id. |

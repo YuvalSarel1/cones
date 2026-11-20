@@ -40,17 +40,17 @@ Claude and Codex are the harnesses cones can supervise, so they are the only one
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `name` | required | Unique, 1-80 ASCII letters, digits, `-` or `_`. `catchup` is reserved. Used for the LaunchAgent label and Claude's session name. |
+| `name` | required | Unique, 1-80 ASCII letters, digits, `-` or `_`. `catchup` is reserved. Used for the LaunchAgent label, the systemd unit name and Claude's session name. |
 | `schedule` | required | Five-field local-time cron; see [schedules](#schedules). |
 | `cwd` | required | Existing working directory. `~/` expands; relative paths resolve against the jobs file's directory. |
 | `prompt` | required | Nonempty task, passed as the final command-line argument after `--`. |
-| `enabled` | `true` | Saving a disabled job removes its LaunchAgent; attempts to run it record `skipped` / `disabled`. |
+| `enabled` | `true` | Saving a disabled job removes its LaunchAgent or systemd units; attempts to run it record `skipped` / `disabled`. |
 | `harness` | `claude` | Must be `claude`. Other [harness keys](#composer-harnesses) are valid in the composer settings and refused on a job. |
 | `model` | harness's own | Overrides the per-harness default. Must be nonempty and contain no NUL. |
 | `timeout_min` | `30` | Positive number of minutes, at most `10080` (one week). This is the only run limit; there is no dollar or turn cap. |
 | `overlap` | `skip` | `skip`, `allow` or `replace`; see [overlap](#overlap). |
 | `catch_up` | `skip` | `skip` or `once`; see [sleep-and-login behavior](#sleep-login-and-reboot). |
-| `notify` | `false` | macOS notification through `osascript` when a run fails or times out. `CONES_NOTIFIER` can name a command receiving the title and message instead. |
+| `notify` | `false` | Desktop notification through `osascript` on macOS or `notify-send` on Linux when a run fails or times out. `CONES_NOTIFIER` can name a command receiving the title and message instead. |
 | `archive_transcript` | `false` | Copy the native transcript into the [run's state directory](#stored-files) when it ends. |
 | `env` | `[]` | Shell variable names to import. A job's nonempty list replaces the default list; an empty list inherits it, so opting out requires removing the name from `defaults.env`. See [environment](#environment). |
 | `bedrock` | unset | `true` selects Amazon Bedrock; `false` selects the native endpoint; unset follows the harness configuration. Claude's definition is the only one that [names a Bedrock switch](harness-definitions.md#commands); Codex selects it with [`codex_provider`](#codex-provider), and pi and OpenCode select Bedrock as a provider through `pi_provider` and `opencode_model`. |
@@ -159,7 +159,7 @@ The agent `folder` column appears when grouped by state. Normal folder groups id
 | `reason` | Runs | Failure, timeout or skip reason. |
 | `trigger` | Runs | `manual` or `schedule`. |
 | `schedule` | Jobs | Configured local cron rule, separate from status. |
-| `next_run` | Jobs | Next time matching the enabled job's configured calendar intervals. This is the configured schedule, not confirmation that its LaunchAgent is loaded. Disabled jobs show `-`. |
+| `next_run` | Jobs | Next time matching the enabled job's configured calendar intervals. This is the configured schedule, not confirmation that its LaunchAgent or timer is loaded. Disabled jobs show `-`. |
 | `last_run` | Jobs | Time since the latest run started. |
 
 Missing values show `-`. `cpu`, `memory` and `children` cover the agent's process tree, stopping at any other listed session below it. Summed resident memory counts pages the processes share once per process. A session with no process of its own shows `-`. A Codex thread runs inside the daemon that holds it, and the kernel charges the daemon, not a thread: the daemon's process tree shows on a thread's row only when it is the daemon's only thread or its only working one, otherwise every thread of that daemon shows `-`, as does a thread the daemon has released. Where Codex reports the processor share and resident size of every command a thread is running, the row shows those instead; Codex 0.165 sends them empty. History offers no live state, activity chart or process columns. Unknown column names are rejected; duplicate names are ignored. Older `last`, `dir`, `took` and `commands` names remain accepted as aliases for `last_reply`, `folder`, `duration` and `children`; saves write the explicit names.
@@ -221,7 +221,7 @@ Buckets align to the clock. Bars move left once per bucket; only the newest grow
 
 ## Schedules
 
-Cron fields are minute, hour, day, month and weekday; `0` and `7` both mean Sunday. Lists, ranges and steps work, up to 4096 compiled launchd intervals. A schedule restricting both day and weekday while one uses a wildcard step is rejected: launchd ORs those fields where cron ANDs them.
+Cron fields are minute, hour, day, month and weekday; `0` and `7` both mean Sunday. Lists, ranges and steps work, up to 4096 compiled calendar intervals. A schedule restricting both day and weekday while one uses a wildcard step is rejected: launchd ORs those fields where cron ANDs them, and the systemd units keep launchd's reading.
 
 Saving or deleting a job in the dashboard installs schedules for the file. Each enabled job gets a per-user LaunchAgent loaded with `launchctl bootstrap` in `gui/<uid>`. Only changed plists are rewritten and re-bootstrapped; agents present on disk but unloaded are bootstrapped, and disabled or removed jobs are booted out. Existing run records and transcripts remain.
 
@@ -237,15 +237,25 @@ Saving or deleting a job in the dashboard installs schedules for the file. Each 
 | `StandardOutPath`, `StandardErrorPath` | `~/.cones/logs/<name>.out.log`, `.err.log` | `~/.cones/logs/catchup.out.log`, `.err.log` |
 | `EnvironmentVariables` | [Environment captured at install](#environment) | None; each catch-up starts the job's own agent |
 
+On Linux each enabled job gets a systemd user service and timer instead, written to `~/.config/systemd/user` (or `$XDG_CONFIG_HOME/systemd/user`) and enabled with `systemctl --user`. Only changed units are rewritten; their timers restart so the next tick is recomputed, and stale units are disabled and removed. A run in flight is never stopped by an install.
+
+| Unit | Job | Catch-up, when needed |
+| --- | --- | --- |
+| Files | `cones-<name>.service`, `cones-<name>.timer` | `cones-catchup.service`, enabled for `default.target` |
+| Schedule | One `OnCalendar=` per compiled tick, a Day-or-Weekday tick split in two; `AccuracySec=1s`; not `Persistent` | none; it runs when the user manager starts |
+| Service | `Type=oneshot`, `TimeoutStartSec=infinity`, the same arguments, working directory, logs and [environment](#environment) as the LaunchAgent | catch-up arguments, state directory, logs |
+
+User timers run only while the user's systemd manager does: from login to logout, or always after `loginctl enable-linger`.
+
 ### Sleep, login and reboot
 
-launchd coalesces ticks missed during sleep into one launch on wake; it does not wake the Mac. Ticks missed while powered off or logged out are lost. Job agents do not run merely because they were installed or the user logged in. These are launchd's documented semantics; physical sleep, reboot and login have not been verified by this project's checks.
+launchd coalesces ticks missed during sleep into one launch on wake, and a systemd timer fires once on resume; neither wakes the machine. Ticks missed while powered off or logged out are lost. Job agents do not run merely because they were installed or the user logged in. These are launchd's and systemd's documented semantics; physical sleep, reboot and login have not been verified by this project's checks.
 
 An enabled job with `catch_up: once` adds the shared login agent in the table above. For each such job, `cones catchup` walks its cron forward from the latest ledger record with trigger `schedule`, including a skipped run, looking back at most 31 days. No prior scheduled record means no catch-up, so first install cannot fire a job.
 
-A missed tick requests `launchctl kickstart` of the job's agent, retaining that agent's environment and schedule trigger. However many ticks passed, it requests only one run per job, subject to overlap admission. The catch-up decision itself appears only in `catchup.out.log`. Saving the file removes the login agent when no enabled job requests it.
+A missed tick requests `launchctl kickstart` of the job's agent, or `systemctl --user start` of its service, retaining that agent's environment and schedule trigger. However many ticks passed, it requests only one run per job, subject to overlap admission. The catch-up decision itself appears only in `catchup.out.log`. Saving the file removes the login agent when no enabled job requests it.
 
-The walk also starts no earlier than the job's own LaunchAgent was written. A disabled job has no agent, so re-enabling one that last ran a fortnight ago catches up nothing: that window was paused, not missed. Editing a schedule rewrites the plist for the same reason, and ticks only the previous cron would have fired are dropped with it. A job left enabled and unchanged keeps its plist untouched, so its window is still the last tick launchd delivered.
+The walk also starts no earlier than the job's own LaunchAgent, or on Linux its timer, was written. A disabled job has no agent, so re-enabling one that last ran a fortnight ago catches up nothing: that window was paused, not missed. Editing a schedule rewrites the plist for the same reason, and ticks only the previous cron would have fired are dropped with it. A job left enabled and unchanged keeps its plist untouched, so its window is still the last tick launchd delivered.
 
 ### Overlap
 
@@ -333,7 +343,7 @@ Each run starts with a cleared environment. Installed schedules capture values i
 
 A background launch prints no usage totals. Run tokens come from the conversation's reported usage; a saved status line supplies the context window and takes precedence for cost. Without a native dollar total, a displayed estimate requires reported provider, model and usage plus matching cached prices. Missing inputs leave cost unavailable.
 
-A run's clock starts when it fires and counts only time the Mac is awake: the timeout, the recorded `duration_s` and the dashboard's duration while the run is supervised all use it. A closed lid pauses it, though launchd can fire a job during a brief dark wake and the agent works in the wakes that follow.
+A run's clock starts when it fires and counts only time the machine is awake: the timeout, the recorded `duration_s` and the dashboard's duration while the run is supervised all use it. A closed lid pauses it, though launchd can fire a job during a brief dark wake and the agent works in the wakes that follow.
 
 The start record contains `trigger` (`manual` or `schedule`), `fired_awake_s` (the awake clock at firing), `session_id`, `cwd`, `pid`, `pgid`, `timeout_s`, `policy` and its SHA-256 `policy_hash`. The policy excludes the session id; job name and prompt are normalized out of the hash, so compiler flag changes can be compared across runs. The terminal record contains `duration_s`, `exit`, `tokens_in`, `tokens_out`, `cost_usd`, `reason` and, when archived, `transcript`. Cost is the harness's reported value, with no price calculation by cones.
 
@@ -354,5 +364,5 @@ State defaults to `~/.cones`; [`--state-dir`](cli.md) relocates it. Directories 
 | `output/<run_id>/events.jsonl` | Streamed events, capped at 64 MiB total and 1 MiB per line. |
 | `output/<run_id>/stderr.log` | Captured stderr, capped at 1 MiB. |
 | `transcripts/<run_id>/<session_id>.jsonl` | Archived transcript, when requested. |
-| `logs/<job>.out.log`, `logs/<job>.err.log` | launchd's stdout and stderr. |
+| `logs/<job>.out.log`, `logs/<job>.err.log` | The scheduled run's stdout and stderr. |
 | `locks/admission/`, `locks/runs/` | Admission lock and one lease held for each live run. |

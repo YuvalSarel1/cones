@@ -21,6 +21,8 @@ import time
 BUILD_SLOTS = 2
 GATE_SLOTS = 2
 TASKPOLICY = "/usr/sbin/taskpolicy"
+# Background QoS on macOS; Linux has none, and a lower CPU priority stands in for it.
+BACKGROUND = [TASKPOLICY, "-b"] if os.path.exists(TASKPOLICY) else ["nice", "-n", "10"]
 PRIO_DARWIN_PROCESS = 4
 
 
@@ -110,7 +112,8 @@ def test_threads():
     # or 12 no faster, with a wall-clock failure at 12.
     try:
         count = int(subprocess.check_output(
-            ["/usr/sbin/sysctl", "-n", "hw.perflevel0.logicalcpu"], text=True
+            ["/usr/sbin/sysctl", "-n", "hw.perflevel0.logicalcpu"],
+            text=True, stderr=subprocess.DEVNULL,
         ))
     except (OSError, subprocess.CalledProcessError, ValueError):
         count = os.cpu_count() or 2
@@ -122,11 +125,13 @@ def build_jobs():
     # there are of those only queue inside rustc.
     try:
         count = subprocess.check_output(
-            ["/usr/sbin/sysctl", "-n", "hw.perflevel1.logicalcpu"], text=True
+            ["/usr/sbin/sysctl", "-n", "hw.perflevel1.logicalcpu"],
+            text=True, stderr=subprocess.DEVNULL,
         )
         return str(max(2, int(count)))
     except (OSError, subprocess.CalledProcessError, ValueError):
-        return "2"
+        # Linux has no efficiency-core count and no background QoS: use every core.
+        return str(max(2, os.cpu_count() or 2))
 
 
 def lease(kind, stage, command):
@@ -160,17 +165,16 @@ def lease(kind, stage, command):
         take(lock, fcntl.LOCK_SH, waiter, [lock_path])
         fcntl.flock(turnstile, fcntl.LOCK_UN)
         env.setdefault("CARGO_BUILD_JOBS", build_jobs())
-        if os.path.exists(TASKPOLICY):
-            command = [TASKPOLICY, "-b", *command]
+        command = [*BACKGROUND, *command]
     else:
         take(turnstile, fcntl.LOCK_EX, waiter, [lock_path, *slot_paths])
         take(lock, fcntl.LOCK_EX, waiter, [lock_path, *slot_paths])
         fcntl.flock(turnstile, fcntl.LOCK_UN)
         record(lock)
-        if env.get("CONES_CHECK_CI") and os.path.exists(TASKPOLICY):
+        if env.get("CONES_CHECK_CI"):
             # `scripts/check ci`: the efficiency cores stand in for a loaded CI runner.
-            command = [TASKPOLICY, "-b", *command]
-        elif hasattr(os, "setpriority"):
+            command = [*BACKGROUND, *command]
+        elif sys.platform == "darwin":
             # Normal priority even when the gate itself was started in the background.
             os.setpriority(PRIO_DARWIN_PROCESS, 0, 0)
     waited = time.monotonic() - requested

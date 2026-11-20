@@ -4,7 +4,7 @@
 #[cfg(test)]
 #[path = "../assets/tui_capture.rs"]
 mod readme_capture;
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 #[path = "tui/stress.rs"]
 mod stress;
 
@@ -3513,17 +3513,43 @@ fn paste_image() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let path = dir.join(format!("pasted-{stamp}.png"));
-    let open = format!(
-        "set f to open for access POSIX file \"{}\" with write permission",
-        path.display()
-    );
-    let out = Command::new("osascript")
-        .args(["-e", &open])
-        .args(["-e", "write (the clipboard as «class PNGf») to f"])
-        .args(["-e", "close access f"])
-        .output()
-        .map_err(|e| format!("osascript: {e}"))?;
-    if !out.status.success() {
+    let saved = if cfg!(target_os = "macos") {
+        let open = format!(
+            "set f to open for access POSIX file \"{}\" with write permission",
+            path.display()
+        );
+        Command::new("osascript")
+            .args(["-e", &open])
+            .args(["-e", "write (the clipboard as «class PNGf») to f"])
+            .args(["-e", "close access f"])
+            .output()
+            .map_err(|e| format!("osascript: {e}"))?
+            .status
+            .success()
+    } else {
+        // The Wayland or X11 tool writes the PNG to stdout, which is the file.
+        let (program, args): (&str, &[&str]) = if crate::copy::desktop("WAYLAND_DISPLAY") {
+            ("wl-paste", &["--no-newline", "--type", "image/png"])
+        } else {
+            (
+                "xclip",
+                &["-selection", "clipboard", "-target", "image/png", "-out"],
+            )
+        };
+        let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+        Command::new(program)
+            .args(args)
+            .stdout(file)
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&path);
+                format!("{program}: {e}")
+            })?
+            .success()
+            && std::fs::metadata(&path).is_ok_and(|m| m.len() > 0)
+    };
+    if !saved {
         let _ = std::fs::remove_file(&path);
         return Err("no image on the clipboard".into());
     }
@@ -3889,7 +3915,7 @@ fn fleet_rows_observed(
         // Native-home fixtures already scope the archive-backed readers. The six
         // terminal-only readers have no home to isolate: keep their test-owned
         // clients, including native smoke launches, without importing host agents.
-        #[cfg(all(test, target_os = "macos"))]
+        #[cfg(test)]
         if !fixture_session(&s) {
             continue;
         }
@@ -3953,7 +3979,7 @@ fn fleet_rows_observed(
     Ok((out, collapsed))
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(test)]
 fn fixture_session(session: &Session) -> bool {
     if !harness::by_name(&session.harness).is_some_and(|s| s.kind.terminal_only()) {
         return true;
@@ -4982,7 +5008,7 @@ impl JobForm {
             ),
             JobRow::Ask(Step::Name) => (
                 "name",
-                "the job's name in jobs.yaml and launchd: letters, digits, - or _".to_owned(),
+                "the job's name in jobs.yaml and the scheduler: letters, digits, - or _".to_owned(),
             ),
             JobRow::Head => (
                 "runs",
@@ -5081,7 +5107,7 @@ const OPTIONS: &[(&str, &str, &str)] = &[
     (
         "catch_up",
         "skip",
-        "ticks lost while the Mac was off or logged out stay lost",
+        "ticks lost while the machine was off or logged out stay lost",
     ),
     (
         "catch_up",
@@ -6014,7 +6040,7 @@ const FIELDS: [Field; 81] = [
         name: "catch_up",
         short: "missed ticks",
         hint: "Whether to run once after missed schedule ticks.",
-        long: "launchd loses a tick that passes while the Mac is powered off or logged out. once starts one run at the next login when any tick was missed, however many passed; skip leaves them lost. A slept-through tick already fires on wake and needs neither.",
+        long: "launchd and systemd lose a tick that passes while the machine is powered off or logged out. once starts one run at the next login when any tick was missed, however many passed; skip leaves them lost. A slept-through tick already fires on wake and needs neither.",
         builtin: "skip",
         input: Answer::Pick(&["-", "skip", "once"]),
     },
@@ -15791,7 +15817,7 @@ impl App {
     fn install(&mut self, done: &str) {
         let r = self.me().arg("__install").output();
         self.status = match r {
-            Ok(o) if o.status.success() => format!("{done} · launchd reinstalled"),
+            Ok(o) if o.status.success() => format!("{done} · schedule reinstalled"),
             Ok(o) => {
                 let err = String::from_utf8_lossy(&o.stderr);
                 let last = err.lines().rev().find(|l| !l.trim().is_empty());
@@ -19706,18 +19732,33 @@ pub(crate) fn debug_line(path: &Path, mut record: Value) -> std::io::Result<()> 
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[link(name = "CoreGraphics", kind = "framework")]
 unsafe extern "C" {
     fn CGEventSourceFlagsState(state: i32) -> u64;
 }
 
 /// `kCGEventSourceStateCombinedSessionState` and `kCGEventFlagMaskShift`.
+#[cfg(target_os = "macos")]
 const COMBINED_SESSION: i32 = 0;
+#[cfg(target_os = "macos")]
 const SHIFT_MASK: u64 = 0x2_0000;
+
+/// Linux has no window server to ask for the keyboard's state.
+#[cfg(not(target_os = "macos"))]
+fn physical_shift_readable() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn physical_shift() -> bool {
+    false
+}
 
 /// Whether Shift can be read from the window server: only in Terminal.app, the one terminal
 /// that cannot report it, and only if the call answers. A session with no window server, such
 /// as a sandbox, can block in it, so the first call runs on a thread with a deadline.
+#[cfg(target_os = "macos")]
 fn physical_shift_readable() -> bool {
     static READABLE: OnceLock<bool> = OnceLock::new();
     *READABLE.get_or_init(|| {
@@ -19736,6 +19777,7 @@ fn physical_shift_readable() -> bool {
     })
 }
 
+#[cfg(target_os = "macos")]
 fn physical_shift() -> bool {
     physical_shift_readable()
         && unsafe { CGEventSourceFlagsState(COMBINED_SESSION) } & SHIFT_MASK != 0
@@ -24001,20 +24043,18 @@ states:
             let mut open = viewer_open(A, &spec.commands.viewer, &screen);
             open.harness = Some(kind);
             app.data.sessions[0].pid = Some(open.viewer.pid());
-            #[cfg(target_os = "macos")]
-            {
-                assert!(
-                    fixture_session(&app.data.sessions[0]),
-                    "{kind}: fixture child is visible"
-                );
-                let mut host = app.data.sessions[0].clone();
-                host.pid = Some(1);
-                assert_eq!(
-                    fixture_session(&host),
-                    !kind.terminal_only(),
-                    "{kind}: process-only fixtures exclude unrelated clients"
-                );
-            }
+            assert!(
+                fixture_session(&app.data.sessions[0]),
+                "{kind}: fixture child is visible"
+            );
+            let mut host = app.data.sessions[0].clone();
+            host.pid = Some(1);
+            assert_eq!(
+                fixture_session(&host),
+                !kind.terminal_only(),
+                "{kind}: process-only fixtures exclude unrelated clients"
+            );
+
             let pid = open.viewer.pid();
             app.viewers.push(open);
             wait_paint(&mut app, 0, "VIEW");
@@ -25286,17 +25326,24 @@ states:
             ]
         );
         // A second worktree heading carries the tree line on past the first, and each
-        // heading, named by its last part, still gives places its whole worktree.
-        app.data.open.push(worktree.canonicalize().unwrap());
+        // heading, named by its last part, still gives places its whole worktree. Headings
+        // follow their paths, which macOS's /private prefix orders differently from Linux.
+        let canonical = worktree.canonicalize().unwrap();
+        app.data.open.push(canonical.clone());
         app.rebuild();
+        let mut trees = [(C, &canonical), (B, &nested)];
+        trees.sort_by_key(|(_, tree)| fleet::tilde(tree));
+        let name = |tree: &Path| tree.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(
             headers(&app)[1..],
-            ["├ ⑂ worktree", "└ ⑂ agent"],
+            [
+                format!("├ ⑂ {}", name(trees[0].1)),
+                format!("└ ⑂ {}", name(trees[1].1))
+            ],
             "{:#?}",
             app.rows.iter().map(Row::text).collect::<Vec<_>>()
         );
-        let canonical = worktree.canonicalize().unwrap();
-        for (id, tree, lead) in [(C, &canonical, "│ "), (B, &nested, "  ")] {
+        for ((id, tree), lead) in trees.into_iter().zip(["│ ", "  "]) {
             app.select_new(id);
             assert!(
                 app.selected().unwrap().cells[3].0.starts_with(lead),
@@ -26470,7 +26517,7 @@ while True:
         // Pumps until the viewer has a title or gave up the focus on its own.
         let titled = |app: &mut App, key: &str, title: &str| {
             let mut c = Command::new("/bin/sh");
-            c.args(["-c", &format!("printf '\\x1b]2;{title}\\x07'; sleep 5")]);
+            c.args(["-c", &format!("printf '\\033]2;{title}\\007'; sleep 5")]);
             let mut open = silent_open(key);
             open.viewer = Viewer::spawn(c, 12, 80, None, viewer::Colors::default()).unwrap();
             app.viewers.push(open);

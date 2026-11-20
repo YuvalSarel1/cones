@@ -579,7 +579,7 @@ pub fn own_home_processes(
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",");
-    let with_environment = process_column(ps, &list, "-wwEp");
+    let with_environment = environments(ps, &list);
     let uses = |used: &Option<PathBuf>| match used {
         None => true,
         Some(used) => {
@@ -653,7 +653,7 @@ pub fn detect_homes(ps: &str, kinds: &[crate::config::HarnessKind]) {
         .collect::<Vec<_>>()
         .join(",");
     let argv = pass_argv(ps);
-    let with_environment = process_column(ps, &list, "-wwEp").unwrap_or_default();
+    let with_environment = environments(ps, &list).unwrap_or_default();
     let fleet = std::env::var("CONES_TEST_FLEET").ok();
     for key in new {
         let env = argv.get(&key.1).and_then(|(argv, _)| {
@@ -708,9 +708,16 @@ fn environment<'a>(with_environment: &'a str, argv: &str) -> Option<&'a str> {
         .filter(|e| !e.is_empty())
 }
 
-/// pid to the printed column for the listed pids, or `None` when `ps` could not run. `ps` exits
-/// nonzero when a pid has gone; the others are still printed.
-fn process_column(ps: &str, list: &str, flags: &str) -> Option<HashMap<u32, String>> {
+/// How `ps` prints each command line followed by its environment: `-E` on macOS, the BSD `e`
+/// modifier in procps, which rejects `-E`.
+#[cfg(target_os = "macos")]
+const ENVIRONMENT: &str = "-wwE";
+#[cfg(not(target_os = "macos"))]
+const ENVIRONMENT: &str = "eww";
+
+/// pid to command line and environment for the listed pids, or `None` when `ps` could not run.
+/// `ps` exits nonzero when a pid has gone; the others are still printed.
+fn environments(ps: &str, list: &str) -> Option<HashMap<u32, String>> {
     if list.is_empty() {
         return Some(HashMap::new());
     }
@@ -718,7 +725,7 @@ fn process_column(ps: &str, list: &str, flags: &str) -> Option<HashMap<u32, Stri
         crate::observe::op::PROCESS_ENV,
         Command::new(ps)
             .env("LC_ALL", PS_LOCALE)
-            .args([flags, list, "-o", "pid=,command="])
+            .args([ENVIRONMENT, "-p", list, "-o", "pid=,command="])
             .stdin(Stdio::null()),
     )
     .ok()?;
@@ -810,6 +817,12 @@ pub fn process_lines(ps: &str) -> Vec<ProcessLine<'_>> {
         .collect()
 }
 
+/// The largest pid the kernel hands out: macOS's fixed limit, Linux's `PID_MAX_LIMIT`.
+#[cfg(target_os = "macos")]
+const PID_MAX: u64 = 99_998;
+#[cfg(not(target_os = "macos"))]
+const PID_MAX: u64 = 4_194_304;
+
 /// Batch process start times in Claude's UTC format to reject reused pids.
 ///
 /// An unreadable process table is an error, never an empty map: every liveness check reads
@@ -826,10 +839,10 @@ pub fn starts(pids: &[u64]) -> Result<HashMap<u32, String>> {
 
 /// `process_starts` against a named `ps`, so a test can point it at one that cannot run.
 fn starts_from(ps: &str, pids: impl Iterator<Item = u64>) -> Result<HashMap<u32, String>> {
-    // ps rejects the whole list when one pid is above the kernel's maximum (99998 on macOS);
-    // such a pid runs nothing anyway.
+    // ps rejects the whole list when one pid is above the kernel's maximum; such a pid runs
+    // nothing anyway.
     let list = pids
-        .filter(|p| *p <= 99_998)
+        .filter(|p| *p <= PID_MAX)
         .map(|p| p.to_string())
         .collect::<Vec<_>>()
         .join(",");
@@ -1869,7 +1882,8 @@ fn usage_in(table: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage>
     wanted
         .iter()
         .filter_map(|&pid| {
-            let &(mut cpu, mut rss) = own.get(&pid)?;
+            let &(cpu, mut rss) = own.get(&pid)?;
+            let mut cpu = recent_cpu(pid, cpu);
             let mut children = 0;
             let mut stack = below.get(&pid).cloned().unwrap_or_default();
             while let Some(child) = stack.pop() {
@@ -1878,7 +1892,7 @@ fn usage_in(table: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage>
                     continue;
                 }
                 if let Some(&(c, r)) = own.get(&child) {
-                    cpu += c;
+                    cpu += recent_cpu(child, c);
                     rss += r;
                     children += 1;
                 }
@@ -1889,9 +1903,56 @@ fn usage_in(table: &str, pids: impl Iterator<Item = u32>) -> HashMap<u32, Usage>
         .collect()
 }
 
+/// macOS's `ps` prints a decaying recent %cpu, so its figure stands.
+#[cfg(not(target_os = "linux"))]
+fn recent_cpu(_pid: u32, ps: f32) -> f32 {
+    ps
+}
+
+/// procps prints %cpu averaged over the process's whole life, which flattens a burst in a
+/// long session to nothing. Linux instead measures the share since the previous pass from
+/// `/proc/<pid>/stat`; a pid seen for the first time, or reused, keeps the `ps` figure.
+#[cfg(target_os = "linux")]
+fn recent_cpu(pid: u32, ps: f32) -> f32 {
+    use std::time::{Duration, Instant};
+    /// When each pid was sampled, its cpu ticks then, and the share computed then.
+    type Sample = (Instant, u64, f32);
+    static SEEN: Mutex<Option<HashMap<u32, Sample>>> = Mutex::new(None);
+    let Some(ticks) = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            // utime and stime, the 14th and 15th fields, after the parenthesized name.
+            let (_, after) = stat.rsplit_once(')')?;
+            let mut fields = after.split_whitespace().skip(11);
+            Some(fields.next()?.parse::<u64>().ok()? + fields.next()?.parse::<u64>().ok()?)
+        })
+    else {
+        return ps;
+    };
+    let now = Instant::now();
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let seen = seen.get_or_insert_with(HashMap::new);
+    seen.retain(|_, (at, ..)| now - *at < Duration::from_secs(60));
+    let cpu = match seen.get(&pid) {
+        // A second read within the same refresh repeats the first rather than divide by
+        // a few milliseconds.
+        Some(&(at, before, cpu)) if ticks >= before && now - at < Duration::from_secs(1) => {
+            return cpu;
+        }
+        Some(&(at, before, _)) if ticks >= before => {
+            let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as f32;
+            (ticks - before) as f32 / hz / (now - at).as_secs_f32() * 100.0
+        }
+        _ => ps,
+    };
+    seen.insert(pid, (now, ticks, cpu));
+    cpu
+}
+
 pub fn alive(pid: u32) -> bool {
     // Signal 0 checks existence; EPERM means it exists under another user.
-    unsafe { libc::kill(pid as i32, 0) == 0 || *libc::__error() == libc::EPERM }
+    (unsafe { libc::kill(pid as i32, 0) } == 0)
+        || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Every harness, for callers with no configuration to consult.
@@ -3234,10 +3295,7 @@ mod tests {
             "the whole table is read in one locale and one timezone"
         );
         assert_eq!(
-            process_column(ps, "1", "-wwEp")
-                .unwrap()
-                .get(&1)
-                .map(|e| e.trim()),
+            environments(ps, "1").unwrap().get(&1).map(|e| e.trim()),
             Some(PS_LOCALE),
             "and so is the environment read, or a non-ASCII command line is spelled two ways"
         );

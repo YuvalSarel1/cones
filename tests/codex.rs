@@ -431,7 +431,6 @@ fn a_codex_fork_takes_the_skip_setting_through_the_daemon_and_a_resume_passes_no
 
 /// A daemon-connected launch has no process row, but its dashboard placeholder must
 /// survive a completed refresh and then become exactly one identified conversation.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_daemon_client_launch_keeps_its_placeholder_until_the_thread_arrives() {
     use crate::dashboard::Dashboard;
@@ -554,7 +553,6 @@ while True:
 /// costs one read of its own, which this test cannot tell apart from a read of its client.
 /// It asserts that reads stay at most half the refreshes instead of exactly one; reading every
 /// refresh, the regression, makes them equal.
-#[cfg(target_os = "macos")]
 #[test]
 fn a_codex_client_environment_is_read_once_across_refreshes() {
     use crate::dashboard::Dashboard;

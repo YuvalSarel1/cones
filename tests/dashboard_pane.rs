@@ -362,11 +362,18 @@ fn a_drag_over_the_list_copies_the_rows_it_covers() {
         })
         .collect();
     d.open_folders(&dirs);
-    // A pbcopy on the front of PATH keeps the machine's clipboard out of the test.
+    // A pbcopy, or on Linux an X11 xclip, on the front of PATH keeps the machine's clipboard
+    // out of the test.
     let bin = d.path("bin");
     fs::create_dir_all(&bin).unwrap();
     let clip = d.path("clipboard");
-    let stub = bin.join("pbcopy");
+    let stub = bin.join(if cfg!(target_os = "macos") {
+        "pbcopy"
+    } else {
+        d.env.push(("DISPLAY", ":0"));
+        d.env.push(("WAYLAND_DISPLAY", ""));
+        "xclip"
+    });
     fs::write(&stub, format!("#!/bin/sh\ncat > '{}'\n", clip.display())).unwrap();
     fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());

@@ -134,7 +134,8 @@ fn launch(d: &mut Dashboard, prompt: &str) -> u32 {
         .unwrap();
     let command = String::from_utf8_lossy(&ps.stdout);
     assert!(
-        command.contains(&format!("Python {} --extension", argv[0])),
+        // macOS names the framework interpreter `Python`, Linux the `python3` it ran.
+        command.contains(&format!("{} --extension", argv[0])) && command.contains("ython"),
         "pid {pid} is the fixture: {command}"
     );
     pid

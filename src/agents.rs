@@ -97,7 +97,6 @@ fn copilot_sessions(home: &Path) -> Vec<(u32, String, DateTime<Utc>)> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
 pub fn sessions(kind: HarnessKind, home: &Path) -> Result<Vec<Session>> {
     // One table per pass, shared with every other adapter, rather than a table per adapter
     // kept for a hundred milliseconds: a refresh is the scope that shares an observation.
@@ -202,9 +201,4 @@ impl Adapter for Unreported {
 pub(crate) fn accounting(kind: HarnessKind) -> Box<dyn Reader> {
     assert!(kind.terminal_only() || kind == HarnessKind::Grok);
     Box::new(Accounting::<Unreported>::default())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn sessions(_kind: HarnessKind, _home: &Path) -> Result<Vec<Session>> {
-    anyhow::bail!("native process discovery requires macOS")
 }

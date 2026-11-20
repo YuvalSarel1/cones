@@ -1,0 +1,4 @@
+# candle's gemm-f16 uses half-precision NEON instructions that Linux targets leave off by
+# default; macOS on Apple silicon enables them already.
+[target.aarch64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+fp16"]

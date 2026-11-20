@@ -114,25 +114,93 @@ pub fn items(details: String, last_reply: Option<&str>) -> Vec<Item> {
     items
 }
 
-/// ponytail: pbcopy, the clipboard of the machine cones already targets. OSC 52 is the
-/// upgrade path if a dashboard ever runs over ssh.
+/// The program that reads text for the clipboard on stdin: pbcopy on macOS; on Linux the
+/// Wayland or X11 tool for the desktop session, and none outside one, such as over ssh.
+fn clipboard_program() -> Option<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        Some(("pbcopy", &[]))
+    } else if desktop("WAYLAND_DISPLAY") {
+        Some(("wl-copy", &[]))
+    } else if desktop("DISPLAY") {
+        Some(("xclip", &["-selection", "clipboard"]))
+    } else {
+        None
+    }
+}
+
+/// Whether a Linux desktop session names its display in `variable`.
+pub(crate) fn desktop(variable: &str) -> bool {
+    std::env::var_os(variable).is_some_and(|v| !v.is_empty())
+}
+
 pub fn to_clipboard(text: &str) -> Result<()> {
-    let mut child = Command::new("pbcopy")
+    let Some((program, args)) = clipboard_program() else {
+        return osc52(text);
+    };
+    let mut child = Command::new(program)
+        .args(args)
         .stdin(Stdio::piped())
         .spawn()
-        .context("pbcopy")?;
+        .context(program)?;
     child
         .stdin
         .take()
-        .context("pbcopy stdin")?
+        .context("clipboard stdin")?
         .write_all(text.as_bytes())?;
-    ensure!(child.wait()?.success(), "pbcopy failed");
+    ensure!(child.wait()?.success(), "{program} failed");
     Ok(())
+}
+
+/// Ask the terminal to set its clipboard (OSC 52), which reaches the desktop across ssh.
+// ponytail: unconfirmed; a terminal that ignores OSC 52 drops it silently, and tmux forwards
+// it only with `set-clipboard on`.
+fn osc52(text: &str) -> Result<()> {
+    let mut tty = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .context("/dev/tty")?;
+    write!(tty, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    Ok(())
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= chunk.len() {
+                TABLE[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// OSC 52 carries base64, and no E2E test has a terminal that reads it back. A wrong
+    /// padding or bit order puts garbage on the clipboard with nothing reporting it.
+    #[test]
+    fn osc52_payload_is_rfc_4648_base64() {
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foobar", "Zm9vYmFy"),
+            ("—", "4oCU"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), encoded, "{plain}");
+        }
+    }
 
     #[test]
     fn an_unclosed_block_is_offered_and_marked() {

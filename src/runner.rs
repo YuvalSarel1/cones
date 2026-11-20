@@ -206,7 +206,7 @@ fn end_session(
     }
 }
 
-/// `CONES_NOTIFIER` overrides osascript and receives (title, message).
+/// See [`crate::attention::notifier`].
 fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
     let wanted = matches!(status, Status::Failed | Status::Timeout | Status::Input);
     if !job.notify || !wanted {
@@ -216,18 +216,7 @@ fn notify(job: &ResolvedJob, status: Status, reason: Option<&str>) {
         Some(r) => format!("{} {status}: {r}", job.name),
         None => format!("{} {status}", job.name),
     };
-    let result = match std::env::var_os("CONES_NOTIFIER") {
-        Some(command) => Command::new(command).args(["cones", &message]).status(),
-        None => Command::new("/usr/bin/osascript")
-            .args([
-                "-e",
-                &format!(
-                    "display notification {} with title \"cones\"",
-                    serde_json::json!(message)
-                ),
-            ])
-            .status(),
-    };
+    let result = crate::attention::notifier(&message).status();
     if let Err(e) = result {
         eprintln!("cones: notification failed: {e}");
     }

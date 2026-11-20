@@ -1,7 +1,7 @@
 # Architecture
 
 cones is one binary in two layers. The control plane puts every coding-agent session on the
-Mac in one place: it finds sessions from native records, reads their conversations, and
+machine in one place: it finds sessions from native records, reads their conversations, and
 starts, messages, renames and stops them, for a person or an agent alike. Three clients sit
 on it, each adding one opinion: the [dashboard](dashboard.md), the
 [coordinator](#the-coordinator) and [scheduled jobs](jobs.md).
@@ -57,7 +57,7 @@ flowchart TB
         VIEW["viewer.rs + terminal_host.rs<br/>PTY viewers, detached hosts"]
         READ["history search context<br/>transcript cost attention forks"]
     end
-    LAUNCHD["launchd agents"]
+    LAUNCHD["launchd agents<br/>systemd user timers"]
     HARNESS["Claude Code, Codex,<br/>OpenCode, pi, others"]
     COORD["coordinator skill<br/>assets/coordinator"]
 
@@ -186,7 +186,7 @@ remain owner decisions; the skill and repository instructions govern the workflo
 
 ## Jobs
 
-Jobs are the scheduling client. Saving a job installs its launchd schedule. A tick invokes `cones run`; `cones catchup`
+Jobs are the scheduling client. Saving a job installs its launchd or systemd schedule. A tick invokes `cones run`; `cones catchup`
 handles eligible missed schedules at login. The supervisor admits the run under the job's
 overlap policy and starts a worker in a separate process group. The worker starts the
 session through the control plane's start, a Claude background session or a Codex daemon

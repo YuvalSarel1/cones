@@ -122,7 +122,6 @@ impl Fixture {
     }
 
     /// A stand-in Codex client with a real socket connection to this test process.
-    #[cfg(target_os = "macos")]
     fn connected_codex(
         &mut self,
         home: &Path,
@@ -490,10 +489,13 @@ fn an_opencode_client_in_another_data_home_is_a_row_with_its_session() {
 /// A headless `codex exec` run by a dispatcher has its own HOME and a home under a temporary
 /// directory, which macOS keeps behind a symlink: the client names one spelling and the
 /// configuration the other. It is still a row, titled by its prompt and not by its subcommand.
+/// A symlink of the fixture's own gives Linux, whose temporary directory is real, both spellings.
 #[test]
 fn a_headless_codex_run_is_a_row_when_its_configured_home_is_spelled_differently() {
     let mut f = Fixture::new();
-    let task = f.path().join("task-codex");
+    let alias = f.path().join("alias");
+    std::os::unix::fs::symlink(f.path(), &alias).unwrap();
+    let task = alias.join("task-codex");
     let elsewhere = f.path().join("elsewhere");
     for dir in [&task, &elsewhere] {
         fs::create_dir_all(dir).unwrap();
@@ -830,7 +832,6 @@ fn an_npm_wrapper_and_the_client_it_runs_are_one_row() {
     assert_eq!(mine.len(), 1, "{rows:?}");
     assert_ne!(mine[0]["pid"], wrapper, "{}", mine[0]);
     let _connection = accept_connection(&listener);
-    #[cfg(target_os = "macos")]
     {
         let dir = f.path().join(".codex/app-server-daemon");
         fs::create_dir_all(&dir).unwrap();
@@ -850,7 +851,6 @@ fn an_npm_wrapper_and_the_client_it_runs_are_one_row() {
 
 /// External clients have real socket connections but no `--resume` identity. Only the
 /// daemon's thread is a row, including when the client names a different Codex home.
-#[cfg(target_os = "macos")]
 #[test]
 fn external_codex_daemon_clients_have_no_duplicate_row() {
     let artifact = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("codex-daemon-clients.json");
@@ -918,7 +918,6 @@ fn external_codex_daemon_clients_have_no_duplicate_row() {
     );
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 fn a_socket_connected_codex_writer_keeps_its_row() {
     let mut f = Fixture::new();
@@ -949,7 +948,6 @@ fn a_socket_connected_codex_writer_keeps_its_row() {
 
 /// A plain `codex` is a daemon client, and the daemon holds its thread's lock from launch, before
 /// any rollout exists. Until that first turn the client's own row is the only one it has.
-#[cfg(target_os = "macos")]
 #[test]
 fn an_idle_codex_daemon_client_keeps_its_row_until_its_thread_has_a_rollout() {
     let mut f = Fixture::new();

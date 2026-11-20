@@ -352,7 +352,8 @@ impl Viewer {
                 &mut slave,
                 std::ptr::null_mut(),
                 normal.as_mut().map_or(std::ptr::null_mut(), |t| t),
-                &mut size,
+                // macOS takes `*mut winsize`, Linux `*const`; a raw pointer suits both.
+                &raw mut size,
             )
         };
         if opened < 0 {

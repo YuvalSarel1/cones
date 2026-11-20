@@ -5,10 +5,11 @@ same machine by what it costs. Formatting and the JavaScript reporter contract r
 first and take no slot, so a formatting failure returns at once. Compiling (Clippy,
 `cargo test --no-run` and `install`) takes a build slot: two builds may run at
 once, under background QoS (`taskpolicy -b`), which keeps them on the efficiency
-cores. Running the built tests takes the test slot, which is exclusive, because
-wall-clock tests flake under load; it waits for running builds, and a waiting test
-run holds back new builds so they cannot starve it. Tests run at normal priority,
-even when the gate itself was started at background priority.
+cores, or under `nice -n 10` on Linux. Running the built tests takes the test slot,
+which is exclusive, because wall-clock tests flake under load; it waits for running
+builds, and a waiting test run holds back new builds so they cannot starve it. Tests
+run at normal priority, and on macOS even when the gate itself was started at
+background priority.
 Waiting checks print the holder's PID and checkout. Cancellation stops the gate's
 process group. Each lease is inherited by Cargo, so killing the wrapper cannot
 admit another check while its child still runs. The lock files under `~/.cones`

@@ -61,7 +61,7 @@ homes are still added. A client under another `HOME` whose home is not configure
 another fleet and is not listed, unless it is a Codex client with a rollout open: `codex exec`
 keeps its rollout open for its whole run, and the file names the home. A client whose
 environment cannot be read is offered to every home of its harness: the one holding its conversation names it, and otherwise it is a
-bare process row. An environment hidden by macOS keeps a process out for its first ten
+bare process row. An environment the OS hides keeps a process out for its first ten
 seconds. pi hides its environment once it starts, so a pi home is never detected and has to
 be configured. A [`homes` name ending in `*`](jobs.md#homes) is detection too: it is off
 under the same overrides, and it needs the client's environment, so pi refuses one. Reading
@@ -104,7 +104,7 @@ A process without an explicit thread may match a rollout started after it in the
 only when exactly one live process could own it and no known writer does. Ambiguity leaves
 identity absent. Mtimes prune scans but never supply activity. Remote clients are excluded
 from this matching; while the daemon runs, their threads appear through locks or saved
-records rather than separate unidentified client rows. On macOS a client connected to a
+records rather than separate unidentified client rows. A client connected to a
 daemon's socket without naming a thread, including a plain `codex`, counts as remote once
 that daemon holds a thread with a rollout in its folder, started no earlier than the client.
 Before its first turn the client keeps its own row.

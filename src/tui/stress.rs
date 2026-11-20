@@ -1,6 +1,6 @@
 //! Opt-in lifecycle and resource measurements. Only disposable fixtures run.
 use super::*;
-use std::{fs, mem::size_of, time::Duration};
+use std::{fs, time::Duration};
 
 #[derive(serde::Serialize, Clone)]
 struct Resources {
@@ -11,9 +11,11 @@ struct Resources {
     cpu_ns: u64,
 }
 
-fn resources() -> Resources {
+/// Resident bytes and thread count of this process.
+#[cfg(target_os = "macos")]
+fn memory_and_threads() -> (u64, i32) {
     let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
-    let size = size_of::<libc::proc_taskinfo>() as i32;
+    let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
     // sys/proc_info.h: PROC_PIDTASKINFO. Unlike ps, this includes thread count.
     let got = unsafe {
         libc::proc_pidinfo(
@@ -25,6 +27,21 @@ fn resources() -> Resources {
         )
     };
     assert_eq!(got, size, "kernel resource read failed");
+    (info.pti_resident_size, info.pti_threadnum)
+}
+
+#[cfg(target_os = "linux")]
+fn memory_and_threads() -> (u64, i32) {
+    let status = fs::read_to_string("/proc/self/status").unwrap();
+    let field = |name: &str| -> u64 {
+        let line = status.lines().find_map(|l| l.strip_prefix(name)).unwrap();
+        line.split_whitespace().next().unwrap().parse().unwrap()
+    };
+    (field("VmRSS:") * 1024, field("Threads:") as i32)
+}
+
+fn resources() -> Resources {
+    let (rss_bytes, threads) = memory_and_threads();
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
     let ns = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1000;
@@ -33,8 +50,8 @@ fn resources() -> Resources {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs_f64(),
-        rss_bytes: info.pti_resident_size,
-        threads: info.pti_threadnum,
+        rss_bytes,
+        threads,
         descriptors: fs::read_dir("/dev/fd").unwrap().count(),
         cpu_ns: ns(usage.ru_utime) + ns(usage.ru_stime),
     }

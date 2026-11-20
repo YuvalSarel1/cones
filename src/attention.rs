@@ -276,24 +276,7 @@ pub(crate) fn notify(notices: Vec<Notice>) {
                     (_, false) => "ready to review",
                 }
             );
-            let mut command = match std::env::var_os("CONES_NOTIFIER") {
-                Some(program) => {
-                    let mut c = Command::new(program);
-                    c.args(["cones", &message]);
-                    c
-                }
-                None => {
-                    let mut c = Command::new("/usr/bin/osascript");
-                    c.args([
-                        "-e",
-                        &format!(
-                            "display notification {} with title \"cones\"",
-                            serde_json::json!(message)
-                        ),
-                    ]);
-                    c
-                }
-            };
+            let mut command = notifier(&message);
             let Ok(mut child) = command
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
@@ -312,6 +295,31 @@ pub(crate) fn notify(notices: Vec<Notice>) {
             let _ = child.wait();
         }
     });
+}
+
+/// The command that shows `message` as a desktop notification titled cones: `CONES_NOTIFIER`
+/// with the title and message as arguments, else `osascript` on macOS and `notify-send` on Linux.
+pub(crate) fn notifier(message: &str) -> Command {
+    if let Some(program) = std::env::var_os("CONES_NOTIFIER") {
+        let mut c = Command::new(program);
+        c.args(["cones", message]);
+        return c;
+    }
+    if cfg!(target_os = "macos") {
+        let mut c = Command::new("/usr/bin/osascript");
+        c.args([
+            "-e",
+            &format!(
+                "display notification {} with title \"cones\"",
+                serde_json::json!(message)
+            ),
+        ]);
+        c
+    } else {
+        let mut c = Command::new("notify-send");
+        c.args(["--app-name=cones", "cones", message]);
+        c
+    }
 }
 
 #[cfg(test)]

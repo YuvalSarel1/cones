@@ -465,7 +465,8 @@ of several rows Up and Down move the cursor between rows, and move the list sele
 from the first and last row. Ctrl+E edits a selected job only when the composer is
 empty. See [the binding source](../assets/bindings.yaml) for all aliases.
 
-Ctrl+V pastes clipboard images through macOS `osascript`. Temporary PNGs appear as
+Ctrl+V pastes clipboard images through `osascript` on macOS and `wl-paste` or `xclip` on
+Linux. Temporary PNGs appear as
 `[Image #n]` markers, delete as one unit and expand to their paths at launch. A paste of
 only existing image file paths, escaped or quoted as Finder drags write them, becomes the
 same markers. Other text pastes insert at the cursor.

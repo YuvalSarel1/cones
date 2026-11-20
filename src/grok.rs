@@ -179,7 +179,6 @@ fn first_prompt(path: &Path) -> Option<String> {
 /// The top-level session folder a live client holds `events.jsonl` open in: Grok opens it
 /// for writing when the client takes the session and closes it when the client lets it go,
 /// including on `/new` and `/resume`. None when it holds no such file, or several.
-#[cfg(target_os = "macos")]
 fn held(pid: u32, root: &Path) -> Option<PathBuf> {
     let mut held = crate::process_info::open_files(pid)
         .ok()?
@@ -193,7 +192,6 @@ fn held(pid: u32, root: &Path) -> Option<PathBuf> {
     (held.len() == 1).then(|| held.remove(0))
 }
 
-#[cfg(target_os = "macos")]
 pub fn sessions(home: &Path) -> Result<Vec<Session>> {
     if !home.is_dir() {
         return Ok(Vec::new());
@@ -255,9 +253,4 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
             })
         })
         .collect())
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn sessions(_home: &Path) -> Result<Vec<Session>> {
-    anyhow::bail!("native process discovery requires macOS")
 }

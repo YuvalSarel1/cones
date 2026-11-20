@@ -196,11 +196,11 @@ fn two_builds_overlap_in_the_background_while_further_builds_and_test_runs_wait(
     let cargo = r#"
 case " $* " in
 *" --no-run "*)
-    python3 -c 'import os; print(os.getpriority(4, 0))' > "$TMPDIR/build.priority"
+    python3 -c 'import os, sys; print(os.getpriority(4, 0) if sys.platform == "darwin" else int(os.nice(0) > 0))' > "$TMPDIR/build.priority"
     touch "$TMPDIR/built"
     while [ ! -f "$TMPDIR/release" ]; do sleep 0.02; done ;;
 *)
-    python3 -c 'import os; print(os.getpriority(4, 0))' > "$TMPDIR/test.priority"
+    python3 -c 'import os, sys; print(os.getpriority(4, 0) if sys.platform == "darwin" else int(os.nice(0) > 0))' > "$TMPDIR/test.priority"
     touch "$TMPDIR/tested" ;;
 esac
 "#;
@@ -297,7 +297,7 @@ fn ci_runs_tests_on_three_background_threads_and_a_backgrounded_gate_tests_norma
     let fixture = Fixture::new(
         r#"
 if [ "$2" != --no-run ]; then
-    python3 -c 'import os; print(os.getpriority(4, 0))' > "$TMPDIR/$1.priority"
+    python3 -c 'import os, sys; print(os.getpriority(4, 0) if sys.platform == "darwin" else int(os.nice(0) > 0))' > "$TMPDIR/$1.priority"
     echo "$RUST_TEST_THREADS" > "$TMPDIR/$1.threads"
 fi
 "#,
@@ -311,7 +311,11 @@ fi
         "3\n",
         "ci uses the runner's three vCPUs"
     );
-    // A gate started by a backgrounded agent still runs its tests at normal priority.
+    // A gate started by a backgrounded agent still runs its tests at normal priority. Linux
+    // cannot lower a niceness again without privilege, so only macOS restores it.
+    if !cfg!(target_os = "macos") {
+        return;
+    }
     let mut background = Command::new("/usr/sbin/taskpolicy");
     background.arg("-b").arg(fixture.command().get_program());
     background.args(["test"]).current_dir(fixture.dir.path());
@@ -454,7 +458,7 @@ fn installing_head_builds_a_detached_worktree_in_the_background_and_removes_it()
     let fixture = Fixture::new(
         r#"
 printf '%s\n' "$@" > "$TMPDIR/args"
-python3 -c 'import os; print("priority", os.getpriority(4, 0))' >> "$TMPDIR/args"
+python3 -c 'import os, sys; print("priority", os.getpriority(4, 0) if sys.platform == "darwin" else int(os.nice(0) > 0))' >> "$TMPDIR/args"
 test -f "$4/Cargo.toml" && printf 'package\n' >> "$TMPDIR/args"
 git -C "$4" rev-parse HEAD >> "$TMPDIR/args"
 "#,

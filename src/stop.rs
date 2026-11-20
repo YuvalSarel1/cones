@@ -76,7 +76,9 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
         .with_context(|| format!("unknown session harness {}", session.harness))?;
     let kind = spec.session(session.kind.as_deref());
     if kind.lifetime != harness::spec::Lifetime::Daemon
-        && let Some(pid) = session.pid.filter(|&pid| process(pid).0 == "??")
+        && let Some(pid) = session
+            .pid
+            .filter(|&pid| ["??", "?"].contains(&process(pid).0.as_str()))
     {
         ensure!(
             crate::fleet::terminate(pid, &spec.name)?,
@@ -154,8 +156,8 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
     ))
 }
 
-/// The controlling terminal and state of `pid` as `ps` prints them: `??` for no terminal, and
-/// an empty state once the process is gone.
+/// The controlling terminal and state of `pid` as `ps` prints them: `??` for no terminal on
+/// macOS and `?` in procps, and an empty state once the process is gone.
 fn process(pid: u32) -> (String, String) {
     let out = Command::new("/bin/ps")
         .args(["-o", "tty=,stat=", "-p", &pid.to_string()])

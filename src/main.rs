@@ -170,13 +170,14 @@ enum Action {
         #[arg(long, value_parser = seconds, requires = "wait")]
         timeout: Option<std::time::Duration>,
     },
-    /// Start jobs whose ticks passed while the Mac was off or logged out. The login agent runs this.
+    /// Start jobs whose ticks passed while the machine was off or logged out. The login agent runs this.
     Catchup {
         /// Name the ticks that were missed without starting anything.
         #[arg(long)]
         dry_run: bool,
     },
-    /// Write and load the LaunchAgents for the jobs; the dashboard runs this when a job is saved.
+    /// Write and load the jobs' LaunchAgents, or systemd units on Linux; the dashboard runs this
+    /// when a job is saved.
     #[command(name = "__install", hide = true)]
     Install {
         #[arg(long)]
@@ -508,7 +509,8 @@ Jobs and anything else can be edited in the file directly:
 - Run `cones config --check` after editing by hand. An invalid file is not loaded and the dashboard
   falls back to built-in defaults without saying why.
 - A running dashboard rereads the file on its next refresh. Scheduled jobs also need their
-  LaunchAgents rewritten: run `cones __install` after adding, changing or removing a job.
+  LaunchAgents (systemd units on Linux) rewritten: run `cones __install` after adding,
+  changing or removing a job.
 - Links below are relative to https://github.com/YuvalSarel1/cones/tree/main/docs.
 
 ";

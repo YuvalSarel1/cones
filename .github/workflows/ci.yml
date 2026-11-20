@@ -5,14 +5,20 @@ on:
   pull_request:
 jobs:
   check:
-    # cones reads macOS process tables and launchd, so it builds nowhere else.
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      # Shells, tmux and sqlite3 that macOS ships and the suites drive.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh tmux sqlite3 lsof
       # One test compiles Claude's argv, which resolves the executable on
       # harness::launch_path(). The assertion is the argument list, so a stub
       # on that path is enough and nothing ever runs it.

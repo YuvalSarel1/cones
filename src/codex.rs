@@ -137,7 +137,6 @@ pub fn home_of(rollout: &Path) -> Option<&Path> {
 
 /// The home of the rollout a live client holds open. A `codex exec` run keeps its rollout open
 /// for its whole life, so the file names the run's home whatever `HOME` it was started under.
-#[cfg(target_os = "macos")]
 pub fn open_home(pid: u32) -> Option<PathBuf> {
     crate::process_info::open_files(pid)
         .ok()?
@@ -151,11 +150,6 @@ pub fn open_home(pid: u32) -> Option<PathBuf> {
                     .is_some_and(|n| n.starts_with("rollout-"))
         })
         .and_then(|path| home_of(&path).map(Path::to_owned))
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn open_home(_pid: u32) -> Option<PathBuf> {
-    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,7 +357,6 @@ pub(crate) fn sessions_in(
         &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
     );
     procs.retain(|p| own.contains(&p.pid));
-    #[cfg(target_os = "macos")]
     for p in &mut procs {
         p.cwd = crate::process_info::cwd(p.pid);
     }
@@ -379,7 +372,7 @@ pub(crate) fn sessions_in(
     } else {
         crate::observe::spawn(
             crate::observe::op::OPEN_FILES,
-            Command::new("/usr/sbin/lsof")
+            Command::new(crate::process_info::LSOF)
                 .args(["-nPw", "-a", "-p", &list, "-d", "cwd", "-Fn"])
                 .stdin(Stdio::null()),
         )
@@ -418,15 +411,12 @@ fn prepared_processes(ps: &str, homes: &[PathBuf]) -> anyhow::Result<Vec<Process
             let mut procs = processes(&crate::fleet::pass_table(ps)?);
             // An npm install runs the client under a node wrapper with the same arguments: the child is
             // the client, and two rows in one folder would leave its rollout to neither.
-            #[cfg(target_os = "macos")]
-            {
-                let key = |p: &Process| (p.remote, p.thread.clone(), p.prompt.clone());
-                let wrappers: Vec<(u32, _)> = procs
-                    .iter()
-                    .filter_map(|p| Some((crate::process_info::parent(p.pid)?, key(p))))
-                    .collect();
-                procs.retain(|p| !wrappers.contains(&(p.pid, key(p))));
-            }
+            let key = |p: &Process| (p.remote, p.thread.clone(), p.prompt.clone());
+            let wrappers: Vec<(u32, _)> = procs
+                .iter()
+                .filter_map(|p| Some((crate::process_info::parent(p.pid)?, key(p))))
+                .collect();
+            procs.retain(|p| !wrappers.contains(&(p.pid, key(p))));
             let excluded = daemon_clients(homes, &procs);
             procs.retain(|p| !excluded.contains(&p.pid));
             Ok(procs)
@@ -862,9 +852,8 @@ pub fn locks(codex: &Path, pids: &[u32]) -> HashMap<String, u32> {
     if files.is_empty() {
         return HashMap::new();
     }
-    #[cfg(target_os = "macos")]
+    use std::os::unix::fs::MetadataExt;
     {
-        use std::os::unix::fs::MetadataExt;
         let allowed: HashMap<(u64, u64), String> = files
             .iter()
             .filter_map(|p| {
@@ -894,8 +883,6 @@ pub fn locks(codex: &Path, pids: &[u32]) -> HashMap<String, u32> {
         }
         out
     }
-    #[cfg(not(target_os = "macos"))]
-    locks_with_lsof(&files, pids)
 }
 
 fn locks_with_lsof(files: &[PathBuf], pids: &[u32]) -> HashMap<String, u32> {
@@ -906,7 +893,7 @@ fn locks_with_lsof(files: &[PathBuf], pids: &[u32]) -> HashMap<String, u32> {
         .join(",");
     let lsof = crate::observe::spawn(
         crate::observe::op::OPEN_FILES,
-        Command::new("/usr/sbin/lsof")
+        Command::new(crate::process_info::LSOF)
             .args(["-nPw", "-a", "-p", &pids, "-Fpn"])
             .args(files)
             .stdin(Stdio::null()),
@@ -951,7 +938,6 @@ pub fn daemon_pid(codex: &Path) -> Option<u32> {
 
 /// Clients connected to a socket the daemon holds. Match kernel socket handles: the
 /// accepted socket's path alone does not identify the process at the other end.
-#[cfg(target_os = "macos")]
 fn socket_clients(daemons: &BTreeSet<u32>, pids: impl Iterator<Item = u32>) -> BTreeSet<u32> {
     let ends: BTreeSet<u64> = daemons
         .iter()
@@ -968,11 +954,6 @@ fn socket_clients(daemons: &BTreeSet<u32>, pids: impl Iterator<Item = u32>) -> B
                 .is_ok_and(|own| own.iter().any(|s| s.peer != 0 && ends.contains(&s.peer)))
         })
         .collect()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn socket_clients(_: &BTreeSet<u32>, _: impl Iterator<Item = u32>) -> BTreeSet<u32> {
-    BTreeSet::new()
 }
 
 /// Unidentified clients of any daemon in this scan have no process row once the daemon's
@@ -1034,14 +1015,8 @@ fn daemon_threads(codex: &Path) -> Vec<Meta> {
         .collect()
 }
 
-#[cfg(target_os = "macos")]
 fn client_cwd(pid: u32) -> Option<PathBuf> {
     crate::process_info::cwd(pid)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn client_cwd(_: u32) -> Option<PathBuf> {
-    None
 }
 
 /// Prefer the database rollout path; fall back to `sessions/**/*-<id>.jsonl`.

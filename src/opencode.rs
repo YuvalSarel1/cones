@@ -617,7 +617,6 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
         &procs.iter().map(|p| p.pid).collect::<Vec<_>>(),
     );
     procs.retain(|p| own.contains(&p.pid));
-    #[cfg(target_os = "macos")]
     for process in &mut procs {
         process.cwd = crate::process_info::cwd(process.pid);
     }
@@ -630,7 +629,8 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
     if !missing.is_empty() {
         let output = crate::observe::spawn(
             crate::observe::op::OPEN_FILES,
-            Command::new("/usr/sbin/lsof").args(["-nPw", "-a", "-p", &missing, "-d", "cwd", "-Fn"]),
+            Command::new(crate::process_info::LSOF)
+                .args(["-nPw", "-a", "-p", &missing, "-d", "cwd", "-Fn"]),
         );
         if let Ok(output) = output {
             let cwds = crate::codex::cwds(&String::from_utf8_lossy(&output.stdout));
