@@ -156,8 +156,8 @@ folder of its own instead. Every heading counts its sessions that are working, a
 waiting for input, failed or done, in the header's marks and colours, after its name; idle
 sessions go uncounted.
 
-With nothing typed, `←` on a session folds the heading it sits under, its tag or else its
-folder, and `←` on a folded tag folds its folder too. A folded heading keeps its counts, says
+Folder and tag headings take the cursor. With nothing typed, `←` on a heading folds it, `←`
+on a folded tag folds its folder too, and `←` on a session does nothing. A folded heading keeps its counts, says
 how many sessions it hides, `· 3 folded`, and takes the cursor; `→` or Enter unfolds it. Folds
 are kept in `state/folded.json` across restarts. State grouping does not fold. Actions use the actual working directory. Sessions sort oldest first by reported start, with unknown starts last;
 [`sort`](jobs.md#list-settings) can order them by last activity or by hand instead. Forks
@@ -264,7 +264,8 @@ folder` the worktree.
 
 Tag headings are drawn in cyan, so a group of tagged sessions does not read as a folder.
 
-With the mouse, press a session row, drag it and release. A drop moves that row: the session
+With the mouse, press a session row, drag it and release. The held row is highlighted from the
+press on and the row it would drop on is underlined. A drop moves that row: the session
 leaves the place it was dragged from and takes the one dropped on, a tag of either kind or its
 own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
 session keeps its folder, and the footer names the folder that accepts it. A drop on a row of

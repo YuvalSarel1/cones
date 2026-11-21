@@ -230,6 +230,8 @@ pub enum Kind {
     Header,
     /// A folded heading, by the group it hides: the cursor can reach it to unfold it.
     Folded(String),
+    /// An unfolded folder or tag heading, by its group: the cursor can reach it to fold it.
+    Heading(String),
     /// Column names under a section title, dim and unselectable.
     Columns,
     Blank,
@@ -260,6 +262,7 @@ impl Kind {
         match self {
             Self::Header => "header",
             Self::Folded(_) => "folded",
+            Self::Heading(_) => "heading",
             Self::Columns => "columns",
             Self::Blank => "blank",
             Self::Job(_) => "job",
@@ -290,7 +293,7 @@ impl Kind {
             Kind::Session(id, _) | Kind::Run(id, _) => Some(id),
             Kind::History(key) => Some(key),
             Kind::Menu => Some("menu"),
-            Kind::Folder(dir) | Kind::Folded(dir) => Some(dir),
+            Kind::Folder(dir) | Kind::Folded(dir) | Kind::Heading(dir) => Some(dir),
             Kind::NewFolder => Some("new folder"),
             Kind::Suggestion(key, _) => Some(key),
             Kind::NewJob => Some("new job"),
@@ -1332,11 +1335,11 @@ impl Data {
             });
             out.push(names);
         }
-        // A folded heading becomes a row the cursor can reach, saying how many sessions it
+        // Every heading is a row the cursor can reach. A folded one says how many sessions it
         // hides; the counts it already carries stay.
         let fold =
             |out: &mut Vec<Row>, id: String, under: &dyn Fn(&(String, String, String)) -> bool| {
-                if !folds || !self.folded.contains(&id) {
+                if !folds {
                     return;
                 }
                 let n = flat
@@ -1348,6 +1351,13 @@ impl Data {
                     })
                     .collect::<HashSet<_>>()
                     .len();
+                // A heading over no sessions has nothing to fold.
+                if !self.folded.contains(&id) {
+                    if let Some(row) = out.last_mut().filter(|_| n > 0) {
+                        row.kind = Kind::Heading(id);
+                    }
+                    return;
+                }
                 if let Some(row) = out.last_mut() {
                     row.kind = Kind::Folded(id);
                     row.cells.insert(1, (format!(" · {n} folded"), dim()));
@@ -1606,6 +1616,7 @@ pub fn list(jobs_path: &Path, state: &Path, claude: &Path) -> Result<String> {
         let (key, aux) = match &row.kind {
             Kind::Header
             | Kind::Folded(_)
+            | Kind::Heading(_)
             | Kind::Columns
             | Kind::Blank
             | Kind::HistoryStatus
@@ -1787,6 +1798,8 @@ struct GuideGroup {
     title: String,
     when: String,
     keys: Vec<(String, String)>,
+    /// The keys `?` lists: those not marked `more`.
+    quick: Vec<(String, String)>,
 }
 
 /// Help is built from the same keys and descriptions used for dispatch.
@@ -8787,6 +8800,9 @@ struct BindingHelp {
 struct BindingExplanation {
     action: KeyAction,
     description: Option<String>,
+    /// Listed only in the whole of Help, not in the `?` overlay.
+    #[serde(default)]
+    more: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -8988,12 +9004,10 @@ impl KeyBindings {
             .iter()
             .filter_map(|state| {
                 let help = state.help.as_ref()?;
-                Some(GuideGroup {
-                    title: help.title.clone(),
-                    when: help.when.clone(),
-                    keys: help
-                        .bindings
+                let keys = |quick: bool| -> Vec<(String, String)> {
+                    help.bindings
                         .iter()
+                        .filter(|explanation| !(quick && explanation.more))
                         .flat_map(|explanation| {
                             state
                                 .bindings
@@ -9010,7 +9024,13 @@ impl KeyBindings {
                                     )
                                 })
                         })
-                        .collect(),
+                        .collect()
+                };
+                Some(GuideGroup {
+                    title: help.title.clone(),
+                    when: help.when.clone(),
+                    keys: keys(false),
+                    quick: keys(true),
                 })
             })
             .collect()
@@ -12507,34 +12527,30 @@ impl App {
         self.select_row(id);
     }
 
-    /// Fold or unfold the selected row's heading for `action`; false leaves the key to others.
-    /// ← on a session folds its tag, or its folder outside a tag, and on a folded tag folds
-    /// the folder too. → or Enter on a folded heading unfolds it.
+    /// Fold or unfold the selected heading for `action`; false leaves the key to others.
+    /// ← on a heading folds it, on a folded tag folds its folder too, and on a session does
+    /// nothing. → or Enter on a folded heading unfolds it.
     fn fold_key(&mut self, action: KeyAction) -> bool {
         let Some(i) = self.visible.get(self.cursor).copied() else {
             return false;
         };
-        let folded = match &self.rows[i].kind {
-            Kind::Folded(id) => Some(id.clone()),
-            Kind::Session(..) | Kind::Run(..) => None,
-            _ => return false,
-        };
-        let Some(spot) = self.place_at(i) else {
-            return false;
-        };
-        let target = match (action, folded) {
-            (KeyAction::Right | KeyAction::Enter, Some(id)) => {
+        let target = match (action, self.rows[i].kind.clone()) {
+            (KeyAction::Right | KeyAction::Enter, Kind::Folded(id)) => {
                 self.folded.remove(&id);
                 id
             }
-            (KeyAction::Left, None) => {
-                self.folded.insert(spot.group.clone());
-                spot.group
+            (KeyAction::Left, Kind::Heading(id)) => {
+                self.folded.insert(id.clone());
+                id
             }
-            (KeyAction::Left, Some(id)) if id != spot.folder => {
-                self.folded.insert(spot.folder.clone());
-                spot.folder
-            }
+            (KeyAction::Left, Kind::Folded(id)) => match self.place_at(i).map(|spot| spot.folder) {
+                Some(folder) if folder != id => {
+                    self.folded.insert(folder.clone());
+                    folder
+                }
+                _ => return true,
+            },
+            (KeyAction::Left, Kind::Session(..) | Kind::Run(..)) => return true,
             _ => return false,
         };
         if let Err(e) = std::fs::write(
@@ -12648,8 +12664,9 @@ impl App {
         } else if keep.is_none() {
             let below = |i: &usize| {
                 let k = &self.rows[*i].kind;
-                // Neither button row opens the list: the cursor wants work, or the menu.
-                k.selectable() && *k != Kind::Menu && *k != Kind::NewFolder
+                // Neither button row nor a heading opens the list: the cursor wants work, or the
+                // menu.
+                k.selectable() && !matches!(k, Kind::Menu | Kind::NewFolder | Kind::Heading(_))
             };
             self.cursor = self.visible.iter().position(below).unwrap_or(0);
         }
@@ -12719,13 +12736,18 @@ impl App {
                             (unread || (!unread_only && state == "blocked"))
                                 && rows[i].text().to_lowercase().contains(needle)
                         }
-                        Kind::Menu | Kind::Header | Kind::Folded(_) | Kind::Columns => true,
+                        Kind::Menu
+                        | Kind::Header
+                        | Kind::Folded(_)
+                        | Kind::Heading(_)
+                        | Kind::Columns => true,
                         _ => false,
                     };
                 }
                 needle.is_empty()
                     || matches!(rows[i].kind, Kind::History(_) | Kind::HistoryStatus)
                     || (!rows[i].kind.selectable() && rows[i].kind != Kind::Columns)
+                    || matches!(rows[i].kind, Kind::Heading(_))
                     || rows[i].text().to_lowercase().contains(needle)
             })
             .collect();
@@ -12737,7 +12759,9 @@ impl App {
             .iter()
             .enumerate()
             .filter(|&(n, &i)| {
-                rows[i].kind.selectable()
+                // A heading shows only above a row the filter kept, as before it was selectable.
+                let heading = |k: &Kind| matches!(k, Kind::Header | Kind::Heading(_));
+                (rows[i].kind.selectable() && !heading(&rows[i].kind))
                     || rows[i].kind == Kind::HistoryStatus
                     // Details follow their session in or out.
                     || (rows[i].kind == Kind::Detail
@@ -12750,9 +12774,10 @@ impl App {
                         && matched
                             .get(n + 1)
                             .is_some_and(|&j| matches!(rows[j].kind, Kind::History(_))))
-                    || (rows[i].kind == Kind::Header
+                    || (heading(&rows[i].kind)
                         && matched.get(n + 1).is_some_and(|&j| {
-                            rows[j].kind.selectable() || rows[j].kind == Kind::HistoryStatus
+                            (rows[j].kind.selectable() && !heading(&rows[j].kind))
+                                || rows[j].kind == Kind::HistoryStatus
                         }))
             })
             .map(|(_, &i)| i)
@@ -12765,7 +12790,7 @@ impl App {
             return;
         }
         self.cursor = self.cursor.min(self.visible.len() - 1);
-        let selectable = |i: usize| self.rows[self.visible[i]].kind.selectable();
+        let selectable = |i: usize| self.cursor_stops(self.visible[i]);
         if !selectable(self.cursor)
             && let Some(i) = (self.cursor..self.visible.len())
                 .chain((0..self.cursor).rev())
@@ -12773,6 +12798,12 @@ impl App {
         {
             self.cursor = i;
         }
+    }
+
+    /// Whether the cursor stops on row `i`. A filter's headings only frame its matches.
+    fn cursor_stops(&self, i: usize) -> bool {
+        let kind = &self.rows[i].kind;
+        kind.selectable() && !(matches!(kind, Kind::Heading(_)) && !self.filter.text.is_empty())
     }
 
     fn step(&mut self, delta: isize) {
@@ -12788,7 +12819,7 @@ impl App {
                 break;
             }
             i = (i + delta).rem_euclid(n);
-            if self.rows[self.visible[i as usize]].kind.selectable() {
+            if self.cursor_stops(self.visible[i as usize]) {
                 break;
             }
         }
@@ -12810,7 +12841,13 @@ impl App {
     }
 
     fn selected_cwd(&self) -> Option<PathBuf> {
-        match &self.selected()?.kind {
+        self.cwd_at(*self.visible.get(self.cursor)?)
+    }
+
+    fn cwd_at(&self, i: usize) -> Option<PathBuf> {
+        match &self.rows.get(i)?.kind {
+            // A heading starts work where the first row it holds does.
+            Kind::Heading(_) => self.cwd_at(i + 1),
             Kind::Job(name) => self
                 .data
                 .jobs
@@ -13181,7 +13218,7 @@ impl App {
         }
         let heading = |i: usize| match &self.rows[i] {
             Row {
-                kind: Kind::Header | Kind::Folded(_),
+                kind: Kind::Header | Kind::Folded(_) | Kind::Heading(_),
                 cells,
             } => cells.first().map(|(text, _)| text.as_str()),
             _ => None,
@@ -13247,14 +13284,23 @@ impl App {
     fn group_roots(&self, i: usize) -> Vec<String> {
         let start = (0..=i)
             .rev()
-            .find(|&at| matches!(self.rows[at].kind, Kind::Header | Kind::Folded(_)))
+            .find(|&at| {
+                matches!(
+                    self.rows[at].kind,
+                    Kind::Header | Kind::Folded(_) | Kind::Heading(_)
+                )
+            })
             .unwrap_or(0);
         let ids: Vec<&str> = self.rows[start + 1..]
             .iter()
             .take_while(|r| {
                 !matches!(
                     r.kind,
-                    Kind::Header | Kind::Folded(_) | Kind::Blank | Kind::NewFolder
+                    Kind::Header
+                        | Kind::Folded(_)
+                        | Kind::Heading(_)
+                        | Kind::Blank
+                        | Kind::NewFolder
                 )
             })
             .filter_map(|r| match &r.kind {
@@ -17129,7 +17175,7 @@ impl App {
             return vec![];
         }
         let keys = guide_group(self.guide_origin())
-            .map(|g| guide_groups()[g].keys.clone())
+            .map(|g| guide_groups()[g].quick.clone())
             .unwrap_or_default();
         let pad = keys
             .iter()
@@ -19196,6 +19242,10 @@ impl App {
                         }),
                     ));
                     mark = 2;
+                } else if row.kind == Kind::Header {
+                    // Headings line up whether or not the cursor can reach them.
+                    spans.push(Span::raw("  "));
+                    mark = 2;
                 }
                 let live;
                 let cells = if row.kind == Kind::Menu {
@@ -19210,13 +19260,23 @@ impl App {
                 };
                 let mut drawn = Vec::with_capacity(cells.len() + 1);
                 let mut keep = named_cell(rows, i);
+                let heading = matches!(row.kind, Kind::Header | Kind::Folded(_) | Kind::Heading(_));
                 for (c, (text, style)) in cells.iter().enumerate() {
+                    // An indented heading's cursor mark takes the place of two of its spaces,
+                    // so a tag heading still starts where its folder's titles do.
+                    let text = match text.strip_prefix("  ") {
+                        Some(rest) if c == 0 && heading => rest,
+                        _ => text.as_str(),
+                    };
                     // A heading's tree lines are drawn plain, apart from its name's colour, and
                     // a title's dim, apart from the title's.
                     let text = match text.trim_start_matches(TREE) {
                         label
                             if c == 0
-                                && matches!(row.kind, Kind::Header | Kind::Folded(_))
+                                && matches!(
+                                    row.kind,
+                                    Kind::Header | Kind::Folded(_) | Kind::Heading(_)
+                                )
                                 && label != text =>
                         {
                             drawn.push(Span::raw(text[..text.len() - label.len()].to_owned()));
@@ -19235,7 +19295,7 @@ impl App {
                             keep = keep.saturating_add(1);
                             label
                         }
-                        _ => text.as_str(),
+                        _ => text,
                     };
                     let text = match text.strip_prefix(UNREAD) {
                         Some(rest) if c == title && !armed => {
@@ -19323,11 +19383,17 @@ impl App {
                     drawn
                 });
                 let line = Line::from(spans);
-                // The row a dragged session would drop on.
+                // A session held by the mouse is highlighted from the press on, and the row it
+                // would drop on is underlined.
+                let lifted = self.row_drag.as_ref().is_some_and(|d| d.from == i);
                 let over =
                     cursor.is_some() && self.row_drag.as_ref().and_then(|d| d.over) == Some(i);
                 match () {
-                    () if over => line.style(Style::default().add_modifier(Modifier::REVERSED)),
+                    () if lifted => line
+                        .style(Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)),
+                    () if over => line.style(
+                        Style::default().add_modifier(Modifier::UNDERLINED | Modifier::BOLD),
+                    ),
                     () if selected => line.style(bold()),
                     () => line,
                 }
@@ -25287,7 +25353,7 @@ states:
         let headers = |app: &App| {
             app.rows
                 .iter()
-                .filter(|r| r.kind == Kind::Header)
+                .filter(|r| matches!(r.kind, Kind::Header | Kind::Heading(_)))
                 .map(|r| r.cells[0].0.trim_start().to_owned())
                 .collect::<Vec<_>>()
         };
@@ -25857,11 +25923,11 @@ while True:
         assert!((0..30).all(|y| cells(&t, y, 99..100) == " "));
         // B has no live viewer. The previous screen must clear; B's own conversation is
         // what the pane may show instead.
-        app.step(1);
+        app.select_row(B);
         assert_eq!(key(&app).as_deref(), Some(B));
         t.draw(|f| app.draw(f)).unwrap();
         assert!((0..30).all(|y| !cells(&t, y, 101..200).contains("VIEW")));
-        app.step(-1);
+        app.select_row(A);
         t.draw(|f| app.draw(f)).unwrap();
         assert!(cells(&t, 0, 101..200).starts_with(" VIEW"));
     }

@@ -20,27 +20,34 @@ states:
         - action: place
           description: Place a session; ctrl+t pins it.
         - action: reorder
-          description: Reorder a session in its group.
+          description: Move a session within its group.
         - action: highlight
           description: Highlight a session, or remove its highlight.
+          more: true
         - action: coordinate
           description: Start the folder's coordinator.
+          more: true
         - action: settings
           description: Choose model, effort and launch settings.
         - action: cycle
           description: Choose a harness or terminal.
+          more: true
         - action: filter
           description: Filter by text, :attention or :unread.
         - action: group
           description: Group sessions by state or folder.
+          more: true
         - action: history
           description: Show or hide past conversations.
         - action: expand
           description: Show all of a session's details, or edit a job.
+          more: true
         - action: paste_image
           description: Paste a clipboard image into an instruction.
+          more: true
         - action: mouse
           description: Release the mouse so dragging selects text.
+          more: true
     bindings:
       - keys: ["up"]
         action: up
@@ -59,7 +66,7 @@ states:
         description: "Complete a path being typed, otherwise focus the pane or leave the jobs screen."
       - keys: ["left"]
         action: left
-        description: "With an empty composer, fold the selected row's heading, or leave jobs."
+        description: "With an empty composer, fold the selected heading, or leave jobs."
       - keys: ["right"]
         action: right
         description: "With an empty composer, unfold a folded heading, focus the pane or enter a session."

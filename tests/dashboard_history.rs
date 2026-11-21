@@ -178,7 +178,7 @@ fn history_lists_past_conversations_from_every_harness_and_previews_each_read_on
     let screen = open_history(&mut d);
     d.capture("history-open");
     let listed = list(&screen);
-    assert!(listed.contains("\nhistory\n"), "{screen}");
+    assert!(listed.contains("\n  history\n"), "{screen}");
     assert!(listed.contains("title"), "{screen}");
     assert!(listed.contains("last active  folder"), "{screen}");
     assert_rows(&screen, &TITLES);

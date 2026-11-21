@@ -32,7 +32,8 @@ key replaces that inherited key; other inherited keys remain available.
 
 A `help` block has a `title`, a `when` explanation and `bindings` entries
 referencing an `action` in the state's bindings. Each entry can override the
-Help `description`. Shortcut labels come from the referenced action's keys, so
+Help `description`, and `more: true` keeps it out of the `?` overlay, which lists
+the everyday keys, while Help still shows it. Shortcut labels come from the referenced action's keys, so
 remapping an action updates Help with it. Help shows every heading open; it
 only selects and organizes, and never changes input handling.
 

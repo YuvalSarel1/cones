@@ -62,7 +62,7 @@ fn empty_folder_row(screen: &str, folder: &str) -> bool {
     let lines: Vec<&str> = screen.lines().collect();
     lines.windows(2).any(|w| {
         // The selected row starts with the cursor bar instead of two spaces.
-        w[0].starts_with(&format!("{folder} "))
+        w[0].starts_with(&format!("  {folder} "))
             && w[1]
                 .trim_start_matches(['▌', ' '])
                 .starts_with("no sessions here ")
@@ -503,7 +503,7 @@ fn a_pinned_folder_is_offered_under_add_folder_until_it_is_open() {
 
     // ctrl+x closes the folder and keeps the pin, which is offered again.
     select(&mut d, UP, "the opened folder", |_, above| {
-        above.starts_with(&real)
+        above.starts_with(&format!("  {real}"))
     });
     d.press("ctrl+x", CTRL_X);
     d.press("ctrl+x", CTRL_X);

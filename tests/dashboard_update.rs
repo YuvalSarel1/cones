@@ -74,14 +74,20 @@ fn the_current_release_shows_only_the_version() {
     let keys = d.wait_text("ctrl+g all of Help · esc close");
     d.capture("shortcuts");
     assert!(
-        keys.contains("Fork the selected conversation.") && !keys.contains("? shortcuts"),
+        keys.contains("Fork the selected conversation.")
+            && keys.contains("Move a session within its group.")
+            && !keys.contains("? shortcuts"),
         "{keys}"
     );
+    // The everyday keys only: the rest wait in Help.
+    let more = "Release the mouse so dragging selects text.";
+    assert!(!keys.contains(more), "{keys}");
     d.press("?", b"?");
     d.wait_text("? shortcuts");
     d.press("ctrl+g", CTRL_G);
     let help = d.wait_text(&format!("help  cones {VERSION}"));
     d.capture("help");
+    assert!(help.contains(more), "{help}");
     for screen in [&list, &help] {
         assert!(!screen.contains("available"), "{screen}");
     }

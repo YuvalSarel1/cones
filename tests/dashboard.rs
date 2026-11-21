@@ -285,6 +285,12 @@ impl Dashboard {
     }
 
     /// The first cell of the first `text` on the screen.
+    /// The cell at a 1-based (column, row), as a mouse report names it.
+    pub fn cell_at(&self, x: usize, y: usize) -> Option<vt100::Cell> {
+        let parser = self.screen.lock().unwrap();
+        parser.screen().cell(y as u16 - 1, x as u16 - 1).cloned()
+    }
+
     pub fn cell_of(&self, text: &str) -> Option<vt100::Cell> {
         let parser = self.screen.lock().unwrap();
         let screen = parser.screen();

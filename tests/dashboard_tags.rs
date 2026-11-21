@@ -151,7 +151,8 @@ fn cell(screen: &str, text: &str) -> (usize, usize) {
         .unwrap_or_else(|| panic!("{text:?} is not on screen:\n{screen}"))
 }
 
-/// Press the left button on `from`, drag it to `to` and release it there.
+/// Press the left button on `from`, drag it to `to` and release it there. While it moves,
+/// the dragged row is in reverse video and the row it would drop on is underlined.
 fn drag(d: &mut Dashboard, from: &str, to: &str) {
     let screen = d.screen();
     let (fx, fy) = cell(&screen, from);
@@ -164,6 +165,10 @@ fn drag(d: &mut Dashboard, from: &str, to: &str) {
         &format!("drag to {to:?}"),
         format!("\x1b[<32;{tx};{ty}M").as_bytes(),
     );
+    d.wait_for("the dragged row lifted", |_| {
+        let style = |x, y| d.cell_at(x, y).map(|c| (c.inverse(), c.underline()));
+        style(fx, fy) == Some((true, false)) && style(tx, ty) == Some((false, true))
+    });
     d.press("release", format!("\x1b[<0;{tx};{ty}m").as_bytes());
 }
 
@@ -256,7 +261,7 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
                 && !list(&screen)
                     .nth(subs(&screen, &group)[0])
                     .unwrap()
-                    .starts_with("  "));
+                    .contains("─ "));
         assert_eq!(line.contains("· in project"), above, "{group}: {line}");
     }
     assert!(

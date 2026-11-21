@@ -574,6 +574,12 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
         "{screen}"
     );
     d.wait_text(&format!("fixture attached to {}", away.short));
+    // The folder's heading is a stop of its own between the two folders' sessions.
+    d.press("down", DOWN);
+    let path = project.display().to_string();
+    d.wait_for("the project heading selected", |s| {
+        selected(s).contains(&path)
+    });
     d.press("down", DOWN);
     let screen = d.wait_text(&format!("fixture attached to {}", fix.short));
     assert!(selected(&screen).contains("Fix the parser"), "{screen}");
@@ -1003,6 +1009,7 @@ fn entering_a_session_whose_folder_was_deleted_names_the_missing_folder() {
     fs::remove_dir(&scratch).unwrap();
     d.start();
     d.wait_text("Probe the scratch folder");
+    d.press("down", DOWN);
     d.press("down", DOWN);
     d.press("enter", b"\r");
     let screen = d.wait_text("attach failed: session directory no longer exists");
@@ -2025,7 +2032,18 @@ fn ctrl_e_unfolds_every_detail_of_a_session_under_its_row_and_folds_it_again() {
         "folded rows show no id:\n{screen}"
     );
 
-    // Left folds the row's folder, not its details; right unfolds it onto its first row.
+    // Left on a session does nothing; on its folder's heading it folds the folder, not the
+    // session's details. Right unfolds it onto its first row.
+    d.press("left", b"\x1b[D");
+    d.press("up", b"\x1b[A");
+    let screen = d.wait_for("the heading selected", |s| {
+        let row = selected(s);
+        !row.trim().is_empty() && !row.contains("Fix the parser") && !row.contains("Rest")
+    });
+    assert!(
+        !screen.contains("folded"),
+        "left on a session folded:\n{screen}"
+    );
     d.press("left", b"\x1b[D");
     let screen = d.wait_text("· 2 folded");
     d.capture("folded");
