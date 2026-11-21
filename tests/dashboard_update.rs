@@ -13,7 +13,9 @@
 //! only to a binary under a Homebrew Cellar. A copy of the binary in a fixture Cellar runs
 //! the prefix's `brew update`, then `brew upgrade cones` with cleanup off, so a tap Homebrew
 //! has not refreshed yet still upgrades; once the new version's Cellar folder exists the
-//! notice asks to reopen cones, and when brew fails it offers the command.
+//! notice asks to reopen cones, and when brew fails it offers the command. A newer version
+//! Homebrew installed on its own, while the kept formula still names this binary's release,
+//! asks to reopen cones without running brew.
 use crate::dashboard::*;
 use std::{fs, os::unix::fs::PermissionsExt};
 
@@ -237,5 +239,25 @@ fn a_failed_homebrew_upgrade_offers_the_command() {
     d.capture("help");
     d.press("esc", ESC);
     d.wait_text("? shortcuts");
+    d.quit();
+}
+
+#[test]
+fn a_release_homebrew_installed_on_its_own_asks_to_reopen() {
+    let mut d = Dashboard::new("update-homebrew-autoupdate", &[]);
+    from_homebrew(&mut d, "");
+    // `brew autoupdate` installed 99.0.0; the formula cones kept is a day old and still current.
+    fs::write(d.path("state/formula.rb"), formula(VERSION)).unwrap();
+    fs::create_dir_all(d.path("brew/Cellar/cones/99.0.0")).unwrap();
+    d.start();
+    let list = d.wait_text("cones 99.0.0 installed · reopen cones");
+    d.capture("list");
+    assert!(
+        list.lines()
+            .take(5)
+            .any(|l| l.contains("cones 99.0.0 installed · quit and reopen cones")),
+        "{list}"
+    );
+    assert!(!d.path("brew.log").exists(), "brew ran");
     d.quit();
 }

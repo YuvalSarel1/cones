@@ -2,7 +2,9 @@
 //! state dir and, while it runs, downloads it again in the background once it is a day old,
 //! so drawing never waits on the network. A Homebrew install then upgrades itself with
 //! `brew upgrade cones`, keeping the running version's files, and the next start uses the
-//! new one. `start.update_check: false` turns both off.
+//! new one. A newer version Homebrew installed on its own, such as through `brew autoupdate`,
+//! is noticed from its Cellar folder within a minute. `start.update_check: false` turns all
+//! of it off.
 use std::{
     fs,
     io::Write,
@@ -10,7 +12,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Mutex, Once,
+        Mutex, Once, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, SystemTime},
@@ -20,11 +22,13 @@ const FORMULA_URL: &str =
     "https://raw.githubusercontent.com/YuvalSarel1/cones/main/Formula/cones.rb";
 const REFRESH_AFTER: Duration = Duration::from_secs(24 * 3600);
 const PASS_EVERY: Duration = Duration::from_secs(3600);
+const CELLAR_EVERY: Duration = Duration::from_secs(60);
 
 static NEWER: Mutex<Option<String>> = Mutex::new(None);
 static INSTALLED: Mutex<Option<String>> = Mutex::new(None);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WATCH: Once = Once::new();
+static PREFIX: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 /// Called at startup and again when the config editor saves `start.update_check`.
 pub fn init(state: &Path, enabled: bool) {
@@ -33,15 +37,23 @@ pub fn init(state: &Path, enabled: bool) {
         *NEWER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         return;
     }
+    homebrew();
     let path = state.join("formula.rb");
     remember(&path);
     WATCH.call_once(|| {
         std::thread::spawn(move || {
+            let mut since_pass = PASS_EVERY;
             loop {
                 if ENABLED.load(Ordering::Relaxed) {
-                    pass(&path);
+                    if since_pass >= PASS_EVERY {
+                        pass(&path);
+                        since_pass = Duration::ZERO;
+                    } else {
+                        see_cellar();
+                    }
                 }
-                std::thread::sleep(PASS_EVERY);
+                std::thread::sleep(CELLAR_EVERY);
+                since_pass += CELLAR_EVERY;
             }
         });
     });
@@ -57,6 +69,7 @@ fn pass(path: &Path) {
     if age.is_none_or(|a| a >= REFRESH_AFTER) {
         fetch(path);
     }
+    see_cellar();
     let newer = NEWER.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let installed = INSTALLED.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let (Some(v), Some(prefix)) = (newer, homebrew())
@@ -90,8 +103,33 @@ fn upgrade(prefix: &Path, v: &str) -> bool {
     brew(&["upgrade", "cones"]) && prefix.join("Cellar/cones").join(v).is_dir()
 }
 
+/// A newer cones Homebrew installed without this dashboard, which `brew autoupdate` does
+/// hourly, is a release already installed: the notice asks to reopen, and nothing upgrades.
+fn see_cellar() {
+    let Some(prefix) = homebrew() else { return };
+    let newest = fs::read_dir(prefix.join("Cellar/cones"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok())
+        .filter(|v| parts(v).len() == 3)
+        .max_by_key(|v| parts(v));
+    let Some(v) = newest.filter(|v| parts(v) > parts(env!("CARGO_PKG_VERSION"))) else {
+        return;
+    };
+    let mut newer = NEWER.lock().unwrap_or_else(|e| e.into_inner());
+    if newer.as_ref().is_none_or(|n| parts(n) <= parts(&v)) {
+        *newer = Some(v.clone());
+        *INSTALLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(v);
+    }
+}
+
 /// The Homebrew prefix when Homebrew installed this binary, as `<prefix>/Cellar/cones/<v>/bin`.
+/// Read once: an upgrade's cleanup can delete the running version's folder.
 fn homebrew() -> Option<PathBuf> {
+    PREFIX.get_or_init(prefix).clone()
+}
+
+fn prefix() -> Option<PathBuf> {
     let exe = std::env::current_exe()
         .and_then(|e| e.canonicalize())
         .ok()?;
