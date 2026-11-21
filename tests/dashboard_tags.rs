@@ -152,7 +152,7 @@ fn cell(screen: &str, text: &str) -> (usize, usize) {
 }
 
 /// Press the left button on `from`, drag it to `to` and release it there. While it moves,
-/// the dragged row is in reverse video and the row it would drop on is underlined.
+/// the row it would drop on is underlined and the dragged row keeps its look.
 fn drag(d: &mut Dashboard, from: &str, to: &str) {
     let screen = d.screen();
     let (fx, fy) = cell(&screen, from);
@@ -165,9 +165,9 @@ fn drag(d: &mut Dashboard, from: &str, to: &str) {
         &format!("drag to {to:?}"),
         format!("\x1b[<32;{tx};{ty}M").as_bytes(),
     );
-    d.wait_for("the dragged row lifted", |_| {
+    d.wait_for("the drop row underlined", |_| {
         let style = |x, y| d.cell_at(x, y).map(|c| (c.inverse(), c.underline()));
-        style(fx, fy) == Some((true, false)) && style(tx, ty) == Some((false, true))
+        style(fx, fy) == Some((false, false)) && style(tx, ty) == Some((false, true))
     });
     d.press("release", format!("\x1b[<0;{tx};{ty}m").as_bytes());
 }
@@ -414,6 +414,11 @@ fn reordering_by_hand_keeps_the_group_s_order_and_says_so_once() {
     d.press("up", UP);
     d.press("up", UP);
     let screen = d.wait_for("the row moved", |s| order(s)[0] == "third");
+    // The picked-up row is in reverse video while it moves.
+    let (x, y) = cell(&screen, "Third started");
+    d.wait_for("the moving row highlighted", |_| {
+        d.cell_at(x, y).is_some_and(|c| c.inverse())
+    });
     d.capture("moving");
     d.press("enter", b"\r");
     // The footer is as wide as the list; this fixture's folder path fills most of it.

@@ -264,15 +264,14 @@ folder` the worktree.
 
 Tag headings are drawn in cyan, so a group of tagged sessions does not read as a folder.
 
-With the mouse, press a session row, drag it and release. The held row is highlighted from the
-press on and the row it would drop on is underlined. A drop moves that row: the session
-leaves the place it was dragged from and takes the one dropped on, a tag of either kind or its
-own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
+With the mouse, press a session row, drag it and release. The row it would drop on is
+underlined. A drop moves that row: the session leaves the place it was dragged from and takes
+the one dropped on, a tag of either kind or its own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
 session keeps its folder, and the footer names the folder that accepts it. A drop on a row of
 its own group reorders it there; a row of another group counts as that group's heading.
 
-`ctrl+b` picks up the selected row; up and down move it inside its group, Enter keeps the order
-and Escape puts it back. A fork or launch listed beneath another session moves with it and
+`ctrl+b` picks up the selected row and highlights it; up and down move it inside its group,
+Enter keeps the order and Escape puts it back. A fork or launch listed beneath another session moves with it and
 cannot be picked up alone. A group reordered by hand keeps that order whatever
 [`sort`](jobs.md#list-settings) says, and the footer says so the first time. A session started
 from a group other than its folder's, with `ctrl+o` or the composer, runs in the selected row's

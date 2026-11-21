@@ -19383,9 +19383,9 @@ impl App {
                     drawn
                 });
                 let line = Line::from(spans);
-                // A session held by the mouse is highlighted from the press on, and the row it
-                // would drop on is underlined.
-                let lifted = self.row_drag.as_ref().is_some_and(|d| d.from == i);
+                // A session picked up with ctrl+b is highlighted while it moves; the row a
+                // mouse drag would drop on is underlined.
+                let lifted = selected && matches!(self.mode, Mode::Move(_));
                 let over =
                     cursor.is_some() && self.row_drag.as_ref().and_then(|d| d.over) == Some(i);
                 match () {
