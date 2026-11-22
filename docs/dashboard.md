@@ -167,7 +167,7 @@ finish is read. The [Jobs](#jobs) screen keeps the full run list.
 
 [Column settings](jobs.md#list-settings) control each table independently. Identity and row
 icons stay visible. The default last reply column hides with the pane open; an explicit
-selection keeps it. Columns grow to fit values during the session, and `whole_columns`
+selection keeps it. Columns grow to fit changing values and refit when a row joins or leaves; `whole_columns`
 controls clipping in narrow lists. Times display in the local timezone.
 
 | State | Display |

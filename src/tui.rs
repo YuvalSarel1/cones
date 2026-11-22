@@ -2517,10 +2517,11 @@ fn uncolored(text: &str) -> String {
     out
 }
 
-/// Column widths only grow during a dashboard session, preventing shifts as values change.
-/// The naming column is the exception: it fits the rows listed now, so a long title that
-/// left does not hold the other columns away from the short ones that stayed.
-pub type Widths = HashMap<Vec<String>, Vec<usize>>;
+/// Column widths only grow while the same rows are listed, preventing shifts as values change.
+/// A row joining or leaving refits every column, so a long value that left does not hold the
+/// columns apart. The naming column always fits the rows listed now. Rows are told apart by
+/// their naming cell.
+pub type Widths = HashMap<Vec<String>, (Vec<String>, Vec<usize>)>;
 
 /// Pad each column to its widest cell, two spaces apart; `widths` remembers across frames
 /// except for the `fitted` column.
@@ -3020,7 +3021,20 @@ fn columns(
     let mut all = vec![names.iter().map(|n| ((*n).to_owned(), dim())).collect()];
     all.extend(rows);
     let named = names.iter().position(|n| matches!(*n, "title" | "job"));
-    let mut all = table(all, widths.entry(key).or_default(), named);
+    let listed: Vec<String> = all
+        .iter()
+        .map(|r| {
+            r.get(named.unwrap_or(0))
+                .map(|c| c.0.clone())
+                .unwrap_or_default()
+        })
+        .collect();
+    let (seen, remembered) = widths.entry(key).or_default();
+    if *seen != listed {
+        *seen = listed;
+        remembered.clear();
+    }
+    let mut all = table(all, remembered, named);
     let mut cells = all.remove(0);
     cells[0].0.insert_str(0, "  ");
     (
@@ -24406,39 +24420,37 @@ states:
     }
 
     #[test]
-    fn the_title_column_narrows_when_its_longest_title_leaves() {
+    fn every_column_refits_when_the_row_holding_it_wide_leaves() {
         let d = dir();
         let mut data = Data::load(&d.path().join("none.yaml"), d.path(), d.path()).unwrap();
-        data.sessions = vec![
-            session(A, "idle", "short", 1),
-            session(B, "idle", "a title well over the short one", 1),
-        ];
-        let mut widths = Widths::new();
-        let title_of = |data: &Data, widths: &mut Widths| {
-            let rows = data.rows_excluding(
+        let mut long = session(B, "idle", "a title well over the short one", 1);
+        long.model = Some("a-model-name-far-wider-than-the-header".into());
+        long.cost_usd = Some(12345.67);
+        data.sessions = vec![session(A, "idle", "short", 1), long];
+        let row_of = |data: &Data, widths: &mut Widths| {
+            data.rows_excluding(
                 false,
                 false,
                 false,
                 &HashSet::new(),
                 &Places::default(),
                 widths,
-            );
-            let row = rows
-                .into_iter()
-                .find(|r| matches!(&r.kind, Kind::Session(id, _) if id == A))
-                .unwrap();
-            let named = row
-                .cells
-                .iter()
-                .position(|(t, _)| t.trim_start_matches(TREE).trim() == "short")
-                .unwrap();
-            row.cells[named].0.trim_start_matches(TREE).to_owned()
+            )
+            .into_iter()
+            .find(|r| matches!(&r.kind, Kind::Session(id, _) if id == A))
+            .unwrap()
+            .cells
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<String>()
         };
-        let wide = title_of(&data, &mut widths);
-        assert_eq!(wide.len(), "a title well over the short one".len() + 2);
+        let mut widths = Widths::new();
+        let wide = row_of(&data, &mut widths);
         data.sessions.truncate(1);
-        let narrow = title_of(&data, &mut widths);
-        assert_eq!(narrow, "short  ");
+        let after = row_of(&data, &mut widths);
+        let alone = row_of(&data, &mut Widths::new());
+        assert!(wide.len() > alone.len() + 30, "{wide:?} vs {alone:?}");
+        assert_eq!(after, alone);
     }
 
     #[test]

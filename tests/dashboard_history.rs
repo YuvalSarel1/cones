@@ -249,7 +249,7 @@ fn history_search_filters_titles_and_conversation_text_and_escape_backs_out() {
         history_rows(s).len() == 1 && pane(s).contains("Release notes written")
     });
     d.capture("filter-typed");
-    assert_rows(&screen, &["✻   Changelog for 0.3"]);
+    assert_rows(&screen, &["✻  Changelog for 0.3"]);
     assert!(screen.contains("/ changelog"), "{screen}");
     assert!(
         screen.contains("enter keep the search · esc clear it"),
@@ -259,7 +259,7 @@ fn history_search_filters_titles_and_conversation_text_and_escape_backs_out() {
     d.press("enter", b"\r");
     let screen = d.wait_text("history words / changelog");
     d.capture("filter-kept");
-    assert_rows(&screen, &["✻   Changelog for 0.3"]);
+    assert_rows(&screen, &["✻  Changelog for 0.3"]);
     assert!(
         screen.contains("search: changelog  enter resume"),
         "{screen}"
@@ -284,7 +284,7 @@ fn history_search_filters_titles_and_conversation_text_and_escape_backs_out() {
     d.capture("text-search");
     let rows = history_rows(&screen);
     assert_eq!(rows.len(), 2, "{screen}");
-    assert!(rows[0].contains("π   Sort the imports"), "{screen}");
+    assert!(rows[0].contains("π  Sort the imports"), "{screen}");
     assert_eq!(rows[1].trim(), "Imports sorted alphabetically", "{screen}");
     assert!(
         screen.contains("history words / alphabetically"),

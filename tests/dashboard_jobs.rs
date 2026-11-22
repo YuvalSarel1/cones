@@ -339,9 +339,9 @@ fn a_scheduled_job_is_created_edited_and_deleted_leaving_the_rest_of_the_file_as
     let screen = d.wait_for("the deleted row gone", |s| {
         s.contains("job release-notes deleted · install failed") && !s.contains("release-notes  ")
     });
-    // The job column narrows to the names still listed.
+    // Every column refits to the jobs still listed.
     assert!(
-        screen.contains("◆  ✻  -       triage  0 3 * * *      success"),
+        screen.contains("◆  ✻  -       triage  0 3 * * *  success"),
         "{screen}"
     );
     d.capture("deleted");
