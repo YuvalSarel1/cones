@@ -59,7 +59,10 @@ the output; `cones ls --json` prints one object per line, with a live session's 
 `.session`, and a job's session also carries its run under `.run`. IDs come from `cones ls` or `cones launch`; pass the
 full id, since every command refuses a prefix. `cones launch --name NAME` names
 a session at start and `cones rename ID NAME` names one later, through the harness's own
-rename, so a worker's row says what it is doing. `cones stop ID` ends a session's
+rename, so a worker's row says what it is doing. When the owner names a session, match the
+name against `.session.title` in `cones ls --json`, then `cones search NAME` for finished
+ones; names repeat, so when several match, prefer the live one in the current folder or ask
+which. `cones stop ID` ends a session's
 work and keeps its conversation; `cones rm ID` does what the dashboard's `ctrl+x` twice does
 to a row. `cones btw ID QUESTION` asks a session a side question and prints the answer, from a
 read-only fork that adds nothing to the session's context; `cones compact ID` compacts a
