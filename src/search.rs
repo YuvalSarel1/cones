@@ -23,9 +23,10 @@ const VERSION: &str = "minilm-l6-v2-passages-v1";
 /// Passages claimed from SQLite per scheduling round. One round trip per dashboard
 /// refresh, so a small batch spends most of its time waiting for the next tick.
 const BATCH: usize = 256;
-/// Sequences per forward pass. Activations are this many by 256 tokens by 384 floats,
-/// so a wider pass buys little and costs memory.
-const FORWARD: usize = 32;
+/// Sequences per forward pass. Each layer's attention scores are this many by 12 heads by
+/// 256 by 256 floats: 32 peaked the process at 1.6 GB, 8 at 0.65 GB for about a fifth
+/// less throughput.
+const FORWARD: usize = 8;
 pub(crate) const DIMENSIONS: usize = 384;
 /// MiniLM puts unrelated English prose around 0.3. On labeled history queries 0.5 dropped
 /// right answers and 0.35 let in wrong ones; 0.4 returned nothing for absent topics.
