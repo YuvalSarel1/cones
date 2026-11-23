@@ -174,7 +174,7 @@ fn lock_path(state: &Path, id: &str) -> PathBuf {
 
 fn save(state: &Path, record: &Record) -> io::Result<()> {
     let mut temp = tempfile::NamedTempFile::new_in(directory(state))?;
-    serde_json::to_writer(&mut temp, record).map_err(io::Error::other)?;
+    temp.write_all(&serde_json::to_vec(record).map_err(io::Error::other)?)?;
     temp.flush()?;
     temp.persist(record_path(state, &record.id))
         .map_err(io::Error::other)?;

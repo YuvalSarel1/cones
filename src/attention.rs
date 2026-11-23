@@ -226,7 +226,8 @@ impl Tracker {
         }
         if dirty {
             let mut temporary = tempfile::NamedTempFile::new_in(state)?;
-            serde_json::to_writer(&mut temporary, &self.entries).map_err(io::Error::other)?;
+            // One write: an unbuffered writer issues a syscall per JSON token, thousands for this file.
+            temporary.write_all(&serde_json::to_vec(&self.entries).map_err(io::Error::other)?)?;
             temporary.flush()?;
             temporary.persist(&path).map_err(io::Error::other)?;
             self.stamp = stamp(&path);

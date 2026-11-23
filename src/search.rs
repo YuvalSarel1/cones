@@ -1103,6 +1103,20 @@ fn model_file(directory: &Path, name: &str, hash: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run the calling thread below interactive work: utility QoS on macOS, nice 10 elsewhere.
+fn background_priority() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: changes only the calling thread's scheduling class.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0);
+    }
+    #[cfg(not(target_os = "macos"))]
+    // SAFETY: on Linux, `who == 0` with PRIO_PROCESS is the calling thread.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS as _, 0, 10);
+    }
+}
+
 impl Embeddings {
     fn new(directory: PathBuf) -> Result<Self> {
         let (input, requests) = mpsc::channel::<EmbeddingRequest>();
@@ -1116,7 +1130,12 @@ impl Embeddings {
                 let threads = std::thread::available_parallelism()
                     .map(|n| n.get().saturating_sub(1).max(1))
                     .unwrap_or(2);
-                let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build();
+                // Embedding is background work. At full priority its idle workers spin for
+                // their siblings and outbid every agent on a loaded machine.
+                let pool = rayon::ThreadPoolBuilder::new()
+                    .num_threads(threads)
+                    .start_handler(|_| background_priority())
+                    .build();
                 let mut query_cache: Option<(String, Vec<f32>)> = None;
                 while let Ok(request) = requests.recv() {
                     let result = (|| -> Result<EmbeddingResponse> {

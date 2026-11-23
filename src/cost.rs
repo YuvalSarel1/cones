@@ -478,8 +478,9 @@ impl Catalog {
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(&temp)?;
-            serde_json::to_writer(&mut file, self)?;
-            file.write_all(b"\n")?;
+            let mut bytes = serde_json::to_vec(self)?;
+            bytes.push(b'\n');
+            file.write_all(&bytes)?;
             file.sync_all()?;
             fs::rename(&temp, path)?;
             Ok(())
