@@ -401,8 +401,9 @@ fn endpoint(id: &str) -> &'static str {
     }
 }
 
-/// The plan of the account Claude is signed in to: `oauthAccount.organizationType` without its
-/// `claude_` prefix, such as `max`, or `api` when no account is signed in. Claude keeps
+/// The plan of the account Claude is signed in to: `oauthAccount.planDisplayName`, the name
+/// Claude itself shows, such as `ultra`, else `organizationType` without its `claude_` prefix,
+/// which names the tier family (`max` for every Max tier), or `api` when no account is signed in. Claude keeps
 /// `.claude.json` inside a custom config folder, else beside the default one, and the default
 /// folder can hold a leftover one naming no account, so the first that names one is read.
 // ponytail: account-wide; a session started with ANTHROPIC_API_KEY under a signed-in account shows the account's plan.
@@ -414,7 +415,14 @@ fn account_plan(claude: &Path) -> String {
     .into_iter()
     .filter_map(|p| serde_json::from_slice::<Value>(&fs::read(p).ok()?).ok())
     .find_map(|config| {
-        let kind = config["oauthAccount"]["organizationType"].as_str()?;
+        let account = &config["oauthAccount"];
+        if let Some(name) = account["planDisplayName"]
+            .as_str()
+            .filter(|n| !n.is_empty())
+        {
+            return Some(name.to_lowercase());
+        }
+        let kind = account["organizationType"].as_str()?;
         Some(kind.strip_prefix("claude_").unwrap_or(kind).to_owned())
     })
     .unwrap_or_else(|| "api".into())

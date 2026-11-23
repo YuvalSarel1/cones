@@ -1775,7 +1775,9 @@ fn plan_shows_the_cloud_or_the_signed_in_account_plan() {
     }
     fs::write(
         d.home().join(".claude.json"),
-        json!({"oauthAccount": {"organizationType": "claude_max"}}).to_string(),
+        // Every Max tier is `claude_max`; the plan Claude itself shows is the display name.
+        json!({"oauthAccount": {"organizationType": "claude_max", "planDisplayName": "Ultra"}})
+            .to_string(),
     )
     .unwrap();
     // A leftover config inside the default folder names no account and must not hide it.
@@ -1806,7 +1808,7 @@ fn plan_shows_the_cloud_or_the_signed_in_account_plan() {
     };
     assert_eq!(plan("On bedrock"), "bedrock", "{screen}");
     assert_eq!(plan("On vertex"), "vertex", "{screen}");
-    assert_eq!(plan("On the account"), "max", "{screen}");
+    assert_eq!(plan("On the account"), "ultra", "{screen}");
     assert_eq!(plan("Not answered"), "-", "{screen}");
     d.quit();
 }

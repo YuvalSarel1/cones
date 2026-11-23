@@ -107,6 +107,7 @@ pub(crate) struct Report {
     pub context_window: Option<u64>,
     pub cost_usd: Option<f64>,
     pub cost_info: Option<Info>,
+    pub plan: Option<String>,
     pub activity: Vec<Activity>,
 }
 
@@ -124,6 +125,7 @@ pub(crate) fn report(dir: &Path) -> Option<Report> {
         effort: text(&summary["reasoning_effort"]),
         forked_from: text(&summary["parent_session_id"]),
         last_activity: time(&summary["last_active_at"]),
+        plan: dir.ancestors().nth(3).and_then(plan),
         ..Report::default()
     };
     let rules = &spec().state;
@@ -162,6 +164,15 @@ pub(crate) fn report(dir: &Path) -> Option<Report> {
         r.context_window = signals["contextWindowTokens"].as_u64().filter(|w| *w > 0);
     }
     Some(r)
+}
+
+/// The subscription Grok shows for its signed-in account, such as `supergrok`, from the
+/// settings it caches in its home; a session folder sits at `sessions/<cwd>/<id>/` below it.
+fn plan(home: &Path) -> Option<String> {
+    let cache = json(&home.join("settings_cache.json"))?;
+    let settings: Value = serde_json::from_str(cache["payload"].as_str()?).ok()?;
+    let name = settings["settings"]["subscription_tier_display"].as_str()?;
+    (!name.is_empty()).then(|| name.to_lowercase())
 }
 
 /// The first instruction, for a session Grok has not titled yet.
@@ -242,7 +253,7 @@ pub fn sessions(home: &Path) -> Result<Vec<Session>> {
                 bypass: None,
                 usage: None,
                 tasks: None,
-                plan: None,
+                plan: r.plan,
                 title: r.title,
                 last: r.last,
                 coordinator: false,

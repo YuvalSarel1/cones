@@ -291,6 +291,12 @@ fn a_launched_grok_is_read_controlled_resumed_and_forked_through_its_session_fol
     );
 
     // The row is the client, and everything on it is what Grok wrote about the session it holds.
+    let payload = json!({"settings": {"subscription_tier_display": "SuperGrok"}}).to_string();
+    fs::write(
+        f.home().join("settings_cache.json"),
+        json!({"payload": payload, "signature": [1]}).to_string(),
+    )
+    .unwrap();
     let row = f.row(&id, |r| r["state"] == "idle");
     let transcript = f
         .home()
@@ -311,6 +317,7 @@ fn a_launched_grok_is_read_controlled_resumed_and_forked_through_its_session_fol
         ("context_tokens", json!(1000)),
         ("context_window", json!(256000)),
         ("cost_usd", json!(0.12345)),
+        ("plan", json!("supergrok")),
         ("transcript_path", json!(transcript)),
     ] {
         assert_eq!(row[field], expected, "{field}: {row:#}");

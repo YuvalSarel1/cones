@@ -1139,7 +1139,7 @@ fn grok_columns(path: &Path) -> Columns {
     Columns {
         title: r.title,
         model: r.model,
-        plan: None,
+        plan: r.plan,
         tokens_in: r.tokens_in,
         tokens_out: r.tokens_out,
         context_tokens: r.context_tokens,
