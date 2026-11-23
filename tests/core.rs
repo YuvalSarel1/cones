@@ -1147,6 +1147,86 @@ fn fleet_view_lists_live_sessions_and_collapses_cones_runs() {
         "{pane:?}"
     );
 }
+
+/// The context column draws the reported share of the window as a bar on a track: grey below
+/// half, amber from half, red from 80%. The percent after it is plain dim text, and a session
+/// with no reported window keeps its bare token count.
+#[test]
+fn the_context_column_is_a_meter_coloured_by_the_reported_share() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dirs::home_dir().unwrap().join("src/repo");
+    let me = std::process::id();
+    let cases = [
+        (
+            "44444444-4444-4444-8444-444444444441",
+            100_000,
+            Some(1_000_000),
+            "▋     ",
+            "  10%",
+            (138, 145, 153),
+            (65, 69, 74),
+        ),
+        (
+            "44444444-4444-4444-8444-444444444442",
+            120_000,
+            Some(200_000),
+            "███▋  ",
+            "  60%",
+            (240, 198, 116),
+            (94, 84, 63),
+        ),
+        (
+            "44444444-4444-4444-8444-444444444443",
+            170_000,
+            Some(200_000),
+            "█████▏",
+            "  85%",
+            (204, 102, 102),
+            (84, 57, 60),
+        ),
+        (
+            "44444444-4444-4444-8444-444444444444",
+            50_000,
+            None,
+            "",
+            "",
+            (0, 0, 0),
+            (0, 0, 0),
+        ),
+    ];
+    let sidecar = dir.path().join("statusline");
+    fs::create_dir_all(&sidecar).unwrap();
+    for (id, prompt, window, ..) in &cases {
+        registry(
+            dir.path(),
+            id,
+            serde_json::json!({"pid": me, "sessionId": id, "cwd": cwd, "kind": "interactive",
+                "status": "idle", "name": "fix the widget", "startedAt": 1757682871892i64}),
+        );
+        transcript(dir.path(), &cwd, id, *prompt, "Running the tests");
+        if let Some(w) = window {
+            fs::write(
+                sidecar.join(format!("{id}.json")),
+                serde_json::json!({"context_window": {"context_window_size": w}}).to_string(),
+            )
+            .unwrap();
+        }
+    }
+    let list = cones::tui::list(&dir.path().join("none.yaml"), dir.path(), dir.path()).unwrap();
+    for (id, _, window, bar, percent, (r, g, b), (tr, tg, tb)) in cases {
+        let row = list.lines().find(|l| l.starts_with(id)).unwrap();
+        if window.is_none() {
+            assert!(
+                plain(row).contains(" 50k ") && !row.contains(";48;2;"),
+                "no window, no meter: {row:?}"
+            );
+            continue;
+        }
+        let drawn =
+            format!("\x1b[38;2;{r};{g};{b};48;2;{tr};{tg};{tb}m{bar}\x1b[0m\x1b[2m{percent}");
+        assert!(row.contains(&drawn), "{drawn:?} not in {row:?}");
+    }
+}
 #[test]
 fn adhoc_job_borrows_policy_or_defaults() {
     let dir = tempfile::tempdir().unwrap();

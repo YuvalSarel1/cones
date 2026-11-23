@@ -2580,10 +2580,10 @@ fn table(
             let n = r.len();
             r.into_iter()
                 .enumerate()
-                .map(|(c, (text, style))| {
+                .flat_map(|(c, (text, style))| {
                     let pad = widths[c] - Span::raw(text.as_str()).width()
                         + if c + 1 == n { 0 } else { 2 };
-                    (format!("{text}{:pad$}", ""), style)
+                    split_meter(format!("{text}{:pad$}", ""), style)
                 })
                 .collect()
         })
@@ -2788,6 +2788,8 @@ fn detail_rows(s: &Session, activity: &config::Activity, width: usize) -> Vec<Ro
                     None => s.harness.clone(),
                 }),
                 "folder" => text(fleet::tilde(s.dir())),
+                // The unfolded row spells out what the list's meter draws.
+                "context" => (fleet::context(s), dim()),
                 // ponytail: read on every rebuild for the one unfolded row; cache it if it shows.
                 "branch" => text(git_branch(s.dir()).unwrap_or_else(|| "-".into())),
                 c => cell(c, s, false, spark.as_deref()),
@@ -2943,7 +2945,7 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
         }
         "model" => (fleet::row_model(s), dim()),
         "age" => (since(s.started), dim()),
-        "context" => (fleet::context(s), dim()),
+        "context" => meter(s.context_tokens, s.context_window),
         "tokens" => (fleet::tokens(s), dim()),
         "folder" => (elide_folder(fleet::tilde(s.dir())), dim()),
         "last_active" => (since(s.last_activity), dim()),
@@ -2978,6 +2980,55 @@ fn cell(column: &str, s: &Session, _by_state: bool, spark: Option<&str>) -> (Str
         ),
         _ => ("?".into(), dim()),
     }
+}
+
+/// Context meter cells: grey until half the reported window is used, amber from half, red
+/// from 80%. Each fill sits on a dark track of its own hue.
+const METER: usize = 6;
+const METER_COLORS: [(Color, Color); 3] = [
+    (Color::Rgb(0x8a, 0x91, 0x99), Color::Rgb(0x41, 0x45, 0x4a)),
+    (Color::Rgb(0xf0, 0xc6, 0x74), Color::Rgb(0x5e, 0x54, 0x3f)),
+    (Color::Rgb(0xcc, 0x66, 0x66), Color::Rgb(0x54, 0x39, 0x3c)),
+];
+
+/// Reported context as a bar and a share of the window, `▉▉▍    21%`. Without a reported
+/// window there is no share to draw, so the bare count stays. `table` splits the bar from
+/// the percent so only the bar sits on the track.
+fn meter(tokens: Option<u64>, window: Option<u64>) -> (String, Style) {
+    let (Some(t), Some(w)) = (tokens, window.filter(|&w| w > 0)) else {
+        return (fleet::context_values(tokens, window), dim());
+    };
+    let share = t as f64 / w as f64;
+    let (fill, track) = METER_COLORS[usize::from(share >= 0.5) + usize::from(share >= 0.8)];
+    let eighths = (share.min(1.0) * (METER * 8) as f64).round() as usize;
+    let bar: String = (0..METER)
+        .map(|i| match eighths.saturating_sub(i * 8).min(8) {
+            0 => ' ',
+            n => ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'][n - 1],
+        })
+        .collect();
+    (
+        format!("{bar}{:>4.0}%", share * 100.0),
+        Style::default().fg(fill).bg(track),
+    )
+}
+
+/// A meter cell as its bar on the track and the rest, percent and padding, dim.
+fn split_meter(text: String, style: Style) -> Vec<(String, Style)> {
+    if !METER_COLORS
+        .iter()
+        .any(|(_, track)| style.bg == Some(*track))
+    {
+        return vec![(text, style)];
+    }
+    let at = text
+        .char_indices()
+        .nth(METER)
+        .map_or(text.len(), |(i, _)| i);
+    vec![
+        (text[..at].to_owned(), style),
+        (text[at..].to_owned(), dim()),
+    ]
 }
 
 /// Each kind with its count, in the order the harness lists them: `2 shells 1 monitor`.
@@ -3024,7 +3075,7 @@ fn run_cell(column: &str, run: &Run, view: &RunView) -> (String, Style) {
             .as_deref()
             .map(fleet::model)
             .unwrap_or_else(|| "-".into()),
-        "context" => fleet::context_values(view.context_tokens, view.context_window),
+        "context" => return meter(view.context_tokens, view.context_window),
         "tokens" => fleet::token_values(view.tokens_in, view.tokens_out),
         "cost" => crate::cost::display(view.cost_usd, view.cost_info.as_ref()),
         "reason" => last.reason.clone().unwrap_or_else(|| "-".into()),
@@ -25087,7 +25138,7 @@ states:
         fs::rename(&output, terminal.transcript.as_ref().unwrap()).unwrap();
         ledger.append(&terminal).unwrap();
         data = load();
-        assert!(row(&data).text().contains("2k/200k"));
+        assert!(row(&data).text().contains("        1%"));
         assert!(row(&data).text().contains("9k/40"));
         data.run_columns = vec![
             "harness".into(),

@@ -75,8 +75,8 @@ fn a_composer_grok_draws_in_its_viewer_returns_with_ctrl_z_and_stops_with_ctrl_x
     d.capture("idle-row");
     let line = row(&screen, "Fixture fix the tests", "idle").unwrap();
     assert!(
-        line.contains("1k/256k"),
-        "the row shows Grok's context: {line}"
+        line.contains("        0%"),
+        "the row shows Grok's context as a share of its window: {line}"
     );
     assert!(screen.contains("▁ 1 idle"), "{screen}");
 
