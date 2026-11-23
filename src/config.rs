@@ -411,13 +411,14 @@ pub struct JobsFile {
     pub launched_under_parent: Option<bool>,
 }
 
-/// `repo` lists a linked worktree's sessions in its repository's folder; `folder` lists a
-/// worktree as a folder of its own. `nested` and `flat`, the earlier names, read as `repo`.
+/// `nested` lists a linked worktree's sessions in its repository's folder, under a heading of
+/// their own once two or more share the worktree; `folder` lists a worktree as a folder of its
+/// own. `repo` and `flat`, earlier names, read as `nested`.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Worktrees {
-    #[serde(alias = "nested", alias = "flat")]
-    Repo,
+    #[serde(alias = "repo", alias = "flat")]
+    Nested,
     Folder,
 }
 

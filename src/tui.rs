@@ -934,6 +934,35 @@ impl Data {
         // Sessions placed by hand; the rest follow their launcher.
         let mut chosen: HashSet<&str> = HashSet::new();
         let pin = Place::Tag(crate::places::PINNED.into());
+        // Unless worktrees are folders of their own, the worktree a session runs in names a
+        // heading inside its repository's folder once two or more sessions share it.
+        let tree_of = |s: &Session| self.repo_of(s.dir()).and(self.trees.get(s.dir()));
+        // Only sessions listed in the folder count: one a tag moved out leaves the heading, and
+        // a launch follows its launcher wherever that is listed.
+        let listed: HashSet<&str> = self
+            .sessions
+            .iter()
+            .chain(&runs)
+            .map(|s| s.session_id.as_str())
+            .collect();
+        let mut per_tree: HashMap<&PathBuf, usize> = HashMap::new();
+        for s in self.sessions.iter().chain(&runs) {
+            if let Some(top) = tree_of(s)
+                && places.of(&s.session_id, parent).contains(&Place::Folder)
+                && !s
+                    .launched_by
+                    .as_deref()
+                    .is_some_and(|by| listed.contains(by))
+            {
+                *per_tree.entry(top).or_default() += 1;
+            }
+        }
+        let tree_heading = |s: &Session| {
+            tree_of(s)
+                .filter(|top| per_tree.get(top).is_some_and(|n| *n > 1))
+                .and_then(|top| top.file_name())
+                .map(|name| format!("{TREE_HEADING}{}", name.to_string_lossy()))
+        };
         let pinned_key = || {
             (
                 String::new(),
@@ -968,7 +997,7 @@ impl Data {
             }
             let folder_key = {
                 let (sort, name) = self.home_folder(s);
-                (sort, name, String::new())
+                (sort, name, tree_heading(s).unwrap_or_default())
             };
             if set.len() != 1 || !set.contains(&Place::Folder) {
                 chosen.insert(s.session_id.as_str());
@@ -1259,6 +1288,7 @@ impl Data {
                     // Among the repository's own, a worktree's row names it, dim, by its last
                     // part, whatever else runs in it.
                     if !by_state
+                        && !key.2.starts_with(TREE_HEADING)
                         && self.repo_of(s.dir()).is_some()
                         && let Some(top) = self.trees.get(s.dir())
                         && let Some(name) = top.file_name()
@@ -1385,7 +1415,7 @@ impl Data {
                     kind: Kind::Header,
                     cells: vec![(
                         format!("{pad}{}{}", branch(tag_last(key)), key.2),
-                        tag_style(),
+                        heading_style(&key.2),
                     )],
                 });
                 count(&mut out, &|k| k == key);
@@ -2655,6 +2685,9 @@ fn counted(row: &mut Row, end: usize, states: &[&str]) {
     row.cells.push((" ".repeat(gap), plain()));
     row.cells.extend(counts);
 }
+
+/// What leads a worktree's heading inside its repository's folder under `worktrees: nested`.
+const TREE_HEADING: &str = "⑂ ";
 
 /// A group of the session list: sort key, heading and sub-heading.
 type GroupKey = (String, String, String);
@@ -5281,9 +5314,9 @@ const FIELDS: [Field; 81] = [
         name: "worktrees",
         short: "worktree sessions",
         hint: "List worktree sessions in their repository's folder.",
-        long: "repo lists a linked worktree's sessions in its repository's folder, each naming its worktree dim after its title. folder lists every worktree as a folder of its own, with its own heading and tags.",
-        builtin: "repo",
-        input: Answer::Pick(&["-", "repo", "folder"]),
+        long: "nested lists a linked worktree's sessions in its repository's folder, under a ⑂ heading of their own once two or more share the worktree; a lone one names its worktree dim after its title. folder lists every worktree as a folder of its own, with its own heading and tags.",
+        builtin: "nested",
+        input: Answer::Pick(&["-", "nested", "folder"]),
     },
     Field {
         group: "cones",
@@ -8071,7 +8104,7 @@ fn sort_value(jobs_path: &Path) -> String {
 /// The worktree layout as the file states it, empty when it does not.
 fn worktrees_value(jobs_path: &Path) -> String {
     match config::file_worktrees(jobs_path) {
-        Some(config::Worktrees::Repo) => "repo".into(),
+        Some(config::Worktrees::Nested) => "nested".into(),
         Some(config::Worktrees::Folder) => "folder".into(),
         None => String::new(),
     }
@@ -13250,6 +13283,12 @@ impl App {
             at = at.checked_sub(1)?;
         };
         Some(match tag {
+            // A worktree heading holds its sessions in their folder, not under a tag.
+            Some(tag) if tag.starts_with(TREE_HEADING) => Spot {
+                place: Place::Folder,
+                group: format!("{top} {tag}"),
+                folder: top,
+            },
             Some(tag) => Spot {
                 place: Place::FolderTag(tag.trim_start_matches("# ").to_owned()),
                 group: format!("{top} {tag}"),

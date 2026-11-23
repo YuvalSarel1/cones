@@ -1344,60 +1344,59 @@ fn column(screen: &str, text: &str) -> usize {
     line[..line.find(text).unwrap()].chars().count()
 }
 
-/// By default a worktree's sessions sit in the main checkout's folder, each naming its
-/// worktree dim after its title, however many share it, and the rows hang from the folder
-/// on tree lines. Opening a folder in the worktree adds no heading; the status line names the
-/// setting that heads every worktree.
+/// By default, `worktrees: nested`, a worktree with two sessions heads them inside the main
+/// checkout's folder, `└─ ⑂ cost-vis`, drawn bold as a folder is, not in the tag colour, and its
+/// rows do not name the worktree after their title. Opening a folder in the worktree adds no
+/// heading; the status line names the setting that heads every worktree.
 #[test]
-fn worktree_sessions_sit_in_the_repository_and_name_their_worktree() {
+fn worktree_sessions_sit_in_the_repository_under_their_worktree() {
     let Worktree {
         mut d,
         main,
         tree,
         folder,
         _sessions,
-    } = worktree("claude-worktree-repo");
+    } = worktree("claude-worktree-nested");
     d.start();
 
     let main_name = main.display().to_string();
     let screen = d.wait_text("Autoscaling plan");
-    d.capture("repo");
+    d.capture("nested");
     let at = heading(&screen, &main_name).unwrap_or_else(|| panic!("{screen}"));
     assert_eq!(
         heading(&screen, &tree.display().to_string()),
         None,
         "{screen}"
     );
-    let named = format!("· in ⑂ {}", leaf(&tree));
-    for title in [
-        "Rank tenants",
-        "Cost visibility dashboard",
-        "Autoscaling plan",
-    ] {
-        assert!(row(&screen, title) > at, "{title}:\n{screen}");
+    assert_eq!(row(&screen, "├─ Rank tenants"), at + 1, "{screen}");
+    let sub = format!("└─ ⑂ {}", leaf(&tree));
+    let under = row(&screen, &sub);
+    assert_eq!(under, at + 2, "{screen}");
+    assert_eq!(
+        column(&screen, &sub),
+        column(&screen, "├─ Rank tenants"),
+        "{screen}"
+    );
+    assert_ne!(
+        d.colour_of(&format!("⑂ {}", leaf(&tree))),
+        Some(vt100::Color::Idx(6)),
+        "{screen}"
+    );
+    let rows = ["Cost visibility dashboard", "Autoscaling plan"];
+    for title in rows {
+        assert!(row(&screen, title) > under, "{title}:\n{screen}");
         assert_eq!(
             column(&screen, title),
-            column(&screen, "Rank tenants"),
+            column(&screen, "Rank tenants") + 3,
             "{screen}"
         );
-        assert_eq!(
-            line_of(&screen, title).contains(&named),
-            title != "Rank tenants",
-            "{title}:\n{screen}"
-        );
     }
-    let last = [
-        "Rank tenants",
-        "Cost visibility dashboard",
-        "Autoscaling plan",
-    ]
-    .into_iter()
-    .max_by_key(|t| row(&screen, t))
-    .unwrap();
+    let last = rows.into_iter().max_by_key(|t| row(&screen, t)).unwrap();
     assert!(
         line_of(&screen, last).contains(&format!("└─ {last}")),
-        "the folder's last row closes its tree:\n{screen}"
+        "the worktree's last row closes its tree:\n{screen}"
     );
+    assert!(!screen.contains("· in ⑂"), "{screen}");
 
     add_folder(&mut d, &folder.display().to_string());
     let screen = d.wait_text("worktrees: folder heads every worktree");

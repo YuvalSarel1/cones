@@ -150,9 +150,10 @@ Headings go two levels deep at most: a folder or a tag at the top, and tags insi
 Tree lines run from each heading to what it holds, after the state and harness marks so those
 stay in one column: a folder's own rows, then its tags, `├─` for each and `└─` for the last,
 with a tag's rows one level further in. A linked Git worktree's sessions sit in their
-repository's folder, each naming its worktree dim after its title, `fix pager · in ⑂ NAME`,
-however many share it. [`worktrees: folder`](jobs.md#list-settings) lists every worktree as a
-folder of its own instead. Every heading counts its sessions that are working, at a shell,
+repository's folder. A worktree with two or more sessions heads them there, `└─ ⑂ NAME`, at
+the tags' level; a lone one stays among the repository's own, naming its worktree dim after
+its title, `fix pager · in ⑂ NAME`. [`worktrees: folder`](jobs.md#list-settings) lists every
+worktree as a folder of its own instead. Every heading counts its sessions that are working, at a shell,
 waiting for input, failed or done, in the header's marks and colours, after its name; idle
 sessions go uncounted.
 
