@@ -922,18 +922,23 @@ pub fn parse_locks(lsof: &str) -> HashMap<String, u32> {
 pub fn daemon_pid(codex: &Path) -> Option<u32> {
     let pid = codex.join(&daemon_files().pid);
     // A standalone install names it app-server.pid; Codex's managed daemon package, which
-    // other installs download on `daemon start`, names it daemon.pid in the same folder.
-    let text = fs::read_to_string(&pid)
-        .or_else(|_| fs::read_to_string(pid.with_file_name("daemon.pid")))
-        .ok()?;
-    let pid = serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32;
-    // Signal 0 through the kernel, not `/bin/kill`: liveness is read once per pass per home.
-    crate::observe::read(
-        crate::observe::op::LIVENESS,
-        || crate::fleet::alive(pid),
-        |_| true,
-    )
-    .then_some(pid)
+    // other installs download on `daemon start`, names it daemon.pid in the same folder. A home
+    // that switched to the managed package keeps the standalone file naming a dead pid, so the
+    // live one of the two is the daemon.
+    [pid.clone(), pid.with_file_name("daemon.pid")]
+        .iter()
+        .filter_map(|file| {
+            let text = fs::read_to_string(file).ok()?;
+            Some(serde_json::from_str::<Value>(&text).ok()?["pid"].as_u64()? as u32)
+        })
+        .find(|&pid| {
+            // Signal 0 through the kernel, not `/bin/kill`: liveness is read once per pass per home.
+            crate::observe::read(
+                crate::observe::op::LIVENESS,
+                || crate::fleet::alive(pid),
+                |_| true,
+            )
+        })
 }
 
 /// Clients connected to a socket the daemon holds. Match kernel socket handles: the
@@ -1878,6 +1883,13 @@ mod tests {
         fs::write(
             d.path().join("app-server-daemon/daemon.pid"),
             serde_json::json!({"pid": std::process::id()}).to_string(),
+        )
+        .unwrap();
+        assert_eq!(daemon_pid(d.path()), Some(std::process::id()));
+        // A standalone pid file left from before the switch names a dead process.
+        fs::write(
+            d.path().join("app-server-daemon/app-server.pid"),
+            serde_json::json!({"pid": u32::MAX - 1}).to_string(),
         )
         .unwrap();
         assert_eq!(daemon_pid(d.path()), Some(std::process::id()));
