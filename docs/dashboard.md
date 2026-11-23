@@ -257,7 +257,8 @@ Grouping by state lists each session once and ignores places other than `pinned`
 `ctrl+l` opens a checklist of places for the selected session: its folder, every tag a
 session carries, `pinned`, and `+ new tag…`, where a name typed on the row and Enter add it
 and keep the checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape
-discards it. The folder alone lists the session in its folder, tags alone list it in groups
+discards it. Delete or Backspace on a tag's line marks it struck through, and Enter then takes
+that tag off every session, not only the selected one; a press again unmarks it. The folder alone lists the session in its folder, tags alone list it in groups
 above the folders, and the folder with tags nests those tags inside the folder. Unchecking
 everything returns the session to its folder. `ctrl+t` toggles `pinned` directly. A worktree
 session's folder line names the folder that lists it: its repository, or under `worktrees:

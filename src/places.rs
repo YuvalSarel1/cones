@@ -248,6 +248,21 @@ impl Places {
         }
     }
 
+    /// Take the tag `tag` off every session, both above the folders and inside them. A session
+    /// whose tag sat inside its folder stays in that folder; one left with nothing returns to it.
+    pub fn remove_tag(&mut self, tag: &str) {
+        // ponytail: a set left as the bare folder stays stored, since a continued
+        // conversation's own set overrides its parent's.
+        for set in self.places.values_mut() {
+            let inside = set.remove(&Place::FolderTag(tag.to_owned()));
+            let above = set.remove(&Place::Tag(tag.to_owned()));
+            let nested = set.iter().any(|p| matches!(p, Place::FolderTag(_)));
+            if (inside && !nested) || (above && set.is_empty()) {
+                set.insert(Place::Folder);
+            }
+        }
+    }
+
     /// Add `place` to the session, remove `from` first if given: a move. Both are idempotent.
     pub fn change<'a>(
         &mut self,

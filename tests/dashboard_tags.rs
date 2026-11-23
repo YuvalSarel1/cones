@@ -385,6 +385,58 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     d.quit();
 }
 
+/// Delete on a tag's checklist line marks it, a second press unmarks it, and Enter takes the
+/// tag off every session: one nested in its folder stays there, one with another place keeps
+/// that place, and the selected one left with nothing returns to its folder.
+#[test]
+fn delete_in_the_checklist_removes_a_tag_from_every_session() {
+    let mut d = Dashboard::new("places-remove-tag", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    d.open_folders(std::slice::from_ref(&project));
+    let p = project.display().to_string();
+    let nested = seed(&d, &project, 1, "Answer sales", "idle", None);
+    let pinned = seed(&d, &project, 2, "Build export", "idle", None);
+    let only = seed(&d, &project, 3, "Draft notes", "idle", None);
+    cli(&d, &["place", &nested.id, "add", "folder › # legal"]);
+    cli(&d, &["place", &pinned.id, "add", "# legal"]);
+    cli(&d, &["place", &pinned.id, "add", "pinned"]);
+    cli(&d, &["place", &pinned.id, "remove", "folder"]);
+    cli(&d, &["place", &only.id, "add", "# legal"]);
+    cli(&d, &["place", &only.id, "remove", "folder"]);
+    d.start();
+    d.wait_for("the legal tags", |s| subs(s, "# legal").len() == 2);
+    select_in(&mut d, "Draft notes", "# legal");
+
+    checklist(&mut d);
+    d.press("down", DOWN);
+    let line = chosen(&d.screen());
+    assert!(
+        line.contains("[x] # legal · del removes it everywhere"),
+        "{line}"
+    );
+    d.press("delete", b"\x1b[3~");
+    d.wait_text("removed from every session");
+    d.press("backspace", b"\x7f");
+    d.wait_for("unmarked", |s| !s.contains("removed from every session"));
+    d.press("delete", b"\x1b[3~");
+    d.wait_text("removed from every session");
+    d.capture("marked");
+    d.press("enter", b"\r");
+
+    let screen = d.wait_for("the tag gone", |s| subs(s, "# legal").is_empty());
+    d.capture("removed");
+    assert!(screen.contains("removed # legal"), "{screen}");
+    assert_eq!(under(&screen, row(&screen, "Answer sales")), p);
+    assert_eq!(under(&screen, row(&screen, "Draft notes")), p);
+    assert_eq!(under(&screen, row(&screen, "Build export")), "pinned");
+    assert_eq!(places(&d, &nested.id), json!(["folder"]));
+    assert_eq!(places(&d, &pinned.id), json!(["pinned"]));
+    assert_eq!(places(&d, &only.id), Value::Null);
+    d.keep("state/tags.json");
+    d.quit();
+}
+
 #[test]
 fn reordering_by_hand_keeps_the_group_s_order_and_says_so_once() {
     let mut d = Dashboard::new("places-reorder", &["claude"]);

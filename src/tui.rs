@@ -8678,6 +8678,8 @@ struct Pick {
     input: Input,
     /// Which checklist rows are checked; empty for a picker that is not a checklist.
     checked: Vec<bool>,
+    /// Tags the checklist removes from every session when kept, by row text.
+    dropped: BTreeSet<String>,
 }
 
 struct PickRow {
@@ -8704,14 +8706,27 @@ impl Pick {
                 Some(false) => "[ ] ",
                 None => "",
             };
+            let dropped = self.dropped.contains(&row.text);
+            let style = if chosen { bold() } else { dim() };
             let mut spans = vec![Span::styled(
                 format!(
                     "{} {check}{}",
                     if chosen { "\u{203a}" } else { " " },
                     row.label
                 ),
-                if chosen { bold() } else { dim() },
+                if dropped {
+                    style.add_modifier(Modifier::CROSSED_OUT)
+                } else {
+                    style
+                },
             )];
+            if dropped {
+                spans.push(Span::styled(" · removed from every session", dim()));
+            } else if chosen
+                && matches!(Place::parse(&row.text), Ok(Place::Tag(t)) if t != crate::places::PINNED)
+            {
+                spans.push(Span::styled(" · del removes it everywhere", dim()));
+            }
             if row.text == NEW_TAG && chosen {
                 spans.push(Span::raw(" "));
                 spans.extend(self.input.spans("type a name"));
@@ -11371,6 +11386,7 @@ impl App {
             place: None,
             input: Input::default(),
             checked: Vec::new(),
+            dropped: BTreeSet::new(),
         });
     }
 
@@ -13489,7 +13505,27 @@ impl App {
             place: Some(id),
             input: Input::default(),
             checked,
+            dropped: BTreeSet::new(),
         });
+    }
+
+    /// Take each of `tags`, spelled `# NAME`, off every session through the state file.
+    fn tags_removed(&mut self, tags: &BTreeSet<String>) {
+        if tags.is_empty() {
+            return;
+        }
+        let mut store = Places::load(&self.state);
+        for t in tags.iter().filter_map(|t| Place::parse(t).ok()) {
+            if let Some(t) = t.tag() {
+                store.remove_tag(t);
+            }
+        }
+        if let Err(e) = store.save(&self.state) {
+            self.status = warning(format!("places kept for this dashboard only: {e:#}"));
+        }
+        self.places = store;
+        self.add_launch_places();
+        self.rebuild();
     }
 
     /// A new tag typed on its row joins the checklist, checked.
@@ -16336,6 +16372,7 @@ impl App {
             place: None,
             input: Input::default(),
             checked: Vec::new(),
+            dropped: BTreeSet::new(),
         });
     }
 
@@ -17963,11 +18000,23 @@ impl App {
                         self.status = warning(e);
                     }
                     KeyAction::Enter => {
-                        let (rows, checked) =
-                            (std::mem::take(&mut pick.rows), pick.checked.clone());
+                        let rows = std::mem::take(&mut pick.rows);
+                        let dropped = std::mem::take(&mut pick.dropped);
+                        let checked: Vec<bool> = rows
+                            .iter()
+                            .zip(&pick.checked)
+                            .map(|(r, on)| *on && !dropped.contains(&r.text))
+                            .collect();
                         let group = self.selected_spot().map(|s| s.group);
                         self.close_pick();
+                        self.tags_removed(&dropped);
                         self.places_chosen(&id, &rows, &checked, group.as_deref());
+                        if !dropped.is_empty() && !self.status.starts_with("places kept") {
+                            self.status = format!(
+                                "removed {}",
+                                dropped.iter().cloned().collect::<Vec<_>>().join(", ")
+                            );
+                        }
                     }
                     _ if code == KeyCode::Esc => {
                         self.close_pick();
@@ -17975,6 +18024,16 @@ impl App {
                     }
                     _ if new => {
                         pick.input.key(code, mods);
+                    }
+                    // Delete on a tag's line marks it for removal from every session.
+                    _ if matches!(code, KeyCode::Delete | KeyCode::Backspace) => {
+                        if let Some(r) = pick.rows.get(pick.at)
+                            && let Ok(Place::Tag(t)) = Place::parse(&r.text)
+                            && t != crate::places::PINNED
+                            && !pick.dropped.remove(&r.text)
+                        {
+                            pick.dropped.insert(r.text.clone());
+                        }
                     }
                     _ if code == KeyCode::Char(' ') => {
                         if let Some(on) = pick.checked.get_mut(pick.at) {
