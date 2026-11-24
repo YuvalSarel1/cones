@@ -184,13 +184,14 @@ controls clipping in narrow lists. Times display in the local timezone.
 Harness marks stay still. The coordinator has an orange `★` title, identified by its claim.
 An external session without native attach support cannot be joined. Where cones reads the
 harness's conversations the preview shows its conversation as it is written, the same view
-history rows use; Enter says `watch` and focuses it. ctrl+y, from the list or the preview,
-offers `take over here` first: it stops the client in its own terminal, waits for it to exit,
+history rows use. Enter says `take over` and opens the ctrl+y menu, whose first entry,
+`take over here`, stops the client in its own terminal, waits for it to exit,
 and resumes the conversation in a pane here, in the session's own folder and beneath the
 agent that started it, if any. That agent is first sent a note naming the session and telling
 it to `cones wait` on it rather than start the work again, since the run it holds, such as a
 `codex exec`, ends. A turn the stop interrupted continues: once the resumed session takes notes,
-it is asked to carry on where it left off. A harness with no readable conversation says `own terminal`, and Enter names that
+it is asked to carry on where it left off. A harness that cannot resume says `watch` and
+Enter focuses the preview. A harness with no readable conversation says `own terminal`, and Enter names that
 terminal as the only way in. A warning wider than the composer's rule ends in `…`.
 
 | Key | Action |

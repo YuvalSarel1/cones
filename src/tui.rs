@@ -15768,7 +15768,9 @@ impl App {
                 .iter()
                 .any(|s| &s.session_id == id && s.own_terminal())
         {
-            return if self.selected_session().is_some_and(|s| {
+            return if self.can_take_over() {
+                "take over"
+            } else if self.selected_session().is_some_and(|s| {
                 s.transcript_path.is_some()
                     && harness::by_name(&s.harness).is_some_and(|spec| spec.transcript.available)
             }) {
@@ -15882,17 +15884,17 @@ impl App {
                     return Ok(());
                 };
                 let (harness, own_terminal) = (s.harness.clone(), s.own_terminal());
-                // An interactive client in another terminal cannot be joined, but a
-                // conversation cones reads can be watched as it is written. ctrl+y offers to
-                // take it over.
+                // An interactive client in another terminal cannot be joined. Enter offers to
+                // take it over when its harness resumes from history; otherwise a conversation
+                // cones reads can be watched as it is written.
                 if own_terminal {
+                    if self.can_take_over() {
+                        self.open_fork_menu();
+                        return Ok(());
+                    }
                     if self.transcript_target().is_some() {
                         self.focus_transcript();
-                        self.status = if self.can_take_over() {
-                            "watching it live · ctrl+y takes it over".into()
-                        } else {
-                            "watching it live".into()
-                        };
+                        self.status = "watching it live".into();
                         return Ok(());
                     }
                     self.event("debug", "action.refused", || {
@@ -24113,12 +24115,12 @@ states:
     }
 
     /// A Claude client in its own terminal cannot be joined. Ways this could fail: hovering
-    /// it previews nothing; Enter refuses it instead of watching its conversation; ctrl+y
-    /// does not offer to take it over, from the list or from the preview it is watched in;
-    /// the fork menu leads with a fork instead of the take-over; a refusal wider than the
-    /// composer's rule is cut mid-word with no sign it goes on.
+    /// it previews nothing; Enter only focuses the preview it already shows instead of
+    /// offering the take-over; ctrl+y does not offer to take it over, from the list or from
+    /// the preview it is watched in; the menu leads with a fork instead of the take-over; a
+    /// refusal wider than the composer's rule is cut mid-word with no sign it goes on.
     #[test]
-    fn an_own_terminal_claude_is_watched_on_enter_and_taken_over_from_ctrl_y() {
+    fn an_own_terminal_claude_is_taken_over_from_enter_or_ctrl_y() {
         let d = dir();
         let mut app = app(d.path());
         app.refresh().unwrap();
@@ -24141,7 +24143,7 @@ states:
             .iter()
             .position(|&i| app.rows[i].kind.key() == Some(A))
             .unwrap();
-        assert_eq!(app.enter_label(), "watch");
+        assert_eq!(app.enter_label(), "take over");
         assert!(app.transcript_target().is_some(), "hovering previews it");
         assert!(app.can_take_over(), "ctrl+y offers the take-over");
         app.open_fork_menu();
@@ -24152,12 +24154,16 @@ states:
         assert_eq!(pick.rows[0].text, TAKE_OVER);
         app.close_pick();
         app.enter().unwrap();
+        let Mode::Pick(pick) = &app.mode else {
+            panic!("Enter offers the take-over");
+        };
+        assert_eq!(pick.rows[0].text, TAKE_OVER);
         assert!(
-            app.status.contains("ctrl+y takes it over"),
-            "{}",
-            app.status
+            !app.transcript.focused,
+            "Enter does not just focus the preview"
         );
-        assert!(app.transcript.focused, "Enter watches it in the preview");
+        app.close_pick();
+        app.focus_transcript();
         assert!(
             app.transcript_hints()
                 .to_string()
