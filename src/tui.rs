@@ -8638,11 +8638,30 @@ enum Mode {
     Move(Move),
 }
 
-/// A session being moved inside its group: the group's order as it now stands.
+/// A session being moved inside its group, among the sessions that hang from the same parent
+/// there, or among the group's top rows when it hangs from none.
 struct Move {
     id: String,
     group: String,
-    roots: Vec<String>,
+    /// The sessions it moves among, in the order they now stand.
+    siblings: Vec<String>,
+    /// The rest of the group's hand order.
+    rest: Vec<String>,
+    /// Whether the siblings are the group's top rows.
+    top: bool,
+}
+
+impl Move {
+    /// The group's hand order. Top rows only sort against top rows and the rows beneath one
+    /// parent only against each other, so the siblings lead the list or end it.
+    fn order(&self) -> Vec<String> {
+        let (a, b) = if self.top {
+            (&self.siblings, &self.rest)
+        } else {
+            (&self.rest, &self.siblings)
+        };
+        a.iter().chain(b).cloned().collect()
+    }
 }
 
 /// A session row pressed with the mouse.
@@ -13399,9 +13418,8 @@ impl App {
         }
     }
 
-    /// The sessions of the group that holds row `i` that are not listed beneath another one,
-    /// in the order shown. Forks and launches move with them.
-    fn group_roots(&self, i: usize) -> Vec<String> {
+    /// The sessions of the group that holds row `i`, in the order shown.
+    fn group_ids(&self, i: usize) -> Vec<&str> {
         let start = (0..=i)
             .rev()
             .find(|&at| {
@@ -13411,7 +13429,7 @@ impl App {
                 )
             })
             .unwrap_or(0);
-        let ids: Vec<&str> = self.rows[start + 1..]
+        self.rows[start + 1..]
             .iter()
             .take_while(|r| {
                 !matches!(
@@ -13427,25 +13445,48 @@ impl App {
                 Kind::Session(id, _) => Some(id.as_str()),
                 _ => None,
             })
-            .collect();
-        ids.iter()
-            .filter(|id| !self.listed_beneath(id, &ids))
-            .map(|id| (*id).to_owned())
             .collect()
     }
 
-    /// Whether a session hangs from another session of `ids`, as a fork or a launch does.
-    fn listed_beneath(&self, id: &str, ids: &[&str]) -> bool {
-        self.data
-            .sessions
-            .iter()
-            .find(|s| s.session_id == id)
-            .is_some_and(|s| {
-                [s.forked_from.as_deref(), s.launched_by.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .any(|p| p != id && ids.contains(&p))
-            })
+    /// The session of `ids` that `id` hangs from, as a launch or a fork.
+    fn parent_in(&self, id: &str, ids: &[&str]) -> Option<&str> {
+        let s = self.data.sessions.iter().find(|s| s.session_id == id)?;
+        [s.launched_by.as_deref(), s.forked_from.as_deref()]
+            .into_iter()
+            .flatten()
+            .find(|p| *p != id && ids.contains(p))
+    }
+
+    /// Moving `id` inside the group that holds row `i`: among the sessions hanging from its
+    /// parent there, or among the top rows. What hangs beneath a session moves with it.
+    fn move_in(&self, i: usize, id: &str) -> Option<Move> {
+        let group = self.place_at(i)?.group;
+        let ids = self.group_ids(i);
+        if !ids.contains(&id) {
+            return None;
+        }
+        let parent = self.parent_in(id, &ids);
+        let level = |p: Option<&str>| -> Vec<String> {
+            ids.iter()
+                .filter(|s| self.parent_in(s, &ids) == p)
+                .map(|s| (*s).to_owned())
+                .collect()
+        };
+        let siblings = level(parent);
+        let mut rest = self
+            .places
+            .order
+            .get(&group)
+            .cloned()
+            .unwrap_or_else(|| level(None));
+        rest.retain(|r| ids.contains(&r.as_str()) && !siblings.contains(r));
+        Some(Move {
+            id: id.to_owned(),
+            group,
+            siblings,
+            rest,
+            top: parent.is_none(),
+        })
     }
 
     /// ctrl+l: the checklist of places for the selected session: its folder, every tag any
@@ -13692,21 +13733,20 @@ impl App {
 
     /// Put `id` where `other`, row `i`, is in their group's hand order, and keep the order.
     fn reorder_to(&mut self, id: &str, other: &str, i: usize) {
-        let mut roots = self.group_roots(i);
+        let Some(mut m) = self.move_in(i, id) else {
+            return;
+        };
         let (Some(from), Some(to)) = (
-            roots.iter().position(|r| r == id),
-            roots.iter().position(|r| r == other),
+            m.siblings.iter().position(|r| r == id),
+            m.siblings.iter().position(|r| r == other),
         ) else {
-            self.status = warning("a fork stays beneath the session it came from");
+            self.status = warning("a session moves only beside the sessions on its own level");
             return;
         };
-        let moved = roots.remove(from);
-        roots.insert(to, moved);
-        let Some(spot) = self.place_at(i) else {
-            return;
-        };
-        self.keep_order(&spot.group, roots);
-        self.select_copy(id, Some(&spot.group));
+        let moved = m.siblings.remove(from);
+        m.siblings.insert(to, moved);
+        self.keep_order(&m.group, m.order());
+        self.select_copy(id, Some(&m.group));
     }
 
     /// Store a group's hand order. The first time a group is ordered by hand, the footer says
@@ -13734,22 +13774,15 @@ impl App {
         let Some(i) = self.visible.get(self.cursor).copied() else {
             return;
         };
-        let (Kind::Session(id, _), Some(spot)) = (&self.rows[i].kind, self.place_at(i)) else {
+        let Some(m) = (match &self.rows[i].kind {
+            Kind::Session(id, _) => self.move_in(i, id),
+            _ => None,
+        }) else {
             self.status = "ctrl+b moves the selected session inside its group".into();
             return;
         };
-        let id = id.clone();
-        let roots = self.group_roots(i);
-        if !roots.contains(&id) {
-            self.status = warning("a fork stays beneath the session it came from");
-            return;
-        }
-        self.status = format!("moving inside {}", spot.group);
-        self.mode = Mode::Move(Move {
-            id,
-            group: spot.group,
-            roots,
-        });
+        self.status = format!("moving inside {}", m.group);
+        self.mode = Mode::Move(m);
     }
 
     /// One step up or down inside the group, shown at once and kept on enter.
@@ -13757,13 +13790,13 @@ impl App {
         let Mode::Move(m) = &mut self.mode else {
             return;
         };
-        let Some(at) = m.roots.iter().position(|r| *r == m.id) else {
+        let Some(at) = m.siblings.iter().position(|r| *r == m.id) else {
             return;
         };
-        let to = (at as isize + delta).clamp(0, m.roots.len() as isize - 1) as usize;
-        let moved = m.roots.remove(at);
-        m.roots.insert(to, moved);
-        self.places.order.insert(m.group.clone(), m.roots.clone());
+        let to = (at as isize + delta).clamp(0, m.siblings.len() as isize - 1) as usize;
+        let moved = m.siblings.remove(at);
+        m.siblings.insert(to, moved);
+        self.places.order.insert(m.group.clone(), m.order());
         let (id, group) = (m.id.clone(), m.group.clone());
         self.rebuild();
         self.select_copy(&id, Some(&group));
@@ -17972,9 +18005,9 @@ impl App {
                 KeyAction::Up => self.move_step(-1),
                 KeyAction::Down => self.move_step(1),
                 KeyAction::Enter => {
-                    let (group, roots) = (m.group.clone(), m.roots.clone());
+                    let (group, order) = (m.group.clone(), m.order());
                     self.mode = Mode::Normal;
-                    self.keep_order(&group, roots);
+                    self.keep_order(&group, order);
                 }
                 _ => {
                     self.mode = Mode::Normal;

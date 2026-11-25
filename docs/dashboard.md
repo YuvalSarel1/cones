@@ -274,8 +274,8 @@ session keeps its folder, and the footer names the folder that accepts it. A dro
 its own group reorders it there; a row of another group counts as that group's heading.
 
 `ctrl+b` picks up the selected row and highlights it; up and down move it inside its group,
-Enter keeps the order and Escape puts it back. A fork or launch listed beneath another session moves with it and
-cannot be picked up alone. A group reordered by hand keeps that order whatever
+Enter keeps the order and Escape puts it back. A fork or launch listed beneath another session moves with it, and
+moves on its own only among the sessions beneath the same parent. A group reordered by hand keeps that order whatever
 [`sort`](jobs.md#list-settings) says, and the footer says so the first time. A session started
 from a group other than its folder's, with `ctrl+o` or the composer, runs in the selected row's
 folder and sits in that group alone; one started from `pinned` is not pinned.

@@ -6,7 +6,8 @@
 //! and `pinned`. Each place is one row; the copies agree on state and stop together, the cursor
 //! keeps the copy it was on, and each copy counts the others. ctrl+l is a checklist, a mouse drag
 //! moves one copy, a drop on another folder is refused, removing every place restores the folder,
-//! and ctrl+b reorders a group by hand, which keeps that group's order from then on. Pins and the
+//! and ctrl+b reorders a group by hand, which keeps that group's order from then on; a row listed
+//! beneath another moves only among its siblings. Pins and the
 //! one-tag file from before places migrate, a conversation continued under a new id keeps its
 //! places, a launch from a group sits in that group alone, and `cones place` writes the same
 //! file. Each flow keeps `state/tags.json`.
@@ -505,6 +506,64 @@ fn reordering_by_hand_keeps_the_group_s_order_and_says_so_once() {
     d.press("esc", b"\x1b");
     let screen = d.wait_for("the row back", |s| order(s)[2] == "first");
     assert_eq!(order(&screen), ["second", "third", "first"]);
+    d.keep("state/tags.json");
+    d.quit();
+}
+
+#[test]
+fn a_row_listed_beneath_another_moves_among_its_siblings() {
+    let mut d = Dashboard::new("places-reorder-beneath", &["claude"]);
+    d.install("claude", "fake_claude_fleet.py");
+    let project = real_project(&d);
+    let p = project.display().to_string();
+    let lead = seed(&d, &project, 1, "Lead the work", "idle", None);
+    let one = seed(&d, &project, 2, "Worker one", "idle", None);
+    let two = seed(&d, &project, 3, "Worker two", "idle", None);
+    let other = seed(&d, &project, 4, "Other top row", "idle", None);
+    cli(&d, &["adopt", &one.id, "--parent", &lead.id]);
+    cli(&d, &["adopt", &two.id, "--parent", &lead.id]);
+    d.start();
+    let screen = d.wait_text("Other top row");
+    let order = |s: &str| {
+        let mut rows = [
+            (row(s, "Lead the work"), "lead"),
+            (row(s, "Worker one"), "one"),
+            (row(s, "Worker two"), "two"),
+            (row(s, "Other top row"), "other"),
+        ];
+        rows.sort();
+        rows.map(|(_, name)| name)
+    };
+    assert_eq!(order(&screen), ["lead", "one", "two", "other"], "{screen}");
+
+    // ctrl+b picks up a launched row; it moves past its sibling and stays beneath its launcher.
+    select(&mut d, "Worker two");
+    d.press("ctrl+b", CTRL_B);
+    d.wait_text("moving inside");
+    d.press("up", UP);
+    d.press("up", UP);
+    d.wait_for("the row moved", |s| order(s)[1] == "two");
+    d.press("enter", b"\r");
+    let screen = d.wait_text("now sorts by hand");
+    assert_eq!(order(&screen), ["lead", "two", "one", "other"], "{screen}");
+    assert_eq!(
+        stored(&d)["order"][&p],
+        json!([&lead.id, &other.id, &two.id, &one.id])
+    );
+
+    // Moving a top row keeps the siblings' order and carries them with their launcher.
+    select(&mut d, "Other top row");
+    d.press("ctrl+b", CTRL_B);
+    d.wait_text("moving inside");
+    d.press("up", UP);
+    d.press("enter", b"\r");
+    let screen = d.wait_for("the top row moved", |s| order(s)[0] == "other");
+    assert_eq!(order(&screen), ["other", "lead", "two", "one"], "{screen}");
+
+    // A launched row dropped on a top row is refused.
+    drag(&mut d, "Worker one", "Other top row");
+    let screen = d.wait_text("on its own level");
+    assert_eq!(order(&screen), ["other", "lead", "two", "one"], "{screen}");
     d.keep("state/tags.json");
     d.quit();
 }
