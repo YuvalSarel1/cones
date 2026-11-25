@@ -9312,6 +9312,8 @@ struct TranscriptView {
     /// The read-only context inspector, when the preview is showing it.
     inspector: Option<Inspector>,
     context_reader: Option<context::Reader>,
+    /// Tool calls show their whole input and result, like Claude Code's ctrl+o.
+    expanded: bool,
 }
 
 impl TranscriptView {
@@ -9378,8 +9380,13 @@ impl TranscriptView {
                         matched_line = Some(self.lines.len());
                     }
                     let harness = self.target.as_ref().map_or("", |t| t.harness.as_str());
-                    self.lines
-                        .extend(conversation_message(message, harness, width, colors));
+                    self.lines.extend(conversation_message(
+                        message,
+                        harness,
+                        width,
+                        colors,
+                        self.expanded,
+                    ));
                     self.lines.push(Line::default());
                 }
                 if let Some(at) = matched_line
@@ -9487,6 +9494,7 @@ fn conversation_message(
     harness: &str,
     width: u16,
     colors: &viewer::Colors,
+    expanded: bool,
 ) -> Vec<Line<'static>> {
     if message.role == transcript::Role::Output {
         return transcript_wrap(&message.text, width);
@@ -9550,12 +9558,17 @@ fn conversation_message(
         if !lines.is_empty() {
             lines.push(Line::default());
         }
-        let detail = if tool.input.is_empty() {
+        let input = if expanded && !tool.detail.is_empty() {
+            &tool.detail
+        } else {
+            &tool.input
+        };
+        let detail = if input.is_empty() {
             tool.name.clone()
         } else if harness == "claude" {
-            format!("{}({})", tool.name, tool.input)
+            format!("{}({})", tool.name, input)
         } else {
-            format!("{} {}", tool.name, tool.input)
+            format!("{} {}", tool.name, input)
         };
         for (i, mut line) in transcript_wrap(&detail, content_width)
             .into_iter()
@@ -9577,8 +9590,41 @@ fn conversation_message(
             }
             lines.push(line);
         }
+        lines.extend(tool_output(&tool.output, content_width, gutter, expanded));
     }
     lines
+}
+
+/// Lines a collapsed result shows before its "+N lines" note, as Claude Code does.
+const COLLAPSED_OUTPUT_LINES: usize = 3;
+
+fn tool_output(output: &str, width: u16, indent: u16, expanded: bool) -> Vec<Line<'static>> {
+    if output.is_empty() {
+        return Vec::new();
+    }
+    let lead = "⎿  ";
+    let inner = width.saturating_sub(Span::raw(lead).width() as u16);
+    let mut wrapped = transcript_wrap(output, inner);
+    let hidden = if expanded {
+        0
+    } else {
+        wrapped.len().saturating_sub(COLLAPSED_OUTPUT_LINES)
+    };
+    wrapped.truncate(wrapped.len() - hidden);
+    if hidden > 0 {
+        wrapped.push(Line::raw(format!("… +{hidden} lines (ctrl+o to expand)")));
+    }
+    let pad = " ".repeat(usize::from(indent));
+    wrapped
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut line)| {
+            let prefix = if i == 0 { lead } else { "   " };
+            line.spans.insert(0, Span::raw(format!("{pad}{prefix}")));
+            line.style = dim();
+            line
+        })
+        .collect()
 }
 
 fn conversation_prompt_background(harness: &str, colors: &viewer::Colors) -> Color {
@@ -18134,6 +18180,10 @@ impl App {
                 }
                 KeyAction::Copy => self.open_copy_menu(),
                 KeyAction::Fork => self.open_fork_menu(),
+                KeyAction::Expand => {
+                    self.transcript.expanded = !self.transcript.expanded;
+                    self.transcript.width = 0;
+                }
                 KeyAction::Refresh => {
                     self.transcript.requested = false;
                     self.transcript.document = None;
@@ -18775,7 +18825,19 @@ impl App {
         if self.inspector_target().is_some() {
             keys.push(("→", "context"));
         }
-        keys.extend([("tab", "list"), ("c", "copy"), ("ctrl+\\", "layout")]);
+        keys.extend([
+            ("tab", "list"),
+            ("c", "copy"),
+            (
+                "ctrl+o",
+                if self.transcript.expanded {
+                    "collapse"
+                } else {
+                    "expand"
+                },
+            ),
+            ("ctrl+\\", "layout"),
+        ]);
         if self.can_take_over() {
             keys.push(("ctrl+y", "take over"));
         }
@@ -22357,6 +22419,64 @@ states:
         assert!(app.stale);
         assert!(pane_text(&app, &terminal).contains("reply 0"));
         assert!(app.viewers.is_empty() && app.opening.is_none());
+    }
+
+    #[test]
+    fn ctrl_o_expands_tool_inputs_and_results_like_claude_code() {
+        let (_d, mut app, mut terminal) = history_fixture(1);
+        app.toggle_history();
+        history_until(&mut app, &mut terminal, |a| {
+            a.history.ready && a.history.fetch.is_none()
+        });
+        let path = app.history.rows[0].entry.transcript.clone();
+        let output = (1..=8)
+            .map(|n| format!("out {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let records = [
+            serde_json::json!({"type":"assistant","message":{"id":"t","content":[{"type":"tool_use","id":"call","name":"Bash","input":{"command":"python3 - <<'EOF'\nprint('second input line')\nEOF"}}]}}),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call","content":output}]}}),
+        ];
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        for record in records {
+            std::io::Write::write_all(&mut file, format!("{record}\n").as_bytes()).unwrap();
+        }
+        transcript_until(&mut app, &mut terminal, |a| {
+            a.transcript.document.as_ref().is_some_and(|d| {
+                d.messages
+                    .iter()
+                    .any(|m| m.tools.iter().any(|t| !t.output.is_empty()))
+            })
+        });
+        let collapsed = pane_text(&app, &terminal);
+        assert!(collapsed.contains("Bash(python3 - <<'EOF')"), "{collapsed}");
+        assert!(collapsed.contains("⎿  out 1"), "{collapsed}");
+        assert!(
+            collapsed.contains("out 3") && !collapsed.contains("out 4"),
+            "{collapsed}"
+        );
+        assert!(
+            collapsed.contains("… +5 lines (ctrl+o to expand)"),
+            "{collapsed}"
+        );
+        assert!(!collapsed.contains("second input line"), "{collapsed}");
+        app.key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.transcript.focused);
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let expanded = pane_text(&app, &terminal);
+        assert!(
+            expanded.contains("print('second input line')"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("out 8") && !expanded.contains("ctrl+o to expand"),
+            "{expanded}"
+        );
+        assert!(app.transcript_hints().to_string().contains("collapse"));
+        app.key(KeyCode::Char('o'), KeyModifiers::CONTROL).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        assert!(pane_text(&app, &terminal).contains("… +5 lines (ctrl+o to expand)"));
     }
 
     #[test]

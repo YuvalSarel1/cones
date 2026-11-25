@@ -227,7 +227,7 @@ The row disappears while the action runs and returns if it fails.
 | Empty folder | Close it; retain the directory and any pin. |
 
 Run previews read the archived/native conversation, falling back to captured events and
-stderr. They show messages and compact tool calls, excluding thinking and tool output. Live
+stderr. They show messages and tool calls as [history previews](#history) do. Live
 output refreshes once per second and follows new text until scrolled back. Enter joins an
 available native session, follows a running run's output if unjoinable, or revives a settled
 run. A running run's state comes from its agent, so one waiting on input reads `input`. A
@@ -362,15 +362,17 @@ background from startup; [`cones index`](cli.md#building-the-meaning-index) fini
 terminal. With `start.index` off, meaning search shows a notice and ctrl+o opens that setting. The rebuildable cache is under `STATE_DIR/search/`. Browsing without a query loads no
 model, and live session polling does not rescan history.
 
-Previews show chronological messages, Markdown replies and compact tool calls, excluding
-thinking and tool output. The initial view starts at the latest message or search match.
+Previews show chronological messages, Markdown replies and tool calls, excluding thinking.
+Each Claude Code, Codex and pi call shows its first three result lines, as Claude Code
+does; ctrl+o in a focused preview shows every call's whole input and result, up to 4 KiB
+each, and again collapses them. Other harnesses show the call without its result. The initial view starts at the latest message or search match.
 Scrolling loads more in bounded pages; oversized messages mark omitted text. Native themes,
 extensions and interactive widgets are not reproduced. Live pi/OpenCode rows without owned
 viewers, and settled sessions without clients to join, use the same read-only presentation.
 Live previews refresh once per second.
 
 In a focused preview, arrows, page keys and the wheel scroll. Home/End reaches the loaded
-beginning/latest text. Tab, Escape or Ctrl+Z returns; Ctrl+R rereads at the bottom. `c` copies
+beginning/latest text. Ctrl+O expands or collapses tool calls. Tab, Escape or Ctrl+Z returns; Ctrl+R rereads at the bottom. `c` copies
 the last response, one of its fenced code blocks, or session details. Incomplete blocks are
 marked and copied text excludes terminal escapes.
 

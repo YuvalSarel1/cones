@@ -292,6 +292,9 @@ states:
       - keys: ["ctrl+y"]
         action: fork
         description: "Take over a session in its own terminal, or fork the conversation."
+      - keys: ["ctrl+o"]
+        action: expand
+        description: "Show or hide whole tool inputs and results."
       - keys: ["ctrl+r"]
         action: refresh
         description: "Reload the transcript and follow its bottom."

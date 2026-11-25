@@ -73,7 +73,13 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tool {
     pub name: String,
+    /// The first line of the call's main argument, as a collapsed row shows it.
     pub input: String,
+    /// The whole main argument, or the pretty-printed input when it has none.
+    pub detail: String,
+    /// What the harness recorded as the call's result; empty until its record is read.
+    pub output: String,
+    id: Option<String>,
 }
 
 impl Message {
@@ -82,7 +88,7 @@ impl Message {
             + self
                 .tools
                 .iter()
-                .map(|t| t.name.len() + t.input.len())
+                .map(|t| t.name.len() + t.input.len() + t.detail.len() + t.output.len())
                 .sum::<usize>()
     }
 }
@@ -530,6 +536,9 @@ fn parse_at(harness: &str, bytes: &[u8], mut offset: u64) -> Transcript {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
+        for (id, output) in results(harness, &v) {
+            size += attach(messages.iter_mut().rev(), &id, output);
+        }
         let Some(mut message) = message(harness, &v) else {
             continue;
         };
@@ -884,6 +893,9 @@ fn read_forward(path: &Path, harness: &str, start: u64, stamp: &Stamp) -> Result
         let Ok(v) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
+        for (id, output) in results(harness, &v) {
+            size += attach(document.messages.iter_mut().rev(), &id, output);
+        }
         if let Some(mut m) = message(harness, &v) {
             m.text = plain(&m.text);
             m.offset = at;
@@ -973,6 +985,9 @@ fn trim_message(message: &mut Message) -> bool {
         message.tools.push(Tool {
             name: "Additional tool calls omitted".into(),
             input: String::new(),
+            detail: String::new(),
+            output: String::new(),
+            id: None,
         });
         trimmed = true;
     }
@@ -1028,13 +1043,13 @@ fn message(harness: &str, v: &Value) -> Option<Message> {
 
 /// Display only the native call records. This never executes a tool or infers its outcome.
 fn tools(harness: &str, v: &Value) -> Vec<Tool> {
-    fn summary(name: &Value, input: &Value) -> Option<Tool> {
+    fn summary(name: &Value, input: &Value, id: &Value) -> Option<Tool> {
         let name = name.as_str()?;
         let parsed = input
             .as_str()
             .and_then(|s| serde_json::from_str::<Value>(s).ok());
         let input = parsed.as_ref().unwrap_or(input);
-        let detail = [
+        let main = [
             "command",
             "cmd",
             "file_path",
@@ -1045,8 +1060,8 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
         ]
         .iter()
         .find_map(|key| input.get(key).and_then(Value::as_str))
-        .or_else(|| input.as_str())
-        .unwrap_or("");
+        .or_else(|| input.as_str());
+        let detail = main.unwrap_or("");
         let short = |text: &str, max: usize| {
             let clean = plain(text);
             let text = clean.lines().next().unwrap_or("").trim();
@@ -1056,9 +1071,17 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
             }
             out
         };
+        let full = match main {
+            Some(text) => text.to_owned(),
+            None if input.is_null() => String::new(),
+            None => serde_json::to_string_pretty(input).unwrap_or_default(),
+        };
         Some(Tool {
             name: short(name, 80),
             input: short(detail, 160),
+            detail: capped(&full),
+            output: String::new(),
+            id: id.as_str().map(str::to_owned),
         })
     }
     match harness {
@@ -1068,7 +1091,7 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
                 .into_iter()
                 .flatten()
                 .filter(|part| part["type"] == "tool_use")
-                .filter_map(|part| summary(&part["name"], &part["input"]))
+                .filter_map(|part| summary(&part["name"], &part["input"], &part["id"]))
                 .collect()
         }
         "pi" if v["type"] == "message" && v["message"]["role"] == "assistant" => {
@@ -1077,7 +1100,7 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
                 .into_iter()
                 .flatten()
                 .filter(|part| part["type"] == "toolCall")
-                .filter_map(|part| summary(&part["name"], &part["arguments"]))
+                .filter_map(|part| summary(&part["name"], &part["arguments"], &part["id"]))
                 .collect()
         }
         "cursor-agent" if v["role"] == "assistant" => v["message"]["content"]
@@ -1085,11 +1108,11 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
             .into_iter()
             .flatten()
             .filter(|part| part["type"] == "tool_use")
-            .filter_map(|part| summary(&part["name"], &part["input"]))
+            .filter_map(|part| summary(&part["name"], &part["input"], &part["id"]))
             .collect(),
         "grok" if v["params"]["update"]["sessionUpdate"] == "tool_call" => {
             let call = &v["params"]["update"];
-            summary(&call["title"], &call["rawInput"])
+            summary(&call["title"], &call["rawInput"], &call["toolCallId"])
                 .into_iter()
                 .collect()
         }
@@ -1097,18 +1120,108 @@ fn tools(harness: &str, v: &Value) -> Vec<Tool> {
             .as_array()
             .into_iter()
             .flatten()
-            .filter_map(|call| summary(&call["name"], &call["arguments"]))
+            .filter_map(|call| summary(&call["name"], &call["arguments"], &call["toolCallId"]))
             .collect(),
         "codex" if v["type"] == "response_item" => {
             let p = &v["payload"];
             match p["type"].as_str() {
-                Some("function_call") => summary(&p["name"], &p["arguments"]).into_iter().collect(),
-                Some("custom_tool_call") => summary(&p["name"], &p["input"]).into_iter().collect(),
+                Some("function_call") => summary(&p["name"], &p["arguments"], &p["call_id"])
+                    .into_iter()
+                    .collect(),
+                Some("custom_tool_call") => summary(&p["name"], &p["input"], &p["call_id"])
+                    .into_iter()
+                    .collect(),
                 _ => Vec::new(),
             }
         }
         _ => Vec::new(),
     }
+}
+
+/// The longest tool argument or result a preview keeps, from its start.
+// ponytail: fixed head cap; a long result's tail needs paging if anyone asks for it.
+const MAX_TOOL_TEXT: usize = 4 * 1024;
+
+fn capped(text: &str) -> String {
+    let mut text = plain(text);
+    if text.len() > MAX_TOOL_TEXT {
+        let mut at = MAX_TOOL_TEXT;
+        while !text.is_char_boundary(at) {
+            at -= 1;
+        }
+        text.truncate(at);
+        text.push_str("\n…");
+    }
+    text.trim_end().to_owned()
+}
+
+/// Native result records as (call id, text). Harnesses without call ids show no results.
+fn results(harness: &str, v: &Value) -> Vec<(String, String)> {
+    fn text(content: &Value) -> String {
+        match content {
+            Value::String(s) => s.clone(),
+            Value::Array(parts) => parts
+                .iter()
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
+    let one = |id: &Value, output: String| {
+        id.as_str()
+            .map(|id| (id.to_owned(), output))
+            .into_iter()
+            .collect()
+    };
+    match harness {
+        "claude" if v["type"] == "user" && v["isSidechain"] != true => v["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|part| part["type"] == "tool_result")
+            .filter_map(|part| {
+                Some((
+                    part["tool_use_id"].as_str()?.to_owned(),
+                    text(&part["content"]),
+                ))
+            })
+            .collect(),
+        "pi" if v["type"] == "message" && v["message"]["role"] == "toolResult" => {
+            one(&v["message"]["toolCallId"], text(&v["message"]["content"]))
+        }
+        "codex" if v["type"] == "response_item" => match v["payload"]["type"].as_str() {
+            Some("function_call_output" | "custom_tool_call_output") => {
+                let output = &v["payload"]["output"];
+                let output = match output {
+                    Value::String(s) => serde_json::from_str::<Value>(s)
+                        .ok()
+                        .and_then(|j| j["output"].as_str().map(str::to_owned))
+                        .unwrap_or_else(|| s.clone()),
+                    other => text(&other["content"]),
+                };
+                one(&v["payload"]["call_id"], output)
+            }
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Give the call `id` its result, searching from the newest message. Returns the bytes added.
+fn attach<'a>(messages: impl Iterator<Item = &'a mut Message>, id: &str, output: String) -> usize {
+    for message in messages {
+        if let Some(tool) = message
+            .tools
+            .iter_mut()
+            .find(|t| t.id.as_deref() == Some(id))
+        {
+            let before = tool.output.len();
+            tool.output = capped(&output);
+            return tool.output.len().saturating_sub(before);
+        }
+    }
+    0
 }
 
 /// Transcripts are data, never terminal commands. Strip CSI/OSC/DCS and other controls.

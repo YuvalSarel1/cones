@@ -327,6 +327,66 @@ fn compact_tool_calls_keep_reported_names_and_inputs_without_tool_output_or_inje
 }
 
 #[test]
+fn tool_calls_carry_their_whole_input_and_the_result_recorded_under_their_id() {
+    let doc = transcript::parse(
+        "claude",
+        &records(&[
+            json!({"type":"assistant","message":{"id":"a","content":[
+                {"type":"tool_use","id":"one","name":"Bash","input":{"command":"python3 - <<'EOF'\nprint(1)\nEOF"}},
+                {"type":"tool_use","id":"two","name":"mcp__game__screen","input":{"x":1}}]}}),
+            json!({"type":"user","message":{"content":[
+                {"type":"tool_result","tool_use_id":"two","content":[{"type":"text","text":"screen"},{"type":"image","source":{"data":"x"}}]},
+                {"type":"tool_result","tool_use_id":"one","content":"1\u{1b}[31m\n"},
+                {"type":"tool_result","tool_use_id":"unknown","content":"dropped"}]}}),
+        ]),
+    );
+    let tools = &doc.messages[0].tools;
+    assert_eq!(tools[0].input, "python3 - <<'EOF'");
+    assert_eq!(tools[0].detail, "python3 - <<'EOF'\nprint(1)\nEOF");
+    assert_eq!(tools[0].output, "1");
+    assert_eq!(tools[1].detail, "{\n  \"x\": 1\n}");
+    assert_eq!(tools[1].output, "screen");
+    assert_eq!(
+        doc.messages.len(),
+        1,
+        "results are not conversation messages"
+    );
+
+    let doc = transcript::parse(
+        "codex",
+        &records(&[
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"c","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"a\nb"}}),
+        ]),
+    );
+    assert_eq!(doc.messages[0].tools[0].output, "a\nb");
+
+    let doc = transcript::parse(
+        "pi",
+        &records(&[
+            json!({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"p","name":"read","arguments":{"path":"f"}}]}}),
+            json!({"type":"message","message":{"role":"toolResult","toolCallId":"p","content":[{"type":"text","text":"file text"}]}}),
+        ]),
+    );
+    assert_eq!(doc.messages[0].tools[0].output, "file text");
+
+    let long = "x".repeat(10_000);
+    let doc = transcript::parse(
+        "claude",
+        &records(&[
+            json!({"type":"assistant","message":{"id":"a","content":[{"type":"tool_use","id":"l","name":"Read","input":{"file_path":"f"}}]}}),
+            json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"l","content":long}]}}),
+        ]),
+    );
+    let output = &doc.messages[0].tools[0].output;
+    assert!(
+        output.len() < 5_000 && output.ends_with("\n…"),
+        "{}",
+        output.len()
+    );
+}
+
+#[test]
 fn older_codex_ui_events_keep_the_prompt_without_duplicating_the_assistant() {
     let user = json!({"type":"event_msg","payload":{"type":"user_message","message":"earlier format\nsecond line","images":[]}});
     let data = records(&[
