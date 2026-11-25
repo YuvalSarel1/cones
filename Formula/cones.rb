@@ -1,14 +1,14 @@
 class Cones < Formula
   desc "A terminal workspace for coding agents"
   homepage "https://github.com/YuvalSarel1/cones"
-  url "https://github.com/YuvalSarel1/cones/archive/refs/tags/v0.4.34.tar.gz"
-  sha256 "75153e718df4722701f3762a553dd749fc8f7a20a8c3f8c4e42a7ba5d8891524"
+  url "https://github.com/YuvalSarel1/cones/archive/refs/tags/v0.4.35.tar.gz"
+  sha256 "6f3180c165c60313ac8f3ed50fd789a99c830212a683321344277805fb827343"
   license any_of: ["MIT", "Apache-2.0"]
   head "https://github.com/YuvalSarel1/cones.git", branch: "main"
 
   bottle do
-    root_url "https://github.com/YuvalSarel1/cones/releases/download/v0.4.34"
-    sha256 cellar: :any_skip_relocation, arm64_big_sur: "4807c72a59112ed1a83090d995ce9f0b6c8b79f2db348767cf4b8f4ad0635e53"
+    root_url "https://github.com/YuvalSarel1/cones/releases/download/v0.4.35"
+    sha256 cellar: :any_skip_relocation, arm64_big_sur: "20be7af4c2f09edc1c129ade8473ab2bcaffb05b5f1a9391a87808793e16f763"
   end
 
   depends_on "rust" => :build
