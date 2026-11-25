@@ -1152,9 +1152,13 @@ fn state(job: &Value, status: &str) -> State {
     }
 }
 
-/// In-flight kinds that only wait to start a turn: a scheduled wake or a monitor.
+/// In-flight kinds that only wait to start a turn: a scheduled wake, a monitor, or a watch on
+/// an Artifact's comments.
 fn is_wake(kind: &Value) -> bool {
-    matches!(kind.as_str(), Some("session_cron" | "monitor"))
+    matches!(
+        kind.as_str(),
+        Some("session_cron" | "monitor" | "artifact_watch")
+    )
 }
 
 /// Read reported values saved by the user's statusLine command.
@@ -3094,6 +3098,16 @@ mod tests {
             word(watching.clone(), "idle"),
             "idle",
             "a monitor waiting to report is not a turn"
+        );
+        // Claude Code 2.1.332's record for a finished job watching an Artifact's comments.
+        let mut commenting = job("done", "idle");
+        commenting["inFlight"] = serde_json::json!({
+            "tasks": 1, "queued": 0, "kinds": ["artifact_watch"], "drainableMonitors": 1
+        });
+        assert_eq!(
+            word(commenting, "idle"),
+            "idle",
+            "a watch on Artifact comments is not a turn"
         );
         assert_eq!(word(watching.clone(), "busy"), "active");
         watching["state"] = "working".into();

@@ -355,10 +355,10 @@ Claude background uses the first matching rule:
 
 1. Registry `busy`: working, and `shell`: shell, ahead of any previous job result.
 2. Job `done`/`failed`/`stopped` with tempo no longer `active`: that state. Done also requires
-   no routine, self-wake, in-flight `session_cron` or `monitor` that could restart it.
+   no routine, self-wake, in-flight `session_cron`, `monitor` or `artifact_watch` that could restart it.
 3. Tempo `blocked` or registry `waiting`: input.
-4. Registry `idle`, no queue, no in-flight work other than a `session_cron` wake or a
-   `monitor`, and tempo `idle` or a `done` job: idle, even when the job still reports
+4. Registry `idle`, no queue, no in-flight work other than a `session_cron` wake, a
+   `monitor` or an `artifact_watch`, and tempo `idle` or a `done` job: idle, even when the job still reports
    `working` while it waits on another agent, or a done job sleeps until a scheduled wake or
    keeps tempo `active` beside a running monitor. Its reported detail stays on the row.
 5. Otherwise working.
