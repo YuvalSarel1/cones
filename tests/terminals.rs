@@ -282,6 +282,27 @@ fn host_restores_stdin_and_environment_without_exporting_the_transport_marker() 
     );
 }
 
+/// A hosted `claude attach` shows a background session whose row carries the daemon's pid.
+/// The dashboard forwards that row; the host keeps the view and its own record.
+#[test]
+fn another_process_s_row_neither_closes_the_view_nor_replaces_the_record() {
+    let mut host = Host::start("/bin/cat", &[], json!([]));
+    let mut client = host.attach();
+    let mut daemon = host.record["session"].clone();
+    daemon["pid"] = json!(1);
+    daemon["title"] = json!("DAEMON ROW");
+    send(&mut client.stream, &json!({"Update": daemon}));
+    client.input("STILL_ATTACHED\n");
+    client.until("STILL_ATTACHED");
+    let saved: Value = serde_json::from_str(
+        &fs::read_to_string(host.root.path().join(format!("terminals/{}.json", host.id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["session"]["pid"], host.record["session"]["pid"]);
+    assert_ne!(saved["session"]["title"], "DAEMON ROW");
+    host.stop();
+}
+
 #[test]
 fn incompatible_clients_and_broken_streams_do_not_stop_work() {
     let mut host = Host::start("/bin/cat", &[], json!([]));

@@ -492,7 +492,13 @@ impl Viewer {
     }
 
     pub(crate) fn update_host(&mut self, session: &crate::fleet::Session) {
-        if self.remote.is_some() {
+        // A hosted `claude attach` shows its background session, whose row carries the daemon's
+        // pid. The host drops a connection that sends it another process's session.
+        if self
+            .remote
+            .as_ref()
+            .is_some_and(|remote| remote.record.session.pid == session.pid)
+        {
             self.send(&crate::terminal_host::Request::Update(Box::new(
                 session.clone(),
             )));

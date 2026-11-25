@@ -631,6 +631,9 @@ fn host_loop(
                             }
                             save(state, record)?;
                         }
+                        // Another process's row, such as the background session a hosted
+                        // `claude attach` shows, never replaces the record or ends the view.
+                        Request::Update(_) if peer.link == Link::Attached => {}
                         _ => return Err(io::Error::other("invalid terminal request")),
                     }
                 }
