@@ -1261,7 +1261,7 @@ fn worktrees_as_folders_head_each_worktree_like_any_folder() {
 /// Idan's ask: a worktree session is tagged without leaving its repository. ctrl+l names the
 /// repository as the session's folder; a tag checked with it nests inside the repository's
 /// heading in the tag colour, a branch of the folder's tree, and the session is listed once,
-/// still naming its worktree.
+/// still naming its worktree. The worktree's other session keeps its `⑂` heading.
 #[test]
 fn a_tag_on_a_worktree_session_sits_in_the_repository_folder() {
     let Worktree {
@@ -1298,13 +1298,15 @@ fn a_tag_on_a_worktree_session_sits_in_the_repository_folder() {
     // One Enter adds the tag and keeps the checklist.
     d.typed("ideas");
     d.press("enter", b"\r");
-    let screen = d.wait_for("the tag inside the folder", |s| s.contains("└─ # ideas"));
+    let screen = d.wait_for("the tag inside the folder", |s| s.contains("├─ # ideas"));
     d.capture("worktree-tag");
     let order = [
         heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}")),
         row(&screen, "Rank tenants"),
         heading(&screen, "# ideas").unwrap_or_else(|| panic!("{screen}")),
         row(&screen, "Autoscaling plan"),
+        heading(&screen, &format!("⑂ {}", leaf(&tree))).unwrap_or_else(|| panic!("{screen}")),
+        row(&screen, "└─ Cost visibility dashboard"),
     ];
     assert!(order.is_sorted(), "{order:?}\n{screen}");
     assert_eq!(
@@ -1413,8 +1415,8 @@ fn worktree_sessions_sit_in_the_repository_under_their_worktree() {
 /// A past conversation resumed from history in a worktree that no live session uses. Its
 /// row stands in before Claude reports it, and the dashboard used to resolve worktrees
 /// before adding that row: the worktree went unrecognised, opened as a folder of its own and
-/// stayed open. Now the row sits among the repository's own, naming its worktree, and no folder
-/// opens.
+/// stayed open. Now the row sits in the repository's folder under its worktree's heading, and
+/// no folder opens.
 #[test]
 fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     let Worktree {
@@ -1452,7 +1454,7 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     .unwrap();
     // Claude reports the resumed session late, so its row stands in meanwhile.
     fs::write(d.home().join("registry-delay"), "3").unwrap();
-    // Any heading of the worktree's own is a folder that opened.
+    // A heading naming the worktree's path is a folder that opened.
     d.start();
     d.wait_text("Autoscaling plan");
 
@@ -1470,16 +1472,17 @@ fn a_session_resumed_from_history_in_a_worktree_opens_no_folder() {
     d.press("enter", b"\r");
     let old_heading = format!("⑂ {}", leaf(Path::new(&cwd)));
     let screen = d.wait_for("the resumed row in the live list", |s| {
-        s.contains("fixture attached to")
-            && (s.contains("Old tree work · in ⑂ old-tree") || heading(s, &old_heading).is_some())
+        s.contains("fixture attached to") && s.contains("Old tree work")
     });
     d.capture("resumed");
-    assert!(heading(&screen, &old_heading).is_none(), "{screen}");
-    let at = heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}"));
     assert!(
-        row(&screen, "Old tree work · in ⑂ old-tree") > at,
+        !screen.lines().any(|l| heading_name(l).contains(&cwd)),
         "{screen}"
     );
+    let at = heading(&screen, &main.display().to_string()).unwrap_or_else(|| panic!("{screen}"));
+    let tree = heading(&screen, &old_heading).unwrap_or_else(|| panic!("{screen}"));
+    assert!(at < tree, "{screen}");
+    assert_eq!(row(&screen, "Old tree work"), tree + 1, "{screen}");
     let open = fs::read_to_string(d.path("state/open-folders.json")).unwrap_or_default();
     assert!(!open.contains(&cwd), "{open}");
     d.keep("state/open-folders.json");

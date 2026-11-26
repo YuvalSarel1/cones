@@ -935,31 +935,10 @@ impl Data {
         let mut chosen: HashSet<&str> = HashSet::new();
         let pin = Place::Tag(crate::places::PINNED.into());
         // Unless worktrees are folders of their own, the worktree a session runs in names a
-        // heading inside its repository's folder once two or more sessions share it.
-        let tree_of = |s: &Session| self.repo_of(s.dir()).and(self.trees.get(s.dir()));
-        // Only sessions listed in the folder count: one a tag moved out leaves the heading, and
-        // a launch follows its launcher wherever that is listed.
-        let listed: HashSet<&str> = self
-            .sessions
-            .iter()
-            .chain(&runs)
-            .map(|s| s.session_id.as_str())
-            .collect();
-        let mut per_tree: HashMap<&PathBuf, usize> = HashMap::new();
-        for s in self.sessions.iter().chain(&runs) {
-            if let Some(top) = tree_of(s)
-                && places.of(&s.session_id, parent).contains(&Place::Folder)
-                && !s
-                    .launched_by
-                    .as_deref()
-                    .is_some_and(|by| listed.contains(by))
-            {
-                *per_tree.entry(top).or_default() += 1;
-            }
-        }
+        // heading inside its repository's folder.
         let tree_heading = |s: &Session| {
-            tree_of(s)
-                .filter(|top| per_tree.get(top).is_some_and(|n| *n > 1))
+            self.repo_of(s.dir())
+                .and(self.trees.get(s.dir()))
                 .and_then(|top| top.file_name())
                 .map(|name| format!("{TREE_HEADING}{}", name.to_string_lossy()))
         };
@@ -5365,7 +5344,7 @@ const FIELDS: [Field; 81] = [
         name: "worktrees",
         short: "worktree sessions",
         hint: "List worktree sessions in their repository's folder.",
-        long: "nested lists a linked worktree's sessions in its repository's folder, under a ⑂ heading of their own once two or more share the worktree; a lone one names its worktree dim after its title. folder lists every worktree as a folder of its own, with its own heading and tags.",
+        long: "nested lists a linked worktree's sessions in its repository's folder, under a ⑂ heading of their own. folder lists every worktree as a folder of its own, with its own heading and tags.",
         builtin: "nested",
         input: Answer::Pick(&["-", "nested", "folder"]),
     },
@@ -25680,10 +25659,25 @@ states:
         let repo_label = fleet::tilde(&repo.canonicalize().unwrap());
         assert_eq!(
             headers(&app),
-            [repo_label.clone(), fleet::tilde(&under_repo)],
-            "every worktree, opened or not, lists its sessions in the repository's folder; \
-             ordinary subfolders keep their own heading"
+            [
+                repo_label.clone(),
+                "├─ ⑂ agent".into(),
+                "├─ ⑂ moved".into(),
+                "└─ ⑂ worktree".into(),
+                fleet::tilde(&under_repo)
+            ],
+            "every worktree, opened or not, heads its sessions inside the repository's folder, \
+             one session or several; ordinary subfolders keep their own heading"
         );
+        // The heading a selected row sits under.
+        let heading_of = |app: &App| {
+            app.rows[..app.visible[app.cursor]]
+                .iter()
+                .rev()
+                .find(|r| matches!(r.kind, Kind::Header | Kind::Heading(_)))
+                .map(|r| r.cells[0].0.trim_start().to_owned())
+                .unwrap()
+        };
         assert!(
             app.rows.iter().all(|r| !matches!(r.kind, Kind::Folder(_))),
             "populated worktrees and their open repository have no empty placeholders"
@@ -25697,15 +25691,16 @@ states:
             app.select_new(id);
             assert_eq!(app.target_dir(), *cwd, "actions retain the actual cwd");
             let row = app.selected().unwrap();
-            assert_eq!(
-                row.cells[3]
-                    .0
-                    .trim_end()
-                    .ends_with(&format!("{ELSEWHERE}⑂ {}", tree.unwrap_or("-"))),
-                tree.is_some(),
-                "a worktree's row names its worktree: {}",
+            assert!(
+                !row.cells[3].0.contains('⑂'),
+                "its heading names the worktree: {}",
                 row.text()
             );
+            let heading = heading_of(&app);
+            match tree {
+                Some(tree) => assert!(heading.ends_with(&format!("⑂ {tree}")), "{heading}"),
+                None => assert!(!heading.contains('⑂'), "{heading}"),
+            }
         }
         app.select_new(moved_id);
         assert_eq!(
@@ -25713,8 +25708,12 @@ states:
                 .0
                 .trim_start_matches(TREE)
                 .trim_end(),
-            format!("session {}{ELSEWHERE}⑂ moved", &moved_id[..8]),
-            "a background job keeps its launch heading and names the worktree it entered"
+            format!("session {}", &moved_id[..8]),
+        );
+        assert_eq!(
+            heading_of(&app),
+            "├─ ⑂ moved",
+            "a background job sits in its launch folder under the worktree it entered"
         );
         app.by_state = true;
         app.rebuild();
