@@ -38,10 +38,12 @@ struct Cli {
 /// A change to the places a session is listed in.
 #[derive(Subcommand)]
 enum PlaceChange {
-    /// List the session in PLACE too: `folder`, `# NAME`, `folder › # NAME` or `pinned`.
-    Add { place: String },
-    /// Take the session out of PLACE; out of its last place it returns to its folder.
-    Remove { place: String },
+    /// Move the session to PLACE, out of wherever it was: `folder`, `# NAME`,
+    /// `folder › # NAME` or `pinned`.
+    #[command(alias = "add")]
+    Set { place: String },
+    /// Return the session to its folder. A PLACE given must be the one it is in.
+    Remove { place: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -256,8 +258,9 @@ enum Action {
         #[arg(long, conflicts_with = "parent")]
         remove: bool,
     },
-    /// The places a session is listed in on the dashboard: `cones place ID` lists them,
-    /// `add` and `remove` change one, and no id lists every placed session; see docs/cli.md.
+    /// The one place a session is listed in on the dashboard: `cones place ID` prints it,
+    /// `set` moves it and `remove` returns it to its folder; no id lists every placed session;
+    /// see docs/cli.md.
     Place {
         /// The full session id as `cones ls` prints it.
         id: Option<String>,
@@ -1123,10 +1126,8 @@ fn execute(cli: Cli) -> Result<i32> {
         Action::Place { id, change } => {
             let mut store = cones::places::Places::load(&state);
             let Some(id) = id else {
-                for (id, set) in &store.places {
-                    for place in set {
-                        println!("{id}\t{place}");
-                    }
+                for (id, place) in &store.places.0 {
+                    println!("{id}\t{place}");
                 }
                 return Ok(0);
             };
@@ -1137,28 +1138,24 @@ fn execute(cli: Cli) -> Result<i32> {
                     .find(|s| s.session_id == id)
                     .and_then(|s| s.forked_from.as_deref())
             };
-            let changed = change.is_some();
-            match change {
-                Some(PlaceChange::Add { place }) => store.change(
-                    &id,
-                    None,
-                    Some(&cones::places::Place::parse(&place)?),
-                    parent,
-                ),
-                Some(PlaceChange::Remove { place }) => store.change(
-                    &id,
-                    Some(&cones::places::Place::parse(&place)?),
-                    None,
-                    parent,
-                ),
-                None => {}
-            }
-            if changed {
+            let to = match change {
+                Some(PlaceChange::Set { place }) => Some(cones::places::Place::parse(&place)?),
+                Some(PlaceChange::Remove { place }) => {
+                    let now = store.of(&id, parent);
+                    if let Some(place) = place
+                        && cones::places::Place::parse(&place)? != now
+                    {
+                        anyhow::bail!("{id} is in {now}, not {place}");
+                    }
+                    Some(cones::places::Place::Folder)
+                }
+                None => None,
+            };
+            if let Some(to) = to {
+                store.set(&id, to, parent);
                 store.save(&state)?;
             }
-            for place in store.of(&id, parent) {
-                println!("{place}");
-            }
+            println!("{}", store.of(&id, parent));
             Ok(0)
         }
         Action::Btw {

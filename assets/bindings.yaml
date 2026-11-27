@@ -102,10 +102,10 @@ states:
         description: "Release the mouse to the terminal so dragging selects text, or take it back for cones and the panes."
       - keys: ["ctrl+t"]
         action: pin
-        description: "Pin the selected session above every group, or unpin it. Pins survive restarts."
+        description: "Pin the selected session above every group, or unpin it back to its folder. Pins survive restarts."
       - keys: ["ctrl+l"]
         action: place
-        description: "Check the places the selected session sits in: its folder, tags, pinned, or a new tag."
+        description: "Choose the one place the selected session sits in: its folder, a tag, both, pinned, or a new tag."
       - keys: ["ctrl+b"]
         action: reorder
         description: "Pick up the selected session; up and down move it inside its group, enter keeps the order, esc puts it back."

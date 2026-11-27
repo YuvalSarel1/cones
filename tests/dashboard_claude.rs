@@ -674,11 +674,9 @@ fn existing_sessions_group_navigate_filter_pin_and_highlight() {
     );
     let tags: Value =
         serde_json::from_str(&d.wait_file("state/tags.json", |t| t.contains(&rest.id))).unwrap();
-    // Pinning adds a place: the session sits in its folder and under `pinned`.
-    assert_eq!(
-        tags["places"],
-        json!({rest.id.as_str(): ["folder", "pinned"]})
-    );
+    // Pinning moves the session: it sits under `pinned` alone, listed once.
+    assert_eq!(tags["places"], json!({rest.id.as_str(): ["pinned"]}));
+    assert_eq!(screen.matches("Rest a while").count(), 1, "{screen}");
     d.keep("state/tags.json");
 
     // ctrl+p highlights the selected title in the configured colour, keeps it across a
@@ -1281,7 +1279,7 @@ fn a_tag_on_a_worktree_session_sits_in_the_repository_folder() {
         });
     }
     d.press("ctrl+l", b"\x0c");
-    let screen = d.wait_text("places · space checks");
+    let screen = d.wait_text("place · space checks");
     // The checklist is narrower than the fixture's paths, so only their start shows.
     let start: String = main.display().to_string().chars().take(30).collect();
     assert!(

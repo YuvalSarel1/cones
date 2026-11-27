@@ -203,7 +203,7 @@ terminal as the only way in. A warning wider than the composer's rule ends in `�
 | `ctrl+n` | Rename a Claude, Codex, pi or OpenCode session, as [`cones rename`](cli.md#renaming-a-session) does. |
 | `ctrl+p` | Toggle a session highlight, kept in `state/tags.json` across restarts. |
 | `ctrl+y` | [Fork a conversation](#fork-a-conversation). |
-| `ctrl+l` | Check the [places](#places) a session sits in. |
+| `ctrl+l` | Choose the [place](#places) a session sits in. |
 | `ctrl+t` | Pin a session above every group, or unpin it. |
 | `ctrl+b` | [Reorder a row](#places) inside its group. |
 | `ctrl+r` | Refresh now. |
@@ -235,7 +235,7 @@ resumed run retains its row and original ledger outcome while displaying live va
 
 ### Places
 
-A session sits in any number of places, each one a row of its own:
+A session is listed once, in exactly one place:
 
 | Place | Row |
 | --- | --- |
@@ -245,31 +245,29 @@ A session sits in any number of places, each one a row of its own:
 | `pinned` | In the group that heads the list, also naming the folder. |
 
 A group exists while a session sits in it; the last one leaving removes the heading, and an
-open folder keeps its row with `no sessions here`. Removing a session's last place returns it
+open folder keeps its row with `no sessions here`. Removing a session's place returns it
 to its folder, so a session never leaves the list. A place changes only the view: the folder
-still decides where the session runs, its coordinator and its comms.
-
-A session's rows are one session. Each shows `+N` after its title when the session sits in N
-other places, and while one is selected the others carry a faint `┆` mark. Opening, stopping,
-renaming, state, unread marks and removal act on the session, so every row agrees and the
-header counts each session once. The cursor, a drag and a reorder act on the row they are on.
+still decides where the session runs, its coordinator and its comms. Giving a session a place
+moves it there, out of the one it was in; nothing lists a session twice.
 Grouping by state lists each session once and ignores places other than `pinned`.
 
 `ctrl+l` opens a checklist of places for the selected session: its folder, every tag a
-session carries, `pinned`, and `+ new tag…`, where a name typed on the row and Enter add it
-and keep the checklist. Space checks or unchecks a line, Enter keeps the checklist and Escape
-discards it. Delete or Backspace on a tag's line marks it struck through, and Enter then takes
-that tag off every session, not only the selected one; a press again unmarks it. The folder alone lists the session in its folder, tags alone list it in groups
-above the folders, and the folder with tags nests those tags inside the folder. Unchecking
-everything returns the session to its folder. `ctrl+t` toggles `pinned` directly. A worktree
+session carries, `pinned`, and `+ new tag…`, where a name typed on the row and Enter add it,
+checked, and keep the checklist. Space checks or unchecks a line, Enter keeps the checklist and
+Escape discards it. Checking a tag or `pinned` unchecks the others, since a session has one
+place. Delete or Backspace on a tag's line marks it struck through, and Enter then takes
+that tag off every session, not only the selected one, returning each to its folder; a press
+again unmarks it. The folder alone lists the session in its folder, a tag alone lists it in a
+group above the folders, and the folder with a tag nests that tag inside the folder. Unchecking
+everything returns the session to its folder. `ctrl+t` pins the session, or unpins it back to
+its folder. A worktree
 session's folder line names the folder that lists it: its repository, or under `worktrees:
 folder` the worktree.
 
 Tag headings are drawn in cyan, so a group of tagged sessions does not read as a folder.
 
 With the mouse, press a session row, drag it and release. The row it would drop on is
-underlined. A drop moves that row: the session leaves the place it was dragged from and takes
-the one dropped on, a tag of either kind or its own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
+underlined. A drop moves the session to the place dropped on, a tag of either kind or its own folder. Another folder's heading, or a tag inside another folder, refuses the drop, since a
 session keeps its folder, and the footer names the folder that accepts it. A drop on a row of
 its own group reorders it there; a row of another group counts as that group's heading.
 
@@ -280,7 +278,7 @@ moves on its own only among the sessions beneath the same parent. A group reorde
 from a group other than its folder's, with `ctrl+o` or the composer, runs in the selected row's
 folder and sits in that group alone; one started from `pinned` is not pinned.
 
-A conversation that continues under a new id, a fork or a Claude resume, takes the places and
+A conversation that continues under a new id, a fork or a Claude resume, takes the place and
 the position of the one it came from until it is given its own. Places and hand orders live in
 [`tags.json`](jobs.md#stored-files); [`cones place`](cli.md#placing-a-session) writes the same
 file.

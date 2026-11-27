@@ -2,11 +2,11 @@
 //! Both are keyed by session id, so they live in the state directory beside the ledger, not in
 //! `jobs.yaml`.
 //!
-//! A session sits in any number of places: its folder, a tag heading a group above the folders,
-//! or a tag inside its own folder. `pinned` is a tag that heads the list. A session with no entry
-//! sits in its folder, and removing its last place puts it back there, so it never disappears.
+//! A session sits in exactly one place: its folder, a tag heading a group above the folders, or
+//! a tag inside its own folder. `pinned` is a tag that heads the list. A session with no entry
+//! sits in its folder, and removing its place puts it back there, so it never disappears.
 //! A conversation that continues under a new id, a fork or a Claude resume, reports the id it
-//! came from; a session with no entry of its own takes the places and the position of the one it
+//! came from; a session with no entry of its own takes the place and the position of the one it
 //! came from, so both survive without anyone copying them.
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ const FILE: &str = "tags.json";
 /// The pins kept before pins were a tag: a list of session ids.
 const PINS: &str = "pins.json";
 
-/// One place a session is listed in.
+/// The one place a session is listed in.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum Place {
@@ -91,17 +91,67 @@ impl From<Place> for String {
     }
 }
 
-pub type Set = BTreeSet<Place>;
+/// A session's place as the file stores it: a list holding one place, the shape cones wrote
+/// when a session could sit in several, so an older cones still reads the file. A list from then
+/// keeps one place: a tag over the folder, of several tags the last.
+// ponytail: no record says when a tag was added, so "the last" is the last as stored.
+mod one {
+    use super::Place;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-fn folder_only() -> Set {
-    Set::from([Place::Folder])
+    pub fn serialize<S: Serializer>(place: &Place, s: S) -> Result<S::Ok, S::Error> {
+        [place].serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Place, D::Error> {
+        let list = Vec::<Place>::deserialize(d)?;
+        Ok(super::keep_one(list))
+    }
+}
+
+/// The one place kept of several: a tag of either kind over the folder, of several the last.
+fn keep_one(list: Vec<Place>) -> Place {
+    list.into_iter()
+        .rev()
+        .find(|p| *p != Place::Folder)
+        .unwrap_or(Place::Folder)
+}
+
+/// Session id to its place.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Map(#[serde(with = "map")] pub BTreeMap<String, Place>);
+
+mod map {
+    use super::Place;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize, Deserialize)]
+    struct One(#[serde(with = "super::one")] Place);
+
+    pub fn serialize<S: Serializer>(m: &BTreeMap<String, Place>, s: S) -> Result<S::Ok, S::Error> {
+        m.iter()
+            .map(|(k, v)| (k, One(v.clone())))
+            .collect::<BTreeMap<_, _>>()
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<String, Place>, D::Error> {
+        Ok(BTreeMap::<String, One>::deserialize(d)?
+            .into_iter()
+            .map(|(k, One(v))| (k, v))
+            .collect())
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Places {
-    /// Session id to the places it sits in.
+    /// Session id to the one place it sits in.
     #[serde(default)]
-    pub places: BTreeMap<String, Set>,
+    pub places: Map,
     /// A group's sessions in the order set by hand, by the group's heading.
     #[serde(default)]
     pub order: BTreeMap<String, Vec<String>>,
@@ -115,7 +165,7 @@ pub struct Places {
 #[derive(Deserialize)]
 struct Stored {
     #[serde(default)]
-    places: Option<BTreeMap<String, Set>>,
+    places: Option<Map>,
     #[serde(default)]
     tags: BTreeMap<String, String>,
     #[serde(default)]
@@ -142,11 +192,24 @@ impl Places {
                     highlighted,
                     ..
                 }) => {
-                    return Self {
+                    let places = Self {
                         places,
                         order,
                         highlighted,
                     };
+                    // A session stored in several places keeps one, written back once.
+                    let several = serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .ok()
+                        .and_then(|v| {
+                            Some(
+                                v.get("places")?
+                                    .as_object()?
+                                    .values()
+                                    .any(|l| l.as_array().is_some_and(|l| l.len() > 1)),
+                            )
+                        })
+                        .unwrap_or(false);
+                    (places, several)
                 }
                 Ok(old) => (Self::from_tags(old), true),
                 Err(_) => return Self::default(),
@@ -159,11 +222,12 @@ impl Places {
                 let places = Self {
                     places: pins
                         .into_iter()
-                        .map(|id| (id, Set::from([Place::Tag(PINNED.into())])))
-                        .collect(),
+                        .map(|id| (id, Place::Tag(PINNED.into())))
+                        .collect::<BTreeMap<_, _>>()
+                        .into(),
                     ..Self::default()
                 };
-                let any = !places.places.is_empty();
+                let any = !places.places.0.is_empty();
                 (places, any)
             }
         };
@@ -184,11 +248,11 @@ impl Places {
                     _ if old.inside.contains(&id) => Place::FolderTag(tag),
                     _ => Place::Tag(tag),
                 };
-                (id, Set::from([place]))
+                (id, place)
             })
             .collect();
         Self {
-            places,
+            places: Map(places),
             order: old.order,
             highlighted: old.highlighted,
         }
@@ -205,20 +269,20 @@ impl Places {
         Ok(())
     }
 
-    /// The session's places: its own, else those of the conversation it continues, which
+    /// The session's place: its own, else that of the conversation it continues, which
     /// `parent` names, else its folder.
-    pub fn of<'a>(&self, id: &'a str, parent: impl Fn(&str) -> Option<&'a str>) -> Set {
+    pub fn of<'a>(&self, id: &'a str, parent: impl Fn(&str) -> Option<&'a str>) -> Place {
         let mut at = id;
         for _ in 0..8 {
-            if let Some(set) = self.places.get(at) {
-                return set.clone();
+            if let Some(place) = self.places.0.get(at) {
+                return place.clone();
             }
             match parent(at) {
                 Some(p) => at = p,
                 None => break,
             }
         }
-        folder_only()
+        Place::Folder
     }
 
     /// The id carrying the session's ctrl+p mark: its own, else that of the conversation it
@@ -238,47 +302,25 @@ impl Places {
         None
     }
 
-    /// Give `id` the set `set`; an empty one means its folder. A set equal to what it would
-    /// take anyway is not stored.
-    pub fn set<'a>(&mut self, id: &'a str, set: Set, parent: impl Fn(&str) -> Option<&'a str>) {
-        let set = if set.is_empty() { folder_only() } else { set };
-        self.places.remove(id);
-        if self.of(id, parent) != set {
-            self.places.insert(id.to_owned(), set);
+    /// Move `id` to `place`, out of wherever it was. A place equal to what it would take anyway
+    /// is not stored.
+    pub fn set<'a>(&mut self, id: &'a str, place: Place, parent: impl Fn(&str) -> Option<&'a str>) {
+        self.places.0.remove(id);
+        if self.of(id, parent) != place {
+            self.places.0.insert(id.to_owned(), place);
         }
     }
 
-    /// Take the tag `tag` off every session, both above the folders and inside them. A session
-    /// whose tag sat inside its folder stays in that folder; one left with nothing returns to it.
+    /// Take the tag `tag` off every session, both above the folders and inside them; each
+    /// returns to its folder.
     pub fn remove_tag(&mut self, tag: &str) {
-        // ponytail: a set left as the bare folder stays stored, since a continued
-        // conversation's own set overrides its parent's.
-        for set in self.places.values_mut() {
-            let inside = set.remove(&Place::FolderTag(tag.to_owned()));
-            let above = set.remove(&Place::Tag(tag.to_owned()));
-            let nested = set.iter().any(|p| matches!(p, Place::FolderTag(_)));
-            if (inside && !nested) || (above && set.is_empty()) {
-                set.insert(Place::Folder);
+        // ponytail: the folder stays stored, since a continued conversation's own place
+        // overrides its parent's.
+        for place in self.places.0.values_mut() {
+            if place.tag() == Some(tag) {
+                *place = Place::Folder;
             }
         }
-    }
-
-    /// Add `place` to the session, remove `from` first if given: a move. Both are idempotent.
-    pub fn change<'a>(
-        &mut self,
-        id: &'a str,
-        from: Option<&Place>,
-        to: Option<&Place>,
-        parent: impl Fn(&str) -> Option<&'a str> + Copy,
-    ) {
-        let mut set = self.of(id, parent);
-        if let Some(from) = from {
-            set.remove(from);
-        }
-        if let Some(to) = to {
-            set.insert(to.clone());
-        }
-        self.set(id, set, parent);
     }
 
     /// Where `id` sorts in its group's hand order, taking the place of the conversation it
@@ -310,4 +352,10 @@ pub fn name(raw: &str) -> Result<String> {
         "a tag name is one line of text"
     );
     Ok(name.to_owned())
+}
+
+impl From<BTreeMap<String, Place>> for Map {
+    fn from(m: BTreeMap<String, Place>) -> Self {
+        Self(m)
+    }
 }

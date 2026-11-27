@@ -1,16 +1,15 @@
 //! Places in the session list, driven through the real dashboard and `cones place`.
 //!
 //! The `claude` on the launch path is `tests/fixtures/fake_claude_fleet.py`, as in
-//! `dashboard_claude.rs`, whose seeding helpers these flows share. A session sits in any number
-//! of places: its folder, a `# tag` group above the folders, a `# tag` heading inside its folder,
-//! and `pinned`. Each place is one row; the copies agree on state and stop together, the cursor
-//! keeps the copy it was on, and each copy counts the others. ctrl+l is a checklist, a mouse drag
-//! moves one copy, a drop on another folder is refused, removing every place restores the folder,
-//! and ctrl+b reorders a group by hand, which keeps that group's order from then on; a row listed
-//! beneath another moves only among its siblings. Pins and the
-//! one-tag file from before places migrate, a conversation continued under a new id keeps its
-//! places, a launch from a group sits in that group alone, and `cones place` writes the same
-//! file. Each flow keeps `state/tags.json`.
+//! `dashboard_claude.rs`, whose seeding helpers these flows share. A session sits in exactly one
+//! place: its folder, a `# tag` group above the folders, a `# tag` heading inside its folder, or
+//! `pinned`, and is listed once. Every change moves it: `cones place set`, ctrl+t, ctrl+l, whose
+//! checklist keeps one tag checked, and a mouse drag; a drop on another folder is refused, and
+//! unchecking everything restores the folder. ctrl+b reorders a group by hand, which keeps that
+//! group's order from then on; a row listed beneath another moves only among its siblings. Pins,
+//! the one-tag file and the several-place file from earlier cones migrate, a conversation
+//! continued under a new id keeps its place, a launch from a group sits in that group, and
+//! `cones place` writes the same file. Each flow keeps `state/tags.json`.
 use crate::dashboard::*;
 use crate::dashboard_claude::{
     Seeded, heading, heading_name, line_of, real_project, row, seed, selected,
@@ -73,7 +72,6 @@ fn under(screen: &str, line: usize) -> String {
             !l.is_empty()
                 && (t.starts_with('#') || t == "pinned" || t.starts_with('/'))
                 && !l.starts_with("▌")
-                && !l.starts_with("┆")
         })
         .map(|l| heading_name(l).to_owned())
         .unwrap_or_default()
@@ -185,12 +183,43 @@ fn chosen(screen: &str) -> String {
 /// Open the checklist for the selected row.
 fn checklist(d: &mut Dashboard) -> String {
     d.press("ctrl+l", CTRL_L);
-    d.wait_text("places · space checks")
+    d.wait_text("place · space checks")
+}
+
+/// Move the checklist cursor onto the line containing `text`.
+fn go(d: &mut Dashboard, text: &str) {
+    for key in [DOWN, UP] {
+        for _ in 0..20 {
+            if chosen(&d.screen()).contains(text) {
+                return;
+            }
+            if !step(d, key) {
+                break;
+            }
+        }
+    }
+    assert!(
+        chosen(&d.screen()).contains(text),
+        "{text}:\n{}",
+        d.screen()
+    );
+}
+
+/// Every session row on the screen, each at most once, and no row naming another listing.
+fn listed_once(screen: &str, titles: &[&str]) {
+    for t in titles {
+        assert!(rows_of(screen, t).len() <= 1, "{t} listed twice:\n{screen}");
+        if let Some(&l) = rows_of(screen, t).first() {
+            let line = list(screen).nth(l).unwrap();
+            assert!(!line.contains(&format!("{t} +")), "{line}");
+        }
+    }
+    assert!(!list(screen).any(|l| l.starts_with("┆")), "{screen}");
 }
 
 #[test]
-fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
-    let mut d = Dashboard::new("places-many", &["claude"]);
+fn a_session_sits_in_exactly_one_place_and_every_change_moves_it() {
+    let mut d = Dashboard::new("places-one", &["claude"]);
     d.install("claude", "fake_claude_fleet.py");
     let project = real_project(&d);
     fs::create_dir_all(d.path("other")).unwrap();
@@ -201,155 +230,132 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     let two = seed(&d, &other, 2, "Build export", "idle", None);
     let pin = seed(&d, &project, 3, "Clean the data", "waiting", None);
     let one = seed(&d, &project, 4, "Draft notes", "idle", None);
+    let titles = [
+        "Answer sales",
+        "Build export",
+        "Clean the data",
+        "Draft notes",
+    ];
     // A pin kept before places: its file becomes `pinned` on the first read.
     fs::write(
         d.path("state/pins.json"),
         serde_json::to_vec(&[&pin.id]).unwrap(),
     )
     .unwrap();
-    for place in ["# sales", "folder › # legal", "pinned", "# urgent"] {
-        cli(&d, &["place", &five.id, "add", place]);
-    }
-    cli(&d, &["place", &two.id, "add", "# sales"]);
-    cli(&d, &["place", &two.id, "add", "folder > # legal"]);
+    assert_eq!(cli(&d, &["place", &pin.id]), "pinned\n");
+    // Sessions an earlier cones listed in several places keep one: a tag over the folder, of
+    // several tags the last stored, and the file is written back with one each.
+    let mut tags = stored(&d);
+    tags["places"][&five.id] = json!([
+        "folder",
+        "pinned",
+        "# sales",
+        "# urgent",
+        "folder › # legal"
+    ]);
+    tags["places"][&two.id] = json!(["folder", "# sales"]);
+    fs::write(d.path("state/tags.json"), tags.to_string()).unwrap();
+    assert_eq!(cli(&d, &["place", &five.id]), "folder › # legal\n");
+    assert_eq!(places(&d, &five.id), json!(["folder › # legal"]));
+    assert_eq!(places(&d, &two.id), json!(["# sales"]));
+    // `set` moves the session out of where it was; `add` is the older spelling of it.
     assert_eq!(
-        places(&d, &five.id),
-        json!([
-            "folder",
-            "pinned",
-            "# sales",
-            "# urgent",
-            "folder › # legal"
-        ])
+        cli(&d, &["place", &five.id, "add", "# urgent"]),
+        "# urgent\n"
     );
+    assert_eq!(cli(&d, &["place", &five.id, "set", "# sales"]), "# sales\n");
+    assert_eq!(places(&d, &five.id), json!(["# sales"]));
     assert_eq!(places(&d, &pin.id), json!(["pinned"]));
     assert_eq!(places(&d, &one.id), Value::Null);
     d.start();
-    let screen = d.wait_for("every place", |s| sub(s, "# urgent").is_some());
-    d.capture("many");
+    let screen = d.wait_for("every place", |s| sub(s, "# sales").is_some());
+    d.capture("one-place");
 
-    // One row per place, each under its heading, each counting the others.
-    let fives = rows_of(&screen, "Answer sales");
-    let mut groups: Vec<String> = fives.iter().map(|&l| under(&screen, l)).collect();
-    groups.sort();
+    // One row per session, in its one place.
+    listed_once(&screen, &titles);
     assert_eq!(
-        groups,
-        ["# legal", "# sales", "# urgent", p.as_str(), "pinned"],
+        under(&screen, row(&screen, "Answer sales")),
+        "# sales",
         "{screen}"
     );
-    for &l in &fives {
-        let line = list(&screen).nth(l).unwrap();
-        assert!(line.contains("Answer sales +4"), "{line}");
-        assert!(
-            line.contains("idle"),
-            "every copy reports one state: {line}"
-        );
-    }
-    let twos = rows_of(&screen, "Build export");
-    let mut groups: Vec<String> = twos.iter().map(|&l| under(&screen, l)).collect();
-    groups.sort();
-    assert_eq!(groups, ["# legal", "# sales", o.as_str()], "{screen}");
-    assert_eq!(rows_of(&screen, "Draft notes").len(), 1, "{screen}");
-    assert!(!line_of(&screen, "Draft notes").contains('+'), "{screen}");
-    assert_eq!(rows_of(&screen, "Clean the data").len(), 1, "{screen}");
+    assert_eq!(
+        under(&screen, row(&screen, "Build export")),
+        "# sales",
+        "{screen}"
+    );
     assert_eq!(under(&screen, row(&screen, "Clean the data")), "pinned");
+    assert_eq!(under(&screen, row(&screen, "Draft notes")), p);
+    assert!(sub(&screen, "# urgent").is_none() && sub(&screen, "# legal").is_none());
     // A row under a tag above the folders names its folder; one inside a folder does not.
-    for &l in &fives {
-        let line = list(&screen).nth(l).unwrap();
-        let group = under(&screen, l);
-        let above = group == "pinned"
-            || (group.starts_with('#')
-                && !list(&screen)
-                    .nth(subs(&screen, &group)[0])
-                    .unwrap()
-                    .contains("─ "));
-        assert_eq!(line.contains("· in project"), above, "{group}: {line}");
-    }
     assert!(
-        screen.contains("1 input"),
-        "the header counts each session once:\n{screen}"
+        line_of(&screen, "Answer sales").contains("· in project"),
+        "{screen}"
     );
+    assert!(
+        !line_of(&screen, "Draft notes").contains("· in "),
+        "{screen}"
+    );
+    assert!(screen.contains("1 input"), "{screen}");
     assert!(screen.contains("3 idle"), "{screen}");
-    assert_eq!(places(&d, &pin.id), json!(["pinned"]));
 
-    // The cursor walks the copies as rows, and the others carry a faint mark.
-    select_in(&mut d, "Answer sales", "# sales");
-    let screen = d.capture("copy-selected");
-    assert_eq!(
-        list(&screen).filter(|l| l.starts_with("┆ ")).count(),
-        4,
-        "{screen}"
-    );
-    // A change keeps the cursor on the copy it was on.
+    // ctrl+t moves the session under `pinned`, and again back to its folder.
+    select(&mut d, "Draft notes");
     d.press("ctrl+t", CTRL_T);
-    let screen = d.wait_for("unpinned", |s| rows_of(s, "Answer sales").len() == 4);
-    let at = rows_of(&screen, "▌ ")[0];
-    assert!(
-        list(&screen).nth(at).unwrap().contains("Answer sales"),
-        "{screen}"
-    );
-    assert_eq!(under(&screen, at), "# sales", "{screen}");
+    let screen = d.wait_for("pinned", |s| under(s, row(s, "Draft notes")) == "pinned");
+    listed_once(&screen, &titles);
+    assert_eq!(places(&d, &one.id), json!(["pinned"]));
+    d.press("ctrl+t", CTRL_T);
+    let screen = d.wait_for("unpinned", |s| under(s, row(s, "Draft notes")) == p);
+    listed_once(&screen, &titles);
+    assert_eq!(places(&d, &one.id), Value::Null);
 
-    // A drag moves only the copy dragged: out of `# sales`, into `# urgent`.
-    let screen = d.screen();
-    let from = rows_of(&screen, "Build export")[0];
-    assert_eq!(under(&screen, from), "# sales");
-    drag(&mut d, "Build export", "# urgent");
-    let screen = d.wait_for("the moved copy", |s| {
-        rows_of(s, "Build export")
-            .iter()
-            .any(|&l| under(s, l) == "# urgent")
+    // A drag moves the session: out of `# sales`, under `pinned`.
+    drag(&mut d, "Build export", "pinned");
+    let screen = d.wait_for("the moved row", |s| {
+        under(s, row(s, "Build export")) == "pinned"
     });
     d.capture("moved");
-    let mut groups: Vec<String> = rows_of(&screen, "Build export")
-        .iter()
-        .map(|&l| under(&screen, l))
-        .collect();
-    groups.sort();
-    assert_eq!(groups, ["# legal", "# urgent", o.as_str()], "{screen}");
-    assert_eq!(
-        places(&d, &two.id),
-        json!(["folder", "# urgent", "folder › # legal"])
-    );
+    listed_once(&screen, &titles);
+    assert_eq!(places(&d, &two.id), json!(["pinned"]));
 
-    // Another folder's heading, or a tag inside another folder, refuses a drop.
+    // Another folder's heading refuses a drop.
     drag(&mut d, "Clean the data", &o);
-    d.wait_text("A session keeps its folder.");
-    let legal = subs(&d.screen(), "# legal");
-    assert!(
-        under(&d.screen(), legal[0]).ends_with("other"),
-        "{}",
-        d.screen()
-    );
-    drag(&mut d, "Clean the data", "# legal");
     let screen = d.wait_text("A session keeps its folder.");
     d.capture("refused");
     assert_eq!(places(&d, &pin.id), json!(["pinned"]), "{screen}");
 
-    // A name typed on `+ new tag…` and one Enter add the tag and keep the checklist. With the
-    // folder still checked, the tag sits inside the folder and the session is listed once.
-    select(&mut d, "Draft notes");
+    // The checklist keeps one tag checked: checking `pinned` unchecks `# sales`, the folder
+    // does not go with `pinned`, and the folder with a tag nests it.
+    select(&mut d, "Answer sales");
     let screen = checklist(&mut d);
     d.capture("checklist");
-    assert!(chosen(&screen).ends_with(&format!("[x] {p}")), "{screen}");
-    assert!(screen.contains("[ ] # legal"), "{screen}");
-    assert!(!screen.contains("› # legal"), "one line per tag:\n{screen}");
-    assert!(screen.contains("[ ] # urgent"), "{screen}");
-    d.press("up", UP);
+    assert!(screen.contains(&format!("[ ] {p}")), "{screen}");
+    assert!(screen.contains("[x] # sales"), "{screen}");
+    go(&mut d, "pinned");
+    d.press("space", b" ");
+    let screen = d.wait_text("[x] pinned");
+    assert!(screen.contains("[ ] # sales"), "{screen}");
+    go(&mut d, &p);
+    d.press("space", b" ");
+    let screen = d.wait_text(&format!("[x] {p}"));
+    assert!(screen.contains("[ ] pinned"), "{screen}");
+    // A new tag typed on its row and one Enter keep the checklist with that tag in place of
+    // any other, nested in the checked folder.
+    go(&mut d, "+ new tag");
     d.typed("follow up");
     d.press("enter", b"\r");
     let screen = d.wait_for("the moved row", |s| {
-        subs(s, "# follow up").len() == 1 && rows_of(s, "Draft notes").len() == 1
+        sub(s, "# follow up").is_some() && sub(s, "# sales").is_none()
     });
+    listed_once(&screen, &titles);
     assert_eq!(
-        under(&screen, row(&screen, "Draft notes")),
+        under(&screen, row(&screen, "Answer sales")),
         "# follow up",
         "{screen}"
     );
-    assert_eq!(places(&d, &one.id), json!(["folder › # follow up"]));
+    assert_eq!(places(&d, &five.id), json!(["folder › # follow up"]));
 
-    // Unchecking every place restores the folder.
-    select_in(&mut d, "Answer sales", "# sales");
+    // Unchecking everything restores the folder.
     checklist(&mut d);
     for _ in 0..20 {
         let line = chosen(&d.screen());
@@ -364,31 +370,25 @@ fn a_session_sits_in_one_two_or_five_places_and_its_copies_act_as_one() {
     let screen = d.screen();
     assert!(!screen.contains("[x]"), "{screen}");
     d.press("enter", b"\r");
-    let screen = d.wait_for("one row again", |s| rows_of(s, "Answer sales").len() == 1);
+    let screen = d.wait_for("its folder again", |s| sub(s, "# follow up").is_none());
     d.capture("folder-again");
+    listed_once(&screen, &titles);
     assert_eq!(under(&screen, row(&screen, "Answer sales")), p);
-    assert!(!line_of(&screen, "Answer sales").contains('+'), "{screen}");
     assert_eq!(places(&d, &five.id), Value::Null);
-    assert!(
-        sub(&screen, "# sales").is_none(),
-        "an empty tag leaves:\n{screen}"
-    );
 
-    // Stopping one copy stops the session: every copy leaves.
+    // Stopping the session takes its one row away.
     select(&mut d, "Build export");
     d.press("ctrl+x", CTRL_X);
     d.wait_text("ctrl+x again");
     d.press("ctrl+x", CTRL_X);
-    let screen = d.wait_for("every copy gone", |s| !s.contains("Build export"));
+    d.wait_for("the row gone", |s| !s.contains("Build export"));
     d.capture("stopped");
-    assert!(sub(&screen, "# urgent").is_none(), "{screen}");
     d.keep("state/tags.json");
     d.quit();
 }
 
 /// Delete on a tag's checklist line marks it, a second press unmarks it, and Enter takes the
-/// tag off every session: one nested in its folder stays there, one with another place keeps
-/// that place, and the selected one left with nothing returns to its folder.
+/// tag off every session, each returning to its folder; a session in another place keeps it.
 #[test]
 fn delete_in_the_checklist_removes_a_tag_from_every_session() {
     let mut d = Dashboard::new("places-remove-tag", &["claude"]);
@@ -399,12 +399,9 @@ fn delete_in_the_checklist_removes_a_tag_from_every_session() {
     let nested = seed(&d, &project, 1, "Answer sales", "idle", None);
     let pinned = seed(&d, &project, 2, "Build export", "idle", None);
     let only = seed(&d, &project, 3, "Draft notes", "idle", None);
-    cli(&d, &["place", &nested.id, "add", "folder › # legal"]);
-    cli(&d, &["place", &pinned.id, "add", "# legal"]);
-    cli(&d, &["place", &pinned.id, "add", "pinned"]);
-    cli(&d, &["place", &pinned.id, "remove", "folder"]);
-    cli(&d, &["place", &only.id, "add", "# legal"]);
-    cli(&d, &["place", &only.id, "remove", "folder"]);
+    cli(&d, &["place", &nested.id, "set", "folder › # legal"]);
+    cli(&d, &["place", &pinned.id, "set", "pinned"]);
+    cli(&d, &["place", &only.id, "set", "# legal"]);
     d.start();
     d.wait_for("the legal tags", |s| subs(s, "# legal").len() == 2);
     select_in(&mut d, "Draft notes", "# legal");
@@ -624,25 +621,26 @@ fn tags_migrate_places_follow_a_continued_conversation_and_a_launch_sits_in_its_
             "order": {&p: [&cleared.id, &pinned.id]},
         })
     );
-    // A conversation continued under a new id lists the places of the one it came from.
+    // A conversation continued under a new id lists the place of the one it came from.
     assert_eq!(cli(&d, &["place", &resumed.id]), "# analysis\n");
-    let out = d.cli(&["place", &study.id, "add", "nowhere"], &[]);
+    let out = d.cli(&["place", &study.id, "set", "nowhere"], &[]);
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(
-        cli(&d, &["place", &study.id, "add", "# review"]),
-        "# review\nfolder › # study\n"
-    );
-    assert_eq!(
-        cli(&d, &["place", &study.id, "remove", "folder › # study"]),
+        cli(&d, &["place", &study.id, "set", "# review"]),
         "# review\n"
     );
+    // `remove PLACE` names where the session is, or changes nothing.
+    let out = d.cli(&["place", &study.id, "remove", "folder › # study"], &[]);
+    assert!(!out.status.success(), "{out:?}");
+    assert_eq!(places(&d, &study.id), json!(["# review"]));
     assert_eq!(
         cli(&d, &["place", &study.id, "remove", "# review"]),
         "folder\n"
     );
     assert_eq!(places(&d, &study.id), Value::Null);
-    cli(&d, &["place", &study.id, "add", "folder › # study"]);
-    cli(&d, &["place", &study.id, "remove", "folder"]);
+    cli(&d, &["place", &study.id, "set", "# review"]);
+    assert_eq!(cli(&d, &["place", &study.id, "remove"]), "folder\n");
+    cli(&d, &["place", &study.id, "set", "folder › # study"]);
     let all = cli(&d, &["place"]);
     for line in [
         format!("{gone}\t# analysis\n"),
@@ -678,7 +676,7 @@ fn tags_migrate_places_follow_a_continued_conversation_and_a_launch_sits_in_its_
     assert_eq!(
         under(&screen, row(&screen, "Continue the analysis")),
         "# analysis",
-        "the continued conversation keeps its places:\n{screen}"
+        "the continued conversation keeps its place:\n{screen}"
     );
     assert_eq!(under(&screen, row(&screen, "Plan the study")), "# study");
     assert!(

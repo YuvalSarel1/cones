@@ -955,7 +955,7 @@ impl Data {
             .filter(|s| !jobs_view && !deleting.contains(s.session_id.as_str()))
             .chain(&runs)
         {
-            let set = places.of(&s.session_id, parent);
+            let place = places.of(&s.session_id, parent);
             // State grouping lists each session once, a pinned one under `pinned`. An empty
             // sort key puts pins above every state rank and folder path.
             if by_state {
@@ -966,7 +966,7 @@ impl Data {
                     fleet::State::Idle => 4,
                     _ => 5,
                 };
-                if set.contains(&pin) {
+                if place == pin {
                     lifted.insert(s.session_id.as_str());
                     placed.push((s, pinned_key(), true));
                 } else {
@@ -978,48 +978,41 @@ impl Data {
                 let (sort, name) = self.home_folder(s);
                 (sort, name, tree_heading(s).unwrap_or_default())
             };
-            if set.len() != 1 || !set.contains(&Place::Folder) {
+            if place != Place::Folder {
                 chosen.insert(s.session_id.as_str());
             }
-            if !set
-                .iter()
-                .any(|p| matches!(p, Place::Folder | Place::FolderTag(_)))
-            {
+            if matches!(place, Place::Tag(_)) {
                 lifted.insert(s.session_id.as_str());
             }
-            // One row per place: a tag above the folders heads its own group, a tag inside the
-            // folder is a heading there, and `pinned` heads the list.
-            for place in &set {
-                placed.push(match place {
-                    Place::Folder => (s, folder_key.clone(), true),
-                    Place::Tag(t) if t == crate::places::PINNED => (s, pinned_key(), true),
-                    Place::Tag(t) => (
-                        s,
-                        (
-                            format!("\u{1}{}", t.to_lowercase()),
-                            format!("# {t}"),
-                            String::new(),
-                        ),
-                        true,
+            // One row, in its one place: a tag above the folders heads its own group, a tag
+            // inside the folder is a heading there, and `pinned` heads the list.
+            placed.push(match place {
+                Place::Folder => (s, folder_key, true),
+                Place::Tag(t) if t == crate::places::PINNED => (s, pinned_key(), true),
+                Place::Tag(t) => (
+                    s,
+                    (
+                        format!("\u{1}{}", t.to_lowercase()),
+                        format!("# {t}"),
+                        String::new(),
                     ),
-                    Place::FolderTag(t) => {
-                        let (sort, name) = self.home_folder(s);
-                        (s, (sort, name, format!("# {t}")), true)
-                    }
-                });
-            }
+                    true,
+                ),
+                Place::FolderTag(t) => {
+                    let (sort, name) = self.home_folder(s);
+                    (s, (sort, name, format!("# {t}")), true)
+                }
+            });
         }
         // A launch sits in its launcher's groups wherever it works, following the chain up to
         // the first launcher that was not itself launched. A session placed by hand keeps its
         // own places.
         let mut moved: HashSet<&str> = HashSet::new();
         if !by_state {
-            let mut keys: HashMap<&str, Vec<(GroupKey, bool)>> = HashMap::new();
-            for (s, key, open) in &placed {
-                keys.entry(s.session_id.as_str())
-                    .or_default()
-                    .push((key.clone(), *open));
-            }
+            let keys: HashMap<&str, (GroupKey, bool)> = placed
+                .iter()
+                .map(|(s, key, open)| (s.session_id.as_str(), (key.clone(), *open)))
+                .collect();
             let launchers: HashMap<&str, &str> = placed
                 .iter()
                 .filter_map(|(s, _, _)| Some((s.session_id.as_str(), s.launched_by.as_deref()?)))
@@ -1038,21 +1031,16 @@ impl Data {
                     }
                 }
                 match keys.get(at).filter(|_| at != s.session_id) {
-                    Some(parent_keys) => {
-                        if !parent_keys.iter().any(|(k, _)| *k == key) {
+                    Some((k, o)) => {
+                        if *k != key {
                             moved.insert(s.session_id.as_str());
                         }
-                        out.extend(parent_keys.iter().map(|(k, o)| (s, k.clone(), *o)));
+                        out.push((s, k.clone(), *o));
                     }
                     None => out.push((s, key, open)),
                 }
             }
             placed = out;
-        }
-        // How many rows each session has, so each copy can say how many others there are.
-        let mut copies: HashMap<&str, usize> = HashMap::new();
-        for (s, _, _) in &placed {
-            *copies.entry(s.session_id.as_str()).or_default() += 1;
         }
         let mut groups: BTreeMap<(String, String, String), Vec<Entry>> = BTreeMap::new();
         for j in self.jobs.iter().filter(|_| jobs_view) {
@@ -1245,13 +1233,6 @@ impl Data {
                                 .map_or_else(|| fleet::tilde(dir), |n| n.to_string_lossy().into());
                             text.push_str(&format!("{ELSEWHERE}{name}"));
                         }
-                    }
-                    // A session listed in other places too says how many.
-                    let others = copies.get(s.session_id.as_str()).map_or(0, |n| n - 1);
-                    if others > 0
-                        && let Some((text, _)) = row.get_mut(title)
-                    {
-                        text.push_str(&format!(" +{others}"));
                     }
                     // Under a tag above the folders, the folder it runs in is named dim, by its
                     // last part as a launch's is, so the title column stays narrow.
@@ -12320,7 +12301,7 @@ impl App {
         for (placeholder, id) in &replaced {
             if let Some(place) = self.launch_places.remove(placeholder) {
                 let mut store = Places::load(&self.state);
-                store.set(id, crate::places::Set::from([place]), |_| None);
+                store.set(id, place, |_| None);
                 if let Err(e) = store.save(&self.state) {
                     self.status = warning(format!("places kept for this dashboard only: {e:#}"));
                 }
@@ -12757,8 +12738,6 @@ impl App {
         let keep = self
             .selected()
             .and_then(|r| r.kind.key().map(str::to_owned));
-        // A session listed in several places keeps the copy the cursor was on.
-        let keep_group = self.selected_spot().map(|s| s.group);
         let deleting = self
             .stopping
             .iter()
@@ -12816,7 +12795,7 @@ impl App {
         self.unfold();
         self.apply_filter();
         if let Some(k) = &keep
-            && let Some(i) = self.copy_position(k, keep_group.as_deref())
+            && let Some(i) = self.session_position(k)
         {
             self.cursor = i;
         } else if keep.is_none() {
@@ -13017,8 +12996,7 @@ impl App {
                 let mut s = find(id)?;
                 // A launch listed under its launcher starts work in the folder it is listed in,
                 // following the chain `rows_excluding` follows.
-                if !self.by_state && self.places_of(id) == crate::places::Set::from([Place::Folder])
-                {
+                if !self.by_state && self.places_of(id) == Place::Folder {
                     for _ in 0..8 {
                         match s.launched_by.as_deref().and_then(find) {
                             Some(parent) if parent.session_id != *id => s = parent,
@@ -13302,8 +13280,8 @@ impl App {
         self.invalidate();
     }
 
-    /// The session's places, its own or those of the conversation it continues.
-    fn places_of(&self, id: &str) -> crate::places::Set {
+    /// The session's place, its own or that of the conversation it continues.
+    fn places_of(&self, id: &str) -> Place {
         let parent = |id: &str| self.parent_of(id);
         self.places.of(id, parent)
     }
@@ -13317,24 +13295,11 @@ impl App {
             .and_then(|s| s.forked_from.as_deref())
     }
 
-    /// Change a session's places through the state file: `set` gives it a whole set, else
-    /// `from` is removed and `to` added. The file is read first, so `cones place` writes made
-    /// meanwhile stay.
-    fn change_places(
-        &mut self,
-        id: &str,
-        set: Option<crate::places::Set>,
-        from: Option<&Place>,
-        to: Option<&Place>,
-    ) {
+    /// Move a session to `place` through the state file. The file is read first, so
+    /// `cones place` writes made meanwhile stay.
+    fn change_places(&mut self, id: &str, place: Place) {
         let mut store = Places::load(&self.state);
-        {
-            let parent = |id: &str| self.parent_of(id);
-            match set {
-                Some(set) => store.set(id, set, parent),
-                None => store.change(id, from, to, parent),
-            }
-        }
+        store.set(id, place, |id: &str| self.parent_of(id));
         if let Err(e) = store.save(&self.state) {
             self.status = warning(format!("places kept for this dashboard only: {e:#}"));
         }
@@ -13347,9 +13312,7 @@ impl App {
     /// names it.
     fn add_launch_places(&mut self) {
         for (id, place) in &self.launch_places {
-            self.places
-                .places
-                .insert(id.clone(), crate::places::Set::from([place.clone()]));
+            self.places.places.0.insert(id.clone(), place.clone());
         }
     }
 
@@ -13360,13 +13323,14 @@ impl App {
             return;
         };
         let pin = Place::Tag(crate::places::PINNED.into());
-        let group = self.selected_spot().map(|s| s.group);
-        if self.places_of(&id).contains(&pin) {
-            self.change_places(&id, None, Some(&pin), None);
+        // Unpinning returns the session to its folder.
+        let to = if self.places_of(&id) == pin {
+            Place::Folder
         } else {
-            self.change_places(&id, None, None, Some(&pin));
-        }
-        self.select_copy(&id, group.as_deref());
+            pin
+        };
+        self.change_places(&id, to);
+        self.select_session(&id);
     }
 
     /// The group the row at `i` of `rows` sits in, read off the headings above it.
@@ -13421,23 +13385,14 @@ impl App {
         self.place_at(*self.visible.get(self.cursor)?)
     }
 
-    /// The visible row of the session `id` in `group`, else its first row.
-    fn copy_position(&self, id: &str, group: Option<&str>) -> Option<usize> {
-        let rows: Vec<usize> = (0..self.visible.len())
-            .filter(|&n| self.rows[self.visible[n]].kind.key() == Some(id))
-            .collect();
-        rows.iter()
-            .copied()
-            .find(|&n| {
-                group.is_some()
-                    && self.place_at(self.visible[n]).map(|s| s.group).as_deref() == group
-            })
-            .or_else(|| rows.first().copied())
+    /// The visible row of the session `id`, its only one.
+    fn session_position(&self, id: &str) -> Option<usize> {
+        (0..self.visible.len()).find(|&n| self.rows[self.visible[n]].kind.key() == Some(id))
     }
 
-    /// Select the session's row in `group`, else its first row.
-    fn select_copy(&mut self, id: &str, group: Option<&str>) {
-        if let Some(n) = self.copy_position(id, group) {
+    /// Select the session's row.
+    fn select_session(&mut self, id: &str) {
+        if let Some(n) = self.session_position(id) {
             self.cursor = n;
             self.settle();
         }
@@ -13515,8 +13470,8 @@ impl App {
     }
 
     /// ctrl+l: the checklist of places for the selected session: its folder, every tag any
-    /// session carries, `pinned`, and a new tag typed in place. A session is in its folder, in
-    /// tags, or in both, which nests the tags inside its folder.
+    /// session carries, `pinned`, and a new tag typed in place. A session is in one place: its
+    /// folder, a tag, the folder and a tag, which nests the tag inside its folder, or `pinned`.
     fn place_selected(&mut self) {
         let (Some(s), Some(_)) = (self.selected_session(), self.selected_spot()) else {
             self.status = "ctrl+l places the selected session".into();
@@ -13528,8 +13483,7 @@ impl App {
             .data
             .sessions
             .iter()
-            .flat_map(|s| self.places_of(&s.session_id))
-            .filter_map(|p| p.tag().map(str::to_owned))
+            .filter_map(|s| self.places_of(&s.session_id).tag().map(str::to_owned))
             .filter(|t| t != crate::places::PINNED)
             .collect();
         names.sort_by_key(|t| t.to_lowercase());
@@ -13553,18 +13507,13 @@ impl App {
         let checked = rows
             .iter()
             .map(|r| match Place::parse(&r.text) {
-                Ok(Place::Folder) => current
-                    .iter()
-                    .any(|p| matches!(p, Place::Folder | Place::FolderTag(_))),
-                Ok(Place::Tag(t)) => {
-                    current.contains(&Place::FolderTag(t.clone()))
-                        || current.contains(&Place::Tag(t))
-                }
+                Ok(Place::Folder) => matches!(current, Place::Folder | Place::FolderTag(_)),
+                Ok(Place::Tag(t)) => current.tag() == Some(t.as_str()),
                 _ => false,
             })
             .collect();
         self.mode = Mode::Pick(Pick {
-            title: "places · space checks · folder and a tag nests it · enter keeps · esc discards",
+            title: "place · space checks one · folder and a tag nests it · enter keeps · esc discards",
             rows,
             at: 0,
             fork: None,
@@ -13616,14 +13565,15 @@ impl App {
                 at
             }
         };
-        pick.checked[at] = true;
+        pick.checked[at] = false;
+        Self::check_one(pick, at);
         pick.input = Input::default();
         Ok(())
     }
 
-    /// The checklist kept: its folder alone, its tags alone above the folders, or both, which
-    /// puts the tags inside its folder; `pinned` besides. Nothing checked is its folder.
-    fn places_chosen(&mut self, id: &str, rows: &[PickRow], checked: &[bool], group: Option<&str>) {
+    /// The checklist kept: its folder alone, a tag alone above the folders, or both, which
+    /// puts the tag inside its folder; or `pinned`. Nothing checked is its folder.
+    fn places_chosen(&mut self, id: &str, rows: &[PickRow], checked: &[bool]) {
         let on: Vec<Place> = rows
             .iter()
             .zip(checked)
@@ -13631,24 +13581,45 @@ impl App {
             .filter_map(|(r, _)| Place::parse(&r.text).ok())
             .collect();
         let folder = on.contains(&Place::Folder);
-        let set: crate::places::Set = on
-            .into_iter()
-            .map(|p| match p {
-                Place::Tag(t) if folder && t != crate::places::PINNED => Place::FolderTag(t),
-                p => p,
-            })
-            .collect();
-        // A tag inside the folder already lists the session there.
-        let set: crate::places::Set = if set.iter().any(|p| matches!(p, Place::FolderTag(_))) {
-            set.into_iter().filter(|p| *p != Place::Folder).collect()
-        } else {
-            set
+        // `check_one` leaves at most one tag checked.
+        let place = match on.into_iter().find(|p| *p != Place::Folder) {
+            Some(Place::Tag(t)) if folder && t != crate::places::PINNED => Place::FolderTag(t),
+            Some(p) => p,
+            None => Place::Folder,
         };
-        let n = set.len().max(1);
-        self.change_places(id, Some(set), None, None);
-        self.select_copy(id, group);
+        let shown = place.to_string();
+        self.change_places(id, place);
+        self.select_session(id);
         if !self.status.starts_with("places kept") {
-            self.status = format!("in {n} place{}", if n == 1 { "" } else { "s" });
+            self.status = format!("in {shown}");
+        }
+    }
+
+    /// Space on checklist row `at`: a session has one place, so checking a tag or `pinned`
+    /// unchecks the others, and the folder, which nests a tag, does not go with `pinned`.
+    fn check_one(pick: &mut Pick, at: usize) {
+        let Some(on) = pick.checked.get(at).map(|on| !on) else {
+            return;
+        };
+        pick.checked[at] = on;
+        let kind = |r: &PickRow| Place::parse(&r.text).ok();
+        let pinned =
+            |p: &Option<Place>| matches!(p, Some(Place::Tag(t)) if t == crate::places::PINNED);
+        let this = kind(&pick.rows[at]);
+        if !on || this.is_none() {
+            return;
+        }
+        for (i, r) in pick.rows.iter().enumerate() {
+            let other = kind(r);
+            let clash = match (&this, &other) {
+                (_, None) => false,
+                (Some(Place::Folder), o) => pinned(o),
+                (t, Some(Place::Folder)) => pinned(t),
+                _ => true,
+            };
+            if i != at && clash {
+                pick.checked[i] = false;
+            }
         }
     }
 
@@ -13711,8 +13682,7 @@ impl App {
         }
     }
 
-    /// The copy of a session at row `from` dropped on row `i` moves there: the place it was
-    /// dragged from is removed and the one dropped on added. Inside its own group it is
+    /// A session at row `from` dropped on row `i` moves to the place dropped on. Inside its own group it is
     /// reordered. Another folder, or a tag inside another folder, refuses it, since a session
     /// runs where it runs; a row of another group counts as its heading.
     fn drop_row(&mut self, id: &str, from: usize, i: usize) {
@@ -13743,8 +13713,8 @@ impl App {
             ));
             return;
         }
-        self.change_places(id, None, Some(&from.place), Some(&to.place));
-        self.select_copy(id, Some(&to.group));
+        self.change_places(id, to.place.clone());
+        self.select_session(id);
         self.status = match &to.place {
             Place::Folder => "back in its folder".into(),
             p => format!(
@@ -13771,7 +13741,7 @@ impl App {
         let moved = m.siblings.remove(from);
         m.siblings.insert(to, moved);
         self.keep_order(&m.group, m.order());
-        self.select_copy(id, Some(&m.group));
+        self.select_session(id);
     }
 
     /// Store a group's hand order. The first time a group is ordered by hand, the footer says
@@ -13822,9 +13792,9 @@ impl App {
         let moved = m.siblings.remove(at);
         m.siblings.insert(to, moved);
         self.places.order.insert(m.group.clone(), m.order());
-        let (id, group) = (m.id.clone(), m.group.clone());
+        let id = m.id.clone();
         self.rebuild();
-        self.select_copy(&id, Some(&group));
+        self.select_session(&id);
     }
 
     fn rename_selected(&mut self) {
@@ -17638,9 +17608,8 @@ impl App {
                     keys.push(("ctrl+y", "fork"));
                 }
                 if let Some(s) = self.selected_session() {
-                    let pin = if self
-                        .places_of(&s.session_id)
-                        .contains(&Place::Tag(crate::places::PINNED.into()))
+                    let pin = if self.places_of(&s.session_id)
+                        == Place::Tag(crate::places::PINNED.into())
                     {
                         "unpin"
                     } else {
@@ -18067,10 +18036,9 @@ impl App {
                             .zip(&pick.checked)
                             .map(|(r, on)| *on && !dropped.contains(&r.text))
                             .collect();
-                        let group = self.selected_spot().map(|s| s.group);
                         self.close_pick();
                         self.tags_removed(&dropped);
-                        self.places_chosen(&id, &rows, &checked, group.as_deref());
+                        self.places_chosen(&id, &rows, &checked);
                         if !dropped.is_empty() && !self.status.starts_with("places kept") {
                             self.status = format!(
                                 "removed {}",
@@ -18095,11 +18063,7 @@ impl App {
                             pick.dropped.insert(r.text.clone());
                         }
                     }
-                    _ if code == KeyCode::Char(' ') => {
-                        if let Some(on) = pick.checked.get_mut(pick.at) {
-                            *on = !*on;
-                        }
-                    }
+                    _ if code == KeyCode::Char(' ') => Self::check_one(pick, pick.at),
                     _ => {}
                 }
                 return Ok(false);
@@ -19434,12 +19398,6 @@ impl App {
         height: usize,
         width: u16,
     ) -> Vec<Line<'static>> {
-        let chosen = cursor
-            .and_then(|c| visible.get(c))
-            .and_then(|&i| match &rows[i].kind {
-                Kind::Session(id, _) => Some(id.as_str()),
-                _ => None,
-            });
         visible
             .iter()
             .enumerate()
@@ -19462,23 +19420,10 @@ impl App {
                         .is_some_and(|k| self.places.marked(k, |id| self.parent_of(id)).is_some());
                 let mut spans = Vec::with_capacity(row.cells.len() + 1);
                 let mut mark = 0;
-                // The selected session's rows in its other places carry a faint mark.
-                let copy = !selected
-                    && matches!(row.kind, Kind::Session(..))
-                    && row.kind.key().is_some()
-                    && row.kind.key() == chosen;
                 if row.kind.selectable() {
                     spans.push(Span::styled(
-                        match () {
-                            () if selected => "▌ ",
-                            () if copy => "┆ ",
-                            () => "  ",
-                        },
-                        Style::default().fg(match () {
-                            () if armed => Color::Red,
-                            () if copy => Color::DarkGray,
-                            () => ORANGE,
-                        }),
+                        if selected { "▌ " } else { "  " },
+                        Style::default().fg(if armed { Color::Red } else { ORANGE }),
                     ));
                     mark = 2;
                 } else if row.kind == Kind::Header {
@@ -24901,8 +24846,7 @@ states:
             .unwrap();
         app.cursor = at;
         app.key(KeyCode::Char('t'), KeyModifiers::CONTROL).unwrap();
-        // Pinning adds a place; taking the folder out leaves the session only under `pinned`.
-        app.change_places(A, None, Some(&Place::Folder), None);
+        // Pinning moves the session out of its folder, leaving it only under `pinned`.
         poll_until(&mut app, |a| a.loading.is_none());
         let name = fleet::tilde(&work);
         let row = app

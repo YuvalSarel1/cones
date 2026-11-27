@@ -38,7 +38,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones send ID TEXT` | [Send one note](#sending-a-note) to a live session in any folder. |
 | `cones adopt ID [--parent ID\|self\|--remove]` | List a running session beneath another, `self` by default, [as `--parent` would have](#starting-a-session), or take it out with `--remove`. |
 | `cones rename ID NAME` | [Name a session](#renaming-a-session) through its harness's own rename, as the dashboard's `ctrl+n` does. |
-| `cones place [ID [add\|remove PLACE]]` | [List a session in a place](#placing-a-session) in the dashboard, or take it out of one. |
+| `cones place [ID [set PLACE\|remove]]` | [Move a session to a place](#placing-a-session) in the dashboard, or back to its folder. |
 | `cones btw ID QUESTION [--model ID] [--timeout S]` | [Ask a side question](#asking-a-side-question) in a read-only fork the harness keeps nothing of, and print the answer. |
 | `cones compact ID` | [Compact a session's context](#compacting-a-session) through its harness's own compaction. |
 | `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
@@ -409,19 +409,20 @@ or unknown id fail without changing anything.
 ### Placing a session
 
 ```sh
-cones place 5bf8392e add "# sales-questions"
-cones place 5bf8392e add "folder › # legal"
-cones place 5bf8392e remove folder
+cones place 5bf8392e set "# sales-questions"
+cones place 5bf8392e set "folder › # legal"
+cones place 5bf8392e remove
 cones place 5bf8392e
 cones place
 ```
 
-Lists the session in, or takes it out of, one of its [places](dashboard.md#places) in the
-dashboard's list, as `ctrl+l` does, and prints the places it then sits in, one per line. A place
-is spelled `folder`, `# NAME`, `folder › # NAME` (`folder > # NAME` also works) or `pinned`; the
-name must be one line. Both are idempotent, and removing the last place returns the session to
-its folder. An id alone prints its places. With no id it prints every placed session, one
-`ID<TAB>PLACE` line per place. A running dashboard shows the change on its next refresh. Order
+A session sits in exactly one [place](dashboard.md#places) in the dashboard's list. `set` moves
+it there, out of wherever it was, as `ctrl+l` does, and prints the place it then sits in; `add`
+is an older spelling of `set`. A place is spelled `folder`, `# NAME`, `folder › # NAME`
+(`folder > # NAME` also works) or `pinned`; the name must be one line. `remove` returns the
+session to its folder; `remove PLACE` does so only when PLACE is where it sits, and fails
+otherwise. Both are idempotent. An id alone prints its place. With no id it prints every placed
+session, one `ID<TAB>PLACE` line each. A running dashboard shows the change on its next refresh. Order
 within a group is set in the dashboard only.
 
 ### Asking a side question
