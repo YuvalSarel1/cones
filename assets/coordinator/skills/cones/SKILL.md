@@ -55,16 +55,20 @@ turn.
 
 `cones --help` lists every command, and `cones help COMMAND` gives its flags, such as
 `cones help launch` or `cones help comms`. Add `--json` where offered when you are going to parse
-the output; `cones ls --json` prints one object per line, with a live session's fields under
-`.session`, and a job's session also carries its run under `.run`. IDs come from `cones ls` or `cones launch`; pass the
-full id, since every command refuses a prefix. `cones launch --name NAME` names
+the output; `cones ls --json` prints one object per line: the row's id is `.id`, a live
+session's fields are under `.session`, and a job's session also carries its run under `.run`.
+IDs come from `cones ls` or `cones launch`; pass the full id, since every command refuses a
+prefix. Before scripting over many rows, read one JSON row or the command's help: a guessed
+field is `null` for every row. `cones launch --name NAME` names
 a session at start and `cones rename ID NAME` names one later, through the harness's own
 rename, so a worker's row says what it is doing. When the owner names a session, match the
 name against `.session.title` in `cones ls --json`, then `cones search NAME` for finished
 ones; names repeat, so when several match, prefer the live one in the current folder or ask
-which. `cones stop ID` ends a session's
-work and keeps its conversation; `cones rm ID` does what the dashboard's `ctrl+x` twice does
-to a row. `cones btw ID QUESTION` asks a session a side question and prints the answer, from a
+which. `cones stop ID...` ends sessions' work and keeps their conversations, and leaves their
+rows listed. `cones rm ID...` is the dashboard's `ctrl+x` twice: it stops and removes the rows,
+and the conversations stay resumable. When the owner says close, clean up or remove finished
+agents, that is `rm`, in one call, not a loop: it takes many ids at once, or `-` to read
+`cones ls` rows from stdin, as in `cones ls --dir PATH --status done | cones rm -`. `cones btw ID QUESTION` asks a session a side question and prints the answer, from a
 read-only fork that adds nothing to the session's context; `cones compact ID` compacts a
 session's context through its harness's own `/compact`.
 
@@ -159,7 +163,8 @@ author's checks, then run the project's required checks on the combined tree; a 
 not evidence the combination passes. On a tree several workers touch, never stash and never
 stage by path: commit from a diff trimmed to your own hunks.
 
-**Stopping.** When the task is done, `cones stop` the workers you launched. Stop keeps the
+**Stopping.** When the task is done, `cones stop` the workers you launched, all ids in one
+call, or `cones rm` them when the owner wants their rows gone. Stop keeps the
 conversation, so the work stays readable and resumable. A worker still waiting on a native
 prompt is not finished, and every other session in the folder is not yours to stop. A report is
 not the end of a worker that a later message of yours started again: `cones stop` refuses a

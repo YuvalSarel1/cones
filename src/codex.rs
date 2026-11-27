@@ -1213,6 +1213,9 @@ pub fn remember(state: &Path, t: Thread) -> std::io::Result<()> {
 }
 
 pub fn forget(state: &Path, id: &str) -> std::io::Result<()> {
+    // ponytail: in-process lock for a bulk `cones rm`; two cones processes can still race.
+    static FORGET: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = FORGET.lock().unwrap_or_else(|e| e.into_inner());
     let mut all = threads(state);
     all.retain(|x| x.id != id);
     fs::write(threads_path(state), serde_json::to_string_pretty(&all)?)

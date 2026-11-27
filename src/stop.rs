@@ -36,7 +36,8 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
         return Ok(match (stopped.turn, stopped.terminals) {
             (false, false) => format!(
                 "codex thread {id} in {} is running no turn and no background terminal; \
-                 nothing was stopped and its conversation is kept\n",
+                 nothing was stopped and its conversation is kept; `cones rm {id}` removes \
+                 its row\n",
                 home.display()
             ),
             (turn, terminals) => format!(
@@ -150,7 +151,8 @@ pub fn session(state: &Path, claude: &Path, id: &str) -> Result<String> {
             .unwrap_or_else(|| format!("exited {}", out.status))
     );
     Ok(format!(
-        "stopped {} session {id} in {}; its conversation is kept\n",
+        "stopped {} session {id} in {}; its conversation is kept, and `cones rm {id}` removes \
+         its row\n",
         spec.name,
         home.display()
     ))

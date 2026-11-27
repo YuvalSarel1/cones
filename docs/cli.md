@@ -41,8 +41,8 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 | `cones place [ID [set PLACE\|remove]]` | [Move a session to a place](#placing-a-session) in the dashboard, or back to its folder. |
 | `cones btw ID QUESTION [--model ID] [--timeout S]` | [Ask a side question](#asking-a-side-question) in a read-only fork the harness keeps nothing of, and print the answer. |
 | `cones compact ID` | [Compact a session's context](#compacting-a-session) through its harness's own compaction. |
-| `cones stop ID` | [Stop a session](#stopping-a-session) and keep its conversation. |
-| `cones rm TARGET` | Do to a run, session, job or folder what the dashboard's [`ctrl+x` twice](#removing-a-row) does. |
+| `cones stop ID...\|-` | [Stop sessions](#stopping-a-session) and keep their conversations. |
+| `cones rm TARGET...\|-` | Do to runs, sessions, jobs or folders what the dashboard's [`ctrl+x` twice](#removing-a-row) does. |
 | `cones comms [--dir PATH] send\|mail\|wait ...` | [Write to the agents in a folder, read their replies and wait for one](#comms). |
 | `cones config [--check]` | Print the `jobs.yaml` path, editing notes and the full [configuration reference](jobs.md), for you or an agent to edit the file directly. `--check` validates the file. |
 | `cones config set KEY VALUE`, `cones config unset KEY` | Set one [setting](jobs.md) by dotted path, such as `columns`, `highlight` or `defaults.model`, or remove it to restore the built-in. VALUE is YAML, so a list is `'[state, bypass, model]'`. Only that top-level block is rewritten; a value the file would refuse leaves it unchanged. Jobs are not settable here. |
@@ -54,7 +54,7 @@ Install and authenticate each CLI separately. cones searches `~/.local/bin`, `~/
 
 `--dir` keeps the rows whose folder is that path or sits under it. This includes worktrees stored inside the directory; linked worktrees elsewhere are not included merely because they share a repository. Both sides are resolved first, so a folder reached through a symlink still matches. A row that reports no folder is not in any folder, so a scoped read leaves it out.
 
-`--json` writes one object per line. `kind` is `session` or `run` and says which of the two shapes follows: `status` and `session` for a session; `status`, `started` and `terminal` for a run. A run that started a session is printed as that session, with the run under `run`: its `run_id`, `job`, `status`, `started` and `terminal`. The row's own `status` is then the live session's state, or the run's status once the session is gone, when `session` holds only its id, harness and folder. `kind: run` is left for runs that never started a session: skipped, refused or failed before the launch. Timestamps stay UTC and native model ids are preserved. A pi, OpenCode or other process-identified session is `<harness>-<pid>` in `session_id`, with the conversation it reports, when it reports one, in `native_id`. A session started with [`cones launch --parent`](#starting-a-session) names its launcher's id in `launched_by`, the row the dashboard lists it beneath; with `launched_under_parent: false` no launch carries one.
+`--json` writes one object per line. `id` is the row's id, the one every other command takes: `session.session_id` for a session, `started.run_id` for a run. `kind` is `session` or `run` and says which of the two shapes follows: `status` and `session` for a session; `status`, `started` and `terminal` for a run. A run that started a session is printed as that session, with the run under `run`: its `run_id`, `job`, `status`, `started` and `terminal`. The row's own `status` is then the live session's state, or the run's status once the session is gone, when `session` holds only its id, harness and folder. `kind: run` is left for runs that never started a session: skipped, refused or failed before the launch. Timestamps stay UTC and native model ids are preserved. A pi, OpenCode or other process-identified session is `<harness>-<pid>` in `session_id`, with the conversation it reports, when it reports one, in `native_id`. A session started with [`cones launch --parent`](#starting-a-session) names its launcher's id in `launched_by`, the row the dashboard lists it beneath; with `launched_under_parent: false` no launch carries one.
 
 ```sh
 cones ls --dir ~/src/app --json
@@ -371,7 +371,9 @@ roster, greeting or inbox; [`cones comms`](#comms) adds those for agents sharing
 cones stop 5bf8392e-17cb-405d-a400-22dfbda13472
 ```
 
-Use the id from `cones ls --json`. A session its harness reports `active` is refused, since an
+Use the id from `cones ls`, or `id` in `cones ls --json`. Several ids stop at once; see
+[many targets](#many-targets). Stopping leaves the row on the list, done or idle: `cones rm`
+takes it off. A session its harness reports `active` is refused, since an
 agent that read a worker's report may not know its own later note started a new turn: wait for
 it with `cones wait ID`, or pass `--force` to interrupt the turn. Four targets are supported:
 
@@ -479,8 +481,13 @@ permission dialog is unverified; Claude's shows no empty editor and the command 
 
 ### Removing a row
 
-`cones rm TARGET` is the dashboard's `ctrl+x` twice on the row TARGET names: a job's name, an
-open folder's path (anything with a `/` or starting with `~`), or a full run or session id from `cones ls`.
+`cones rm TARGET...` is the dashboard's `ctrl+x` twice on each row a TARGET names: a job's name,
+an open folder's path (anything with a `/` or starting with `~`), or a full run or session id
+from `cones ls`. It is how finished agents are closed:
+
+```sh
+cones ls --dir ~/src/app --status done | cones rm -
+```
 
 A session is stopped first, then removed from the harness's own list. If the stop fails,
 nothing is removed and the command exits 1. Runs and jobs belong to the
@@ -496,6 +503,16 @@ nothing is removed and the command exits 1. Runs and jobs belong to the
 | Codex daemon thread | Stopped through its daemon when one runs, then forgotten and hidden, its client closed; the thread stays resumable from history. |
 | Other session | SIGTERM to the process, once it is verified to be that harness's. The harness keeps no list to remove it from, and the output says so. |
 | Open folder | Closed; the directory and any pin remain. A running dashboard drops the row on its next refresh. |
+
+### Many targets
+
+`cones stop` and `cones rm` take any number of targets, or a lone `-` to read them from stdin,
+one per line, where only the first tab-separated field counts, so `cones ls` rows pipe in as
+printed. Repeats are dropped. The targets are handled at once, up to 16 together, and each
+prints its own line in the order given: its result on stdout, or `cones: TARGET: error` on
+stderr. One failure leaves the others done and exits 1. Jobs and folders rewrite one shared file,
+so they go one at a time. An id of `null`, `undefined` or nothing is refused with the field
+to read instead.
 
 ## Coordinator
 

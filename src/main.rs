@@ -8,7 +8,7 @@ use cones::{
 };
 use std::{
     fs,
-    io::{IsTerminal, Write},
+    io::{IsTerminal, Read, Write},
     os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::PathBuf,
     process::Command,
@@ -213,10 +213,14 @@ enum Action {
         /// The conversation's full id as `cones search` or `cones ls` prints it.
         id: String,
     },
-    /// End a session's work and keep its conversation; see docs/cli.md.
+    /// End sessions' work and keep their conversations, all at once, one line per id; see
+    /// docs/cli.md. `cones rm` also takes the rows off the list.
     Stop {
-        /// The full session id as `cones ls` prints it.
-        id: String,
+        /// Full session ids: the first column of `cones ls`, `id` in `cones ls --json`. A lone
+        /// `-` reads them from stdin, the first tab-separated field of each line, so
+        /// `cones ls --dir . --status done | cones stop -` works.
+        #[arg(required = true)]
+        ids: Vec<String>,
         /// Stop it even while its harness reports a turn running.
         #[arg(long)]
         force: bool,
@@ -286,12 +290,15 @@ enum Action {
         /// The full session id as `cones ls` prints it.
         id: String,
     },
-    /// What the dashboard's ctrl+x twice does to a row: stop it, remove it or close it; see
-    /// docs/cli.md.
+    /// What the dashboard's ctrl+x twice does to rows: stop and remove them, all at once, one
+    /// line per target; the way to close finished agents. See docs/cli.md.
     Rm {
-        /// A full run or session id as `cones ls` prints it, a job
-        /// name, or an open folder's path.
-        target: String,
+        /// Full run or session ids (the first column of `cones ls`, `id` in `cones ls --json`),
+        /// job names or open folders' paths. A lone `-` reads them from stdin, the first
+        /// tab-separated field of each line, so `cones ls --dir . --status done | cones rm -`
+        /// works.
+        #[arg(required = true)]
+        targets: Vec<String>,
     },
     /// A run's captured output; the dashboard opens this in a viewer.
     #[command(name = "__logs", hide = true)]
@@ -955,7 +962,7 @@ fn execute(cli: Cli) -> Result<i32> {
                             |s| serde_json::json!(s),
                         );
                         serde_json::json!({
-                            "kind": "session", "status": state, "session": session,
+                            "kind": "session", "id": id, "status": state, "session": session,
                             "run": {"run_id": run.started.run_id, "job": run.started.job,
                                     "status": run.status(), "started": run.started,
                                     "terminal": run.terminal},
@@ -963,7 +970,7 @@ fn execute(cli: Cli) -> Result<i32> {
                     });
                     println!(
                         "{}",
-                        projected.unwrap_or_else(|| serde_json::json!({"kind":"run","status":run.status(),"started":run.started,"terminal":run.terminal}))
+                        projected.unwrap_or_else(|| serde_json::json!({"kind":"run","id":run.started.run_id,"status":run.status(),"started":run.started,"terminal":run.terminal}))
                     );
                 } else {
                     let last = run.terminal.as_ref().unwrap_or(&run.started);
@@ -1003,7 +1010,7 @@ fn execute(cli: Cli) -> Result<i32> {
                 if json {
                     println!(
                         "{}",
-                        serde_json::json!({"kind":"session","status":s.state,"session":s})
+                        serde_json::json!({"kind":"session","id":s.session_id,"status":s.state,"session":s})
                     );
                 } else {
                     println!(
@@ -1043,21 +1050,23 @@ fn execute(cli: Cli) -> Result<i32> {
             println!("{}", started.id);
             Ok(0)
         }
-        Action::Stop { id, force } => {
+        Action::Stop { ids, force } => {
+            let ids = targets(ids)?;
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
-            let id = full_id(rows.iter().map(|s| s.session_id.clone()), &id)?;
-            // An agent that read a worker's report may not know its own later note started a
-            // new turn; stopping would cut that turn off. Only a reported working state refuses.
-            ensure!(
-                force
-                    || !rows
-                        .iter()
-                        .any(|s| s.session_id == id && s.state == cones::fleet::State::Active),
-                "{id} is working on a turn; wait for it (`cones wait {id}`) or pass --force to \
-                 interrupt it"
-            );
-            print!("{}", cones::stop::session(&state, &claude, &id)?);
-            Ok(0)
+            Ok(each(&ids, |id| {
+                let id = full_id(rows.iter().map(|s| s.session_id.clone()), id)?;
+                // An agent that read a worker's report may not know its own later note started a
+                // new turn; stopping would cut that turn off. Only a reported working state refuses.
+                ensure!(
+                    force
+                        || !rows
+                            .iter()
+                            .any(|s| s.session_id == id && s.state == cones::fleet::State::Active),
+                    "{id} is working on a turn; wait for it (`cones wait {id}`) or pass --force to \
+                     interrupt it"
+                );
+                cones::stop::session(&state, &claude, &id)
+            }))
         }
         Action::Wait { ids, timeout } => {
             match cones::launch::wait(&state, &claude, &jobs_path, &ids, None, timeout)? {
@@ -1187,59 +1196,67 @@ fn execute(cli: Cli) -> Result<i32> {
             println!("compacted {id} ({})", session.harness);
             Ok(0)
         }
-        Action::Rm { target } => {
+        Action::Rm { targets: list } => {
+            let list = targets(list)?;
             let ledger = Ledger::new(&state)?;
             let runs = ledger.runs()?;
             let jobs = config::read_jobs(&jobs_path).unwrap_or_default();
-            if jobs.iter().any(|j| j.name == target) {
-                // A running job's row stops its run, as in the dashboard; an idle one is deleted.
-                if let Some(run) = runs
-                    .iter()
-                    .rev()
-                    .find(|r| r.started.job.as_deref() == Some(&target) && r.status() == "started")
-                {
-                    let removed = cones::runner::remove(&ledger, &claude, &run.started.run_id)?;
-                    print!("{}", removed.unwrap_or_default());
-                    return Ok(0);
-                }
-                config::write_job(&jobs_path, Some(&target), None)?;
-                launchd::install(
-                    &config::read_jobs(&jobs_path)?,
-                    &std::env::current_exe()?,
-                    &fs::canonicalize(&jobs_path)?,
-                    &state,
-                    false,
-                )
-                .with_context(|| {
-                    format!("job {target} deleted, but reinstalling the schedules failed")
-                })?;
-                println!("deleted job {target}; schedules reinstalled");
-                return Ok(0);
-            }
-            // No id holds a slash, so a path names a folder.
-            if target.contains('/') || target.starts_with('~') || target == "." || target == ".." {
-                let dir = match target.strip_prefix('~') {
-                    Some(rest) => {
-                        PathBuf::from(std::env::var("HOME")?).join(rest.trim_start_matches('/'))
-                    }
-                    None => PathBuf::from(&target),
-                };
-                cones::tui::close_folder(&state, &dir)?;
-                println!("closed {target}; the folder itself and any pin are untouched");
-                return Ok(0);
-            }
             let rows = cones::tui::sessions(&claude, &state, &config::defaults(&jobs_path))?;
-            let ids = rows
-                .iter()
-                .map(|s| s.session_id.clone())
-                .chain(runs.iter().map(|r| r.started.run_id.clone()));
-            let id = full_id(ids, &target)?;
-            // A run is the jobs client's row; every other id is a session.
-            match cones::runner::remove(&ledger, &claude, &id)? {
-                Some(removed) => print!("{removed}"),
-                None => print!("{}", cones::stop::remove(&state, &claude, &rows, &id)?),
-            }
-            Ok(0)
+            // Jobs and folders rewrite one shared file each, so they go one at a time.
+            let serial = std::sync::Mutex::new(());
+            Ok(each(&list, |target| -> Result<String> {
+                let target = target.to_owned();
+                if jobs.iter().any(|j| j.name == target) {
+                    let _held = serial.lock().unwrap_or_else(|e| e.into_inner());
+                    // A running job's row stops its run, as in the dashboard; an idle one is deleted.
+                    if let Some(run) = runs.iter().rev().find(|r| {
+                        r.started.job.as_deref() == Some(&target) && r.status() == "started"
+                    }) {
+                        let removed = cones::runner::remove(&ledger, &claude, &run.started.run_id)?;
+                        return Ok(removed.unwrap_or_default());
+                    }
+                    config::write_job(&jobs_path, Some(&target), None)?;
+                    launchd::install(
+                        &config::read_jobs(&jobs_path)?,
+                        &std::env::current_exe()?,
+                        &fs::canonicalize(&jobs_path)?,
+                        &state,
+                        false,
+                    )
+                    .with_context(|| {
+                        format!("job {target} deleted, but reinstalling the schedules failed")
+                    })?;
+                    return Ok(format!("deleted job {target}; schedules reinstalled\n"));
+                }
+                // No id holds a slash, so a path names a folder.
+                if target.contains('/')
+                    || target.starts_with('~')
+                    || target == "."
+                    || target == ".."
+                {
+                    let _held = serial.lock().unwrap_or_else(|e| e.into_inner());
+                    let dir = match target.strip_prefix('~') {
+                        Some(rest) => {
+                            PathBuf::from(std::env::var("HOME")?).join(rest.trim_start_matches('/'))
+                        }
+                        None => PathBuf::from(&target),
+                    };
+                    cones::tui::close_folder(&state, &dir)?;
+                    return Ok(format!(
+                        "closed {target}; the folder itself and any pin are untouched\n"
+                    ));
+                }
+                let ids = rows
+                    .iter()
+                    .map(|s| s.session_id.clone())
+                    .chain(runs.iter().map(|r| r.started.run_id.clone()));
+                let id = full_id(ids, &target)?;
+                // A run is the jobs client's row; every other id is a session.
+                match cones::runner::remove(&ledger, &claude, &id)? {
+                    Some(removed) => Ok(removed),
+                    None => cones::stop::remove(&state, &claude, &rows, &id),
+                }
+            }))
         }
         Action::Skill { name } => {
             let Some(name) = name else {
@@ -1725,6 +1742,59 @@ fn live_parent(rows: &[cones::fleet::Session], parent: &str) -> Result<String> {
         "--parent {parent}: no live session; `cones ls` lists them"
     );
     Ok(id)
+}
+
+/// The targets as given, or with a lone `-` the first tab-separated field of each stdin line, so
+/// `cones ls` rows pipe straight in. Repeats are dropped.
+fn targets(args: Vec<String>) -> Result<Vec<String>> {
+    let mut list = if args == ["-"] {
+        let mut text = String::new();
+        std::io::stdin().read_to_string(&mut text)?;
+        text.lines()
+            .filter_map(|line| line.split('\t').next())
+            .map(|id| id.trim().to_owned())
+            .filter(|id| !id.is_empty())
+            .collect()
+    } else {
+        args
+    };
+    ensure!(!list.is_empty(), "no ids on stdin; nothing was done");
+    let mut seen = std::collections::HashSet::new();
+    list.retain(|t| seen.insert(t.clone()));
+    Ok(list)
+}
+
+/// Run `one` on every target at once, then print each outcome in the order given, as it prints
+/// alone. Exits 1 if any failed.
+fn each(targets: &[String], one: impl Fn(&str) -> Result<String> + Sync) -> i32 {
+    let mut code = 0;
+    // ponytail: 16 at a time bounds the native CLIs spawned together.
+    for chunk in targets.chunks(16) {
+        let done: Vec<Result<String>> = std::thread::scope(|scope| {
+            let running: Vec<_> = chunk.iter().map(|t| scope.spawn(|| one(t))).collect();
+            running
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("panicked")))
+                })
+                .collect()
+        });
+        for (target, result) in chunk.iter().zip(done) {
+            match result {
+                Ok(line) => print!("{line}"),
+                Err(e) => {
+                    // Alone, the error names its target as it always did.
+                    let _ = match targets.len() {
+                        1 => writeln!(std::io::stderr(), "cones: {e:#}"),
+                        _ => writeln!(std::io::stderr(), "cones: {target}: {e:#}"),
+                    };
+                    code = 1;
+                }
+            }
+        }
+    }
+    code
 }
 
 fn full_id(ids: impl Iterator<Item = String>, id: &str) -> Result<String> {

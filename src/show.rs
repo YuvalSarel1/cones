@@ -26,6 +26,12 @@ pub const DEFAULT_CONTEXT: usize = 5;
 /// are time-based, so sessions started together share their first characters and a prefix
 /// that names one session today names two tomorrow. Callers check the exact match first.
 pub fn refuse_prefix<'a>(id: &str, ids: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    // What a script reading the wrong JSON field passes.
+    ensure!(
+        !matches!(id.trim(), "" | "null" | "undefined" | "None"),
+        "`{id}` is not an id; in `cones ls --json` a row's id is its top-level `id`, the same as \
+         `.session.session_id`"
+    );
     let mut full: Vec<&str> = ids
         .into_iter()
         .filter(|s| !id.is_empty() && *s != id && s.starts_with(id))

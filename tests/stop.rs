@@ -1581,6 +1581,91 @@ fn rm_forgets_a_codex_thread_and_keeps_its_rollout() {
     );
 }
 
+/// Closing a folder's finished agents is one `cones rm`: the rows `cones ls` prints pipe in on
+/// stdin, every target is removed in the same call, each answers on its own line in the order
+/// given, and one failure fails the exit without holding back the rest. `--json` names the id a
+/// script needs at the top level, and a script that read the wrong field is told which to read.
+#[test]
+fn rm_closes_every_row_ls_prints_in_one_call_and_reports_each() {
+    let f = Fixture::new();
+    fs::write(f.home().join("allow-rm"), "").unwrap();
+    let (one, two) = (
+        "aaaaaaa1-1111-4111-8111-111111111111",
+        "aaaaaaa2-2222-4222-8222-222222222222",
+    );
+    let (idle1, idle2) = (Idle::new(), Idle::new());
+    f.live_as(one, "bg", idle1.0.id(), "idle");
+    f.live_as(two, "bg", idle2.0.id(), "idle");
+    let thread = "019a12fc-17d9-7af2-bc5a-92de2ec06072";
+    codex_thread(&f, thread);
+    let home = f.home().display().to_string();
+
+    let rows = f.rows();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    for row in &rows {
+        assert_eq!(row["id"], row["session"]["session_id"], "{row}");
+    }
+    let refused = f.cones(&["stop", "null"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert_eq!(
+        text(&refused.stderr),
+        "cones: `null` is not an id; in `cones ls --json` a row's id is its top-level `id`, the \
+         same as `.session.session_id`\n"
+    );
+
+    let listed = f.cones(&["ls"]);
+    let missing = "bbbbbbbb-0000-4000-8000-000000000000";
+    let input = format!("{}{missing}\n", text(&listed.stdout));
+    let order: Vec<String> = input
+        .lines()
+        .map(|l| l.split('\t').next().unwrap().to_owned())
+        .collect();
+    let mut rm = Command::new(env!("CARGO_BIN_EXE_cones"))
+        .env("HOME", f.root.path())
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove("CODEX_HOME")
+        .args(["--state-dir", f.state().to_str().unwrap(), "rm", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    rm.stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = rm.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stdout));
+    assert_eq!(
+        text(&out.stderr),
+        format!("cones: {missing}: no run or session {missing}\n")
+    );
+    let line = |id: &str| match id {
+        _ if id == thread => {
+            format!("stopped and forgot codex thread {id}; it stays resumable from history")
+        }
+        _ => format!("stopped and removed claude session {id}; its transcript is kept"),
+    };
+    let expected: Vec<String> = order[..3].iter().map(|id| line(id)).collect();
+    assert_eq!(text(&out.stdout).lines().collect::<Vec<_>>(), expected);
+    let mut calls: Vec<String> = f.calls().lines().map(str::to_owned).collect();
+    calls.sort();
+    assert_eq!(
+        calls,
+        [
+            format!("rm aaaaaaa1 {home}"),
+            format!("rm aaaaaaa2 {home}"),
+            format!("stop aaaaaaa1 {home}"),
+            format!("stop aaaaaaa2 {home}"),
+        ]
+    );
+    assert_eq!(
+        fs::read_to_string(f.state().join("hidden")).unwrap(),
+        format!("{thread}\n")
+    );
+}
+
 /// A Codex thread opened in a cones terminal outlives the terminal in its daemon. Removing it
 /// stops the terminal and forgets the thread, so the row stays gone after the next start and a
 /// resume clears the hidden id the way any forgotten thread's does.

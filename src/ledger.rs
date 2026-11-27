@@ -301,8 +301,13 @@ impl Ledger {
     }
     /// Hide a row without deleting its ledger record, output or transcript.
     pub fn hide(&self, run_id: &str) -> Result<()> {
-        let mut f = private_file(&self.state.join("hidden"))?;
-        f.seek(SeekFrom::End(0))?;
+        // Appending, so a bulk `cones rm` hiding several rows at once loses none of them.
+        use std::os::unix::fs::OpenOptionsExt;
+        private_file(&self.state.join("hidden"))?;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(self.state.join("hidden"))?;
         writeln!(f, "{run_id}")?;
         Ok(())
     }
